@@ -165,16 +165,15 @@ def test_colour_keyed_png_background_is_composited(mode, key):
 def test_jpeg_frames_stb_rejects_are_not_passed_through():
     raw = _encode(_photo(), "JPEG")
     assert _stb_reads_jpeg(raw)
-    assert _stb_reads_jpeg(_patched_frame(raw, marker = 0xC1))  # Extended sequential.
-    assert not _stb_reads_jpeg(_patched_frame(raw, marker = 0xC3))  # Lossless.
-    assert not _stb_reads_jpeg(_patched_frame(raw, marker = 0xC9))  # Arithmetic.
+    assert _stb_reads_jpeg(_patched_frame(raw, marker = 0xC1))
+    assert not _stb_reads_jpeg(_patched_frame(raw, marker = 0xC3))
+    assert not _stb_reads_jpeg(_patched_frame(raw, marker = 0xC9))
     assert not _stb_reads_jpeg(_patched_frame(raw, precision = 12))
     assert not _stb_reads_jpeg(_encode(_photo("CMYK"), "JPEG"))
-    assert not _stb_reads_jpeg(raw[:20])  # Ends before any frame header.
+    assert not _stb_reads_jpeg(raw[:20])
 
 
-# The 64x64 PNG from the GGUF vision smoke test: its deflate stream is cut short and it has no
-# IEND. Pillow decodes it; stb_image rejects it.
+# Truncated deflate, no IEND: Pillow decodes it, stb_image rejects it.
 _UNTERMINATED_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAYklEQVR4nO3PMQ0AIADAMEAI/k"
     "UhBhEcDcmqYJtn7/GzpQNeNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA1oDWgNaA"
@@ -185,7 +184,7 @@ _UNTERMINATED_PNG = base64.b64decode(
 def test_png_chunks_stb_rejects_are_reencoded():
     raw = _encode(_photo(), "PNG")
     assert _stb_reads_png(raw)
-    assert not _stb_reads_png(raw[: raw.rindex(b"IEND") - 4])  # No IEND.
+    assert not _stb_reads_png(raw[: raw.rindex(b"IEND") - 4])
     assert not _stb_reads_png(_UNTERMINATED_PNG)
     head, out = _split(_llama_image_data_url(_UNTERMINATED_PNG))
     assert head == "data:image/png;base64"
@@ -194,7 +193,6 @@ def test_png_chunks_stb_rejects_are_reencoded():
 
 
 def test_png_with_a_compressed_tail_past_its_rows_is_not_inflated_to_the_end():
-    # 1x1 greyscale: Pillow stops after its two-byte row, a megabyte of zeros follows it.
     deflate = zlib.compressobj(9)
     body = deflate.compress(b"\0\0") + deflate.compress(bytes(1 << 20)) + deflate.flush()
     raw = _encode(Image.new("L", (1, 1)), "PNG")
@@ -211,7 +209,6 @@ def test_png_with_a_compressed_tail_past_its_rows_is_not_inflated_to_the_end():
         b"not an image",
         b"\x89PNG\r\n\x1a\n" + b"\0" * 32,
         b"\xff\xd8\xff\xe0garbage",
-        # Reject truncated data even when stb_image would accept it.
         _encode(_photo(size = (640, 480)), "JPEG", quality = 90)[:4000],
         _encode(_photo(size = (640, 480)), "PNG")[:4000],
     ],

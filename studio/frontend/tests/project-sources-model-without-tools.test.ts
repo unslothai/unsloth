@@ -67,6 +67,8 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "react/jsx-runtime": jsxRuntime,
     "@hugeicons/react": { HugeiconsIcon: Nothing },
     "@hugeicons/core-free-icons": {},
+    "@/lib/folder-icons": {},
+    "@/lib/hugeicons-derived": {},
     "lucide-react": new Proxy({}, { get: () => Nothing }),
     "@/lib/tick-icon": {},
     "@/lib/open-file-picker": { openFilePicker: () => undefined },

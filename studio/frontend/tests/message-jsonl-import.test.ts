@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import vm from "node:vm";
 import { after, before, test } from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { type ViteDevServer, createServer } from "vite";
 import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../src/features/chat/codex-reasoning.ts";
@@ -121,6 +121,43 @@ test("developer and assistant array content survive message JSONL import", () =>
     { type: "text", text: "Done" },
     { type: "image", image },
   ]);
+});
+
+for (const layout of ["messages", "training"]) {
+  test(`assistant refusals survive ${layout} JSONL import`, () => {
+    const refusal = "I cannot help with that request.";
+    for (const assistant of [
+      { role: "assistant", content: null, refusal },
+      { role: "assistant", content: "", refusal },
+      { role: "assistant", content: [], refusal },
+      { role: "assistant", content: [{ type: "refusal", refusal }] },
+    ]) {
+      const messages = [
+        { role: "user", content: "A question" },
+        assistant,
+        { role: "user", content: "Another question" },
+      ];
+      const input = layout === "training"
+        ? JSON.stringify({ messages })
+        : messages.map((message) => JSON.stringify(message)).join("\n");
+      const [conversation] = parseImportText(input, "chat.jsonl");
+      assert.deepEqual(
+        conversation.messages.map(({ role }) => role),
+        ["user", "assistant", "user"],
+      );
+      assert.deepEqual(conversation.messages[1].content, [{ type: "text", text: refusal }]);
+      assert.equal(conversation.messages[1].parentId, conversation.messages[0].id);
+      assert.equal(conversation.messages[2].parentId, conversation.messages[1].id);
+    }
+  });
+}
+
+test("assistant text takes precedence over refusal metadata on import", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({ messages: [{ role: "assistant", content: "An explanation.", refusal: "Refused" }] }),
+    "chat.jsonl",
+  );
+  assert.deepEqual(conversation.messages[0].content, [{ type: "text", text: "An explanation." }]);
 });
 
 test("ShareGPT import maps role aliases regardless of case and whitespace", () => {

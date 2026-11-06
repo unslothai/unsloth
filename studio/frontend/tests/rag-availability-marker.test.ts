@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A Mac where sqlite_vec imports but its native vec0 library is missing has a working
-// server and a dead RAG engine. routes/rag.py answers that as a contract: the polled KB
-// list degrades to 200 with an availability marker, every other endpoint answers 503 with
-// the same reason. Both readings used to be dropped by the client, so the user got an
-// apparently-working empty Knowledge bases page whose Create button could only 503.
+// routes/rag.py reports a dead vec0 via a list marker and 503s; the client used to drop both.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -34,7 +30,6 @@ function resetAvailability() {
   });
 }
 
-/** The body of a top-level function, so an assertion cannot pass on a neighbour's code. */
 function functionBody(src: string, name: string): string {
   const start = src.search(new RegExp(`(async )?function\\*?\\s+${name}\\b`));
   assert.ok(start >= 0, `${name} is gone or was renamed`);
@@ -86,8 +81,6 @@ test("a healthy host stays optimistic and reports no reason", () => {
   assert.equal(state.unavailableReason(), null);
 });
 
-// Backwards compatibility: an older backend, or a different build, sends the list with no
-// marker at all. That has to behave exactly as it does today.
 test("a list with no marker leaves availability unknown", () => {
   resetAvailability();
   assert.equal(hasRagAvailabilityMarker({ knowledgeBases: [] }), false);
@@ -113,8 +106,6 @@ test("a marker of true clears a stale unavailable", () => {
   );
 });
 
-// A user who opens the dialog and hits Create before the first list poll lands gets the
-// 503 first. Reading it means the UI is coherent immediately instead of at the next poll.
 test("a 503 from any endpoint marks unavailable, with the stated reason", () => {
   resetAvailability();
   noteRagResponse(503, { detail: BACKEND_REASON });
@@ -123,12 +114,7 @@ test("a 503 from any endpoint marks unavailable, with the stated reason", () => 
   assert.equal(state.unavailableReason(), BACKEND_REASON);
 });
 
-// A bodyless 503 is precisely what a reverse proxy, Cloudflare or a briefly overloaded
-// server returns, and it says nothing about sqlite-vec. This test used to assert the
-// opposite: that such a response should still be explained with the extension reason.
-// That turns any transient outage into a permanent, wrongly-worded verdict for the rest
-// of the session, since only a 2xx from a gated endpoint can clear it. Unknown is the
-// honest state, and the dialog stays usable until the backend actually says otherwise.
+// A bodyless 503 comes from proxies too, so it is not a sqlite-vec verdict.
 test("a 503 with no readable body is not a capability verdict", () => {
   resetAvailability();
   noteRagResponse(503, null);
@@ -142,8 +128,6 @@ test("a 503 with no readable body is not a capability verdict", () => {
   assert.equal(state.unavailableReason(), null);
 });
 
-// 401, 404, 422 and a genuine 500 say nothing about whether the extension loads. Treating
-// them as unavailable would gray the dialog out on any transient failure.
 test("a non-503 failure does not mark unavailable", () => {
   for (const status of [401, 404, 422, 500]) {
     resetAvailability();
@@ -175,8 +159,6 @@ test("a success from a gated endpoint clears a stale unavailable", () => {
   );
 });
 
-// The KB list is the one endpoint that answers 200 either way, so the blanket "a 2xx means
-// available" rule must not fire on it and race the marker back to available.
 test("the KB list's own 200 does not overrule its marker", () => {
   resetAvailability();
   const body = {
@@ -185,9 +167,7 @@ test("the KB list's own 200 does not overrule its marker", () => {
     ragUnavailableReason: BACKEND_REASON,
   };
   noteRagResponse(200, body);
-  // Assert BEFORE the marker read, which is the only call that can prove the exemption
-  // exists. noteRagAvailability writes available:false unconditionally, so checking only
-  // after it passed even with the exemption deleted -- the last writer hid the bug.
+  // Assert before the marker read: that write is unconditional and would hide the bug.
   assert.equal(
     useRagAvailabilityStore.getState().availabilityUnknown(),
     true,
@@ -304,10 +284,7 @@ test("the dialog stops offering a Create button that can only 503", async () => 
   );
 });
 
-// The queued-prompt gate polls listThreadDocuments and answers "still indexing" whenever
-// it throws, and dispatchQueuedPrompt reschedules on that answer with no cap. On a broken
-// RAG host the probe can never succeed, so a queued prompt on a thread using documents
-// was never dispatched at all.
+// The queue reschedules on probe failure with no cap, so a broken RAG host never dispatched.
 test("a queued prompt is not held forever by a probe that can never succeed", async () => {
   const src = await readSrc("components/assistant-ui/thread.tsx");
   assert.match(
@@ -328,8 +305,6 @@ test("a queued prompt is not held forever by a probe that can never succeed", as
     /return !useRagAvailabilityStore\.getState\(\)\.isUnavailable\(\);/,
     "the catch does not break out on a measured unavailable",
   );
-  // Only a measured unavailable breaks out. A transient failure must still hold the
-  // prompt back rather than sending it without the documents it was waiting for.
   resetAvailability();
   assert.equal(
     !useRagAvailabilityStore.getState().isUnavailable(),
@@ -338,8 +313,7 @@ test("a queued prompt is not held forever by a probe that can never succeed", as
   );
 });
 
-// useRagToolDisabled is a model-capability gate and is deliberately false when no model is
-// loaded. Folding host availability into it would conflate two different questions.
+// useRagToolDisabled is a model-capability gate, deliberately false with no model loaded.
 test("host availability is kept out of the model-capability gate", async () => {
   const src = await readSrc("features/chat/hooks/use-rag-tool-disabled.ts");
   assert.ok(
@@ -348,10 +322,6 @@ test("host availability is kept out of the model-capability gate", async () => {
   );
 });
 
-// A 503 is not automatically a capability verdict. Cloudflare, a reverse proxy and a
-// briefly overloaded server all return one, and their bodies say nothing about
-// sqlite-vec. Recording those would gate the dialog for the session behind a transient
-// outage and show an extension explanation for something that was never the extension.
 test("a generic 503 from a proxy is not read as a RAG capability verdict", () => {
   useRagAvailabilityStore.setState({ available: true, reason: null, answered: false });
 
@@ -361,9 +331,7 @@ test("a generic 503 from a proxy is not read as a RAG capability verdict", () =>
     null,
     {},
     "<html><body><h1>503 Service Unavailable</h1></body></html>",
-    // Anything RAG-aware in front of the backend can say this without meaning the
-    // extension, so the phrase alone must not persist a capability verdict. Only the
-    // package name does, since nothing upstream emits it by accident.
+    // Only the package name marks a capability verdict, since nothing upstream emits it by accident.
     { detail: "RAG is unavailable right now, try again shortly" },
     { detail: "RAG unavailable: upstream timeout" },
   ]) {

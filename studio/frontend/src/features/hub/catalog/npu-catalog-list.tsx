@@ -6,7 +6,7 @@ import { Spinner } from "@/components/ui/spinner";
 import {
   type NpuModel,
   type NpuPickerSource,
-  NpuPoweredBy,
+  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -18,7 +18,6 @@ import { toast } from "@/lib/toast";
 import { useState } from "react";
 import { DeleteConfirmDialog } from "./download-card";
 
-/** The Hub's NPU format: Lemonade's FastFlowLM catalog, the same models the chat picker lists. */
 export function NpuCatalogList({
   source,
   query,
@@ -71,10 +70,8 @@ export function NpuCatalogList({
       data-testid="hub-npu-catalog"
       className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
     >
-      {catalog.ready ? (
-        <NpuPoweredBy status={catalog.status} className="px-3 pb-2" />
-      ) : null}
       {body()}
+      <NpuRuntimeVersions catalog={catalog} className="mt-auto px-3 pt-4" />
     </div>
   );
 }
@@ -126,7 +123,7 @@ function NpuCatalogRow({
     <div
       data-testid="hub-npu-row"
       data-model={model.id}
-      className="flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-accent/50"
+      className="flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-accent/50"
     >
       <span
         aria-hidden={true}
@@ -156,7 +153,7 @@ function NpuCatalogRow({
           <Button size="sm" variant="outline" onClick={onRun}>
             Run
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setConfirming(true)}>
+          <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
             Delete
           </Button>
           <DeleteConfirmDialog

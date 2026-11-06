@@ -1,22 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam guard: every VAE Studio tiles decodes in tiles wide and overlapping enough not to leave lines.
-
-Each family's VAE is built on the meta device from its real ``vae/config.json``, set up as a Studio load sets it
-up (``enable_tiling()`` plus every tile override module), and its real ``decode`` runs over every canvas side
-Studio offers with a shape-only decoder; the tile grid is read from the latent slices the decode takes. Off CUDA
-the overrides size tiles for zero free VRAM, the tightest tier.
-"""
+"""Seam guard: tiled VAE decodes must overlap enough to hide tile seams at every offered size."""
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -77,7 +73,7 @@ def keep_stock() -> dict[str, str]:
     return dict(getattr(_module("diffusion_vae_tiling"), "KEEP_STOCK", {}) or {})
 
 
-# "VAE class@ratio" -> a smaller geometry measured seam-free (real latent, tiled vs untiled decode). Measurement required.
+# "VAE class@ratio" -> a smaller geometry measured seam-free. Measurement required.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # #12698 seam bench: worst 64 px window <= 1.88 levels, PSNR >= 53 dB (stock 2-latent overlaps: 2.3-7.7).
     "AutoencoderKLLTX2Video@32x": Floor(
@@ -90,7 +86,6 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     "AutoencoderKLMiniMaxH3@16x": Floor(
         16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
     ),
-    # 16x video VAEs at stock tiles, real 33-frame clip vs untiled.
     "AutoencoderKLHunyuanVideo15@16x": Floor(
         16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
     ),
@@ -100,7 +95,11 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
 }
 
 # family -> open seam bug below the floor. Strict xfail, so the fix landing forces the entry out.
-KNOWN_SEAMS: dict[str, str] = {}
+KNOWN_SEAMS: dict[str, str] = {
+    # Stock strides only: generate sets per-canvas ones (test_video_cosmos3 checks them against this floor).
+    "cosmos3-nano": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 832 px",
+    "cosmos3-edge": "stock AutoencoderKLWan@16x fallback tiles: 4-latent edge tile at 480 / 640 / 832 px",
+}
 
 GEOMETRY_PRESERVING = {
     "diffusion_vae_fused": "batched stock tiled_decode: the stock attributes' tiles, decoded as one batch",
@@ -296,6 +295,21 @@ def _latent_channels(config: dict) -> int:
     return 16
 
 
+@contextlib.contextmanager
+def _no_memory_reading():
+    """Probe the grid a decode takes with no free-memory reading: the smallest tiles, the same on every host.
+
+    Budgeted planners (video_ltx2_vae_tiles) widen tiles, or go untiled, when the reading says they fit; on a CPU
+    host that reading is host RAM, so an unpinned probe would see whatever the runner has free.
+    """
+    mod = _module("video_vae_untiled")
+    if mod is None or not hasattr(mod, "_free_bytes"):
+        yield
+        return
+    with mock.patch.object(mod, "_free_bytes", lambda device: None):
+        yield
+
+
 def probe_axis(vae, config: dict, length: int, other: int, video: bool) -> list[tuple[int, int]]:
     c = _latent_channels(config)
     for frames in (1, 2, 4, 8) if video else (None,):
@@ -303,7 +317,7 @@ def probe_axis(vae, config: dict, length: int, other: int, video: bool) -> list[
         rec = _TileRecorder(shape[-2:])
         _ACTIVE.append(rec)
         try:
-            with rec, torch.no_grad():
+            with rec, _no_memory_reading(), torch.no_grad():
                 vae.decode(torch.zeros(shape), return_dict = False)
             return sorted(rec.axes[0])
         except Exception as exc:  # noqa: BLE001 - a frame count the VAE's temporal chunking refuses
@@ -474,3 +488,19 @@ def test_probe_reads_the_stock_grid():
     assert applied == []
     tiles = probe_axis(vae, {"z_dim": 16}, 64, 8, True)
     assert tiles == [(0, 32), (24, 56), (48, 64)]
+
+
+def test_probe_ignores_free_host_memory(monkeypatch):
+    """A CPU host whose RAM fits the whole frame decodes LTX-2 untiled; the probe must still read the tiled grid."""
+    untiled = pytest.importorskip("core.inference.video_vae_untiled")
+    ltx = pytest.importorskip("core.inference.video_ltx2_vae_tiles")
+    monkeypatch.setattr(untiled, "_free_bytes", lambda device: 1 << 50)
+    kind, config = _family_configs()["ltx-2"]
+    vae, applied = build_vae(config, kind)
+    assert "video_ltx2_vae_tiles" in applied
+    length = max(_sides("ltx-2")) // _ratio(vae)
+    z = torch.zeros(1, _latent_channels(config), 1, length, length, device = "meta")
+    # The planner itself takes the reading: one tile covering the frame.
+    assert ltx.plan_tiles(vae, z) == (length, length)
+    tiles = probe_axis(vae, config, length, max(1, MIN_SIDE // _ratio(vae)), True)
+    assert len(tiles) >= 2, tiles

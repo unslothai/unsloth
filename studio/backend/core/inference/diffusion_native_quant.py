@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torchao-free weight-only int8 / fp8 for the diffusion transformer (ROCm, Windows torchao stub).
-
-Plain buffers, unlike torchao tensors, survive the offload hooks' ``Module.to()``; torch imported lazily.
-"""
+"""Torchao-free int8/fp8 weight-only quant for ROCm and Windows; plain buffers survive offload
+hooks' Module.to(); torch imported lazily"""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import os
+import re
+import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
@@ -31,6 +34,48 @@ _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
+# Compiled linear holds int32 acc + output chunk (6 B/elem); eager's row budget keeps its peak <= eager's (#15183 used 4x).
+_INT_MM_FUSED_CHUNK_ELEMS = _INT_MM_CHUNK_ELEMS
+# ``0`` keeps eager CUDA W8A8 kernels instead of one compiled function per linear.
+NATIVE_INT8_FUSED_ENV = "UNSLOTH_NATIVE_INT8_FUSED"
+# fp8 codes a native fp8 layer may hold; e5m2 only from a checkpoint (the quantise path writes e4m3fn).
+NATIVE_FP8_FORMATS = ("float8_e4m3fn", "float8_e5m2")
+# ``0`` quantises host-resident linears on the host again instead of one at a time on the card.
+NATIVE_QUANT_ON_DEVICE_ENV = "UNSLOTH_NATIVE_QUANT_ON_DEVICE"
+_HOST_QUANT_DEVICE: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_native_host_quant_device", default = None
+)
+
+
+def fp8_bits_to_float32(bits: Any, fmt: str = "float8_e4m3fn") -> Any:
+    """uint8 fp8 codes to float32 by integer ops, bit-exact; Triton has no e4m3fn convert below sm_89."""
+    import torch
+
+    b = bits.to(torch.int32)
+    if fmt == "float8_e5m2":
+        exp_bits, man_bits, bias = 5, 2, 15
+    else:
+        exp_bits, man_bits, bias = 4, 3, 7
+    e = (b >> man_bits) & ((1 << exp_bits) - 1)
+    m = b & ((1 << man_bits) - 1)
+    normal = (((e + (127 - bias)) << 23) | (m << (23 - man_bits))).view(torch.float32)
+    # subnormal: m * 2**(1 - bias - man_bits), exact in float32
+    sub = m.to(torch.float32) * (2.0 ** (1 - bias - man_bits))
+    mag = torch.where(e == 0, sub, normal)
+    if fmt == "float8_e5m2":
+        top = e == (1 << exp_bits) - 1
+        mag = torch.where(top, torch.where(m == 0, float("inf"), float("nan")), mag)
+    else:
+        mag = torch.where((e == 15) & (m == 7), float("nan"), mag)
+    return torch.where((b & 0x80) != 0, -mag, mag)
+
+
+@lru_cache(maxsize = None)
+def fp8_lookup_table(fmt: str, device: str) -> Any:
+    """float32 value of every fp8 code on ``device``. MPS has no fp8 casts before torch 2.15; indexing this table
+    with the uint8 codes gives the same bits as the cast on any torch."""
+    import torch
+    return torch.arange(256, dtype = torch.uint8).view(getattr(torch, fmt)).float().to(device)
 
 
 def int8_act_requested() -> bool:
@@ -193,11 +238,7 @@ def int8_rotation_group() -> int:
 
 @lru_cache(maxsize = 1)
 def _row_major_op() -> Any:
-    """``unsloth_studio::native_row_major``: a row-major copy Inductor cannot re-layout, or None.
-
-    cuBLASLt runs int8 GEMMs only with a row-major activation. Inductor lays the int8 activation out in the stride
-    order of whatever produced it (a transposed view upstream, even one passed through ``.contiguous()``, which it
-    drops), so ``torch._int_mm`` can get it column-major and fail with CUBLAS_STATUS_NOT_SUPPORTED."""
+    """Row-major copy Inductor cannot re-layout; cuBLASLt int8 GEMMs fail on a column-major activation."""
     import torch
 
     ns = getattr(torch.ops, "unsloth_studio", None)
@@ -220,6 +261,135 @@ def _row_major_op() -> Any:
     except Exception:  # noqa: BLE001 - a registration failure keeps the plain copy
         return None
     return torch.ops.unsloth_studio.native_row_major
+
+
+def int8_fused_disabled() -> bool:
+    import os
+    return os.environ.get(NATIVE_INT8_FUSED_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
+    """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
+    import torch
+
+    if rot_h is not None:
+        g = rot_h.shape[0]
+        x2 = (x2.reshape(x2.shape[0], -1, g) @ rot_h.to(x2.dtype)).reshape(x2.shape)
+    x_scale = torch.linalg.vector_norm(
+        x2, ord = float("inf"), dim = 1, keepdim = True, dtype = torch.float32
+    ).clamp(min = 1e-12)
+    # fp64 reciprocal: matches eager CUDA bit-for-bit; Triton's fp32 reciprocal is approximate and drifts codes.
+    x_scale = x_scale * (1.0 / 127.0)
+    x_recip = (1.0 / x_scale.double()).float()
+    xq = torch.mul(x2, x_recip).round().clamp(-127, 127).to(torch.int8)
+    if rot_h is None:
+        op = _FUSED_STATE.get("row_major")
+        xq = op(xq) if op is not None else xq.contiguous()
+    acc = torch._int_mm(xq, weight_q.t())
+    out = torch.mul(acc, x_scale)
+    w_scale = weight_scale.view(torch.float32)
+    if bias is not None:
+        out = torch.addcmul(bias.float(), out, w_scale)
+    else:
+        out = out * w_scale
+    return out.to(x2.dtype)
+
+
+def _w8a8_rows_into(
+    x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any, out: Any
+) -> None:
+    """``_w8a8_rows`` stored straight into ``out`` (a row slice of the chunked output), no temporary chunk result."""
+    out.copy_(_w8a8_rows(x2, rot_h, weight_q, weight_scale, bias))
+
+
+_FUSED_STATE: dict = {"fn": None, "failed": None}
+
+
+# ROCm archs where the compiled W8A8 linear was measured: RDNA3 / RDNA3.5 / RDNA4 (gfx11xx / gfx12xx). On gfx1151 it
+# matches eager exactly and beats bf16 (1.03-1.36x per linear at 4096 rows), where the eager int8 path is 0.93x bf16.
+_ROCM_FUSED_W8A8_ARCH = re.compile(r"^gfx1[12][0-9a-f]{2}$")
+
+
+def _rocm_fused_w8a8_refusal(torch: Any) -> Optional[str]:
+    """None when the compiled linear may run on this ROCm device, else why not (other ROCm archs: unmeasured)."""
+    from .rocm_bf16 import _device_gfx_arch
+
+    arch = _device_gfx_arch(torch, None)
+    if _ROCM_FUSED_W8A8_ARCH.match(arch):
+        return None
+    return f"ROCm {arch or 'unknown arch'}"
+
+
+def _fused_w8a8() -> Optional[Callable[..., Any]]:
+    """Compiled ``_w8a8_rows``, or None if disabled, no inductor runtime, a ROCm arch other than RDNA3 / RDNA4, or
+    already failed."""
+    if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
+        return None
+    fn = _FUSED_STATE["fn"]
+    if fn is not None:
+        return fn
+    import torch
+
+    from .rocm_bf16 import is_rocm_torch
+
+    try:
+        from .diffusion_speed import torch_compile_runtime_available
+        runtime = torch_compile_runtime_available()
+    except Exception:  # noqa: BLE001 - unknown runtime: stay eager
+        runtime = False
+    try:  # Studio's structured logger (the line lands in the server log), plain logging outside Studio
+        from loggers import get_logger
+        log = get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        import logging
+        log = logging.getLogger(__name__)
+    if not runtime:
+        _FUSED_STATE["failed"] = "no inductor runtime"
+        log.info("diffusion.native_quant: int8 W8A8 linear stays eager (no inductor runtime)")
+        return None
+    if is_rocm_torch(torch):
+        refusal = _rocm_fused_w8a8_refusal(torch)
+        if refusal is not None:
+            _FUSED_STATE["failed"] = refusal
+            log.info("diffusion.native_quant: int8 W8A8 linear stays eager (%s)", refusal)
+            return None
+    # Registered in eager, before any trace reads the handle.
+    _FUSED_STATE["row_major"] = _row_major_op()
+    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
+    # "calls" after the first call would recompile each compiled function once.
+    _FUSED_STATE.setdefault("calls", 0)
+    fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
+    # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
+    _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
+    _FUSED_STATE["fn"] = fn
+    log.info("diffusion.native_quant: int8 W8A8 linear runs as one compiled function")
+    return fn
+
+
+def _fused_w8a8_failed(exc: BaseException) -> None:
+    import logging
+
+    _FUSED_STATE["failed"] = repr(exc)
+    _FUSED_STATE["fn"] = None
+    _FUSED_STATE["into"] = None
+    logging.getLogger(__name__).warning(
+        "diffusion.native_quant: the compiled int8 W8A8 linear failed (%s); eager kernels from here on "
+        "(set %s=0 to skip it)",
+        exc,
+        NATIVE_INT8_FUSED_ENV,
+    )
+
+
+def _autocast_on(x: Any) -> bool:
+    import torch
+    try:
+        return bool(torch.is_autocast_enabled(x.device.type))
+    except TypeError:  # torch without the device_type argument: treat any autocast as on
+        return bool(torch.is_autocast_enabled() or torch.is_autocast_cpu_enabled())
+
+
+def fused_w8a8_state() -> dict:
+    return {"calls": _FUSED_STATE.get("calls", 0), "failed": _FUSED_STATE["failed"]}
 
 
 @lru_cache(maxsize = 1)
@@ -259,8 +429,15 @@ def native_linear_class():
                 if self.act_int8 and rot_group and self.in_features % int(rot_group) == 0
                 else 0
             )
+            self.fp8_format = "float8_e4m3fn"
             if codes is not None:
                 wanted = torch.int8 if scheme == NATIVE_INT8 else torch.float8_e4m3fn
+                if (
+                    scheme == NATIVE_FP8
+                    and str(codes.dtype).replace("torch.", "") in NATIVE_FP8_FORMATS
+                ):
+                    wanted = codes.dtype
+                    self.fp8_format = str(codes.dtype).replace("torch.", "")
                 if codes.dtype != wanted:
                     raise ValueError(
                         f"pre-quantized native {scheme} codes must be {str(wanted).replace('torch.', '')}"
@@ -313,13 +490,19 @@ def native_linear_class():
             self._int8pack_scales: dict = {}
 
         def _stored_weight(self, dtype: Any) -> Any:
-            wq = (
-                self.weight_q.view(torch.float8_e4m3fn)
-                if self.scheme == NATIVE_FP8
-                else self.weight_q
-            )
             scale = self.weight_scale.view(torch.float32)
-            return (wq.to(torch.float32) * scale[:, None]).to(dtype)
+            if self.scheme != NATIVE_FP8:
+                wide = self.weight_q.to(torch.float32)
+            elif torch.compiler.is_compiling():
+                wide = fp8_bits_to_float32(self.weight_q, self.fp8_format)
+            elif self.weight_q.device.type == "mps":
+                lut = fp8_lookup_table(self.fp8_format, str(self.weight_q.device))
+                wide = lut.index_select(0, self.weight_q.reshape(-1).int()).view(
+                    self.weight_q.shape
+                )
+            else:
+                wide = self.weight_q.view(getattr(torch, self.fp8_format)).to(torch.float32)
+            return (wide * scale[:, None]).to(dtype)
 
         def _rotate(self, x: Any) -> Any:
             g = self.rot_group
@@ -384,6 +567,65 @@ def native_linear_class():
                         for part in torch.tensor_split(x2, -(-rows // chunk))
                     ]
                 )
+            return out.reshape(*x.shape[:-1], self.out_features)
+
+        def _forward_fused(self, x: Any) -> Any:
+            """Chunked compiled forward; None = use eager kernels (also during CUDA graph capture)."""
+            in_f = self.in_features
+            rows = x.numel() // max(1, in_f)
+            if not self._int_mm_ok(rows) or (
+                x.is_cuda and torch.cuda.is_current_stream_capturing()
+            ):
+                return None
+            from .diffusion_bg_compile import eager_forced  # noqa: PLC0415
+
+            # Detailer crops and in-flight background compiles must not compile on this thread (#15063).
+            if eager_forced():
+                return None
+            fn = _fused_w8a8()
+            if fn is None:
+                return None
+            # Detached: guards on a view's base / Parameter shape would recompile per layout / layer.
+            x2 = x.reshape(-1, in_f).detach()
+            rot_h = self.rot_h if self.rot_group else None
+            bias = self.bias.detach() if self.bias is not None else None
+            chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(in_f, self.out_features)
+            try:
+                if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
+                    out = fn(x2, rot_h, self.weight_q, self.weight_scale, bias)
+                else:
+                    # Only the rotation matmul can change the dtype (autocast); without it the output is x2's dtype.
+                    into = _FUSED_STATE.get("into")
+                    if into is not None and (rot_h is None or not _autocast_on(x2)):
+                        out = x2.new_empty(rows, self.out_features)
+                    else:
+                        into = out = None
+                    start = 0
+                    for part in torch.tensor_split(x2, -(-rows // chunk)):
+                        stop = start + part.shape[0]
+                        if into is not None:
+                            into(
+                                part.detach(),
+                                rot_h,
+                                self.weight_q,
+                                self.weight_scale,
+                                bias,
+                                out[start:stop],
+                            )
+                        else:
+                            got = fn(part.detach(), rot_h, self.weight_q, self.weight_scale, bias)
+                            if out is None:
+                                # Allocated from the first chunk to keep the compiled dtype (autocast can differ).
+                                out = got.new_empty(rows, self.out_features)
+                            out[start:stop].copy_(got)
+                            del got
+                        start = stop
+            except torch.cuda.OutOfMemoryError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - a compile failure falls back to the eager kernels
+                _fused_w8a8_failed(exc)
+                return None
+            _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _int8pack_scale(self, dtype: Any, device: Any) -> Any:
@@ -451,6 +693,10 @@ def native_linear_class():
                 out = self._forward_int8pack(x)
                 if out is not None:
                     return out
+            if self.act_int8 and x.is_cuda and not torch.compiler.is_compiling():
+                out = self._forward_fused(x)
+                if out is not None:
+                    return out
             if self.rot_group:
                 x = self._rotate(x)
             if (
@@ -465,6 +711,7 @@ def native_linear_class():
             return (
                 f"in_features={self.in_features}, out_features={self.out_features}, "
                 f"scheme={self.scheme}, act_int8={self.act_int8}, rot_group={self.rot_group}, bias={self.bias is not None}"
+                + (f", codes={self.fp8_format}" if self.scheme == NATIVE_FP8 else "")
             )
 
     return NativeWeightOnlyLinear
@@ -498,20 +745,25 @@ def apply_native_weight_quant(
     rot_group = int8_rotation_group() if act_int8 else 0
     # Names only: holding the old modules would keep every bf16 weight alive until the pass ends.
     names = [name for name, mod in transformer.named_modules() if name and filter_fn(mod, name)]
+
+    def build(linear: Any) -> Any:
+        return cls(
+            linear,
+            scheme,
+            act_int8 = act_int8,
+            rot_group = rot_group,
+            scale_dtype = scale_dtype if scheme == NATIVE_INT8 and not act_int8 else None,
+        )
+
+    device = _HOST_QUANT_DEVICE.get()
+    mover = _HostLinearMover(device) if device is not None else None
     for name in names:
         parent_name, _, leaf = name.rpartition(".")
         parent = transformer.get_submodule(parent_name) if parent_name else transformer
-        setattr(
-            parent,
-            leaf,
-            cls(
-                getattr(parent, leaf),
-                scheme,
-                act_int8 = act_int8,
-                rot_group = rot_group,
-                scale_dtype = scale_dtype if scheme == NATIVE_INT8 and not act_int8 else None,
-            ),
-        )
+        linear = getattr(parent, leaf)
+        setattr(parent, leaf, mover.build(linear, build) if mover is not None else build(linear))
+    if mover is not None:
+        mover.close(logger)
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: %s %s (torchao-free) on %d linears",
@@ -522,6 +774,129 @@ def apply_native_weight_quant(
             len(names),
         )
     return len(names)
+
+
+def native_quant_on_device_enabled() -> bool:
+    return os.environ.get(NATIVE_QUANT_ON_DEVICE_ENV, "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+@contextlib.contextmanager
+def quantise_host_linears_on(device: Any):
+    """Inside, ``apply_native_weight_quant`` builds each host-resident Linear on ``device`` and returns it to the
+    host. Same kernels as a layer staged on the card, so the codes match a fully staged build bit for bit."""
+    token = _HOST_QUANT_DEVICE.set(device)
+    try:
+        yield
+    finally:
+        _HOST_QUANT_DEVICE.reset(token)
+
+
+class _HostLinearMover:
+    """A card failure builds that layer and the rest on the host, as without this."""
+
+    def __init__(self, device: Any) -> None:
+        import torch
+
+        self.device = torch.device(device)
+        self._pinned: dict = {}
+        self.layers = 0
+        self.up_bytes = 0
+        self.started = time.perf_counter()
+        self.failed: Optional[str] = None
+
+    def _staging(self, slot: str, nbytes: int) -> Any:
+        import torch
+
+        from .host_pinning import host_pinning_allowed
+
+        if not host_pinning_allowed(self.device):
+            return None
+        buf = self._pinned.get(slot)
+        if buf is None or buf.numel() < nbytes:
+            self._pinned[slot] = None
+            try:
+                buf = torch.empty(nbytes, dtype = torch.uint8, pin_memory = True)
+            except Exception:  # noqa: BLE001 -- no pinnable memory: pageable copies, same bytes
+                buf = torch.empty(0, dtype = torch.uint8)
+            self._pinned[slot] = buf
+        return buf if buf.numel() >= nbytes else None
+
+    def _to_device(self, tensor: Any) -> Any:
+        import torch
+
+        nbytes = tensor.numel() * tensor.element_size()
+        buf = self._staging("up", nbytes) if tensor.is_contiguous() else None
+        if buf is None:
+            return tensor.to(self.device)
+        host = buf[:nbytes].view(tensor.dtype).view(tensor.shape)
+        host.copy_(tensor)
+        out = torch.empty(tensor.shape, dtype = tensor.dtype, device = self.device)
+        out.copy_(host, non_blocking = True)
+        return out
+
+    def _to_host(self, tensor: Any) -> Any:
+        import torch
+
+        nbytes = tensor.numel() * tensor.element_size()
+        buf = self._staging("down", nbytes) if tensor.is_contiguous() else None
+        if buf is None:
+            return tensor.to("cpu")
+        host = buf[:nbytes].view(tensor.dtype).view(tensor.shape)
+        host.copy_(tensor)
+        return torch.empty(tensor.shape, dtype = tensor.dtype).copy_(host)
+
+    def build(self, linear: Any, make: Callable[[Any], Any]) -> Any:
+        import torch
+
+        weight = getattr(linear, "weight", None)
+        if (
+            self.failed is not None
+            or not isinstance(weight, torch.nn.Parameter)
+            or weight.device.type != "cpu"
+        ):
+            return make(linear)
+        cuda = self.device.type == "cuda"
+        try:
+            linear.weight = torch.nn.Parameter(
+                self._to_device(weight.detach()), requires_grad = False
+            )
+            built = make(linear)
+            for key, buf in list(built._buffers.items()):
+                if buf is not None and buf.device.type != "cpu":
+                    built._buffers[key] = self._to_host(buf)
+            # The next upload reuses the pinned buffer.
+            if cuda:
+                torch.cuda.synchronize(self.device)
+        except Exception as exc:  # noqa: BLE001 -- out of memory or a device fault: the host build, as before
+            self.failed = f"{type(exc).__name__}: {exc}".splitlines()[0][:200]
+            linear.weight = weight
+            if cuda:
+                torch.cuda.empty_cache()
+            return make(linear)
+        finally:
+            if linear.weight is not weight:
+                linear.weight = weight
+        self.layers += 1
+        self.up_bytes += weight.numel() * weight.element_size()
+        return built
+
+    def close(self, logger: Any = None) -> None:
+        self._pinned.clear()
+        if logger is None or not (self.layers or self.failed):
+            return
+        logger.info(
+            "diffusion.transformer_quant: built %d host linear(s) on %s one at a time (%.1f GB in %.1f s)%s",
+            self.layers,
+            self.device,
+            self.up_bytes / 1e9,
+            time.perf_counter() - self.started,
+            f"; the rest on the host ({self.failed})" if self.failed else "",
+        )
 
 
 def _first_native_linear(module: Any) -> Any:

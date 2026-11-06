@@ -19,17 +19,38 @@ import torch._dynamo.utils as dynamo_utils
 from unsloth.kernels import rms_layernorm
 from unsloth.kernels.rms_layernorm import fast_rms_layernorm
 
-if torch.version.hip:
-    pytest.skip("the multi-row kernels are off on ROCm", allow_module_level = True)
-
 BF16_OK = torch.cuda.get_device_capability()[0] >= 8
 DTYPES = [torch.float16, torch.float32] + ([torch.bfloat16] if BF16_OK else [])
 NARROW = [33, 64, 96, 100, 127, 128]
 _eager = rms_layernorm._eager_kernel
 
 
+def _replay_matches_device():
+    # ROCm arches whose tl.sum is the generic butterfly (RDNA1/2, CDNA1) fail the DPP replay; production stays
+    # one-row there through the self-check, but most tests below force the replay.
+    if not torch.version.hip:
+        return True
+    device = torch.device("cuda", torch.cuda.current_device())
+    saved, rms_layernorm._MULTIROW = rms_layernorm._MULTIROW, True
+    try:
+        settings = rms_layernorm._multirow_settings(128, device)
+    finally:
+        rms_layernorm._MULTIROW = saved
+    return settings is not None and rms_layernorm._multirow_self_check(
+        device, torch.float32, torch.float32, 128, 1e-6, False, settings
+    )
+
+
+REPLAY_OK = _replay_matches_device()
+
+
 @pytest.fixture
-def multirow(monkeypatch):
+def multirow(monkeypatch, request):
+    if (
+        not REPLAY_OK
+        and request.node.originalname != "test_rocm_without_the_dpp_order_stays_one_row"
+    ):
+        pytest.skip("this ROCm arch does not reduce in the replayed order")
     monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
     monkeypatch.setattr(rms_layernorm, "_MULTIROW_CHECKED", {})
     return monkeypatch
@@ -131,29 +152,37 @@ class _Norm(torch.nn.Module):
         self.variance_epsilon = 1e-6
 
 
-def _qk_norm_case(fn, dtype, gemma):
+def _qk_norm_case(
+    fn,
+    dtype,
+    gemma,
+    dim = 128,
+):
     g = torch.Generator(device = "cuda").manual_seed(0)
-    norm = _Norm(128, dtype)
-    X = torch.randn(2, 37, 16, 128, device = "cuda", generator = g).to(dtype).requires_grad_(True)
-    dY = torch.randn(2, 37, 16, 128, device = "cuda", generator = g).to(dtype)
+    norm = _Norm(dim, dtype)
+    X = torch.randn(2, 37, 16, dim, device = "cuda", generator = g).to(dtype).requires_grad_(True)
+    dY = torch.randn(2, 37, 16, dim, device = "cuda", generator = g).to(dtype)
     Y = fn(norm, X, gemma)
     Y.backward(dY)
     return Y.detach(), X.grad
 
 
 @pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
-def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
-    """Under torch.compile (fullgraph, no graph break) the bytes match the one-row eager kernel."""
+@pytest.mark.parametrize("dynamic", [False, True], ids = ["static", "dynamic"])
+@pytest.mark.parametrize("dim", [64, 128])
+def test_multirow_compiled_matches_one_row_eager(multirow, gemma, dynamic, dim):
     if not getattr(torch.library, "triton_op", None):
         pytest.skip("needs torch.library.triton_op")
     dtype = torch.bfloat16 if rms_layernorm._BF16_TRACEABLE else torch.float16
     multirow.setattr(rms_layernorm, "_MULTIROW", False)
-    ref = _qk_norm_case(fast_rms_layernorm, dtype, gemma)
+    ref = _qk_norm_case(fast_rms_layernorm, dtype, gemma, dim)
     multirow.setattr(rms_layernorm, "_MULTIROW", True)
     torch._dynamo.reset()
     dynamo_utils.counters.clear()
-    compiled = torch.compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True)
-    got = _qk_norm_case(compiled, dtype, gemma)
+    compiled = torch.compile(
+        lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True, dynamic = dynamic
+    )
+    got = _qk_norm_case(compiled, dtype, gemma, dim)
     torch._dynamo.reset()
     assert sum(dynamo_utils.counters["graph_break"].values()) == 0
     assert list(rms_layernorm._MULTIROW_CHECKED.values()) == [True]
@@ -323,3 +352,12 @@ def test_multirow_launches_on_the_tensors_device(multirow, path):
             torch._dynamo.reset()
     assert torch.equal(_bits(ref), _bits(got))
     assert any(rms_layernorm._MULTIROW_CHECKED.values()) and rms_layernorm._MULTIROW
+
+
+@pytest.mark.skipif(REPLAY_OK, reason = "this device reduces in the replayed order")
+def test_rocm_without_the_dpp_order_stays_one_row(multirow):
+    """An arch the replay does not match never runs the multi-row kernels."""
+    X = torch.randn(64, 128, device = "cuda")
+    W = torch.randn(128, device = "cuda")
+    with pytest.warns(UserWarning, match = "self-check mismatch"):
+        assert rms_layernorm._multirow_checked(X, W, 1e-6, False) is None

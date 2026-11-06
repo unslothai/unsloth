@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One log record must not be able to grow without bound.
-
-request_failed renders the whole traceback into an "exception" field. That is a
-few KB for a normal failure, but an exception whose message embeds a request body
-is not: a rejected binary upload produced a single 2.2 MB line. The head (raising
-frame) and the tail (exception type and message) are what a reader needs, so the
-middle is dropped with a count of what went missing.
-"""
+"""Cap one log record: keep the traceback head and tail, and drop the middle with a count."""
 
 from __future__ import annotations
 
@@ -42,8 +35,7 @@ def test_head_and_tail_survive():
 
 
 def test_the_error_field_is_capped_too():
-    # request_failed logs str(exc) under "error" as well as the rendered traceback,
-    # so capping only the traceback still lets the same payload through.
+    # request_failed logs str(exc) under "error" as well as the traceback
     text = "ERR_HEAD" + ("x" * 4_000_000) + "ERR_TAIL"
     out = log_config.truncate_exception({"error": text})["error"]
     assert len(out) < log_config._MAX_ERROR_CHARS + 200, len(out)
@@ -52,7 +44,6 @@ def test_the_error_field_is_capped_too():
 
 
 def test_a_cap_smaller_than_the_tail_is_still_enforced(monkeypatch):
-    # head = cap - tail went negative, so text[:-2048] kept nearly everything.
     monkeypatch.setattr(log_config, "_MAX_EXC_CHARS", 1024)
     text = "H" * 4_000_000
     out = log_config.truncate_exception({"exception": text})["exception"]
@@ -79,16 +70,13 @@ def test_processor_signature_matches_structlog():
 
 
 def test_redaction_runs_before_truncation():
-    # redact_native_paths replaces exact strings, so truncating first could leave a
-    # half path behind for it to miss.
+    # redact_native_paths replaces exact strings, so truncating first could leave half a path
     text = (_BACKEND / "loggers/config.py").read_text(encoding = "utf-8")
     order = text.index("filter_sensitive_data,\n"), text.index("_truncate_exception_processor,\n")
     assert order[0] < order[1], "filter_sensitive_data must come first in the chain"
 
 
 def test_the_event_field_is_capped_too():
-    # logger.error(f"failed: {e}", exc_info = True) puts the whole exception text in
-    # the event, a third copy the first two caps never saw.
     text = "failed: " + ("q" * 4_000_000)
     out = log_config.truncate_exception({"event": text})["event"]
     assert len(out) < log_config._MAX_ERROR_CHARS + 200, len(out)
@@ -101,8 +89,7 @@ def test_a_normal_event_name_is_untouched():
 
 
 def test_positional_arguments_are_capped():
-    # logger.error("stream error: %s", exc) keeps the exception under positional_args,
-    # which the renderer stringifies with nothing in the chain to bound it.
+    # positional_args are stringified by the renderer with nothing to bound them
     out = log_config.truncate_exception(
         {"event": "stream error: %s", "positional_args": (Exception("x" * 4_000_000),)}
     )

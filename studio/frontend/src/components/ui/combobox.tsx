@@ -109,7 +109,6 @@ function ComboboxInput({
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean;
   showClear?: boolean;
-  /** Optional leading content (e.g. a search icon) rendered before the input. */
   startAddon?: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -179,8 +178,7 @@ function ComboboxContent({
           data-chips={!!anchor}
           onWheel={(event) => {
             onWheel?.(event);
-            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup, so
-            // scroll the list by hand while one is active.
+            // Dialog scroll locks cancel native wheel scrolling on this body-portaled popup.
             if (!document.body.hasAttribute("data-scroll-locked")) return;
             const list = event.currentTarget.querySelector<HTMLElement>(
               '[data-slot="combobox-list"]',
@@ -233,7 +231,7 @@ function ComboboxItem({
     <ComboboxPrimitive.Item
       data-slot="combobox-item"
       className={cn(
-        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-[10px] py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-9 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-md py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-9 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
@@ -326,7 +324,7 @@ function ComboboxChips({
     <ComboboxPrimitive.Chips
       data-slot="combobox-chips"
       className={cn(
-        "bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-4xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
+        "bg-input/30 border-input dark:border-transparent focus-within:border-ring dark:focus-within:border-transparent dark:focus-within:bg-[rgb(255_255_255_/_calc(0.09*var(--contrast-wash-gain,1)))] has-aria-invalid:ring-destructive/20 dark:has-aria-invalid:ring-destructive/40 has-aria-invalid:border-destructive dark:has-aria-invalid:border-destructive/50 flex min-h-9 flex-wrap items-center gap-1.5 rounded-xl border bg-clip-padding px-2.5 py-1.5 text-sm transition-colors has-aria-invalid:ring-[3px] has-data-[slot=combobox-chip]:px-1.5",
         className,
       )}
       {...props}
@@ -346,7 +344,7 @@ function ComboboxChip({
     <ComboboxPrimitive.Chip
       data-slot="combobox-chip"
       className={cn(
-        "bg-muted-foreground/10 text-foreground flex h-[calc(--spacing(5.5))] w-fit items-center justify-center gap-1 rounded-4xl px-2 text-xs font-medium whitespace-nowrap has-data-[slot=combobox-chip-remove]:pr-0 has-disabled:pointer-events-none has-disabled:cursor-not-allowed has-disabled:opacity-50",
+        "bg-muted-foreground/10 text-foreground flex h-[calc(--spacing(5.5))] w-fit items-center justify-center gap-1 rounded-full px-2 text-xs font-medium whitespace-nowrap has-data-[slot=combobox-chip-remove]:pr-0 has-disabled:pointer-events-none has-disabled:cursor-not-allowed has-disabled:opacity-50",
         className,
       )}
       {...props}

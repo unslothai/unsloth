@@ -75,3 +75,25 @@ def test_profile_endpoint_forwards_each_authenticated_subject(monkeypatch):
     active["subject"] = "bob"
     assert client.get("/api/profile/stats").json() == {"subject": "bob"}
     assert seen == ["alice", "bob"]
+
+
+def test_usage_export_forwards_the_subject_and_downloads_csv(monkeypatch):
+    seen: list[dict] = []
+
+    def fake_export(**kwargs):
+        seen.append(kwargs)
+        return "time,date\n"
+
+    monkeypatch.setattr(profile_stats_route, "export_usage_csv", fake_export)
+    app = FastAPI()
+    app.include_router(profile_stats_route.router, prefix = "/api/profile")
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    response = TestClient(app).get(
+        "/api/profile/stats/export?tz=Europe/Paris&tz_offset_minutes=-60"
+    )
+
+    assert response.status_code == 200
+    assert response.text == "time,date\n"
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"].startswith("attachment; filename=")
+    assert seen == [{"tz_offset_minutes": -60, "tz_name": "Europe/Paris", "subject": "alice"}]

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A registered folder Unsloth cannot read must say so, not look empty.
-
-Covers the add-time probe (os.access alone passes paths macOS TCC still
-refuses), the status the scan records when a folder stops being readable, and
-that reading the status back never touches the disk.
-"""
+"""An unreadable scan folder must report denied, not look empty, since os.access misses macOS TCC."""
 
 import errno
 import os
@@ -35,8 +30,7 @@ from utils.paths.scan_folder_health import (
 )
 
 
-# os.geteuid is missing on Windows, and a skipif condition is evaluated at import,
-# so the check has to be resolved before the decorator sees it.
+# os.geteuid is missing on Windows and skipif evaluates at import.
 requires_posix_permissions = pytest.mark.skipif(
     os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
     reason = "needs POSIX mode bits and a non-root user",
@@ -59,7 +53,6 @@ def test_a_readable_directory_passes_the_probe(tmp_path: Path):
 
 
 def test_an_empty_directory_still_passes(tmp_path: Path):
-    # Nothing to list is not the same as refusing to list.
     empty = tmp_path / "empty"
     empty.mkdir()
     assert is_readable_dir(str(empty)) is True
@@ -78,11 +71,7 @@ def test_a_chmod_000_directory_fails_the_probe(tmp_path: Path):
 
 
 def test_the_probe_catches_what_os_access_misses(tmp_path: Path, monkeypatch):
-    """The macOS TCC shape: mode bits say yes, opening the directory says no.
-
-    This is the case the old os.access-only check accepted, which then showed
-    the user a folder with no models in it and no reason why.
-    """
+    """Mode bits say readable but opening is refused, the macOS TCC case the old os.access check missed."""
     (tmp_path / "model.gguf").write_bytes(b"stub")
     assert os.access(str(tmp_path), os.R_OK | os.X_OK) is True
 
@@ -163,11 +152,7 @@ def test_annotate_does_not_mutate_the_database_rows():
 
 
 def test_a_healthy_folder_costs_a_bounded_number_of_opens(tmp_path: Path, monkeypatch):
-    """The scan probes even when models were found, so the bound is the guarantee.
-
-    A denied model sits next to readable ones and nothing raises, so the only way
-    to know is to ask, and the only thing keeping that cheap is the open budget.
-    """
+    """The scan probes even when models are found, so the open budget is what keeps the probe bounded."""
     import utils.paths.scan_folder_health as health
 
     for i in range(health._PROBE_OPEN_LIMIT * 4):
@@ -265,7 +250,6 @@ def test_a_healthy_folder_stays_ok_when_models_were_found(tmp_path: Path):
 
 
 def test_a_folder_that_disappeared_reports_missing(tmp_path: Path):
-    # Unmounted drive or renamed folder: the scanners return nothing, same as empty.
     note_scan_folder_scanned(str(tmp_path / "gone"), found = False)
     assert scan_folder_status(str(tmp_path / "gone")) == STATUS_MISSING
 
@@ -289,7 +273,6 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
 
-        # And it recovers on its own once the folder is readable again.
         denied.chmod(stat.S_IRWXU)
         collect_local_models(tmp_path, custom_folders = list(rows))
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
@@ -310,12 +293,7 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     ],
 )
 def test_windows_errors_classify_from_the_native_code(winerror, expected):
-    """Windows errno is a lossy translation, so read the native code first.
-
-    CPython's PC/errmap.h folds 27 distinct winerrors onto EACCES, only two of
-    which are access denials. Going by errno alone tells a user whose drive is
-    unplugged to fix the folder's permissions.
-    """
+    """CPython maps many winerrors onto EACCES, so classify Windows errors from winerror, not errno."""
     error = OSError(errno.EACCES, "simulated")
     error.winerror = winerror
     assert classify_scan_error(error) == expected
@@ -329,12 +307,7 @@ def test_a_posix_error_is_unaffected_by_the_windows_branch():
 
 
 def test_a_model_deleted_mid_scan_does_not_condemn_the_folder(tmp_path: Path):
-    """A child in the listing and gone by the time it is opened proves nothing.
-
-    Downloads create and rename temp directories inside a scan folder constantly,
-    so treating a vanished child as the folder's own status told a user who was
-    merely downloading a model that some of their models could not be read.
-    """
+    """A child that vanishes between listing and opening proves nothing about the folder itself."""
     folder = tmp_path / "models"
     keep = folder / "keep"
     keep.mkdir(parents = True)
@@ -363,9 +336,7 @@ def test_a_model_deleted_mid_scan_does_not_condemn_the_folder(tmp_path: Path):
             return next(self._entries)
 
     def _vanishing(path = "."):
-        # Read the listing to completion, then delete the temp dir. The entry is
-        # still in what we hand back, exactly as when a download renames it away
-        # between the folder being listed and the child being opened.
+        # Delete after listing, as when a download renames an entry away mid-scan.
         if str(path) == str(folder) and doomed.exists():
             with real_scandir(path) as entries:
                 listed = list(entries)
@@ -390,13 +361,7 @@ def test_the_folder_itself_disappearing_still_reports_missing(tmp_path: Path):
 
 
 def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
-    """The probe opens directories, so it cannot run on the loop.
-
-    Every other filesystem step in ``_collect_models_from_default_sources`` is
-    already wrapped in ``asyncio.to_thread``. This one opens up to 64 directories
-    per registered folder, and on a stalled network mount ``scandir`` sits in the
-    kernel with nothing to yield to, so the whole Unsloth server stops answering.
-    """
+    """The folder probe opens directories, so it runs in asyncio.to_thread, not on the event loop."""
     import asyncio as _asyncio
 
     import hub.services.models.local_inventory as inventory
@@ -567,7 +532,6 @@ def test_the_deep_probe_finds_the_denial_in_a_few_opens(tmp_path: Path, monkeypa
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
         assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
-        # Root, publisher, model.
         assert len(opened) == 3
     finally:
         denied.chmod(stat.S_IRWXU)
@@ -579,7 +543,6 @@ def test_this_file_can_be_collected_without_geteuid(monkeypatch):
     monkeypatch.delattr(os, "geteuid", raising = False)
     monkeypatch.setattr(os, "name", "nt")
     namespace: dict = {"__name__": "windows_collection_probe"}
-    # The module body is what pytest evaluates while collecting.
     exec(compile(source, __file__, "exec"), namespace)
 
 
@@ -598,18 +561,12 @@ def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
-    # Too wide to finish inside the budget, so the answer is "did not see
-    # everything", not "healthy". Only an exhaustive probe may report ok.
     assert probe_status(str(tmp_path), children = True) == STATUS_UNKNOWN
-    # One shared budget across the whole walk, however deep or wide the tree.
     assert len(opened) <= health._PROBE_OPEN_LIMIT
 
 
 def test_reopening_the_dialog_clears_a_folder_the_user_fixed(tmp_path: Path):
-    """The row tells the user to fix it and come back, so coming back must work.
-
-    Nothing rescans between inventory scans, so the folder list has to recheck.
-    """
+    """Reopening the dialog must recheck the folder, since nothing rescans between inventory scans."""
     (tmp_path / "model.gguf").write_bytes(b"stub")
     rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
     record_scan_failure(str(tmp_path), PermissionError(errno.EACCES, "Permission denied"))
@@ -690,7 +647,6 @@ def test_an_exhausted_budget_does_not_clear_a_known_failure(tmp_path: Path):
 
     for i in range(health._PROBE_OPEN_LIMIT * 3):
         (tmp_path / f"model{i:03d}").mkdir()
-    # Deterministically past the budget: pick by real listing order, not by name.
     order = [entry.name for entry in os.scandir(tmp_path)]
     denied = tmp_path / order[-1]
     denied.chmod(0o000)
@@ -713,7 +669,6 @@ def test_a_wide_folder_still_clears_once_it_is_fixed(tmp_path: Path):
         (tmp_path / f"model{i:03d}").mkdir()
     order = [entry.name for entry in os.scandir(tmp_path)]
     fixed = tmp_path / order[-1]
-    # Recorded as the cause, but readable again by the time the scan runs.
     health._failed[str(tmp_path)] = (STATUS_PARTIAL, str(fixed))
 
     note_scan_folder_scanned(str(tmp_path), found = True)
@@ -755,10 +710,7 @@ def test_the_internal_unknown_status_never_reaches_the_api(tmp_path: Path):
 
 
 def test_reading_status_never_touches_the_filesystem(monkeypatch):
-    """The folder list must stay a dict lookup: no stat, no listing, no cost.
-
-    Every filesystem entry point raises, so any disk access fails the test.
-    """
+    """Reading a folder's status is a dict lookup and must never touch the filesystem."""
     record_scan_failure("/models/b", PermissionError(errno.EACCES, "Permission denied"))
 
     def _boom(*args, **kwargs):
@@ -847,7 +799,6 @@ def test_the_snapshot_level_costs_nothing_on_a_plain_folder(tmp_path: Path, monk
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
     try:
-        # Root, publisher, model. The component level is still out of reach.
         assert probe_status(str(tmp_path), children = True) == STATUS_OK
         assert len(opened) == 3
     finally:

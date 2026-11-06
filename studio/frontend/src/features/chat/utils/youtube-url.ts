@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mirrors extract_video_id in core/youtube_transcript.py. The backend re-parses the URL, so this
-// only decides whether to offer the prompt.
+// Mirrors extract_video_id in core/youtube_transcript.py; the backend re-parses.
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 // `www.` is stripped before the lookup, so only the bare forms are listed.
@@ -18,7 +17,6 @@ const MAX_CLIPBOARD_TEXT_LENGTH = 8192;
 const WHITESPACE = /\s+/;
 const LINE_BREAK = /\r?\n/;
 
-/** The 11-character video id in a YouTube URL, or null if it is not one. */
 export function extractYoutubeVideoId(value: string): string | null {
   const trimmed = value.trim();
   if (trimmed.length === 0 || trimmed.length > 2048) return null;

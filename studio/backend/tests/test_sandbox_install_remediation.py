@@ -36,7 +36,6 @@ def test_missing_bwrap_names_the_command_for_this_package_manager(monkeypatch, m
     monkeypatch.setattr(os_sandbox, "_linux_userns_blocked_by_apparmor", lambda: False)
     remediation = os_sandbox.linux_unavailable_remediation()
     assert f"`{command}`" in remediation
-    # Setup never installed bwrap for an ordinary user, so the text must not send them there.
     assert "re-run Studio setup" not in remediation
 
 

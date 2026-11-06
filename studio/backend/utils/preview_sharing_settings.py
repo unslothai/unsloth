@@ -8,9 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 PREVIEW_SHARING_SETTING_KEY = "preview_public_sharing_enabled"
-# Default on: signed share links work out of the box (current behavior). An admin
-# can flip this off to take the public ``/p`` surface offline entirely - links
-# then 404 even with a valid token, leaving preview to the authenticated app.
+# Off takes the public /p surface offline: links 404 even with a valid token.
 DEFAULT_PREVIEW_SHARING_ENABLED = True
 
 
@@ -27,13 +25,7 @@ def _coerce_bool(value: Any) -> bool | None:
 
 
 def get_preview_sharing_enabled() -> bool:
-    """Read the persisted public-preview-sharing preference.
-
-    A *missing* setting defaults to enabled so the feature keeps working as
-    before unless an admin explicitly turns it off. A *read failure* (e.g. a
-    transient SQLite/permission error) fails closed -- this is a kill switch, so
-    an unreadable settings DB must not silently reopen the public surface.
-    """
+    """Missing setting means enabled; a read failure fails closed, since this is a kill switch."""
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as

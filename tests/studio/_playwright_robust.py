@@ -93,9 +93,28 @@ _VIEW_TRANSITION_KILLER_JS = """
 """
 
 
+# Reduce motion Off ignores reduced_motion emulation; System honours it.
+_FOLLOW_OS_MOTION_JS = """
+(() => {
+    try {
+        const key = "unsloth_appearance_customization";
+        if (localStorage.getItem(key) === null) {
+            localStorage.setItem(key, JSON.stringify({ state: { customization: { reduceMotion: "system" } }, version: 9 }));
+        }
+    } catch (e) { /* noop */ }
+})();
+"""
+
+
+def follow_os_reduced_motion(ctx: Any) -> None:
+    """Make Studio honour the context's reduced_motion emulation, as the old System default did."""
+    ctx.add_init_script(_FOLLOW_OS_MOTION_JS)
+
+
 def install_view_transition_killer(ctx: Any) -> None:
     """Inject the CSS view-transition killer into every page in `ctx`."""
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
+    follow_os_reduced_motion(ctx)
 
 
 # Health pre-flight; /api/health can return 200 while /api/auth still 503s.
@@ -462,6 +481,12 @@ def is_benign_page_error(msg: str) -> bool:
 
 def is_benign_console_error(msg: str) -> bool:
     return any(p in msg for p in BENIGN_CONSOLE_ERROR_PATTERNS)
+
+
+def is_vite_outdated_dep(response: Any) -> bool:
+    """Vite answers 504 "Outdated Optimize Dep" for a pre-bundle it just replaced, then reloads the page,
+    so it is not a missing asset. Its other 504, "Optimize Deps Processing Error", is a real failure."""
+    return response.status == 504 and response.status_text == "Outdated Optimize Dep"
 
 
 def echo_browser_errors(page: Any, info: Callable[[str], None]) -> list[str]:

@@ -13,9 +13,7 @@ This answers three questions on a real Windows ROCm box:
   1. Does ``free_gb`` move when ANOTHER process holds VRAM? That is the PR's
      entire claim, and it is the one that could silently be a no-op here:
      hipMemGetInfo is system-wide on Linux but process-local on Windows WDDM.
-  2. Does reading the summary ever spawn amd-smi? On Windows without a HIP SDK
-     it elevates a child and pops a UAC/DiskPart prompt, so the answer must be
-     no spawns.
+  2. Does reading the summary ever spawn amd-smi? Unless UNSLOTH_ENABLE_AMD_SMI=1, no.
   3. What do the Windows-only gates actually evaluate to?
 
 Run from ``studio/backend`` with the Unsloth venv's python::
@@ -41,13 +39,9 @@ from pathlib import Path
 
 GIB = 1024**3
 
-# Run from studio/backend, or from anywhere: resolve the backend root either way.
 BACKEND = Path(__file__).resolve().parents[2]
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
-
-
-# ========== holder ==========
 
 
 def run_holder(gib: float, max_seconds: int) -> int:
@@ -58,8 +52,7 @@ def run_holder(gib: float, max_seconds: int) -> int:
         print(json.dumps({"status": "ERROR", "error": "no cuda/hip device"}), flush = True)
         return 2
 
-    # TOUCHED, not merely allocated: an uncommitted allocation is not what a
-    # resident model is, and on WDDM it may not be committed to VRAM at all.
+    # TOUCHED, not just allocated: on WDDM an uncommitted allocation may not be in VRAM.
     chunks, held, step = [], 0, 256 * 1024 * 1024
     want = int(gib * GIB)
     while held < want:
@@ -84,9 +77,6 @@ def run_holder(gib: float, max_seconds: int) -> int:
     while time.time() < deadline:
         time.sleep(1)
     return 0
-
-
-# ========== observer ==========
 
 
 def _count_amd_smi_spawns(fn):
@@ -134,9 +124,7 @@ def _reading(hw, torch) -> dict:
         "total_gb": mem.get("total_gb"),
         "allocated_gb": mem.get("allocated_gb"),
         "reserved_gb": mem.get("reserved_gb"),
-        # The pre-PR expression, evaluated here so the base leg is present
-        # without needing a second checkout. It is blind to other processes by
-        # construction, and that is the point.
+        # The pre-PR expression, evaluated here so no second checkout is needed.
         "old_formula_free_gb": (props.total_memory - allocated) / GIB,
         "observer_allocated_gb": allocated / GIB,
     }
@@ -197,9 +185,7 @@ def main() -> int:
 
     from utils.hardware import hardware as hw
 
-    # IS_ROCM is False at import and is only set by detect_hardware(). Reading
-    # the gates without this reports every ROCm branch as inactive on a ROCm
-    # box, and the run then describes a path the machine never took.
+    # IS_ROCM is only set by detect_hardware(); without it every ROCm gate reads inactive.
     try:
         detected = str(hw.detect_hardware())
     except Exception as e:  # noqa: BLE001
@@ -228,7 +214,6 @@ def main() -> int:
         "is_integrated": getattr(props, "is_integrated", None),
     }
 
-    # --- gates: what the Windows-only branches actually decide here ---
     def _safe(fn, *a):
         try:
             return fn(*a)
@@ -263,8 +248,8 @@ def main() -> int:
     # idle backend is in.
     #
     # Two calls, because "0 spawns" means different things on different boxes.
-    # With a HIP SDK present amd-smi is ALLOWED and a spawn is correct, so the
-    # as-configured run cannot by itself exercise the guard. The forced run
+    # With UNSLOTH_ENABLE_AMD_SMI=1 amd-smi is ALLOWED and a spawn is correct, so
+    # the as-configured run cannot by itself exercise the guard. The forced run
     # drives _amd_smi_allowed() to False explicitly, which every new call site
     # must honour whatever the host looks like.
     import shutil
@@ -284,10 +269,7 @@ def main() -> int:
             os.environ["UNSLOTH_ENABLE_AMD_SMI"] = prior
     report["amd_smi_spawns_when_refused"] = spawns_refused
 
-    # --- questions 1: does free move when someone ELSE holds memory? ---
-    # Warm the primary context FIRST. _reading calls mem_get_info, which pins
-    # roughly 600 MiB on first use; without this the observer's own context
-    # lands between the two readings and is charged to the holder.
+    # Warm the primary context first: mem_get_info pins ~600 MiB that would be charged to the holder.
     try:
         torch.cuda.mem_get_info()
     except Exception as e:  # noqa: BLE001
@@ -312,7 +294,7 @@ def main() -> int:
     report["holder"] = ready
     if ready:
         report["with_holder"] = _reading(hw, torch)
-    # Stop by PID. Never pkill by pattern: it matches the shell running it.
+    # Stop by PID; pkill by pattern matches the shell running it.
     proc.terminate()
     try:
         proc.wait(timeout = 30)
@@ -325,7 +307,6 @@ def main() -> int:
     if args.json:
         args.json.write_text(json.dumps(report, indent = 2))
 
-    # --- verdict ---
     print("\n" + "=" * 62)
     if not ready:
         print("INCONCLUSIVE: the holder never became ready, so nothing was")
@@ -335,10 +316,7 @@ def main() -> int:
 
     held = float(ready.get("allocated_gib") or 0.0)
     before, during = report["before"], report["with_holder"]
-    # The holder costs its tensor PLUS its own primary context, so the driver's
-    # free legitimately drops by more than `held`. The question is binary --
-    # did free track another process at all, or not move -- so this is a band,
-    # not a point. Anything under `floor` means the other process was invisible.
+    # The holder also costs its own context, so this is a band, not a point.
     floor, ceiling = 0.9 * held, held + 2.0
 
     new_drop = (before["free_gb"] or 0) - (during["free_gb"] or 0)
@@ -364,8 +342,6 @@ def main() -> int:
     print(f"amd-smi spawns, when refused  {len(spawns_refused)}   (want 0)")
 
     problems = []
-    # A ROCm build whose ROCm gates read False means detection did not take, and
-    # every gate below describes a branch this machine never executed.
     if getattr(torch.version, "hip", None) and not gates.get("IS_ROCM"):
         problems.append(
             "torch is a ROCm build but hw.IS_ROCM is False, so the gate dump "
@@ -385,8 +361,7 @@ def main() -> int:
             f"free_gb moved {new_drop:.2f} GiB, more than {held:.2f} GiB held plus "
             f"2.00 GiB of process overhead: free is being under-reported"
         )
-    # A spawn is only a fault where the guard said no. With a HIP SDK present
-    # amd-smi is allowed and calling it is the intended behaviour.
+    # A spawn is only a fault where the guard said no.
     if allowed is False and spawns:
         problems.append(
             f"amd-smi was spawned {len(spawns)}x despite _amd_smi_allowed() being "
@@ -410,7 +385,6 @@ def main() -> int:
         return 1
     print(f"PASS: free_gb tracked another process's {held:.2f} GiB, the old formula")
     print("did not, and no call site spawned amd-smi once the guard refused.")
-    # State the reach of the amd-smi result rather than letting PASS imply more.
     if platform.system() != "Windows":
         print("\n  Note: not Windows, so _amd_smi_allowed() returned True by")
         print("  platform and the elevation guard was never under test.")
@@ -418,9 +392,9 @@ def main() -> int:
         print("\n  Note: amd-smi is not on PATH, so zero spawns is trivially true.")
         print("  The refusal path is confirmed, the real no-SDK case is not.")
     elif allowed is True:
-        print("\n  Note: a HIP SDK is present, so amd-smi is legitimately allowed")
-        print("  here. The forced-refusal leg passed, but the genuine")
-        print("  Windows-without-a-HIP-SDK case needs a box without one.")
+        print("\n  Note: UNSLOTH_ENABLE_AMD_SMI opts in, so amd-smi is legitimately")
+        print("  allowed here. The forced-refusal leg passed; rerun without the")
+        print("  flag to check the default.")
     return 0
 
 

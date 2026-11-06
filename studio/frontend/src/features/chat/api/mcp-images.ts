@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The envelope the backend appends to a tool result that returned images.
-// Validated, so tool text that merely mentions the marker is never truncated.
+// Backend envelope for tool images; validated so text merely mentioning it is not truncated.
 
 export const MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:";
 
 export interface McpImage {
   data: string;
   mimeType: string;
-  // Set on the first entry once this side has shortened the array, so the backend's
-  // note can still say how many the tool returned rather than how many were uploaded.
+  // Set once shortened, so the backend note reports the tool's original image count.
   returned?: number;
 }
 
@@ -44,31 +42,22 @@ export function splitMcpImages(result: string): {
   return { text: result.slice(0, idx), images };
 }
 
-// Re-attached on replay: the backend promotes it into an image turn for a vision
-// model, and strips it for every other one.
+// Re-attached on replay; the backend promotes it for vision models and strips it otherwise.
 export function mcpImagesEnvelope(images: McpImage[]): string {
   return MCP_IMAGES_MARKER + JSON.stringify(images);
 }
 
-// The backend keeps the newest eight pictures of a conversation. It can only do
-// that after the request is parsed, so without the same bound here every past
-// screenshot is uploaded again on every turn and the body grows without limit.
+// The backend keeps only the newest eight pictures, but only after parsing, so bound here too.
 export const MAX_TOTAL_MCP_IMAGES = 8;
 // Mirrors the backend's per-result promotion limit.
 export const MAX_MODEL_IMAGES = 4;
-// Mirrors LOCAL_MAX_IMAGES_PER_TURN in studio/backend/core/inference/mcp_images.py: the
-// marker paths (safetensors, MLX) render a tool batch as one turn carrying one picture.
+// Mirrors LOCAL_MAX_IMAGES_PER_TURN in studio/backend/core/inference/mcp_images.py.
 export const LOCAL_MAX_IMAGES_PER_TURN = 1;
-// Spare candidates carried past that limit, because the backend's quota counts
-// images that DECODE and this side cannot tell which will. Bounded, so a result
-// of unreadable blobs still cannot grow the request without limit.
+// Spares past the limit: the backend counts only images that DECODE, which this side cannot tell.
 export const DECODE_FAILURE_ALLOWANCE = 4;
-// Bound total replay base64 to the backend's per-result payload ceiling.
-// The count cap alone permits twelve 12 MB candidates (~144 MB per turn).
+// Total base64 cap matching the backend's per-result ceiling; the count cap alone allows ~144 MB.
 export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
-// The data budget matches mcp_client.MAX_IMAGE_PAYLOAD_CHARS so accepted live
-// images fit their replay. Bound metadata separately, matching mcp_images.py
-// MAX_MCP_IMAGE_MIME_CHARS, to prevent oversized mimeType values bypassing it.
+// Matches mcp_client.MAX_IMAGE_PAYLOAD_CHARS and mcp_images.py MAX_MCP_IMAGE_MIME_CHARS.
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
 export function isImageToolName(name: unknown): boolean {
@@ -81,21 +70,16 @@ interface EnvelopeCarrier {
   content?: unknown;
 }
 
-/** The bound itself, over batches of results in document order (oldest first): what
- *  each result may still carry. A batch is the results one model turn produced in
- *  parallel; the marker paths render it as one turn carrying one picture, so with
- *  localMarkers the batch is charged once and its further candidates are decode
- *  fallbacks. The part paths take MAX_MODEL_IMAGES per result, each result its own batch.
- *
- *  Both carriers of an envelope -- the serialized OpenAI history and the run's own tool
- *  results -- plan through here, so the two never drift. */
+/**
+ * Plans what each result may carry, oldest batch first. With localMarkers a batch is charged
+ * once (one picture per turn). Both envelope carriers plan through here so they cannot drift.
+ */
 export function planMcpImageBound(
   batches: readonly (readonly (readonly McpImage[])[])[],
   { localMarkers = false }: { localMarkers?: boolean } = {},
 ): McpImage[][][] {
   let budget = MAX_TOTAL_MCP_IMAGES;
-  // Shared, so at most MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE candidates
-  // ever leave here however many results there are.
+  // Shared across results, bounding total candidates to MAX_TOTAL_MCP_IMAGES plus the allowance.
   let spare = DECODE_FAILURE_ALLOWANCE;
   let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
   const perResult = localMarkers ? LOCAL_MAX_IMAGES_PER_TURN : MAX_MODEL_IMAGES;
@@ -104,17 +88,13 @@ export function planMcpImageBound(
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
-    // Charge only what the backend can promote; excess entries must not evict
-    // older results. Since only successful decodes count and this side cannot
-    // decode, keep shared fallback candidates beyond the remaining image budget.
-    // Spending or resetting spares per result can strand valid older images
-    // behind corrupt entries even when decoding would leave room.
+    // Charge only what the backend can promote; shared spares keep corrupt entries from stranding
+    // valid older images.
     let allowance = room + spare;
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {
       const images = batch[r];
-      // Scan until enough candidates fit: slicing first could discard smaller
-      // images behind entries that exceed the remaining byte budget.
+      // Scan rather than slice, so smaller images behind oversized entries can still fit.
       const keep: McpImage[] = [];
       for (const image of images) {
         if (keep.length >= allowance) break;
@@ -131,13 +111,10 @@ export function planMcpImageBound(
         out[b][r] = images.slice();
         continue;
       }
-      // Carry the count the tool actually returned, or a prior bound's record of it,
-      // so the backend's note does not describe this upload as the whole result.
       const returned = Math.max(images[0]?.returned ?? 0, images.length);
       out[b][r] = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
     }
-    // Charge only the batch's usable slots. Fallback candidates consume spares
-    // so they cannot independently evict older results.
+    // Fallback candidates consume spares so they cannot evict older results.
     const charged = Math.min(taken, room);
     budget -= charged;
     spare -= taken - charged;
@@ -145,10 +122,7 @@ export function planMcpImageBound(
   return out;
 }
 
-/** The bound over an already serialized OpenAI history. The send path bounds the
- *  run's own tool results before serializing them (chat-adapter's
- *  boundMcpImageResults), so a discarded envelope is never even built; this form
- *  serves callers that only hold the wire shape. */
+/** The bound over already-serialized history, for callers holding only the wire shape. */
 export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   messages: readonly T[],
   { localMarkers = false }: { localMarkers?: boolean } = {},
@@ -162,8 +136,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (typeof message.content !== "string") continue;
     const { text, images } = splitMcpImages(message.content);
     if (images.length === 0) continue;
-    // Match backend provenance: strip named non-MCP envelopes so their payloads
-    // cannot bypass the replay bounds and be uploaded again.
+    // Strip non-MCP envelopes like the backend so their payloads cannot bypass replay bounds.
     if (
       typeof message.name === "string" &&
       message.name &&
@@ -206,10 +179,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   return out;
 }
 
-// For a target known not to read images. The backend strips these envelopes without
-// sending a pixel, so leaving them on the wire re-uploaded up to 12 million characters
-// of base64 on every text turn after a switch to a text-only model. The stored
-// history keeps them, for a later switch back.
+// For a text-only target: the backend strips these anyway, so do not re-upload the base64.
 export function stripMcpImageEnvelopes<T extends EnvelopeCarrier>(
   messages: readonly T[],
 ): T[] {

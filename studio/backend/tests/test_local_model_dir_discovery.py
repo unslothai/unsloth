@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where local models live is one policy, not two.
-
-``lmstudio_model_dirs`` / ``ollama_model_dirs`` / ``well_known_model_dirs`` were implemented
-twice: in ``utils.paths.storage_roots`` for the model picker and in ``hub.utils.paths`` for
-the folder browser. Only one read ``~/.lmstudio/settings.json`` as utf-8-sig, so a BOM'd file
-put the user's custom folder in the picker and nowhere else, with nothing logged (#9748).
-
-Simulation notice: this suite runs on one host, so only Linux is native. Windows, macOS and
-WSL are ``sys.platform`` / ``_IS_WSL`` / ``_WSL_AUTOMOUNT_ROOT`` monkeypatches. ``os.name`` is
-patched only in the pure-string normalizer tests, never in one touching ``tmp_path``: it swaps
-pathlib's flavour mid-run and every filesystem assertion after it becomes a lie. The
-authoritative signal for those platforms stays the per-OS CI matrix on real runners.
-"""
+"""Windows, macOS and WSL are simulated on Linux here; only the per-OS CI matrix proves them."""
 
 from __future__ import annotations
 
@@ -45,20 +33,14 @@ def fake_home(monkeypatch, tmp_path):
 
 
 class _RecordingLogger:
-    """Stands in for the module logger.
-
-    Asserted through this rather than capsys: logging is structlog, hub/tests stubs it,
-    and whether a debug record reaches stdout is config this test should not pin. What
-    matters is that the code calls debug once, with the cause attached.
-    """
+    """Stands in for the module logger; logging is structlog and stdout config is not pinned here."""
 
     def __init__(self):
         self.debug_calls: list[tuple] = []
 
     def debug(self, event, *args, **kwargs):
         self.debug_calls.append((event, args))
-        # Mirror structlog's own %-interpolation so a broken format string raises here
-        # instead of silently rendering "%s" to a user later.
+        # Mirror structlog %-interpolation so a broken format string raises here.
         if args:
             event % args
 
@@ -83,11 +65,6 @@ def write_settings(home: Path, payload: bytes) -> Path:
 def settings_json(downloads: Path | str, *, bom: bool = False) -> bytes:
     body = json.dumps({"downloadsFolder": str(downloads)}).encode("utf-8")
     return (BOM_UTF8 if bom else b"") + body
-
-
-# ---------------------------------------------------------------------------
-# A. Encoding of ~/.lmstudio/settings.json
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bom", [False, True], ids = ["no_bom", "utf8_bom"])
@@ -135,10 +112,7 @@ def test_bom_with_crlf_line_endings_is_still_read(fake_home):
     ],
 )
 def test_unusable_settings_never_raise_and_never_invent_a_directory(fake_home, payload, label):
-    """Every degenerate settings file degrades to "no custom folder", never a crash.
-
-    ``~/.lmstudio/models`` does not exist in this fake home, so a clean degrade is [].
-    """
+    """Degenerate LM Studio settings files degrade to no custom folder, never a crash or invented dir."""
     write_settings(fake_home, payload)
 
     assert storage_roots.lmstudio_model_dirs() == []
@@ -155,8 +129,6 @@ def test_a_parse_failure_is_logged_once_with_its_cause(fake_home, recording_logg
     assert len(recording_logger.debug_calls) == 1
     event, args = recording_logger.debug_calls[0]
     assert "LM Studio settings" in event
-    # The path and the underlying exception both have to reach the log line, or the
-    # message tells an operator nothing they can act on.
     assert len(args) == 2
     assert str(fake_home) in str(args[0])
     assert isinstance(args[1], Exception)
@@ -169,11 +141,6 @@ def test_a_readable_settings_file_logs_nothing(fake_home, recording_logger):
 
     assert storage_roots.lmstudio_model_dirs() == [downloads]
     assert recording_logger.debug_calls == []
-
-
-# ---------------------------------------------------------------------------
-# B. Filesystem state of the configured folder
-# ---------------------------------------------------------------------------
 
 
 def test_a_configured_folder_that_does_not_exist_is_dropped(fake_home):
@@ -190,12 +157,7 @@ def test_a_configured_path_that_is_a_file_is_dropped(fake_home):
 
 
 def test_a_symlinked_folder_keeps_the_spelling_the_user_configured(fake_home, tmp_path):
-    """Not the resolved target.
-
-    ``_scan_lmstudio_dir`` mints the user-facing model id from this path, so resolving
-    here would rename every model behind a symlinked root and invalidate saved
-    selections on an existing install.
-    """
+    """Do not resolve symlinked roots: model ids come from the configured path and would be renamed."""
     real = tmp_path / "real-models"
     real.mkdir()
     link = fake_home / "linked-models"
@@ -203,8 +165,6 @@ def test_a_symlinked_folder_keeps_the_spelling_the_user_configured(fake_home, tm
     write_settings(fake_home, settings_json(link))
 
     assert storage_roots.lmstudio_model_dirs() == [link]
-    # well_known_model_dirs is the other contract: it feeds a containment check, so it
-    # does resolve.
     assert real.resolve() in storage_roots.well_known_model_dirs()
 
 
@@ -217,11 +177,7 @@ def test_a_broken_symlink_is_dropped(fake_home, tmp_path):
 
 
 def test_a_symlink_loop_is_dropped_without_taking_the_list_with_it(fake_home):
-    """A raising resolve() costs one candidate, not the list.
-
-    The old storage_roots copy called ``p.resolve()`` unguarded, so one bad entry
-    emptied everything.
-    """
+    """A candidate whose resolve() raises is dropped alone; one bad entry must not empty the whole list."""
     loop = fake_home / "loop"
     loop.symlink_to(loop)
     write_settings(fake_home, settings_json(loop))
@@ -278,8 +234,7 @@ def test_settings_path_being_a_directory_is_not_a_crash(fake_home):
 
 @pytest.mark.skipif(
     not hasattr(os, "geteuid") or os.geteuid() == 0,
-    # geteuid is POSIX-only, and skipif evaluates at import, so calling it unguarded
-    # fails collection of this whole module on Windows.
+    # geteuid is POSIX-only and skipif evaluates at import.
     reason = "needs POSIX mode bits and a non-root user",
 )
 def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_logger):
@@ -292,18 +247,10 @@ def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_l
         settings.chmod(0o600)
 
 
-# ---------------------------------------------------------------------------
-# C. Platform matrix -- pure-string normalizer behaviour
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def as_host(monkeypatch):
-    """Apply one simulated host to the normalizers.
-
-    Only the seams ``host_normalize_path`` branches on. No test using this may touch
-    tmp_path files, since ``os.name`` is patched here.
-    """
+    """Simulates a host for the normalizers only; os.name is patched, so such tests must not use
+    tmp_path."""
 
     def _apply(label: str, *, automount: str = "/mnt/"):
         is_wsl = label == "wsl"
@@ -342,11 +289,7 @@ def test_a_drive_letter_path_is_mapped_under_the_default_automount_root(as_host)
 
 
 def test_a_drive_letter_path_honours_a_custom_automount_root(as_host):
-    """The whole reason host_normalize_path is not normalize_path.
-
-    ``[automount] root = /`` puts C: at ``/c/``, while the loader-facing normalize_path
-    deliberately keeps predicting ``/mnt/``.
-    """
+    """host_normalize_path honours a custom WSL automount root; normalize_path keeps predicting /mnt/."""
     as_host("wsl", automount = "/c-drive-root/")
     assert path_utils.host_normalize_path("C:\\models") == "/c-drive-root/c/models"
     assert path_utils.normalize_path("C:\\models") == "/mnt/c/models"
@@ -362,12 +305,7 @@ def test_a_unc_path_gets_forward_slashes_on_every_host(as_host):
 
 @pytest.mark.parametrize("host", ["linux", "macos", "wsl"])
 def test_a_backslash_in_a_posix_name_is_left_alone(as_host, host):
-    """Regression guard.
-
-    A backslash is a legal character in a POSIX filename, WSL included. Rewriting it to
-    "/" turns one real directory into a two-segment path that does not exist, and the
-    folder vanishes from the picker with nothing logged.
-    """
+    """A backslash is a legal POSIX filename character, so rewriting it to / would hide the real folder."""
     as_host(host)
     assert path_utils.host_normalize_path("/home/u/models\\backup") == "/home/u/models\\backup"
 
@@ -383,11 +321,6 @@ def test_the_empty_string_is_returned_unchanged(as_host):
     assert path_utils.host_normalize_path("") == ""
 
 
-# ---------------------------------------------------------------------------
-# C2. Platform matrix -- discovery against a real filesystem (os.name untouched)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def as_wsl(monkeypatch):
     def _apply(automount: str):
@@ -398,10 +331,7 @@ def as_wsl(monkeypatch):
 
 
 def test_a_windows_downloads_folder_is_discovered_under_wsl(fake_home, tmp_path, as_wsl):
-    """A drive-letter path is meaningless to a WSL process until mapped.
-
-    Only the hub copy used to do this; folding them together gives it to the picker too.
-    """
+    """A drive-letter path means nothing to a WSL process until mapped, so the picker must map it too."""
     mount = tmp_path / "mnt"
     models = mount / "c" / "Users" / "u" / "models"
     models.mkdir(parents = True)
@@ -419,8 +349,7 @@ def test_a_windows_downloads_folder_is_dropped_on_plain_linux(fake_home):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    # The property under test is POSIX-only: on Windows this name cannot be created,
-    # mkdir reads the backslash as a separator and the parent does not exist.
+    # POSIX-only: on Windows mkdir reads the backslash as a separator.
     reason = "a backslash cannot be part of a filename on Windows",
 )
 def test_a_posix_folder_with_a_backslash_survives_discovery(fake_home):
@@ -433,11 +362,6 @@ def test_a_posix_folder_with_a_backslash_survives_discovery(fake_home):
     assert hub_paths.lmstudio_model_dirs() == [downloads]
 
 
-# ---------------------------------------------------------------------------
-# D. The two entry points are one implementation
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "name", ["lmstudio_model_dirs", "ollama_model_dirs", "well_known_model_dirs"]
 )
@@ -446,12 +370,7 @@ def test_hub_and_picker_share_one_function_object(name):
 
 
 def test_the_hub_normalizer_stays_separate_from_the_loader_normalizer():
-    """They disagree on a custom-root WSL host, and that difference is load-bearing.
-
-    The hub copy answers "where is this on my disk", the path_utils copy "where will the
-    loader look". This pins that folding the discovery copies together did not fold
-    these two together as well.
-    """
+    """The hub normalizer answers where a file is on disk; the loader one answers where the loader looks."""
     assert hub_paths.normalize_path is not path_utils.normalize_path
     assert hasattr(hub_paths, "_IS_WSL")
     assert hasattr(hub_paths, "_WSL_AUTOMOUNT_ROOT")
@@ -463,11 +382,6 @@ def test_the_hub_normalizer_still_reads_its_own_module_attributes(monkeypatch):
     monkeypatch.setattr(hub_paths, "_WSL_AUTOMOUNT_ROOT", "/custom-root/")
 
     assert hub_paths.normalize_path("D:\\models") == "/custom-root/d/models"
-
-
-# ---------------------------------------------------------------------------
-# E. Return-shape contracts (the backwards-compatibility guard)
-# ---------------------------------------------------------------------------
 
 
 def test_per_tool_lists_are_unresolved_and_well_known_is_resolved(fake_home, tmp_path):
@@ -526,11 +440,6 @@ def test_discovery_returns_path_objects_not_strings(fake_home):
         assert all(isinstance(p, Path) for p in result)
 
 
-# ---------------------------------------------------------------------------
-# F. $OLLAMA_MODELS -- previously untested anywhere in the repo
-# ---------------------------------------------------------------------------
-
-
 def test_the_ollama_env_override_is_honoured(fake_home, monkeypatch, tmp_path):
     models = tmp_path / "ollama-models"
     models.mkdir()
@@ -567,11 +476,6 @@ def test_the_ollama_default_is_found_without_the_env(fake_home, monkeypatch):
     default.mkdir(parents = True)
 
     assert storage_roots.ollama_model_dirs() == [default]
-
-
-# ---------------------------------------------------------------------------
-# G. Import graph -- the new hub -> storage_roots edge
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

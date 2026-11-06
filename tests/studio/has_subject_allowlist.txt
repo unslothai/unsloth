@@ -1,0 +1,121 @@
+# Non-subject :has() selectors main shipped when the gate's :has() lint was added (see _has_lint.py).
+# Being rewritten as data attributes; delete lines as they go. One selector per line, as Chromium
+# serializes it from the production build. Regenerate: LONG_THREAD_HAS_LINT_WRITE=1.
+.aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay
+.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover .composer-pill-glyph
+.composer-pill-btn:has(> .composer-pill-glyph[role="button"]):hover .composer-pill-x
+.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.dark .unsloth-plus-menu .menu-row-with-action:has([data-row-action]:is(:hover, [data-highlighted])) > :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])
+.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn
+.has-\[\>\[data-align\=block-end\]\]\:\[\&\>input\]\:pt-3:has(> [data-align="block-end"]) > input
+.has-\[\>\[data-align\=block-start\]\]\:\[\&\>input\]\:pb-3:has(> [data-align="block-start"]) > input
+.has-\[\>\[data-align\=inline-end\]\]\:\[\&\>input\]\:pr-1\.5:has(> [data-align="inline-end"]) > input
+.has-\[\>\[data-align\=inline-start\]\]\:\[\&\>input\]\:pl-1\.5:has(> [data-align="inline-start"]) > input
+.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > a
+.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) > br
+.hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img
+.unsloth-plus-menu .menu-row-with-action:has([data-row-action]:is(:hover, [data-highlighted])) > :is([data-slot="dropdown-menu-item"], [data-slot="context-menu-item"])
+:has(.unsloth-files-panel) > .\[\:has\(\.unsloth-files-panel\)\>\&\]\:hidden
+:is(.\@md\/field-group\:has-\[\>\[data-slot\=field-content\]\]\:\[\&\>\[role\=checkbox\]\,\[role\=radio\]\]\:mt-px:has(> [data-slot="field-content"]) > [role="checkbox"], .\@md\/field-group\:has-\[\>\[data-slot\=field-content\]\]\:\[\&\>\[role\=checkbox\]\,\[role\=radio\]\]\:mt-px:has(> [data-slot="field-content"]) [role="radio"])
+:is(.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-glyph, .unsloth-thinking-pill[data-active="true"]:hover .composer-pill-glyph)
+:is(.composer-pill-btn[data-active="true"]:has(.composer-pill-x):hover .composer-pill-x, .unsloth-thinking-pill[data-active="true"]:hover .composer-pill-x)
+:is(.diffusion-surface, .hint-on-hover) :is(:hover, :has(:focus-visible)) > [data-slot="info-hint"], :is(.diffusion-surface, .hint-on-hover) :is(:hover, :has(:focus-visible)) > * > [data-slot="info-hint"], :is(.diffusion-surface, .hint-on-hover) [data-slot="info-hint"]:focus-visible
+:is(.has-\[\>\[data-slot\=field-content\]\]\:\[\&\>\[role\=checkbox\]\,\[role\=radio\]\]\:mt-px:has(> [data-slot="field-content"]) > [role="checkbox"], .has-\[\>\[data-slot\=field-content\]\]\:\[\&\>\[role\=checkbox\]\,\[role\=radio\]\]\:mt-px:has(> [data-slot="field-content"]) [role="radio"])
+:is(.unsloth-files-panel-row:has(> .unsloth-files-panel-strip:hover) > .unsloth-files-panel-show-all, .unsloth-files-panel-show-all:is(:hover, :focus-visible))
+:is(:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade, :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade)
+:is(:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface, .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer)
+:is(:where(.group\/recent-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/recent-item\:opacity-100, :where(.group\/library-card):has(:focus-visible) .group-has-\[\:focus-visible\]\/library-card\:opacity-100, :where(.group\/row):has([data-highlighted]) .group-has-\[\[data-highlighted\]\]\/row\:opacity-100)
+:is(:where(html:not([data-mq-min-width-40rem])) :where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!gap-0, :where(.group\/chat-model-controls):has(> [data-chat-model-notice]):where(html:not([data-mq-min-width-40rem])) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!gap-0)
+:is(:where(html:not([data-mq-min-width-40rem])) :where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!ml-0, :where(.group\/chat-model-controls):has(> [data-chat-model-notice]):where(html:not([data-mq-min-width-40rem])) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!ml-0)
+:is(:where(html:not([data-mq-min-width-40rem])) :where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!px-2, :where(.group\/chat-model-controls):has(> [data-chat-model-notice]):where(html:not([data-mq-min-width-40rem])) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!px-2)
+:is(:where(html[data-mq-min-width-40rem]) :where(.group\/alert-dialog-content):has([data-slot="alert-dialog-media"]) .sm\:group-data-\[size\=default\]\/alert-dialog-content\:group-has-data-\[slot\=alert-dialog-media\]\/alert-dialog-content\:col-start-2:is(:where(.group\/alert-dialog-content)[data-size="default"] *), :where(.group\/alert-dialog-content):has([data-slot="alert-dialog-media"]):where(html[data-mq-min-width-40rem]) .sm\:group-data-\[size\=default\]\/alert-dialog-content\:group-has-data-\[slot\=alert-dialog-media\]\/alert-dialog-content\:col-start-2:is(:where(.group\/alert-dialog-content)[data-size="default"] *))
+:is([data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]), [data-pill-compact="first"] .composer-pill-btn.composer-pill-permissions:not([data-keep-label])):has(.composer-pill-caret) .composer-pill-x
+:is([data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]), [data-pill-compact="first"] .composer-pill-btn.composer-pill-permissions:not([data-keep-label])):has(.composer-pill-caret):hover .composer-pill-glyph
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center)
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .chat-header-fade
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting::before
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface])
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-side-panel-inset]:not(.chat-header-fade)
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-wallpaper-chrome-controls]
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens .glass-lens-rim
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens::after
+:is([data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"], [data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) [data-chat-page-root])
+:is(html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel), html[data-glass] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer, html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel), html[data-glass^="liquid"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer)
+:where(.group):has([data-state="open"]) .group-has-\[\[data-state\=open\]\]\:hover\:opacity-0:hover
+:where(.group):has([data-state="open"]) .group-has-\[\[data-state\=open\]\]\:opacity-0
+:where(.group\/alert):has(> svg) .group-has-\[\>svg\]\/alert\:col-start-2
+:where(.group\/alert-dialog-content):has([data-slot="alert-dialog-media"]) .sm\:group-data-\[size\=default\]\/alert-dialog-content\:group-has-data-\[slot\=alert-dialog-media\]\/alert-dialog-content\:col-start-2:is(:where(.group\/alert-dialog-content)[data-size="default"] *)
+:where(.group\/avatar-group):has([data-size="lg"]) .group-has-data-\[size\=lg\]\/avatar-group\:\[--avatar-count-icon\:calc\(var\(--spacing\)\*5\)\]
+:where(.group\/avatar-group):has([data-size="lg"]) .group-has-data-\[size\=lg\]\/avatar-group\:size-10
+:where(.group\/avatar-group):has([data-size="sm"]) .group-has-data-\[size\=sm\]\/avatar-group\:\[--avatar-count-icon\:calc\(var\(--spacing\)\*3\)\]
+:where(.group\/avatar-group):has([data-size="sm"]) .group-has-data-\[size\=sm\]\/avatar-group\:size-6
+:where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!gap-0
+:where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!ml-0
+:where(.group\/chat-model-controls):has(> [data-chat-model-notice]) .max-sm\:group-has-\[\>\[data-chat-model-notice\]\]\/chat-model-controls\:\!px-2
+:where(.group\/command-item):has([data-slot="command-shortcut"]) .group-has-\[\[data-slot\=command-shortcut\]\]\/command-item\:hidden
+:where(.group\/field):has(:disabled) .group-has-disabled\/field\:opacity-50
+:where(.group\/field):has([data-orientation="horizontal"]) .group-has-\[\[data-orientation\=horizontal\]\]\/field\:text-balance
+:where(.group\/input-group):has(> input) .group-has-\[\>input\]\/input-group\:pb-3
+:where(.group\/input-group):has(> input) .group-has-\[\>input\]\/input-group\:pt-3
+:where(.group\/input-group):has([data-slot="combobox-clear"]) .group-has-data-\[slot\=combobox-clear\]\/input-group\:hidden
+:where(.group\/menu-item):has([data-sidebar="menu-action"]) .group-has-data-\[sidebar\=menu-action\]\/menu-item\:pr-8
+:where(.group\/number):has(:is(input:disabled)) .group-has-\[input\:disabled\]\/number\:opacity-0
+:where(.group\/number):has(:is(input:disabled)) .group-has-\[input\:disabled\]\/number\:pointer-events-none
+:where(.group\/project-chat-item):has(.sidebar-row-action:focus-visible) .group-has-\[\.sidebar-row-action\:focus-visible\]\/project-chat-item\:opacity-0
+:where(.group\/project-chat-item):has(.sidebar-row-action:focus-visible) .group-has-\[\.sidebar-row-action\:focus-visible\]\/project-chat-item\:pr-14
+:where(.group\/project-chat-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/project-chat-item\:opacity-0
+:where(.group\/project-chat-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/project-chat-item\:opacity-100
+:where(.group\/project-chat-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/project-chat-item\:pointer-events-auto
+:where(.group\/project-chat-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/project-chat-item\:pr-14
+:where(.group\/queue-editor):has(:is(textarea:focus-visible)) .group-has-\[textarea\:focus-visible\]\/queue-editor\:visible
+:where(.group\/recent-item):has(.sidebar-row-action:focus-visible) .group-has-\[\.sidebar-row-action\:focus-visible\]\/recent-item\:opacity-0
+:where(.group\/recent-item):has(.sidebar-row-action:focus-visible) .group-has-\[\.sidebar-row-action\:focus-visible\]\/recent-item\:pr-16
+:where(.group\/recent-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/recent-item\:opacity-0
+:where(.group\/recent-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/recent-item\:pointer-events-auto
+:where(.group\/recent-item):has(.sidebar-row-action[data-state="open"]) .group-has-\[\.sidebar-row-action\[data-state\=open\]\]\/recent-item\:pr-16
+:where(.peer):has(:checked) ~ .peer-has-\[\:checked\]\:opacity-50
+[data-sonner-toast][data-styled="true"]:has([data-button]) [data-button]
+[data-sonner-toast][data-styled="true"]:has([data-button]) [data-content]
+[data-sonner-toast][data-styled="true"]:has([data-button]) [data-icon]
+[data-sonner-toast][data-styled="true"]:has([data-button]):has([data-icon]) [data-button]
+[data-sonner-toast][data-styled="true"]:has([data-button]):has([data-icon]) [data-content]
+[data-sonner-toast][data-styled="true"]:not(:has([data-title])) [data-icon]
+[data-sonner-toast][data-styled="true"][data-multiline]:not(:has([data-title])) [data-icon]
+[data-wallpaper-workspace]:has(> .chat-wallpaper[data-ready]) :is(.hub-page, .hub-page .hub-canvas, [data-wallpaper-page-canvas])
+[data-wallpaper-workspace][data-wallpaper-route="page"]:has(> .chat-wallpaper[data-ready]) > [data-slot="sidebar-inset"]
+[data-windows-wallpaper-page]:has(> [data-windows-glass-frame], > [data-slot="sidebar"] > [data-windows-glass-frame]) > [data-slot="page-wallpaper-blur"]
+html.dark[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="true"]:not([data-state="open"], :focus-visible)
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper
+html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper
+html[data-composer-outline="off"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface
+html[data-glass-clear] [data-slot="sidebar-inner"]:has([data-slot="sidebar-footer-fade"][data-visible="true"]) .sidebar-scroll-fade
+html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel)
+html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer::before
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface .unsloth-composer-plus:not(:hover, [data-state="open"], :focus-visible)
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="true"]:not([data-state="open"], :focus-visible)
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface button.aui-composer-send:not(:disabled)
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel)::before
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel)::before
+html[data-glass="macos"] [data-slot="sidebar-inner"]:has([data-slot="sidebar-footer-fade"][data-visible="true"]) .sidebar-scroll-fade
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"])
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface:has(> .glass-lens)
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel)
+html[data-glass] [data-auth-wallpaper]:has(> .chat-wallpaper[data-ready]) > [data-slot="card"]
+html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) > [data-slot="page-wallpaper-blur"]
+html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) [data-slot="api-toolbar-fade"]
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) :is(.unsloth-composer-surface, .unsloth-files-panel)
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"]:has([data-slot="sidebar-footer-fade"][data-visible="true"]) .sidebar-scroll-fade
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) > [data-slot="sidebar-inset"]
+html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel)
+html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-ready]) > [data-slot="card"]

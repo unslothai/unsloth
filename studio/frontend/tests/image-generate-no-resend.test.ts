@@ -39,6 +39,8 @@ function loadApis(): ImagesApi {
       "@/lib/model-lifecycle-events": { withBackgroundLoadNotice: (f: unknown) => f },
       "@/features/auth": { authFetch: auth.authFetch },
       "@/lib/format-fastapi-error": { readFastApiError: async () => "" },
+      "@/lib/multi-model-refusal": { parseLoadJson: async () => ({}) },
+      "@/lib/unified-memory-load-refusal": { withAllowOversizedLoad: (body: unknown) => body },
     },
     { relativePassthrough: true },
   );

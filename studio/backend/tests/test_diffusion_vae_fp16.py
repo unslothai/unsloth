@@ -56,7 +56,7 @@ def test_rescaled_decoder_is_the_same_function_in_fp32():
     with torch.no_grad():
         got = vae.decode(z, return_dict = False)[0]
         want = ref.decode(z, return_dict = False)[0]
-    # Only the fp16 rounding of the smallest rescaled weights remains; a wrong shortcut or eps scale is off by ~0.4.
+    # Only fp16 rounding remains; a wrong shortcut or eps scale is off by ~0.4.
     torch.testing.assert_close(got, want, rtol = 0, atol = 1e-3)
 
 
@@ -161,7 +161,7 @@ def test_studio_decode_compile_lands_inside_the_non_finite_check(monkeypatch):
 
     monkeypatch.setattr(torch, "compile", fake_compile)
     assert ds._compile_vae_decode(_unet_pipe(vae), None) is True
-    # The data-dependent check stays eager (outermost); only the real decode is compiled, so no graph break.
+    # The data-dependent check stays eager (outermost); only the decode is compiled, so no graph break.
     assert vae.__dict__["decode"] is wrapper
     assert compiled_targets == [original]
     assert wrapper._unsloth_decode_slot.decode is not original
@@ -206,6 +206,6 @@ def test_declines_once_a_compiled_decode_owns_the_vae(monkeypatch):
     vae = _tiny_vae().to(torch.float16)
     monkeypatch.setattr(torch, "compile", lambda fn, **kwargs: fn)
     assert ds._compile_vae_decode(_unet_pipe(vae), None) is True
-    # Wrapping now would leave the check behind the compile guard, whose eager fallback unwraps it (NaN frames).
+    # Wrapping now would leave the check behind the compile guard, whose eager fallback unwraps it (NaN).
     assert vf.enable_fp16_vae_decode(_unet_pipe(vae), CUDA) is False
     assert vae.config.force_upcast is True

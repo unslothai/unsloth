@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { validateChatSearch, type ChatSearch } from "./chat-search";
+export {
+  loadChatPage,
+  loadedChatPage,
+  prefetchChatPage,
+} from "./load-chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
-  addScanFolder,
   browseFolders,
   ChatThreadDeletedError,
   deleteChatAttachment,
@@ -21,12 +25,10 @@ export {
   listLoras,
   listModels,
   listRecommendedFolders,
-  listScanFolders,
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
   notifyChatProjectsUpdated,
-  removeScanFolder,
   subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
@@ -38,7 +40,6 @@ export {
   type ChatAttachmentRecord,
   type KvCacheEstimate,
   type LocalModelInfo,
-  type ScanFolderInfo,
   CHAT_HISTORY_UPDATED_EVENT,
   fetchSidebarThreadRows,
 } from "./api/chat-api";
@@ -61,14 +62,14 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  syncKeepModelsLoaded,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
-export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
@@ -89,7 +90,16 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
-export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export type { PlacementPool } from "./lib/partial-offload";
+export {
+  betweenToolRounds,
+  formatLiveDecode,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "./lib/generation-progress";
+export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -102,11 +112,13 @@ export {
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
 export {
+  FullAccessConfirmDialog,
   PermissionModeDropdown,
   useActivePermissionMode,
+  usePermissionModeChoice,
   useSandboxCapability,
 } from "./permission-mode-select";
-export { sandboxSwitchState } from "./sandbox-level";
+export { SANDBOX_DOCS_URL, sandboxSwitchState } from "./sandbox-level";
 export { pickSandboxLevel } from "./sandbox-pick";
 export { SandboxSetupDialog } from "./sandbox-setup-dialog";
 export {
@@ -205,6 +217,7 @@ export {
   type SectionLanding,
 } from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
+export { usePinnedChatsSync } from "./hooks/use-pinned-chats-sync";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
   applyManualOrder,
@@ -256,6 +269,7 @@ export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   requestLocalPromptQueueStop,
+  requestScopedLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
@@ -274,7 +288,6 @@ export {
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
-// Audio swaps the same llama-server Chat decodes on, so it needs the same confirmation.
 export {
   confirmStopRunningChatsIfNeeded,
   type StopRunningChatsDecision,
@@ -315,12 +328,14 @@ export {
 export {
   PLUS_MENU_ORDER,
   normalizePlusMenuOrder,
+  keepSavedSlot,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
 export {
   useChatModelRuntime,
+  resyncInferenceStatusAfterKeptModelsUnload,
   resyncInferenceStatusAfterServerModelChange,
 } from "./hooks/use-chat-model-runtime";
 export { compareModelDisplayName } from "./lib/external-model-label";
@@ -335,9 +350,13 @@ export {
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
+export type { ExternalProviderConfig } from "./external-providers";
+export {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "./provider-capabilities";
 // A provider catalogue lands async, so capability reads need to re-run when it does.
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
-// What a per-model reasoning pin displaced in the live runtime, so clearing it can put it back.
 export {
   noteEffortDisplacedByPin,
   reconcilePinnedReasoningEffort,
@@ -403,9 +422,11 @@ export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
 export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
-export { showForkCreatedToast } from "./utils/fork-toast";
+export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
+export { readIncompleteInfo } from "./utils/continuation";
+export { priorPassTiming } from "./utils/continued-timing";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -440,6 +461,8 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,
@@ -467,7 +490,10 @@ export {
   onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
-export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "./utils/chat-attachment-events";
 export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
@@ -504,6 +530,7 @@ export {
 export {
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,
@@ -568,7 +595,9 @@ export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  projectActivityAt,
   renameChatProject,
+  sortProjectsByActivity,
   updateChatProjectInstructions,
   useChatProjects,
 } from "./hooks/use-chat-projects";

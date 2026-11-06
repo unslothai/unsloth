@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Faster MiniMax-H3 video VAE encode and decode: Triton-fused GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU and
-tile batching around Diffusers' own matmuls and convolutions.
-
-Levers: fused_encoder, fp16_encoder, fused_decoder, tile_batch, fp16_accum, int8_decoder (opt-in,
-``UNSLOTH_H3_VAE_INT8=1``). ``UNSLOTH_H3_VAE_FAST=0`` disables all. NVIDIA CUDA with Triton only; else stock.
-"""
+"""Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
+and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
+int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
+CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -16,10 +14,12 @@ import types
 from contextlib import nullcontext
 from functools import lru_cache
 from typing import Any, Optional
+from .rocm_bf16 import is_rocm_torch
 
 H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
+H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
 LEVER_FUSED_ENCODER = "fused_encoder"
@@ -68,7 +68,8 @@ def plan_h3_vae_levers(
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
-    if _env(H3_VAE_INT8_ENV) in _TRUE:
+    int8 = _env(H3_VAE_INT8_ENV)
+    if int8 in _TRUE or (int8 not in _FALSE and mode != _SPEED_EAGER):
         levers.append(LEVER_INT8_DECODER)
     if mode == _SPEED_MAX and consumer_gpu and _env(FP16_ACCUM_DISABLE_ENV) not in _TRUE:
         levers.append(LEVER_FP16_ACCUM)
@@ -87,7 +88,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     # Triton <= 3.2 resolves string annotations against module globals, not this function's locals
     globals().update(triton = triton, tl = tl, libdevice = libdevice)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "HW", "W", "n_chunks"])
     def _gn_partials(
         x_ptr,
         bias_ptr,
@@ -103,11 +104,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        C: tl.constexpr,
-        G: tl.constexpr,
-        CPG: tl.constexpr,
-        BLOCK_P: tl.constexpr,
-        HAS_BIAS: tl.constexpr,
+        C: tl.constexpr,  # channels
+        G: tl.constexpr,  # groupnorm groups
+        CPG: tl.constexpr,  # channels per group
+        BLOCK_P: tl.constexpr,  # pixels per program
+        HAS_BIAS: tl.constexpr,  # bias present
     ):
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
@@ -140,9 +141,17 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pm2_ptr + slot * G + g, m2)
         tl.store(pn_ptr + slot, n_pix * CPG)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_chunks"])
     def _gn_combine(
-        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
+        pn_ptr,
+        pmean_ptr,
+        pm2_ptr,
+        mean_ptr,
+        rstd_ptr,
+        n_chunks,
+        G,
+        eps,
+        BLOCK: tl.constexpr,  # block size
     ):
         row = tl.program_id(0)
         g = row % G
@@ -170,7 +179,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(mean_ptr + row, mean)
         tl.store(rstd_ptr + row, 1.0 / tl.sqrt(acc_m2 / acc_n + eps))
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "H", "W", "To", "Ho", "Wo"])
     def _gn_silu_pad(
         x_ptr,
         out_ptr,
@@ -195,11 +204,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        CPG: tl.constexpr,
-        HAS_NORM: tl.constexpr,
-        HAS_IN_BIAS: tl.constexpr,
-        BLOCK_W: tl.constexpr,
-        BLOCK_C: tl.constexpr,
+        CPG: tl.constexpr,  # channels per group
+        HAS_NORM: tl.constexpr,  # apply groupnorm
+        HAS_IN_BIAS: tl.constexpr,  # input bias present
+        BLOCK_W: tl.constexpr,  # width pixels per program
+        BLOCK_C: tl.constexpr,  # channels per program
     ):
         pid_row = tl.program_id(0)
         pid_w = tl.program_id(1)
@@ -241,7 +250,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v = tl.where(t_ok, v, 0.0)
         tl.store(out_base + (wo[:, None] * C + c[None, :]), v.to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["P", "T", "H", "W"])
     def _add_residual(
         o_ptr,
         ob_ptr,
@@ -256,11 +265,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        C: tl.constexpr,
-        HAS_OB: tl.constexpr,
-        HAS_RB: tl.constexpr,
-        R_SAME: tl.constexpr,
-        BLOCK_P: tl.constexpr,
+        C: tl.constexpr,  # channels
+        HAS_OB: tl.constexpr,  # output bias present
+        HAS_RB: tl.constexpr,  # residual bias present
+        R_SAME: tl.constexpr,  # residual same layout (channels_last)
+        BLOCK_P: tl.constexpr,  # pixels per program
     ):
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         pmask = p < P
@@ -295,7 +304,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _add_rmsnorm(
-        h_ptr, o_ptr, s_ptr, w_ptr, n_ptr, N, eps, HAS_RES: tl.constexpr, BLOCK_N: tl.constexpr
+        h_ptr,
+        o_ptr,
+        s_ptr,
+        w_ptr,
+        n_ptr,
+        N,
+        eps,
+        HAS_RES: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_RES residual add present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
@@ -312,7 +329,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         y = h * (1.0 / tl.sqrt(ms + eps)) * w
         tl.store(n_ptr + row * N + cols, y.to(n_ptr.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_head_rows"])
     def _qk_norm_rope(
         x_ptr,
         cos_ptr,
@@ -321,9 +338,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         heads,
         cs_stride,
         eps,
-        HEAD_D: tl.constexpr,
-        ROT: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HEAD_D: tl.constexpr,  # hd
+        ROT: tl.constexpr,  # rotary dim
+        BLOCK: tl.constexpr,  # block size
     ):
         hr = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         rmask = hr < n_head_rows
@@ -351,7 +368,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(x_ptr + base + d[None, :], y.to(dt), mask = rmask[:, None])
 
     @triton.jit
-    def _swiglu(x_ptr, out_ptr, N, BLOCK_N: tl.constexpr):
+    def _swiglu(x_ptr, out_ptr, N, BLOCK_N: tl.constexpr):  # block size along the row
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
         cols = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -363,7 +380,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(out_ptr + row * N + cols, (hid * act).to(dt), mask = mask)
 
     @triton.jit
-    def _quant_rows(x_ptr, q_ptr, s_ptr, N, BLOCK_N: tl.constexpr):
+    def _quant_rows(x_ptr, q_ptr, s_ptr, N, BLOCK_N: tl.constexpr):  # block size along the row
         # IEEE division + half-to-even rounding: the same codes as the torch path.
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
@@ -378,7 +395,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _dequant_epilogue(
-        acc_ptr, xs_ptr, ws_ptr, bias_ptr, out_ptr, N, HAS_BIAS: tl.constexpr, BLOCK_N: tl.constexpr
+        acc_ptr,
+        xs_ptr,
+        ws_ptr,
+        bias_ptr,
+        out_ptr,
+        N,
+        HAS_BIAS: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_BIAS bias present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
@@ -443,8 +467,7 @@ def _guarded(fast: Any, stock: Any, label: str) -> Any:
     return forward
 
 
-# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias, avoiding PyTorch's
-# separate strided bias pass. A 1x1 conv folds its input's pending bias through its weight exactly.
+# Activations travel as (tensor, pending_bias): the next fused pass adds the conv bias.
 
 
 def _bias_view(bias: Any) -> Any:
@@ -843,13 +866,25 @@ def _swiglu(x: Any) -> Any:
     return out
 
 
+def _residual_dtype(hidden_states: Any, blocks: Any) -> Any:
+    """Stock ``h + out * scale`` promotes to float32 ``scale1`` / ``scale2`` under diffusers' mixed load."""
+    import torch
+
+    dtype = hidden_states.dtype
+    for name in ("scale1", "scale2"):
+        scale = getattr(blocks[0], name, None)
+        if isinstance(scale, torch.Tensor):
+            dtype = torch.promote_types(dtype, scale.dtype)
+    return dtype
+
+
 def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm_dtype: Any) -> Any:
     """The transformer blocks; the kernels store normed activations in ``gemm_dtype``."""
     import torch.nn.functional as F
 
     blocks = decoder.transformer_blocks
     batch, seq, dim = hidden_states.shape
-    h = hidden_states.contiguous()
+    h = hidden_states.to(_residual_dtype(hidden_states, blocks)).contiguous()
     normed = _add_rmsnorm(h, None, None, blocks[0].norm1, gemm_dtype)
     cos2 = cos.reshape(-1, cos.shape[-1])
     sin2 = sin.reshape(-1, sin.shape[-1])
@@ -873,8 +908,16 @@ def _fast_block_stack(decoder: Any, hidden_states: Any, cos: Any, sin: Any, gemm
         if i + 1 < len(blocks):
             normed = _add_rmsnorm(h, out, block.scale2, blocks[i + 1].norm1, gemm_dtype)
         else:
-            h.addcmul_(out, block.scale2)
+            # not addcmul: stock rounds the product separately
+            h.add_(out * block.scale2)
     return h
+
+
+def _weight_dtype(module: Any, default: Any) -> Any:
+    """``default`` for an int8 Linear (weight dropped) or a missing weight."""
+    weight = getattr(module, "weight", None)
+    dtype = getattr(weight, "dtype", None)
+    return dtype if dtype is not None and dtype.is_floating_point else default
 
 
 def _fast_decoder_forward(self: Any, hidden_states: Any) -> Any:
@@ -893,7 +936,7 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     )
     hidden_states = self.proj_in(hidden_states)
     num_patches = hidden_states.shape[1]
-    register_tokens = self.register_tokens.expand(batch_size, -1, -1)
+    register_tokens = self.register_tokens.expand(batch_size, -1, -1).to(hidden_states.dtype)
     cls_token = torch.zeros_like(hidden_states[:, :1, :])
     hidden_states = torch.cat([hidden_states, register_tokens, cls_token], dim = 1)
     grids = [
@@ -910,12 +953,15 @@ def _fast_decoder_body(self: Any, hidden_states: Any) -> Any:
     q_dtype = (
         torch.get_autocast_dtype("cuda")
         if torch.is_autocast_enabled("cuda")
-        else hidden_states.dtype
+        else _weight_dtype(self.transformer_blocks[0].attn.to_q, hidden_states.dtype)
     )
     cos = cos.to(q_dtype).contiguous()
     sin = sin.to(q_dtype).contiguous()
     hidden_states = _fast_block_stack(self, hidden_states, cos, sin, q_dtype)
-    hidden_states = self.norm_out(hidden_states)
+    # stock casts float32-pinned norm_out to proj_out's dtype
+    hidden_states = self.norm_out(hidden_states).to(
+        _weight_dtype(self.proj_out, hidden_states.dtype)
+    )
     hidden_states = self.proj_out(hidden_states)
     hidden_states = hidden_states[:, :num_patches, :]
     p, pt = self.patch_size, self.patch_size_t
@@ -965,7 +1011,9 @@ def _tile_batch_size(z: Any) -> int:
     if env.isdigit() and int(env) > 0:
         return int(env)
     try:
-        free, _ = torch.cuda.mem_get_info(z.device)
+        from .diffusion_memory import user_budget_reserve_bytes
+        free, total = torch.cuda.mem_get_info(z.device)
+        free = max(0, int(free) - user_budget_reserve_bytes(z.device, total))
     except Exception:  # noqa: BLE001
         return 1
     return int(
@@ -1031,6 +1079,58 @@ def _install_tile_batch(vae: Any) -> bool:
     return True
 
 
+_FUSED_DEVICES: dict = {}
+
+
+def _fused_int8_ready(index: Optional[int]) -> bool:
+    """Probe once per card, never inside a forward."""
+    if index is None or _env(H3_VAE_INT8_FUSED_ENV) in _FALSE:
+        return False
+    if index not in _FUSED_DEVICES:
+        ok = False
+        try:
+            from . import diffusion_int8_gemm as gemm
+            from .diffusion_convrot_quant import rotquant_device_config
+            ok = (
+                gemm.int8_gemm_mode() != "off"
+                and gemm._op() is not None
+                and gemm.device_config(index) is not None
+                and rotquant_device_config(index) is not None
+            )
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            ok = False
+        _FUSED_DEVICES[index] = ok
+    return _FUSED_DEVICES[index]
+
+
+def _fused_int8_linear(
+    linear: Any, x2: Any, wq: Any, ws: Any, out_dtype: Any, group: int
+) -> Optional[Any]:
+    """ConvRot rotation + int8 act quant, then int8 GEMM with fused dequant. None when unsupported."""
+    import torch
+
+    bias = linear.bias
+    if (
+        _env(H3_VAE_INT8_FUSED_ENV) in _FALSE
+        or out_dtype != torch.bfloat16
+        or x2.dtype != torch.bfloat16
+        or not _FUSED_DEVICES.get(x2.device.index)
+        or (bias is not None and bias.dtype != torch.bfloat16)
+        or x2.shape[1] % 64
+        or wq.shape[0] % 16
+    ):
+        return None
+    from . import diffusion_int8_gemm as gemm
+    from .diffusion_convrot_quant import convrot_act_quant
+
+    q = convrot_act_quant(x2, group, True)
+    op = gemm._op()
+    if q is None or op is None:
+        return None
+    xq, xs = q
+    return op(xq, wq, xs.reshape(-1), ws, bias)
+
+
 def _int8_linear(linear: Any, x: Any) -> Any:
     """W8A8: per-token int8 activations, per-output-channel int8 weights, int32 accumulate via ``torch._int_mm``."""
     import torch
@@ -1042,6 +1142,18 @@ def _int8_linear(linear: Any, x: Any) -> Any:
     wq, ws = linear._unsloth_int8
     out_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else x.dtype
     rot = getattr(linear, "_unsloth_rot", None)
+    if (
+        rot is not None
+        and x.is_cuda
+        and x.shape[-1] >= rot.shape[0]
+        and x.numel() >= 17 * x.shape[-1]
+    ):
+        x2 = x.reshape(-1, x.shape[-1])
+        out = _fused_int8_linear(
+            linear, x2 if x2.is_contiguous() else x2.contiguous(), wq, ws, out_dtype, rot.shape[0]
+        )
+        if out is not None:
+            return out.view(*x.shape[:-1], out.shape[-1])
     if rot is not None:
         # ConvRot: weight stored as W @ H.T, so x @ H keeps the product while spreading outlier channels
         g = rot.shape[0]
@@ -1131,6 +1243,15 @@ def _install_int8_decoder(vae: Any, *, keep_blocks: Optional[tuple] = None) -> i
                 wq, ws = _quantize_int8_weight(w, hadamard if rotate else None)
                 staged.append((linear, wq, ws, rotate))
         cls = _int8_linear_class()
+    if hadamard is not None:
+        try:
+            if torch.cuda.is_available():
+                # weights' card, plus the current one for host-offloaded weights
+                if hadamard.is_cuda:
+                    _fused_int8_ready(hadamard.device.index)
+                _fused_int8_ready(torch.cuda.current_device())
+        except Exception:  # noqa: BLE001 - the unfused path stays
+            pass
     freed = 0
     for linear, wq, ws, rotate in staged:
         if rotate:
@@ -1248,7 +1369,7 @@ def cuda_fast_path_available(vae: Any = None) -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return False
     if vae is not None:
         try:
@@ -1360,6 +1481,8 @@ def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
             for lever, part in ((LEVER_FUSED_ENCODER, "encoder"), (LEVER_FUSED_DECODER, "decoder"))
             if getattr(getattr(vae, part, None), "_unsloth_fast_failed", False)
         ]
+        if getattr(vae, "__dict__", {}).get("_unsloth_h3_sol_vae_failed"):
+            failed.append("h3_sol_vae")
         optims = tuple(getattr(state, "speed_optims", None) or ())
         updated = tuple(o for o in optims if o not in failed)
         if updated != optims:

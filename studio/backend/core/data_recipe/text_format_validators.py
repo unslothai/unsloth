@@ -204,8 +204,7 @@ def _validate_json_text(value: Any) -> dict[str, Any]:
     return _valid_result()
 
 
-# Markdown accepts unmatched brackets and parentheses as text ("1) item", "Status (draft"),
-# so an unclosed code fence is the only structural break worth rejecting.
+# Markdown accepts unmatched brackets as text; only an unclosed fence is structural.
 def _has_unclosed_markdown_fence(text: str) -> bool:
     fence = ""
     for line in text.splitlines():

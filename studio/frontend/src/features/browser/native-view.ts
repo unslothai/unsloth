@@ -4,7 +4,7 @@
 /** desktop web pages use per-tab native views for bot checks. macOS puts each page under the app's webview, so
  *  overlays draw over the live page; elsewhere native views cover the DOM, so overlays use snapshots. */
 
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -19,8 +19,9 @@ import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } f
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
+import { FLOATING_ATTRIBUTE, FLOATING_MOVE_EVENT, FLOATING_SCALE_VAR, floatingNativeZoom } from "./floating-events";
 import { outsideThread } from "./outside-thread";
-import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
@@ -45,7 +46,9 @@ type NativeEvent =
   | { kind: "url"; tabId: string; url: string }
   | { kind: "history"; tabId: string; canGoBack: boolean; canGoForward: boolean; icon: string | null }
   | { kind: "newTab"; tabId: string; url: string }
+  | { kind: "refused"; tabId: string; url: string }
   | { kind: "external"; tabId: string; url: string }
+  | { kind: "failed"; tabId: string; error: string }
   | {
       kind: "download";
       tabId: string;
@@ -96,6 +99,13 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+function nativeErrorText(message: string): string {
+  if (/public web/i.test(message)) return t("browser.native.blocked");
+  if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
+  return message;
+}
+
 // The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
@@ -104,6 +114,13 @@ function keepReachedPage(tabId: string): void {
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
   store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
+}
+
+// A view pruned while its tab is still on the granted origin keeps the grant, to reopen.
+function onLocalOrigin(tabId: string): boolean {
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+  const entry = tab && currentEntry(tab);
+  return entry?.kind === "web" && localOriginGranted(tabId, entry.url);
 }
 
 function closeView(tabId: string): void {
@@ -119,8 +136,10 @@ function closeView(tabId: string): void {
   recency = recency.filter((id) => id !== tabId);
   if (parkedView === tabId) parkedView = null;
   background = background.filter((id) => id !== tabId);
-  void call("browser_view_close", { tabId }).catch(() => undefined);
+  void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
 }
+
+setLocalViewCloser(closeView);
 
 let listening = false;
 
@@ -145,6 +164,14 @@ const loadingPages = new Set<string>();
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
   const fresh = pageEntries.get(tabId) !== entry;
   pageEntries.set(tabId, entry);
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === tabId);
+  if (tab && tab.chat !== store.chat) {
+    // Off-screen chat: a self-navigation keeps the page's own flag, not the shown chat's incognito.
+    const own = entry.temporary === true;
+    temporaryPages.set(tabId, fresh ? own : (temporaryPages.get(tabId) ?? own));
+    return;
+  }
   const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
   temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
@@ -206,6 +233,13 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (!tab) return;
+  if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
+    closeView(tab.id);
+    store.updateTab(tab.id, { loading: false, nativeError: event.error });
+    return;
+  }
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
@@ -256,21 +290,15 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        // A page at work in a chat off screen opens its popups there, not over this chat's tabs.
-        if (tab.chat !== store.chat) store.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-        else store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
+        openPopup(tab, event.url);
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
-          label: t("browser.native.open"),
-          onClick: () => {
-            const now = useBrowserStore.getState();
-            if (tab.chat !== now.chat) now.openTabIn(tab.chat, event.url, { from: shownUrl(tab), background: true });
-            else now.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
-          },
-        });
+        promptPopup(tab, event.url);
       }
       break;
     }
+    case "refused":
+      promptPopup(tab, event.url);
+      break;
     case "external":
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
@@ -278,6 +306,23 @@ function onNativeEvent(event: NativeEvent): void {
       });
       break;
   }
+}
+
+// A page at work in a chat off screen opens its popups there, not over this chat's tabs.
+function openPopup(tab: BrowserTab, url: string): void {
+  const store = useBrowserStore.getState();
+  if (tab.chat !== store.chat) {
+    // The opener's temporary flag, not the shown chat's: a temporary page's popups stay out of history.
+    const temporary = pageTemporary(tab.id, currentEntry(tab));
+    store.openTabIn(tab.chat, url, { from: shownUrl(tab), background: true, temporary });
+  } else store.openUrl(url, { newTab: true, from: shownUrl(tab) });
+}
+
+function promptPopup(tab: BrowserTab, url: string): void {
+  prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url }), {
+    label: t("browser.native.open"),
+    onClick: () => openPopup(tab, url),
+  });
 }
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
@@ -314,8 +359,7 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
- *  Web addresses only: a blob: or data: page goes with the view that made it. */
+/** Keyed by the entry the view holds; blob: and data: pages are not remembered. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
@@ -325,8 +369,6 @@ function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
 
-/** Once the view moves off the address the tab was opened for, opening that address again
- *  opens it rather than focusing this tab. */
 function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
   return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
@@ -513,6 +555,9 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
+// The wallpaper is no ancestor of the page, so it is masked instead.
+const MASK_ATTRIBUTE = "data-native-hole-mask";
+let masked: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
@@ -544,8 +589,15 @@ function placeHole(): void {
   const zoom = getAppliedInterfaceZoom() || 1;
   const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
-  const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
+  const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
+  const values = rect.map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+  // No zoom correction: a mask is no fixed background.
+  for (const node of masked) {
+    const box = node.getBoundingClientRect();
+    const local = [rect[0] - box.left, rect[1] - box.top, rect[2], rect[3]];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${local[index]}px`));
+  }
 }
 
 /** Re-reads background colors when the chain, its classes or the theme change; true if it did. */
@@ -557,8 +609,13 @@ function markHole(): boolean {
   // Theme: html classes, palette and inline color vars, minus our own.
   const root = document.documentElement;
   const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
-  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}`;
-  if (signature === holeSignature && holed.every((node) => node.isConnected)) return false;
+  // Ancestors only, no document scan: this runs on every recheck.
+  const layers = chain
+    .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
+    .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
+  layers.push(...floatingUnderlay(chain));
+  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
+  if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
   const colors = chain.map((node) => getComputedStyle(node));
@@ -568,11 +625,27 @@ function markHole(): boolean {
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
   });
+  masked = layers;
   placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
   return true;
+}
+
+/** The chat under a floating page is no ancestor of it, so its boxes are masked too. */
+function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
+  if (floating < 0) return [];
+  const under: HTMLElement[] = [];
+  for (const node of chain.slice(floating)) {
+    if (node.hasAttribute("data-chat-content-root")) break;
+    for (const sibling of node.parentElement?.children ?? []) {
+      if (sibling !== node && sibling instanceof HTMLElement && !sibling.classList.contains("chat-wallpaper")) under.push(sibling);
+    }
+  }
+  return under;
 }
 
 function unmarkHole(): void {
@@ -581,6 +654,11 @@ function unmarkHole(): void {
     for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
   }
   holed = [];
+  for (const node of masked) {
+    node.removeAttribute(MASK_ATTRIBUTE);
+    for (const name of HOLE_VARS) node.style.removeProperty(name);
+  }
+  masked = [];
   holeSignature = "";
 }
 
@@ -651,6 +729,12 @@ function insetToasts(rect: DOMRect | null): void {
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }
 
+function floatingScale(tabId: string): number {
+  const surface = placeholder(tabId)?.closest?.<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+  const scale = Number.parseFloat(surface?.style?.getPropertyValue?.(FLOATING_SCALE_VAR) ?? "");
+  return scale > 0 && scale <= 1 ? scale : 1;
+}
+
 function desiredView(): Desired {
   const page = pageRect();
   if (layered) {
@@ -665,7 +749,7 @@ function desiredView(): Desired {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
-    zoom: tab.zoom,
+    zoom: floatingNativeZoom(tab.zoom, floatingScale(tab.id)),
     bounds: {
       x: Math.round(rect.left),
       y: Math.round(rect.top),
@@ -790,6 +874,7 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   try {
     if (views.has(tabId)) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
     } else {
       const bounds = viewBounds.get(tabId) ??
         shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
@@ -961,7 +1046,7 @@ async function applyView(desired: Desired): Promise<void> {
   const started = generation;
   const stale = () => {
     if (started === generation) return false;
-    void call("browser_view_close", { tabId }).catch(() => undefined);
+    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
     return true;
   };
   try {
@@ -980,6 +1065,7 @@ async function applyView(desired: Desired): Promise<void> {
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
+      zooms.delete(tabId);
       if (stale()) return;
     }
     views.set(tabId, entry);
@@ -992,14 +1078,13 @@ async function applyView(desired: Desired): Promise<void> {
     if (stale()) return;
     useBrowserStore.getState().updateTab(tabId, {
       loading: false,
-      nativeError: /public web/i.test(error(cause)) ? t("browser.native.blocked") : error(cause),
+      nativeError: nativeErrorText(error(cause)),
     });
   }
   recency = [...recency.filter((id) => id !== tabId), tabId];
 }
 
-// One call in flight, across mounts; meanwhile only the newest state waits, so a drag can't queue
-// a backlog of stale bounds for the native view to replay.
+// One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
 let running = false;
 let pending: { desired: Desired } | null = null;
 
@@ -1060,6 +1145,8 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
+    // A page on top waits out a floating drag under its snapshot, not a capture per frame.
+    if (!layered && parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
@@ -1109,6 +1196,11 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerover", reachedPage, true);
   // A dragged or resized panel ends where the pointer lets go.
   document.addEventListener("pointerup", schedule, true);
+  // A layered page follows the floating window; one on top waits for the drop (see sync).
+  const floatingMoved = () => {
+    if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
+  };
+  window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -1124,6 +1216,7 @@ export function startNativeViews(): () => void {
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
+    window.removeEventListener(FLOATING_MOVE_EVENT, floatingMoved);
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;

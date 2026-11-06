@@ -89,7 +89,6 @@ const DOCX_ATTRIBUTES = new Set(["href", "src", "alt", "id", "colspan", "rowspan
 const MAX_DOCX_PARAGRAPHS = 20_000;
 const MAX_DOCX_ELEMENTS = 50_000;
 const MAX_DOCX_PIXELS = 128 * 1024 * 1024;
-// A card shows only the opening of a document.
 const THUMBNAIL_DOCX_PARAGRAPHS = 60;
 const THUMBNAIL_DOCX_ELEMENTS = 2_000;
 const THUMBNAIL_SHEET_LIMITS: SheetLimits = { sheets: 1, rows: 60, columns: 30, extraNames: 8 };
@@ -347,7 +346,7 @@ function SheetView({
           {tabs &&
             sheets.map((item, index) => {
               const className = cn(
-                "shrink-0 rounded-md px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
+                "shrink-0 rounded-full px-3 py-1 text-ui-13 transition-colors hover:bg-muted",
                 index === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground",
               );
               return thumbnail ? (

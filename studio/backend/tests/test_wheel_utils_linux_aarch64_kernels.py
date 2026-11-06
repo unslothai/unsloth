@@ -51,8 +51,8 @@ def test_all_three_resolve_to_our_builds(torch_mm):
         {"python_tag": "cp314", "abi_tag": "cp314t"},
         {"cuda_major": "12", "cuda_version": "12.8"},
         {"cxx11abi": "FALSE"},
-        {"torch_mm": "2.10"},
-        {"torch_mm": "2.11"},
+        {"torch_mm": "2.10", "python_tag": "cp310", "abi_tag": "cp310"},
+        {"torch_mm": "2.11", "cuda_major": "12", "cuda_version": "12.8"},
     ],
 )
 def test_cells_we_do_not_build_never_name_our_release(overrides):
@@ -65,6 +65,16 @@ def test_cells_we_do_not_build_never_name_our_release(overrides):
         assert url is None or not url.startswith(OURS), url
 
 
-def test_torch_2_10_still_resolves_upstream():
-    e = env(torch_mm = "2.10", torch_version = "2.10.0+cu130")
+@pytest.mark.parametrize("torch_mm", ["2.10", "2.11", "2.12"])
+def test_older_torches_take_our_causal_conv1d_and_mamba_ssm_but_upstream_flash_attn(torch_mm):
+    e = env(torch_mm = torch_mm, torch_version = f"{torch_mm}.0+cu130")
+    tail = f"+cu13torch{torch_mm}cxx11abiTRUE-cp313-cp313-linux_aarch64.whl"
+    assert kernel_install.CAUSAL_CONV1D.wheel_url(e) == f"{OURS}causal_conv1d-1.7.0{tail}"
+    assert kernel_install.MAMBA_SSM.wheel_url(e) == f"{OURS}mamba_ssm-2.3.2.post1{tail}"
+    flash = wheel_utils.flash_attn_wheel_url(e)
+    assert flash is None or not flash.startswith(OURS), flash
+
+
+def test_torch_2_10_cu12_still_resolves_upstream():
+    e = env(torch_mm = "2.10", torch_version = "2.10.0+cu128", cuda_major = "12", cuda_version = "12.8")
     assert "Dao-AILab/causal-conv1d" in kernel_install.CAUSAL_CONV1D.wheel_url(e)

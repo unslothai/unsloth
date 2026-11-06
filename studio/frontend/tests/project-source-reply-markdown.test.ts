@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Save to project sources" on one reply used to upload getCopyText(), which is
-// the text parts of the message joined and nothing else. A reply that searched,
-// ran a tool or reasoned would be saved with that work missing, and a reply that
-// is only a tool call has no text part at all, so it saved nothing.
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
 
 import { readSrcAsync } from "./helpers/kit.ts";
 
-// The module under test imports a sibling without its extension, the way vite
-// resolves it.
+// The module imports a sibling extensionless, as vite resolves.
 register("./bundler-resolver.mjs", import.meta.url);
 const { replySourceMarkdown } = await import(
   "../src/features/chat/utils/reply-source-markdown.ts"
 );
 
-/** An assistant reply as assistant-ui holds it: parts, not a string. */
 const reply = [
   { type: "reasoning", text: "the docs pin it to 3.1" },
   {
@@ -86,8 +79,7 @@ test("a tool result is normalised the way the whole-chat save normalises it", ()
 });
 
 test("the reply action saves through this conversion", async () => {
-  // thread.tsx is 6k lines of TSX that node cannot load, so this reads the
-  // source, the way project-source-reply-destination.test.ts does.
+  // thread.tsx cannot be loaded by node, so read the source.
   const src = await readSrcAsync("components/assistant-ui/thread.tsx");
   const marker = src.indexOf("Save to project sources");
   assert.ok(marker > 0, "the reply action is gone or was renamed");

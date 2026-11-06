@@ -81,10 +81,10 @@ def _nvfp4_dequant_kernel(
     rows,
     half_cols,
     scale_cols,
-    BLOCK_R: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_C: tl.constexpr,  # cols per program
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
 ):
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
     if INT64_OFFSETS:
@@ -193,12 +193,12 @@ def _nvfp4_weight_tile(
     stride_pc,
     stride_sr,
     stride_sc,
-    BLOCK_R: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    OUT_DTYPE: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    OUT_DTYPE: tl.constexpr,  # output dtype
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
@@ -251,13 +251,13 @@ def _nvfp4_matmul_fwd_kernel(
     stride_yn,
     stride_ys,
     k_per_split,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Split K writes fp32 partials [split, M, N], summed in a fixed order afterwards (deterministic).
     pid = tl.program_id(0)
@@ -339,13 +339,13 @@ def _nvfp4_matmul_dx_kernel(
     stride_dk,
     stride_ds,
     n_per_split,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
@@ -408,7 +408,7 @@ _FUSED_CALLS = {"fwd": 0, "bwd": 0}
 
 
 def _read_fused_env():
-    # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS overrides it).
+    # UNSLOTH_NVFP4_FUSED: 0 dense, 1 fused, unset = per-GPU row gate (UNSLOTH_NVFP4_FUSED_MAX_ROWS: a flat row limit).
     rows = os.environ.get("UNSLOTH_NVFP4_FUSED_MAX_ROWS")
     return os.environ.get("UNSLOTH_NVFP4_FUSED", "auto").strip().lower(), int(
         rows
@@ -436,15 +436,45 @@ _FUSED_FORCE = ("1", "true", "on", "yes", "force")
 _IS_HIP = torch.version.hip is not None
 
 
-def _fused_ok(A, packed, scale, global_scale, inner):
+def _fused_max_rows(
+    capability,
+    n,
+    k,
+    dx = False,
+):
+    # Rows of X (forward) or of the output gradient (dX) up to which fused beats dense; 0 = never (unmeasured GPU).
+    gate = _FUSED_ROW_GATE.get(capability)
+    if gate is None or not n or not k:
+        return 0
+    div, c, floor, max_rows = gate[dx]
+    if n % 128 or k % 128:  # masked edge tiles: fused only up to the floor
+        return floor
+    # A narrow reduction (forward, small K) or a wide output (dX, large K) also keeps fused ahead.
+    k_rows = (k // c if dx else c // k) if c else 0
+    return max(floor, min(max_rows, max(n * k // div, k_rows)))
+
+
+def _fused_ok(
+    A,
+    packed,
+    scale,
+    global_scale,
+    inner,
+    dx = False,
+):
     # Anything unusual keeps the dense path (and its errors).
     mode, rows = _fused_env()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
         return False
     index = A.get_device()
     if mode not in _FUSED_FORCE:
-        limit = rows if rows is not None else _FUSED_MAX_ROWS.get(_device_capability(index), 0)
-        if A.numel() > limit * inner:  # unmeasured GPUs (limit 0) leave here
+        if rows is None:
+            if packed.dim() != 2:
+                return False
+            rows = _fused_max_rows(
+                _device_capability(index), packed.shape[0], packed.shape[1] * 2, dx
+            )
+        if A.numel() > rows * inner:  # unmeasured GPUs (limit 0) leave here
             return False
     if A.dtype not in (torch.float16, torch.bfloat16) or A.numel() == 0 or A.shape[-1] != inner:
         return False
@@ -458,7 +488,8 @@ def _fused_ok(A, packed, scale, global_scale, inner):
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        # N and K both 64 aligned (inner is N for dX); unaligned dX is up to 2.8x slower.
+        and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
@@ -467,8 +498,15 @@ def _fused_ok(A, packed, scale, global_scale, inner):
     )
 
 
-# Max rows where fused beats dense (measured at N, K multiples of 64); unmeasured GPUs stay dense.
-_FUSED_MAX_ROWS = {(8, 0): 64, (8, 9): 256, (12, 0): 128}
+# Fused beats dense while the weight (N * K elements) gives the GPU enough tiles:
+# rows <= clamp(max(N * K // div, k_rows), floor, max_rows), k_rows = c // K forward, K // c for dX (c = 0: none).
+# capability: ((div, c, floor, max_rows) forward, (...) dX). Fitted to a bf16 sweep (rows 1 to 256, N * K 2.4M to 67M)
+# on A100, L4 and RTX PRO 6000; unmeasured GPUs stay dense.
+_FUSED_ROW_GATE = {
+    (8, 0): ((3 << 17, 3 << 14, 32, 64), (3 << 17, 0, 16, 64)),
+    (8, 9): ((3 << 16, 3 << 14, 32, 256), (3 << 15, 0, 32, 256)),
+    (12, 0): ((3 << 17, 1 << 16, 32, 128), (7 << 15, 128, 16, 256)),
+}
 
 
 def _scale_args(scale):
@@ -490,7 +528,8 @@ def _fused_config(
 ):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
-    stages = 2 if _device_capability(index) < (8, 0) else 3
+    capability = _device_capability(index)
+    stages = 2 if capability < (8, 0) else 3
     if M <= 16:
         bm, bo, br, warps = (16, 128, 64, 4) if dx else (16, 64, 128, 4)
     elif M <= 64:
@@ -500,6 +539,9 @@ def _fused_config(
     else:
         bm, bo, br, warps = 128, 64, 64, 4
     tiles = triton.cdiv(M, bm) * triton.cdiv(n_out, bo)
+    # sm89 dX up to 32 rows: an output that fills every SM by itself is 11-17% faster unsplit (L4; A100 is not).
+    if dx and M <= 32 and capability == (8, 9) and tiles >= _sm_count(index):
+        return bm, bo, br, warps, stages, 1
     # Split under four waves; fp32 partials capped at 1/8 of the 16 bit weight.
     split = 1
     while (
@@ -513,8 +555,11 @@ def _fused_config(
 
 
 @triton.jit
-def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
-    # Fixed-order sum of the split partials (determinism), one cast.
+def _split_sum_kernel(
+    partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr
+):  # SPLIT split-K partials, BLOCK block size
+    # Fixed-order sum of the split partials (determinism), one cast. SPLIT stays constexpr: the unrolled
+    # static_range is 13-34% faster than a runtime loop, and SPLIT is only ever 2, 4, 8 or 16.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(partial_ptr + offs, mask = mask, other = 0.0)
@@ -640,10 +685,22 @@ def _nvfp4_matmul_bwd(
 ) -> torch.Tensor:
     # create_graph: the raw launch has no autograd history, so differentiate through the dense matmul.
     if not (grad.requires_grad and torch.is_grad_enabled()) and _fused_ok(
-        grad, packed, scale, global_scale, packed.shape[0]
+        grad, packed, scale, global_scale, packed.shape[0], dx = True
     ):
         return _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale.reshape(-1)[:1])
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
+
+
+_AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _autocast_operand(X):
+    # Cast outside the opaque op so fused, dense and fake impl all return the autocast dtype.
+    if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+        if dtype != X.dtype:
+            return X.to(dtype)
+    return X
 
 
 class NVFP4Linear_matmul(torch.autograd.Function):
@@ -656,12 +713,13 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
+        X_mm = _autocast_operand(X)
+        output = _nvfp4_matmul_fwd(X_mm, packed, scale, global_scale)
         if bias is not None:
             output = output + bias
-            # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
-            if output.dtype != X.dtype:
-                output = output.to(X.dtype)
+            # Cast to the compute dtype only if a fp32 bias promoted (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
+            if output.dtype != X_mm.dtype:
+                output = output.to(X_mm.dtype)
         ctx.save_for_backward(packed, scale, global_scale)
         ctx.bias_grad = bias is not None and bias.requires_grad
         ctx.dtype = X.dtype

@@ -12,9 +12,10 @@ import inspect
 import json
 import secrets
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qsl
 
 import pytest
@@ -248,6 +249,15 @@ def bodies(studio: FastAPI, path: str) -> list[Any]:
     return [json.loads(c[3]) for c in studio.state.calls if c[1] == path]
 
 
+def media_load_bodies(studio: FastAPI, path: str) -> list[Any]:
+    """The bodies of an image or video load, each checked to name its load and shown without that id."""
+    sent = bodies(studio, path)
+    for body in sent:
+        token = body.pop("load_token", None)
+        assert isinstance(token, str) and len(token) == 32, body
+    return sent
+
+
 def queries(studio: FastAPI, path: str) -> list[dict[str, str]]:
     return [
         dict(parse_qsl(q, keep_blank_values = True)) for _m, p, q in studio.state.queries if p == path
@@ -353,6 +363,14 @@ def run_export_job(monkeypatch: Any, studio: FastAPI, args: dict) -> tuple[dict,
             if job["structuredContent"]["status"] != "running" or time.monotonic() > deadline:
                 return started, job
             time.sleep(0.02)
+
+
+@contextmanager
+def session(monkeypatch: Any, studio: FastAPI) -> Iterator[Callable[..., dict]]:
+    """One served MCP server for several calls, so a background job one call starts is still there for the next."""
+    from mcp_server import create_studio_mcp
+    with TestClient(served(create_studio_mcp(), studio, monkeypatch = monkeypatch)) as http:
+        yield lambda name, args = None: call_tool(http, name, args)
 
 
 def route_studio(

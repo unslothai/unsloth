@@ -1,52 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Download a single file from a Hugging Face repo with a stall-retry
-# watchdog. Used by the Unsloth CI workflows so a hung hf-xet transfer
-# kills + retries instead of silently consuming the job's timeout.
+# Download one file from a Hugging Face repo, killing and retrying a stalled hf-xet transfer.
 # Usage: hf-download-with-retry.sh REPO FILE LOCAL_DIR
-# Why this exists
-# huggingface_hub 1.15+ deprecated `hf_transfer` and routes every
-# transfer through the `hf-xet` binary package. In CI we observed
-# `hf download` on a 3 GB GGUF (gemma-4-E2B-it-UD-Q4_K_XL) progress
-# to ~46% via Xet, then go completely silent for the remainder of
-# the 30-min job timeout -- no progress bytes, no error, no exit.
-# A sibling 940 MB mmproj on the same step downloaded in ~21s
-# moments earlier, so the hang is per-file inside hf-xet rather
-# than a network outage. The Xet env-vars below put hf-xet into
-# its highest-throughput mode and force a 500 s client-read
-# timeout; the watchdog loop ensures a stall does not eat the
-# whole job: if the hf process has not exited after STALL_S
-# seconds (default 180 = 3 min), we SIGTERM, then SIGKILL, then
-# start a fresh attempt. Retries are unbounded -- the enclosing
-# GitHub Actions step's (or, absent one, job's) `timeout-minutes` is
-# the real bound, so give every step that calls this script one.
-# See https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
-# for the HF_XET_* documentation, and npm/cli#7308's pattern (silent
-# CI hang with no error) for prior art on this class of failure.
+# Retries are unbounded: give every calling step a timeout-minutes.
 
 set -uo pipefail
 
 REPO="${1:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
 FILE="${2:?usage: hf-download-with-retry.sh REPO FILE [LOCAL_DIR]}"
-# LOCAL_DIR is optional. If empty, hf falls back to HF_HUB_CACHE
-# (~/.cache/huggingface/hub) which is the desired path for callers
-# that populate HF_HOME for a downstream Unsloth model load.
+# Empty LOCAL_DIR falls back to HF_HUB_CACHE, which callers relying on HF_HOME want.
 LOCAL_DIR="${3:-}"
 
-# Stall threshold per attempt, in seconds. Override with
-# HF_DOWNLOAD_STALL_SECONDS in the workflow env if 3 min is too tight
-# for a specific runner / file. The script keeps retrying past this
-# until the job timeout fires.
 STALL_S="${HF_DOWNLOAD_STALL_SECONDS:-180}"
 
-# hf-xet tuning. HF_HUB_ENABLE_HF_TRANSFER is deliberately NOT set --
-# it is a no-op on huggingface_hub>=1.15 and only emits a deprecation
-# FutureWarning. The five HF_XET_* knobs below mirror the settings
-# Daniel asked for: max bandwidth + 64 parallel range gets, no chunk
-# cache (download-once usage pattern), parallel disk writes (SSD/NVMe
-# runners), and a generous 500 s read timeout so individual chunk
-# requests fail loudly instead of stalling forever.
+# HF_HUB_ENABLE_HF_TRANSFER is a no-op on huggingface_hub>=1.15, so it is not set.
 export HF_XET_HIGH_PERFORMANCE=1
 export HF_XET_CHUNK_CACHE_SIZE_BYTES=0
 export HF_XET_NUM_CONCURRENT_RANGE_GETS=64

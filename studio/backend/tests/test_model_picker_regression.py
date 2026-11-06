@@ -1,29 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression guards for the model-picker per-model-config feature (the set of
-bugs that got the predecessor PR reverted). Pure-function / validation checks
-only, so they run on CPU in the backend pytest job with no model download.
-
-Covers, at the backend layer:
-  - infra-model hiding: the RAG embedder (bge-small-en-v1.5) and the llama.cpp
-    install-validation probe (ggml-org/models / stories260K) stay hidden, while
-    normal chat repos are not hidden;
-  - the HF token is honored from the dedicated header with the query string as a
-    fallback, never the other way around;
-  - the chat-template byte caps reject oversized overrides (both the char-count
-    fast path and the UTF-8 byte path) and the sidecar reader is size-bounded.
-"""
+"""Pure checks: infra models stay hidden, and the HF header token beats the query-string fallback."""
 
 from __future__ import annotations
 
+import math
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
-# Keep this test runnable without the optional structlog dependency (mirrors
-# tests/test_cached_gguf_routes.py), since importing routes.models pulls it in.
+# Stub optional structlog: importing routes.models pulls it in.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -55,22 +44,17 @@ def _pin_default_embedder(monkeypatch):
     monkeypatch.setattr(rag_config, "default_gguf_repo", lambda: default)
 
 
-# --------------------------------------------------------------------------- #
-# Infra-model hiding (the "infra models resurfaced in the picker" regression)  #
-# --------------------------------------------------------------------------- #
-
-
 @pytest.mark.parametrize(
     "value",
     [
-        "ggml-org/models",  # the probe repo id
-        "unsloth/bge-small-en-v1.5",  # the RAG embedder repo
-        "unsloth/bge-small-en-v1.5-GGUF",  # its GGUF companion
-        "/root/.cache/huggingface/hub/x/stories260K.gguf",  # probe on disk
-        "/root/.cache/x/Stories260K.GGUF",  # case-insensitive
-        r"C:\\models\\stories260K.gguf",  # windows-style path
-        "/opt/models/bge-small-en-v1.5",  # embedder basename folder
-        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",  # suffixed local weight
+        "ggml-org/models",
+        "unsloth/bge-small-en-v1.5",
+        "unsloth/bge-small-en-v1.5-GGUF",
+        "/root/.cache/huggingface/hub/x/stories260K.gguf",
+        "/root/.cache/x/Stories260K.GGUF",
+        r"C:\\models\\stories260K.gguf",
+        "/opt/models/bge-small-en-v1.5",
+        "/opt/models/bge-small-en-v1.5-Q8_0.gguf",
     ],
 )
 def test_infra_models_are_hidden(value):
@@ -80,10 +64,10 @@ def test_infra_models_are_hidden(value):
 @pytest.mark.parametrize(
     "value",
     [
-        "unsloth/gemma-3-270m-it-GGUF",  # a normal small chat GGUF
-        "unsloth/Qwen3-0.6B",  # a normal non-GGUF chat model
-        "user/stories260K-finetune-GGUF",  # repo id merely contains "stories260k"
-        "user/model-chat",  # generic repo must not be hidden
+        "unsloth/gemma-3-270m-it-GGUF",
+        "unsloth/Qwen3-0.6B",
+        "user/stories260K-finetune-GGUF",
+        "user/model-chat",
         "meta-llama/Llama-3.1-8B-Instruct",
     ],
 )
@@ -102,8 +86,6 @@ def test_hidden_model_matchers_expose_probe_needles():
     lowered = [n.lower() for n in needles]
     assert "ggml-org/models" in lowered
     assert "stories260k.gguf" in lowered
-    # The configured embedder is exposed as an exact repo id, never as a
-    # basename needle that would substring-hide unrelated chat models.
     assert "bge-small-en-v1.5" not in lowered
     assert "unsloth/bge-small-en-v1.5" in exact_ids
 
@@ -119,9 +101,6 @@ def test_hidden_model_matchers_custom_repo_publishes_exact_ids(monkeypatch):
 
 
 def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, tmp_path):
-    # A local embedder shaped like owner/name that exists on disk must be an
-    # exact resolved path, not a Hub repo id (mirroring is_hidden_model), so the
-    # local row stays hidden instead of showing as a chat model.
     (tmp_path / "models" / "embedder").mkdir(parents = True)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "models/embedder")
@@ -130,11 +109,6 @@ def test_hidden_model_matchers_local_owner_name_path_is_exact_path(monkeypatch, 
     resolved = str((tmp_path / "models" / "embedder").resolve()).lower()
     assert resolved in exact_paths
     assert "models/embedder" not in exact_ids
-
-
-# --------------------------------------------------------------------------- #
-# HF token via header, query string only as a fallback (the token-leak fix)    #
-# --------------------------------------------------------------------------- #
 
 
 def test_get_hf_token_strips_and_returns():
@@ -167,11 +141,6 @@ def test_query_token_is_fallback_when_header_absent():
     assert resolved == "hf_query"
 
 
-# --------------------------------------------------------------------------- #
-# Chat-template byte caps (the unbounded-template hardening)                    #
-# --------------------------------------------------------------------------- #
-
-
 def _load_request(**overrides):
     data = {"model_path": "unsloth/test-model-GGUF", "gguf_variant": "Q4_K_M"}
     data.update(overrides)
@@ -188,7 +157,7 @@ def test_nonblank_chat_template_override_preserved_verbatim():
 
 
 def test_chat_template_at_byte_limit_is_accepted():
-    template = "a" * MAX_CHAT_TEMPLATE_BYTES  # exactly the limit, 1 byte/char
+    template = "a" * MAX_CHAT_TEMPLATE_BYTES
     assert (
         len(_load_request(chat_template_override = template).chat_template_override)
         == MAX_CHAT_TEMPLATE_BYTES
@@ -196,18 +165,65 @@ def test_chat_template_at_byte_limit_is_accepted():
 
 
 def test_chat_template_over_char_limit_is_rejected():
-    with pytest.raises(Exception):  # pydantic ValidationError wrapping ValueError
+    with pytest.raises(Exception):
         _load_request(chat_template_override = "a" * (MAX_CHAT_TEMPLATE_BYTES + 1))
 
 
 def test_chat_template_over_byte_limit_is_rejected():
-    # Char count stays under the limit but UTF-8 bytes exceed it (3 bytes/char),
-    # so only the byte-count branch can catch this.
-    multibyte = "€" * (MAX_CHAT_TEMPLATE_BYTES // 2)  # euro sign, 3 bytes each
+    # Under the char limit but over in UTF-8 bytes (3 bytes/char).
+    multibyte = "€" * (MAX_CHAT_TEMPLATE_BYTES // 2)
     assert len(multibyte) <= MAX_CHAT_TEMPLATE_BYTES
     assert len(multibyte.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES
     with pytest.raises(Exception):
         _load_request(chat_template_override = multibyte)
+
+
+def _large_community_template(target_bytes: int) -> str:
+    # Shaped like the large community templates in #14841: one long chain of role branches.
+    branch = (
+        "{%- elif message['role'] == 'persona_{i}' -%}"
+        "{{ '<|im_start|>persona_{i}\\n' + message['content'] | trim + '<|im_end|>\\n' }}\n"
+    )
+    body, i = [], 0
+    while sum(map(len, body)) < target_bytes:
+        body.append(branch.replace("{i}", str(i)))
+        i += 1
+    return (
+        "{%- for message in messages -%}\n"
+        "{%- if message['role'] == 'system' -%}{{ message['content'] }}\n"
+        + "".join(body)
+        + "{%- endif -%}{%- endfor -%}"
+    )
+
+
+def test_large_community_chat_template_is_accepted_end_to_end():
+    from picker.schemas import ValidateChatTemplateRequest
+    from picker.service import validate_chat_template
+    from utils import openai_auto_switch_settings as settings
+
+    template = _large_community_template(230 * 1024)
+    assert len(template.encode("utf-8")) > 230 * 1024
+    assert _load_request(chat_template_override = template).chat_template_override == template
+    assert ValidateChatTemplateRequest(template = template).template == template
+    assert validate_chat_template(template).valid
+    stored = settings.normalize_model_override({"chat_template_override": template})
+    assert stored["chat_template_override"] == template
+
+
+def test_frontend_chat_template_limit_matches_backend():
+    import re
+
+    from utils import openai_auto_switch_settings as settings
+
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/features/model-picker/model-config/per-model-config.ts"
+    ).read_text(encoding = "utf-8")
+    match = re.search(r"export const MAX_CHAT_TEMPLATE_BYTES = ([0-9_ *]+);", ts)
+    assert match is not None
+    frontend_limit = math.prod(int(part) for part in match.group(1).replace("_", "").split("*"))
+    assert frontend_limit == MAX_CHAT_TEMPLATE_BYTES
+    assert settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES == MAX_CHAT_TEMPLATE_BYTES
 
 
 def test_read_bounded_text_reads_within_limit(tmp_path):

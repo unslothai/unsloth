@@ -35,7 +35,7 @@ def _record(**overrides):
         "policy_version": 1,
         "checkpoint_sha256": "a" * 64,
         "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
-        "filename": "Z-Image-Turbo-NVFP4.pt",
+        "filename": "Z-Image-Turbo-NVFP4.safetensors",
         "gptq": False,
         "all_pass": True,
         "num_pairs": 28,
@@ -199,8 +199,8 @@ def test_a_record_at_a_superseded_policy_no_longer_gates_its_base(tmp_path):
         base_repo = "black-forest-labs/FLUX.1-schnell",
         policy_id = "flux_mod_single_v1",
     )
-    # Separate files: the loader caches on (path, mtime_ns, size), and this third document is the first one's size, so
-    # on Windows' ~15.6 ms write clock a rewrite of the same path would read the first document back.
+    # Separate files: the loader caches on (path, mtime_ns, size), and Windows' ~15.6 ms write clock
+    # would return the first same-size document on a rewrite.
     (tmp_path / "superseded").mkdir()
     (tmp_path / "current").mkdir()
     path = _gate_file(tmp_path / "superseded", flux)

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an existing Studio install keeps when the MCP session cache stops being
-stdio-only: the close entry point, the session-cap environment variable, and the
-fastmcp surface this code actually depends on.
-
-Studio declares fastmcp>=3.0.2 with no upper bound and no lockfile, so a released
-install resolves to whatever is newest. Anything asserted about fastmcp here is
-asserted against the installed version, not a mock.
-"""
+"""Studio's fastmcp>=4.1.5,<5 has no lockfile, so these check the installed version."""
 
 from __future__ import annotations
 
@@ -28,27 +21,15 @@ LEGACY_ENV = "UNSLOTH_STUDIO_MAX_STDIO_MCP_SESSIONS"
 ENV = "UNSLOTH_STUDIO_MAX_MCP_SESSIONS"
 
 
-# --------------------------------------------------------------------------
-
-# Entry points an old install may still call
-# --------------------------------------------------------------------------
-
-
 def test_the_old_close_name_still_works():
     """close_stdio_sessions had no underscore, so treat it as callable from
     outside this module even though nothing in-repo does."""
     assert mcp_client.close_stdio_sessions is mcp_client.close_mcp_sessions
-    mcp_client.close_stdio_sessions()  # must not raise on an empty cache
+    mcp_client.close_stdio_sessions()
 
 
 def test_the_old_close_name_takes_the_same_arguments():
     mcp_client.close_stdio_sessions("https://mcp.example.test/mcp", None)
-
-
-# --------------------------------------------------------------------------
-
-# Session cap: the name changed, the setting must not
-# --------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse = True)
@@ -91,12 +72,6 @@ def test_the_cap_never_drops_below_one(monkeypatch, raw, expected):
     assert mcp_client._max_sessions_from_env() == expected
 
 
-# --------------------------------------------------------------------------
-
-# The fastmcp surface this module relies on
-# --------------------------------------------------------------------------
-
-
 def test_the_transports_this_code_builds_still_exist():
     from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
     for cls in (StdioTransport, SSETransport, StreamableHttpTransport):
@@ -118,7 +93,7 @@ def test_only_stdio_answers_the_liveness_probe():
 def test_the_installed_fastmcp_meets_the_declared_floor():
     version = importlib.metadata.version("fastmcp")
     major, minor, *_ = (int(part) for part in version.split(".")[:2])
-    assert (major, minor) >= (3, 0), f"fastmcp {version} is below the declared >=3.0.2"
+    assert (major, minor) >= (4, 1), f"fastmcp {version} is below the declared >=4.1.5"
 
 
 def test_tool_errors_are_still_distinguishable_from_transport_errors():
@@ -127,12 +102,6 @@ def test_tool_errors_are_still_distinguishable_from_transport_errors():
 
     assert mcp_client._is_tool_error(ToolError("nope")) is True
     assert mcp_client._is_tool_error(RuntimeError("stream closed")) is False
-
-
-# --------------------------------------------------------------------------
-
-# Rows written by an older Studio
-# --------------------------------------------------------------------------
 
 
 def test_a_row_without_use_oauth_is_treated_as_non_oauth():

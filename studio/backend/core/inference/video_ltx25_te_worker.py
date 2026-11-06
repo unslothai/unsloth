@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5 Gemma 4 text encoder, in a spawned worker on the transformers 5.10 sidecar.
-
-The server process runs Studio's default transformers, which has no ``Gemma4UnifiedForConditionalGeneration``. This
-entry point runs in a fresh spawned interpreter: it prepends ``.venv_t5_510`` to ``sys.path`` BEFORE anything imports
-transformers (the same activation the chat / training workers use), loads the encoder and tokenizer from the LTX-2.5
-pack, and answers encode requests with the packed hidden states diffusers' ``LTX2Pipeline._get_gemma_prompt_embeds``
-computes (every hidden state stacked on a last axis and flattened, left padding to ``max_sequence_length``).
-
-Protocol (multiprocessing queues): the worker sends ``{"type": "ready", ...}`` once the model is loaded, then answers
-``{"type": "encode", "id", "prompts", "max_sequence_length"}`` with ``{"type": "embeds", "id", "embeds", "mask"}``
-(host tensors; bf16 ``[B, L, hidden * (layers + 1)]`` and int64 ``[B, L]``); ``{"type": "shutdown"}`` ends it. Any
-failure is ``{"type": "error", "error": "..."}``. Must import nothing heavy at module level.
-"""
+"""LTX-2.5 Gemma 4 encoder worker; prepends .venv_t5_510 to sys.path before any transformers import;
+must import nothing heavy at module level"""
 
 from __future__ import annotations
 
@@ -62,6 +51,7 @@ def _single_file_folder(config: dict) -> str:
         path = hf_hub_download(
             repo,
             name,
+            **({"revision": config["revision"]} if config.get("revision") else {}),
             token = config.get("hf_token") or None,
             cache_dir = config.get("cache_dir") or None,
             local_files_only = bool(config.get("local_files_only")),
@@ -133,6 +123,8 @@ def _load(config: dict) -> tuple[Any, Any]:
         "token": config.get("hf_token") or None,
         "cache_dir": config.get("cache_dir") or None,
         "local_files_only": bool(config.get("local_files_only")),
+        # The load plan's commit for the base, when it pinned one.
+        **({"revision": config["revision"]} if config.get("revision") else {}),
     }
     if config.get("single_file"):
         import shutil
@@ -149,14 +141,31 @@ def _load(config: dict) -> tuple[Any, Any]:
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             repo, subfolder = "tokenizer", **common
         )
-        model = model_cls.from_pretrained(
-            repo, subfolder = "text_encoder", torch_dtype = dtype, **common
-        )
+        model = None
+        if config.get("te_quant") == TE_QUANT_INT8_CONVROT and config.get("te_prequant"):
+            try:
+                model = _load_hosted(config, model_cls, dtype, common)
+                config["_te_source"] = "hosted"
+            except Exception as exc:  # noqa: BLE001 -- the dense encoder quantized at load is the same build
+                _require_room_for_dense(config, exc)
+                print(
+                    f"video.ltx25_te: hosted int8 ConvRot encoder unavailable ({exc}); quantizing the dense "
+                    "encoder at load",
+                    file = sys.stderr,
+                    flush = True,
+                )
+                model = None
+        if model is None:
+            model = _load_dense(config, model_cls, dtype, common)
     model.eval()
     model.requires_grad_(False)
     _truncate_dead_tail(tokenizer, model)
     if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
-        quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
+        if config.get("_te_source") != "hosted":
+            quantize_int8_convrot_(
+                model, config.get("device") or "cpu", bool(config.get("resident"))
+            )
+            config["_te_source"] = "quantized_at_load"
     elif config.get("te_quant"):
         raise RuntimeError(f"unsupported text encoder precision '{config.get('te_quant')}'")
     if config.get("resident"):
@@ -164,10 +173,184 @@ def _load(config: dict) -> tuple[Any, Any]:
     return tokenizer, model
 
 
-# Matches ComfyUI's gemma4 int8-convrot encoder, built from the bf16 weights on disk (no second 15 GB download).
+# Matches ComfyUI's gemma4 int8-convrot encoder. Loaded from the hosted build of this same quantization
+# (scripts/build_ltx25_te_int8_convrot.py) when the server hands one over, else built from the bf16 weights at load.
 TE_QUANT_INT8_CONVROT = "int8"
 CONVROT_GROUP = 256
 _PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def _available_host_bytes() -> Optional[int]:
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001 -- no psutil in this venv
+        pass
+    try:
+        with open("/proc/meminfo", encoding = "utf-8") as fh:
+            for line in fh:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+_DTYPE_SCALE_VS_BF16 = {"float32": 2.0, "float": 2.0, "float64": 4.0, "double": 4.0}
+
+
+def _dense_scale_vs_bf16(dtype: Any) -> float:
+    return _DTYPE_SCALE_VS_BF16.get(
+        str(dtype or "bfloat16").replace("torch.", "").strip().lower(), 1.0
+    )
+
+
+def _require_room_for_dense(config: dict, exc: Exception) -> None:
+    """The load was planned at the hosted file's size: refuse the dense fallback when free memory cannot hold the
+    dense encoder, rather than let the OS kill the process mid-read (on Apple Silicon the same pool as the DiT).
+    ``dense_te_gb`` is bf16; a float32 load (fp16 promoted without bf16) needs twice that."""
+    need = (
+        float(config.get("dense_te_gb") or 0.0)
+        * 1000**3
+        * _dense_scale_vs_bf16(config.get("dtype"))
+    )
+    free = _available_host_bytes()
+    if need and free is not None and free < need:
+        raise RuntimeError(
+            f"The hosted int8 text encoder could not be loaded ({exc}), and quantizing the dense encoder at load "
+            f"needs about {need / 1000**3:.0f} GB of free memory ({free / 1000**3:.0f} GB free)."
+        ) from exc
+
+
+def _load_dense(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
+    """The pack's bf16 encoder. A scoped snapshot whose dense shards the plan dropped for the hosted file has none to
+    open, so a failed read retries the pack's Hub id (``hub_repo``) the way a fresh load would fetch it."""
+    repo, hub_repo = config["repo"], config.get("hub_repo")
+    try:
+        return model_cls.from_pretrained(
+            repo, subfolder = "text_encoder", torch_dtype = dtype, **common
+        )
+    except Exception:
+        # Offline too: a complete dense snapshot may already be cached under the Hub id.
+        if not hub_repo or hub_repo == repo:
+            raise
+    return model_cls.from_pretrained(
+        hub_repo, subfolder = "text_encoder", torch_dtype = dtype, **common
+    )
+
+
+def _hosted_path(spec: dict, common: dict) -> str:
+    mirror = spec.get("mirror_path")
+    if mirror and os.path.isfile(mirror):
+        return mirror
+    from huggingface_hub import hf_hub_download, try_to_load_from_cache
+
+    # ``common`` may pin the BASE repo's commit; the hosted file lives in its own repo, so that revision never applies.
+    kwargs = {k: v for k, v in common.items() if k != "revision"}
+    # The server stages this file with reuse_other_cache_root (hf_hub_download_with_xet_fallback), so a copy cached
+    # only under huggingface_hub's own root counts as staged and the dense shards are dropped. Resolve it the same way,
+    # else a local_files_only load misses it here and has no dense encoder to fall back to.
+    if kwargs.get("cache_dir"):
+        try:
+            here = try_to_load_from_cache(
+                spec["repo"], spec["filename"], cache_dir = kwargs["cache_dir"]
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(spec["repo"], spec["filename"], cache_dir = None)
+                if isinstance(elsewhere, str) and os.path.isfile(elsewhere):
+                    kwargs["cache_dir"] = None
+        except Exception:  # noqa: BLE001 -- an unreadable cache keeps the configured root
+            pass
+    return hf_hub_download(spec["repo"], spec["filename"], **kwargs)
+
+
+def _load_hosted(config: dict, model_cls: Any, dtype: Any, common: dict) -> Any:
+    """The hosted int8 ConvRot encoder: the skeleton meta-initialised from the pack's text_encoder config, every
+    decoder projection swapped for ``Int8ConvRotLinear``, then the file assigned in strictly (the tied lm_head is the
+    one key it lacks, re-tied to the embedding). Raises on any mismatch; the caller falls back to the at-load build."""
+    import torch
+    import transformers
+    from accelerate import init_empty_weights
+    from torch import nn
+
+    from core.inference.prequant_safetensors import load_plain_prequant_safetensors
+    from core.inference.video_ltx25 import LTX25_TE_HOSTED_FORMAT
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class, _meta_tensor_names
+
+    spec = config["te_prequant"]
+    ckpt = load_plain_prequant_safetensors(_hosted_path(spec, common))
+    if ckpt.get("format") != LTX25_TE_HOSTED_FORMAT:
+        raise ValueError(f"not an LTX-2.5 int8 ConvRot encoder (format {ckpt.get('format')!r})")
+    meta = ckpt.get("metadata") or {}
+    quant = meta.get("quant") or {}
+    if str(meta.get("base_model_id") or "").lower() != str(spec.get("base") or "").lower():
+        raise ValueError(f"built from {meta.get('base_model_id')!r}, not {spec.get('base')!r}")
+    if meta.get("scheme") != "int8" or quant.get("group_size") != CONVROT_GROUP:
+        raise ValueError(
+            f"unexpected scheme {meta.get('scheme')!r} / group {quant.get('group_size')!r}"
+        )
+    state_dict = ckpt["state_dict"]
+    for key, tensor in list(state_dict.items()):
+        # The int8 codes and fp32 scales keep their storage; dense tensors follow the load dtype, as from_pretrained.
+        if (
+            tensor.is_floating_point()
+            and not key.endswith(".weight_scale")
+            and tensor.dtype != dtype
+        ):
+            state_dict[key] = tensor.to(dtype)
+    repo, hub_repo = config["repo"], config.get("hub_repo")
+    try:
+        cfg = transformers.AutoConfig.from_pretrained(repo, subfolder = "text_encoder", **common)
+    except Exception:
+        if not hub_repo or hub_repo == repo:
+            raise
+        cfg = transformers.AutoConfig.from_pretrained(hub_repo, subfolder = "text_encoder", **common)
+    previous = torch.get_default_dtype()
+    # from_pretrained(torch_dtype = bf16) builds under the same default, so buffers made in __init__ match it.
+    torch.set_default_dtype(dtype)
+    try:
+        with init_empty_weights(include_buffers = False):
+            model = model_cls(cfg)
+    finally:
+        torch.set_default_dtype(previous)
+    cls = _int8_convrot_linear_class()
+    for layer in _decoder_layers(model):
+        for parent in (getattr(layer, "self_attn", None), getattr(layer, "mlp", None)):
+            if parent is None:
+                continue
+            for name in _PROJECTIONS:
+                linear = getattr(parent, name, None)
+                if isinstance(linear, nn.Linear):
+                    setattr(
+                        parent,
+                        name,
+                        cls(
+                            linear.in_features,
+                            linear.out_features,
+                            linear.bias is not None,
+                            CONVROT_GROUP,
+                        ),
+                    )
+    result = model.load_state_dict(state_dict, strict = False, assign = True)
+    tied = {"lm_head.weight"} if getattr(cfg, "tie_word_embeddings", False) else set()
+    missing = set(result.missing_keys) - tied
+    if missing or result.unexpected_keys:
+        raise ValueError(
+            f"hosted encoder does not match the model: missing {sorted(missing)[:3]}, "
+            f"unexpected {sorted(result.unexpected_keys)[:3]}"
+        )
+    tie = getattr(model, "tie_weights", None)
+    if callable(tie):
+        tie()
+    stranded = _meta_tensor_names(model)
+    if stranded:
+        raise ValueError(f"{len(stranded)} tensor(s) still on the meta device, e.g. {stranded[0]}")
+    swapped = sum(1 for m in model.modules() if isinstance(m, cls))
+    if swapped != int(quant.get("linears") or -1):
+        raise ValueError(
+            f"{swapped} projections swapped, the file quantized {quant.get('linears')}"
+        )
+    return model
 
 
 def _decoder_layers(model: Any) -> Any:
@@ -355,22 +538,225 @@ def _encode_device(
     # MPS shares host memory, so there is no card to keep the encoder off.
     if config.get("resident") or kind not in ("cuda", "xpu"):
         return device
+    need = _weights_mib(model) + ENCODE_MARGIN_MIB
+    room = _encode_room_mib(config, server_reserved_mib)
+    if room is None:
+        return device if kind == "cuda" else "cpu"
+    return device if room >= need else "cpu"
+
+
+def _encode_room_mib(config: dict, server_reserved_mib: Optional[int] = None) -> Optional[int]:
+    """MiB an encode may use on the configured card (see ``_encode_device``), or None when nothing could be read."""
     import torch
 
-    need = _weights_mib(model) + ENCODE_MARGIN_MIB
+    device = str(config["device"])
+    kind = device.split(":", 1)[0]
     room: Optional[int] = None
     try:
-        free, _total = getattr(torch, kind).mem_get_info(torch.device(device))
-        room = free >> 20
+        free, total = getattr(torch, kind).mem_get_info(torch.device(device))
+        share = float(config.get("vram_reserve_share") or 0.0)
+        room = (int(free) - int(int(total) * share)) >> 20
     except Exception:  # noqa: BLE001 -- judged by the budget alone
         pass
     budget = config.get("budget_mib")
     if budget is not None and server_reserved_mib is not None:
         allowed = int(budget) - int(server_reserved_mib) - WORKER_CONTEXT_MIB
         room = allowed if room is None else min(room, allowed)
-    if room is None:
-        return device if kind == "cuda" else "cpu"
-    return device if room >= need else "cpu"
+    return room
+
+
+# Towers a text encode never runs; a streamed encode leaves them on the host.
+_TOWER_TOKENS = ("visual", "vision", "audio")
+
+
+def _tensor_tables(module: Any) -> tuple:
+    return (module._parameters, module._buffers)
+
+
+def _stream_parts(model: Any) -> Optional[tuple[list, list, list]]:
+    """``(resident, containers, layers)`` for a layer-streamed encode, or None when the encoder cannot stream.
+    A module overriding ``_apply`` may keep tensors outside its tables, so it declines streaming."""
+    import torch
+
+    from core.inference.diffusion_te_truncate import is_passthrough
+
+    try:
+        stack = _decoder_layers(model)
+    except Exception:  # noqa: BLE001 -- not the expected Gemma 4 layout
+        return None
+    if not isinstance(model, torch.nn.Module) or not isinstance(stack, torch.nn.ModuleList):
+        return None
+    layers = [m for m in stack if not is_passthrough(m)]
+    if not layers:
+        return None
+    resident: list = []
+    containers: list = []
+
+    def walk(module: Any) -> None:
+        containers.append(module)
+        for name, child in module.named_children():
+            if child is stack or any(token in name.lower() for token in _TOWER_TOKENS):
+                continue
+            if any(m is stack for m in child.modules()):
+                walk(child)
+            else:
+                resident.append(child)
+
+    walk(model)
+    for module in [*containers, *[s for m in (*resident, *layers) for s in m.modules()]]:
+        if type(module)._apply is not torch.nn.Module._apply:
+            return None
+    return resident, containers, layers
+
+
+def _tensors_mib(modules: list, recurse: bool = True) -> int:
+    seen: set = set()
+    total = 0
+    for module in modules:
+        for sub in module.modules() if recurse else (module,):
+            for table in _tensor_tables(sub):
+                for tensor in table.values():
+                    if tensor is None or id(tensor) in seen:
+                        continue
+                    seen.add(id(tensor))
+                    total += tensor.numel() * tensor.element_size()
+    return total >> 20
+
+
+def _stream_need_mib(parts: tuple[list, list, list]) -> int:
+    """Resident modules + two layers (allocator may still hold the last) + the encode margin."""
+    resident, containers, layers = parts
+    biggest = max(_tensors_mib([layer]) for layer in layers)
+    return (
+        _tensors_mib(resident)
+        + _tensors_mib(containers, recurse = False)
+        + 2 * biggest
+        + ENCODE_MARGIN_MIB
+    )
+
+
+def _encode_plan(
+    config: dict,
+    model: Any,
+    server_reserved_mib: Optional[int] = None,
+) -> tuple[str, Optional[tuple[list, list, list]]]:
+    """``(device, parts)``: an encoder too big to onload whole streams its layers (``parts`` set) instead of CPU."""
+    device = _encode_device(config, model, server_reserved_mib)
+    configured = str(config["device"])
+    if device != "cpu" or configured.split(":", 1)[0] not in ("cuda", "xpu"):
+        return device, None
+    if config.get("resident") or (os.environ.get(STREAM_ENCODE_ENV) or "").strip() == "0":
+        return device, None
+    try:
+        parts = _stream_parts(model)
+        if parts is None:
+            return device, None
+        room = _encode_room_mib(config, server_reserved_mib)
+        if room is None or room < _stream_need_mib(parts):
+            return device, None
+    except Exception:  # noqa: BLE001 -- any doubt keeps the CPU encode
+        return device, None
+    return configured, parts
+
+
+def _stream_need_mib_or_none(config: dict, model: Any) -> Optional[int]:
+    """``_encode_plan``'s streamed need, or None when this encoder never streams."""
+    if config.get("resident") or (os.environ.get(STREAM_ENCODE_ENV) or "").strip() == "0":
+        return None
+    if str(config.get("device") or "").split(":", 1)[0] not in ("cuda", "xpu"):
+        return None
+    try:
+        parts = _stream_parts(model)
+        return None if parts is None else _stream_need_mib(parts)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return None
+
+
+# "0" turns the layer-streamed encode off (a card too small for the whole encoder then encodes on the CPU again).
+STREAM_ENCODE_ENV = "UNSLOTH_LTX25_TE_STREAM"
+
+
+class _Onload:
+    """Moves the tensors of some modules to a device and back. Parameters keep their identity (``.data`` swaps, so a
+    tied weight moves once); the host tensors are kept and restored, so returning costs no copy."""
+
+    def __init__(self, device: Any) -> None:
+        self.device = device
+        self.saved: list = []
+        self.moved: dict = {}
+
+    def add(
+        self,
+        modules: list,
+        recurse: bool = True,
+    ) -> None:
+        import torch
+        for module in modules:
+            for sub in module.modules() if recurse else (module,):
+                for table in _tensor_tables(sub):
+                    for key, tensor in list(table.items()):
+                        if tensor is None:
+                            continue
+                        if isinstance(tensor, torch.nn.Parameter):
+                            if id(tensor) not in self.moved:
+                                self.moved[id(tensor)] = tensor
+                                self.saved.append((tensor, None, None, tensor.data))
+                                tensor.data = tensor.data.to(self.device, copy = True)
+                            continue
+                        moved = self.moved.get(id(tensor))
+                        if moved is None:
+                            moved = tensor.to(self.device, copy = True)
+                            self.moved[id(tensor)] = moved
+                        self.saved.append((None, table, key, tensor))
+                        table[key] = moved
+
+    def restore(self) -> None:
+        while self.saved:
+            param, table, key, original = self.saved.pop()
+            if param is not None:
+                param.data = original
+            else:
+                table[key] = original
+        self.moved.clear()
+
+
+def _streamed(parts: tuple[list, list, list], device: str) -> Any:
+    """Context: the resident modules on ``device`` for the encode, each decoder layer only while it runs."""
+    import contextlib
+
+    resident, containers, layers = parts
+
+    @contextlib.contextmanager
+    def _ctx():
+        base = _Onload(device)
+        handles: list = []
+        live: dict = {}
+        try:
+            base.add(resident)
+            base.add(containers, recurse = False)
+
+            def before(module: Any, _args: Any) -> None:
+                onload = _Onload(device)
+                live[id(module)] = onload
+                onload.add([module])
+
+            def after(module: Any, _args: Any, _output: Any) -> None:
+                onload = live.pop(id(module), None)
+                if onload is not None:
+                    onload.restore()
+
+            for layer in layers:
+                handles.append(layer.register_forward_pre_hook(before))
+                handles.append(layer.register_forward_hook(after, always_call = True))
+            yield
+        finally:
+            for handle in handles:
+                handle.remove()
+            for onload in live.values():
+                onload.restore()
+            base.restore()
+
+    return _ctx()
 
 
 def _memory_stats(device: str) -> dict:
@@ -397,10 +783,11 @@ def _memory_stats(device: str) -> dict:
 
 
 def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
-    """``LTX2Pipeline._get_gemma_prompt_embeds``: every hidden state stacked on a last axis, flattened."""
+    """``LTX2Pipeline._get_gemma_prompt_embeds``: every hidden state stacked on a last axis, flattened. No KV cache:
+    the encoder config sets ``use_cache``, which would build and hold a DynamicCache this single forward never reads."""
     import torch
 
-    out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True)
+    out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True, use_cache = False)
     return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
 
 
@@ -449,7 +836,7 @@ def _encode_on(
     import torch
 
     resident = bool(config.get("resident"))
-    device = _encode_device(config, model, server_reserved_mib)
+    device, stream = _encode_plan(config, model, server_reserved_mib)
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -461,11 +848,15 @@ def _encode_on(
         add_special_tokens = True,
         return_tensors = "pt",
     )
-    onloaded = not resident and device != "cpu"
+    config["_streamed"] = stream is not None
+    onloaded = not resident and device != "cpu" and stream is None
     if onloaded:
         model.to(device)
     try:
-        with torch.inference_mode():
+        with (
+            _streamed(stream, device) if stream is not None else _no_context(),
+            torch.inference_mode(),
+        ):
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
@@ -482,6 +873,11 @@ def _encode_on(
         if accel is not None and accel.is_available():
             accel.empty_cache()
     return embeds_host, mask_host, device
+
+
+def _no_context() -> Any:
+    import contextlib
+    return contextlib.nullcontext()
 
 
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
@@ -502,7 +898,11 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                 ),
                 "resident": bool(config.get("resident")),
                 "te_quant": config.get("te_quant") or None,
+                # "hosted" (the unsloth file), "quantized_at_load" (built from the dense encoder) or None (bf16).
+                "te_source": config.get("_te_source"),
                 "weights_mib": _weights_mib_or_none(model),
+                # video_ltx25.lend_resident_dit_for_encode lends resident denoiser blocks up to this.
+                "stream_need_mib": _stream_need_mib_or_none(config, model),
                 **_memory_stats(config.get("device") or ""),
             }
         )
@@ -511,6 +911,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
             {
                 "type": "error",
                 "error": f"LTX-2.5 text encoder failed to load: {exc}",
+                "cache_miss": isinstance(exc, OSError) or isinstance(exc.__cause__, OSError),
                 "stack": traceback.format_exc(limit = 20),
             }
         )
@@ -538,6 +939,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "embeds": embeds,
                     "mask": mask,
                     "device": device,
+                    "streamed": bool(config.get("_streamed")),
                     **_memory_stats(config.get("device") or ""),
                 }
             )

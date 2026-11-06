@@ -11,6 +11,7 @@ const { store } = installLocalStorageFake();
 const {
   PLUS_MENU_ORDER,
   PLUS_MENU_PINS_STORAGE_KEY,
+  keepSavedSlot,
   normalizePlusMenuOrder,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
@@ -86,7 +87,38 @@ test("dragging a chat menu row stays inside the list and saves the order once, o
   // Swaps go to a local draft; the persisted store (read by both + menus) only takes the drop.
   assert.match(src, /onReorder=\{\(ids: PlusMenuItemId\[\]\) => setDraft\(ids\)\}/);
   assert.match(src, /onDragEnd=\{onDrop\}/);
-  assert.match(src, /if \(draftRef\.current\) \{\s*setOrder\(draftRef\.current\);/);
+  assert.match(src, /if \(draftRef\.current\) \{\s*setOrder\(withFixed\(draftRef\.current\)\);/);
   // layoutScroll on the settings pane would double-count its scroll against the constraints.
   assert.ok(!readSrc("features/settings/settings-dialog.tsx").includes("layoutScroll"));
+});
+
+test("a pinned Deep research sits right under Tools, not with the other pinned items", () => {
+  const src = readSrc("components/assistant-ui/thread.tsx");
+  const tools = src.indexOf("          Tools\n");
+  const research = src.indexOf("{deepResearchWithTools ? plusMenuNodes.deepResearch : null}");
+  const separator = src.indexOf("<DropdownMenuSeparator />", tools);
+  assert.ok(tools > 0 && research > tools && research < separator, "Deep research is not between Tools and the separator");
+  assert.match(src, /pinnedPlusItems\s*\.filter\(\(id\) => id !== "deepResearch"\)/);
+});
+
+test("Settings shows Deep research under Tools with a switch and no drag handle", () => {
+  const src = readSrc("features/settings/components/chat-menu-order-list.tsx");
+  const tools = src.indexOf('label={t("settings.chat.menu.tools")}');
+  const row = src.indexOf("<ToggleRow id={FIXED_TOGGLE}");
+  assert.ok(tools > 0 && row > tools && row < src.indexOf("border-t", row), "Deep research is not under Tools");
+  const toggle = src.slice(src.indexOf("function ToggleRow"), src.indexOf("function MovableRow"));
+  assert.ok(toggle.includes("<Switch") && !toggle.includes("DragDropVerticalIcon"));
+  // It never joins the draggable list, and a drop or arrow key keeps it in the saved order.
+  assert.match(src, /\.filter\(\(id\) => id !== FIXED_TOGGLE\)/);
+  assert.match(src, /setOrder\(withFixed\(next\)\)/);
+});
+
+test("moving another row keeps Deep research where it was in More, not at the top", () => {
+  const saved = ["chatWithFiles", "browserUse", "deepResearch", "mcp", "skills"] as const;
+  // Skills dragged to the top; the list it comes from never shows Deep research.
+  const moved = keepSavedSlot(["skills", "chatWithFiles", "browserUse", "mcp"], [...saved], "deepResearch");
+  assert.deepEqual(moved, ["skills", "chatWithFiles", "deepResearch", "browserUse", "mcp"]);
+  // A saved slot past the end of the list lands at its end; an order without it puts it first.
+  assert.deepEqual(keepSavedSlot(["mcp"], ["mcp", "skills", "deepResearch"], "deepResearch"), ["mcp", "deepResearch"]);
+  assert.deepEqual(keepSavedSlot(["mcp"], ["mcp"], "deepResearch"), ["deepResearch", "mcp"]);
 });

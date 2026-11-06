@@ -98,6 +98,7 @@ def _gpu_record_helpers(source: str) -> str:
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
             "_amd_prefer_discrete_gfx",
+            "_hsa_override_gfx_arch",
             "_amd_gfx_is_shadowing_integrated",
             "_amd_gfx_has_wheel_route",
             "_amd_arch_index_family_for_gfx",
@@ -4260,7 +4261,7 @@ class TestWindowsRocmWarning:
     def test_windows_amd_warning_has_docs_link(self):
         """Warning should include AMD docs link."""
         source = _STACK_PATH.read_text(encoding = "utf-8")
-        assert "docs.unsloth.ai/get-started/install-and-update/amd" in source
+        assert "unsloth.ai/docs/get-started/install/amd" in source
 
 
 class TestIsRdnaExpansion:
@@ -5701,9 +5702,16 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
-            patch.object(stack_mod, "NO_TORCH", no_torch),
+            # The mocked subprocess writes no wheel metadata, so the no-torch pair probe (#16157)
+            # would find nothing; model a feed that serves a compatible Unsloth / Zoo pair.
+            # One patch for both: this with statement is at Python's 20 nested block limit.
+            patch.multiple(
+                stack_mod,
+                NO_TORCH = no_torch,
+                _no_torch_pair = MagicMock(return_value = ("2026.11.1", "2026.11.1", 0)),
+            ),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
-            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),
@@ -6440,7 +6448,9 @@ class TestStrixRocm71Override:
             r"^_infer_amd_gfx_arch_from_gpu_name\(\) \{\n.*?\n\}\n", source, re.S | re.M
         )
         scan = re.search(
-            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n    return 1\n", source, re.S | re.M
+            r"^    if command -v lspci[^\n]*\n.*?\nEOF\n    fi\n.*?    return 1\n",
+            source,
+            re.S | re.M,
         )
         assert name_fn and scan, "could not extract the lspci scan block"
         cases = (

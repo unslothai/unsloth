@@ -4,10 +4,8 @@
 // Import-free so it is testable: app-sidebar.tsx pulls in the whole shell.
 
 /**
- * Sidebar clicks: drop one on where the router is or is heading; while the entry the last
- * click pushed has not rendered, send the next at once as a replace, so the router cancels
- * the stale load and a burst leaves one history entry. Only that entry: Back/Forward onto a
- * slow page, or a navigation still held by a blocker (unsaved Library note), keeps its entry.
+ * Coalesces sidebar clicks: while the last pushed entry has not rendered, the next goes out as a
+ * replace so a burst leaves one history entry.
  */
 export function createNavigationCoalescer<T>({
   navigate,
