@@ -298,18 +298,54 @@ test("settled mode keeps today's paths: no live subscription in the meter, the l
   assert.match(hook, /throttle\.cancel\(\)/);
 });
 
-test("the toggle sits after Generation details, is searchable, and is translated in every locale", async () => {
-  const tab = readSrc("features/settings/tabs/chat-tab.tsx");
-  const details = tab.indexOf('t("settings.chat.showGenerationDetails")');
-  const stats = tab.indexOf('t("settings.chat.generationStatsUpdates")');
-  assert.ok(details !== -1 && stats > details);
-  assert.match(tab, /GENERATION_STATS_UPDATES\.map\(\(mode\) =>/);
-  assert.match(tab, /onClick=\{\(\) => setGenerationStatsUpdates\(mode\)\}/);
+test("one toggle row sits in Chat defaults and System > Live monitor, is searchable, and is translated in every locale", async () => {
+  const row = readSrc(
+    "features/settings/components/generation-stats-updates-row.tsx",
+  );
+  assert.match(row, /GENERATION_STATS_UPDATES\.map\(\(mode\) =>/);
+  assert.match(row, /onClick=\{\(\) => setGenerationStatsUpdates\(mode\)\}/);
+  const chat = readSrc("features/settings/tabs/chat-tab.tsx");
+  const defaults = chat.slice(
+    chat.indexOf(
+      '<SettingsSection title={t("settings.general.chatDefaults")}>',
+    ),
+    chat.indexOf(
+      '<SettingsSection title={t("settings.chat.groups.conversations.title")}>',
+    ),
+  );
+  assert.match(defaults, /<GenerationStatsUpdatesRow \/>/);
+  assert.equal(
+    chat.match(/<GenerationStatsUpdatesRow \/>/g)?.length,
+    1,
+    "only once on the Chat tab",
+  );
+  assert.doesNotMatch(
+    chat,
+    /generationStatsUpdates/,
+    "the Chat tab renders the shared row, not its own copy",
+  );
+  const system = readSrc("features/settings/tabs/resources-tab.tsx");
+  const monitor = system.slice(
+    system.indexOf(
+      '<SettingsSection title={t("settings.resources.liveMonitor.title")}>',
+    ),
+    system.indexOf(
+      '<SettingsSection title={t("settings.resources.gpu.title")}>',
+    ),
+  );
+  assert.match(monitor, /<GenerationStatsUpdatesRow \/>/);
   const search = readSrc("features/settings/settings-search.ts");
   assert.match(
     search,
     /"settings\.chat\.generationStatsUpdates": "settings\.chat\.generationStatsUpdatesKeywords"/,
   );
+  const index = (tab: string) =>
+    search.slice(
+      search.indexOf(`  ${tab}: [`),
+      search.indexOf("],", search.indexOf(`  ${tab}: [`)),
+    );
+  assert.match(index("chat"), /"settings\.chat\.generationStatsUpdates"/);
+  assert.match(index("resources"), /"settings\.chat\.generationStatsUpdates"/);
 
   const keys = [
     "generationStatsUpdates",

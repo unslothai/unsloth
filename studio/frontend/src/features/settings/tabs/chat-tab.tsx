@@ -22,7 +22,6 @@ import {
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
-import { GENERATION_STATS_UPDATES } from "@/features/chat/lib/live-generation-stats";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
@@ -58,6 +57,7 @@ import {
 } from "../api/tool-result-limit";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
 import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
+import { GenerationStatsUpdatesRow } from "../components/generation-stats-updates-row";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
@@ -377,12 +377,6 @@ export function ChatTab() {
   const setShowGenerationDetails = useChatPreferencesStore(
     (state) => state.setShowGenerationDetails,
   );
-  const generationStatsUpdates = useChatPreferencesStore(
-    (state) => state.generationStatsUpdates,
-  );
-  const setGenerationStatsUpdates = useChatPreferencesStore(
-    (state) => state.setGenerationStatsUpdates,
-  );
   const autoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.autoScrollWhileGenerating,
   );
@@ -543,82 +537,9 @@ export function ChatTab() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.autoCompact")}
-          description={t("settings.chat.autoCompactDescription")}
-          hint={t("settings.chat.autoCompactHint")}
-        >
-          <Switch
-            aria-label={t("settings.chat.autoCompact")}
-            checked={autoCompactEnabled}
-            onCheckedChange={setAutoCompactEnabled}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.keepRunningWhenTabClosed")}
-          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
-          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
-        >
-          <Switch
-            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
-            checked={keepRunningWhenTabClosed}
-            onCheckedChange={setKeepRunningWhenTabClosed}
-          />
-        </SettingsRow>
+        <GenerationStatsUpdatesRow />
         {isOwner ? <ToolResultLimitRow /> : null}
         {isOwner ? <FirstTokenTimeoutRow /> : null}
-        <SettingsRow
-          label={t("settings.chat.autoScroll")}
-          description={t("settings.chat.autoScrollDescription")}
-        >
-          <div
-            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-            role="group"
-            aria-label={t("settings.chat.autoScroll")}
-          >
-            {([true, false] as const).map((follow) => (
-              <button
-                key={String(follow)}
-                type="button"
-                aria-pressed={autoScrollWhileGenerating === follow}
-                onClick={() => setAutoScrollWhileGenerating(follow)}
-                className={cn(
-                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  autoScrollWhileGenerating === follow
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {autoScrollWhileGenerating === follow && (
-                  <SegmentedPill group={`${pillId}-auto-scroll`} />
-                )}
-                {t(
-                  follow
-                    ? "settings.chat.autoScrollAuto"
-                    : "settings.chat.autoScrollManual",
-                )}
-              </button>
-            ))}
-          </div>
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.replyNotification")}
-          description={t("settings.chat.replyNotificationDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.replyNotification")}
-            checked={notifyWhenReplyFinishes}
-            onCheckedChange={(checked) => {
-              setNotifyWhenReplyFinishes(checked);
-              if (!checked) return;
-              void requestReplyFinishedPermission().then((granted) => {
-                if (granted) return;
-                setNotifyWhenReplyFinishes(false);
-                toast.error(t("settings.chat.replyNotificationBlocked"));
-              });
-            }}
-          />
-        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -675,6 +596,80 @@ export function ChatTab() {
             aria-label={t("settings.general.autoTitleNewChats")}
             checked={autoTitle}
             onCheckedChange={setAutoTitle}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoCompact")}
+          description={t("settings.chat.autoCompactDescription")}
+          hint={t("settings.chat.autoCompactHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.autoCompact")}
+            checked={autoCompactEnabled}
+            onCheckedChange={setAutoCompactEnabled}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.keepRunningWhenTabClosed")}
+          description={t("settings.chat.keepRunningWhenTabClosedDescription")}
+          hint={t("settings.chat.keepRunningWhenTabClosedHint")}
+        >
+          <Switch
+            aria-label={t("settings.chat.keepRunningWhenTabClosed")}
+            checked={keepRunningWhenTabClosed}
+            onCheckedChange={setKeepRunningWhenTabClosed}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.autoScroll")}
+          description={t("settings.chat.autoScrollDescription")}
+        >
+          <div
+            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+            role="group"
+            aria-label={t("settings.chat.autoScroll")}
+          >
+            {([true, false] as const).map((follow) => (
+              <button
+                key={String(follow)}
+                type="button"
+                aria-pressed={autoScrollWhileGenerating === follow}
+                onClick={() => setAutoScrollWhileGenerating(follow)}
+                className={cn(
+                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                  autoScrollWhileGenerating === follow
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {autoScrollWhileGenerating === follow && (
+                  <SegmentedPill group={`${pillId}-auto-scroll`} />
+                )}
+                {t(
+                  follow
+                    ? "settings.chat.autoScrollAuto"
+                    : "settings.chat.autoScrollManual",
+                )}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
           />
         </SettingsRow>
       </SettingsSection>
@@ -808,41 +803,6 @@ export function ChatTab() {
             checked={showGenerationDetails}
             onCheckedChange={setShowGenerationDetails}
           />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.generationStatsUpdates")}
-          description={t("settings.chat.generationStatsUpdatesDescription")}
-        >
-          <div
-            className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-            // biome-ignore lint/a11y/useSemanticElements: matches Scroll while generating; a fieldset's default box would break the pill row.
-            role="group"
-            aria-label={t("settings.chat.generationStatsUpdates")}
-          >
-            {GENERATION_STATS_UPDATES.map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={generationStatsUpdates === mode}
-                onClick={() => setGenerationStatsUpdates(mode)}
-                className={cn(
-                  "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                  generationStatsUpdates === mode
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {generationStatsUpdates === mode && (
-                  <SegmentedPill group={`${pillId}-generation-stats`} />
-                )}
-                {t(
-                  mode === "realtime"
-                    ? "settings.chat.generationStatsUpdatesRealtime"
-                    : "settings.chat.generationStatsUpdatesSettled",
-                )}
-              </button>
-            ))}
-          </div>
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.inlineEditResponse")}
