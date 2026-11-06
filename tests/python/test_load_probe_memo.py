@@ -2,14 +2,47 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import json
+import os
+import sys
 
 import pytest
+import torch
 
 import unsloth
 import peft
 import transformers
 
 from unsloth.models import loader_utils
+
+
+def _lora_forwards():
+    return {
+        cls: vars(cls)["forward"]
+        for name, module in list(sys.modules.items())
+        if name.startswith("peft.tuners.lora") and module is not None
+        for cls in vars(module).values()
+        if isinstance(cls, type)
+        and issubclass(cls, torch.nn.Module)
+        and cls.__module__.startswith("peft.")
+        and "forward" in vars(cls)
+    }
+
+
+@pytest.fixture(autouse = True)
+def _undo_process_wide_load_patches():
+    """FastModel.from_pretrained swaps PEFT's LoRA forwards and sets UNSLOTH_* variables for the whole process. Put
+    both back, or a later test in the same xdist worker runs on Unsloth's LoRA forward without asking for it."""
+    env = {k: v for k, v in os.environ.items() if k.startswith("UNSLOTH_")}
+    forwards = _lora_forwards()
+    yield
+    for cls, forward in _lora_forwards().items():
+        # A PEFT module first imported during the load has no entry; fall back to the forward Unsloth wrapped.
+        original = forwards.get(cls, getattr(forward, "_unsloth_original_forward", forward))
+        if forward is not original:
+            cls.forward = original
+    for key in [k for k in os.environ if k.startswith("UNSLOTH_") and k not in env]:
+        del os.environ[key]
+    os.environ.update(env)
 
 
 def _save_tiny(tmp_path, name, config):
