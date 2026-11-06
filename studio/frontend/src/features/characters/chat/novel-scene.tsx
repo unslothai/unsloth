@@ -54,7 +54,10 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
     <>
       <NovelBackdrop wallpaper={wallpaper} />
       <section
-        className="novel-figures pointer-events-none absolute inset-x-0 bottom-[34%] top-14 z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12"
+        className={cn(
+          "novel-figures pointer-events-none absolute inset-x-0 bottom-[34%] top-14 z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12",
+          cast.length === 1 && "novel-figures-solo",
+        )}
         aria-label={t("characters.chat.viewNovel")}
         data-testid="character-novel"
       >
