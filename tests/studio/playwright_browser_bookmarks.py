@@ -18,8 +18,7 @@ SECOND = "https://bookmark.test/followed"
 
 
 def follow_link(panel, address, content):
-    # On a loaded Windows runner the click into the nested page sometimes never reaches the panel and the
-    # tab stays on the typed page. Click again only while it is still there, so a slow navigation is not doubled.
+    # Retry only while still on FIRST, avoiding a doubled slow navigation on loaded Windows runners.
     link = content.get_by_role("link", name = "Follow link")
     for attempt in range(3):
         link.click()
@@ -73,8 +72,13 @@ def check_page(browser, session, action, followed):
         address = panel.get_by_role("textbox", name = "Search or enter a URL")
         address.fill(FIRST)
         address.press("Enter")
-        shell = panel.locator('iframe[src*="/api/browser/frame"]')
-        content = panel.frame_locator('iframe[src*="/api/browser/frame"]').frame_locator("iframe")
+        selector = (
+            '[data-browser-scope-tab]:not([inert]) iframe[src*="/api/browser/frame"], '
+            '[role="region"][aria-label="Browser"] iframe[src*="/api/browser/frame"]'
+        )
+        shell = page.locator(selector)
+        expect(shell).to_have_count(1)
+        content = page.frame_locator(selector).frame_locator("iframe")
         expect(content.get_by_role("link", name = "Follow link")).to_be_visible()
         if followed:
             follow_link(panel, address, content)
