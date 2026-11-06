@@ -53,6 +53,7 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
+import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -606,9 +607,7 @@ export const ModelInspector = memo(function ModelInspector({
       : undefined;
   // A precision folder downloads as it loads, so it need not be on device.
   const isMlx =
-    !model.isGguf &&
-    (model.libraryName?.toLowerCase() === "mlx" ||
-      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
