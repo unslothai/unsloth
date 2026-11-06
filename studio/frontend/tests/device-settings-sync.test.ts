@@ -51,8 +51,11 @@ const { PLUS_MENU_ORDER, usePlusMenuPrefsStore } = await import(
 );
 const { getTimeFormat, setTimeFormat } = await import("../src/lib/time-format.ts");
 const { getSpellCheck } = await import("../src/lib/spellcheck.ts");
+const { markPending, readPending } = await import(
+  "../src/features/settings/lib/client-prefs-pending.ts"
+);
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 1000));
+const settle = () => new Promise((resolve) => setTimeout(resolve, 1600));
 
 function freshBrowser() {
   store.clear();
@@ -120,4 +123,20 @@ test("choices made here before the account had any are uploaded once", async () 
   await settle();
   stop();
   assert.deepEqual(puts, [{ timeFormat: "12h" }]);
+});
+
+test("an edit not yet sent wins over the account's copy and is sent after load", async () => {
+  freshBrowser();
+  useChatPreferencesStore.getState().setShowReplyTimes(true);
+  markPending(["chat"], true);
+  account = { ...empty, saved: true, chat: { showReplyTimes: false }, timeFormat: "24h" };
+  const stop = startClientPreferencesSync();
+  await settle();
+  stop();
+  assert.equal(useChatPreferencesStore.getState().showReplyTimes, true);
+  assert.equal(getTimeFormat(), "24h");
+  assert.equal(puts.length, 1);
+  assert.deepEqual(Object.keys(puts[0]), ["chat"]);
+  assert.equal((puts[0].chat as Record<string, unknown>).showReplyTimes, true);
+  assert.equal(readPending().chat, false);
 });

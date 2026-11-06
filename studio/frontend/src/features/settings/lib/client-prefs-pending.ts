@@ -13,7 +13,8 @@ export const PENDING_SECTIONS = [
   "spellcheck",
 ] as const;
 
-export type Pending = Record<(typeof PENDING_SECTIONS)[number], boolean>;
+export type PendingSection = (typeof PENDING_SECTIONS)[number];
+export type Pending = Record<PendingSection, boolean>;
 
 const pendingKey = () => accountDatabaseName("unsloth_client_prefs_pending");
 
@@ -22,6 +23,7 @@ export function readPending(): Pending {
   try {
     saved = JSON.parse(localStorage.getItem(pendingKey()) ?? "{}");
   } catch {
+    // nothing pending
   }
   return Object.fromEntries(
     PENDING_SECTIONS.map((section) => [section, saved?.[section] === true]),
@@ -36,5 +38,13 @@ export function writePending(pending: Pending): void {
       localStorage.removeItem(pendingKey());
     }
   } catch {
+    // storage unavailable
   }
+}
+
+// Re-read first: other tabs of this account share the marker.
+export function markPending(sections: readonly PendingSection[], value: boolean): void {
+  const pending = readPending();
+  for (const section of sections) pending[section] = value;
+  writePending(pending);
 }

@@ -15,7 +15,7 @@ Object.assign(globalThis, {
   window: { localStorage, location: { protocol: "http:", host: "127.0.0.1", hostname: "127.0.0.1", pathname: "/", href: "" } },
 });
 
-const { readPending, writePending } = await import(
+const { markPending, readPending, writePending } = await import(
   "../src/features/settings/lib/client-prefs-pending.ts"
 );
 
@@ -42,4 +42,15 @@ test("a corrupt marker reads as nothing pending", () => {
   const [key] = [...store.keys()];
   store.set(key, "{");
   assert.deepEqual(readPending(), none);
+});
+
+test("one tab's pending flags survive another tab marking or clearing its own", () => {
+  writePending(none);
+  markPending(["chat"], true);
+  markPending(["scale"], true);
+  assert.deepEqual(readPending(), { ...none, chat: true, scale: true });
+  markPending(["scale"], false);
+  assert.deepEqual(readPending(), { ...none, chat: true });
+  markPending(["chat"], false);
+  assert.equal(store.size, 0);
 });

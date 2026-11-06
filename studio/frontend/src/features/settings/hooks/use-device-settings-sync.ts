@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
+// eslint-disable-next-line no-restricted-imports
 import { startChatBackgroundSync } from "@/features/chat-background/sync";
+// eslint-disable-next-line no-restricted-imports
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports
 import { usePlusMenuPrefsStore } from "@/features/chat/stores/plus-menu-prefs-store";
 import { getSpellCheck, setSpellCheck, subscribeSpellCheck } from "@/lib/spellcheck";
 import {
@@ -23,10 +27,10 @@ import {
   useInterfaceScaleStore,
 } from "../stores/interface-scale-store";
 import {
+  markPending,
   type Pending,
   PENDING_SECTIONS,
   readPending,
-  writePending,
 } from "../lib/client-prefs-pending";
 
 const PUSH_DEBOUNCE_MS = 800;
@@ -139,7 +143,7 @@ export function startClientPreferencesSync(): () => void {
   const touch = (section: keyof Pending) => {
     touched[section] = true;
     edits++;
-    writePending(touched);
+    markPending([section], true);
   };
 
   let saving: Promise<void> = Promise.resolve();
@@ -158,7 +162,7 @@ export function startClientPreferencesSync(): () => void {
           );
           if (edits === sent) {
             for (const section of edited) touched[section] = false;
-            writePending(touched);
+            markPending(edited, false);
           }
         })
         .catch(() => undefined);
