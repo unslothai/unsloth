@@ -104,7 +104,6 @@ def test_custom_template_reading_sharegpt_keys_keeps_working():
 
 @pytest.mark.parametrize("name", ["llama-3.1", "chatml"])
 def test_mapping_that_keeps_the_role_key_still_renames_role_values(name):
-    # {"role": "human"} reuses the standard key, so only the role values need mapping.
     mapping = {"role": "role", "content": "content", "user": "human", "assistant": "gpt"}
     renamed = [{"role": SHAREGPT_ROLES[role], "content": text} for role, text in CONVERSATION]
     role_content = [{"role": role, "content": text} for role, text in CONVERSATION]
