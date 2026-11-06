@@ -19,6 +19,18 @@ requires_sqlite_vec = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse = True)
+def _forget_pending_marker():
+    # The resolution memo is process-wide: a pending marker left here would make later llama-server tests cache-only.
+    from utils import embedding_model_settings as ems
+
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+    yield
+    ems._resolved_gguf_memo.clear()
+    ems._invalidate_cache()
+
+
 def _run(folder_id: str, *, rebuild: bool = False) -> dict:
     job_id = folder_sync.request_sync(folder_id, rebuild = rebuild)
     folder_sync.reconcile_folder(job_id)
@@ -156,11 +168,11 @@ def test_sync_waits_for_a_pending_download_instead_of_failing_every_file(
 
     assert waiting["status"] == "failed"
     assert waiting["failed"] == 0
-    assert "is still downloading" in waiting["error"]
+    assert "is not downloaded yet" in waiting["error"]
     assert started == []
     row = _folder_row(folder["id"])
     assert row["status"] == "error"
-    assert "is still downloading" in row["last_error"]
+    assert "is not downloaded yet" in row["last_error"]
     assert row["failed_files"] is None
     assert _mapped(folder["id"]) == set()
 
@@ -192,7 +204,7 @@ def test_rebuild_during_a_pending_download_keeps_the_index(
     rebuild = _run(folder["id"], rebuild = True)
 
     assert rebuild["status"] == "failed"
-    assert "is still downloading" in rebuild["error"]
+    assert "is not downloaded yet" in rebuild["error"]
     assert _mapped(folder["id"]) == {"a.md", "b.md"}
 
 

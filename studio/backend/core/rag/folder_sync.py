@@ -1687,9 +1687,10 @@ def _reconcile_folder(job_id: str) -> None:
         known_failed.get(rel, {}).get("sig") != _failure_signature(current[rel]) for rel in work
     ) and embeddings.download_required(embedding_model):
         # One job-level wait, not every file failing the same check; the periodic sync resumes it.
-        error = (
-            f"The embedding model {embedding_model!r} is still downloading. "
-            "Indexing starts once its Settings download finishes."
+        error = f"The embedding model {embedding_model!r} is not downloaded yet. " + (
+            "Indexing starts on its own once its Settings download finishes."
+            if folder.get("auto_sync")
+            else "Sync again once its Settings download finishes."
         )
         _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
         with closing(rag_db.get_connection()) as conn:

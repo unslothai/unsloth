@@ -152,16 +152,12 @@ def download_required_message(name: str) -> str:
 
 
 def is_download_required_error(error: str | None) -> bool:
-    """Whether a stored error text is an EmbeddingModelDownloadRequiredError, i.e. a wait, not a bad file."""
+    """A stored error text from EmbeddingModelDownloadRequiredError: a wait, not a bad file."""
     return bool(error) and DOWNLOAD_REQUIRED_HINT in error
 
 
 def download_required(model_name: str | None = None) -> bool:
-    """True while ``model_name``'s Settings transfer is pending and its weights are not loadable yet.
-
-    Cheap when no transfer is pending. Otherwise it asks the loader, which is cache-only while the marker is set
-    and retires it once the cache is complete, so a finished transfer reads False here and stays loaded.
-    """
+    """True while ``model_name``'s Settings transfer is pending and the cache-only loader still cannot load it."""
     name = model_name or config.effective_embedding_model()
     try:
         from utils.embedding_model_settings import get_stored_download_pending
