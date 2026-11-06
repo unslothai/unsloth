@@ -22,11 +22,11 @@ const config = await (await fetch("/inline-fixture/config")).json();
 storeAuthTokens("inline-image-fixture", "inline-image-fixture");
 const adapter = { async *run() {} };
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(predicate, timeout = 5000) {
+async function until(predicate, timeout = 5000, describe = () => "") {
 	const start = performance.now();
 	while (!predicate()) {
 		if (performance.now() - start > timeout)
-			throw new Error("Condition timed out");
+			throw new Error(`Condition timed out ${describe()}`.trim());
 		await pause(20);
 	}
 }
@@ -47,6 +47,7 @@ function App() {
 	const [status, setStatus] = React.useState("Ready");
 	const [results, setResults] = React.useState([]);
 	async function run() {
+		let loadGraceMs = 30000;
 		const checks = [];
 		const unsupportedFormats = [];
 		const show = (next) =>
@@ -74,7 +75,23 @@ function App() {
 			await fetch("/inline-fixture/requests", { method: "DELETE" });
 		}
 		async function loaded(width = 32) {
-			await until(() => image()?.complete && image()?.naturalWidth === width);
+			// Firefox on windows-latest has timed out the first non-Latin filename at 5 s while the other browsers
+			// and filenames passed. A slow load may borrow up to 10 s from a 30 s grace shared by the whole run, so a
+			// run where every load fails still reports before the harness stops waiting. On a timeout, say whether
+			// the image was missing, slow or wrong.
+			const start = performance.now();
+			await until(
+				() => image()?.complete && image()?.naturalWidth === width,
+				5000 + Math.max(0, Math.min(loadGraceMs, 10000)),
+				() => {
+					const img = image();
+					return img
+						? `(complete=${img.complete} naturalWidth=${img.naturalWidth} src=${img.currentSrc.slice(0, 40)})`
+						: "(no image)";
+				},
+			).finally(() => {
+				loadGraceMs -= Math.max(0, performance.now() - start - 5000);
+			});
 			assert(
 				image().currentSrc.startsWith("blob:"),
 				"Sandbox image did not use a blob URL",
