@@ -1288,7 +1288,6 @@ class LlamaServerBackend:
             return n
 
         def _count_batch(keys: list[str]) -> list[int] | None:
-            """None when this server cannot batch."""
             try:
                 data = self._post(
                     "/tokenize",
