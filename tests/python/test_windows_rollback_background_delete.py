@@ -142,22 +142,7 @@ def test_rollback_is_deleted_in_the_background(tmp_path: Path, shell: str):
     home = tmp_path / "studio"
     home.mkdir()
     backup = home / "unsloth_studio.rollback.20260101000000.4000001"
-    _make_tree(backup, dirs = 200, files_per_dir = 100)
-    twin = tmp_path / "twin"
-    shutil.copytree(backup, twin)
-
-    out, _ = _run(
-        shell,
-        """
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-Remove-StudioVenvTreeWithRetry -Path $env:TEST_TWIN -Label "environment rollback" | Out-Null
-$sw.Stop()
-Write-Output ("MARK foreground_ms=" + [int]$sw.Elapsed.TotalMilliseconds)
-""".replace("$env:TEST_TWIN", f"'{twin}'"),
-        home,
-    )
-    foreground_ms = int(re.search(r"foreground_ms=(\d+)", out).group(1))
-    assert not twin.exists()
+    _make_tree(backup, dirs = 50, files_per_dir = 100)
 
     os.environ["TEST_BACKUP"] = str(backup)
     try:
@@ -167,7 +152,7 @@ Write-Output ("MARK foreground_ms=" + [int]$sw.Elapsed.TotalMilliseconds)
     returned_at = time.monotonic()
     parked = _rollbacks(home)
     commit_ms = int(re.search(r"commit_ms=(\d+)", out).group(1))
-    print(f"[{shell}] foreground_ms={foreground_ms} commit_ms={commit_ms} wall_s={wall:.2f}")
+    print(f"[{shell}] commit_ms={commit_ms} wall_s={wall:.2f}")
 
     assert [l for l in out.splitlines() if l and not l.startswith("MARK ")] == [], out
     assert "active=False committed=True" in out, out

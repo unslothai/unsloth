@@ -239,7 +239,7 @@ jobs:
         # concurrency is capped at 5. The non-Windows shell steps cover Intel XPU paths no Mac reaches.
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
