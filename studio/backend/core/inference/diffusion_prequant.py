@@ -1365,7 +1365,26 @@ _CANONICAL_PARTS: dict = {
     "Float8Tensor": (("q", "qdata"), ("scale", "scale")),
     "NVFP4Tensor": (("q", "qdata"), ("scale", "scale"), ("per_tensor_scale", "per_tensor_scale")),
     "MXTensor": (("q", "qdata"), ("scale", "scale")),
+    "HostedInt8Parts": (("q", "qdata"), ("scale", "scale"), ("zero_point", "zero_point")),
 }
+
+
+class HostedInt8Parts:
+    """An Int8Tensor's stored payload read as plain tensors (no torchao), fingerprinted like the Int8Tensor."""
+
+    __slots__ = ("qdata", "scale", "zero_point")
+
+    def __init__(
+        self,
+        qdata: Any,
+        scale: Any,
+        zero_point: Any = None,
+    ):
+        self.qdata = qdata
+        self.scale = scale
+        self.zero_point = zero_point
+
+
 _CANONICAL_ROLE_ORDER = (
     "q",
     "scale",
