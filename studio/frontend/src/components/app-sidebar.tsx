@@ -82,6 +82,7 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
   shouldUseCustomWindowTitlebar,
+  usesWindowsTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 // deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
@@ -272,6 +273,7 @@ import {
   prefersReducedMotion,
 } from "@/features/settings/stores/appearance-custom-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   isSurfaceBackgrounded,
   useShortcutLabel,
@@ -3989,6 +3991,12 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
+    // Capture the unread result before Recents clears its persistent unread marker.
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(
+      item.type === "single" ? item.id : null,
+      ttsEnabled && autoReadAloud,
+    );
     clearThreadsUnread(getSidebarItemThreadIds(item));
   }
 
@@ -5941,6 +5949,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
+      data-windows-glass-frame={(pinned && usesWindowsTitlebar()) || undefined}
       variant="sidebar"
       className={cn(
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
@@ -5955,7 +5964,8 @@ export function AppSidebar() {
             ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+              : // The chat header's top padding, so the two rows line up.
+                "pl-3 pr-3 pt-[var(--studio-chat-header-padding-top,11px)] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -6003,7 +6013,13 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className={cn(
+                      "relative top-px -left-px shrink-0 rounded-full object-cover",
+                      // Web Studio only; the desktop header keeps its own sizes.
+                      usesDesktopTitlebar
+                        ? "h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))]"
+                        : "h-[calc(20.5px+0.5rem*var(--ui-font-scale,1))] w-[calc(20.5px+0.5rem*var(--ui-font-scale,1))]",
+                    )}
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -6021,10 +6037,17 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className={cn(
+                        "inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        usesDesktopTitlebar && "relative top-px",
+                      )}
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+                      <HugeiconsIcon
+                        icon={Search01Icon}
+                        strokeWidth={1.75}
+                        className={usesDesktopTitlebar ? "size-4" : "size-icon"}
+                      />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -6096,7 +6119,7 @@ export function AppSidebar() {
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
           rowPadding,
-          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(7px*var(--ui-space-scale,1))]",
+          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(5px*var(--ui-space-scale,1))]",
           scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-px",
         )}
       >

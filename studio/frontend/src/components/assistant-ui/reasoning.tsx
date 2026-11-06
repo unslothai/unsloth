@@ -136,8 +136,7 @@ function ReasoningRoot({
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  // The grid transition starts only after React commits `0fr`, so the lock needs the backstop
-  // margin on this path; tool-group and tool-fallback keep the plain duration.
+  // The grid transition starts after React commits `0fr`, so include the backstop margin.
   const lockScroll = useCollapseScrollLock(
     collapsibleRef,
     GRID_COLLAPSE_REASONING_ENABLED

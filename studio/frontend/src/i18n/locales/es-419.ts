@@ -207,12 +207,16 @@ export const es419 = {
         history: "Leyendo tu historial de navegación",
         move: "Moviendo el mouse",
         drag: "Arrastrando",
+        tabs: "Revisando las pestañas",
+        readFile: "Leyendo el archivo",
+        editFile: "Editando el archivo",
       },
     },
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -363,6 +367,8 @@ export const es419 = {
     askBeforeDownloadingSetting: "Preguntar antes de descargar",
     askBeforeDownloadingSettingDescription:
       "Confirma los archivos de sitios web antes de guardarlos.",
+    askBeforeProgramDownloadsSetting: "Preguntar antes de descargar programas",
+    askBeforeProgramDownloadsSettingDescription: "Confirma los archivos que pueden ejecutar programas, como .exe o .dmg, aunque las demás descargas no pregunten.",
     downloadSitesSetting: "Permisos de descarga por sitio",
     downloadSitesSettingDescription:
       "Sitios cuyas descargas elegiste permitir o bloquear siempre.",
@@ -371,6 +377,7 @@ export const es419 = {
     downloadSitesFor: "Descargas de {host}",
     downloadSitesRemove: "Olvidar {host}",
     downloadSiteAllow: "Permitir siempre",
+    downloadSiteAllowAll: "Permitir también programas",
     downloadSiteBlock: "Bloquear siempre",
     downloadPrompt: {
       title: "¿Descargar este archivo?",
@@ -378,6 +385,9 @@ export const es419 = {
       dangerous:
         "Los archivos como este pueden ejecutar programas en tu computadora. Descárgalo solo si confías en {host}.",
       remember: "Recordar para la próxima vez",
+      once: "Preguntar la próxima vez",
+      site: "Siempre para {host}",
+      all: "Descargar siempre, desde cualquier sitio",
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
@@ -426,6 +436,12 @@ export const es419 = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al costado",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -882,6 +898,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1204,6 +1223,9 @@ export const es419 = {
         "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -2314,6 +2336,12 @@ export const es419 = {
           "Elige según la computadora y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta computadora.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Ingresa un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2710,6 +2738,10 @@ export const es419 = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -3284,9 +3316,8 @@ export const es419 = {
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       turnNavigation: "Navegación por turnos",
       turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
-      composerAtBottom: "Cuadro de mensaje abajo",
-      composerAtBottomDescription:
-        "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
+      composerPosition: "Posición del cuadro de mensaje",
+      composerPositionDescription: "Dónde aparece el cuadro de mensaje al iniciar un chat nuevo, desde arriba de la página hasta abajo.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Haz que los nuevos archivos adjuntos del chat estén disponibles para todos los chats del proyecto.",
@@ -4303,8 +4334,6 @@ export const es419 = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          appleSilicon:
-            "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",
@@ -6235,8 +6264,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -6245,8 +6273,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:

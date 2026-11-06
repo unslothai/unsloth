@@ -58,7 +58,7 @@ class _FakeS3Client:
         callback = kwargs.get("Callback")
         if callback is not None:
             callback(1)
-        with open(local_path, "w", encoding = "utf-8") as f:
+        with open(local_path, "w", encoding = "utf-8", newline = "") as f:
             f.write(self._contents.get(key, f"content-of:{key}"))
 
 
@@ -137,6 +137,24 @@ def test_audio_with_no_manifest_names_whats_missing(monkeypatch, tmp_path):
         s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids = ["lf", "crlf"])
+def test_s3_json_lines_preserves_unicode_transcript(monkeypatch, tmp_path, suffix, newline):
+    rows = [
+        {"audio": "audio/a.wav", "text": "first\u0085second\u2028third\u2029fourth"},
+        {"audio": "audio/a.wav", "text": "last"},
+    ]
+    manifest = "".join(json.dumps(row, ensure_ascii = False) + newline for row in rows)
+    key = f"datasets/train{suffix}"
+    _install(monkeypatch, [key, "datasets/audio/a.wav"], contents = {key: manifest})
+
+    result = s3_dataset.prepare_s3_dataset_download(_cfg(), dest_dir = str(tmp_path))
+
+    audio_path = tmp_path / "audio" / "a.wav"
+    assert audio_path.is_file()
+    assert _rows(result.files[0]) == [{**row, "audio": str(audio_path)} for row in rows]
+
+
 def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path):
     manifest = "\n".join(
         [
@@ -181,6 +199,40 @@ def test_json_lines_in_a_json_manifest_are_rewritten(monkeypatch, tmp_path):
         str(tmp_path / "a.wav"),
         str(tmp_path / "b.wav"),
     ]
+
+
+@pytest.mark.parametrize("layout", ["object", "jsonl", "array"])
+@pytest.mark.parametrize("audio_value", ["a.wav", {"path": "a.wav", "bytes": None}])
+def test_single_record_manifest_rewrites_audio(monkeypatch, tmp_path, layout, audio_value):
+    row = {"audio": audio_value, "text": "hello", "speaker": "speaker-1"}
+    suffix = ".jsonl" if layout == "jsonl" else ".json"
+    key = "datasets/train" + suffix
+    payload = [row] if layout == "array" else row
+    _install(
+        monkeypatch,
+        [key, "datasets/a.wav"],
+        contents = {key: json.dumps(payload) + "\n"},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    loaded = json.loads(Path(files[0]).read_text(encoding = "utf-8"))
+    result = loaded[0] if layout == "array" else loaded
+    local_audio = str(tmp_path / "a.wav")
+    expected_audio = (
+        {"path": local_audio, "bytes": None} if isinstance(audio_value, dict) else local_audio
+    )
+    assert result == {**row, "audio": expected_audio}
+    assert Path(local_audio).is_file()
+
+
+def test_json_manifest_non_record_layout_is_unchanged(tmp_path):
+    # A column-oriented object of indexed columns is not a row of audio paths.
+    payload = {"audio": {"0": "a.wav"}, "text": {"0": "hello"}}
+    path = tmp_path / "train.json"
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+    s3_dataset._rewrite_json_manifest(
+        str(path), lambda value: "/local/a.wav" if value == "a.wav" else None
+    )
+    assert json.loads(path.read_text(encoding = "utf-8")) == payload
 
 
 def test_manifest_relative_references_resolve_against_the_manifest_dir(monkeypatch, tmp_path):

@@ -30,6 +30,13 @@ try:
 except Exception:
     pass
 
+# Triton-only flash-attn (RDNA3/4) imports only with its backend switch; set before any flash_attn import.
+try:
+    from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
+    _default_triton_amd_env()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -2406,7 +2413,9 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    return asdict(get_download_transport_capabilities(probe = probe))
+    from utils.download_speed_limit import get_download_speed_limit_mbps
+    caps = asdict(get_download_transport_capabilities(probe = probe))
+    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
 
 
 @app.post(

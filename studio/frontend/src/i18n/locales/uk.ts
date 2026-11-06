@@ -206,12 +206,16 @@ export const uk = {
         history: "Читання вашої історії переглядів",
         move: "Переміщення миші",
         drag: "Перетягування",
+        tabs: "Перегляд вкладок",
+        readFile: "Читання файлу",
+        editFile: "Редагування файлу",
       },
     },
     title: "Браузер",
     tabs: "Вкладки браузера",
     newTab: "Нова вкладка",
     newTabFullView: "Нова вкладка на весь екран",
+    newTabFloating: "Нова вкладка в плаваючому вікні",
     closeTab: "Закрити вкладку",
     close: "Закрити браузер",
     show: "Показати браузер",
@@ -361,6 +365,8 @@ export const uk = {
     askBeforeDownloadingSetting: "Питати перед завантаженням",
     askBeforeDownloadingSettingDescription:
       "Підтверджувати файли з вебсайтів перед їх збереженням.",
+    askBeforeProgramDownloadsSetting: "Питати перед завантаженням програм",
+    askBeforeProgramDownloadsSettingDescription: "Підтверджувати файли, які можуть запускати програми, як-от .exe або .dmg, навіть якщо для інших завантажень питання не ставиться.",
     downloadSitesSetting: "Дозволи сайтів на завантаження",
     downloadSitesSettingDescription:
       "Сайти, для яких ви вирішили завжди дозволяти або блокувати завантаження.",
@@ -369,6 +375,7 @@ export const uk = {
     downloadSitesFor: "Завантаження з {host}",
     downloadSitesRemove: "Забути {host}",
     downloadSiteAllow: "Завжди дозволяти",
+    downloadSiteAllowAll: "Дозволяти й програми",
     downloadSiteBlock: "Завжди блокувати",
     downloadPrompt: {
       title: "Завантажити цей файл?",
@@ -376,6 +383,9 @@ export const uk = {
       dangerous:
         "Такі файли можуть запускати програми на вашому комп’ютері. Завантажуйте його, лише якщо довіряєте {host}.",
       remember: "Запам’ятати на наступний раз",
+      once: "Запитати наступного разу",
+      site: "Завжди для {host}",
+      all: "Завжди завантажувати, з будь-якого сайту",
       cancel: "Скасувати",
       download: "Завантажити",
       blocked: "Заблоковано завантаження з {host}.",
@@ -424,6 +434,12 @@ export const uk = {
       openChat: "Відкрити в повному вигляді",
       moveLeft: "Перемістити на ліву панель",
       moveRight: "Перемістити на праву панель",
+    },
+    floating: {
+      enter: "Плаваюче вікно",
+      dock: "Закріпити збоку",
+      close: "Закрити плаваюче вікно",
+      handle: "Перемістити вікно. Стрілки переміщують його, Shift зі стрілками змінює розмір.",
     },
     annotate: {
       countOne: "1 анотація",
@@ -882,6 +898,9 @@ export const uk = {
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",
+    residentToRun: "для запуску",
+    residentToRunHint:
+      "Пам'ять GPU, яку перевірка завантаження вимагає під час роботи",
     onDevice: "На пристрої",
     huggingFace: "Hugging Face",
     retry: "Повторити",
@@ -1205,6 +1224,9 @@ export const uk = {
         "Одна модель у рядку, наприклад unsloth/Qwen3-4B-GGUF, або unsloth/* для всієї організації. Залиште порожнім, щоб дозволити всі моделі.",
       modelAccessSave: "Зберегти",
       modelAccessLimited: "Обмежений доступ до моделей",
+      rename: "Перейменувати",
+      renameTitle: "Перейменувати {username}",
+      renameDescription: "Виберіть ім'я, з яким цей обліковий запис входить у систему. Чати, файли та ключі API залишаються в обліковому записі. Користувача буде виведено з системи, і він знову ввійде з новим ім'ям та поточним паролем.",
       empty: "Інших облікових записів поки що немає",
       setupCode: "Код налаштування",
       setupFor: "Код налаштування для {username}",
@@ -2305,6 +2327,12 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
+        speedLimitUsesHttps: "Поки встановлено обмеження швидкості, завантаження використовують HTTPS. Файли понад 50 ГБ і далі завантажуються через Xet без обмеження.",
       },
       uploads: {
         sectionTitle: "Вивантаження",
@@ -2696,6 +2724,10 @@ export const uk = {
         },
         contrast: {
           label: "Контраст",
+        },
+        elementOutline: {
+          label: "Контур елементів",
+          description: "Насиченість меж кнопок, полів, карток і меню.",
         },
         reduceMotion: {
           label: "Зменшити рух",
@@ -3265,9 +3297,8 @@ export const uk = {
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
       turnNavigation: "Навігація ходами",
       turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
-      composerAtBottom: "Поле введення внизу",
-      composerAtBottomDescription:
-        "Починати нові чати з полем введення внизу сторінки, а не посередині.",
+      composerPosition: "Розташування поля введення",
+      composerPositionDescription: "Де розташоване поле введення в новому чаті: від верху сторінки до самого низу.",
       projectAttachments: "Спільні файли в проєкті",
       projectAttachmentsDescription:
         "Робити нові вкладення чату доступними для всіх чатів проєкту.",
@@ -4272,8 +4303,6 @@ export const uk = {
             "Схоже, цей набір даних містить зображення, які не можна передавати потоком.",
           audioDataset:
             "Схоже, цей набір даних містить аудіо, яке не можна передавати потоком.",
-          appleSilicon:
-            "Потокове передавання ще не підтримується на Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "лише відповіді асистента",
@@ -6192,7 +6221,7 @@ export const uk = {
     skippedVersion: "Наразі пропущено: {component} {version}",
     skippedUpdate: "Оновлення {component} наразі пропущено",
     skippedUpdates: "Оновлення {components} наразі пропущено",
-    vulkanFaster: "Vulkan на >10% швидший за ROCM. Перезапуск не потрібен",
+    vulkanFaster: "Швидше більш ніж на 10%",
     noRestart: "Перезапуск не потрібен",
     downloadSize: "Обсяг завантаження: {size}",
     backendChange: "Бекенд: {change}",
@@ -6201,8 +6230,8 @@ export const uk = {
     installingPhase: "Інсталяція {component} ({current} із {total})...",
     installingCount: "Інсталяція оновлень: {count}...",
     bundleTitle: "Оновлень середовища виконання: {count}",
-    newBackend: "Новий бекенд {component}",
-    newUpdate: "Нове оновлення {component}",
+    newBackend: "Новий бекенд середовища виконання",
+    newUpdate: "Нове оновлення середовища виконання",
     hideUpdate:
       "Приховати оновлення {component} до повторного відкриття Unsloth",
     hideUpdates:

@@ -20,7 +20,7 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.diffusion_auto_policy import DenseQuantEstimate
 from core.inference.diffusion_denoiser_prequant import PIPELINE_SEED_DECLINED
 from core.inference.diffusion_device import DiffusionDeviceTarget
-from core.inference.diffusion_families import detect_family_for_pick
+from core.inference.diffusion_families import ANIMA_BF16_WHEN_RESIDENT, detect_family_for_pick
 from core.inference.diffusion_memory import DeviceMemory
 from models.inference import DiffusionDownloadPlanResponse
 
@@ -1906,6 +1906,8 @@ def _small_dit_kept_bf16(monkeypatch, reason):
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
         ("measured: no faster", None, "off", True),
+        # Anima's reason keeps the deferred compile (background, from render 3).
+        (ANIMA_BF16_WHEN_RESIDENT, None, "off", True),
     ],
 )
 def test_a_small_dit_kept_bf16_compiles_from_render_1(
