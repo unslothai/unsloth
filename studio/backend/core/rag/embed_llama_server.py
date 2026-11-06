@@ -1259,7 +1259,7 @@ class LlamaServerBackend:
         so a -1 marker between them splits the reply into per-text counts."""
         memo: OrderedDict[str, int] = OrderedDict()
         memo_lock = threading.Lock()
-        batching = [True]
+        batching = True
 
         def _remember(text: str, n: int) -> None:
             with memo_lock:
@@ -1276,13 +1276,12 @@ class LlamaServerBackend:
                 return n
 
         def _count_one(text: str) -> int:
-            with self._operation():
-                data = self._post(
-                    "/tokenize",
-                    {"content": text, "add_special": False},
-                    model_name = model_name,
-                )
-                return len(data.get("tokens", []))
+            data = self._post(
+                "/tokenize",
+                {"content": text, "add_special": False},
+                model_name = model_name,
+            )
+            return len(data.get("tokens", []))
 
         def _count(text: str) -> int:
             n = _lookup(text)
@@ -1291,25 +1290,19 @@ class LlamaServerBackend:
                 _remember(text, n)
             return n
 
-        def _count_batch(keys: list[str]) -> list[int]:
-            content: list = []
-            for key in keys:
-                if content:
-                    content.append(-1)
-                content.append(key)
+        def _count_batch(keys: list[str]) -> list[int] | None:
+            """None when this server cannot batch."""
             try:
-                with self._operation():
-                    data = self._post(
-                        "/tokenize",
-                        {"content": content, "add_special": False},
-                        model_name = model_name,
-                    )
+                data = self._post(
+                    "/tokenize",
+                    {"content": [x for key in keys for x in (-1, key)][1:], "add_special": False},
+                    model_name = model_name,
+                )
             except RuntimeError as e:
                 # A build that refuses the array answers with a status; anything else still raises.
                 if not isinstance(e.__cause__, httpx.HTTPStatusError):
                     raise
-                batching[0] = False
-                return [_count_one(key) for key in keys]
+                return None
             counts, run = [], 0
             for token in data.get("tokens", []):
                 if token == -1:
@@ -1318,12 +1311,10 @@ class LlamaServerBackend:
                 else:
                     run += 1
             counts.append(run)
-            if len(counts) != len(keys):
-                batching[0] = False
-                return [_count_one(key) for key in keys]
-            return counts
+            return counts if len(counts) == len(keys) else None
 
         def _count_many(texts) -> list[int]:
+            nonlocal batching
             texts = list(texts)
             out = [0] * len(texts)
             misses: dict[str, list[int]] = {}
@@ -1346,11 +1337,12 @@ class LlamaServerBackend:
                     chars += len(keys[end])
                     end += 1
                 batch = keys[start:end]
-                counts = (
-                    _count_batch(batch)
-                    if batching[0] and len(batch) > 1
-                    else [_count_one(key) for key in batch]
-                )
+                counts = None
+                if batching and len(batch) > 1:
+                    counts = _count_batch(batch)
+                    batching = counts is not None
+                if counts is None:
+                    counts = [_count_one(key) for key in batch]
                 for key, n in zip(batch, counts):
                     _remember(key, n)
                     for i in misses[key]:
