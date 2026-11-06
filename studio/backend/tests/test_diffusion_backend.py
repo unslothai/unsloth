@@ -5957,6 +5957,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        vae = None,
         # Spelled out, not **kwargs: pins the exact production signature incl. local_files_only.
         local_files_only = False,
         check_cancelled = None,
@@ -5964,6 +5965,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         assert callable(check_cancelled)
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["vae"] = vae
         calls["local_files_only"] = local_files_only
         return Pipe()
 
@@ -5990,6 +5992,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     assert calls == {
         "base": "unsloth/Krea-2-Turbo",
         "transformer": marker,
+        "vae": None,
         "device": "cuda:0",
         "local_files_only": False,
     }

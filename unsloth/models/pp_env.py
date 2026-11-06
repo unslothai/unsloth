@@ -752,6 +752,23 @@ def _global_items(trainer, stage, num_items_in_batch):
     return int(count[0])
 
 
+def _cpu_chunked_ce_model(trainer, model):
+    """Model whose zoo CPU chunked CE compute_loss would arm, or None; the pipeline schedule never calls compute_loss."""
+    if not getattr(getattr(type(trainer), "compute_loss", None), "_unsloth_cpu", False):
+        return None
+    loss_type = getattr(trainer.args, "loss_type", None)
+    if str(getattr(loss_type, "value", loss_type) or "nll") != "nll":
+        return None
+    accelerator = getattr(trainer, "accelerator", None)
+    unwrapped = accelerator.unwrap_model(model) if accelerator is not None else model
+    base = getattr(unwrapped, "base_model", None)
+    for candidate in (unwrapped, base, getattr(base, "model", None)):
+        # vars(): PEFT forwards attribute reads to the inner model.
+        if candidate is not None and vars(candidate).get("_unsloth_cpu_chunked_ce", False):
+            return candidate
+    return None
+
+
 def _pp_training_step(
     self,
     model,
@@ -784,15 +801,22 @@ def _pp_training_step(
     m, pad = resolve_microbatches(stage, input_ids.shape[0])
     _refuse_split_router_aux(stage, m)
     input_ids, labels, extra = _pad_rows(input_ids, labels, extra, pad)
-    loss = stage.step(
-        input_ids,
-        labels,
-        num_items_in_batch = n,
-        scaler = scaler,
-        n_microbatches = m,
-        loss_scale = scale,
-        **extra,
-    )
+    chunked = _cpu_chunked_ce_model(self, model)
+    if chunked is not None:
+        chunked._unsloth_cpu_chunked_ce_active = True
+    try:
+        loss = stage.step(
+            input_ids,
+            labels,
+            num_items_in_batch = n,
+            scaler = scaler,
+            n_microbatches = m,
+            loss_scale = scale,
+            **extra,
+        )
+    finally:
+        if chunked is not None:
+            chunked._unsloth_cpu_chunked_ce_active = False
     del inputs
     return loss.detach().to(self.args.device)
 

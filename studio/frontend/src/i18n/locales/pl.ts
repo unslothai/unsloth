@@ -215,6 +215,7 @@ export const pl = {
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -434,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -892,6 +899,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -5935,8 +5945,7 @@ export const pl = {
     skippedVersion: "Na razie pominięto {component} {version}",
     skippedUpdate: "Na razie pominięto aktualizację: {component}",
     skippedUpdates: "Na razie pominięto aktualizacje: {components}",
-    vulkanFaster:
-      "Vulkan jest o ponad 10% szybszy niż ROCM. Nie trzeba uruchamiać ponownie",
+    vulkanFaster: "Ponad 10% szybciej",
     noRestart: "Nie trzeba uruchamiać ponownie",
     downloadSize: "Do pobrania: {size}",
     backendChange: "Backend: {change}",
@@ -5945,8 +5954,8 @@ export const pl = {
     installingPhase: "Instalowanie: {component} ({current} z {total})...",
     installingCount: "Instalowanie aktualizacji ({count})...",
     bundleTitle: "Aktualizacje środowiska uruchomieniowego: {count}",
-    newBackend: "Nowy backend: {component}",
-    newUpdate: "Nowa aktualizacja: {component}",
+    newBackend: "Nowy backend środowiska uruchomieniowego",
+    newUpdate: "Nowa aktualizacja środowiska uruchomieniowego",
     hideUpdate: "Ukryj aktualizację {component} do ponownego otwarcia Unsloth",
     hideUpdates:
       "Ukryj aktualizacje {components} do ponownego otwarcia Unsloth",

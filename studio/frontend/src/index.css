@@ -3214,6 +3214,11 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
+	/* Not while the frame eases to a new height (markComposerScrollEdges). */
+	.unsloth-composer-editor .unsloth-composer-input:not([data-scrollable]) {
+		overflow-y: hidden;
+	}
+
 	/* 6px wider (and as much more padding) so the scrollbar sits near the composer's edge. */
 	.unsloth-composer-line .unsloth-composer-editor .unsloth-composer-input {
 		width: calc(100% + 0.375rem * var(--ui-space-scale, 1));
@@ -5679,6 +5684,43 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 @media (max-width: 639px) {
 	[data-slot="tooltip-content"] {
 		max-width: calc(100vw - 1rem);
+	}
+}
+
+/* Placed by floating-preview.ts. No transition: a drag's transform must drop without easing back. */
+.chat-artifact-pop-surface.chat-browser-floating {
+	/* In front of everything in the chat, its header (z-40) included. */
+	z-index: 45;
+	opacity: 1;
+	pointer-events: auto;
+	will-change: auto;
+	transition: none;
+	border: 1px solid var(--border);
+	border-radius: calc(16px * var(--ui-space-scale, 1));
+	background: var(--card);
+	box-shadow:
+		0 18px 44px -14px rgb(0 0 0 / 0.3),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+	/* No chat header above it. */
+	--studio-content-top-inset: 0px;
+	animation: browser-floating-in 140ms var(--ease-out-cubic);
+}
+
+.chat-browser-floating[data-floating-gesture] {
+	box-shadow:
+		0 26px 60px -16px rgb(0 0 0 / 0.38),
+		0 6px 16px -6px rgb(0 0 0 / 0.16);
+}
+
+@keyframes browser-floating-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html:not(.force-motion) .chat-browser-floating {
+		animation: none;
 	}
 }
 

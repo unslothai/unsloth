@@ -136,17 +136,50 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
 
 # GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
 _GENERIC_PROFILE = (2.5, 1.5)
-# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 peak plus at least
 # 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
 _MEASURED_PROFILES = {
-    # Peak is a 240 s cover (the longest edit), above a 240 s song.
-    "ace_step": (1.0, 6.4, 9.4),
+    # Peak is a 240 s cover (the longest edit), above a 240 s song; BF16 highest on Vulkan.
+    "ace_step": (1.15, 5.55, 9.4),
     "chatterbox": (1.0, 3.5, 3.5),
+    # Peak is a 240 s song with 20,000 characters of lyrics, above the generic formula on Vulkan.
+    "heartmula": (2.5, 2.7, 7.2),
     "higgs_audio_tts": (1.0, 2.0, 4.8),
     "kokoro_tts": (1.0, 3.5, 0.2),
+    # Flat in length: 10 s and the 80 s cap peak the same.
+    "midashenglm_gen": (1.0, 2.25, 3.2),
+    # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s); F16 highest on Vulkan.
+    "stable_audio": (1.8, 0.65, 5.5),
     "voxcpm2": (2.2, 4.7, 4.5),
     "voxtral_tts": (1.0, 2.0, 4.4),
+    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap, highest on Vulkan.
+    "yue2": (1.2, 4.45, 7.1),
 }
+# Families measured far higher on pre-Ampere NVIDIA cards (YuE2 on a T4): the generic formula there.
+_NOT_BEFORE_AMPERE = frozenset({"yue2"})
+
+
+def _may_have_pre_ampere_nvidia_card() -> bool:
+    """Uncached (gpu_query caches); unreadable NVIDIA capabilities count as pre-Ampere."""
+    from utils.hardware import nvidia
+
+    capabilities = nvidia.get_compute_capabilities()
+    if not capabilities:
+        return nvidia.has_nvidia_driver()
+    return any(capability < (8, 0) for capability in capabilities.values())
+
+
+def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
+    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
+    import utils.hardware as hardware
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+    from core.inference.audio_device import audio_load_runs_on_cpu
+
+    return (
+        audio_type in AUDIO_CPP_AUDIO_TYPES
+        and hardware.get_device() in (hardware.DeviceType.CUDA, hardware.DeviceType.XPU)
+        and not audio_load_runs_on_cpu(audio_type, "auto")
+    )
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
@@ -156,7 +189,7 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     weights_gb = size_bytes / (1024**3)
     generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
     profile = _MEASURED_PROFILES.get(family or "")
-    if profile is None:
+    if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
         return round(generic, 2)
     per_weight, fixed, measured_up_to_gb = profile
     measured = weights_gb * per_weight + fixed
@@ -249,9 +282,10 @@ def classify_audio_cpp_failure(
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
         need = ""
         if placement and required_gb is not None:
-            need = f" It needs about {required_gb:.1f} GB of GPU memory while running"
+            digits = 2 if free_gb is not None and f"{required_gb:.1f}" == f"{free_gb:.1f}" else 1
+            need = f" It needs about {required_gb:.{digits}f} GB of GPU memory while running"
             need += (
-                f", and the most free on one GPU is {free_gb:.1f} GB."
+                f", and the most free on one GPU is {free_gb:.{digits}f} GB."
                 if free_gb is not None
                 else "."
             )

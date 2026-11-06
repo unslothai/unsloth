@@ -215,6 +215,7 @@ export const uk = {
     tabs: "Вкладки браузера",
     newTab: "Нова вкладка",
     newTabFullView: "Нова вкладка на весь екран",
+    newTabFloating: "Нова вкладка в плаваючому вікні",
     closeTab: "Закрити вкладку",
     close: "Закрити браузер",
     show: "Показати браузер",
@@ -433,6 +434,12 @@ export const uk = {
       openChat: "Відкрити в повному вигляді",
       moveLeft: "Перемістити на ліву панель",
       moveRight: "Перемістити на праву панель",
+    },
+    floating: {
+      enter: "Плаваюче вікно",
+      dock: "Закріпити збоку",
+      close: "Закрити плаваюче вікно",
+      handle: "Перемістити вікно. Стрілки переміщують його, Shift зі стрілками змінює розмір.",
     },
     annotate: {
       countOne: "1 анотація",
@@ -891,6 +898,9 @@ export const uk = {
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",
+    residentToRun: "для запуску",
+    residentToRunHint:
+      "Пам'ять GPU, яку перевірка завантаження вимагає під час роботи",
     onDevice: "На пристрої",
     huggingFace: "Hugging Face",
     retry: "Повторити",
@@ -5926,7 +5936,7 @@ export const uk = {
     skippedVersion: "Наразі пропущено: {component} {version}",
     skippedUpdate: "Оновлення {component} наразі пропущено",
     skippedUpdates: "Оновлення {components} наразі пропущено",
-    vulkanFaster: "Vulkan на >10% швидший за ROCM. Перезапуск не потрібен",
+    vulkanFaster: "Швидше більш ніж на 10%",
     noRestart: "Перезапуск не потрібен",
     downloadSize: "Обсяг завантаження: {size}",
     backendChange: "Бекенд: {change}",
@@ -5935,8 +5945,8 @@ export const uk = {
     installingPhase: "Інсталяція {component} ({current} із {total})...",
     installingCount: "Інсталяція оновлень: {count}...",
     bundleTitle: "Оновлень середовища виконання: {count}",
-    newBackend: "Новий бекенд {component}",
-    newUpdate: "Нове оновлення {component}",
+    newBackend: "Новий бекенд середовища виконання",
+    newUpdate: "Нове оновлення середовища виконання",
     hideUpdate:
       "Приховати оновлення {component} до повторного відкриття Unsloth",
     hideUpdates:
