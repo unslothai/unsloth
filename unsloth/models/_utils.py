@@ -6420,7 +6420,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # before anything below splits or shards the model.
             _parallel_capabilities_pre(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_PP_SIZE: trainers / arguments the pipeline step cannot run, refused before the split.
-            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs)
+            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
@@ -6754,7 +6754,13 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 
 
-def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
+def _pipeline_parallel_env_refusals(
+    trainer,
+    init,
+    args,
+    kwargs,
+    model = None,
+):
     if not os.environ.get("UNSLOTH_PP_SIZE"):
         return
     from .tp_env import env_layout
@@ -6764,13 +6770,17 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         return
     training_args = kwargs.get("args")
     compute_loss_func = kwargs.get("compute_loss_func")
-    if training_args is None or (compute_loss_func is None and args):
+    train_dataset = kwargs.get("train_dataset")
+    eval_dataset = kwargs.get("eval_dataset")
+    if training_args is None or args:
         try:
             import inspect
 
             bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
             training_args = bound.arguments.get("args", training_args)
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
+            train_dataset = bound.arguments.get("train_dataset", train_dataset)
+            eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6787,7 +6797,15 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         )
     from .pp_env import pp_trainer_refusals
 
-    pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)
+    pp_trainer_refusals(
+        type(trainer),
+        training_args,
+        layout,
+        compute_loss_func = compute_loss_func,
+        model = model,
+        train_dataset = train_dataset,
+        eval_dataset = eval_dataset,
+    )
 
 
 def _tensor_parallel_env_trainer_pre(model):

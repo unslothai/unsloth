@@ -340,6 +340,8 @@ def _case_train(
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
+    args_coef = "unset",
+    probe_refusal = False,
     gc = "none",
     packed = None,
 ):
@@ -532,6 +534,8 @@ def _case_train(
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
         args.router_aux_loss_coef = aux_coef if (router_aux or trl_aux) else 0.0
+        if args_coef != "unset":
+            args.router_aux_loss_coef = args_coef
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -553,6 +557,44 @@ def _case_train(
             caps.query_from(layout_now, SequentialSFT, model, args, cp = cp, cp_backend = "ulysses")
         )
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
+    if probe_refusal:
+        before = {n: (p.detach().clone(), p.device) for n, p in model.named_parameters()}
+
+        def untouched():
+            now = dict(model.named_parameters())
+            return now.keys() == before.keys() and all(
+                now[n].device == d and now[n].shape == t.shape and torch.equal(now[n].detach(), t)
+                for n, (t, d) in before.items()
+            )
+
+        phase = "init"
+        try:
+            trainer = SequentialSFT(
+                model = model,
+                args = args,
+                train_dataset = data,
+                data_collator = collate,
+                processing_class = tokenizer,
+            )
+            phase = "train"
+            trainer.train()
+        except Exception as e:
+            return {
+                "error": f"{type(e).__name__}: {e}",
+                "phase": phase,
+                "split": pp_native.pipeline_stage_of(model) is not None,
+                "untouched": untouched(),
+            }
+        logs = [h for h in trainer.state.log_history if "loss" in h]
+        stage = pp_native.pipeline_stage_of(trainer.model)
+        return {
+            "phase": None,
+            "losses": [h["loss"] for h in logs],
+            "stage": None if stage is None else int(stage.stage_index),
+            "output_router_logits": bool(
+                getattr(trainer.model.config, "output_router_logits", False)
+            ),
+        }
     trainer = SequentialSFT(
         model = model,
         args = args,
@@ -779,8 +821,14 @@ _ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 s
 
 
 def _skip_if_one_microbatch_refused(results):
+    from unsloth.models import pp_env
+
     errors = [res.get("error") or "" for res in results]
-    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+    # Where GPipe pads a single micro-batch up to the stage count, a batch of one splits too and is refused.
+    padded = pp_env._gpipe_needs_stage_count() and all(
+        "splits each Trainer batch into 2" in e for e in errors
+    )
+    if errors and (padded or all(_ONE_MICROBATCH_REFUSED in e for e in errors)):
         import torch as _torch
         pytest.skip(
             f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
@@ -1166,6 +1214,52 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
     for rank, res in enumerate(results):
         # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
         _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
+
+
+_PP_AUX_SPLIT = "load-balancing loss per micro-batch"
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        dict(router_aux = True, aux_coef = 0.5),
+        dict(trl_aux = True, aux_coef = 0.5),
+    ],
+    ids = ["config_flag", "trl_coef"],
+)
+@pytest.mark.parametrize("env", [{}, {"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["default", "1f1b"])
+def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_init(how, env):
+    env = {"UNSLOTH_PP_SIZE": "2", **env}
+    for rank, res in enumerate(
+        _spawn("train", 2, env, bs = 2, ga = 1, steps = 1, arch = "qwen3_moe", probe_refusal = True, **how)
+    ):
+        assert _PP_AUX_SPLIT in (res.get("error") or ""), (rank, res)
+        assert res["phase"] == "init", (rank, res)
+        assert not res["split"] and res["untouched"], (rank, res)
+
+
+@pytest.mark.parametrize(
+    "how, env",
+    [
+        (dict(), {}),
+        (dict(router_aux = True, args_coef = 0.0), {}),
+        (
+            dict(router_aux = True, aux_coef = 0.5, ga = 2),
+            {"UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
+        ),
+        (dict(router_aux = True, aux_coef = 0.5, bs = 1), {"UNSLOTH_PP_SCHEDULE": "gpipe"}),
+    ],
+    ids = ["aux_off", "config_flag_coef0", "aux_on_one_microbatch", "aux_on_batch_of_one"],
+)
+def test_pp_moe_router_aux_loss_allowed_layouts_still_train(how, env):
+    kw = dict(bs = 2, ga = 1, steps = 2, arch = "qwen3_moe", probe_refusal = True)
+    kw.update(how)
+    results = _spawn("train", 2, {"UNSLOTH_PP_SIZE": "2", **env}, **kw)
+    _skip_if_one_microbatch_refused(results)
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    for rank, res in enumerate(results):
+        assert res["phase"] is None and "error" not in res, (rank, res)
+        assert len(res["losses"]) == 2 and all(l == l for l in res["losses"]), (rank, res)
 
 
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
