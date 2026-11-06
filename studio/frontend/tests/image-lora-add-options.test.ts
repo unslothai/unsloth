@@ -82,16 +82,34 @@ test("search matches the display name or the id, case-insensitively, and drops e
 });
 
 test("only a typed owner/name that is not listed is offered as a Hugging Face id", () => {
-  assert.equal(
-    customLoraId("  someone/cool-lora ", CATALOG),
-    "someone/cool-lora",
+  const none = new Set<string>();
+  assert.deepEqual(customLoraId("  someone/cool-lora ", CATALOG, none), {
+    id: "someone/cool-lora",
+    added: false,
+  });
+  assert.deepEqual(
+    customLoraId("someone/cool-lora:style.safetensors", CATALOG, none),
+    { id: "someone/cool-lora:style.safetensors", added: false },
   );
-  assert.equal(
-    customLoraId("someone/cool-lora:style.safetensors", CATALOG),
-    "someone/cool-lora:style.safetensors",
-  );
-  assert.equal(customLoraId("pixel", CATALOG), null);
-  assert.equal(customLoraId("", CATALOG), null);
-  assert.equal(customLoraId("some one/lora", CATALOG), null);
-  assert.equal(customLoraId("krea/Krea-2-LoRA-neondrip", CATALOG), null);
+  assert.equal(customLoraId("pixel", CATALOG, none), null);
+  assert.equal(customLoraId("", CATALOG, none), null);
+  assert.equal(customLoraId("some one/lora", CATALOG, none), null);
+  assert.equal(customLoraId("krea/Krea-2-LoRA-neondrip", CATALOG, none), null);
+});
+
+test("a typed id already in a row is offered as added, so it cannot be added twice", () => {
+  // The backend rejects a repeated LoRA id, so a second row with it would fail the load or generate.
+  const taken = new Set(["someone/custom"]);
+  assert.deepEqual(customLoraId("someone/custom", CATALOG, taken), {
+    id: "someone/custom",
+    added: true,
+  });
+  assert.deepEqual(customLoraId("  someone/custom  ", CATALOG, taken), {
+    id: "someone/custom",
+    added: true,
+  });
+  assert.deepEqual(customLoraId("someone/other", CATALOG, taken), {
+    id: "someone/other",
+    added: false,
+  });
 });

@@ -48,7 +48,7 @@ export function LoraAddMenu({
     () => loraAddGroups(catalog, takenIds, query),
     [catalog, takenIds, query],
   );
-  const customId = customLoraId(query, catalog);
+  const custom = customLoraId(query, catalog, takenIds);
 
   if (catalog.length === 0) {
     return (
@@ -92,7 +92,8 @@ export function LoraAddMenu({
         align="start"
         sideOffset={4}
         collisionPadding={12}
-        className="w-[max(var(--radix-popover-trigger-width),20rem)] gap-0 rounded-lg p-1"
+        // Capped at the space Radix measures; only the catalog gives way, so search and footer stay reachable.
+        className="w-[max(var(--radix-popover-trigger-width),20rem)] gap-0 overflow-hidden rounded-lg p-1"
         onCloseAutoFocus={(e) => {
           if (keepFocusOnRow.current) e.preventDefault();
           keepFocusOnRow.current = false;
@@ -101,7 +102,7 @@ export function LoraAddMenu({
         {/* Own filtering: the list is small and grouped, and the custom-id row must not be filtered away. */}
         <Command
           shouldFilter={false}
-          className="rounded-none bg-transparent p-0"
+          className="min-h-0 rounded-none bg-transparent p-0"
         >
           <CommandInput
             value={query}
@@ -109,15 +110,16 @@ export function LoraAddMenu({
             aria-label="Search LoRAs"
             placeholder="Search LoRAs or paste owner/name"
           />
-          {/* Only the catalog scrolls, so the Hugging Face row below it stays in view. */}
-          <CommandList className="max-h-none overflow-visible">
+          {/* Only the catalog scrolls, and it shrinks first in a short window, so the footer row stays in view.
+              The flex column runs through cmdk's own sizer div. */}
+          <CommandList className="flex max-h-none min-h-0 flex-col overflow-hidden [&>[cmdk-list-sizer]]:flex [&>[cmdk-list-sizer]]:min-h-0 [&>[cmdk-list-sizer]]:flex-col">
             {/* Not CommandEmpty: the Hugging Face row below is always an item, so cmdk never counts zero. */}
-            {groups.length === 0 && !customId && (
+            {groups.length === 0 && !custom && (
               <p className="px-3 py-4 text-center text-sm text-muted-foreground">
                 No LoRA matches.
               </p>
             )}
-            <div className="hover-scrollbar max-h-64 overflow-y-auto overscroll-contain">
+            <div className="hover-scrollbar max-h-64 min-h-0 overflow-y-auto overscroll-contain">
               {groups.map((group) => (
                 <CommandGroup key={group.heading} heading={group.heading}>
                   {group.options.map(({ lora, added }) => (
@@ -149,17 +151,24 @@ export function LoraAddMenu({
                 </CommandGroup>
               ))}
             </div>
-            {groups.length > 0 && <CommandSeparator />}
-            <CommandGroup>
-              {customId ? (
+            {groups.length > 0 && <CommandSeparator className="shrink-0" />}
+            <CommandGroup className="shrink-0">
+              {custom ? (
                 <CommandItem
                   value={CUSTOM_ROW}
-                  onSelect={() => add({ id: customId, weight: 1 }, false)}
+                  disabled={custom.added}
+                  data-checked={custom.added}
+                  onSelect={() => add({ id: custom.id, weight: 1 }, false)}
                   className="cursor-pointer"
                 >
                   <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                    Use <span className="font-mono text-xs">{customId}</span>
+                    Use <span className="font-mono text-xs">{custom.id}</span>
                   </span>
+                  {custom.added && (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      Added
+                    </span>
+                  )}
                 </CommandItem>
               ) : (
                 <CommandItem

@@ -49,12 +49,15 @@ export function loraAddGroups(
   })).filter((g) => g.options.length > 0);
 }
 
-/** A typed `owner/name` (or `owner/name:file`) not already listed, offered as a Hugging Face id. */
+/** A typed `owner/name` (or `owner/name:file`) not in the catalog, offered as a Hugging Face id; `added` when a row has it. */
 export function customLoraId(
   query: string,
   catalog: readonly DiffusionLoraInfo[],
-): string | null {
+  takenIds: ReadonlySet<string>,
+): { id: string; added: boolean } | null {
   const id = query.trim();
   if (!id.includes("/") || /\s/.test(id)) return null;
-  return catalog.some((l) => l.id === id) ? null : id;
+  return catalog.some((l) => l.id === id)
+    ? null
+    : { id, added: takenIds.has(id) };
 }

@@ -1925,7 +1925,8 @@ export function ImagesPage({
     () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
     [availableLoras],
   );
-  const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id)), [loras]);
+  // Trimmed like the request payload, whose duplicate-id check this mirrors.
+  const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
   // Row whose id field mounts focused: set when Add LoRA adds a row for typing an id.
   const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
