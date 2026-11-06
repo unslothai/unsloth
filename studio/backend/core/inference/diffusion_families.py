@@ -1205,8 +1205,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "chroma",
         comfy_shift_node = "sd3",
         label = "Chroma",
-        # A ComfyUI fp8 file computes in fp8, as ComfyUI does (1.78x per step on RTX 6000 Ada). Auto never
-        # re-quantizes bf16 or GGUF weights, which ComfyUI runs unquantized; an explicit fp8 / int8 request is kept.
+        # fp8 files compute in fp8 as in ComfyUI; auto never quantizes bf16 / GGUF weights, which ComfyUI runs unquantized.
         profile = FamilyProfile(
             scheme_deny = frozenset({"nvfp4", "mxfp8"}),
             auto_scheme_skip = frozenset({"fp8", "int8"}),

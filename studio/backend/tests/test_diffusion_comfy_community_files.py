@@ -414,8 +414,6 @@ def test_family_entries():
 
 
 def test_a_chroma_fp8_file_computes_in_fp8_and_auto_never_requantizes_chroma(monkeypatch):
-    """A ComfyUI fp8 file's layers take the fp8 runtime, as ComfyUI computes them; auto never quantizes bf16 or GGUF
-    Chroma weights, which ComfyUI runs unquantized; an explicit int8 / fp8 request is honoured."""
     import types
 
     import core.inference.diffusion_transformer_quant as tq
