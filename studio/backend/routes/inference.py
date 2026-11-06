@@ -8189,7 +8189,9 @@ def _note_replay_launch(llama_backend, request: LoadRequest) -> None:
     # Saved settings are re-read on reload, so a reset one must not come back from here.
     _, override = resolve_override_for_load(
         request.model_path,
-        request._override_alias_id or request._advertised_id,
+        request._override_alias_id
+        or request._advertised_id
+        or _snapshot_repo_or_self(request.model_path, require_cache = True),
         request.gguf_variant,
     )
     owned = model_override_load_kwargs(override, is_gguf = True)
@@ -8215,6 +8217,7 @@ def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
             kwargs["llama_extra_args"],
             override_kwargs,
             strip_offload = override_kwargs.get("gpu_memory_mode") == "manual",
+            strip_tensor_split = "gpu_ids" in override_kwargs,
             strip_load_mode = "load_mode" in override_kwargs,
             strip_load_mode_aliases = "load_mode" in override_kwargs,
         )

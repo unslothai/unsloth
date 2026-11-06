@@ -3188,6 +3188,35 @@ def test_idle_reload_uses_saved_auto_layers_over_a_freed_cpu_only_launch(monkeyp
     assert (reload.gpu_memory_mode, reload.gpu_layers) == ("manual", -1)
 
 
+def test_idle_reload_strips_a_freed_split_flag_the_saved_pin_replaces(monkeypatch):
+    async def _resolves(ids, kind = "physical"):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    launch = {**_CUSTOM_LAUNCH, "llama_extra_args": ["--tensor-split", "2,1", "--no-warmup"]}
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = launch)
+    saved = {"org/A-GGUF": {"gpu_memory_mode": "manual", "gpu_layers": 99, "gpu_ids": [0, 1]}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.llama_extra_args == ["--no-warmup"]
+
+
+def test_hub_snapshot_load_does_not_record_its_saved_settings_as_launch(monkeypatch):
+    path = "/hf/models--org--A-GGUF/snapshots/abc"
+    monkeypatch.setattr(inference_route, "_inside_hf_cache", lambda p: True)
+    saved = {"org/A-GGUF": {"kv_cache_dtype": "q8_0"}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    backend = SimpleNamespace()
+    inference_route._note_replay_launch(
+        backend,
+        LoadRequest(
+            model_path = path, gguf_variant = "Q4_K_M", max_seq_length = 8192, cache_type_kv = "q8_0"
+        ),
+    )
+    assert backend.replay_launch == {"max_seq_length": 8192}
+
+
 def test_idle_reload_replays_only_fields_the_launch_set(monkeypatch):
     rec = _idle_unload_a_custom_launch(monkeypatch, launch = {"max_seq_length": 8192})
     _reload_unnamed()
