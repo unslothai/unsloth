@@ -2912,7 +2912,6 @@ def plan_diffusion_memory(
             flat_streamed = policy == OFFLOAD_GROUP and stream_transformer
             policy, stream_text_encoders, stream_transformer, tile, reason = faster
             if flat_streamed and policy == OFFLOAD_GROUP and not stream_transformer:
-                # read by prefer_whole_module_offload: the flat pick it would have priced streamed the denoiser
                 estimates["calibrated_over_streamed_transformer"] = 1
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
@@ -4272,8 +4271,7 @@ def prefer_whole_module_offload(
     """``refined``, or whole-module offload in its place where it beats streaming. With ``steps`` the switch is
     priced from this card's measured bandwidth and bf16 throughput (RTX PRO 6000 streams faster at 4 steps, B200 does
     not); unmeasurable or without ``steps`` it is kept. Plain bf16 only: an fp16 T4 run pointed the other way.
-    A ``_CALIBRATED_KEEPS_WHOLE_MODULE`` family's measured resident-transformer plan is priced as the streamed plan it
-    replaced: whole-module offload where it was taken before, else the resident plan.
+    A ``_CALIBRATED_KEEPS_WHOLE_MODULE`` family's measured plan is priced as the streamed plan it replaced.
     """
     switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
     if switch in ("0", "off", "false", "no", "never"):
@@ -4347,7 +4345,6 @@ def prefer_whole_module_offload(
                     if logger is not None:
                         logger.info("diffusion.memory: %s", declined)
                     if calibrated:
-                        # the resident transformer beats the streaming that was priced
                         return refined
                     if per_request_whole_enabled():
                         try:
@@ -4368,7 +4365,7 @@ def prefer_whole_module_offload(
             logger.info("diffusion.memory: %s", reason)
         kept = dict(refined.estimates)
         if calibrated:
-            # the flat whole-module plan: the generate guard prices it as before the measured row
+            # the generate guard prices it as main's flat whole-module plan
             kept.pop("calibrated_headroom_mib", None)
         return replace(
             refined,
