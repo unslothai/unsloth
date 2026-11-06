@@ -14,14 +14,23 @@ function ruleAt(head: string): string {
   return CSS.slice(at, CSS.indexOf("}", at) + 1);
 }
 
-test("the glass dialog blurs on a pseudo-element layer, not on itself", () => {
+test("Settings blurs on a pseudo-element layer; dialogs that scroll their own box keep the direct blur", () => {
   const dialog = ruleAt('html[data-glass][data-glass-menus] [data-slot="dialog-content"] {');
-  assert.doesNotMatch(dialog, /backdrop-filter/, "a backdrop-filter on the dialog re-runs for every scrolled frame");
-  assert.match(dialog, /isolation: isolate;/, "keeps the z-index -1 layer inside the dialog");
-  const layer = ruleAt('html[data-glass][data-glass-menus] [data-slot="dialog-content"]::before {');
+  assert.match(dialog, /\n\s*backdrop-filter: blur\(max\(var\(--glass-blur\), 24px\)\) saturate\(var\(--glass-saturate\)\);/,
+    "an absolute layer would scroll away inside dialogs whose own box scrolls (overflow-y-auto)");
+  const settings = ruleAt('html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog] {');
+  assert.match(settings, /\n\s*backdrop-filter: none;/, "a backdrop-filter on the dialog re-runs for every scrolled frame");
+  assert.match(settings, /isolation: isolate;/, "keeps the z-index -1 layer inside the dialog");
+  const layer = ruleAt('html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before {');
   assert.match(layer, /z-index: -1;/);
   assert.match(layer, /will-change: transform;/);
   assert.match(layer, /pointer-events: none;/);
   assert.match(layer, /inset: 0;/);
   assert.match(layer, /\n\s*backdrop-filter: blur\(max\(var\(--glass-blur\), 24px\)\) saturate\(var\(--glass-saturate\)\);/);
+});
+
+test("the Settings shell never scrolls, so its blur layer stays put", () => {
+  const settings = readSrc("features/settings/settings-dialog.tsx");
+  assert.match(settings, /data-settings-dialog/);
+  assert.match(settings, /"settings-surface [^"]*overflow-hidden"/);
 });

@@ -6848,7 +6848,8 @@ html[data-glass^="liquid"][data-glass-menus] :is(.tooltip-compact, .tooltip-rich
 }
 html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(min(100%, calc(var(--glass-tint) + 40%)), var(--glass-read-floor, 0%), var(--glass-menu-floor)) * var(--glass-opacity, 1))), transparent);
-  isolation: isolate;
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
   --background: transparent;
   --popover: transparent;
   --sidebar: color-mix(in srgb, var(--glass-page-card) 35%, transparent);
@@ -6867,10 +6868,17 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   --color-accent: var(--glass-hover);
   --color-sidebar-accent: var(--glass-hover);
 }
-/* The dialog's blur lives on its own layer underneath it. On the dialog itself, Chromium re-ran the blur for
-   every frame its content scrolled; a pseudo-element's backdrop is left alone while only the content above it
-   moves, which takes about 40% off the CPU of scrolling Settings. The look is unchanged to the eye. */
-html[data-glass][data-glass-menus] [data-slot="dialog-content"]::before {
+/* Settings blurs on its own layer underneath it. On the dialog itself, Chromium re-ran the blur for every frame
+   its panes scrolled; a pseudo-element's backdrop is left alone while only the content above it moves, which
+   takes about 40% off the CPU of scrolling Settings. The look is unchanged to the eye. Only Settings: its
+   shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
+   layer away with its content and lose the blur. */
+html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  isolation: isolate;
+}
+html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before {
   content: "";
   position: absolute;
   inset: 0;
