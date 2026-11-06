@@ -6254,6 +6254,15 @@ html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-back
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
 .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer { --composer-shadow: none; }
 
+/* WebKit only (data-glass-layers, set by WindowMaterialMount): give the children of the large glass
+   surfaces their own layers, so scrolling or typing inside one repaints that layer instead of
+   re-blurring the surface's shadows and backdrop. Appearance is unchanged; opacity, unlike transform,
+   leaves containing blocks alone, so positioned descendants stay where they were. Each child is also
+   a stacking context, so an inline (non-portaled) dropdown nested in one child cannot rise above a
+   later sibling: give that child its own z-index (Prompt Storage's search toolbar is relative z-10). */
+html[data-glass][data-glass-layers] :is([data-slot="dialog-content"], [data-slot="sidebar-inner"], .unsloth-composer-surface, .unsloth-files-panel) > * {
+  will-change: opacity;
+}
 /* Glass materials (html[data-glass]): unprefixed backdrop-filter goes last, the minifier keeps only the last of the pair and Chromium ignores -webkit-. */
 html[data-glass] {
   --glass-tint: var(--glass-tint-base);
@@ -6858,6 +6867,27 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   --color-secondary: var(--secondary);
   --color-accent: var(--glass-hover);
   --color-sidebar-accent: var(--glass-hover);
+}
+/* Settings blurs on its own layer underneath it. On the dialog itself, Chromium re-ran the blur for every frame
+   its panes scrolled; a pseudo-element's backdrop is left alone while only the content above it moves, which
+   takes about 36% off the CPU of scrolling Settings. The look is unchanged to the eye. Only Settings: its
+   shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
+   layer away with its content and lose the blur. Not on WebKit (data-glass-layers), where the layer costs
+   about 9% more; no will-change, which made the Style dropdown inside Settings slower to open. */
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  isolation: isolate;
+}
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
 }
 /* Picture controls (dark:bg-neutral-700) stay solid on purpose. */
 html.dark[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] [class*="dark:hover:bg-neutral-600"]:not([class*="dark:bg-neutral-700"]):hover {

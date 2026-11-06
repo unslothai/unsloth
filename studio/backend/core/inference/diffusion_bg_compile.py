@@ -137,6 +137,21 @@ def warm_triton_key(logger: Any = None) -> bool:
     return True
 
 
+def warm_inductor_key(logger: Any = None) -> bool:
+    """Fill inductor's per-process ``torch_key()`` (a hash of torch's sources), paid by the first compile otherwise."""
+    try:
+        from torch._inductor.codecache import torch_key
+    except Exception:  # noqa: BLE001 - another torch layout: the first compile computes it as before
+        return False
+    try:
+        torch_key()
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: inductor key warm-up skipped: %s", exc)
+        return False
+    return True
+
+
 def warm_engage_imports(logger: Any = None) -> int:
     """Model-free first-use work of the engagement; returns how many steps ran."""
 
@@ -173,6 +188,7 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
             t0 = time.perf_counter()
             warm_compile_pool(logger)
             warm_triton_key(logger)
+            warm_inductor_key(logger)
             n = warm_engage_imports(logger)
             if logger is not None:
                 logger.info(
@@ -757,6 +773,40 @@ class InlineFloatSeeds:
 
     def describe(self) -> dict:
         return {"float_seeds": self.float_seeds, "float_seeds_learned": self.float_seeds_learned}
+
+
+def float_seed_dits(pipe: Any) -> list:
+    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
+    try:
+        from .diffusion_speed import _guarded_dits
+
+        dits = []
+        for dit in _guarded_dits(pipe):
+            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
+            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
+                dits.append(dit)
+        return dits
+    except Exception:  # noqa: BLE001 - no seeds, main's compile
+        return []
+
+
+@contextlib.contextmanager
+def seed_before_first_forward(float_seeds: Any):
+    """Also seed at the first DiT forward, for a loop that opens no progress bar (H3 modular's is its loop wrapper's)."""
+    handles = []
+
+    def _pre(*_args: Any) -> None:
+        float_seeds.seed()
+
+    try:
+        for module in list(getattr(float_seeds, "modules", None) or ()):
+            with contextlib.suppress(Exception):
+                handles.append(module.register_forward_pre_hook(_pre))
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
 
 
 def load_time_enabled() -> bool:

@@ -14668,3 +14668,110 @@ def test_a_pass_that_never_decodes_reads_the_placement_once_it_returns(
     monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "resident")
 
     assert backend.generate(prompt = "p", steps = 4)["denoiser_offload"] == "resident"
+
+
+class _SeedsProbe:
+    """Records when generate() seeds and keeps the first inline compile's float specialisations."""
+
+    def __init__(
+        self,
+        events,
+        modules = (),
+    ):
+        self.events = events
+        self.modules = list(modules)
+
+    def seed(self):
+        if "seed" not in self.events:
+            self.events.append("seed")
+
+    def keep(self):
+        self.events.append("keep")
+
+
+def _loop_pipe(
+    pipe,
+    events,
+    dit = None,
+):
+    """The fake pipe as a diffusers loop: a progress bar, the denoiser, then the VAE decode."""
+
+    class _LoopPipe(type(pipe)):
+        def progress_bar(self, *args, **kwargs):
+            return contextlib.nullcontext()
+
+        def __call__(self, **kwargs):
+            if dit is None:
+                with self.progress_bar(total = 2):
+                    events.append("denoiser")
+            else:
+                dit()
+            self.vae.decode()
+            return super().__call__(**kwargs)
+
+    pipe.__class__ = _LoopPipe
+    pipe.vae = types.SimpleNamespace(decode = lambda *a, **k: events.append("decode"))
+
+
+def test_first_compiled_render_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """An inline compile (no background compile) pre-seeds the learned float specialisations, as video does."""
+    backend = _loaded_backend(tmp_path)
+    events: list = []
+    asked: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_inline_float_seeds",
+        lambda self, state: asked.append(state) or _SeedsProbe(events),
+    )
+    _loop_pipe(backend._state.pipe, events)
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert asked == [backend._state]
+    assert events[:2] == ["seed", "denoiser"]
+    assert events.index("keep") < events.index("decode")
+    assert events.count("keep") == 1
+
+
+def test_first_compiled_render_seeds_at_the_first_dit_forward_without_a_progress_bar(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = _loaded_backend(tmp_path)
+    events: list = []
+
+    class _Dit:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_pre_hook(self, fn):
+            self.hooks.append(fn)
+            return types.SimpleNamespace(remove = lambda: self.hooks.remove(fn))
+
+        def __call__(self):
+            for hook in list(self.hooks):
+                hook(self, ())
+            events.append("denoiser")
+
+    dit = _Dit()
+    monkeypatch.setattr(
+        DiffusionBackend, "_inline_float_seeds", lambda self, state: _SeedsProbe(events, [dit])
+    )
+    _loop_pipe(backend._state.pipe, events, dit = dit)
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert events[:2] == ["seed", "denoiser"]
+    assert dit.hooks == []
+
+
+def test_a_background_compile_render_takes_no_inline_seeds(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion_bg_compile as bgc
+
+    backend = _loaded_backend(tmp_path)
+    asked: list = []
+    monkeypatch.setattr(
+        DiffusionBackend, "_inline_float_seeds", lambda self, state: asked.append(state) or None
+    )
+    with bgc.auxiliary_pass():
+        backend.generate(prompt = "a crop inpaint", steps = 2)
+    assert asked == []
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert asked == [backend._state]

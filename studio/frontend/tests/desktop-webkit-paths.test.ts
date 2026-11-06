@@ -97,7 +97,7 @@ test("an offscreen fence update skipped under a held pointer or selection is ret
     /if \(selected \|\| inputPointerHeld\(\)\) \{[^}]*heldLastFrame = true;\s*return;\s*\}/,
     "releasePointer and selectionchange remeasure only after a held frame, so a skip must mark one or a fence that entered view mid-drag stays plain",
   );
-  assert.match(defer, /const releasePointer = \(\): void => \{\s*if \(pointerHeld === null\) return;\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/);
+  assert.match(defer, /const releasePointer = \(\): void => \{\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/, "touch never sets pointerHeld, so the release must not be gated on it (behaviour: code-fence-offscreen-restore.test.ts)");
 });
 
 test("settled WebKitGTK fences only line-window themselves while code wrapping is off", () => {

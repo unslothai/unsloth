@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from typing import Any
 
 from .diffusion_patch_backend import apply_patch, revert_patch
@@ -45,6 +46,8 @@ _ENV_FUSED_Q8_0 = "UNSLOTH_DIFFUSION_GGUF_FUSED_Q8_0"
 _FORWARD_ATTR = "forward_native"
 _Q8_0 = 8  # gguf.GGMLQuantizationType.Q8_0
 _Q8_0_TYPE_SIZE = 34  # one fp16 scale + 32 int8 codes per block
+# torch 2.6 inductor miscompiles the fused kernel (wrong weights on CUDA, no build on CPU); 2.7.1+ is bit-identical.
+_FUSED_Q8_0_MIN_TORCH = (2, 7)
 _fused_q8_0_installed = False
 
 
@@ -74,6 +77,11 @@ def _q8_0_dequant_cast(
     """Q8_0 bytes ``(rows, n_blocks * 34)`` -> ``(rows, n_blocks * 32)`` weight in ``dtype``; ``blocks_fn`` is the
     (compiled) block dequant, eager by default. The final reshape is a free view of the contiguous block output."""
     return (blocks_fn or _q8_0_blocks_dequant_cast)(raw, dtype).reshape(raw.shape[0], -1)
+
+
+def _torch_supports_fused_q8_0(version: Any) -> bool:
+    parts = re.match(r"\s*(\d+)\.(\d+)", str(version))
+    return parts is not None and (int(parts.group(1)), int(parts.group(2))) >= _FUSED_Q8_0_MIN_TORCH
 
 
 def is_fused_q8_0_installed() -> bool:
@@ -164,6 +172,8 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
     try:
         import torch  # noqa: PLC0415
 
+        if not _torch_supports_fused_q8_0(torch.__version__):
+            return False
         compiled = torch.compile(_q8_0_blocks_dequant_cast, dynamic = True)
         blocks_fn = _guard(compiled, _q8_0_blocks_dequant_cast, logger)
         stock_forward = getattr(linear_cls, _FORWARD_ATTR)
