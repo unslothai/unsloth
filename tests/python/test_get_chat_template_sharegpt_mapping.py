@@ -126,3 +126,16 @@ def test_mapping_that_only_renames_the_content_key(name):
 
     assert _render(mapped, renamed, True) == expected
     assert _render(mapped, role_content, True) == expected
+
+
+@pytest.mark.parametrize("name", ["gpt-oss", "qwen3-instruct"])
+def test_sharegpt_mapping_with_content_less_tool_call_first(name):
+    call = [{"type": "function", "function": {"name": "f", "arguments": {}}}]
+    sharegpt = [{"from": "gpt", "tool_calls": call}, {"from": "human", "value": "ok"}]
+    role_content = [{"role": "assistant", "tool_calls": call}, {"role": "user", "content": "ok"}]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, False)
+    mapped = get_chat_template(_tokenizer(), name, mapping = SHAREGPT)
+
+    assert "ok" in expected
+    assert _render(mapped, sharegpt, False) == expected
