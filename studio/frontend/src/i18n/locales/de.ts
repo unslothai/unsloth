@@ -2530,6 +2530,10 @@ export const de = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Umrandung der Elemente",
+          description: "Stärke der Ränder von Schaltflächen, Feldern, Karten und Menüs.",
+        },
         reduceMotion: {
           label: "Bewegung reduzieren",
           description: "Animationen reduzieren oder Systemeinstellung übernehmen.",

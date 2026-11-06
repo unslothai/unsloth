@@ -4,7 +4,9 @@ import test from "node:test";
 import {
 	MATERIALS,
 	LENS_SCALE,
+	inScope,
 	lensDrawn,
+	sanitizeScope,
 	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
@@ -16,6 +18,30 @@ test("glass material repairs malformed persisted data", () => {
 	assert.equal(sanitizeMaterial("glass"), "solid");
 	assert.equal(sanitizeMaterial({}), "solid");
 	for (const material of MATERIALS) assert.equal(sanitizeMaterial(material), material);
+});
+
+test("the glass Show on setting keeps old records on every page and maps routes like the background", () => {
+	assert.equal(sanitizeScope(undefined, "all"), "all");
+	assert.equal(sanitizeScope("pages", "all"), "all");
+	assert.equal(sanitizeScope("chats", "all"), "chats");
+	assert.deepEqual(
+		(["newChat", "chat", "page"] as const).map((route) => [inScope("newChat", route), inScope("chats", route), inScope("all", route)]),
+		[[true, true, true], [false, true, true], [false, false, true]],
+	);
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	assert.match(material, /scope: sanitizeScope\(stored\?\.scope, "all"\)/);
+	// Out of scope the page draws solid: no glass attribute, no glass menus, no lens or plain backdrop.
+	assert.match(material, /const applied = shown === "solid" \|\| !here \? null : shown;/);
+	assert.match(material, /menus && material !== "solid" && material !== "transparent" && here,/);
+	for (const file of ["lens.tsx", "mount.tsx", "background.tsx"]) {
+		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
+		assert.match(source, /useAppliedMaterial\(\)/, file);
+	}
+	// Pages without the image still get the plain glass canvas; only macOS draws its own.
+	const mount = readFileSync(new URL("../src/features/chat-background/mount.tsx", import.meta.url), "utf8");
+	assert.match(mount, /return backdrop && ready && material !== "solid" && material !== "macos" \? \(/);
+	const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
+	assert.match(root, /<WindowMaterialMount route=\{hideNavbar \? undefined : isChatRoute \? "chat" : "page"\} \/>/);
 });
 
 test("every glass material has its stylesheet tokens", () => {
@@ -293,31 +319,32 @@ test("light glass New chat lifts the wallpaper along a curve that still tracks t
 	assert.ok(lift(0.9) - lift(0.75) > 0.07 && lift(1) === 1 && lift(0) === 0);
 });
 
-test("light glass pages use the white control glass and a lighter card sheet, edged with inner light", () => {
+test("light glass pages use the white control glass and a lighter card sheet, edged with an outline and inner light", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const light = String.raw`html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\]`;
-	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-inner\\);`));
+	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.elevated-card > \\[class~="bg-card"\\] \\{\\n  background-color: transparent;\\n  box-shadow: inset -1px 0 0 var\\(--page-glass-divider\\), inset 0 -1px 0 var\\(--page-glass-divider\\);`));
 	assert.match(css, new RegExp(`${light} :is\\(\\.elevated-card, \\.library-card\\) \\{\\n  box-shadow: var\\(--page-glass-card-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.glass-divider \\{\\n  border-color: var\\(--page-glass-divider\\);`));
-	assert.match(css, new RegExp(`${light} \\.unsloth-model-selector-trigger \\{\\n  background-color: var\\(--glass-control\\) !important;\\n  box-shadow: var\\(--glass-light-inner\\);`));
+	assert.match(css, new RegExp(`${light} \\.unsloth-model-selector-trigger \\{\\n  background-color: var\\(--glass-control\\) !important;\\n  box-shadow: var\\(--glass-light-edge\\);`));
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /const DIVIDER = "glass-divider /);
 	assert.match(api, /const INSET =\n  "glass-inset /);
 });
 
-test("light glass API cards trade the outline for a thinner fill and inner glass light", () => {
+test("light glass API cards use a thinner fill with the outlined glass edge", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-inner\);/);
+	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
 	assert.match(css, /\.api-monitor-page \.elevated-card:has\(> \[class~="bg-card"\]\) \{\n  clip-path: inset\(0 1px 1px 0 round var\(--radius-2xl\)\);/);
 });
 
-test("light glass trades grey outlines for inner light on the sidebar, model buttons and status chip", () => {
+test("light glass outlines model buttons and the status chip, but not the sidebar", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /  --glass-light-inner: inset 0 1px 1px rgb\(255 255 255 \/ \.7\), inset 0 16px 30px -20px rgb\(255 255 255 \/ \.55\), inset 0 -18px 34px -20px rgb\(255 255 255 \/ \.4\);/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-slot="sidebar-inner"\] \{\n  border-color: transparent;\n  box-shadow: none;/);
-	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-inner\);/);
-	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-inner\);/);
+	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-edge\);/);
+	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-edge\);/);
+	assert.match(css, /  --glass-light-edge: inset 0 0 0 1px color-mix\(in srgb, var\(--foreground\) var\(--element-outline, 12%\), transparent\), var\(--glass-light-inner\);/);
 });
 
 test("light glass draws no grey outlines outside the composer", () => {
@@ -335,15 +362,15 @@ test("light glass draws no grey outlines outside the composer", () => {
 	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });
 
-test("light glass pages drop outlines from boxed panels but keep checkboxes", () => {
+test("light glass pages keep the borders of boxed panels and select triggers", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\], :focus-visible, \[aria-invalid="true"\]\) \{\n  border-color: transparent;/);
+	assert.doesNotMatch(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\], :focus-visible, \[aria-invalid="true"\]\) \{\n  border-color: transparent;/);
 });
 
 test("light glass border clearing leaves focused and invalid fields their ring border", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const cleared = [...css.matchAll(/([^{}]*)\{\n  border-color: transparent;\n\}/g)].map(([, sel]) => sel).filter((sel) => sel.includes('[data-wallpaper-route="page"]') && sel.includes(":not(.dark)"));
-	assert.ok(cleared.length >= 2);
+	assert.ok(cleared.length >= 1);
 	for (const sel of cleared) assert.match(sel, /:focus-visible, \[aria-invalid="true"\]\)/, sel);
 });
 
@@ -352,4 +379,25 @@ test("focused glass surfaces on pages show their Tailwind focus ring over the gl
 	assert.match(css, /\[data-slot="sidebar-inset"\] :focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow, 0 0 #0000\), var\(--tw-inset-ring-shadow, 0 0 #0000\), var\(--tw-ring-offset-shadow, 0 0 #0000\), var\(--tw-ring-shadow, 0 0 #0000\), var\(--tw-shadow, 0 0 #0000\) !important;/);
 	const cards = readFileSync(new URL("../src/features/library/components/library-cards.tsx", import.meta.url), "utf8");
 	assert.match(cards, /focus-visible:ring-2/);
+});
+
+test("transparent glass keeps each surface's colour at the strength's opacity, with no shadow or blur", () => {
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	// Its own attribute, so none of the frosted html[data-glass] rules apply on top.
+	assert.match(material, /if \(applied && applied !== "transparent"\) root\.setAttribute\("data-glass", applied\);/);
+	assert.match(material, /root\.toggleAttribute\("data-glass-clear", applied === "transparent"\);/);
+	assert.match(material, /root\.style\.setProperty\("--glass-fill-alpha", `\$\{strength\}%`\);/);
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
+	// On #root from the html copies: a token cannot mix itself, and portalled overlays stay solid.
+	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
+		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root \\[data-sonner-toaster\\] \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
+	}
+	// Sonner renders inside #root (no portal), so toasts re-resolve the tokens at full opacity.
+	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
+	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
+	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
+	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
+	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
+	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
 });

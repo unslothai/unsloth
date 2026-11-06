@@ -2701,6 +2701,10 @@ export const id = {
         contrast: {
           label: "Kontras",
         },
+        elementOutline: {
+          label: "Garis tepi elemen",
+          description: "Kekuatan garis tepi tombol, kolom, kartu, dan menu.",
+        },
         reduceMotion: {
           label: "Kurangi gerakan",
           description: "Kurangi animasi atau ikuti sistem Anda.",

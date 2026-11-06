@@ -2592,6 +2592,10 @@ export const th = {
         contrast: {
           label: "คอนทราสต์",
         },
+        elementOutline: {
+          label: "เส้นขอบองค์ประกอบ",
+          description: "ความเข้มของเส้นขอบปุ่ม ช่องกรอก การ์ด และเมนู",
+        },
         reduceMotion: {
           label: "ลดการเคลื่อนไหว",
           description: "ลดภาพเคลื่อนไหวหรือใช้ตามระบบ",

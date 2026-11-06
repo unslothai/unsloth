@@ -2689,6 +2689,10 @@ export const fa = {
         contrast: {
           label: "کنتراست",
         },
+        elementOutline: {
+          label: "حاشیهٔ عناصر",
+          description: "شدت حاشیهٔ دکمه‌ها، فیلدها، کارت‌ها و منوها.",
+        },
         reduceMotion: {
           label: "کاهش حرکت",
           description: "کاهش پویانمایی‌ها یا پیروی از سیستم.",

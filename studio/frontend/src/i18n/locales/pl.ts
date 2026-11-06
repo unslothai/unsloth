@@ -2733,6 +2733,10 @@ export const pl = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Obramowanie elementów",
+          description: "Intensywność obramowania przycisków, pól, kart i menu.",
+        },
         reduceMotion: {
           label: "Ogranicz ruch",
           description: "Ogranicz animacje lub dopasuj do ustawień systemu.",

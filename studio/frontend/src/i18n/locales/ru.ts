@@ -2511,6 +2511,10 @@ export const ru = {
         contrast: {
           label: "Контраст",
         },
+        elementOutline: {
+          label: "Контур элементов",
+          description: "Насыщенность границ кнопок, полей, карточек и меню.",
+        },
         reduceMotion: {
           label: "Уменьшить анимацию",
           description: "Уменьшить анимацию или использовать системную настройку.",

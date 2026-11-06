@@ -2495,6 +2495,10 @@ export const ko = {
         contrast: {
           label: "대비",
         },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
+        },
         reduceMotion: {
           label: "동작 줄이기",
           description: "애니메이션을 줄이거나 시스템 설정을 따릅니다.",

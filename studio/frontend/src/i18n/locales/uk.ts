@@ -2724,6 +2724,10 @@ export const uk = {
         contrast: {
           label: "Контраст",
         },
+        elementOutline: {
+          label: "Контур елементів",
+          description: "Насиченість меж кнопок, полів, карток і меню.",
+        },
         reduceMotion: {
           label: "Зменшити рух",
           description: "Зменшити анімацію або як у системі.",

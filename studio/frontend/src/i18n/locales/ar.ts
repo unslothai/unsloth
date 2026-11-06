@@ -2501,6 +2501,10 @@ export const ar = {
         contrast: {
           label: "التباين",
         },
+        elementOutline: {
+          label: "حدود العناصر",
+          description: "قوة الحدود حول الأزرار والحقول والبطاقات والقوائم.",
+        },
         reduceMotion: {
           label: "تقليل الحركة",
           description: "قلّل الرسوم المتحركة أو اتبع إعداد نظامك.",

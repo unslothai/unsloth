@@ -2507,6 +2507,10 @@ export const hi = {
         contrast: {
           label: "कंट्रास्ट",
         },
+        elementOutline: {
+          label: "तत्वों की आउटलाइन",
+          description: "बटन, फ़ील्ड, कार्ड और मेनू की बॉर्डर की तीव्रता।",
+        },
         reduceMotion: {
           label: "एनिमेशन कम करें",
           description: "एनिमेशन कम करें या सिस्टम सेटिंग का पालन करें।",
