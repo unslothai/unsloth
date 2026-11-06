@@ -3281,8 +3281,16 @@ def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPl
     )
 
 
-def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
-    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together."""
+def refine_memory_plan_for_components(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    headroom_mib: int = 0,
+) -> MemoryPlan:
+    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together.
+
+    ``headroom_mib``: what the component's own phase holds beside it (a whole-module onload holds the component AND
+    that phase's activations at once); the caller prices it per phase. 0 (the image path) is the bare size check."""
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
@@ -3313,9 +3321,18 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
     if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
-    if largest_mib <= int(budget):
+    beside = max(0, int(headroom_mib or 0))
+
+    def need(name: str) -> int:
+        # the headroom is the denoise phase's: a text encoder runs in its own phase and keeps the bare check
+        return streamed_sizes[name] + (beside if streamable[name][1] == "block_level" else 0)
+
+    largest_name = max(streamed_sizes, key = need)
+    largest_mib = streamed_sizes[largest_name]
+    if need(largest_name) <= int(budget):
         return plan
+    if streamable[largest_name][1] != "block_level":
+        beside = 0
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
     if resident_mib > int(budget):
@@ -3330,8 +3347,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         estimates = estimates,
         reasons = plan.reasons
         + (
-            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
-            "device budget; streaming transformer blocks and text-encoder layers",
+            f"loaded {largest_name} is {largest_mib} MiB"
+            + (f" (+{beside} MiB runtime headroom)" if beside else "")
+            + f", above the {int(budget)} MiB device budget; streaming transformer blocks and text-encoder layers",
         ),
     )
 
