@@ -597,7 +597,6 @@ def test_a_launcher_with_nothing_staged_beside_it_is_still_damage(site_packages)
     assert install_manifest.damaged_payload_files(PKG) == ["../Scripts/unsloth.exe is missing"]
 
 
-
 def test_a_launcher_restored_from_an_older_copy_is_not_damage(site_packages):
     """#16897: an update restored an older uv trampoline, shorter than RECORD says."""
     launcher = _launcher_case(site_packages)
@@ -616,6 +615,7 @@ def test_another_shortened_console_script_is_still_damage(site_packages):
     assert install_manifest.damaged_payload_files(PKG) == [
         f"../Scripts/demo.exe is 2 bytes, expected {size}"
     ]
+
 
 def test_an_unrelated_sibling_does_not_excuse_a_missing_file(site_packages):
     """Only the three names `_recover_missing_launcher` reads count."""
