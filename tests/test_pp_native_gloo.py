@@ -773,6 +773,9 @@ def test_layer_call_format_reads_tuple_loops():
 
 
 def test_layer_call_format_knows_the_renamed_checkpointing_layer():
+    class ActivationCheckpointingLayer(torch.nn.Module):
+        pass
+
     class Decoder(torch.nn.Module):
         gradient_checkpointing = True
 
