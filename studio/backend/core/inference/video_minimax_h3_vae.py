@@ -1481,6 +1481,8 @@ def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
             for lever, part in ((LEVER_FUSED_ENCODER, "encoder"), (LEVER_FUSED_DECODER, "decoder"))
             if getattr(getattr(vae, part, None), "_unsloth_fast_failed", False)
         ]
+        if getattr(vae, "__dict__", {}).get("_unsloth_h3_sol_vae_failed"):
+            failed.append("h3_sol_vae")
         optims = tuple(getattr(state, "speed_optims", None) or ())
         updated = tuple(o for o in optims if o not in failed)
         if updated != optims:

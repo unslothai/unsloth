@@ -69,6 +69,7 @@ from backend.utils.wheel_utils import (
     xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
+from backend.utils import rocm_flash_attn as _rocm_flash_attn
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -8056,7 +8057,7 @@ def _flash_attn_importable() -> bool:
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", "import flash_attn"],
+            [sys.executable, "-c", _rocm_flash_attn.IMPORT_PROBE],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
             timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
@@ -8111,6 +8112,9 @@ def _ensure_flash_attn() -> None:
     )
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
+    if env is not None and env.get("hip_version") and not IS_WINDOWS:
+        _ensure_rocm_triton_flash_attn(env, stale)
+        return
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and not (env or {}).get("hip_version") and _flash_attn_gpu_below_floor():
         # Unsloth only turns FlashAttention 2 on from sm80; a T4 would download it for nothing.
@@ -8173,6 +8177,66 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
+
+
+def _rocm_gfx_codes() -> list[str]:
+    try:
+        return _detect_amd_gfx_codes()
+    except Exception:
+        return []
+
+
+@contextlib.contextmanager
+def _temporary_environ(values: dict[str, str]):
+    saved = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _ensure_rocm_triton_flash_attn(env: dict[str, str], stale: bool) -> None:
+    """Best-effort Triton AMD flash-attn on ROCm RDNA3/4; failure leaves SDPA."""
+    reason = _rocm_flash_attn.install_skip_reason(
+        platform = sys.platform,
+        hip_version = env.get("hip_version"),
+        gfx_codes = _rocm_gfx_codes(),
+    )
+    if reason is not None:
+        _note(f"flash-attn (ROCm Triton backend) skipped: {reason}")
+        if stale:
+            _remove_stale_flash_attn()
+        return
+    with _install_heartbeat("flash-attn"):
+        deps_ok = pip_install_try(
+            "Installing flash-attn build dependencies",
+            "--no-cache-dir",
+            *_rocm_flash_attn.FLASH_ATTN_TRITON_AMD_BUILD_DEPS,
+        )
+        installed = False
+        if deps_ok:
+            with _temporary_environ(_rocm_flash_attn.FLASH_ATTN_TRITON_AMD_BUILD_ENV):
+                installed = pip_install_try(
+                    "Installing flash-attn (ROCm Triton backend)",
+                    "--no-build-isolation",
+                    "--no-deps",
+                    "--no-cache-dir",
+                    *(["--force-reinstall"] if stale else []),
+                    _rocm_flash_attn.FLASH_ATTN_TRITON_AMD_SPEC,
+                    constrain = False,
+                )
+    if installed and _flash_attn_importable():
+        _note("flash-attn installed (ROCm Triton backend)")
+        return
+    if _installed_distribution_version("flash-attn") is not None:
+        # An unimportable copy breaks diffusers and xformers imports: never leave one behind.
+        _remove_stale_flash_attn()
+    _step("warning", "Continuing without flash-attn (ROCm Triton backend did not install)", _warn)
 
 
 # The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
