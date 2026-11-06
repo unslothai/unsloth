@@ -2137,6 +2137,18 @@ html[data-chat-font] .aui-root {
 		pointer-events: auto;
 		will-change: transform;
 	}
+	/* The same for the explicit pointer-events-auto restorations (rows, toolbars, overlay buttons inside
+	   a pointer-events-none wrapper). Under a modal layer they stayed hit-testable, so wheel over one
+	   scrolled the list or page around it. Two places they can sit:
+	   - a dialog or menu that a nested modal menu has turned into a lower layer (Radix writes
+	     pointer-events: none on it; e.g. the Skills rows under Skill actions);
+	   - the page under the lock (modal layers portal to <body>, outside the sidebar inset).
+	   Class-keyed; the thread's own (about 100 at 100 turns) are left to its cover, so the lock toggle
+	   restyles only the few elsewhere. */
+	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto,
+	body[style*="pointer-events: none"] [data-slot="sidebar-inset"] .pointer-events-auto:not(.aui-thread-root *) {
+		pointer-events: none !important;
+	}
 
 	/* Firefox makes scrollable containers focusable; :where keeps specificity at zero. */
 	:where(div, main, section, aside, ul, ol):focus-visible {

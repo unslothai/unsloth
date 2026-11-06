@@ -120,3 +120,17 @@ test("the side pane sits under the same modal cover as the thread", () => {
   assert.match(readSrc("features/browser/browser-panel.tsx"), /data-slot="browser-panel"[\s\S]{0,600}"relative flex h-full min-h-0 flex-col overflow-hidden/);
   assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /<aside[\s\S]{0,200}"relative flex min-h-0 flex-col/);
 });
+
+test("pointer-events-auto restorations go inert outside the top modal layer", () => {
+  const css = readSrc("index.css");
+  const selector =
+    ':is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto,\n\tbody[style*="pointer-events: none"] [data-slot="sidebar-inset"] .pointer-events-auto:not(.aui-thread-root *)';
+  const at = css.indexOf(`${selector} {`);
+  assert.ok(at >= 0, "missing the lower-layer / page restoration rule");
+  const body = css.slice(at, css.indexOf("}", at));
+  assert.match(body, /pointer-events: none !important;/);
+  // The Skills rows (the confirmed case) restore pointer-events with exactly this class.
+  assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
+  // The page rule needs the inset's slot, which SidebarInset renders.
+  assert.match(readSrc("components/ui/sidebar.tsx"), /data-slot="sidebar-inset"/);
+});
