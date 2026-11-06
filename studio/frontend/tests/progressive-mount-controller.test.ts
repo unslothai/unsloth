@@ -18,6 +18,7 @@ import {
   alignAnchorCorrection,
   initialWindow,
   isCovered,
+  FAR_MOUNT_CHUNK,
   nextMountChunk,
   stepsToCover,
   watchProgressiveScroll,
@@ -430,7 +431,7 @@ test("subpixel reflows can be absorbed without issuing fractional scroll writes"
   assert.deepEqual(alignAnchorCorrection(-0.375, 0), { scroll: 0, inset: 0.375 });
 });
 
-test("WebKitGTK steps stay small near the reader and ramp to CHUNK_MESSAGES past the window reach", () => {
+test("WebKitGTK steps stay small near the reader and ramp to FAR_MOUNT_CHUNK past the window reach", () => {
   const near = 2;
   const reach = 2000;
   // Unknown geometry or a frontier within reach (or below the viewport top) keeps the small step.
@@ -447,7 +448,8 @@ test("WebKitGTK steps stay small near the reader and ramp to CHUNK_MESSAGES past
     chunk = nextMountChunk(chunk, reach + 1, near, reach);
     steps.push(chunk);
   }
-  assert.deepEqual(steps, [near, 8, CHUNK_MESSAGES, CHUNK_MESSAGES, CHUNK_MESSAGES, CHUNK_MESSAGES]);
+  assert.deepEqual(steps, [near, 8, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK]);
+  assert.ok(FAR_MOUNT_CHUNK <= 16, "larger far steps made ~1.4 s frames on CPU-painted WebKit");
   // A step after near ones ramps from the near size.
   assert.equal(nextMountChunk(near, reach + 1, near, reach), 8);
   // Coming back within reach (the reader scrolled up to the frontier) drops straight to the small step.
@@ -455,7 +457,7 @@ test("WebKitGTK steps stay small near the reader and ramp to CHUNK_MESSAGES past
   // The near step already being the cap (other engines) never changes it.
   assert.equal(nextMountChunk(CHUNK_MESSAGES, 10_000, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
   assert.equal(nextMountChunk(CHUNK_MESSAGES, null, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
-  // A 300-message thread past the reach covers in about 10 commits instead of about 142.
+  // A 300-message thread past the reach covers in about 20 commits instead of about 142.
   let current: MountWindow = initialWindow(300, false);
   let commits = 0;
   chunk = 0;
@@ -464,5 +466,5 @@ test("WebKitGTK steps stay small near the reader and ramp to CHUNK_MESSAGES past
     current = widen(current, 300, chunk);
     commits += 1;
   }
-  assert.ok(commits <= 12, `took ${commits} commits`);
+  assert.ok(commits <= 24, `took ${commits} commits`);
 });
