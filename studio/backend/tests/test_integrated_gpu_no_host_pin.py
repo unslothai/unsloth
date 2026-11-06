@@ -699,6 +699,8 @@ def test_only_deviceless_sites_ask_the_predicate_without_a_device():
         # device == "cuda" (the current device) is checked first
         ("core/training/diffusion_dit_trainer.py", "_build_latent_cache"),
         ("core/training/diffusion_dit_trainer.py", "_load_warm_conditioning"),
+        ("core/training/diffusion_dit_trainer.py", "_pin_caption_embeds"),
+        ("core/training/diffusion_h3_trainer.py", "_train_h3"),
         ("core/training/diffusion_lora_trainer.py", "_build_sdxl_latent_cache"),
     }
     bare = set()
