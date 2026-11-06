@@ -1175,7 +1175,12 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     return str(name or "")
 
 
-def _noop_result(reason: NoopReason, tool_name: str, *, final: bool = False) -> str:
+def _noop_result(
+    reason: NoopReason,
+    tool_name: str,
+    *,
+    final: bool = False,
+) -> str:
     if reason == "duplicate":
         follow_up = (
             "Provide the final answer now without calling more tools."
