@@ -239,7 +239,7 @@ test("the rule that closes the trace goes on the last thing before the answer", 
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
   assert.equal(
-    reasoning.match(/closesTrace && <ReasoningEndRule \/>/g)?.length,
+    reasoning.match(/closesTrace && <ReasoningEndRule capped=\{(?:capped|false)\} \/>/g)?.length,
     2,
   );
   assert.match(

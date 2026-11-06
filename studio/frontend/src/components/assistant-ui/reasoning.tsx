@@ -33,7 +33,6 @@ import {
   clearReasoningRound,
   foldIsActive,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   setReasoningRoundOpen,
@@ -504,105 +503,77 @@ function ReasoningBody({
   );
 }
 
-function useTailFlexBox(capped: boolean, streaming: boolean): boolean {
-  const [flexBox, setFlexBox] = useState(capped);
-  const next = reasoningTailFlexBox({ capped, streaming, previous: flexBox });
-  if (next !== flexBox) {
-    setFlexBox(next);
-  }
-  return next;
-}
+const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 
-// A fixed box (#11703): the newest lines while streaming, the start once finished. Clipped, not an inner
-// scroller, which split the reading anchor across two containers (#11704).
+// A fixed box (#11703) that scrolls on its own: it follows the newest lines while streaming until the
+// reader scrolls up, and fades an edge only while more is past it. Not clipped behind an Expand button.
 function ReasoningTail({
-  cappable,
-  expanded,
+  capped,
   streaming,
-  onExpandedChange,
   children,
 }: {
+  capped: boolean;
   streaming: boolean;
-  cappable: boolean;
-  expanded: boolean;
-  onExpandedChange: (expanded: boolean) => void;
   children: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
-  const capped = cappable && !expanded;
-  // Sticky while expanded: an unbounded box cannot measure its cap, and a trace only grows.
-  const [overflowing, setOverflowing] = useState(false);
+  const following = useRef(true);
   useLayoutEffect(() => {
     const box = boxRef.current;
-    const content = box?.firstElementChild as HTMLElement | null | undefined;
-    if (!cappable) {
-      setOverflowing(false);
+    const content = box?.firstElementChild;
+    if (!(capped && box && content)) {
+      box?.removeAttribute("data-more-below");
+      box?.removeAttribute("data-more-above");
       return;
     }
-    if (!capped || !box || !content) return;
-    const check = () => setOverflowing(content.offsetHeight > box.clientHeight);
-    const observer = new ResizeObserver(check);
+    if (streaming) following.current = true;
+    const below = () => box.scrollHeight - box.scrollTop - box.clientHeight;
+    // Attributes, not state: a scroll must not re-render the trace.
+    const markEdges = () => {
+      box.toggleAttribute("data-more-below", below() > 1);
+      box.toggleAttribute("data-more-above", box.scrollTop > 0);
+    };
+    const onResize = () => {
+      if (streaming && following.current) box.scrollTop = box.scrollHeight;
+      markEdges();
+    };
+    // Only the reader's own scroll stops the follow: rows mounting above shift scrollTop too.
+    let readerAt = Number.NEGATIVE_INFINITY;
+    const onReader = () => {
+      readerAt = performance.now();
+    };
+    const onScroll = () => {
+      const atBottom = below() < 24;
+      if (atBottom || performance.now() - readerAt < 250) following.current = atBottom;
+      markEdges();
+    };
+    const observer = new ResizeObserver(onResize);
     observer.observe(content);
     observer.observe(box);
-    check();
-    return () => observer.disconnect();
-  }, [cappable, capped]);
-  const clipped = capped && overflowing;
-  const flexBox = useTailFlexBox(capped, streaming);
+    box.addEventListener("scroll", onScroll, { passive: true });
+    for (const type of READER_SCROLL_EVENTS) box.addEventListener(type, onReader, { passive: true });
+    onResize();
+    return () => {
+      observer.disconnect();
+      box.removeEventListener("scroll", onScroll);
+      for (const type of READER_SCROLL_EVENTS) box.removeEventListener(type, onReader);
+    };
+  }, [capped, streaming]);
   return (
-    <>
-      <div
-        ref={boxRef}
-        data-slot="reasoning-tail"
-        data-capped={capped ? "" : undefined}
-        data-overflowing={clipped ? "" : undefined}
-        onFocus={(event) => {
-          // Clipped lines cannot scroll into view: a link focused in them expands the trace.
-          const target = event.target.getBoundingClientRect();
-          const box = event.currentTarget.getBoundingClientRect();
-          if (
-            clipped &&
-            (streaming ? target.top < box.top : target.bottom > box.bottom)
-          )
-            onExpandedChange(true);
-        }}
-        className={cn(
-          // The child rule stays on too: it is inert outside a flex box and toggling it restyles every row.
-          cappable && "[&>*]:shrink-0",
-          cappable && flexBox && "flex flex-col",
-          // A mask paints only inside its box: bleed into the side padding so list markers survive.
-          capped &&
-            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(18rem,40vh)] overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip",
-          capped && (streaming ? "justify-end" : "justify-start"),
-          clipped &&
-            (streaming
-              ? "[mask-image:linear-gradient(to_bottom,transparent,black_3rem)]"
-              : "[mask-image:linear-gradient(to_top,transparent,black_3rem)]"),
-        )}
-      >
-        {children}
-      </div>
-      {cappable && overflowing && (
-        <button
-          type="button"
-          data-slot="reasoning-show-full"
-          aria-expanded={expanded}
-          onClick={() => onExpandedChange(!expanded)}
-          className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {expanded ? "Collapse thinking" : "Expand thinking"}
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            aria-hidden={true}
-            className={cn(
-              "size-3.5 shrink-0 transition-transform duration-200 ease-out",
-              // Below the trace, so Collapse points up at what it folds away; -180, not 180, turns a quarter.
-              expanded ? "-rotate-180" : "-rotate-90",
-            )}
-          />
-        </button>
+    <div
+      ref={boxRef}
+      data-slot="reasoning-tail"
+      data-capped={capped ? "" : undefined}
+      className={cn(
+        // A mask paints only inside its box: bleed into the side padding so list markers survive.
+        capped &&
+          "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(22rem,48vh)] overflow-x-hidden overflow-y-auto px-[calc(1.25rem*var(--ui-space-scale,1))]",
+        // Most of the text's top padding moves outside the scroller, so scrolled lines stop short of the header.
+        capped && "mt-2 [&>[data-slot=reasoning-text]]:pt-1",
       )}
-    </>
+    >
+      {children}
+    </div>
   );
 }
 
@@ -626,12 +597,13 @@ const ReasoningGroupImpl: ReasoningGroupComponent = (props) => {
 };
 
 // Full --border: at 60% the line was nearly invisible on both themes.
-function ReasoningEndRule() {
+function ReasoningEndRule({ capped }: { capped: boolean }) {
   return (
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      className="mt-4 border-border border-t"
+      // Closer under a capped box, so its height goes to text.
+      className={cn(capped ? "mt-2" : "mt-4", "border-border border-t")}
     />
   );
 }
@@ -699,7 +671,7 @@ const FoldedReasoningRound: ReasoningGroupComponent = ({
       >
         {children}
       </ReasoningBody>
-      {closesTrace && <ReasoningEndRule />}
+      {closesTrace && <ReasoningEndRule capped={false} />}
     </div>
   );
 };
@@ -793,7 +765,6 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
-  const [tailExpanded, setTailExpanded] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -815,7 +786,6 @@ const ReasoningGroupBlock = ({
     setWasStreaming(isReasoningStreaming);
     if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setOverride(null);
-      setTailExpanded(false);
     }
   }
 
@@ -824,7 +794,6 @@ const ReasoningGroupBlock = ({
   if (lastVisibility !== visibility) {
     setLastVisibility(visibility);
     setOverride(null);
-    setTailExpanded(false);
   }
 
   const isOpen = resolveReasoningOpen({
@@ -912,15 +881,7 @@ const ReasoningGroupBlock = ({
         streaming={isReasoningStreaming}
         ref={reasoningContentRef}
       >
-        <ReasoningTail
-          cappable={capped}
-          expanded={tailExpanded}
-          streaming={isReasoningStreaming}
-          onExpandedChange={(expanded) => {
-            setTailExpanded(expanded);
-            if (expanded) handleOpenChange(true);
-          }}
-        >
+        <ReasoningTail capped={capped} streaming={isReasoningStreaming}>
           <ReasoningBody
             transcript={transcript}
             messageId={messageId}
@@ -929,12 +890,12 @@ const ReasoningGroupBlock = ({
               messageHasRenderableRenderHtmlTool
             }
             isStreaming={isReasoningStreaming}
-            bounded={capped && !tailExpanded}
+            bounded={capped}
           >
             {children}
           </ReasoningBody>
         </ReasoningTail>
-        {closesTrace && <ReasoningEndRule />}
+        {closesTrace && <ReasoningEndRule capped={capped} />}
       </ReasoningContent>
     </ReasoningRoot>
   );
