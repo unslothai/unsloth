@@ -3,6 +3,7 @@
 
 import codecs
 import json
+import contextlib
 import os
 import re
 import sys
@@ -301,6 +302,40 @@ def test_missing_resource_listing_refuses_a_swapped_directory(isolated_skills, t
         pytest.skip("cannot create symlinks here")
 
     assert skills._list_skill_files(root, identity) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
+    isolated_skills, tmp_path, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "queued")
+    (root / "scripts").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private-filename.txt").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+    queued = []
+    swapped = []
+
+    def swapping_scandir(target):
+        # Swap between queueing scripts/ as a real directory and scanning it.
+        if queued and not swapped:
+            (root / "scripts").rename(root / "scripts-old")
+            os.symlink(outside, root / "scripts", target_is_directory = True)
+            swapped.append(True)
+        with real_scandir(target) as scan:
+            entries = list(scan)
+        if any(entry.name == "scripts" for entry in entries):
+            queued.append(True)
+        return contextlib.nullcontext(entries)
+
+    monkeypatch.setattr(skills.os, "scandir", swapping_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("queued", "missing.txt", home = home)
+
+    assert swapped
+    assert "private-filename" not in str(error.value)
 
 
 def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):

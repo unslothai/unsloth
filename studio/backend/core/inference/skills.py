@@ -49,6 +49,7 @@ _OVERRIDES_NAME = "skill-overrides.json"
 _DIR_FD_OPENS = (
     hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
 )
+_SCANDIR_FD = _DIR_FD_OPENS and os.scandir in os.supports_fd
 _WINDOWS_RESERVED_STEMS = frozenset(
     {"con", "prn", "aux", "nul", "conin$", "conout$"}
     | {f"com{index}" for index in range(1, 10)}
@@ -1173,29 +1174,50 @@ def _list_skill_files(
             or os.path.samestat(os.stat(skill_dir, follow_symlinks = False), identity)
         )
 
+    def entries(parts: tuple[str, ...]) -> list:
+        # Same pinning as resource reads: no-follow descriptors, else per-component link checks.
+        if _SCANDIR_FD:
+            descriptor = _open_within(skill_dir, identity, parts)
+            try:
+                with os.scandir(descriptor) as scan:
+                    return sorted(scan, key = lambda entry: entry.name)
+            finally:
+                os.close(descriptor)
+        chain = [skill_dir.joinpath(*parts[: index + 1]) for index in range(len(parts))]
+
+        def unlinked() -> bool:
+            return not any(map(_is_linked_path, chain)) and pinned()
+
+        if not unlinked():
+            raise SkillError("Skill folder changed while it was listed.")
+        with os.scandir(skill_dir.joinpath(*parts)) as scan:
+            listed = sorted(scan, key = lambda entry: entry.name)
+        if not unlinked():
+            raise SkillError("Skill folder changed while it was listed.")
+        return listed
+
     found: list[str] = []
-    pending = [skill_dir]
+    pending: list[tuple[str, ...]] = [()]
     try:
-        # Iterative and budgeted: the hint must never recurse, stall the lock or follow a swap.
         if not pinned():
             return []
         while pending and max_dirs > 0:
             max_dirs -= 1
-            current = pending.pop(0)
-            with os.scandir(current) as scan:
-                entries = sorted(scan, key = lambda entry: entry.name)
-            for entry in entries:
-                path = Path(entry.path)
-                if entry.name.startswith(".") or _is_linked_path(path):
+            parts = pending.pop(0)
+            for entry in entries(parts):
+                linked = entry.is_symlink() or (
+                    not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name))
+                )
+                if entry.name.startswith(".") or linked:
                     continue
-                relative = path.relative_to(skill_dir).as_posix()
+                relative = "/".join((*parts, entry.name))
                 try:
                     size = len(relative.encode("utf-8"))
                 except UnicodeEncodeError:
                     continue
                 if entry.is_dir(follow_symlinks = False):
                     if size < MAX_SKILL_RESOURCE_PATH_BYTES:
-                        pending.append(path)
+                        pending.append((*parts, entry.name))
                     continue
                 if not entry.is_file(follow_symlinks = False):
                     continue
@@ -1203,6 +1225,8 @@ def _list_skill_files(
                     return found + ["..."] if pinned() else []
                 found.append(relative)
         return found if pinned() else []
+    except SkillError:
+        return []
     except (OSError, ValueError):
         return []
 
