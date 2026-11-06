@@ -187,7 +187,8 @@ def copy_cache_entries(entries):
         if not (_is_cache(entry) or isinstance(entry, (list, tuple))):
             raise TypeError(f"{type(entry).__name__} cannot be copied")
     copies = [_copy_value(entry, mx) for entry in entries]
-    mx.eval(list(_arrays(copies, mx)))
+    # Not mx.eval: a wait between prefill chunks idles the GPU.
+    mx.async_eval(list(_arrays(copies, mx)))
     return copies
 
 
@@ -473,7 +474,7 @@ def kv_skeleton(entries):
         else:
             return None
         skeleton.append(entry)
-    mx.eval(list(_arrays(skeleton, mx)))
+    mx.async_eval(list(_arrays(skeleton, mx)))
     return skeleton
 
 
@@ -516,7 +517,7 @@ def compact_sliding_windows(entries):
                 compacted.extend((entry.keys, entry.values))
     if compacted:
         import mlx.core as mx
-        mx.eval(compacted)
+        mx.async_eval(compacted)
 
 
 class VLMPromptSnapshotStore:
@@ -2142,6 +2143,19 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
+    """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from unsloth_zoo.mlx.loader import _mlx_vlm_only_text_model
+
+        config = _read_raw_config_json(model_name, hf_token) or {}
+        return bool(_mlx_vlm_only_text_model(config, config.get("model_type") or ""))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("unsloth_zoo text-route detection skipped for %s (%s)", model_name, exc)
+        return False
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -2263,6 +2277,69 @@ def _mlx_stream_detokenizer(source):
         logger.debug("MLX streaming detokenizer unavailable (%s)", exc)
         return None
     return independent
+
+
+@functools.cache
+def _eager_spm_detokenizer_class():
+    from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
+    class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
+        def __init__(
+            self,
+            tokenizer,
+            trim_space = True,
+        ):
+            self._trims_first_space = trim_space
+            super().__init__(tokenizer, trim_space = trim_space)
+
+        def reset(self):
+            super().reset()
+            self.trim_space = self._trims_first_space
+
+        # mlx-lm trims every flush while the text is still empty; only the first may be trimmed.
+        def _try_flush(self, force = False):
+            pending = self._unflushed
+            super()._try_flush(force)
+            if pending and not self._unflushed:
+                self.trim_space = False
+
+        def add_token(
+            self,
+            token,
+            skip_special_token_ids = (),
+        ):
+            if token not in skip_special_token_ids:
+                super().add_token(token)
+
+    return EagerSPMStreamingDetokenizer
+
+
+class _SpmPieces(list):
+    @property
+    def vocab(self):  # mlx-lm 0.31.x
+        return {piece: index for index, piece in enumerate(self)}
+
+    def convert_ids_to_tokens(self, ids):  # mlx-lm >= 0.32
+        return [self[index] for index in ids]
+
+
+def _stream_spm_tokens_eagerly(processor):
+    """mlx-vlm's SPM detokenizer holds each piece until the next word starts; mlx-lm's does not."""
+    held = getattr(processor, "detokenizer", None)
+    if (type(held).__module__, type(held).__name__) != (
+        "mlx_vlm.tokenizer_utils",
+        "SPMStreamingDetokenizer",
+    ):
+        return
+    # Reusing mlx-vlm's pieces skips a second ~1 s walk of a 262k vocab.
+    pieces = getattr(held, "tokenmap", None)
+    if pieces and None not in pieces:
+        source = _SpmPieces(pieces)
+    else:
+        source = getattr(processor, "tokenizer", processor)
+    try:
+        processor.detokenizer = _eager_spm_detokenizer_class()(source, trim_space = held.trim_space)
+    except Exception as exc:  # noqa: BLE001 -- mlx-vlm's still streams the same text, only later
+        logger.debug("MLX streaming detokenizer kept as loaded (%s)", exc)
 
 
 class _MlxStreamedText:
@@ -6000,8 +6077,13 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         is_lora = getattr(config, "is_lora", False)
-        zoo_multimodal = not is_vision and _zoo_declares_multimodal(
-            getattr(config, "base_model", None) if is_lora else model_name, hf_token
+        # Route by the config the loader reads.
+        route_config = getattr(config, "config_dir", None) or (
+            getattr(config, "base_model", None) if is_lora else model_name
+        )
+        zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
         )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
@@ -6027,7 +6109,7 @@ class MLXInferenceBackend:
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 distributed = is_distributed,
-                # A text architecture's adapter loads only through mlx-lm, and speculation runs on mlx-vlm.
+                # Speculation runs on mlx-vlm and takes an adapter only on a vision or zoo-multimodal load.
                 lora = is_lora and not (is_vision or zoo_multimodal),
             )
             speculates = spec_reason is None
@@ -6046,6 +6128,7 @@ class MLXInferenceBackend:
         use_vlm = (
             is_vision
             or zoo_multimodal
+            or vlm_only_text
             or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
@@ -6168,7 +6251,8 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
         except Exception as exc:
-            if is_vision or not use_vlm or is_metal_queue_dead(exc):
+            # A vlm_only_text model has no mlx-lm route to fall back to.
+            if is_vision or vlm_only_text or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
                 "Load of %s through mlx-vlm for %s failed (%s); serving through mlx-lm",
@@ -6180,8 +6264,8 @@ class MLXInferenceBackend:
         if model is not None and batches_quantized_text and not (is_vision or self._turboquant):
             _eligibility = _kv_quant_eligibility(model, True, _normalize_mlx_kv_bits(kv_bits))
             verdict, reason, _retainable = _eligibility
-            if verdict not in ("full", "partial"):
-                # Unquantized, the load gains nothing from mlx-vlm's batch.
+            if verdict not in ("full", "partial") and not vlm_only_text:
+                # Unquantized, the load gains nothing from mlx-vlm's batch; a vlm_only_text one stays on it.
                 logger.info(
                     "MLX KV quantization not applied to %s (%s); serving through mlx-lm",
                     model_name,
@@ -6227,6 +6311,7 @@ class MLXInferenceBackend:
             processor = tokenizer_or_processor
             if is_lora:
                 processor = load_mlx_adapter_processor(processor, model_name, hf_token)
+            _stream_spm_tokens_eagerly(processor)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
