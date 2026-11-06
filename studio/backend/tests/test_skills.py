@@ -303,6 +303,23 @@ def test_missing_resource_listing_refuses_a_swapped_directory(isolated_skills, t
     assert skills._list_skill_files(root, identity) == []
 
 
+def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "deep")
+    try:
+        current = root
+        for _ in range(1100):
+            current = current / "d"
+            current.mkdir()
+    except OSError:
+        pytest.skip("filesystem refuses deep paths")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("deep", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
 def test_missing_resource_listing_is_capped(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "many")

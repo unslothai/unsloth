@@ -1163,6 +1163,7 @@ def _list_skill_files(
     identity,
     limit: int = 20,
     max_chars: int = 1000,
+    max_dirs: int = 200,
 ) -> list[str]:
     """Best-effort names for a not-found hint; never reads content or follows links."""
 
@@ -1173,22 +1174,30 @@ def _list_skill_files(
         )
 
     found: list[str] = []
+    pending = [skill_dir]
     try:
-        # os.walk follows a symlinked top directory, so check it before and after.
+        # Iterative and budgeted: the hint must never recurse, stall the lock or follow a swap.
         if not pinned():
             return []
-        for directory, folders, files in os.walk(skill_dir):
-            current = Path(directory)
-            folders[:] = sorted(
-                f for f in folders if not f.startswith(".") and not _is_linked_path(current / f)
-            )
-            for file in sorted(files):
-                if file.startswith(".") or _is_linked_path(current / file):
+        while pending and max_dirs > 0:
+            max_dirs -= 1
+            current = pending.pop(0)
+            with os.scandir(current) as scan:
+                entries = sorted(scan, key = lambda entry: entry.name)
+            for entry in entries:
+                path = Path(entry.path)
+                if entry.name.startswith(".") or _is_linked_path(path):
                     continue
-                relative = (current / file).relative_to(skill_dir).as_posix()
+                relative = path.relative_to(skill_dir).as_posix()
                 try:
-                    relative.encode("utf-8")
+                    size = len(relative.encode("utf-8"))
                 except UnicodeEncodeError:
+                    continue
+                if entry.is_dir(follow_symlinks = False):
+                    if size < MAX_SKILL_RESOURCE_PATH_BYTES:
+                        pending.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks = False):
                     continue
                 if len(found) == limit or sum(map(len, found)) + len(relative) > max_chars:
                     return found + ["..."] if pinned() else []
