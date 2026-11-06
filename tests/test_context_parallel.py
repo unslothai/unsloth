@@ -734,8 +734,6 @@ def test_attention_hooks_are_not_stacked_by_a_second_manager():
 
 
 def test_decoder_layers_see_no_mask_inside_a_cp_step_only():
-    # HF builds a packed row's mask from shard-local positions: None on a shard without a document start, a
-    # tensor on others. Inside a CP step every layer gets None, so a compiled layer's guard on the type holds.
     class Layer(torch.nn.Module):
         def __init__(self, linear = False):
             super().__init__()
@@ -769,7 +767,7 @@ def test_decoder_layers_see_no_mask_inside_a_cp_step_only():
                 layer(x, attention_mask = m)
         return [layer.seen for layer in model.layers]
 
-    # No CP manager: the layer gets exactly what it was handed (the same object), so non-CP runs do not change.
+    # No CP manager: the exact same object passes through.
     plain = run([mask, None])
     assert plain[0][0] is mask and plain[0][1] is None and plain[1][0] is mask
     with cp._manager_scope(_manager()):

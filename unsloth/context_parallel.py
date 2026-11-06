@@ -333,10 +333,8 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
 
 
 def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
-    # Hugging Face builds each layer's mask from the shard-local position_ids: a packed row whose shard holds no
-    # document start gets None, other rows a tensor. Context parallel attention reads packed_seq_lengths and the
-    # validated right padding, never this mask (the self_attn hook drops it), so every row hands the layer None
-    # and a compiled layer, which guards on the argument's type, keeps one graph.
+    # HF's shard-local mask is None on shards with no document start, a tensor elsewhere; CP attention never
+    # reads it, so always pass None: a compiled layer guards on the argument type and keeps one graph.
     if get_cp_manager() is not None and module_kwargs.get("attention_mask") is not None:
         module_kwargs["attention_mask"] = None
     return module_args, module_kwargs
@@ -412,8 +410,7 @@ class ContextParallelManager:
                     _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
                 )
                 module._unsloth_cp_hooked = True
-            # The decoder layer around it: unless a linear attention (whose scan reads the padding mask) shares it,
-            # the mask reaches nothing else there.
+            # Skip layers with linear_attn: its scan reads the padding mask.
             layer = model.get_submodule(name.rpartition(".")[0]) if "." in name else None
             if (
                 layer is not None
