@@ -376,7 +376,8 @@ export function installPageAgent(): PageAgent {
     };
     const flush = () => {
       const text = clean(buffer, 400);
-      if (text && bufferShown && text.length > 1) push(text);
+      // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
       buffer = "";
       bufferShown = false;
     };
@@ -821,7 +822,8 @@ export function installPageAgent(): PageAgent {
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
     const target = new URL(href);
-    const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
+    // href="#" has an empty hash, yet stays on the page like any other fragment.
+    const hashOnly = href.includes("#") && target.href.split("#")[0] === pageUrl().href.split("#")[0];
     return !hashOnly && (directLinks || anchor.target === "_blank") ? href : null;
   };
 
@@ -1142,6 +1144,17 @@ export function installPageAgent(): PageAgent {
         return { ok: true, note: "Submitted the form." };
       }
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
+      // A synthetic Enter inserts no line break.
+      else if (tag === "textarea") {
+        const area = target as HTMLTextAreaElement;
+        if (area.readOnly || area.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
+        const end = area.selectionEnd ?? area.value.length;
+        const start = area.selectionStart ?? end;
+        setValue(area, `${area.value.slice(0, start)}\n${area.value.slice(end)}`);
+        area.setSelectionRange?.(start + 1, start + 1);
+      } else if ((target as HTMLElement).isContentEditable) {
+        if (!document.execCommand("insertParagraph")) document.execCommand("insertText", false, "\n");
+      }
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
     } else if ((name === "Backspace" || name === "Delete") && (tag === "input" || tag === "textarea")) {
@@ -1198,7 +1211,8 @@ export function installPageAgent(): PageAgent {
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
       // A date or time field drops a value it can't parse: tried on a detached field of the same
       // type first, so a bad value never blanks the page's field or fires its change handlers.
-      const format = DATE_FORMATS[field.type.toLowerCase()];
+      // A number field drops text too, which would read as "typed" with the field left empty.
+      const format = DATE_FORMATS[field.type.toLowerCase()] ?? (field.type.toLowerCase() === "number" ? "a number such as 42" : "");
       if (format && text) {
         const probe = document.createElement("input");
         probe.type = field.type;
@@ -1222,6 +1236,8 @@ export function installPageAgent(): PageAgent {
 
   const findOption = (select: HTMLSelectElement, value: string): HTMLOptionElement | undefined => {
     const wanted = value.trim().toLowerCase();
+    // An empty value would match the first option by inclusion.
+    if (!wanted) return undefined;
     return (
       Array.from(select.options).find(
         (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,

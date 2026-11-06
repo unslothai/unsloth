@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: /api/health does not publish a verdict the MLX self-heal is about to overturn.
-
-Detection settles before utils.mlx_repair gets its turn, so an Apple Silicon host whose MLX
-stack is missing or unreadable answers chat_only=true with reason "mlx_unavailable" first.
-The frontend reads that as measured, greys Train and Video and explains them with "run
-`unsloth studio update`"; the background reinstall then lands, chat_only flips false and the
-sidebar's recovery poll enables both rows. That is the reported "greyed out on launch, then
-they come out". Health keeps replying provisionally for that window instead, through the
-existing hardware_detecting shape, so the rows spin until there is a real answer.
-
-Everything a chat-only host relies on must be unchanged: an Intel Mac, a CPU-only Linux box,
-a Mac with the self-heal opted out, and a Mac whose repair has finished must all still get a
-settled verdict and the tooltip that goes with it.
-
-The hold is bounded in both halves. A live worker is waited on for as long as its install
-takes; a repair that has not started is only a promise, and a promise nothing ever keeps must
-expire, or the rows spin for the whole session instead of settling into the greyed state a
-broken MLX stack has genuinely earned.
-
-CPU-only, no network, no GPU, no weights.
-"""
+"""Health must not publish a chat_only verdict that the pending MLX self-heal is about to overturn."""
 
 from __future__ import annotations
 
@@ -56,22 +36,17 @@ class _Worker:
 def apple_silicon(monkeypatch):
     """An Apple Silicon host with the self-heal enabled and nothing attempted yet."""
     monkeypatch.delenv(mlx_repair.DISABLE_ENV_VAR, raising = False)
-    # Both modules ask the question, and hardware.py has its own copy of the helper.
+    # hardware.py has its own copy of the helper.
     monkeypatch.setattr(mlx_repair, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mlx_repair, "_attempted", False, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", None, raising = False)
-    # Same reason as the hold below: a stamp left by an earlier test would decide whether
-    # this one's worker still counts as in flight.
     monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
-    # start_mlx_autorepair_if_needed() gates on this, and the real one imports mlx_vlm,
-    # which is not installed here anyway.
+    # The real check imports mlx_vlm, which is not installed here.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
-    # The self-heal declines on a --no-torch install, so pin the install mode rather
-    # than inherit the manifest of whatever venv these tests run in.
+    # Self-heal declines on --no-torch installs; pin the mode instead of inheriting the venv's.
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: False)
-    # The pre-start hold is stamped on first use and keyed by detection generation, so a
-    # stamp left by an earlier test would decide this one's answer.
+    # The pre-start hold is stamped on first use; reset so earlier tests cannot leak in.
     import main as main_mod
 
     monkeypatch.setattr(main_mod, "_mlx_prestart_hold", None)
@@ -97,9 +72,6 @@ def clock(monkeypatch):
     fake = _Clock()
     monkeypatch.setattr(main_mod, "_mlx_prestart_clock", fake)
     return fake
-
-
-# ------------------------------------------------------------- the predicate
 
 
 def test_a_running_repair_is_in_flight(apple_silicon, monkeypatch):
@@ -171,7 +143,6 @@ def test_the_worker_is_published_together_with_the_latch(apple_silicon, monkeypa
     assert workers and workers[0].started, "the self-heal worker was never started"
     assert mlx_repair._repair_thread is workers[0]
     assert mlx_repair.mlx_repair_in_flight() is True
-    # Still one attempt per process.
     assert mlx_repair.start_mlx_autorepair_if_needed() is False
     assert len(workers) == 1
 
@@ -186,9 +157,6 @@ def test_started_splits_the_two_halves_of_in_flight(apple_silicon, monkeypatch):
     monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)
     assert mlx_repair.mlx_repair_in_flight() is True
     assert mlx_repair.mlx_repair_started() is True
-
-
-# ---------------------------------------------------------- the hardware gate
 
 
 def test_only_the_mlx_reason_holds_a_verdict_back(apple_silicon):
@@ -213,12 +181,7 @@ def test_an_intel_mac_verdict_is_not_held_back(apple_silicon, monkeypatch):
     assert hw.verdict_pending_mlx_repair(True, "mlx_unavailable") is False
 
 
-# --------------------------------------------------- the pre-start hold window
-#
-# The scheduler runs in main._post_warm_background_work, after join_background_warm(), so
-# on a cold Mac "not started yet" is legitimately minutes and no fixed number can stand in
-# for it. main bounds that half with the warm's own progress plus a handoff grace, under an
-# absolute ceiling for the warm that never ends.
+# The scheduler runs after join_background_warm(), so on a cold Mac 'not started' can be minutes.
 
 
 def _superseded(monkeypatch, *, warming: bool) -> bool:
@@ -230,11 +193,7 @@ def _superseded(monkeypatch, *, warming: bool) -> bool:
 
 
 def _spend_the_handoff_grace(monkeypatch, clock) -> None:
-    """Run the grace out the way a caller must: observe the warm stopped, then wait.
-
-    The grace opens on the first stopped reading, not on the clock, so advancing time
-    without asking spends nothing. Tests that want an expired window have to ask twice.
-    """
+    """The grace opens at the first stopped reading, not on the clock, so unasked time spends nothing."""
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = False) is True
@@ -264,10 +223,7 @@ def test_the_handoff_grace_covers_the_gap_after_the_warm(apple_silicon, clock, m
 
 
 def test_a_repair_that_never_starts_stops_holding_the_verdict(apple_silicon, clock, monkeypatch):
-    """The risk this window exists for. The warm finished and the scheduler never claimed
-    the latch (its import raised and _post_warm_background_work swallowed it), so "not
-    started yet" would otherwise be a permanent answer and the rows would spin for the whole
-    session. Instead the Mac gets the greyed rows and the tooltip its stack has earned."""
+    """A warm that never gets its repair started must expire the hold, or the rows spin for the session."""
     assert _superseded(monkeypatch, warming = True) is True
     _spend_the_handoff_grace(monkeypatch, clock)
     assert _superseded(monkeypatch, warming = False) is False
@@ -276,22 +232,12 @@ def test_a_repair_that_never_starts_stops_holding_the_verdict(apple_silicon, clo
 def test_a_gap_in_polling_does_not_spend_the_grace_before_the_handoff(
     apple_silicon, clock, monkeypatch
 ):
-    """The grace has to start when the warm stops, not when a poll last saw it running.
-
-    The warm's final stages are C-extension imports that hold the GIL for seconds at a
-    time, so health requests queue behind them and the next one served can be the first in
-    minutes. Measured from the last observed poll the grace would already be spent by the
-    time anyone could ask, and the gate would publish the mlx_unavailable verdict during
-    the very handoff it exists to cover -- the frontend then stores that as final and greys
-    Train and Video until the repair flips them back, which is the reported bug.
-    """
+    """The grace starts at the warm's stop, not the last poll, as GIL-holding imports delay replies."""
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = True) is True
-    # Nobody asks for far longer than the grace, because the warm is holding the GIL.
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S * 6)
     assert _superseded(monkeypatch, warming = False) is True
-    # And it still expires normally once the handoff has actually had its window.
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
     assert _superseded(monkeypatch, warming = False) is False
 
@@ -333,11 +279,7 @@ def test_a_live_worker_holds_the_verdict_past_every_window(apple_silicon, clock,
 def test_a_worker_parked_past_its_budget_stops_holding_the_verdict(
     apple_silicon, clock, monkeypatch
 ):
-    """attempt_mlx_repair times the uv subprocess, but not the mlx_stack_available()
-    imports that verify the install nor the detect_hardware() pass after it. Those import
-    mlx.core, mlx_lm and mlx_vlm, which this module already assumes can park forever on a
-    broken stack, so an alive thread was an unbounded answer: the rows would spin for the
-    whole session rather than settle into the chat-only verdict the stack has earned."""
+    """A worker parked past its budget must stop holding the verdict, since MLX imports can park forever."""
     worker_clock = _Clock()
     monkeypatch.setattr(mlx_repair, "_repair_clock", worker_clock, raising = False)
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -349,7 +291,6 @@ def test_a_worker_parked_past_its_budget_stops_holding_the_verdict(
     assert mlx_repair.mlx_repair_in_flight() is True
     worker_clock.advance(2)
     assert mlx_repair.mlx_repair_in_flight() is False
-    # And the gate follows it, so the reply settles instead of staying provisional.
     assert _superseded(monkeypatch, warming = False) is False
 
 
@@ -443,9 +384,6 @@ def test_an_unaskable_self_heal_settles_the_verdict(apple_silicon, monkeypatch):
     assert hw.verdict_pending_mlx_repair(True, "mlx_unavailable") is False
 
 
-# ----------------------------------------------------------------- the route
-
-
 def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
     """Drive /api/health as an authed caller against a settled verdict."""
     import auth.authentication as _authmod
@@ -463,8 +401,7 @@ def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
     async def _subject(_creds):
         return "tester"
 
-    # health_check imports get_current_subject inside the function, so patching the module
-    # attribute is enough and keeps this off the real JWT/storage path.
+    # health_check imports get_current_subject at call time, so patching the module is enough.
     monkeypatch.setattr(_authmod, "get_current_subject", _subject)
     app = FastAPI()
     app.add_api_route("/api/health", main_mod.health_check, methods = ["GET"])
@@ -494,7 +431,6 @@ def test_health_replies_provisionally_while_the_repair_runs(apple_silicon, monke
         "this one greys Train and Video for the rest of the session"
     )
     assert "chat_only_reason" not in body
-    # Conservative direction, unchanged: never offer Train on a host that may not have it.
     assert body["chat_only"] is True
     assert body["version"], "the launcher-facing fields are unaffected"
 

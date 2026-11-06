@@ -24,7 +24,7 @@ import { resumesThought } from "@/features/model-picker";
 import { useShortcutLabel } from "@/features/settings";
 import type { ShortcutId } from "@/features/settings";
 import { useT } from "@/i18n";
-import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { useIsAccountOwner } from "@/features/auth";
 import { exportLayaLog } from "@/features/chat/voice/laya-log-api";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
@@ -32,16 +32,12 @@ import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  Archive03Icon,
+  ArchiveIcon,
   BubbleChatTemporaryIcon,
   Cancel01Icon,
   CollapseIcon,
-  Copy01Icon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PinIcon,
@@ -51,7 +47,10 @@ import {
   ViewIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderExportIcon } from "@/lib/folder-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { ForkIcon } from "@/lib/fork-icon";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -76,7 +75,11 @@ import {
   getSidebarItemThreadIds,
   regenerateChatTitleWithToast,
 } from "./chat-row-menu";
-import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
+import {
+  chatFolderSessionId,
+  OpenChatFolderItem,
+  UploadToChatFolderItem,
+} from "./open-chat-folder-item";
 
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
@@ -146,7 +149,7 @@ function TemporaryChatButton({
           className={cn(
             "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             temporary
-              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              ? "bg-wash-10 text-foreground hover:bg-wash-15"
               : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
           )}
           aria-label={label}
@@ -255,6 +258,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.menu.regenerateTitle")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <Item
         icon={menu.pinned ? PinOffIcon : PinIcon}
         onSelect={menu.togglePin}
@@ -311,6 +315,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       >
         {t("library.chats.menu.fork")}
       </Item>
+      <DropdownMenuSeparator className="mx-3" />
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="gap-2.5">
           <HugeiconsIcon
@@ -337,7 +342,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
               {menu.projects.map((entry) => (
                 <Item
                   key={entry.id}
-                  icon={Folder02Icon}
+                  icon={ProjectIcon}
                   onSelect={() => menu.moveToProject(entry.id)}
                 >
                   {entry.name}
@@ -419,6 +424,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
           ))}
         </DropdownMenuSubContent>
       </DropdownMenuSub>
+      {/* Only with the folder items, or it doubles the next separator. */}
+      {chatFolderSessionId(menu.item) ? <DropdownMenuSeparator className="mx-3" /> : null}
       <OpenChatFolderItem item={menu.item} />
       <UploadToChatFolderItem item={menu.item} />
       <DropdownMenuCheckboxItem
@@ -435,17 +442,17 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
         </Item>
       ) : null}
       <DropdownMenuSeparator className="mx-3" />
-      <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
+      <Item icon={ArchiveIcon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
       </Item>
-      <Item icon={Delete02Icon} onSelect={menu.remove} destructive={true}>
+      <Item icon={TrashIcon} onSelect={menu.remove} destructive={true}>
         {t("common.delete")}
       </Item>
     </>
   );
 }
 
-/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
+/** A saved chat's menu, or the temporary toggle on a new chat. Saved chats cannot turn temporary. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,

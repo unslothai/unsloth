@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The command a locked-out user is told to run has to run.
-
-It is printed exactly when someone cannot get into Unsloth, so every way of
-being wrong here is a way of stranding them: naming the executable a policy
-denies (issue #8490), or naming an isolated module route that cannot see the
-site its own package lives in.
-"""
+"""The printed reset-password command must run; a wrong executable strands a locked-out user."""
 
 from __future__ import annotations
 
@@ -26,12 +20,7 @@ if str(_BACKEND) not in sys.path:
 
 @pytest.fixture(scope = "module")
 def auth():
-    """routes/auth.py by path, as test_desktop_auth.py loads it.
-
-    `from routes import auth` runs routes/__init__.py, which imports the whole
-    router set and with it structlog, so the module under test would be
-    unreachable wherever the full backend stack is not installed.
-    """
+    """Load routes/auth.py by path so tests run without the full router stack, which pulls in structlog."""
     route_path = _BACKEND / "routes" / "auth.py"
     spec = importlib.util.spec_from_file_location("_reset_command_auth_route", route_path)
     assert spec is not None and spec.loader is not None
@@ -46,12 +35,7 @@ def windows(monkeypatch, auth):
 
 
 def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, windows):
-    """-I is right when the package is inside the interpreter's own prefix.
-
-    It drops the working directory from sys.path, so a shell sitting in a
-    directory that happens to hold an unsloth_cli folder cannot shadow the
-    managed one.
-    """
+    """-I only inside the interpreter prefix: it drops the cwd so a local unsloth_cli cannot shadow it."""
     monkeypatch.setattr(
         auth.sys, "executable", r"C:\Users\dan\.unsloth\studio\unsloth_studio\Scripts\python.exe"
     )
@@ -64,12 +48,7 @@ def test_a_venv_install_gets_the_isolated_module_route(auth, monkeypatch, window
 
 
 def test_a_user_site_install_is_not_told_to_isolate_itself(auth, monkeypatch, windows):
-    """-I implies -s, which hides the user site the package is installed in.
-
-    A `pip install --user` install told to run that command gets
-    `No module named unsloth_cli`, which is worse than useless to someone who is
-    already locked out.
-    """
+    """-I implies -s, which hides the user site; a --user install must not be told to run with -I."""
     monkeypatch.setattr(auth.sys, "executable", r"C:\Python313\python.exe")
     monkeypatch.setattr(auth, "_cli_is_inside", lambda _prefix: False)
 
@@ -77,23 +56,16 @@ def test_a_user_site_install_is_not_told_to_isolate_itself(auth, monkeypatch, wi
 
     assert " -I " not in command
     assert "-m unsloth_cli" not in command
-    # The bootstrap unsloth_cli/__main__.py documents for exactly this case.
     assert auth._CLI_BOOTSTRAP in command
     assert command.endswith(" studio reset-password")
-    # One pair of double quotes wraps it for cmd and PowerShell alike, which
-    # only holds while the bootstrap itself carries no double quote.
+    # One pair of double quotes wraps it for cmd and PowerShell, so the bootstrap must have none.
     assert '"' not in auth._CLI_BOOTSTRAP
     assert command.count('"') == 2
     assert "unsloth.exe" not in command
 
 
 def test_the_bootstrap_matches_the_one_the_cli_uses(auth):
-    """Three copies of this string, and a drift changes argv[0] handling.
-
-    Read from the CLI's own source rather than imported, since the backend may
-    be running from a venv that has a different unsloth on it, and via AST
-    because the constant there is written as adjacent literals.
-    """
+    """The bootstrap string must match the CLI's copy; a drift would change argv[0] handling."""
     repo_root = _BACKEND.parents[1]
     studio_py = (repo_root / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
     canonical = None
@@ -156,12 +128,7 @@ def test_posix_is_untouched(auth, monkeypatch, tmp_path):
 
 
 def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
-    """The absolute form has to be printed somewhere, and stderr on the host is that somewhere.
-
-    Without a production caller `_reset_password_command()` is dead, and a user whose shell has no
-    `unsloth` on PATH is left with a hint they cannot run. These two warnings go to the host's own
-    console, so naming the install there costs nothing and is the point.
-    """
+    """Console warnings must print the absolute command, since a user's shell may lack unsloth on PATH."""
     run_py = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding = "utf-8")
 
     tree = ast.parse(run_py)
@@ -182,19 +149,13 @@ def test_the_console_warnings_name_the_absolute_command(monkeypatch, tmp_path):
 
 
 def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_path):
-    """The console hint may name the install; the login failure body may not.
-
-    POST /api/auth/login takes no credential and the browser-served default resolves CORS to
-    ["*"], so any page the user has open can read this body. An absolute path built from
-    sys.executable hands it the OS account name and the install layout.
-    """
+    """The 401 login body names no host path, since any open page can read it under wildcard CORS."""
     monkeypatch.setattr(auth.os, "name", "posix")
     bin_dir = tmp_path / "home" / "alice" / "unsloth" / ".venv" / "bin"
     bin_dir.mkdir(parents = True)
     (bin_dir / "unsloth").write_text("", encoding = "utf-8")
     monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
 
-    # The console form is unchanged: that is the one the person at the machine reads.
     assert str(bin_dir) in auth._reset_password_command()
 
     for multi_user in (False, True):
@@ -202,5 +163,4 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
         detail = auth._login_failure_detail()
         assert str(bin_dir) not in detail, multi_user
         assert "alice" not in detail, multi_user
-        # Still actionable, which is the whole point of the hint.
         assert "unsloth studio reset-password" in detail, multi_user

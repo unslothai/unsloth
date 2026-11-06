@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Writes <lock>.compat.json: every constraint the locked packages place on each other, and the
-download size of each locked wheel this platform installs.
-
-A shared engine skips a locked package when Studio already has a version all of these accept,
-so the engine's own dependency graph decides, not the lock's exact pin. The lock's .in pins are
-Studio's choices and are left out. Run after `uv pip compile`:
-
-    python studio/backend/requirements/engines/engine_compat.py vllm-linux-cu130-torch213
-
-Packages a lock takes from its engine's own index (TARGETS) are priced from that index; their
-requirements are not read, since such a lock is always an isolated environment.
-"""
+"""Writes <lock>.compat.json after uv pip compile; shared engine skips a locked package when Studio
+already has a version all constraints accept, so its own graph decides, not the pin; TARGETS
+locks priced from index, requirements not read; .in pins excluded."""
 
 from __future__ import annotations
 

@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every log family must be bounded, and the two line caps must agree.
-
-The volume guards cap how many lines get written. This one caps what is left on disk
-afterwards, which is a separate failure: a family that writes one file per operation and
-never prunes grows for the life of the install, and nothing in the line budget notices.
-
-``utils.debug_log_sources.FAMILIES`` is the authoritative inventory of what Unsloth writes,
-so it is the list a new family cannot avoid appearing on.
-"""
+"""Each family in debug_log_sources.FAMILIES must prune old files, or its logs grow forever."""
 
 from __future__ import annotations
 
@@ -30,18 +22,10 @@ _MAIN_RS = _STUDIO / "src-tauri" / "src" / "main.rs"
 _DIAGNOSTICS_RS = _STUDIO / "src-tauri" / "src" / "diagnostics" / "mod.rs"
 _PROCESS_RS = _STUDIO / "src-tauri" / "src" / "process.rs"
 
-# Families that write one file per operation and prune nothing, so the directory grows for
-# the life of the install. Recorded rather than asserted away, and self-expiring: the test
-# below fails once a family here gains retention, which forces the entry out.
-#
-#   llama-server / diffusion-server: one file per model load ATTEMPT. 319 files going back
-#   two months were found on one machine. Retention arrives with #8763.
-# Empty since #8763 gave the two sidecar families keep-newest-N retention. The staleness
-# check below fails on an entry that no longer describes reality, so this list cannot
-# outlive the problem it records.
+# Self-expiring: the test below fails once a listed family gains retention.
 KNOWN_UNBOUNDED_FAMILIES: frozenset[str] = frozenset()
 
-# Families the desktop shell owns. Bounded in Rust (rotation), not by a Python pruner.
+# Bounded in Rust (rotation), not by a Python pruner.
 _DESKTOP_FAMILIES = frozenset(
     {
         "desktop-backend",
@@ -66,12 +50,7 @@ def _python_retention_sources() -> str:
 
 class TestFamiliesAreBounded:
     def test_every_python_written_family_prunes(self):
-        """A family that never prunes grows without limit.
-
-        Detected from the glob in FAMILIES appearing next to a retention call site, which
-        is deliberately loose: the point is to notice a family that nobody thought about,
-        not to pin how the pruning is spelled.
-        """
+        """A family whose glob never appears beside a retention call site is flagged as unbounded."""
         source = _python_retention_sources()
         unbounded = []
         for family, (_subdir, glob) in debug_log_sources.FAMILIES.items():

@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Compatibility contract for GET /kv-cache-estimate.
-
-The route already shipped, so an existing caller must keep working across an
-upgrade. Two directions matter:
-
-* An OLD client still sends n_ctx and reads kv_bytes / weights_bytes /
-  native_context. Making n_ctx optional is a widening, and the new spec_bytes
-  and n_ctx fields are additions, so nothing it relies on may move.
-
-* A NEW client may omit n_ctx to ask for the model's native length. That is the
-  only request shape the previous version would have rejected, so it is the one
-  worth pinning.
-
-No GPU, no network.
-"""
+"""Old callers send n_ctx and read existing fields; omitting n_ctx is the one newly accepted shape."""
 
 from __future__ import annotations
 
@@ -46,7 +32,6 @@ _FIELDS = {
     "attention.value_length": 128,
 }
 
-# What a client written against the previous version reads back.
 _LEGACY_KEYS = {"kv_bytes", "weights_bytes", "native_context"}
 
 
@@ -60,8 +45,6 @@ def _gguf(tmp_path: Path) -> Path:
 
 
 def _call(monkeypatch, path: Path | None, **overrides):
-    # path=None leaves whatever the caller already patched in place, for the
-    # cases that are about the route's answer when nothing resolves.
     if path is not None:
         monkeypatch.setattr(
             models_routes,
@@ -113,7 +96,6 @@ def test_the_answer_for_a_pinned_context_did_not_move(monkeypatch, tmp_path):
     unchanged request must produce an unchanged number."""
     gguf = _gguf(tmp_path)
     before = _call(monkeypatch, gguf, n_ctx = 4096)
-    # Exactly what an old client sends: no n_parallel, no speculative_type.
     after = _call(monkeypatch, gguf, n_ctx = 4096, n_parallel = None, speculative_type = None)
     assert before["kv_bytes"] == after["kv_bytes"]
 
@@ -135,8 +117,6 @@ def test_the_failure_answer_carries_every_key(monkeypatch):
     out = _call(monkeypatch, None)
     assert _LEGACY_KEYS <= set(out)
     assert {"spec_bytes", "n_ctx", "projector_bytes", "spec_unpriced"} <= set(out)
-    # Every byte figure is absent. spec_unpriced is a flag, not a measurement:
-    # False is its correct value here, since nothing was left unpriced.
     assert all(v is None for k, v in out.items() if k != "spec_unpriced")
     assert out["spec_unpriced"] is False
 

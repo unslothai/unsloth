@@ -1,15 +1,7 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-
-// Loads through the Chat runtime's selectModel, so the API board gets the same context, quant,
-// GPU placement, trust and running-chat guards as Chat.
-
-import { Button } from "@/components/ui/button";
 import {
   chatLocalModelOptions,
   isExternalModelId,
-  readLastLocalModelLoad,
-  useChatModelRuntime,
+  type useChatModelRuntime,
   useChatRuntimeStore,
   wantsDownloadManagerStaging,
 } from "@/features/chat";
@@ -31,9 +23,6 @@ import {
   useActiveModelConfig,
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
-import { cn } from "@/lib/utils";
-import { ReloadIcon, Settings02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
@@ -43,12 +32,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  RELOAD_MISSING_HISTORY_MESSAGE,
-  reloadLastModel,
-} from "../reload-last-model";
 import { monitorSelection } from "../use-resident-run-target";
-import { ToolbarTooltip } from "./toolbar-tooltip";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
 function loadErrorMessage(err: unknown, fallback: string): string | null {
@@ -175,21 +159,6 @@ function useLoadAfterDownload(
   }, [pending, setPending, onStartError]);
 }
 
-function reloadTitle(
-  lastLoadLabel: string | null | undefined,
-  loaded: boolean,
-): string {
-  if (lastLoadLabel === undefined) {
-    return "Checking previously loaded model...";
-  }
-  if (!lastLoadLabel) {
-    return RELOAD_MISSING_HISTORY_MESSAGE;
-  }
-  return loaded
-    ? `Reload ${lastLoadLabel}`
-    : `Reload ${lastLoadLabel} (no model loaded)`;
-}
-
 function toModelOptions(
   models: {
     id: string;
@@ -207,25 +176,37 @@ function toModelOptions(
 }
 
 export function ApiModelLoadControls({
+  runtime,
   activeModel,
+  residencyKey,
   onSettled,
   onUnloadActive,
   unloading,
   configRequest = null,
   onConfigRequestAdopted,
-  onOpenSettings,
+  onEjectAll,
+  onLastLoadChanged,
 }: {
+  runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
+  // Not active_model: a kept-model unload or a side load leaves that unchanged.
+  residencyKey: string;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
   unloading: boolean;
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
-  onOpenSettings?: () => void;
+  onEjectAll?: () => void;
+  onLastLoadChanged?: () => void;
 }): ReactElement {
-  const { selectModel, loadNpuModel, refresh, ejectModel } =
-    useChatModelRuntime();
+  const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -236,33 +217,14 @@ export function ApiModelLoadControls({
   const refreshLocalModels = localModelInventory.refresh;
 
   const [selectorOpen, setSelectorOpen] = useState(false);
-  const [reloading, setReloading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingDownload, setPendingDownload] =
     useState<PendingDownload | null>(null);
-  const [lastLoadLabel, setLastLoadLabel] = useState<string | null | undefined>(
-    undefined,
-  );
-
-  const refreshLastLoadLabel = useCallback(() => {
-    readLastLocalModelLoad()
-      .then((last) => {
-        setLastLoadLabel(
-          last
-            ? last.kind === "gguf" && last.ggufVariant
-              ? `${last.id} · ${last.ggufVariant}`
-              : last.id
-            : null,
-        );
-      })
-      .catch(() => setLastLoadLabel(null));
-  }, []);
-
   useEffect(() => {
     refresh();
     refreshLocalModels();
-    refreshLastLoadLabel();
-  }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
+    onLastLoadChanged?.();
+  }, [refresh, refreshLocalModels, onLastLoadChanged]);
 
   // Opened during render, as the picker adopts the request, so the same pass mounts its page.
   const [openedRequestId, setOpenedRequestId] = useState<string | null>(null);
@@ -273,15 +235,16 @@ export function ApiModelLoadControls({
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: residencyKey is the trigger, not an input
   useEffect(() => {
     if (activeModel === undefined) {
       return;
     }
-    refreshLastLoadLabel();
+    onLastLoadChanged?.();
     if (!useChatRuntimeStore.getState().modelLoading) {
       refresh({ includeLoras: false });
     }
-  }, [activeModel, refresh, refreshLastLoadLabel]);
+  }, [activeModel, residencyKey, refresh, onLastLoadChanged]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -331,13 +294,13 @@ export function ApiModelLoadControls({
           forceReload: meta?.forceReload,
           config: meta?.config,
         });
-        refreshLastLoadLabel();
+        onLastLoadChanged?.();
         onSettled();
         return;
       }
       try {
         await selectModel(localSelection(value, meta));
-        refreshLastLoadLabel();
+        onLastLoadChanged?.();
         onSettled();
       } catch (err: unknown) {
         setActionError(loadErrorMessage(err, "Failed to load model"));
@@ -347,7 +310,7 @@ export function ApiModelLoadControls({
       selectModel,
       loadNpuModel,
       onSettled,
-      refreshLastLoadLabel,
+      onLastLoadChanged,
       activeModel,
       unloading,
     ],
@@ -363,42 +326,6 @@ export function ApiModelLoadControls({
     setActionError,
   );
 
-  const handleReload = useCallback(async () => {
-    setPendingDownload(null);
-    setReloading(true);
-    setActionError(null);
-    try {
-      await reloadLastModel({
-        readLastLoad: () => readLastLocalModelLoad(),
-        resolveConfig: (id, variant) => {
-          const resolved = resolveResidentInitialConfig(id, variant);
-          return resolved.remembered ? { config: resolved.config } : null;
-        },
-        loadTarget: async (target) => {
-          await selectModel({
-            id: target.id,
-            isGguf: target.kind === "gguf",
-            ggufVariant: target.ggufVariant ?? undefined,
-            config: target.config ?? undefined,
-            keepSpeculative: target.config != null,
-            forceReload: true,
-            isDownloaded: true,
-            previousConfig: currentRuntimePerModelConfig({
-              includeMaxSeqLength: true,
-            }),
-            throwOnError: true,
-          });
-        },
-      });
-      refreshLastLoadLabel();
-      onSettled();
-    } catch (err: unknown) {
-      setActionError(loadErrorMessage(err, "Failed to reload model"));
-    } finally {
-      setReloading(false);
-    }
-  }, [selectModel, onSettled, refreshLastLoadLabel]);
-
   const handleEject = useCallback(
     (modelId?: string) => {
       setPendingDownload(null);
@@ -412,7 +339,6 @@ export function ApiModelLoadControls({
   );
 
   const busy = modelLoading || unloading;
-  const reloadDisabled = reloading || busy || lastLoadLabel == null;
 
   const { id: effectiveModel, ggufVariant: activeGgufVariant } =
     monitorSelection(activeModel);
@@ -425,7 +351,7 @@ export function ApiModelLoadControls({
     publicModelId(runtimeCheckpoint) === effectiveModel;
 
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
       <ModelSelector
         models={models}
         loraModels={loraModels}
@@ -443,6 +369,9 @@ export function ApiModelLoadControls({
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
         onEject={busy ? undefined : handleEject}
+        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
+        loadedCount={loadedModels.length}
+        loadedNames={loadedNames}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -451,64 +380,17 @@ export function ApiModelLoadControls({
           refreshLocalModels();
         }}
         deleteDisabled={modelLoading}
-        variant="outline"
-        size="sm"
-        placeholder="Load model"
+        variant="ghost"
+        placeholder="Load models"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="h-9 max-w-full rounded-full"
+        className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
-      <ToolbarTooltip
-        label={
-          activeModel
-            ? "Model run settings"
-            : "Load a model to change its run settings"
-        }
-      >
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-label="Model settings"
-          aria-haspopup="dialog"
-          aria-expanded={selectorOpen && !unloading}
-          onClick={onOpenSettings}
-          disabled={busy || reloading || !onOpenSettings}
-          className="h-9 gap-1.5 rounded-full"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-          Settings
-        </Button>
-      </ToolbarTooltip>
-      <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            handleReload();
-          }}
-          disabled={reloadDisabled}
-          className="h-9 gap-1.5 rounded-full"
-        >
-          <HugeiconsIcon
-            icon={ReloadIcon}
-            strokeWidth={1.75}
-            className={cn("size-4", reloading && "animate-spin")}
-          />
-          {reloading ? "Reloading" : "Reload"}
-        </Button>
-      </ToolbarTooltip>
       {actionError ? (
         <span
           role="alert"
-          className="max-w-64 truncate text-ui-11 text-red-600 dark:text-red-400"
-          title={actionError}
+          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>

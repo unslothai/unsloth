@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI models-folder discovery and loose single-file diffusion checkpoints.
-
-Role folders hold many loose ``.safetensors`` with no ``config.json``; each denoiser is listed as its
-own row when its header says DiT. A local DiT's text encoder is taken from the layout's text-encoder
-folders when one fits (``diffusion_comfy_components.pick_comfy_text_encoders``); VAE folders are
-resolved but nothing loads from them. No torch: called on every listing.
-"""
+"""Loose ComfyUI checkpoints; no torch import (runs on every listing); VAE folders never loaded."""
 
 from __future__ import annotations
 
@@ -23,11 +17,11 @@ from utils.paths.path_utils import is_appledouble_metadata
 DIT_FOLDERS = ("diffusion_models", "unet", "checkpoints")
 TEXT_ENCODER_FOLDERS = ("text_encoders", "clip")
 VAE_FOLDERS = ("vae",)
-_ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS
+LORA_FOLDERS = ("loras",)
+_ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS + LORA_FOLDERS
 _COMFY_ONLY_FOLDERS = frozenset(
     {
         *_ROLE_FOLDERS,
-        "loras",
         "clip_vision",
         "controlnet",
         "upscale_models",
@@ -50,6 +44,7 @@ class ComfyLayout:
     dit_dirs: tuple[Path, ...] = ()
     text_encoder_dirs: tuple[Path, ...] = ()
     vae_dirs: tuple[Path, ...] = ()
+    lora_dirs: tuple[Path, ...] = ()
 
 
 def _is_dir(path: Path) -> bool:
@@ -172,8 +167,9 @@ def comfy_layout(folder: Path) -> Optional[ComfyLayout]:
         dit_dirs = _role(DIT_FOLDERS),
         text_encoder_dirs = _role(TEXT_ENCODER_FOLDERS),
         vae_dirs = _role(VAE_FOLDERS),
+        lora_dirs = _role(LORA_FOLDERS),
     )
-    if not (layout.dit_dirs or layout.text_encoder_dirs or layout.vae_dirs):
+    if not (layout.dit_dirs or layout.text_encoder_dirs or layout.vae_dirs or layout.lora_dirs):
         return None
     return layout
 
@@ -215,6 +211,13 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
         roots.append(root)
         roots.extend(_plain_subdirs(root))
     return tuple(roots)
+
+
+def comfy_lora_scan_roots(folder: Path) -> tuple[Path, ...]:
+    layout = comfy_layout(folder)
+    if layout is None:
+        return ()
+    return tuple(p for root in layout.lora_dirs for p in (root, *_plain_subdirs(root)))
 
 
 # models/<dit folder>/ plus the scanner's subfolder depth, then the ComfyUI root above models/.
@@ -339,10 +342,21 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
-    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3)."""
-    if image_fam is not None and not image_fam.pipeline_only:
+    """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3, a native-only
+    family's non-safetensors file, a GGUF of a family with no GGUF loader)."""
+    if image_fam is not None:
+        if image_fam.pipeline_only:
+            return False
+        if str(filename or "").lower().endswith(".gguf") and not getattr(
+            image_fam, "gguf_loadable", True
+        ):
+            return False
+        if getattr(image_fam, "native_transformer_files_only", False):
+            return str(filename or "").lower().endswith(".safetensors")
         return True
-    if video_fam is None or video_fam.is_moe:
+    from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES
+
+    if video_fam is None or video_fam.is_moe or video_fam.name in PIPELINE_ONLY_VIDEO_FAMILIES:
         return False
     if not getattr(video_fam, "modular_workflow", None):
         return True

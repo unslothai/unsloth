@@ -8,6 +8,7 @@ path so the test stays CPU-only and does not import ``unsloth``.
 """
 
 import importlib.util
+import os
 from pathlib import Path
 
 import types
@@ -127,6 +128,7 @@ def test_skippable_models_keep_transformers_default(ddp_env, make):
         {"encoder_layerdrop": 0.1},
         {"decoder_layerdrop": 0.1},
         {"add_cross_attention": True},
+        {"cross_attention_layers": [3, 8]},  # MllamaTextConfig: layers skipped without images
         {"speech_encoder_layerdrop": 0.1},
         {"is_encoder_decoder": True},
     ],
@@ -267,3 +269,127 @@ def test_generated_trainer_calls_helper():
     template_init = source.index("class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):")
     super_call = source.index("super().__init__({RLTrainer_call_args}", template_init)
     assert template_init < source.index(call, template_init) < super_call
+
+
+def _llava(**text_extra):
+    text = transformers.LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        **text_extra,
+    )
+    vision = transformers.CLIPVisionConfig(
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        image_size = 8,
+        patch_size = 4,
+    )
+    config = transformers.LlavaConfig(text_config = text, vision_config = vision, image_token_index = 63)
+    model = transformers.LlavaForConditionalGeneration(config)
+    # FastBaseModel.post_patch_model under DDP: VLMs checkpoint non-reentrantly.
+    model._unsloth_vlm_gc_non_reentrant = True
+    return model
+
+
+def test_full_finetune_vlm_searches_unused_tower(ddp_env):
+    # transformers' False would leave the tower without gradients on a text-only batch.
+    args = _args()
+    assert _helper()(args, _llava()) is True
+    assert args.ddp_find_unused_parameters is True
+
+
+def test_frozen_tower_keeps_transformers_default(ddp_env):
+    model = _llava()
+    for name, param in model.named_parameters():
+        if "vision" in name or "projector" in name:
+            param.requires_grad_(False)
+    assert _helper()(_args(), model) is None
+
+
+@pytest.mark.parametrize("case", ["no_flag", "reentrant_kwargs", "gemma4", "no_checkpointing"])
+def test_vlm_tower_rule_needs_non_reentrant_checkpointing(ddp_env, case):
+    model = _llava()
+    kwargs = {}
+    if case == "no_flag":
+        model._unsloth_vlm_gc_non_reentrant = False
+    elif case == "reentrant_kwargs":
+        kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": True}
+    elif case == "gemma4":
+        model.config.model_type = "gemma4"
+    else:
+        kwargs["gradient_checkpointing"] = False
+    assert _helper()(_args(**kwargs), model) is None
+
+
+def test_unsloth_config_reentrant_pin_is_overridden_by_the_ddp_wrapper(ddp_env, monkeypatch):
+    # Unsloth's generated configs pin use_reentrant = True; under DDP vision.py swaps in a checkpoint
+    # wrapper (marked _unsloth_original) that forces use_reentrant = False, so the pin is not what runs.
+    import torch.utils.checkpoint as torch_checkpoint
+
+    original = torch_checkpoint.checkpoint
+    args = _args(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    assert _helper()(args, _llava()) is None
+
+    def forced(function, *a, **k):
+        k["use_reentrant"] = False
+        return original(function, *a, **k)
+
+    forced._unsloth_original = original
+    monkeypatch.setattr(torch_checkpoint, "checkpoint", forced)
+    args = _args(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    assert _helper()(args, _llava()) is True
+
+
+def test_lora_vlm_tower_is_true_like_transformers(ddp_env):
+    # transformers already picks True for a PeftModel; the helper agrees.
+    model = _lora(_llava(), target_modules = ["q_proj", "v_proj"])
+    assert _helper()(_args(), model) is True
+
+
+def test_reused_args_redecide_after_an_auto_true(ddp_env):
+    args = _args()
+    helper = _helper()
+    assert helper(args, _llava()) is True
+    assert helper(args, _lora(_llama())) is False
+    assert helper(args, _lora(_llama(num_local_experts = 4))) is None
+
+
+def test_full_finetune_vlm_text_only_batches_train_under_ddp(tmp_path):
+    # Two gloo ranks through the real Trainer: before the fix the second step raised
+    # "Expected to have finished reduction in the prior iteration".
+    import subprocess
+    import sys
+
+    worker = Path(__file__).with_name("_ddp_vlm_text_only_worker.py")
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", TMPDIR = str(tmp_path))
+    env.pop("UNSLOTH_DDP_FIND_UNUSED_PARAMETERS_AUTO", None)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--nproc_per_node",
+            "2",
+            "--master_port",
+            str(_free_port()),
+            str(worker),
+            str(tmp_path),
+        ],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-4000:]
+    assert out.count("RANK_OK find_unused=True") == 2, out[-4000:]
+
+
+def _free_port():
+    from tests._rendezvous_port import free_port
+    return free_port()

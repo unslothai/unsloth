@@ -69,7 +69,6 @@ export type RecipeExecutionRecord = {
   // biome-ignore lint/style/useNamingConvention: backend schema
   jobId: string | null;
   kind: RecipeExecutionKind;
-  // ui-only display label for full runs
   // biome-ignore lint/style/useNamingConvention: ui schema
   run_name: string | null;
   status: RecipeExecutionStatus;

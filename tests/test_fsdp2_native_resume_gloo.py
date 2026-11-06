@@ -8,7 +8,6 @@ native_load_optimizer, then 2 more steps on both: losses and parameters must be 
 control: rank 0's plain `optimizer.state_dict()` (the Trainer's own save) holds only rank 0's shards."""
 
 import os
-import socket
 import sys
 
 import pytest
@@ -16,7 +15,9 @@ import torch
 
 # Spawned gloo ranks re-import this module: keep them on the CPU (deterministic on GPU hosts; CUDA
 # reads the mask at its lazy first use, after this).
-if __import__("multiprocessing").parent_process() is not None:
+if __import__("multiprocessing").parent_process() is not None or getattr(
+    __import__("multiprocessing").current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,9 +27,8 @@ REPO_ID = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _model(lora, seed):

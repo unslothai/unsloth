@@ -119,7 +119,6 @@ W = {"mode": "words"}
     ("dots", "voice", None, EDITED, "Pick a recording or a history clip to edit."),
     ("dots", 31.0, None, EDITED, "Edit works on recordings up to 30 s. Record or upload a shorter take."),
     ("mf", 1.0, None, EDITED, CANNOT),
-    # A GGUF speech model on llama.cpp has no workflows to read.
     ("llama", 1.0, None, EDITED, CANNOT),
     ("dots", 1.0, {**W, "markup": MARKUP.replace("Sam", "Sammy")}, EDITED, MISMATCH),
     ("dots", 1.0, {**W, "markup": "Okay <b>x</b>"}, EDITED, MISMATCH),
@@ -198,14 +197,12 @@ def test_one_source_clip_per_upload_kept_while_an_edit_plays_it(stub, monkeypatc
         first = _edit(client, input_id).json()["clips"]
         output, source = _edit(client, input_id).json()["clips"]
         assert first[1]["id"] == source["id"] and first[0]["id"] != output["id"]
-        # The cap pruned the first output, not the source the second still plays.
         assert client.get(source["url"]).status_code == 200
         assert sum(c.get("role") == "source" for c in run_as(ALICE, audio_gallery.list_audio)) == 1
         clip = f"/api/inference/audio/gallery/{output['id']}"
         assert client.patch(clip, json = {"archived": True}).status_code == 200
         assert client.delete("/api/inference/audio/gallery?workflow=edit").status_code == 200
         assert client.get(source["url"]).status_code == 200
-        # Once nothing plays it, the source goes with the next clear.
         client.patch(clip, json = {"archived": False})
         assert client.delete("/api/inference/audio/gallery?workflow=edit").status_code == 200
         assert client.get(source["url"]).status_code == 404

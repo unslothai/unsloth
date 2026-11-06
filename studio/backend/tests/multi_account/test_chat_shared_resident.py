@@ -167,7 +167,6 @@ def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, share
     assert sees_resident(accounts["alice"]) and sees_resident(accounts["bob"])
     assert run_as(accounts["alice"], inference._openai_model_objects) != []
     assert sees_resident(accounts["unsloth"])
-    # A repeat load by the same account is one membership.
     reuse_load(monkeypatch, accounts["alice"])
     assert access._resident_sharers["chat"] == {
         accounts["alice"].account_id,
@@ -177,7 +176,6 @@ def test_a_matching_load_shares_the_resident_without_a_reload(monkeypatch, share
 
 def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, accounts):
     reuse_load(monkeypatch, accounts["alice"])
-    # Bob is mid-generation: alice's share release must not be a gpu_busy refusal.
     with run_as(accounts["bob"], active_generations.ActiveGeneration, threading.Event()):
         with client_for(accounts["alice"]) as client:
             left = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
@@ -186,7 +184,6 @@ def test_a_sharer_leaving_keeps_the_model_for_the_others(monkeypatch, shared, ac
     assert sees_resident(accounts["bob"])
     assert not sees_resident(accounts["alice"])
     assert status_for(accounts["alice"]) == {"loaded": [], "loading": [], "yours": False}
-    # The last sharer's unload is a real teardown and clears the set.
     with client_for(accounts["bob"]) as client:
         gone = client.post("/api/inference/unload", json = {"model_path": RESIDENT})
     assert gone.status_code == 200, gone.text

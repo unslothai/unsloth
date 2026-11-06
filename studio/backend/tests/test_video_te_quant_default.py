@@ -50,9 +50,15 @@ HV15_BASES = (
 
 
 def test_every_generic_path_video_family_has_a_default():
-    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs."""
+    """Every family that casts its own encoder in place defaults to a hosted one; only H3 and LTX-2.5 resolve theirs,
+    and Cosmos3 has no text encoder."""
     assert {f.name for f in _FAMILIES if f.te_quant_auto} == set(EXPECTED_DEFAULTS)
-    assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {"minimax-h3", "ltx-2.5"}
+    assert {f.name for f in _FAMILIES if not f.te_quant_auto} == {
+        "minimax-h3",
+        "ltx-2.5",
+        "cosmos3-nano",
+        "cosmos3-edge",
+    }
 
 
 def test_the_two_hunyuanvideo_repacks_share_one_encoder_and_not_qwen_images():
@@ -118,6 +124,22 @@ def test_families_with_their_own_tristate_get_the_raw_request(name):
     assert fam.te_quant_auto is None
     for raw in (None, "none", "int8"):
         assert video_te_quant_request(fam, raw) == (raw, False)
+
+
+@pytest.mark.parametrize("name", ["cosmos3-nano", "cosmos3-edge"])
+def test_a_cosmos3_family_has_no_text_encoder_to_default(name):
+    fam = _family(name)
+    for raw in (None, "", "auto", "none", "fp8"):
+        for speed_mode in ("default", "off"):
+            got = video_te_quant_request(fam, raw, base = fam.base_repo, speed_mode = speed_mode)
+            assert got == (raw, False), (raw, speed_mode)
+    for mode in (None, "fp8", "int8"):
+        assert (
+            tpq.te_prequant_sources_for_base(
+                fam, fam.base_repo, te_quant_mode = mode, target = CUDA_BF16
+            )
+            == {}
+        )
 
 
 def test_unsupported_hardware_gets_no_hosted_encoder_for_the_default():
@@ -409,9 +431,13 @@ def test_hunyuanvideo_default_fp8_leaves_the_byt5_encoder_dense(name, monkeypatc
 MPS_BF16 = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
 
 
-def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file():
+def test_an_explicit_wan_int8_on_mps_reaches_the_hosted_convrot_file(monkeypatch):
     # MPS runs the hosted int8 ConvRot encoder without fp8, so the gate must not rewrite int8 to fp8 and refuse it.
+    # Once the file is there: the gate now refuses an unpublished one up front (test_diffusion_te_int8_missing_file).
+    import core.inference.diffusion_te_prequant as tpq
     import core.inference.video as v
+
+    monkeypatch.setattr(tpq, "te_prequant_sources_confirmed", lambda sources, **k: True)
     v._assert_video_precision_for_target(
         _family("wan2.2-ti2v-5b"), MPS_BF16, model_kind = "pipeline", text_encoder_quant = "int8"
     )
@@ -537,16 +563,24 @@ def test_wan_int8_budget_covers_the_measured_file():
     assert tpq.te_int8_convrot_budget_scale("qwen-image-2.1") == tpq.TE_INT8_CONVROT_BUDGET_SCALE
 
 
-def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies():
+def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_LTX25_TE_INT8", raising = False)
     fam = types.SimpleNamespace(name = "ltx-2.5", bf16_components_gb = (40.0, 23.9))
     hosted = tpq.te_prequant_budget_scale(
-        fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
+        fam, te_quant_mode = "int8", target = None, base = "Lightricks/LTX-2.5-Diffusers"
     )
     assert hosted < 1.0
+    # Unset keeps the bf16 encoder (int8 is opt-in), so its budget is the dense one.
+    assert (
+        tpq.te_prequant_budget_scale(
+            fam, te_quant_mode = None, target = None, base = "Lightricks/LTX-2.5-Diffusers"
+        )
+        == 1.0
+    )
     # A custom pack quantizes the dense encoder at load: its peak is the dense one.
     assert (
         tpq.te_prequant_budget_scale(
-            fam, te_quant_mode = None, target = None, base = "someone/ltx25-pack"
+            fam, te_quant_mode = "int8", target = None, base = "someone/ltx25-pack"
         )
         == 1.0
     )

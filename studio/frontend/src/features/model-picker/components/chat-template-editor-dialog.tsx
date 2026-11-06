@@ -42,8 +42,7 @@ export function ChatTemplateEditorDialog({
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
-  // Bumped whenever the dialog closes so a validation still in flight cannot apply a template the
-  // user has already dismissed.
+  // Bumped on close so an in-flight validation cannot apply a dismissed template.
   const validationToken = useRef(0);
   const renderedDraft = draft ?? value ?? defaultTemplate ?? "";
 
@@ -74,7 +73,6 @@ export function ChatTemplateEditorDialog({
     const token = validationToken.current;
     try {
       const result = await validateChatTemplate(renderedDraft);
-      // Dialog was closed (or reopened) while validating; drop the result so a discarded template is never applied.
       if (token !== validationToken.current) {
         return;
       }
@@ -117,8 +115,6 @@ export function ChatTemplateEditorDialog({
               : "Override the model's chat template with custom Jinja. The change applies when the model loads. Saving an empty template or one that matches the default clears the override."}
           </DialogDescription>
         </DialogHeader>
-        {/* Chrome does not clip a scroll area to a squircle, which squared off
-            the scrollbar's corners. The wrapper carries the shape instead. */}
         <div className="corner-squircle overflow-hidden rounded-xl">
           <Textarea
             value={renderedDraft}

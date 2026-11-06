@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A document upload must not occupy the event loop while it runs.
-
-The upload routes copy the file and call start_ingestion inline, and start_ingestion
-re-hashes the file and probes nvidia-smi through embedding_identity. Run on the event
-loop that is seconds of dead backend: a streaming reply stops mid-token and every other
-request queues behind the attachment. These tests count the trivial concurrent requests
-answered while an upload is in flight, so they fail whenever the blocking work moves back
-onto the loop, regardless of how the routes are spelled.
-"""
+"""Upload routes must not block the event loop; ingestion hashing and nvidia-smi probes run off-loop."""
 
 import asyncio
 import time
@@ -24,11 +16,8 @@ from .test_rag_native_drop_upload import SECRET, _sign
 BLOCK_SECONDS = 0.6
 PAYLOAD = b"alpha bravo charlie delta\n" * 320_000
 POLL_INTERVAL = 0.005
-# Blocked, the poller gets exactly two turns: one before the handler takes the loop and one
-# after it hands it back. Free, it gets around a hundred. A count separates those by
-# construction rather than by wall clock, so this file can stay in the -n 4 parallel run
-# that test_scan_loras_off_event_loop, whose tick floor is loose for the same reason, is
-# kept out of. The floor is 10x the blocked count and a fifth of the free one.
+# Count poller turns, not wall clock (blocked ~2, free ~100), so this can run under -n 4.
+# The floor is 10x the blocked count and a fifth of the free one.
 SERVED_FLOOR = 20
 
 

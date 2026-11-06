@@ -72,7 +72,29 @@ def _fast_base_model():
         ):
             node.decorator_list = []
             wanted.insert(0, node)
-    namespace = _Namespace(os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools)
+    # Follow the lifted code into every other _utils.py helper it names, so a guard either method
+    # gains (for_inference's tensor parallel refusal, #15137) runs here instead of resolving to None.
+    helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
+    # Helpers that import a sibling module (a relative import has no package in this namespace): stubbed with what
+    # they return for these fakes. A model split by hand (apply_pipeline_parallel) keeps no UNSLOTH_PP_SIZE replica.
+    stubbed = {
+        "_pipeline_keeps_replica": lambda model: False,
+        "enable_fp8_lora": lambda model: [],
+        "restore_fp8_lora_for_inference": lambda model: None,
+    }
+    lifted = {n.name for n in wanted} | set(stubbed)
+    todo = list(wanted)
+    while todo:
+        for ref in ast.walk(todo.pop()):
+            if isinstance(ref, ast.Name) and ref.id in helpers and ref.id not in lifted:
+                node = helpers[ref.id]
+                node.decorator_list = []
+                lifted.add(node.name)
+                wanted.insert(0, node)
+                todo.append(node)
+    namespace = _Namespace(
+        os = os, inspect = inspect, torch = _torch_or_stub(), functools = functools, **stubbed
+    )
     module = ast.fix_missing_locations(ast.Module(body = wanted, type_ignores = []))
     exec(compile(module, str(MODELS / "vision.py"), "exec"), namespace)
     for name in ("for_inference", "for_training"):
@@ -135,6 +157,14 @@ def test_flag_set_after_for_inference_is_kept(fbm):
     assert os.environ[FLAG] == "1"
 
 
+def test_lifted_for_inference_runs_its_real_helpers(fbm):
+    # The lifted for_inference calls the real _utils.py guards, not a None the namespace made up.
+    model = _Model()
+    model._unsloth_pp = True
+    with pytest.raises(RuntimeError, match = "pipeline parallel"):
+        fbm.for_inference(model)
+
+
 def _fast_llama_for_training():
     tree = ast.parse((MODELS / "llama.py").read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
@@ -147,6 +177,11 @@ def _fast_llama_for_training():
         resolve_training_gradient_checkpointing = lambda model, flag, checkpointing = None: False,
         arm_gradient_checkpointing = lambda model, checkpointing = None: False,
         set_module_gradient_checkpointing = lambda module, flag: None,
+        _tensor_parallel_for_training = lambda model: None,  # tp_replica.py: no tp model here
+        enable_fp8_lora = lambda model: [],
+        _decode_graphs = types.SimpleNamespace(
+            release_for_training = lambda model: None
+        ),  # no graphs held here
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
     exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)
@@ -232,3 +267,25 @@ def test_generated_trainer_init_never_writes_the_flag():
     )
     assert FLAG not in ast.unparse(patcher)
     assert FLAG not in _template()
+
+
+def test_train_restores_eval_without_a_replica_on_a_parallel_trainer():
+    # Failing before: the restore called for_inference, which gathers a whole replica under tensor / pipeline
+    # parallel and is refused for pp x tp, so train() raised after the training finished.
+    calls = []
+    model = _Model()
+    model.for_inference = lambda: calls.append("for_inference")
+    model.for_training = lambda use_gradient_checkpointing = None: model.train()
+
+    class _Trainer:
+        args = types.SimpleNamespace(gradient_checkpointing = False)
+        _unsloth_tensor_parallel = True
+
+        def train(self):
+            return "trained"
+
+    trainer = _Trainer()
+    trainer.model = model
+    model.eval()
+    assert _prepare_for_training_mode()(_Trainer.train)(trainer) == "trained"
+    assert model.training is False and calls == []

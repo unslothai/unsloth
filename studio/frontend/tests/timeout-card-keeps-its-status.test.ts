@@ -12,13 +12,8 @@ const { preferFullToolOutput, preferSanitizedFullToolOutput, toolResultText } = 
   "../src/features/chat/tool-output-result.ts"
 );
 
-// A timed-out python/terminal call returns the output it had already printed and then says
-// it timed out. Past the model's cap that reads
-// `<head>\n\n... (truncated ...)\nExecution timed out after N seconds.`, and the live stdout
-// the card kept has no such sentence anywhere in it -- only the backend writes it. So
-// substituting the fuller stream for the result, which is what the card does whenever the
-// result is a truncated prefix of the stream, used to drop the status and leave a card that
-// reads as a command that finished normally.
+// A timed-out call's result ends with a backend-only status sentence that the live stream lacks,
+// so substituting the stream for a truncated result must re-attach it.
 const SENTENCE = "Execution timed out after 300 seconds.";
 const HEAD = "x".repeat(40);
 const STREAM = `${"x".repeat(200)}\n`;
@@ -29,18 +24,13 @@ const NOTICE =
 test("a truncated timed-out card still says the call timed out", () => {
   const card = preferFullToolOutput(STREAM, `${HEAD}${NOTICE}\n${SENTENCE}`);
 
-  // The stream is the better copy of the output -- it is the part the cap cut -- but the
-  // status it never carried has to survive with it.
   assert.ok(card.startsWith(HEAD), "the stream was not preserved");
   assert.ok(card.includes(SENTENCE), "the card no longer says the call timed out");
-  // Once, not once per source: appending the whole result would repeat the output.
   assert.equal(card.split(SENTENCE).length - 1, 1);
   assert.ok(!card.includes(NOTICE.trimStart()), "the model's cap notice leaked into the card");
 });
 
 test("a completed truncated card still shows the stream alone", () => {
-  // The control: with no status after the footer there is nothing to re-attach, and the
-  // card must not grow a second copy of the output.
   assert.equal(preferFullToolOutput(STREAM, `${HEAD}${NOTICE}`), STREAM);
 });
 
@@ -51,13 +41,10 @@ test("an untruncated timed-out card is left exactly as the backend wrote it", ()
 });
 
 test("a failed call still re-attaches its exit prefix rather than the timeout one", () => {
-  // The sibling case this one is modelled on, asserted here so the new branch cannot
-  // shadow it.
   assert.equal(preferFullToolOutput("boom\n", "Exit code 1:\nboom\n"), "Exit code 1:\nboom\n");
 });
 
 test("a stream whose marker line the backend indented is shown once", () => {
-  // The result carries the backend's indent before a marker line; the stream does not.
   const timedOut = "progress\n__RAG_SOURCES__:[]\nfinished step\n";
   const timedOutCard = preferFullToolOutput(
     timedOut,
@@ -72,8 +59,7 @@ test("a stream whose marker line the backend indented is shown once", () => {
 });
 
 test("a colored marker line is shown once whether or not the result was truncated", () => {
-  // The backend indents only a line-start marker, so a colored one stays unindented until
-  // stripping ANSI moves it to the line start.
+  // The backend indents only a line-start marker; a colored one moves there after ANSI stripping.
   const esc = String.fromCharCode(27);
   const line = `${esc}[31m__FILES__:[]${esc}[0m`;
 
@@ -89,7 +75,6 @@ test("a colored marker line is shown once whether or not the result was truncate
 });
 
 test("an escape sequence the killed program left open does not swallow the timeout status", () => {
-  // Stripping consumes everything after an unterminated OSC, including an appended status.
   const esc = String.fromCharCode(27);
   const stream = `progress\n${esc}]0;running`;
   const card = preferSanitizedFullToolOutput(stream, `${stream}\n${SENTENCE}`);
@@ -97,7 +82,6 @@ test("an escape sequence the killed program left open does not swallow the timeo
 });
 
 test("the timeout status survives a card built from the raw tool result", () => {
-  // Stripping a string result before reconciling lost the status, with or without a saved stream.
   const esc = String.fromCharCode(27);
   const stream = `progress\n${esc}]0;running`;
   const result = `${stream}\n${SENTENCE}`;
@@ -109,7 +93,6 @@ test("the timeout status survives a card built from the raw tool result", () => 
 });
 
 test("an escape sequence the cap cut open does not repeat the output on a timed-out card", () => {
-  // Stripping an escape the cap cut open also ate the footer, so the whole result was appended.
   const esc = String.fromCharCode(27);
   const bel = String.fromCharCode(7);
   const stream = `progress\n${esc}]0;${"t".repeat(200)}${bel}done with step\n`;

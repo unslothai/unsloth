@@ -28,12 +28,10 @@ export function stageFolder(
   };
 }
 
-/** Expired, or too close to it to survive the request. */
 export function isFolderExpired(folder: StagedFolder, now: number): boolean {
   return folder.expiresAtMs - EXPIRY_GRACE_MS <= now;
 }
 
-/** Link folders picked before the project existed. A failed link toasts and never blocks creation. */
 export async function linkStagedFolders(
   projectId: string,
   folders: StagedFolder[],

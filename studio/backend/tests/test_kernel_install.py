@@ -18,13 +18,14 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from utils import kernel_install  # noqa: E402
+from utils import kernel_install, wheel_utils  # noqa: E402
 
 _REAL_LOCK_PATH = kernel_install._kernel_lock_path
 
 _REPO = _BACKEND.parent.parent
 _PT = "https://download.pytorch.org/whl"
 _CC1D = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4"
+_OURS = "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
 
 
 def _env(
@@ -51,6 +52,7 @@ def _no_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
     # Forces the mamba_ssm decision below sm80; an inherited value would override the mocked Triton.
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(wheel_utils, "_uv_static_metadata_config", lambda *args: False)
 
 
 @pytest.mark.parametrize(
@@ -91,9 +93,14 @@ def test_xformers_matches_torch_and_cuda(torch_version, cuda_version, expected):
 
 
 def test_causal_conv1d_reuses_torch_2_10_wheel_on_2_11():
+    # cu12 still takes upstream's torch2.10 wheel; cu13 cp311-cp313 takes our own 2.11 build.
+    url = kernel_install.resolve_wheel_url("causal_conv1d", _env("2.11.0+cu128", "12.8"))
+    assert (
+        url == f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
     url = kernel_install.resolve_wheel_url("causal_conv1d", _env("2.11.0+cu130", "13.0"))
     assert (
-        url == f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        url == f"{_OURS}/causal_conv1d-1.7.0+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 
@@ -187,7 +194,6 @@ def test_pip_reinstalls_the_matched_wheel_without_deps(uv):
 
 
 def test_uv_reinstalls_into_the_system_interpreter_on_colab(uv):
-    # The check failed, so the installed copy is broken: reinstall even at the same version.
     uv(True, outside_venv = True)
     run = _Runner([False, True])
     assert kernel_install.install_kernel("xformers", _COLAB, run = run, exists = lambda url: True) == 0
@@ -386,18 +392,19 @@ def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys, monkeypat
     assert f"skipping {name}, which needs sm80" in capsys.readouterr().out
 
 
-# unsloth_zoo keeps mamba_ssm's fast path on sm75 with Triton 3.4+ (torch 2.8+).
+# unsloth_zoo keeps mamba_ssm's fast path on sm70 / sm75 with Triton 3.4+ (torch 2.8+).
 
 
+@pytest.mark.parametrize("capability", ["7 5", "7 0"])
 @pytest.mark.parametrize("triton", [(3, 4), (3, 6), (4, 0)])
-def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton):
+def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton, capability):
     uv(False)
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
-    run = _Runner([False, True], capability = "7 5")
+    run = _Runner([False, True], capability = capability)
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls[0][-1].endswith(
-        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        "mamba_ssm-2.3.2.post1+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 
@@ -409,7 +416,7 @@ def test_mamba_ssm_is_skipped_on_sm75_with_an_old_triton(monkeypatch, capsys, tr
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
     out = capsys.readouterr().out
-    assert "sm75 with Triton 3.4+" in out
+    assert "sm70+ with Triton 3.4+" in out
     assert ("missing" if triton is None else "%d.%d" % triton) in out
 
 
@@ -427,13 +434,13 @@ def test_triton_is_read_from_the_module(uv, monkeypatch, triton, installs):
     assert bool(run.installer_calls) is installs
 
 
-def test_mamba_ssm_is_skipped_below_sm75_whatever_the_triton(monkeypatch, capsys):
+def test_mamba_ssm_is_skipped_below_sm70_whatever_the_triton(monkeypatch, capsys):
     monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
     monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
-    run = _Runner([], capability = "7 0")
+    run = _Runner([], capability = "6 1")
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls == []
-    assert "the best GPU is sm70" in capsys.readouterr().out
+    assert "the best GPU is sm61" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -482,7 +489,7 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
         kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
         == 0
     )
-    assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
+    assert run.installer_calls[0][-1].startswith(f"{_OURS}/causal_conv1d-1.7.0+cu13torch2.11")
 
 
 @pytest.mark.parametrize(
@@ -560,7 +567,7 @@ def test_install_kernels_without_gpu_installs_mamba_ssm_headless(uv, monkeypatch
         monkeypatch.setenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", "1")
     assert kernel_install.main(argv) == 0
     assert run.installer_calls[0][-1].endswith(
-        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        "mamba_ssm-2.3.2.post1+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 

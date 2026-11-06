@@ -3,24 +3,35 @@
 
 import type { RecipePayload } from "@/features/recipe-studio";
 
+// Templates are fetched under a same-origin CSP; small JSON files must not become data: URLs.
 const structuredOutputsJinjaUrl = new URL(
-  "./structured-outputs-jinja.json",
+  "./structured-outputs-jinja.json?no-inline",
   import.meta.url,
 ).href;
-const pdfGroundedQaUrl = new URL("./pdf-grounded-qa.json", import.meta.url)
-  .href;
+const pdfGroundedQaUrl = new URL(
+  "./pdf-grounded-qa.json?no-inline",
+  import.meta.url,
+).href;
 const instructionFromAnswerUrl = new URL(
-  "./instruction-from-answer.json",
+  "./instruction-from-answer.json?no-inline",
   import.meta.url,
 ).href;
-const textToPythonUrl = new URL("./text-to-python.json", import.meta.url).href;
-const textToSqlUrl = new URL("./text-to-sql.json", import.meta.url).href;
+const textToPythonUrl = new URL(
+  "./text-to-python.json?no-inline",
+  import.meta.url,
+).href;
+const textToSqlUrl = new URL("./text-to-sql.json?no-inline", import.meta.url)
+  .href;
 const ocrDocumentExtractionUrl = new URL(
-  "./ocr-document-extraction.json",
+  "./ocr-document-extraction.json?no-inline",
   import.meta.url,
 ).href;
 const githubSupportBotUrl = new URL(
-  "./github-support-bot.json",
+  "./github-support-bot.json?no-inline",
+  import.meta.url,
+).href;
+const booksAndDocumentsUrl = new URL(
+  "./books-and-documents.json?no-inline",
   import.meta.url,
 ).href;
 
@@ -147,5 +158,12 @@ export const LEARNING_RECIPES: LearningRecipeDef[] = [
     description:
       "Crawl real GitHub issues and PRs and turn each thread into a {User, Assistant} training pair.",
     loadPayload: () => loadPayloadFromUrl(githubSupportBotUrl),
+  },
+  {
+    id: "books-and-documents",
+    title: "Books & Documents to Text",
+    description:
+      "Extract ebooks, PDFs and Office files into a text dataset for continued pretraining.",
+    loadPayload: () => loadPayloadFromUrl(booksAndDocumentsUrl),
   },
 ];

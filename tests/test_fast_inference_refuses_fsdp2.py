@@ -143,3 +143,22 @@ def test_trainer_args_fsdp2_is_refused_when_the_trainer_is_built(tmp_path):
 
     # No version named: TrainingArguments picks FSDP2 from transformers 5.10.0, FSDP1 before.
     assert (unversioned == "REFUSED") == (Version(__version__) >= Version("5.10.0"))
+
+
+@pytest.mark.parametrize("zoo_gathers", [True, False])
+def test_native_fsdp2_keeps_vllm_when_zoo_gathers_the_adapters(no_launcher, zoo_gathers):
+    for key in ("UNSLOTH_FSDP2_BACKEND", "ACCELERATE_USE_FSDP"):
+        no_launcher.delenv(key, raising = False)
+    no_launcher.setenv("UNSLOTH_FSDP2", "1")
+    for key, value in (("WORLD_SIZE", "2"), ("RANK", "0"), ("LOCAL_RANK", "0")):
+        no_launcher.setenv(key, value)
+    no_launcher.setattr(loader_utils, "_zoo_gathers_fsdp2_lora", lambda: zoo_gathers)
+    assert fsdp2_requested()
+    if zoo_gathers:
+        raise_if_fast_inference_under_fsdp2(True)
+    else:
+        with pytest.raises(NotImplementedError, match = "update unsloth_zoo"):
+            raise_if_fast_inference_under_fsdp2(True)
+    no_launcher.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
+    with pytest.raises(NotImplementedError, match = "fast_inference = False"):
+        raise_if_fast_inference_under_fsdp2(True)

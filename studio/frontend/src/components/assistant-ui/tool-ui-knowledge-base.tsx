@@ -13,7 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { useToolAwaitingApproval } from "@/features/chat";
-import { RagDocumentTrigger } from "@/features/rag/components/rag-document-trigger";
+import { RagDocumentTrigger } from "@/features/rag";
 import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { type ComponentProps, memo, useMemo, useState } from "react";
@@ -36,8 +36,10 @@ import {
   citationLabel,
   citedPagesPerDocument,
   documentKey,
+  isPassage,
   topCitationPerDocument,
 } from "./citation-utils";
+import { KnowledgeBasePassages } from "./knowledge-base-passages";
 import { ScrollPane } from "./scroll-pane";
 
 export function CitationBadge({
@@ -60,7 +62,7 @@ export function CitationBadge({
       size="sm"
       className={`rounded-full inline-flex items-center gap-1.5 max-w-[calc(15rem*var(--ui-space-scale,1))] ${
         clickable
-          ? "cursor-pointer hover:bg-accent hover:text-accent-foreground transition-colors"
+          ? "btn-fill cursor-pointer border-transparent hover:text-accent-foreground transition-colors"
           : "cursor-default"
       }`}
     >
@@ -121,12 +123,17 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   );
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? documents : documents.slice(0, DOCUMENTS_SHOWN);
+  // Empty chunks are not passages, so this can sit below the summary's count.
+  const passageCount = useMemo(
+    () => citations.filter(isPassage).length,
+    [citations],
+  );
+  const [showPassages, setShowPassages] = useState(false);
 
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
@@ -183,10 +190,25 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                     Show {documents.length - shown.length} more
                   </button>
                 ) : null}
+                {passageCount > 0 ? (
+                  <button
+                    type="button"
+                    aria-expanded={showPassages}
+                    onClick={() => setShowPassages((v) => !v)}
+                    className="self-start text-xs underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    {showPassages
+                      ? "Hide passages"
+                      : `Show passages (${passageCount})`}
+                  </button>
+                ) : null}
+                {showPassages ? (
+                  <KnowledgeBasePassages citations={citations} />
+                ) : null}
               </>
             ) : resultText ? (
               <ScrollPane
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {resultText}
@@ -197,7 +219,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {query.length > QUERY_INLINE_MAX ? (
               <ScrollPane
                 data-slot="knowledge-base-query"
-                className="rounded bg-muted/50 p-2"
+                className="rounded-lg bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {query}

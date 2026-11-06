@@ -41,20 +41,12 @@ import os
 import sys
 import zipfile
 
-# The CUDA major that every wheel here is built against, and the only one. It is the local
-# version segment upstream writes (cu13), not the toolkit patch level: upstream normalises
-# 13.x to "13" in get_wheel_url(), and a wheel built with 13.0 and one built with 13.2 are
-# interchangeable for the purpose the tag serves, which is "do not install this on cu12".
+# Local version segment (cu13), not the toolkit patch level.
 CUDA_TAG = "13"
 
-# The toolkit actually installed on the runner. Separate from CUDA_TAG because this one is a
-# real apt package version and is reported in the notes, where "cu13" alone would be vague.
 CUDA_TOOLKIT = "13.0"
 
-# torch 2.7 and newer ship pip wheels built with _GLIBCXX_USE_CXX11_ABI=1, so there is no
-# abiFALSE variant to build for 2.13 or 2.14 -- upstream's own matrix excludes it from 2.7 on.
-# The tag is still in the filename because it is in every upstream filename, and a resolver
-# that pattern-matches upstream names has to find it here too.
+# torch 2.7+ wheels are cxx11 ABI only; the tag stays to match upstream filenames.
 CXX11_ABI = "TRUE"
 
 # Device code is most of every wheel. Upstream flash-attn 2.8.1 compressed all of it; the commit
@@ -112,6 +104,11 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": "",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Upstream's torch2.10 causal-conv1d / mamba-ssm wheels (205 / 351 MB, reused on 2.11 and
+        # 2.12) carry -lineinfo and every arch; ours are ~30 / ~55 MB. Upstream flash-attn 2.8.1 is
+        # already smaller than ours there (125 MB, no PTX), so it is not built for these torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
     "win_amd64": {
         "os": "windows",
@@ -132,6 +129,9 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": " / linux_aarch64",
         "pytorch_nvcc": "ccache /usr/local/cuda-13.0/bin/nvcc",
+        # Same as linux_x86_64 for the older torches.
+        "extra_torches": ("2.10.0", "2.11.0", "2.12.0"),
+        "extra_torch_packages": ("causal-conv1d", "mamba-ssm"),
     },
     # NVIDIA publishes flash-attn for Windows on ARM itself (studio resolves it), so only the other
     # two are built here, against the only CUDA torch that exists for it: NVIDIA's 2.14.0+cu134,
@@ -153,6 +153,7 @@ PLATFORMS = {
 _PLATFORM_DEFAULTS = {
     "torches": None,  # every TORCH_VERSIONS entry
     "packages": None,  # every SPECS entry
+    "extra_torch_packages": None,  # packages built for `extra_torches` (None = `packages`)
     "torch_local": "",
     "torch_index_args": "--index-url https://download.pytorch.org/whl/cu130",
 }
@@ -196,23 +197,16 @@ SPECS = {
         "repo": "Dao-AILab/flash-attention",
         "ref": "edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d",
         "submodules": True,
-        # The build is one nvcc invocation per (kernel, arch) and the kernels are large. On a
-        # 4-core, 16 GB hosted runner nvcc 13 goes OOM above one job; this is upstream's own
-        # value for the cu13 legs of its publish matrix, arrived at the same way.
+        # nvcc 13 OOMs above one job on a 16 GB hosted runner.
         "max_jobs": "1",
         "nvcc_threads": "2",
         "env": {
             "FLASH_ATTENTION_FORCE_BUILD": "TRUE",
             "FLASH_ATTENTION_FORCE_CXX11_ABI": CXX11_ABI,
-            # Upstream's default is "80;90;100;110;120". 110 (Thor) is dropped because nothing
-            # Unsloth targets runs it and each arch is a full pass over every kernel. 86 and 89
-            # are absent for a different reason: they are not needed. A cubin is compatible
-            # forward across the minor versions of its major, so sm_80 code runs on sm_86 and
-            # sm_89 hardware, and setup.py additionally emits PTX for the newest arch so an
-            # unlisted future card JITs rather than failing.
+            # sm_86/89 run sm_80 cubins and PTX covers future cards; 110 is not targeted.
             "FLASH_ATTN_CUDA_ARCHS": "80;90;100;120",
         },
-        # Split the 6-8 hour compile across jobs to stay below GitHub's 6-hour limit.
+        # Shard the compile to stay below GitHub's 6-hour job limit.
         "shards": 8,
         # Leave time to upload partial caches after a build timeout.
         "build_timeout": "300m",
@@ -247,13 +241,10 @@ SPECS = {
         "nvcc_threads": "2",
         "env": {
             "MAMBA_FORCE_BUILD": "TRUE",
-            # Mamba-1's selective-scan CUDA kernels are opt-in upstream. They are the reason
-            # this wheel is worth building: without them mamba_ssm falls back to the reference
-            # path, and selective_scan_cuda -- the extension whose missing symbols are the
-            # whole ABI problem -- is not in the wheel at all.
+            # Mamba-1's selective-scan kernels are opt-in upstream and are the reason for this wheel.
             "MAMBA_KEEP_CUDA_BUILD": "TRUE",
         },
-        # The one source edit in this workflow. See patch_mamba_cxx20.py.
+        # See patch_mamba_cxx20.py.
         "patch": "cxx20",
         "build_timeout": "180m",
         "import_names": ["mamba_ssm", "selective_scan_cuda"],
@@ -263,8 +254,6 @@ SPECS = {
     },
 }
 
-# torch minors, not patch levels, are what the ABI is keyed on, but the build needs an exact
-# version to pip install, so the table is keyed by the full version and the minor is derived.
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
 
 
@@ -276,8 +265,16 @@ def _platform_torches(platform: str) -> tuple[str, ...]:
     )
 
 
-# Accepted from a dispatch; each platform builds only its own subset (2.10.0, 2.11.0 and 2.12.0
-# are win_amd64 only).
+def _platform_packages(platform: str, torch_version: str) -> tuple[str, ...]:
+    """Packages a platform builds for one torch: `extra_torch_packages` for its `extra_torches`."""
+    packages = _platform(platform, "packages") or tuple(SPECS)
+    if torch_version in (_platform(platform, "extra_torches") or ()):
+        packages = _platform(platform, "extra_torch_packages") or packages
+    return packages
+
+
+# Accepted from a dispatch; each platform builds only its own subset (2.10.0, 2.11.0 and 2.12.0:
+# every package on win_amd64, causal-conv1d and mamba-ssm on Linux).
 ALLOWED_TORCH = tuple(
     sorted(
         {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
@@ -398,11 +395,11 @@ def build_matrix(
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
         torches = _platform_torches(platform)
-        packages_here = _platform(platform, "packages") or tuple(SPECS)
         local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
             if torch_version not in torches:
                 continue
+            packages_here = _platform_packages(platform, torch_version)
             for python_version in chosen_python:
                 for package in chosen_packages:
                     if package not in packages_here:
@@ -455,8 +452,8 @@ def build_matrix(
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
-            "(torch 2.10.0 to 2.12.0 are win_amd64 only; win_arm64 builds causal-conv1d and "
-            "mamba-ssm for torch 2.14.0 only)."
+            "(torch 2.10.0 to 2.12.0 build flash-attn on win_amd64 only; win_arm64 builds "
+            "causal-conv1d and mamba-ssm for torch 2.14.0 only)."
         )
     return include
 
@@ -635,6 +632,19 @@ def _packages(rows: list[dict]) -> str:
     return _join([f"{package} {version}" for package, version in pairs])
 
 
+def _built(rows: list[dict]) -> str:
+    """`flash-attn 2.8.4, built for PyTorch ...`, split by package where coverage differs (Linux
+    builds causal-conv1d and mamba-ssm for torch 2.10 to 2.12 but flash-attn only for 2.13+)."""
+    by_coverage: dict[str, list[dict]] = {}
+    for package in SPECS:
+        package_rows = [row for row in rows if row["package"] == package]
+        if package_rows:
+            by_coverage.setdefault(_coverage(package_rows), []).extend(package_rows)
+    return "; ".join(
+        f"{_packages(group)}, built for {coverage}" for coverage, group in by_coverage.items()
+    )
+
+
 def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     """One-sentence release body from `(sha256, filename)` pairs.
 
@@ -655,11 +665,11 @@ def render_notes(entries: list[tuple[str, str]], tag: str, repo: str) -> str:
     if len(platforms) == 1:
         return (
             f"Prebuilt {PLATFORM_NAMES[platforms[0]]} CUDA {CUDA_TAG} wheels for "
-            f"{_packages(parsed)}, built for {_coverage(parsed)}.{tail}"
+            f"{_built(parsed)}.{tail}"
         )
     # Per platform: separate runs need not cover the same packages or torch minors.
     per_platform = " ".join(
-        f"{PLATFORM_NAMES[platform]}: {_packages(rows)}, built for {_coverage(rows)}."
+        f"{PLATFORM_NAMES[platform]}: {_built(rows)}."
         for platform in platforms
         for rows in [[row for row in parsed if row["platform"] == platform]]
     )
@@ -701,8 +711,7 @@ def _cmd_matrix(args: argparse.Namespace) -> int:
     pure = pure_matrix(os.environ.get("UW_PACKAGES", ""))
     print(matrix)
 
-    # Writing the step output here rather than echoing it in YAML keeps the JSON -- which is
-    # full of quotes and braces -- out of a shell round trip entirely.
+    # Written here to keep quote-heavy JSON out of a shell round trip.
     if args.github:
         output = os.environ.get("GITHUB_OUTPUT")
         if output:
@@ -738,6 +747,8 @@ def _cmd_wheel_name(args: argparse.Namespace) -> int:
     # The same cells build_matrix accepts: no name for a wheel nothing builds.
     if args.torch not in _platform_torches(args.platform):
         raise SystemExit(f"torch {args.torch} is not built for {args.platform}")
+    if args.package not in _platform_packages(args.platform, args.torch):
+        raise SystemExit(f"{args.package} for torch {args.torch} is not built for {args.platform}")
     print(wheel_name(args.package, args.torch, args.python, args.platform))
     return 0
 

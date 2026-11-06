@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The page shell's fetch and XMLHttpRequest. Wrapped to count the page's requests in flight, so the
-browser agent can wait for content a page fetches after load before it reads the page; and to send
-the page's requests to its own site through the panel, as the sandbox's opaque origin makes them
-cross-origin. Runs inside ``boot`` in routes/browser.py."""
+"""Page fetch/XHR wrappers run inside boot; count in-flight requests, route own-site calls via panel."""
 
 BROWSER_NETWORK_JS = r"""
         const nativeFetch = window.fetch.bind(window);
@@ -32,7 +29,7 @@ BROWSER_NETWORK_JS = r"""
 
         // To the browser the sandbox's origin is opaque, so even the page's own site is another origin,
         // and an API of it that sends no CORS headers can't be read. Requests to the page's origin go
-        // through the panel to Studio's backend (POST /api/browser/request), which makes them as the
+        // through the panel to Unsloth's backend (POST /api/browser/request), which makes them as the
         // same-origin requests they are. Requests to other sites stay the browser's. When the page's
         // site answers any origin (cfg.anyOrigin), its writes and XHRs stay the browser's too, streamed
         // and unbuffered; a fetch GET still falls back to the panel for an API that doesn't.

@@ -5,7 +5,6 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 
-/** Model paths the backend loads onto the NPU (`lemonade:<Lemonade model id>`). */
 export const NPU_MODEL_PREFIX = "lemonade:";
 
 /** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
@@ -78,6 +77,20 @@ export function npuRowsFor(
       (!needle ||
         `${model.id} ${model.checkpoint}`.toLowerCase().includes(needle)),
   );
+}
+
+/** "FastFlowLM v1.0.12 · Lemonade v2026.44.1", or null when no version is known. */
+export function npuRuntimeLabel(
+  versions: NpuStatus["versions"],
+): string | null {
+  const parts: string[] = [];
+  for (const [name, version] of [
+    ["FastFlowLM", versions?.fastflowlm],
+    ["Lemonade", versions?.lemonade],
+  ] as const) {
+    if (version) parts.push(`${name} v${version.replace(/^v/, "")}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function npuSizeLabel(sizeGb: number | null): string | null {

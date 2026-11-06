@@ -1,14 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Regression test for the macOS half of the managed-account link invariant.
-
-Linux already withholds LANDLOCK_ACCESS_FS_MAKE_SYM from every writable root
-(test_managed_child_cannot_plant_a_link_in_its_own_tree). The macOS profile
-granted a plain file-write* on the same roots, and file-write* covers
-symlink creation, so a managed tool could plant a link that the unconfined job
-child later follows out of the account's roots.
-
-"""
+"""macOS profile must not grant file-write*, which covers symlink creation that Linux withholds."""
 
 import sys
 from pathlib import Path
@@ -37,6 +29,6 @@ def test_macos_profile_refuses_symlink_creation_in_the_writable_roots(tmp_path, 
 
     deny = "(deny file-write-create (vnode-type SYMLINK))"
     assert deny in profile, "file-write* grants symlink creation unless it is subtracted back out"
-    # Later rules win, so the deny has to sit after every writable grant.
+    # Later rules win, so the deny must follow every writable grant.
     assert profile.rstrip().endswith(deny)
     assert profile.index(deny) > profile.rindex("(allow file-read* file-write* (subpath")

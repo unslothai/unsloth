@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keeping private data out of Deep Research web queries and prompts.
-
-Search queries leave the machine, so credentials, personal identifiers, and private network
-addresses are stripped before a query is issued. Prompt-delimiter tags in gathered evidence
-are escaped so untrusted text cannot close a wrapper block and inject instructions, and a
-source URL cannot close its own citation to inject a link.
-"""
+"""Strips credentials and private addresses from search queries; escapes prompt tags in evidence."""
 
 from __future__ import annotations
 
@@ -26,8 +20,7 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     r"|untrusted_synthesis_audit_json|synthesis_audit_json)\s*>",
     re.IGNORECASE,
 )
-# An unescaped copy could move the synthesis boundary and truncate the report; spelled out to avoid
-# importing prompts, and pinned by the hardening test.
+# Escaped so evidence cannot move the report boundary; spelled out to avoid importing prompts.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 # IANA registry plus vendor schemes; not OAuth/Mutual, mostly prose ("OAuth 2.0", "Mutual TLS").
@@ -152,8 +145,7 @@ _QUERY_OPAQUE_TOKEN = re.compile(
     r"|hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})|glpat-[A-Za-z0-9_-]{20,}"
     r"|AKIA[A-Z0-9]{16})\b"
 )
-# International (+CC) or NANP-formatted phone numbers: requires separators or a leading "+" so
-# bare numeric research terms are not redacted.
+# Requires separators or '+' so bare numeric research terms are not redacted.
 _QUERY_PHONE = re.compile(
     r"(?<!\w)\+\d[\d\s().-]{7,17}\d(?!\w)|(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\w)"
 )

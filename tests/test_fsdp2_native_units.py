@@ -8,7 +8,6 @@ it runs without a GPU."""
 
 import importlib.util
 import os
-import socket
 import sys
 import types
 
@@ -17,7 +16,9 @@ import torch
 
 # Spawned gloo ranks re-import this module: keep them on the CPU (deterministic on GPU hosts; CUDA
 # reads the mask at its lazy first use, after this).
-if __import__("multiprocessing").parent_process() is not None:
+if __import__("multiprocessing").parent_process() is not None or getattr(
+    __import__("multiprocessing").current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,7 +54,7 @@ ARCHS = [
     ),
     (
         "Qwen3_5",
-        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration",
+        "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink",
         "AutoModelForImageTextToText",
     ),
 ]
@@ -104,9 +105,8 @@ def _expected_blocks(model):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _batch(model, seed = 1):

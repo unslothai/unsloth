@@ -95,10 +95,7 @@ test("every default-engine load path sends the choice, vLLM and SGLang never 4-b
     runtime,
     /load_in_4bit:\s*loadEngineFields\.engine === "auto" && loadIn4bitChoice,/,
   );
-  assert.match(
-    runtime,
-    /load_in_4bit:\s*\(stateBeforeUnload\.params\.engine \?\? "auto"\) === "auto" &&\s*stateBeforeUnload\.params\.loadIn4bit !== false,/,
-  );
+  assert.match(runtime, /await validateModel\(\{\s*\.\.\.loadRequest\(\),/);
   const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
@@ -108,7 +105,7 @@ test("every default-engine load path sends the choice, vLLM and SGLang never 4-b
   assert.equal(
     (adapter.match(/load_in_4bit: config\.loadIn4bit !== false,/g) ?? [])
       .length,
-    2,
+    1,
   );
 });
 

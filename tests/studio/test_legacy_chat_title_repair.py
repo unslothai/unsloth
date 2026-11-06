@@ -114,9 +114,14 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     answers, and anything unreadable counts as unsupported."""
     repair = _read(REPAIR)
     assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
+    # The thread list's advertised flag decides first; only an older backend falls back to the schema.
+    assert (
+        "const probe = await resolveGuardProbe( advertisedThreadPatchGuards(), probeServedSchema, );"
+        in repair
+    )
     assert 'const response = await authFetch("/openapi.json");' in repair
     assert (
-        "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
+        "return readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
         in repair
     )
     # Only a settled answer is cached, or a 401 at startup parks the migration.

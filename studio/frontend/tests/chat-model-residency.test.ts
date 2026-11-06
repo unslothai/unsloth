@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The header used to read "loaded" off the picker selection alone. Loading an
-// image or video model evicts the chat model (the GPU arbiter allows one owner),
-// which leaves the selection untouched, so the header kept its tick and the next
-// prompt came back a bare 400. These pin the rule the header now uses.
+// Loading an image or video model evicts the chat model without changing the selection.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -29,7 +26,6 @@ test("a resident model reads as loaded", () => {
   );
 });
 
-// The reported bug: the image load evicted it, the picker kept the name.
 test("a model evicted for an image load does not read as loaded", () => {
   assert.equal(
     chatModelLoaded({
@@ -42,7 +38,6 @@ test("a model evicted for an image load does not read as loaded", () => {
   );
 });
 
-// Startup: assume loaded rather than flash "not loaded" on every launch.
 test("residency not yet read is not treated as evicted", () => {
   assert.equal(
     chatModelLoaded({
@@ -55,7 +50,6 @@ test("residency not yet read is not treated as evicted", () => {
   );
 });
 
-// An API model has no local weights, so residency says nothing about it.
 test("an external model is loaded whatever the backend holds", () => {
   assert.equal(
     chatModelLoaded({
@@ -80,9 +74,6 @@ test("nothing picked is never loaded", () => {
   );
 });
 
-// The header tick is the selector's own isLoaded, which was `selected !== ""`.
-// Reading the rule out of the source keeps the prop wired to the fix: the first
-// attempt at this changed a different modelLoaded and the tick never moved.
 test("the selector's tick asks the caller, and defaults to the old rule", () => {
   const source = readSrc("features/model-picker/components/model-selector.tsx");
   assert.match(
@@ -110,10 +101,6 @@ test("a model still loading is not loaded yet", () => {
   );
 });
 
-// The trigger tick was only one of three places claiming "loaded", and all three
-// read the picker selection. The dropdown's own green "Loaded" badge and the
-// Model hub cards kept it after an eviction, which is the same lie in a second
-// and third spot.
 test("the picker's Loaded badge asks residency, not the selection", () => {
   const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
   assert.match(pickers, /const chatLoadedModelId = chatModelLoaded\(\{/);
@@ -128,20 +115,10 @@ test("the picker's Loaded badge asks residency, not the selection", () => {
   );
 });
 
-// Nothing in the chat runtime polls /status: refresh runs on mount and when the
-// model lists change, never on a timer. So an eviction caused by the Images
-// page was never observed and residentCheckpoint stayed undefined, which reads
-// as loaded. The re-read has to be driven by the lifecycle event.
-//
-// On the START of the other runtime's load, not only its finish. The GPU
-// arbiter evicts chat inside the image or video load POST, before the download
-// begins, and that download can run for hours: measured against a live backend,
-// /api/inference/status reported active_model null 1.8s after the POST returned,
-// and sending to the model the picker still named answered 400 "No model
-// loaded". Waiting for the settle left that gap open for the whole load.
+// Nothing polls /status, and the arbiter evicts chat at the start of another runtime's load,
+// so the re-read must be driven by that load starting.
 test("another runtime loading re-reads the chat status", () => {
   assert.match(USE_CHAT_MODEL_RUNTIME, /subscribeModelLifecycle\(\(\{ runtime \}\) => \{/);
-  // Dictation holds no GPU ownership, so it is the one that stays excluded.
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(runtime === "chat" \|\| runtime === "stt"\) return;/);
   assert.doesNotMatch(
     USE_CHAT_MODEL_RUNTIME,
@@ -152,18 +129,11 @@ test("another runtime loading re-reads the chat status", () => {
     USE_CHAT_MODEL_RUNTIME,
     /void refresh\(\{\s*includeLoras: false,\s*externalChatSlotLoad: runtime === "tts",\s*\}\)/,
   );
-  // And the branch it feeds still clears residency.
   assert.match(USE_CHAT_MODEL_RUNTIME, /residentCheckpoint: null,/);
 });
 
-// Dimming the tick and the badges was not enough: the model's name on its own
-// reads as "this is my model", and sending to it returns a bare 400. An
-// eviction now drops the pick, exactly as a server-side unload already did.
 test("an eviction drops the pick, not just the loaded marks", () => {
-  // Anchored on the branch, not on the file: other catches sit above it now.
-  // chatActiveModel, not status.active_model: this branch owns the resident-TTS case too.
-  // Matched loosely: the guard has been reflowed across lines, and a literal that
-  // stopped matching would slice nothing and fail on an empty string instead.
+  // Anchored on the branch and matched loosely, since the guard has been reflowed before.
   const branchStart = USE_CHAT_MODEL_RUNTIME.search(/\} else if \(\s*!chatActiveModel/);
   assert.notEqual(branchStart, -1, "the eviction branch anchor no longer matches");
   const branch = USE_CHAT_MODEL_RUNTIME.slice(
@@ -171,15 +141,12 @@ test("an eviction drops the pick, not just the loaded marks", () => {
     USE_CHAT_MODEL_RUNTIME.indexOf("} catch (error) {", branchStart),
   );
   assert.match(branch, /clearCheckpoint\(\)/);
-  // A first speech-only status is definitive too: it must clear a persisted
-  // pick even before this tab has observed a resident Chat model.
   assert.match(
     branch,
     /\(wasResident \|\| isSpeechOnlyStatus\(statusRes\)\)[\s\S]*selectedCheckpoint[\s\S]*!modelLoading/,
   );
 });
 
-// The pick survives a load, which also reports no active model while it runs.
 test("the eviction clear reads the store's loading flag", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
   assert.match(store, /modelLoading: boolean;/);

@@ -177,6 +177,60 @@ const regenerated = storedMessages([
   ["a1-retry", "u1", "assistant", "Pears."],
 ]);
 
+test("deferred export keeps the branch selected before the exporter loads", async () => {
+  const downloads: string[] = [];
+  const exporters = loadExporters(regenerated, downloads, []);
+  let branch = ["u1", "a1"];
+  const unregister = liveThreadHead.registerLiveThreadView({
+    threads: () => ({ getState: () => ({ mainThreadId: "thread" }) }),
+    threadListItem: () => ({
+      getState: () => ({ id: "thread", remoteId: "thread" }),
+    }),
+    thread: () => ({
+      getState: () => ({ messages: branch.map((id) => ({ id })) }),
+    }),
+  });
+  const menu = ts.createSourceFile(
+    "chat-row-menu.ts",
+    readSrc("features/chat/components/chat-row-menu.ts"),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const dispatch = menu.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === "exportConversationByFormat",
+  );
+  assert.ok(dispatch);
+  const context = {
+    exports: {} as {
+      exportConversationByFormat: (id: string, format: string) => Promise<void>;
+    },
+    liveThreadBranch: liveThreadHead.liveThreadBranch,
+    CONVERSATION_MARKDOWN_FORMAT: "markdown",
+    require: () => {
+      branch = ["u1", "a1-retry"];
+      return exporters;
+    },
+  };
+  vm.runInNewContext(
+    ts.transpileModule(dispatch.getText(), {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    }).outputText,
+    context,
+  );
+  try {
+    await context.exports.exportConversationByFormat("thread", "markdown");
+  } finally {
+    unregister();
+  }
+  assert.match(downloads[0] as string, /Apples\./);
+  assert.doesNotMatch(downloads[0] as string, /Pears\./);
+});
+
 const edited = storedMessages([
   ["u1", null, "user", "Name one color."],
   ["a1", "u1", "assistant", "Blue."],
@@ -204,7 +258,6 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
   });
 });
 
-// Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
   const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
@@ -215,7 +268,7 @@ test("Markdown still exports while the switched-to chat is loading", async () =>
   });
 });
 
-// CSV must not follow markdown onto one branch: it is the export used to compare versions.
+// CSV writes all branches: it is the export used to compare versions.
 test("CSV still writes both replies while markdown writes one", async () => {
   const downloads: string[] = [];
   const exporters = loadExporters(regenerated, downloads, []);

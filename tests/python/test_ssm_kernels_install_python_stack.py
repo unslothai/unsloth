@@ -230,3 +230,54 @@ def test_an_inconclusive_re_probe_under_the_lock_keeps_the_kernel(monkeypatch):
     warnings = _run_stale_check(monkeypatch, host, lock = _lock_then_hang)
     assert host.removed == []
     assert any("kept it" in message for message in warnings)
+
+
+def _real_probe(extension, path):
+    return subprocess.run(
+        [sys.executable, "-c", ips._ssm_extension_probe(extension)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        env = {**__import__("os").environ, "PYTHONPATH": str(path)},
+    )
+
+
+# Stand-ins for selective_scan_cuda / causal_conv1d_cuda: a CUDA build on the host cannot interfere.
+_FAKE_SCAN, _FAKE_CONV = "unsloth_test_selective_scan_ext", "unsloth_test_causal_conv1d_ext"
+
+
+def test_the_probe_passes_an_extension_free_mamba_ssm_only(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN})
+    assert _real_probe(_FAKE_SCAN, tmp_path).returncode == 0
+    # causal_conv1d has no extension-free wheel: a missing causal_conv1d_cuda is still broken.
+    missing = _real_probe(_FAKE_CONV, tmp_path)
+    assert missing.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, missing.stderr
+    # A build for another torch: the module is there but does not load.
+    (tmp_path / f"{_FAKE_SCAN}.py").write_text("raise ImportError('undefined symbol: _ZN3c10')\n")
+    broken = _real_probe(_FAKE_SCAN, tmp_path)
+    assert broken.returncode == ips._SSM_EXTENSION_BROKEN_EXIT, broken.stderr
+    assert _FAKE_SCAN in broken.stderr
+
+
+def test_setup_keeps_the_extension_free_mamba_ssm(monkeypatch, tmp_path):
+    # Removing it on every update leaves an offline Mamba-2 load without mamba_ssm.
+    pytest.importorskip("torch")
+    monkeypatch.setattr(ips, "_SSM_KERNEL_EXTENSIONS", {"mamba_ssm": _FAKE_SCAN})
+    monkeypatch.setattr(ips, "_SSM_EXTENSION_OPTIONAL", {_FAKE_SCAN}, raising = False)
+    monkeypatch.setattr(ips, "NO_TORCH", False)
+    monkeypatch.setattr(ips, "IS_MACOS", False)
+    monkeypatch.setattr(
+        ips,
+        "_installed_distribution_version",
+        lambda d: "2.3.2.post1" if d == "mamba-ssm" else None,
+    )
+    removed = []
+    monkeypatch.setattr(ips, "_uninstall_distribution", lambda d: removed.append(d) or True)
+    monkeypatch.setattr(ips, "_count_install_action", lambda: None)
+    monkeypatch.setattr(ips, "kernel_install_lock", _free_lock)
+    messages = []
+    monkeypatch.setattr(ips, "_step", lambda label, value, color_fn = None: messages.append(value))
+    monkeypatch.setattr(ips, "_note", lambda message, color_fn = None: messages.append(message))
+    ips._remove_stale_ssm_kernels()
+    assert removed == [] and messages == []

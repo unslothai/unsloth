@@ -5,33 +5,27 @@
 // controls, and the folders worth suggesting. Shared by the chat picker and the voice Decide list.
 
 import { useIsAccountOwner } from "@/features/auth";
+import { listRecommendedFolders } from "@/features/chat";
 import {
   type ScanFolderInfo,
-  addScanFolder,
-  listRecommendedFolders,
-  listScanFolders,
-  removeScanFolder,
-} from "@/features/chat";
-import { scanFolderStatusCopy } from "@/features/hub";
+  addScanFolderToStore,
+  folderDisplayName,
+  removeScanFolderFromStore,
+  scanFolderStatusCopy,
+  useScanFolders as useScanFolderStore,
+} from "@/features/hub";
 import { pickNativeModelFolder } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
-import {
-  Add01Icon,
-  Cancel01Icon,
-  Folder02Icon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { Folder02Icon } from "@/lib/folder-icons";
+import { Cancel01Icon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { type Ref, useCallback, useEffect, useState } from "react";
 import { FolderBrowser } from "./folder-browser";
 
-// Module-level so re-mounting the popover shows the folders instantly.
-let _scanFoldersCache: ScanFolderInfo[] = [];
-
+// The folders come from the shared store, so the chat picker and the Decide list stay in step.
 export function useScanFolders(onChanged?: () => void) {
-  const [scanFolders, setScanFolders] =
-    useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const { folders: scanFolders } = useScanFolderStore();
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -39,40 +33,26 @@ export function useScanFolders(onChanged?: () => void) {
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
   const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
-  const refreshScanFolders = useCallback(() => {
-    listScanFolders()
-      .then((v) => {
-        _scanFoldersCache = v;
-        setScanFolders(v);
-      })
-      .catch(() => {});
-  }, []);
-
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
-      // An explicit path lets the folder browser submit in the same tick it calls `setFolderInput`;
-      // reading `folderInput` would race the update.
+      // An explicit path avoids racing the `setFolderInput` update.
       const raw = overridePath !== undefined ? overridePath : folderInput;
       const trimmed = raw.trim();
       if (!trimmed || folderLoading) return;
       setFolderError(null);
       setFolderLoading(true);
-      // From the folder browser's "Use this folder": the typed-input panel is closed, so surface failures via toast.
+      // The typed-input panel is closed here, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
-        const created = await addScanFolder(trimmed);
-        // Backend returns the existing row for duplicates, so dedupe.
-        const next = _scanFoldersCache.some(
-          (f) => f.id === created.id || f.path === created.path,
-        )
-          ? _scanFoldersCache
-          : [..._scanFoldersCache, created];
-        _scanFoldersCache = next;
-        setScanFolders(next);
+        const { folder, alreadyAdded } = await addScanFolderToStore(trimmed);
         setFolderInput("");
         setShowFolderInput(false);
+        if (alreadyAdded) {
+          toast.info("Already in your folders", {
+            description: folderDisplayName(folder.path),
+          });
+        }
         onChanged?.();
-        void refreshScanFolders();
       } catch (e) {
         const message = e instanceof Error ? e.message : "Failed to add folder";
         setFolderError(message);
@@ -83,7 +63,7 @@ export function useScanFolders(onChanged?: () => void) {
         setFolderLoading(false);
       }
     },
-    [folderInput, folderLoading, refreshScanFolders, onChanged],
+    [folderInput, folderLoading, onChanged],
   );
 
   const isOwner = useIsAccountOwner();
@@ -99,29 +79,37 @@ export function useScanFolders(onChanged?: () => void) {
   }, [handleAddFolder, isOwner]);
 
   const handleRemoveFolder = useCallback(
-    async (id: number) => {
+    async (folder: ScanFolderInfo) => {
       try {
-        await removeScanFolder(id);
-        // Optimistic: drop it immediately.
-        const next = _scanFoldersCache.filter((f) => f.id !== id);
-        _scanFoldersCache = next;
-        setScanFolders(next);
-        refreshScanFolders();
+        await removeScanFolderFromStore(folder.id);
         onChanged?.();
+        toast.success("Folder removed", {
+          description: folderDisplayName(folder.path),
+          action: {
+            label: "Undo",
+            onClick: () => {
+              addScanFolderToStore(folder.path, Boolean(folder.recursive))
+                .then(() => onChanged?.())
+                .catch((e) =>
+                  toast.error("Couldn't restore folder", {
+                    description: e instanceof Error ? e.message : undefined,
+                  }),
+                );
+            },
+          },
+        });
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-        refreshScanFolders();
       }
     },
-    [refreshScanFolders, onChanged],
+    [onChanged],
   );
 
   useEffect(() => {
-    refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
-  }, [refreshScanFolders]);
+  }, []);
 
   return {
     scanFolders,
@@ -185,7 +173,7 @@ export function CustomFoldersControls({
           className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
         >
           <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />
-          Custom Folders
+          Custom folders
         </button>
         <div className="flex items-center gap-0.5">
           <button
@@ -208,7 +196,7 @@ export function CustomFoldersControls({
             className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
-              icon={showFolderInput ? Cancel01Icon : Add01Icon}
+              icon={showFolderInput ? Cancel01Icon : PlusSignIcon}
               className="size-3"
             />
           </button>
@@ -235,9 +223,9 @@ export function CustomFoldersControls({
             className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
           >
             {customFoldersCollapsed ? (
-              <ChevronRightIcon className="size-3" />
+              <HugeiconsIcon icon={ChevronRightStandardIcon} className="size-3" />
             ) : (
-              <ChevronDownIcon className="size-3" />
+              <HugeiconsIcon icon={ChevronDownStandardIcon} className="size-3" />
             )}
           </button>
         </div>
@@ -274,7 +262,7 @@ export function CustomFoldersControls({
               </div>
               <button
                 type="button"
-                onClick={() => handleRemoveFolder(f.id)}
+                onClick={() => void handleRemoveFolder(f)}
                 aria-label={`Remove folder ${f.path}`}
                 className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
               >
@@ -379,7 +367,7 @@ export function CustomFoldersControls({
         onSelect={(picked) => {
           setFolderInput(picked);
           setFolderError(null);
-          // Pass the path explicitly: `folderInput` state has not flushed when "Use this folder" submits.
+          // Pass the path explicitly: `folderInput` state has not flushed yet.
           void handleAddFolder(picked);
         }}
       />

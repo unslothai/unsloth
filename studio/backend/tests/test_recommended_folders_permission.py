@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Regression test for the /recommended-folders (and /browse-folders) 500
-caused by an unreadable model directory, e.g. a stock root-owned
-``ollama`` install at ``/usr/share/ollama/.ollama/models``.
-
-Root cause: ``routes.models`` folder-scan helpers probed candidates with a
-bare ``Path(p).is_dir()``. On Python <= 3.11 that returned ``False`` for an
-unreadable path; on Python >= 3.12 ``is_dir()`` propagates
-``PermissionError`` (EACCES), so the endpoint 500-ed through the whole
-middleware stack instead of skipping the directory. Probes now go through
-the module-level ``_safe_is_dir`` helper.
-
-``routes.models`` pulls the full backend dep tree (fastapi, structlog, the
-models package, ...), so rather than stand up the app we extract the real
-``_safe_is_dir`` from the source file and exercise it in isolation —
-dependency-free while still running the shipped code.
-
-Run:
-    python -m pytest studio/backend/tests/test_recommended_folders_permission.py -v
-"""
+"""Probe via _safe_is_dir: on Python 3.12+ is_dir() raises PermissionError on unreadable dirs."""
 
 import ast
 import os
@@ -50,8 +31,7 @@ def _load_safe_is_dir():
 
 safe_is_dir = _load_safe_is_dir()
 
-# The superuser bypasses permission bits, so the chmod-000 setup below
-# would not deny access when running as root.
+# Root bypasses permission bits, so chmod 000 would not deny.
 _skip_as_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason = "root bypasses filesystem permission bits",
@@ -59,7 +39,6 @@ _skip_as_root = pytest.mark.skipif(
 
 
 def test_helper_exists_in_source():
-    # Guard against a refactor silently dropping the helper the fix needs.
     assert callable(safe_is_dir)
 
 
@@ -87,7 +66,7 @@ def test_mode000_dir_itself_is_still_a_dir(tmp_path):
     locked.mkdir()
     os.chmod(locked, 0o000)
     try:
-        assert safe_is_dir(locked) is True  # must not raise
+        assert safe_is_dir(locked) is True
     finally:
         os.chmod(locked, 0o755)
 
@@ -118,6 +97,6 @@ def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
     os.chmod(parent, 0o000)
     try:
         with pytest.raises(PermissionError):
-            Path(parent / ".ollama" / "models").is_dir()  # pre-fix expr
+            Path(parent / ".ollama" / "models").is_dir()
     finally:
         os.chmod(parent, 0o755)

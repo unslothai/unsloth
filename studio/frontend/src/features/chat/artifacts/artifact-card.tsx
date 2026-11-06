@@ -27,12 +27,12 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAuiState } from "@assistant-ui/react";
 import {
-  Copy01Icon,
   Download01Icon,
   InternetIcon,
   LinkSquare02Icon,
   SourceCodeIcon,
 } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -293,7 +293,7 @@ export function ArtifactCard({
         </span>
         <div
           className={cn(
-            "relative z-10 flex h-9 shrink-0 items-stretch gap-px overflow-hidden rounded-full border border-border/80 bg-background/60 text-sm text-foreground dark:border-transparent dark:bg-transparent",
+            "relative z-10 flex h-9 shrink-0 items-stretch gap-px overflow-hidden rounded-full text-sm text-foreground",
             isStreaming && "opacity-50",
           )}
         >
@@ -302,7 +302,7 @@ export function ArtifactCard({
             disabled={isStreaming}
             onClick={() => open("preview")}
             aria-pressed={showing}
-            className="cursor-pointer pl-3.5 pr-2.5 transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none disabled:cursor-default disabled:hover:bg-transparent dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(17%*var(--contrast-wash-gain,1)),transparent)] dark:focus-visible:bg-[color-mix(in_oklab,var(--foreground)_calc(17%*var(--contrast-wash-gain,1)),transparent)]"
+            className="btn-fill cursor-pointer pl-3.5 pr-2.5 transition-colors focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none disabled:cursor-default disabled:hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
           >
             Open in
           </button>
@@ -312,7 +312,7 @@ export function ArtifactCard({
                 type="button"
                 disabled={isStreaming}
                 aria-label="More ways to open"
-                className="flex cursor-pointer items-center border-l border-border/80 pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:bg-muted/60 focus-visible:outline-none aria-expanded:bg-muted/60 disabled:cursor-default dark:border-l-0 dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(17%*var(--contrast-wash-gain,1)),transparent)] dark:focus-visible:bg-[color-mix(in_oklab,var(--foreground)_calc(17%*var(--contrast-wash-gain,1)),transparent)] dark:aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(17%*var(--contrast-wash-gain,1)),transparent)]"
+                className="btn-fill flex cursor-pointer items-center pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none aria-expanded:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] disabled:cursor-default dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:aria-expanded:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={ChevronDownStandardIcon}
@@ -324,7 +324,7 @@ export function ArtifactCard({
             <DropdownMenuContent
               align="end"
               sideOffset={8}
-              className="min-w-56 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+              className="min-w-56 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
             >
               <DropdownMenuItem onSelect={() => open("preview")}>
                 <MenuGlyph icon={InternetIcon} />

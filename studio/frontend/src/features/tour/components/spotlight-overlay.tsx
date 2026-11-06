@@ -13,7 +13,7 @@ type SpotlightOverlayProps = {
 
 export function SpotlightOverlay({ rect, vw, vh, maskId }: SpotlightOverlayProps) {
   const hole = rect ?? { x: vw / 2 - 140, y: vh / 2 - 90, w: 280, h: 180 };
-  const r = 22;
+  const r = 24;
 
   return (
     <svg

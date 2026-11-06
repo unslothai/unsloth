@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the single-GPU arbiter.
-
-The real evictors (which tear down live backends) are replaced with recorders, so
-these verify only the ownership/eviction sequencing — no torch, GPU, or subprocess.
-"""
+"""Single-GPU arbiter ownership and eviction order, with evictors replaced by recorders."""
 
 from __future__ import annotations
 
 import types
+from contextlib import nullcontext
 
 import pytest
 
@@ -157,6 +154,87 @@ def test_image_load_beside_a_resident_chat_model_policy_matrix(cores, policy, ne
         ["evicted"] if evicts and policy != "off" else []
     )
     assert arb._media_needs.get(arb.DIFFUSION) == (need if policy != "off" else None)
+
+
+@pytest.mark.parametrize(
+    "policy, growth, outcome",
+    [("always", 512, "join"), ("fit", None, "evict"), ("always", None, "refuse")],
+)
+def test_image_load_beside_a_chat_model_on_metal(cores, monkeypatch, policy, growth, outcome):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: growth)
+    cores.fits()
+    arb.acquire_for(arb.CHAT)
+    assert arb.would_evict(arb.DIFFUSION, policy = policy, need_mib = {0: 4096}) is (outcome == "evict")
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if outcome == "refuse" else nullcontext():
+        arb.acquire_for(arb.DIFFUSION, lambda: None, policy = policy, need_mib = {0: 4096})
+    gone = {"join": set(), "evict": {arb.CHAT}, "refuse": {arb.DIFFUSION}}[outcome]
+    assert {arb.CHAT, arb.DIFFUSION} - set(arb.residents()) == gone
+
+
+@pytest.mark.parametrize("metal", [True, False])
+def test_a_short_chat_load_on_metal_frees_media_but_no_kept_chat_model(cores, monkeypatch, metal):
+    import core.inference.gpu_residency as res
+    from core.inference import model_slots
+
+    monkeypatch.setattr(res, "_on_metal", lambda: metal)
+    monkeypatch.setattr(res, "_mlx_chat_unallocated_mib", lambda: 0)
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (False, {"short_mib": {0: 1}}))
+    asked = []
+    monkeypatch.setattr(model_slots, "eviction_victims", lambda *a, **k: asked.append(a) or [])
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.CHAT, policy = "fit", need_mib = {0: 9000})
+    assert arb.DIFFUSION not in arb.residents() and bool(asked) is not metal
+    asked.clear()
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert asked
+
+
+@pytest.mark.parametrize("policy", ["fit", "always"])
+@pytest.mark.parametrize("priced", [True, False])
+def test_a_priced_mlx_chat_load_does_not_join_an_unpriced_image(cores, monkeypatch, policy, priced):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "can_load_alongside", lambda *a: (True, {}))
+    arb.acquire_for(
+        arb.DIFFUSION, lambda: None, policy = "fit" if priced else "off", need_mib = {0: 4096}
+    )
+    refused = policy == "always" and not priced
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if refused else nullcontext():
+        arb.acquire_for(arb.CHAT, policy = policy, need_mib = res.ChatNeed({0: 2048}))
+    assert (arb.DIFFUSION in arb.residents()) is (priced or refused)
+
+
+@pytest.mark.parametrize("policy", ["off", "fit", "always"])
+def test_an_unpriced_chat_load_settles_beside_media_as_its_policy_says(cores, monkeypatch, policy):
+    import core.inference.gpu_residency as res
+
+    monkeypatch.setattr(res, "_on_metal", lambda: True)
+    res.settle_unpriced_chat_beside_media(policy)  # nothing resident
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    with pytest.raises(arb.MultiModelAlwaysRefusal) if policy == "always" else nullcontext():
+        res.settle_unpriced_chat_beside_media(policy)
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+    monkeypatch.setattr(res, "_on_metal", lambda: False)
+    res.settle_unpriced_chat_beside_media("fit")
+    assert (arb.DIFFUSION in arb.residents()) is (policy != "fit")
+
+
+def test_a_renderer_change_forgets_the_media_price(cores):
+    import core.inference.gpu_residency as res
+
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = {0: 4096})
+    assert arb._media_needs.get(arb.DIFFUSION) == {0: 4096}
+    res.forget_media_price(arb.DIFFUSION)
+    assert arb.DIFFUSION not in arb._media_needs and arb.DIFFUSION in arb.residents()
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()
+    with arb._lock, pytest.raises(RuntimeError):
+        res.forget_media_price(arb.DIFFUSION, cancel)
 
 
 @pytest.mark.parametrize("managed", [False, True])
@@ -406,7 +484,6 @@ def test_release_clears_owner(calls):
     arb.acquire_for(arb.DIFFUSION)
     arb.release(arb.DIFFUSION)
     assert arb.current_owner() is None
-    # A subsequent chat load then has nothing to evict.
     arb.acquire_for(arb.CHAT)
     assert calls == []
 
@@ -423,7 +500,7 @@ def test_unknown_owner_raises(calls):
 
 
 def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
-    # A chat model still starting up is is_active but not yet is_loaded, and eviction must still unload it or the load keeps allocating VRAM after the handover.
+    # A starting chat model is is_active but not is_loaded; eviction must still unload it.
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -431,137 +508,6 @@ def test_evict_chat_unloads_a_still_loading_chat_backend(monkeypatch):
 
     class _FakeLlama:
         is_active = True
-        is_loaded = False  # still loading: skipped if eviction gates on is_loaded
-
-        def unload_model(self):
-            unloaded.append(True)
-
-        def _wait_for_vram_settle(self, *, since_kill):
-            pass
-
-    class _FakeOrchestrator:
-        active_model_name = None
-
-        def unload_model(self, name):
-            pass
-
-        def _shutdown_subprocess(self, timeout = 5.0):
-            pass
-
-    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
-    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
-
-    arb._evict_chat()
-
-    assert unloaded == [True]  # still-loading chat backend was unloaded, not skipped
-
-
-def test_release_if_drops_only_when_predicate_true(calls):
-    arb.acquire_for(arb.DIFFUSION)
-    # Predicate false -> ownership kept.
-    assert arb.release_if(arb.DIFFUSION, lambda: False) is False
-    assert arb.current_owner() == arb.DIFFUSION
-    # Predicate true -> ownership dropped.
-    assert arb.release_if(arb.DIFFUSION, lambda: True) is True
-    assert arb.current_owner() is None
-
-
-def test_release_if_by_non_owner_is_noop(calls):
-    arb.acquire_for(arb.CHAT)
-    # The predicate is never consulted for a non-owner; ownership is untouched.
-    consulted: list[bool] = []
-    assert arb.release_if(arb.DIFFUSION, lambda: consulted.append(True) or True) is False
-    assert consulted == []
-    assert arb.current_owner() == arb.CHAT
-
-
-def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
-    # The race release_if closes: a slow unload's predicate reports a load now in flight, so ownership stays with DIFFUSION.
-    arb.acquire_for(arb.DIFFUSION)
-    loading = {"in_flight": True}
-    assert arb.release_if(arb.DIFFUSION, lambda: not loading["in_flight"]) is False
-    assert arb.current_owner() == arb.DIFFUSION
-
-
-def test_register_runs_under_ownership_and_returns_result(calls):
-    # A register callback runs after ownership transfers and its return value is forwarded; the route registers the in-flight load with it.
-    seen_owner: list = []
-
-    def register():
-        seen_owner.append(arb.current_owner())
-        return "status-dict"
-
-    result = arb.acquire_for(arb.DIFFUSION, register)
-    assert result == "status-dict"
-    assert seen_owner == [arb.DIFFUSION]
-    assert arb.current_owner() == arb.DIFFUSION
-
-
-def test_register_failure_leaves_ownership_in_place(calls):
-    # A failing register (e.g. begin_load reporting a load in progress) propagates but must not drop ownership: the prior handoff stands.
-    arb.acquire_for(arb.CHAT)
-
-    def register():
-        raise RuntimeError("A diffusion load is already in progress.")
-
-    with pytest.raises(RuntimeError):
-        arb.acquire_for(arb.DIFFUSION, register)
-    assert calls == ["evict-chat"]
-    assert arb.current_owner() == arb.DIFFUSION
-
-
-def test_competing_acquire_blocks_until_register_completes(monkeypatch):
-    # While DIFFUSION registers its load, a competing VIDEO acquire must block (not evict) until the load is in-flight; holding the lock across register stops eviction racing it.
-    import threading
-    import time
-
-    monkeypatch.setattr(arb, "_owner", None)
-    evicted: list = []
-    monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: evicted.append("evict-diffusion"))
-    monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: evicted.append("evict-video"))
-
-    in_register = threading.Event()
-    release_register = threading.Event()
-
-    def register():
-        in_register.set()
-        # Hold the arbiter lock here; a competing acquire_for(VIDEO) must block until we return.
-        assert release_register.wait(2.0)
-        return "loading"
-
-    loader = threading.Thread(target = lambda: arb.acquire_for(arb.DIFFUSION, register))
-    loader.start()
-    assert in_register.wait(2.0)
-
-    competitor_done = threading.Event()
-    threading.Thread(
-        target = lambda: (arb.acquire_for(arb.VIDEO), competitor_done.set()),
-    ).start()
-
-    # The competitor cannot evict DIFFUSION while register still holds the lock.
-    time.sleep(0.1)
-    assert evicted == []
-    assert not competitor_done.is_set()
-
-    # Let register finish; ownership is now safely registered, so the competitor proceeds.
-    release_register.set()
-    loader.join(2.0)
-    assert competitor_done.wait(2.0)
-    assert evicted == ["evict-diffusion"]
-    assert arb.current_owner() == arb.VIDEO
-
-
-def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
-    # An HF chat load has no llama-server process until its GGUF finished downloading, which takes minutes. Gating only on
-    # is_active let the evictor find nothing to cancel and the chat load spawn onto the same device; the in-flight marker makes it cancellable.
-    import core.inference as core_inference
-    import routes.inference as routes_inference
-    from core.inference.llama_cpp import chat_load_in_flight
-
-    unloaded: list[bool] = []
-
-    class _FakeLlama:
-        is_active = False  # nothing spawned yet: the download is still running
         is_loaded = False
 
         def unload_model(self):
@@ -582,7 +528,130 @@ def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
     monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
 
-    # No load in flight: nothing to cancel.
+    arb._evict_chat()
+
+    assert unloaded == [True]
+
+
+def test_release_if_drops_only_when_predicate_true(calls):
+    arb.acquire_for(arb.DIFFUSION)
+    assert arb.release_if(arb.DIFFUSION, lambda: False) is False
+    assert arb.current_owner() == arb.DIFFUSION
+    assert arb.release_if(arb.DIFFUSION, lambda: True) is True
+    assert arb.current_owner() is None
+
+
+def test_release_if_by_non_owner_is_noop(calls):
+    arb.acquire_for(arb.CHAT)
+    consulted: list[bool] = []
+    assert arb.release_if(arb.DIFFUSION, lambda: consulted.append(True) or True) is False
+    assert consulted == []
+    assert arb.current_owner() == arb.CHAT
+
+
+def test_release_if_predicate_sees_a_reregistered_same_owner_load(calls):
+    # A slow unload's predicate sees a new load in flight, so DIFFUSION keeps ownership.
+    arb.acquire_for(arb.DIFFUSION)
+    loading = {"in_flight": True}
+    assert arb.release_if(arb.DIFFUSION, lambda: not loading["in_flight"]) is False
+    assert arb.current_owner() == arb.DIFFUSION
+
+
+def test_register_runs_under_ownership_and_returns_result(calls):
+    seen_owner: list = []
+
+    def register():
+        seen_owner.append(arb.current_owner())
+        return "status-dict"
+
+    result = arb.acquire_for(arb.DIFFUSION, register)
+    assert result == "status-dict"
+    assert seen_owner == [arb.DIFFUSION]
+    assert arb.current_owner() == arb.DIFFUSION
+
+
+def test_register_failure_leaves_ownership_in_place(calls):
+    # A failing register propagates but must not undo the prior handoff.
+    arb.acquire_for(arb.CHAT)
+
+    def register():
+        raise RuntimeError("A diffusion load is already in progress.")
+
+    with pytest.raises(RuntimeError):
+        arb.acquire_for(arb.DIFFUSION, register)
+    assert calls == ["evict-chat"]
+    assert arb.current_owner() == arb.DIFFUSION
+
+
+def test_competing_acquire_blocks_until_register_completes(monkeypatch):
+    # Holding the lock across register stops a competing acquire from evicting mid-register.
+    import threading
+    import time
+
+    monkeypatch.setattr(arb, "_owner", None)
+    evicted: list = []
+    monkeypatch.setitem(arb._EVICTORS, arb.DIFFUSION, lambda: evicted.append("evict-diffusion"))
+    monkeypatch.setitem(arb._EVICTORS, arb.VIDEO, lambda: evicted.append("evict-video"))
+
+    in_register = threading.Event()
+    release_register = threading.Event()
+
+    def register():
+        in_register.set()
+        assert release_register.wait(2.0)
+        return "loading"
+
+    loader = threading.Thread(target = lambda: arb.acquire_for(arb.DIFFUSION, register))
+    loader.start()
+    assert in_register.wait(2.0)
+
+    competitor_done = threading.Event()
+    threading.Thread(
+        target = lambda: (arb.acquire_for(arb.VIDEO), competitor_done.set()),
+    ).start()
+
+    time.sleep(0.1)
+    assert evicted == []
+    assert not competitor_done.is_set()
+
+    release_register.set()
+    loader.join(2.0)
+    assert competitor_done.wait(2.0)
+    assert evicted == ["evict-diffusion"]
+    assert arb.current_owner() == arb.VIDEO
+
+
+def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
+    # HF chat loads have no llama-server until the GGUF download ends; the in-flight marker makes
+    # them cancellable.
+    import core.inference as core_inference
+    import routes.inference as routes_inference
+    from core.inference.llama_cpp import chat_load_in_flight
+
+    unloaded: list[bool] = []
+
+    class _FakeLlama:
+        is_active = False
+        is_loaded = False
+
+        def unload_model(self):
+            unloaded.append(True)
+
+        def _wait_for_vram_settle(self, *, since_kill):
+            pass
+
+    class _FakeOrchestrator:
+        active_model_name = None
+
+        def unload_model(self, name):
+            pass
+
+        def _shutdown_subprocess(self, timeout = 5.0):
+            pass
+
+    monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", lambda: _FakeLlama())
+    monkeypatch.setattr(core_inference, "get_inference_backend", lambda: _FakeOrchestrator())
+
     arb._evict_chat()
     assert unloaded == []
 
@@ -590,14 +659,12 @@ def test_evict_chat_cancels_a_chat_load_that_has_not_spawned_yet(monkeypatch):
         arb._evict_chat()
     assert unloaded == [True]
 
-    # The marker is released with the load, so a later eviction is a no-op again.
     arb._evict_chat()
     assert unloaded == [True]
 
 
 def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
-    # The orchestrator publishes active_model_name only once its worker reports success, so an in-flight safetensors load is
-    # visible ONLY in loading_models; gating the cancellation on active_model_name let that worker allocate alongside the new pipeline.
+    # active_model_name is published only on success, so an in-flight safetensors load shows only in loading_models.
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -614,7 +681,7 @@ def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
             pass
 
     class _FakeOrchestrator:
-        active_model_name = None  # not published yet: the load is still running
+        active_model_name = None
         loading_models = {"unsloth/Qwen3-4B"}
 
         def unload_model(self, name):
@@ -636,7 +703,7 @@ def test_evict_chat_cancels_an_in_flight_safetensors_load(monkeypatch):
 
 
 def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch):
-    # cancel_load discards the marker it cancels, so iterate a snapshot (mutating the live set during iteration raises).
+    # cancel_load discards the marker it cancels, so iterate a snapshot.
     import core.inference as core_inference
     import routes.inference as routes_inference
 
@@ -677,7 +744,7 @@ def test_evict_chat_cancels_every_pending_load_over_a_live_snapshot(monkeypatch)
 
 
 def test_the_safetensors_load_yields_a_gpu_it_lost_while_loading():
-    # Mirror of the GGUF branch's guard: an Images/Video acquire can land between the eviction and the load's publish, so the load must undo itself, not leave two models resident.
+    # An Images/Video acquire can land between eviction and publish, so the load must undo itself.
     from pathlib import Path
 
     route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
@@ -1105,3 +1172,35 @@ def test_a_respawning_chat_server_counts_as_occupied(monkeypatch):
     kept = types.SimpleNamespace(llama = types.SimpleNamespace(is_active = True, is_loaded = False))
     monkeypatch.setattr(model_slots, "slots", [kept])
     assert arb._chat_occupied() is True
+
+
+def test_a_failed_replacement_gives_the_kept_model_back_its_price(cores, monkeypatch):
+    # The new price is written as the load starts; its failure keeps the old model, which must
+    # not stay priced as the smaller model that never loaded.
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    old, new = {0: 8000}, {0: 1000}
+    arb.acquire_for(arb.DIFFUSION, lambda: None, policy = "fit", need_mib = old)
+    arb.acquire_for(arb.DIFFUSION, lambda: {"loading": True}, policy = "fit", need_mib = new)
+    assert arb._media_needs[arb.DIFFUSION] == new
+
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+    # Applied once: a repeated restore changes nothing.
+    arb.restore_media_need(arb.DIFFUSION)
+    assert arb._media_needs[arb.DIFFUSION] == old
+
+
+def test_a_failed_first_load_and_an_unpriced_one_restore_nothing_stale(cores, monkeypatch):
+    monkeypatch.setattr(arb, "_media_need_rollback", {}, raising = False)
+    # A first load had no price before it; its rollback is to none.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.restore_media_need(arb.VIDEO)
+    assert arb.VIDEO not in arb._media_needs
+
+    # A load that takes no GPU claim reprices nothing, so its failure must not reach back to an
+    # older load's rollback.
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 4096})
+    arb.acquire_for(arb.VIDEO, lambda: None, policy = "fit", need_mib = {0: 2048})
+    arb.begin_media_load(arb.VIDEO, "fit", ("org/video",), lambda: None)
+    arb.restore_media_need(arb.VIDEO)
+    assert arb._media_needs[arb.VIDEO] == {0: 2048}

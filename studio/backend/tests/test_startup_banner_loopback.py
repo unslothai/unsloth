@@ -14,7 +14,6 @@ from startup_banner import print_studio_access_banner
 
 
 def test_non_alias_loopback_shows_real_address(capsys):
-    # A server bound to 127.0.0.2 does not listen on 127.0.0.1.
     print_studio_access_banner(port = 8891, bind_host = "127.0.0.2", display_host = "127.0.0.2")
     out = capsys.readouterr().out
     assert "http://127.0.0.2:8891" in out
@@ -41,6 +40,18 @@ def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):
     out = capsys.readouterr().out
     assert loopback_url in out
     assert "http://192.168.1.24:8891" in out
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_banner_says_when_remote_access_auto_start_opens_a_public_url(capsys, host):
+    print_studio_access_banner(
+        port = 8891, bind_host = host, display_host = host, remote_access_starting = True
+    )
+    out = capsys.readouterr().out
+    assert "PUBLIC Cloudflare URL" in out
+    assert "--no-cloudflare" in out
+    assert "Reachable on this machine only" not in out
+    assert "Only on trusted networks" not in out
 
 
 WSL_HINT = "WSL2: open http://localhost:"
