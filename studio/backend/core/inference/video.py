@@ -3928,11 +3928,13 @@ def _video_seed_stays_resident(
     reclaimable_mib: int = 0,
     hf_token: Optional[str] = None,
     ltx25_dev: bool = False,
+    device_memory_reader: Optional[Callable[[], Any]] = None,
 ) -> bool:
     """True when an artifact-sized plan keeps the denoiser resident (text encoders may stream).
 
     ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
-    ``_auto_keeps_resident_bf16``)."""
+    ``_auto_keeps_resident_bf16``). ``device_memory_reader`` lets one planner call settle the card once
+    for both checks; it must return the raw settled snapshot (reclaimable is applied here)."""
     from .diffusion_component_sizes import video_components_gb
 
     components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev)
@@ -3974,7 +3976,11 @@ def _video_seed_stays_resident(
         from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
         companions_gb += LTX25_WORKER_RESIDENT_GB
     model_dense_mib = int((denoiser_gb + companions_gb) * mib_per_gb)
-    device_memory = settled_snapshot_device_memory(target)
+    device_memory = (
+        settled_snapshot_device_memory(target)
+        if device_memory_reader is None
+        else device_memory_reader()
+    )
     if reclaimable_mib > 0 and device_memory.free_mib is not None:
         free = device_memory.free_mib + int(reclaimable_mib)
         if device_memory.total_mib is not None:
@@ -7061,6 +7067,14 @@ class VideoBackend:
                     getattr(resident, "pipe", None),
                     ordinal = _target_ordinal(target),
                 )
+                settled: list[Any] = []
+
+                def _settled_once() -> Any:
+                    # Both checks plan on one settled read: each settle can sleep up to 2 s.
+                    if not settled:
+                        settled.append(settled_snapshot_device_memory(target))
+                    return settled[0]
+
                 if _auto_seed_yields_to_resident_bf16(
                     scheme, transformer_quant, fam
                 ) and _video_seed_stays_resident(
@@ -7073,6 +7087,7 @@ class VideoBackend:
                     reclaimable_mib = reclaimable,
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
+                    device_memory_reader = _settled_once,
                 ):
                     # auto keeps a resident bf16 DiT, so the dense shards are what this load runs.
                     return None
@@ -7083,12 +7098,10 @@ class VideoBackend:
                     memory_mode = memory_mode,
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
-                    reclaimable_mib = _pipeline_device_mib(
-                        getattr(resident, "pipe", None),
-                        ordinal = _target_ordinal(target),
-                    ),
+                    reclaimable_mib = reclaimable,
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
+                    device_memory_reader = _settled_once,
                 ):
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
