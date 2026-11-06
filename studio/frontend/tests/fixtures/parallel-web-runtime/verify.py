@@ -155,7 +155,19 @@ with sync_playwright() as p:
         "#desktop-control"
     ).is_visible(), "Floating hid the desktop action by shrinking the page viewport"
     assert b_frame.evaluate("innerWidth") == before_float["width"]
-    b_frame.locator("#desktop-control").click()
+    b_frame.locator("#desktop-control").scroll_into_view_if_needed()
+    button_box = b_frame.locator("#desktop-control").evaluate(
+        "e => e.getBoundingClientRect().toJSON()"
+    )
+    shell_box = b_shell.frame_element().bounding_box()
+    assert shell_box
+    inner_box = b_frame.frame_element().evaluate("e => e.getBoundingClientRect().toJSON()")
+    # Edge's Playwright locator omits the outer iframe scale.
+    scale = shell_box["width"] / b_shell.evaluate("innerWidth")
+    page.mouse.click(
+        shell_box["x"] + (inner_box["x"] + button_box["x"] + button_box["width"] / 2) * scale,
+        shell_box["y"] + (inner_box["y"] + button_box["y"] + button_box["height"] / 2) * scale,
+    )
     assert b_frame.evaluate("window.desktopClicks") == 1
     assert b_frame.evaluate("window.marker") == before_float["marker"]
     page.evaluate("window.setPreviewScale(false)")
