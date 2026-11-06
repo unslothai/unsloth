@@ -7473,6 +7473,26 @@ def test_hermes_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     assert user_config.read_text() == "mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n"
 
 
+def test_hermes_mcp_servers_follow_the_origin_from_a_recipe_shell(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    user_config.write_text("mcp_servers:\n  github:\n    command: g\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"github": {"command": "g"}}
+
+
 def test_hermes_mcp_servers_follow_the_active_profile(fake_studio, tmp_path, monkeypatch):
     yaml = pytest.importorskip("yaml")
     root = tmp_path / "user-hermes"
