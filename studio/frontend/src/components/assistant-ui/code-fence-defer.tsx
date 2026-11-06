@@ -1146,6 +1146,7 @@ function useFenceHighlightLimit(
   source: string,
   code: RefObject<HTMLElement | null>,
   frame: RefObject<HTMLElement | null>,
+  parked = false,
 ): { progress: HighlightProgress | null; staged: boolean } {
   const eligible = !(typeof window === "undefined" || windowing || isIncomplete
     || fenceMode() !== "defer"
@@ -1161,30 +1162,37 @@ function useFenceHighlightLimit(
   const [previous, setPrevious] = useState<{
     tokens: typeof tokens;
     progress: HighlightProgress | null;
-  }>(() => ({ tokens, progress: immediate ? null : tokens === null
+    parked: boolean;
+  }>(() => ({ tokens, parked, progress: immediate ? null : tokens === null
     ? EMPTY_HIGHLIGHT_PROGRESS : initialHighlightProgress(tokens) }));
   let current = previous;
   if (staged && previous.tokens !== tokens) {
-    current = { tokens, progress: immediate || tokens === null
+    current = { tokens, parked, progress: immediate || tokens === null
       ? null : retainHighlightProgress(previous.tokens, tokens, previous.progress) };
   } else if (immediate && previous.progress !== null) {
-    current = { tokens, progress: null };
+    current = { tokens, parked, progress: null };
+  }
+  // Parked as plain text, the highlighted lines are unmounted; restart the batches so returning
+  // to the fence does not remount every highlighted span in one commit.
+  if (parked !== current.parked) {
+    current = { tokens, parked, progress: parked && !immediate && tokens !== null
+      ? initialHighlightProgress(tokens) : current.progress };
   }
   if (current !== previous) setPrevious(current);
   const progress = immediate ? null : current.progress;
   useLayoutEffect(() => {
-    if (progress === null || tokens === null) return;
+    if (progress === null || tokens === null || parked) return;
     watchHighlighting();
     const cancel = highlightQueue.add(() => {
       const visible = progress.located ? 0 : visibleHighlightLine(code.current, frame.current);
-      setPrevious({ tokens, progress: advanceHighlightProgress(tokens, progress, visible) });
+      setPrevious({ tokens, parked, progress: advanceHighlightProgress(tokens, progress, visible) });
       return true;
-    }, () => setPrevious({ tokens, progress: null }));
+    }, () => setPrevious({ tokens, parked, progress: null }));
     return () => {
       cancel();
       unwatchHighlighting();
     };
-  }, [tokens, progress, code, frame]);
+  }, [tokens, progress, parked, code, frame]);
   return { progress, staged };
 }
 
@@ -1217,8 +1225,9 @@ const onPointerDown = (event: PointerEvent): void => {
   pointerHeld = event.target instanceof Node ? event.target : null;
 };
 
+// Not gated on `pointerHeld`: touch never sets it, and a hold that began before the listeners
+// were attached never did either, yet the offscreen-text skip marks `heldLastFrame` for both.
 const releasePointer = (): void => {
-  if (pointerHeld === null) return;
   pointerHeld = null;
   if (heldLastFrame) scheduleRemeasure();
 };
@@ -1651,7 +1660,6 @@ export const FenceBody = memo(function FenceBody({
   const surface = useRef<HTMLDivElement | null>(null);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
-  const highlight = useFenceHighlightLimit(tokens, isIncomplete, windowing, language, source, code, frame);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,
@@ -1664,6 +1672,9 @@ export const FenceBody = memo(function FenceBody({
   const offscreenPlain = useOffscreenFenceText(
     frame,
     WINDOW_SETTLED_FENCES && !!tokens?.length && !isIncomplete,
+  );
+  const highlight = useFenceHighlightLimit(
+    tokens, isIncomplete, windowing, language, source, code, frame, offscreenPlain,
   );
   const languageClass = language === null ? null : `language-${language}`;
 
