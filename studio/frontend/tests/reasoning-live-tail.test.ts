@@ -65,15 +65,28 @@ const tail = reasoning.slice(
   reasoning.indexOf("// With the fold preference on"),
 );
 
-test("the box scrolls on its own, with no border and no Expand toggle", () => {
+test("the box scrolls on its own with no border, its scrollbar showing only on hover", () => {
   assert.match(
     tail,
-    /capped &&\s*"-mx-\[[^\]]+\] min-w-0 max-h-\[min\(22rem,48vh\)\] overflow-x-hidden overflow-y-auto px-\[[^\]]+\]/,
+    /capped &&\s*"hover-scrollbar -mx-\[[^\]]+\] min-w-0 max-h-\[min\(22rem,48vh\)\] overflow-x-hidden overflow-y-auto px-\[[^\]]+\] \[scrollbar-gutter:stable\]/,
   );
-  assert.doesNotMatch(tail, /\bborder\b|Expand thinking|onExpandedChange|overflow-y-clip/);
-  assert.doesNotMatch(reasoning, /tailExpanded|reasoning-show-full/);
+  assert.doesNotMatch(tail, /\bborder\b|Expand thinking|overflow-y-clip/);
+  assert.doesNotMatch(reasoning, /reasoning-show-full/);
   assert.match(reasoning, /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/);
-  assert.match(reasoning, /bounded=\{capped\}/);
+});
+
+test("the header's expand button lifts the cap for the round and appears only when the box overflows", () => {
+  assert.match(reasoning, /const showExpand = isOpen && capped && \(tailOverflowing \|\| tailExpanded\);/);
+  assert.match(reasoning, /label=\{tailExpanded \? "Collapse thinking" : "Expand thinking"\}/);
+  assert.match(reasoning, /icon=\{tailExpanded \? ArrowShrink01Icon : ArrowExpand01Icon\}/);
+  assert.match(reasoning, /capped=\{capped && !tailExpanded\}/);
+  // Expanding keeps the capped spacing, so the trace does not shift down when the cap lifts.
+  assert.match(reasoning, /expanded=\{capped && tailExpanded\}/);
+  assert.match(tail, /\(capped \|\| expanded\) && "mt-2 \[&>\[data-slot=reasoning-text\]\]:pt-1"/);
+  assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
+  assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
+  // The box reports overflow without re-rendering on every scroll: only a change calls back.
+  assert.match(tail, /if \(now !== overflowing\.current\) \{\s*overflowing\.current = now;\s*onOverflowRef\.current\(now\);/);
 });
 
 test("a streaming box follows its newest line until the reader scrolls up", () => {
@@ -91,7 +104,6 @@ test("each edge fades only while more is past it, set without a re-render", () =
   assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-below\] \{\s*--trace-fade-bottom: 1\.5rem;/);
   // The scrollbar's strip is a second, unfaded mask layer.
   assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;\s*mask-position: 0 0, right;/);
-  assert.match(tail, /capped && "mt-2 \[&>\[data-slot=reasoning-text\]\]:pt-1"/);
   assert.match(reasoning, /capped \? "mt-2" : "mt-4"/);
   assert.doesNotMatch(tail, /setState|useState/);
 });

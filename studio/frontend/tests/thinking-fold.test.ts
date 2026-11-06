@@ -281,7 +281,7 @@ test("the header row keeps its height when Copy appears", () => {
   // A bare span would take the paragraph line-height and push the label down when opened.
   assert.match(
     reasoning,
-    /<span className="ml-auto flex items-center leading-none">\n\s*<ReasoningCopyButton/,
+    /<span className="ml-auto flex items-center gap-0\.5 leading-none">/,
   );
 });
 

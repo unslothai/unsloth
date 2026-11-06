@@ -67,6 +67,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@/lib/copy-icon";
+import { ArrowExpand01Icon, ArrowShrink01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { IconActionButton } from "./icon-action-button";
 import {
@@ -509,15 +510,24 @@ const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as
 // reader scrolls up, and fades an edge only while more is past it. Not clipped behind an Expand button.
 function ReasoningTail({
   capped,
+  expanded,
   streaming,
+  onOverflowChange,
   children,
 }: {
   capped: boolean;
+  /** Lifted by the header's expand button: uncapped, but keeps the capped spacing so nothing shifts. */
+  expanded: boolean;
   streaming: boolean;
+  /** Whether the capped box holds more than it shows, for the header's expand button. */
+  onOverflowChange: (overflowing: boolean) => void;
   children: ReactNode;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const overflowing = useRef(false);
+  const onOverflowRef = useRef(onOverflowChange);
+  onOverflowRef.current = onOverflowChange;
   useLayoutEffect(() => {
     const box = boxRef.current;
     const content = box?.firstElementChild;
@@ -532,6 +542,11 @@ function ReasoningTail({
     const markEdges = () => {
       box.toggleAttribute("data-more-below", below() > 1);
       box.toggleAttribute("data-more-above", box.scrollTop > 0);
+      const now = box.scrollHeight > box.clientHeight + 1;
+      if (now !== overflowing.current) {
+        overflowing.current = now;
+        onOverflowRef.current(now);
+      }
     };
     const onResize = () => {
       if (streaming && following.current) box.scrollTop = box.scrollHeight;
@@ -565,11 +580,12 @@ function ReasoningTail({
       data-slot="reasoning-tail"
       data-capped={capped ? "" : undefined}
       className={cn(
-        // A mask paints only inside its box: bleed into the side padding so list markers survive.
+        // A mask paints only inside its box: bleed into the side padding so list markers survive. The
+        // stable gutter keeps the text width the same whether or not the scrollbar is showing.
         capped &&
-          "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(22rem,48vh)] overflow-x-hidden overflow-y-auto px-[calc(1.25rem*var(--ui-space-scale,1))]",
+          "hover-scrollbar -mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(22rem,48vh)] overflow-x-hidden overflow-y-auto px-[calc(1.25rem*var(--ui-space-scale,1))] [scrollbar-gutter:stable]",
         // Most of the text's top padding moves outside the scroller, so scrolled lines stop short of the header.
-        capped && "mt-2 [&>[data-slot=reasoning-text]]:pt-1",
+        (capped || expanded) && "mt-2 [&>[data-slot=reasoning-text]]:pt-1",
       )}
     >
       {children}
@@ -765,6 +781,9 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
+  // The header's expand button lifts the cap for this round; a new round or a setting change restores it.
+  const [tailExpanded, setTailExpanded] = useState(false);
+  const [tailOverflowing, setTailOverflowing] = useState(false);
   const [duration, setDuration] = useState<number>(0);
   const startTimeRef = useRef<number | null>(null);
 
@@ -786,6 +805,7 @@ const ReasoningGroupBlock = ({
     setWasStreaming(isReasoningStreaming);
     if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setOverride(null);
+      setTailExpanded(false);
     }
   }
 
@@ -794,6 +814,7 @@ const ReasoningGroupBlock = ({
   if (lastVisibility !== visibility) {
     setLastVisibility(visibility);
     setOverride(null);
+    setTailExpanded(false);
   }
 
   const isOpen = resolveReasoningOpen({
@@ -810,6 +831,7 @@ const ReasoningGroupBlock = ({
     setClosingCapped(cappedNow);
   }
   const capped = isOpen ? cappedNow : closingCapped;
+  const showExpand = isOpen && capped && (tailOverflowing || tailExpanded);
 
   // Publish the lead's open state for everything folded under it, and count the tool calls for
   // its header. A layout effect, so the folded parts settle before the frame the user sees.
@@ -867,12 +889,29 @@ const ReasoningGroupBlock = ({
           duration={persistedDuration ?? duration}
           foldedToolCount={isOpen ? 0 : foldedToolCount}
         />
-        {isOpen && !isReasoningStreaming && (
-          <span className="ml-auto flex items-center leading-none">
-            <ReasoningCopyButton
-              startIndex={startIndex}
-              endIndex={copyEndIndex}
-            />
+        {isOpen && (showExpand || !isReasoningStreaming) && (
+          <span className="ml-auto flex items-center gap-0.5 leading-none">
+            {showExpand && (
+              <IconActionButton
+                label={tailExpanded ? "Collapse thinking" : "Expand thinking"}
+                aria-expanded={tailExpanded}
+                onClick={() => {
+                  if (!tailExpanded) detachFromBottom();
+                  setTailExpanded(!tailExpanded);
+                }}
+              >
+                <HugeiconsIcon
+                  icon={tailExpanded ? ArrowShrink01Icon : ArrowExpand01Icon}
+                  className="size-3"
+                />
+              </IconActionButton>
+            )}
+            {!isReasoningStreaming && (
+              <ReasoningCopyButton
+                startIndex={startIndex}
+                endIndex={copyEndIndex}
+              />
+            )}
           </span>
         )}
       </div>
@@ -881,7 +920,12 @@ const ReasoningGroupBlock = ({
         streaming={isReasoningStreaming}
         ref={reasoningContentRef}
       >
-        <ReasoningTail capped={capped} streaming={isReasoningStreaming}>
+        <ReasoningTail
+          capped={capped && !tailExpanded}
+          expanded={capped && tailExpanded}
+          streaming={isReasoningStreaming}
+          onOverflowChange={setTailOverflowing}
+        >
           <ReasoningBody
             transcript={transcript}
             messageId={messageId}
@@ -890,7 +934,7 @@ const ReasoningGroupBlock = ({
               messageHasRenderableRenderHtmlTool
             }
             isStreaming={isReasoningStreaming}
-            bounded={capped}
+            bounded={capped && !tailExpanded}
           >
             {children}
           </ReasoningBody>
