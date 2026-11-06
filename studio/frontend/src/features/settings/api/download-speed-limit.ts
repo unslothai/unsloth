@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { clearDownloadTransportCapabilitiesCache } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 const DOWNLOAD_SPEED_LIMIT_EVENT = "unsloth-download-speed-limit-change";
@@ -46,6 +47,7 @@ export async function updateDownloadSpeedLimitSettings(
     );
   }
   const settings = (await res.json()) as DownloadSpeedLimitSettings;
+  clearDownloadTransportCapabilitiesCache();
   window.dispatchEvent(
     new CustomEvent(DOWNLOAD_SPEED_LIMIT_EVENT, { detail: settings }),
   );

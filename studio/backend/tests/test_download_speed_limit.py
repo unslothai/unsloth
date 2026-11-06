@@ -213,3 +213,12 @@ def test_a_limit_shrinks_the_write_chunk_so_progress_keeps_moving(monkeypatch, l
     )
     assert result.returncode == 0, result.stderr
     assert int(result.stdout.split()[-1]) == chunk
+
+
+@pytest.mark.parametrize("limit", [None, 8])
+def test_capabilities_tell_the_frontend_a_limit_forces_http(store, limit):
+    import main
+
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = limit
+    caps = main.studio_download_transport_capabilities(_current_subject = "admin")
+    assert main.TransportCapabilities(**caps).speed_limited is (limit is not None)
