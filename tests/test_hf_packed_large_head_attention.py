@@ -247,6 +247,45 @@ def test_packed_dispatch_keeps_gqa_and_fallback_order(hpa, lh, monkeypatch, case
         assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == 1
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_hd512_block_preparation_ignores_other_layers_cached_route(hpa, monkeypatch, enabled):
+    monkeypatch.setenv("UNSLOTH_HF_PACKED_HD512", "1" if enabled else "0")
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    monkeypatch.setattr(hpa, "_block_varlen_prepare", lambda *args: None)
+    hpa._BLOCK_PREP.clear()
+    hidden = torch.zeros(1, 8, 16)
+    kwargs = {"packed_seq_lengths": torch.tensor([3, 5]), "attention_mask": _mask([3, 5])}
+    small = types.SimpleNamespace(self_attn = types.SimpleNamespace(head_dim = 256))
+    large = types.SimpleNamespace(self_attn = types.SimpleNamespace(head_dim = 512))
+    assert hpa.block_varlen_kwargs(small, hidden, kwargs) is None
+    assert hpa.block_varlen_kwargs(large, hidden, kwargs) == (hpa._LEAVE_BLOCK if enabled else None)
+
+
+@pytest.mark.parametrize("in_block", [False, True])
+def test_compiled_dispatch_only_leaves_unsloth_blocks(hpa, lh, monkeypatch, in_block):
+    monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
+    monkeypatch.setattr(hpa, "_efficient_varlen_takes", lambda *args: True)
+    monkeypatch.setattr(
+        hpa, "_ORIG_SDPA", [lambda module, q, *args, **kwargs: (q.transpose(1, 2), None)]
+    )
+    monkeypatch.delenv("UNSLOTH_HF_PACKED_VARLEN", raising = False)
+    module = types.SimpleNamespace()
+    q, kv = torch.zeros(1, 4, 8, 512), torch.zeros(1, 2, 8, 512)
+    mask, lengths = _mask([3, 5]), torch.tensor([3, 5])
+    kwargs = {"packed_seq_lengths": lengths}
+    if in_block:
+        kwargs[hpa.BLOCK_VARLEN_KWARG] = hpa._LEAVE_BLOCK
+
+    def forward(q, kv):
+        return hpa._sdpa_packed_varlen(module, q, kv, kv, mask, **kwargs)[0]
+
+    compiled = torch.compile(forward, backend = "eager", fullgraph = not in_block)
+    assert compiled(q, kv).shape == (1, 8, 4, 512)
+    assert len(lh.seen) == int(in_block)
+    assert hpa.HF_PACKED_ATTENTION_STATS["large_head"] == int(in_block)
+    torch._dynamo.reset()
+
+
 _CUDA = pytest.mark.skipif(
     not has_real_cuda() or (has_real_cuda() and torch.cuda.get_device_capability()[0] < 8),
     reason = "needs an sm80+ CUDA GPU",

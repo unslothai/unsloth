@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Packed rows use varlen flash; wide heads use SDPA mem-efficient or opt-in HD512 Triton;
-anything else goes to the wrapped sdpa."""
+"""Packed rows use varlen flash; wide heads use SDPA mem-efficient or opt-in HD512 Triton.
+
+UNSLOTH_HF_PACKED_HD512=1 tries the existing Triton kernel on validated packed HD512 rows,
+keeping grouped K/V heads. Off by default pending comparison against efficient varlen.
+Unsloth compiled blocks run this attention call eagerly; user fullgraph compilation keeps SDPA.
+Anything else goes to the wrapped sdpa.
+"""
 
 import contextlib
 import inspect
@@ -309,6 +314,10 @@ def _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     )
 
 
+def _packed_hd512_enabled():
+    return os.environ.get("UNSLOTH_HF_PACKED_HD512", "0").lower() in ("1", "true", "yes", "on")
+
+
 def _packed_key_intervals(cu_seqlens, total, window):
     """Build per-token bounds after _mask_is_block_causal validated these exact boundaries."""
     cacheable = not (torch.is_inference(cu_seqlens) or torch.is_inference_mode_enabled())
@@ -337,7 +346,7 @@ def _packed_large_head(query, key, value, cu_seqlens, scale, window):
     """
     if (
         query.shape[-1] != 512
-        or os.environ.get("UNSLOTH_HF_PACKED_HD512", "0").lower() not in ("1", "true", "yes", "on")
+        or not _packed_hd512_enabled()
         or torch.compiler.is_compiling()
         or torch.version.hip is not None
     ):
@@ -914,6 +923,16 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     wrapper."""
     seq_lengths, mask = kwargs.get("packed_seq_lengths"), kwargs.get("attention_mask")
     attention = getattr(layer, "self_attn", None)
+    if (
+        seq_lengths is not None
+        and not _disabled()
+        and _packed_hd512_enabled()
+        and getattr(attention, "head_dim", None) == 512
+    ):
+        # The experimental route validates masks and prepares intervals eagerly. Keep the rest
+        # of the decoder compiled; a user's fullgraph compile still keeps the original SDPA.
+        # Before the window cache: another layer sharing this window may use smaller heads.
+        return _LEAVE_BLOCK
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
     window = _sliding_window(attention, kwargs) if attention is not None else None
     entry = _BLOCK_PREP.get(window)
