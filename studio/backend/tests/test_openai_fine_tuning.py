@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import threading
 
 import httpx
 import pytest
@@ -591,7 +592,8 @@ def test_a_busy_gpu_queues_jobs_and_starts_them_in_order(queue):
 
     first, second, listed, events, (started, waiting) = _run(flow())
     assert first.status == second.status == "queued"
-    assert [j.id for j in listed.data[:2]] == [second.id, first.id]
+    newest = sorted((first, second), key = lambda job: (-job.created_at, job.id))
+    assert [j.id for j in listed.data[:2]] == [job.id for job in newest]
     assert events.data[0].message == "Waiting for the GPU: position 2 in the queue"
     assert [r.project_name for r in calls["start"]] == ["first", "second"]
 
@@ -1984,6 +1986,74 @@ def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist
 
     persisted = [{"id": "run_a", "started_at": started}, {"id": "run_c", "started_at": started}]
     assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
+
+
+def test_a_cursor_on_a_batch_member_that_starts_during_the_request_still_pages(
+    batch_queue, monkeypatch, tmp_path
+):
+    client, _calls, live, gpu, _backend = batch_queue
+    previous = _finished_run(tmp_path, tmp_path / "chats.jsonl")
+    live["status"] = _Status(previous, "completed")
+    get_run = openai_fine_tuning.get_run
+    reached, released = threading.Event(), threading.Event()
+
+    def get_run_held_once(run_id):
+        if run_id == previous and not reached.is_set():
+            reached.set()
+            released.wait(timeout = 30)
+        return get_run(run_id)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "ab"]
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        monkeypatch.setattr(openai_fine_tuning, "get_run", get_run_held_once)
+        second = asyncio.ensure_future(
+            client.fine_tuning.jobs.list(after = first.data[0].id, limit = 1)
+        )
+        await asyncio.to_thread(reached.wait, 30)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        released.set()
+        page = await second
+        seen = [j.id for j in first.data + page.data]
+        while page.has_more:
+            page = await client.fine_tuning.jobs.list(after = page.data[-1].id, limit = 1)
+            seen += [j.id for j in page.data]
+        return jobs, seen
+
+    jobs, seen = _run(flow())
+    newest = sorted(jobs, key = lambda job: (-job.created_at, job.id))
+    assert seen == [job.id for job in newest] + ["ftjob_20261021_101500_ab12cd34"]
+
+
+def test_a_batch_lists_under_its_job_ids_while_its_start_is_being_saved(batch_queue, monkeypatch):
+    client, _calls, _live, gpu, _backend = batch_queue
+    save_alias = openai_fine_tuning._save_alias
+    saving, release = threading.Event(), threading.Event()
+
+    def save_alias_held(*args):
+        saving.set()
+        release.wait(timeout = 30)
+        save_alias(*args)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "ab"]
+        monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_alias_held)
+        gpu["busy"] = False
+        drain = asyncio.ensure_future(openai_fine_tuning._drain_once())
+        await asyncio.to_thread(saving.wait, 30)
+        listed = await client.fine_tuning.jobs.list()
+        release.set()
+        await drain
+        return jobs, listed
+
+    jobs, listed = _run(flow())
+    newest = sorted(jobs, key = lambda job: (-job.created_at, job.id))
+    assert [(j.id, j.status) for j in listed.data] == [
+        (job.id, "validating_files") for job in newest
+    ]
 
 
 @pytest.mark.parametrize("step", [10, 0])
