@@ -981,8 +981,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         AudioCppFamily(
             name,
             "",
-            unsupported = f"{what} ships inside the audio runtime's asset bundle, which this "
-            "install does not include.",
+            unsupported = f"Voice activity detection with {what} needs the audio runtime's asset "
+            "bundle, which this install does not include.",
         )
         for name, what in (("silero_vad", "Silero VAD"), ("marblenet_vad", "MarbleNet VAD"))
     ),
