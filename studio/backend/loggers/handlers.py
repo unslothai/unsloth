@@ -116,6 +116,8 @@ _QUIET_SUCCESS_PATHS = {
     "/api/engines",
     "/api/export/logs",
     "/api/export/status",
+    # Evals phase poll, every 5s from the app root; runs log their own lifecycle.
+    "/api/benchmarks/evals/status",
     # The Settings > Logs viewer polls are suppressed in _SELF_READ_PATHS below.
     "/api/hub/download-status",
     "/api/hub/download-progress",
