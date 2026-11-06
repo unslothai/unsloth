@@ -29,7 +29,6 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
         ]
     assert fetches == []
 
-    # A base only the remote mapper knows raised before, so it never added a repo either.
     monkeypatch.setattr(
         loader_utils, "_get_new_mapper", lambda: ({}, {"owner/unmapped-base": "x/y"}, {}, {}, {})
     )
