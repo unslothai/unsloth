@@ -35,11 +35,7 @@ def _is_gguf_entry(entry) -> bool:
 
 
 def quiet_inventory_logs() -> None:
-    """Hide the inventory scan's info lines ("Found 0 trained models in ...") above the list.
-
-    Unlike configure_quiet_logging, LOG_LEVEL is read, not exported: `unsloth start` may go on
-    to spawn a server, which must keep its own logging.
-    """
+    # LOG_LEVEL is read, not exported: a server `unsloth start` spawns keeps its own logging.
     import logging
     import os
 
@@ -59,11 +55,7 @@ def pick_model_entry(
     keep: Optional[Callable[[object], bool]] = None,
     entries: Optional[List] = None,
 ) -> ModelEntry:
-    """Print the device's chat models with numbers and return the chosen entry.
-
-    Callers put the Studio backend on sys.path first (ensure_studio_backend_path): the catalog
-    reads the Studio inventory layer, imported here so `unsloth --help` never pays for it.
-    """
+    # Callers run ensure_studio_backend_path first: the catalog reads the Studio inventory.
     from unsloth_cli._model_catalog import list_chat_models
 
     if entries is None:
