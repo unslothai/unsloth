@@ -2,7 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Built-in float seeds (CPU, ``aot_eager``): a first-ever compile of a known denoiser starts from the names a
-returning load would read from its saved file, so it traces once; saved names win, and an unknown key seeds nothing."""
+returning load would read from its saved file, so it traces once; saved names win, and an unknown key seeds nothing.
+The shipped table itself is recorded on CUDA through the load patches (which need a GPU), so it is checked for shape
+here and by key on the GPU."""
 
 from __future__ import annotations
 
@@ -113,8 +115,14 @@ def test_builtin_names_trace_a_fresh_compile_once(tmp_path, restarts, monkeypatc
     assert seeds.float_seeds == len(names) and seeds.float_seeds_builtin
     assert seeds.float_seeds_learned == 0
     assert torch.equal(out, out_main)
-    # Nothing new learned: no file, the next load reads the same built-in names.
-    assert not (tmp_path / "fresh" / bg.FLOAT_SEEDS_FILE).exists()
+    # Kept like a learned list: the next load reads them from the file, as a returning one does.
+    saved = json.loads((tmp_path / "fresh" / bg.FLOAT_SEEDS_FILE).read_text(encoding = "utf-8"))
+    assert sorted(saved["names"]) == sorted(names)
+    torch._dynamo.reset()
+    restarts["n"] = 0
+    again, out_again = _render(_net(), tmp_path / "fresh", x)
+    assert restarts["n"] == 0 and again.float_seeds == len(names) and not again.float_seeds_builtin
+    assert torch.equal(out_again, out_main)
 
 
 def test_saved_names_win_over_builtin(tmp_path, monkeypatch):
@@ -181,6 +189,30 @@ def test_key_ignores_layer_count_but_not_config_or_layout():
     assert bg._default_float_seed_key(no_config) is None
 
 
+def _fused_layer_norm(self, x):
+    return torch.nn.functional.layer_norm(
+        x, self.normalized_shape, self.weight, self.bias, self.eps
+    )
+
+
+def test_key_moves_with_a_class_patch_inside_the_block(monkeypatch):
+    """A load patch swapping a submodule's class forward (the eager fusions) or a helper the block calls by name."""
+    base = bg._default_float_seed_key(_net())
+    monkeypatch.setattr(torch.nn.LayerNorm, "forward", _fused_layer_norm)
+    assert bg._default_float_seed_key(_net()) != base
+    monkeypatch.undo()
+    assert bg._default_float_seed_key(_net()) == base
+
+    def calls_helper(self, x):
+        return _helper(x)
+
+    monkeypatch.setattr(Block, "forward", calls_helper)
+    monkeypatch.setitem(globals(), "_helper", lambda x: x)
+    first = bg._default_float_seed_key(_net())
+    monkeypatch.setitem(globals(), "_helper", _fused_layer_norm)
+    assert bg._default_float_seed_key(_net()) != first
+
+
 def test_unknown_denoiser_gets_no_builtin_names():
     assert bg._default_float_seeds([_net()]) == set()
 
@@ -192,47 +224,3 @@ def test_table_is_well_formed():
         assert len(key) == 64 and int(key, 16) >= 0
         assert names and all(bg._SYMFLOAT_NAME.match(n) for n in names)
         assert len(set(names)) == len(names)
-
-
-def _pinned_stack() -> bool:
-    import diffusers
-    return torch.__version__.split("+")[0].startswith("2.13.") and diffusers.__version__ == "0.42.1"
-
-
-@pytest.mark.skipif(
-    "not _pinned_stack()", reason = "the table is recorded on torch 2.13 + diffusers 0.42.1"
-)
-def test_flux2_names_match_a_fresh_compile(restarts):
-    """Drift guard: the names do not depend on sizes, so a tiny FLUX.2 relearns the shipped FLUX.2 list."""
-    import diffusers
-
-    torch.manual_seed(0)
-    model = diffusers.Flux2Transformer2DModel(
-        in_channels = 16,
-        num_layers = 1,
-        num_single_layers = 1,
-        attention_head_dim = 128,
-        num_attention_heads = 1,
-        joint_attention_dim = 32,
-        timestep_guidance_channels = 256,
-        mlp_ratio = 3.0,
-        axes_dims_rope = (32, 32, 32, 32),
-        rope_theta = 2000,
-        eps = 1e-6,
-        guidance_embeds = False,
-    ).eval()
-    model.compile_repeated_blocks(fullgraph = True, dynamic = True, backend = "aot_eager")
-    side = 4
-    ids = torch.cartesian_prod(
-        torch.arange(1), torch.arange(side), torch.arange(side), torch.arange(1)
-    )[None]
-    with torch.no_grad():
-        model(
-            hidden_states = torch.randn(1, side * side, 16),
-            encoder_hidden_states = torch.randn(1, 8, 32),
-            timestep = torch.tensor([0.5]),
-            img_ids = ids,
-            txt_ids = torch.zeros(1, 8, 4, dtype = torch.long),
-        )
-    assert restarts["n"] >= 1
-    assert sorted(bg._tensorify_state().force_specializations) == sorted(bg._FLUX2.split())

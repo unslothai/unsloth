@@ -694,35 +694,50 @@ FLOAT_SEED_DEFAULTS_ENV = "UNSLOTH_DIFFUSION_FLOAT_SEED_DEFAULTS"
 # Config keys that only repeat blocks: they never change one block's trace (the defaults are recorded on 1 layer).
 _LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n_refiner_layers"})
 # The names a fresh compile learns, per denoiser, so a first-ever load traces once like a returning one. Recorded by
-# compiling one layer of each listed model through ``_compile_repeated_blocks`` (random weights, real config); keyed by
-# ``_default_float_seed_key``, so any other torch minor, diffusers version, config, block code or block layout (LoRA,
-# int8 swaps) matches nothing. Dynamo numbers a SymFloat from its source name (``ShapeEnv._generate_unique_id``), so the
-# names do not depend on sizes; test_diffusion_float_seed_defaults relearns the FLUX.2 list on a tiny model.
-_FLUX2 = "zf0 zf10 zf12 zf21 zf40 zf70 zf71 zf88 zf89 zf90 zf91"
-_FLUX1 = "zf9 zf10 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
-_WAN = "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75"
-# Recorded on torch 2.13 + diffusers 0.42.1; space-separated names per key.
+# loading one layer of each listed model (real config, random weights) through this backend's load patches and
+# ``_compile_repeated_blocks``; keyed by ``_default_float_seed_key``, so any other torch minor, diffusers version,
+# config, patch state, block code or layout (LoRA, int8 swaps) matches nothing and compiles as before. Dynamo numbers a
+# SymFloat from its source name (``ShapeEnv._generate_unique_id``), so the names do not depend on sizes.
+# Recorded on torch 2.13 + diffusers 0.42.1 (the Studio install) on CUDA; space-separated names per key.
 _FLOAT_SEED_DEFAULTS: dict[str, str] = {
     # FLUX.2-klein-4B, FLUX.2-klein-base-4B
-    "26fc8c5debb82d2d3cccaf8080c552dcd1768ab2edfa09edb051936a47e10f89": _FLUX2,
+    "5dd2ab806177446849627b4464e399c23085a03960a47640163a005ead876c76": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
     # FLUX.2-klein-9B, FLUX.2-klein-base-9B
-    "d60d0d16e1911fb62378ceef4dbdf46e7f0e01f0c7e56ef1d1513ac60808851d": _FLUX2,
+    "ed77982ae6d06d727fa45f55b8a9b54d1cfefd714faf4c49661d0c40d45c25cf": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
     # FLUX.2-dev
-    "941e4f61e20f630d6b5d0f7e2f1b7adce9d411807160b58a070a9a723a8a1771": _FLUX2,
+    "08155a26395df986bc2ebe6a03764b3853aea472ce7071d970a2b6d26e78128d": (
+        "zf0 zf12 zf21 zf40 zf58 zf70 zf71 zf88 zf89 zf90 zf91"
+    ),
     # FLUX.1-dev, FLUX.1-Krea-dev, FLUX.1-Kontext-dev
-    "9362235d3d2df5cebcb391ac3605ff93c07b53993427634762e04ba5e583a46a": _FLUX1,
+    "f9da488bd5a25610cba88496c39c38734d14c11e72e3f0688d40379c0995cdc7": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
     # FLUX.1-schnell
-    "0e47148427f8335dee84b1ef5af22d756d9ce505d66b700aa60f50a04ec98955": _FLUX1,
+    "b96ece9558717c01650c7eb9c9c4107bbc0d362cb67ac73edef2d20b96abfa80": (
+        "zf7 zf9 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+    ),
     # Qwen-Image, Qwen-Image-2512
-    "8ec06d9215a37602a413451c36a4d31281afe313a12def5ba61e4e3c52a0f786": "zf14 zf17 zf28 zf35 zf51 zf63 zf72",
-    # Z-Image, Z-Image-Turbo
-    "da246ba89e5597df8ecf6154bb4194315cdd58875a844ff1ef60a67d1ddd85c2": "zf61",
-    # Wan2.1-T2V-1.3B
-    "3666d0b8efb92def7c29fd28ee3cb8aa4ca7e58ec87010d1b64bc706ba17771e": _WAN + " zf88",
-    # Wan2.2-T2V-A14B (both experts)
-    "79b8de8a4e3986ac0039f7b89c973f1dcbb8fc0d848ae5e280a4f242a268d580": _WAN + " zf88",
-    # Wan2.2-TI2V-5B: its per-token timesteps (expand_timesteps) rename one float
-    "cfdb6158424e55521fdf5131a00c1a7d69c5427cabd3e0b0a87f1e6ad73eaea8": _WAN + " zf87",
+    "117a3c53808c528a69646ef6779e6c14e0006d00b744ad2933141adb4dc3e100": (
+        "zf14 zf17 zf21 zf28 zf35 zf51 zf63 zf71 zf72 zf88 zf90"
+    ),
+    # Z-Image-Turbo, Z-Image
+    "dca7906be5a3ff641e546d2701df36ac68e154b101afcf9ed7b9c7834002611c": "zf5 zf28 zf34 zf60 zf61 zf88 zf93",
+    # Wan2.1-T2V-1.3B-Diffusers
+    "e167abbacdd33d070a5afb4db4fab562d48e6947d66516c81e5d82b6e4a33deb": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-T2V-A14B-Diffusers
+    "1964c3258a9e85943eff4f23607798c2b87f1507cba02c4c2ec9426a56c41393": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf88"
+    ),
+    # Wan2.2-TI2V-5B-Diffusers
+    "1bd1ee540edd9dcab8d689c2b48cfb729b19901aaee45bbf67a5b885e176d191": (
+        "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75 zf87"
+    ),
 }
 
 
@@ -731,16 +746,49 @@ def float_seed_defaults_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _source_digest(fn: Any) -> str:
+    """A function by its source (stable across Python versions and builds), else by its bytecode."""
+    import inspect
+
+    fn = getattr(fn, "__func__", fn)
+    try:
+        return hashlib.sha256(inspect.getsource(fn).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no source (C ext / generated): bytecode, or nothing
+        code = getattr(fn, "__code__", None)
+        return _code_digest(code) if code is not None else f"<{type(fn).__qualname__}>"
+
+
+def _callable_id(fn: Any) -> str:
+    fn = getattr(fn, "__func__", fn)
+    return f"{getattr(fn, '__module__', '')}.{getattr(fn, '__qualname__', type(fn).__qualname__)}"
+
+
+def _traced_code(fn: Any) -> list:
+    """``fn`` plus the module-level functions it calls by name, by identity: a patch swapping either moves the key."""
+    fn = getattr(fn, "__func__", fn)
+    out = [f"{_callable_id(fn)}:{_source_digest(fn)}"]
+    code = getattr(fn, "__code__", None)
+    scope = getattr(fn, "__globals__", None) or {}
+    for name in sorted(set(getattr(code, "co_names", ()) or ())):
+        ref = scope.get(name)
+        if callable(ref) and not isinstance(ref, type) and hasattr(ref, "__code__"):
+            out.append(f"{name}={_callable_id(ref)}")
+    return out
+
+
 def _block_layout(block: Any) -> list:
-    """What one block traces through: every submodule's class, attention processor and per-instance forward."""
+    """What one block traces through: every submodule's class and forward, attention processor, instance forward."""
     out = []
     for name, sub in block.named_modules():
         proc = getattr(sub, "processor", None)
         out.append(
             [
                 name,
-                f"{type(sub).__module__}.{type(sub).__qualname__}",
-                "" if proc is None else f"{type(proc).__module__}.{type(proc).__qualname__}",
+                _callable_id(type(sub)),
+                _traced_code(type(sub).forward),
+                []
+                if proc is None
+                else [_callable_id(type(proc))] + _traced_code(type(proc).__call__),
                 "forward" in vars(sub),
             ]
         )
@@ -748,25 +796,22 @@ def _block_layout(block: Any) -> list:
 
 
 def _default_float_seed_key(module: Any) -> Optional[str]:
-    """Portable key of one denoiser's block trace: no bytecode or build suffix, unlike ``_code_signature``."""
+    """Portable key of one denoiser's block trace (no bytecode or build suffix, unlike ``_code_signature``): torch
+    minor, diffusers version, config less layer counts, and per block class its layout and the code it runs."""
     try:
-        import inspect
-
         import diffusers
         import torch
 
         from .diffusion_block_graph import repeated_blocks
 
         config = getattr(module, "config", None)
-        if not isinstance(config, dict):
+        if not isinstance(config, dict) or getattr(module, "peft_config", None):
             return None
         config = {
             k: v
             for k, v in config.items()
             if not str(k).startswith("_") and k not in _LAYER_COUNT_KEYS
         }
-        if getattr(module, "peft_config", None):
-            return None
         first: dict = {}
         for block in repeated_blocks(module):
             first.setdefault(type(block), block)
@@ -775,14 +820,10 @@ def _default_float_seed_key(module: Any) -> Optional[str]:
         parts = [
             ".".join(str(torch.__version__).split("+", 1)[0].split(".")[:2]),
             str(diffusers.__version__),
-            f"{type(module).__module__}.{type(module).__qualname__}",
+            _callable_id(type(module)),
             json.dumps(config, sort_keys = True, default = str),
         ]
-        for cls in sorted(first, key = lambda c: f"{c.__module__}.{c.__qualname__}"):
-            source = inspect.getsource(cls.forward)
-            parts.append(
-                f"{cls.__module__}.{cls.__qualname__}:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
-            )
+        for cls in sorted(first, key = _callable_id):
             parts.append(json.dumps(_block_layout(first[cls])))
         return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     except Exception:  # noqa: BLE001 - no key, no defaults
@@ -824,16 +865,17 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
 
 
 def _keep_floats(seeded: Optional[tuple]) -> int:
-    """Save this compile's specialised names if changed; returns how many are new."""
+    """Save this compile's specialised names if changed (or first taken from the built-in table, so the next load
+    reads them like any returning one); returns how many are new."""
     if seeded is None:
         return 0
-    state, path, signature, before, seeds, _builtin = seeded
+    state, path, signature, before, seeds, builtin = seeded
     try:
         names = {
             n for n in set(state.force_specializations) - before if _SYMFLOAT_NAME.match(str(n))
         }
         names |= seeds & set(state.force_specializations)
-        if names and names != seeds:
+        if names and (names != seeds or builtin):
             _write_float_seeds(path, signature, names)
         return len(names - seeds)
     except Exception:  # noqa: BLE001 - bookkeeping only
