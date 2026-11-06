@@ -56,8 +56,7 @@ def _blocks() -> str:
 def _prelude() -> str:
     return (
         '$ErrorActionPreference = "Stop"\n'
-        # Every line the helpers print goes through these two, so the captured stdout is
-        # exactly what the installer would have shown.
+        # Captured stdout = exactly what the installer would print.
         'function substep { param([string]$Text, [string]$Color) Write-Output ("SUBSTEP " + $Text) }\n'
         "function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) "
         'Write-Output ("LINE " + $Message) }\n'
@@ -74,8 +73,7 @@ def _run(
     env = os.environ.copy()
     env["TEST_STUDIO_HOME"] = str(home)
     started = time.monotonic()
-    # Pipes on both streams, as the desktop app spawns the installer: an inherited handle in
-    # the deleter would keep this call blocked until the deletion ended.
+    # Piped like Desktop: an inherited handle in the deleter would block this until the delete ends.
     result = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", _prelude() + script],
         capture_output = True,
@@ -135,7 +133,6 @@ def test_commit_disarms_restore_before_handing_off_the_delete():
         "$script:StudioVenvRollbackDir = $null",
     ):
         assert text.index(disarm) < handoff, disarm
-    # The foreground delete stays as the fallback.
     assert text.index("Remove-StudioVenvTreeWithRetry -Path $backup") > handoff
 
 
@@ -149,7 +146,6 @@ def test_rollback_is_deleted_in_the_background(tmp_path: Path, shell: str):
     twin = tmp_path / "twin"
     shutil.copytree(backup, twin)
 
-    # Baseline: what the commit cost before, on an identical tree.
     out, _ = _run(
         shell,
         """
@@ -173,11 +169,9 @@ Write-Output ("MARK foreground_ms=" + [int]$sw.Elapsed.TotalMilliseconds)
     commit_ms = int(re.search(r"commit_ms=(\d+)", out).group(1))
     print(f"[{shell}] foreground_ms={foreground_ms} commit_ms={commit_ms} wall_s={wall:.2f}")
 
-    # No output beyond the markers: the installer prints exactly what it did before.
     assert [l for l in out.splitlines() if l and not l.startswith("MARK ")] == [], out
     assert "active=False committed=True" in out, out
     assert "original_present=False" in out, out
-    # Returned while the deletion is still running, and the caller's pipe reached EOF first.
     assert len(parked) == 1, (parked, out)
     match = SWEEP_NAME.match(parked[0].name)
     assert match, parked[0].name
