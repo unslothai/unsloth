@@ -4095,11 +4095,25 @@ html[data-chat-font] .aui-root {
 		/* Runs into the block's side padding so the scrollbar hugs the block's edge; the text keeps its width. */
 		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
 		padding-inline-end: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		/* The same right padding whether or not the block scrolls or shows its scrollbar. */
+		scrollbar-gutter: stable;
 	}
 
-	/* Code scrolled under the header fades out instead of being cut mid-line (code-fence-defer.tsx sets the flag). */
+	/* Code scrolled under the header fades out instead of being cut mid-line (code-fence-defer.tsx sets the
+	   flag); the second layer keeps the scrollbar's strip out of the fade. */
 	.aui-thread-root [data-streamdown="code-block-body"][data-scrolled] {
-		mask-image: linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1)));
+		mask-image:
+			linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1))),
+			linear-gradient(#000, #000);
+		mask-size: 100% 100%, calc(1rem * var(--ui-space-scale, 1)) 100%;
+		mask-position: 0 0, right;
+		mask-repeat: no-repeat;
+	}
+
+	/* Expand code (CodeBlockActions) shows the whole block for this one. */
+	.aui-thread-root [data-code-expanded] [data-streamdown="code-block-body"] {
+		max-height: none;
+		mask-image: none;
 	}
 
 	/* No padding below: long code runs to the bottom edge and the body's own bottom padding spaces short code. */
