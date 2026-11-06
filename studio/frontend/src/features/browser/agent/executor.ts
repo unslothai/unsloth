@@ -1609,7 +1609,8 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   if (entry.kind === "file" && !chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
   // A page at work off screen is captured on its own; one on screen as the panel shows it.
-  const hidden = !chatOnScreen(context) && hasNativeView(tab.id);
+  const hidden = !chatOnScreen(context);
+  if (hidden && !hasNativeView(tab.id)) return { ok: false, error: "this chat's browser panel is not on screen; use browser_snapshot." };
   const pages = document.querySelectorAll<HTMLElement>("[data-browser-page]");
   const element = pages[pages.length - 1];
   if (!hidden && !element) return { ok: false, error: "the browser panel is not on screen." };
