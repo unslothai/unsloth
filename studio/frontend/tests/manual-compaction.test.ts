@@ -177,7 +177,7 @@ test("a marker naming a call the reply no longer shows falls back to the prompt"
   assert.equal(compactionToolCallDividers(messages).size, 0);
 });
 
-test("the composer reads /compact before any send path, and only for GGUF or MLX", async () => {
+test("the composer reads /compact before any send path and checks tool support", async () => {
   const thread = await readSrc("components/assistant-ui/thread.tsx");
   const submit = thread.slice(thread.indexOf("const handleSubmit = useCallback("));
   const command = submit.indexOf("isCompactCommand(composerText)");
@@ -185,7 +185,8 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.ok(command < submit.indexOf("if (disabled || shouldBlockSend())"));
   assert.match(submit, /requestThreadCompaction\(referenceThreadId\)/);
   assert.match(submit, /resumesThought\(\{/);
-  assert.match(submit, /!runtime\.supportsTools \|\|/);
+  assert.match(submit, /!runtime\.supportsTools && !externalTools/);
+  assert.match(submit, /externalModelSupportsStudioTools/);
   assert.match(submit, /runtime\.incognito \|\| isThreadIncognito\(referenceThreadId\)/);
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
@@ -323,6 +324,9 @@ function compactMenu(threadId: string) {
       return supported;
     },
     requestThreadCompaction,
+    isExternalModelId: (checkpoint: string | null | undefined) =>
+      typeof checkpoint === "string" && checkpoint.startsWith("external::"),
+    externalModelSupportsStudioTools: () => false,
     hasPreStreamRunReservation,
     liveThreadRunning,
     toast: { info: (text: string) => notices.push(text) },

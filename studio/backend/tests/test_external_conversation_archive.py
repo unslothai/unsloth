@@ -87,6 +87,27 @@ def test_an_external_fit_archives_the_turns_it_evicts(archive_ready):
     assert conversation_archive.has_archive(THREAD)
 
 
+def test_manual_external_compaction_starts_checkpoint_below_threshold(archive_ready):
+    messages = [
+        {"role": "system", "content": "Answer briefly."},
+        {"role": "user", "content": "Remember my favourite colour is blue."},
+        {"role": "assistant", "content": "I will remember."},
+        {"role": "user", "content": "What was my favourite colour?"},
+    ]
+    _persist(THREAD, messages)
+    payload = _payload(THREAD).model_copy(update = {"compact_context": True})
+    fitted, truncation, _ = ri._fit_external_context(
+        messages,
+        payload,
+        tools = [tools_mod.SEARCH_CONVERSATION_TOOL],
+        tool_loop = True,
+    )
+    assert truncation and truncation.get("checkpoint_started")
+    assert truncation.get("manual")
+    assert len(fitted) < len(messages)
+    assert conversation_archive.has_archive(THREAD)
+
+
 def test_the_evicting_fit_recalls_the_document_into_the_latest_turn(archive_ready):
     # The catalogue is fixed before the fit, so on this turn the model has no search tool.
     messages = _chat()
