@@ -1078,9 +1078,8 @@ def _archive_turns(
                 pass
 
     if dense_failed and not (cancel_check is not None and cancel_check()):
-        # The window has already dropped these turns. Without a copy here the chat has no archive, so
-        # search_conversation is never offered and recall finds nothing, however the embedder fails.
-        # degraded() stays set: dense recall is still down, and callers size recall room on it.
+        # Without any copy there is no archive, so search_conversation is never offered (#16706).
+        # degraded() stays set: dense recall is still down.
         written += _archive_turns_lexically(thread_id, scope, groups, positions)
 
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
@@ -1091,9 +1090,7 @@ def _archive_turns(
     return written
 
 
-# Stamped on turns archived without vectors: the same marker a dropped dense index leaves, so it
-# matches no embedder. `_stale_document` then treats the copy as stale and the next request whose
-# embedder works re-embeds it, keeping its position.
+# Matches no embedder, so `_stale_document` re-embeds the copy in place once one works.
 LEXICAL_ONLY_IDENTITY = rag_db.VECTORS_DROPPED + "none"
 
 
@@ -1105,8 +1102,7 @@ def _rough_token_count(text: str) -> int:
 def _archive_turns_lexically(
     thread_id: str, scope: str, groups: list, positions: Optional[list[list[str]]]
 ) -> int:
-    """Keyword-only copies of evicted turns that have no copy at all, for when the embedder fails.
-    Returns how many were written."""
+    """Keyword-only copies of evicted turns that have no copy yet; returns how many were written."""
     written = 0
     conn = None
     try:
@@ -1117,7 +1113,6 @@ def _archive_turns_lexically(
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             if store.documents_by_hash(conn, scope, digest):
-                # Any copy, dense or not, already makes the turn findable.
                 continue
             chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
             if not chunks:
