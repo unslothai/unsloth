@@ -35,11 +35,16 @@ const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
 const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
 const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
-const WEB_DESTINATION = /^\((https?:\/\/[^\s()<>]+)\)$/i;
+// A parked escape or code span in the destination keeps the link plain.
+const WEB_DESTINATION = /^\((https?:\/\/[^\s()<>\uE000-\uE003]+)\)$/i;
 const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
-// Private-use sentinels park code spans, so document text cannot contain them.
-const SENTINELS = /[\uE000\uE001]/g;
+// Private-use sentinels park code spans and mark links, so document text cannot contain them.
+const SENTINELS = /[\uE000-\uE003]/g;
+const LINK_OPEN = "\uE002";
+const LINK_CLOSE = "\uE003";
+const MARKS = /([\uE002\uE003])/;
+const EDGE_SPACE = /^(\s*)([\s\S]*?)(\s*)$/;
 const LINE_ENDINGS = /\r\n?/g;
 const TABS = /\t/g;
 // A name character must follow "<", so "Python <3.15 and >3.9" keeps its operators.
@@ -129,8 +134,17 @@ function stripHtmlTags(text: string): string {
   return out;
 }
 
+/** `start`/`end` index into the item's `lead` or `rest`. */
 export interface ReleaseNotesLink {
-  text: string;
+  part: "lead" | "rest";
+  start: number;
+  end: number;
+  href: string;
+}
+
+interface Span {
+  start: number;
+  end: number;
   href: string;
 }
 
@@ -148,7 +162,7 @@ export interface ReleaseNotesPreview {
 interface Bullet {
   text: string;
   indent: number;
-  links: ReleaseNotesLink[];
+  links: Span[];
 }
 
 function definedLabel(
@@ -180,7 +194,11 @@ function decodeEntity(match: string, body: string): string {
   return NAMED_ENTITIES[body.toLowerCase()] ?? match;
 }
 
-function toPlainText(markdown: string, labels?: Set<string>): string {
+function toPlainText(
+  markdown: string,
+  labels?: Set<string>,
+  hrefs?: string[],
+): string {
   const codes: string[] = [];
   const park = (text: string): string => {
     codes.push(text);
@@ -194,7 +212,18 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     parked
       .replace(AUTOLINK, "$1")
       .replace(IMAGE, "")
-      .replace(LINK, "$1")
+      .replace(LINK, (match, label: string) => {
+        const href = hrefs
+          ? WEB_DESTINATION.exec(match.slice(label.length + 2))?.[1]
+          : undefined;
+        if (!href) {
+          return label;
+        }
+        hrefs?.push(href);
+        // Edge spaces stay outside the marks, so emphasis around the link strips as before.
+        const [, before, inner, after] = EDGE_SPACE.exec(label) ?? [];
+        return `${before}${LINK_OPEN}${inner}${LINK_CLOSE}${after}`;
+      })
       .replace(IMAGE_REFERENCE, (match, text, ref) =>
         definedLabel(labels, ref, text) ? "" : match,
       )
@@ -213,20 +242,39 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     .trim();
 }
 
-function webLinks(markdown: string): ReleaseNotesLink[] {
-  const links: ReleaseNotesLink[] = [];
-  const unescaped = parkCodeSpans(markdown, () => " ")
-    .replace(ESCAPE, " ")
-    .replace(IMAGE, "");
-  for (const match of unescaped.matchAll(LINK)) {
-    const label = match[1] ?? "";
-    const href = WEB_DESTINATION.exec(match[0].slice(label.length + 2))?.[1];
-    const text = toPlainText(label);
-    if (href && text) {
-      links.push({ text, href });
+/** Spans index the returned text; any doubt drops them rather than link the wrong words. */
+function plainWithLinks(
+  markdown: string,
+  labels: Set<string>,
+): { text: string; links: Span[] } {
+  const hrefs: string[] = [];
+  const marked = toPlainText(markdown, labels, hrefs);
+  if (hrefs.length === 0) {
+    return { text: marked, links: [] };
+  }
+  const links: Span[] = [];
+  let text = "";
+  let label: string | null = null;
+  let opened = 0;
+  for (const piece of marked.split(MARKS)) {
+    if (piece === LINK_OPEN) {
+      label = "";
+      opened += 1;
+    } else if (piece === LINK_CLOSE) {
+      const shown = (label ?? "").replace(WHITESPACE, " ").trim();
+      const end = text.trimEnd().length;
+      const href = hrefs[opened - 1];
+      if (shown && href) {
+        links.push({ start: end - shown.length, end, href });
+      }
+      label = null;
+    } else {
+      text = `${text}${piece}`.replace(WHITESPACE, " ").trimStart();
+      label = label === null ? null : label + piece;
     }
   }
-  return links;
+  const plain = toPlainText(markdown, labels);
+  return { text: plain, links: text.trimEnd() === plain ? links : [] };
 }
 
 function truncate(text: string): string {
@@ -676,9 +724,11 @@ function contentLines(markdown: string): ContentLine[] {
 }
 
 /** Conservative: the next sentence must start like one, so "unsloth.ai in the docs" is not split. */
-function splitLeadSentence(
-  text: string,
-): Omit<ReleaseNotesPreviewItem, "links"> {
+function splitLeadSentence(text: string): {
+  lead: string;
+  rest: string;
+  restStart: number;
+} {
   SENTENCE_BREAK.lastIndex = 0;
   let match = SENTENCE_BREAK.exec(text);
   while (match) {
@@ -687,11 +737,34 @@ function splitLeadSentence(
       TRAILING_WORD.exec(text.slice(0, cut))?.[1]?.toLowerCase() ?? "";
     const isAbbreviation = ABBREVIATIONS.has(word) || INITIAL.test(word);
     if (!isAbbreviation && cut >= MIN_LEAD_CHARS) {
-      return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
+      const tail = text.slice(cut);
+      return {
+        lead: text.slice(0, cut).trim(),
+        rest: tail.trim(),
+        restStart: cut + tail.length - tail.trimStart().length,
+      };
     }
     match = SENTENCE_BREAK.exec(text);
   }
-  return { lead: text, rest: "" };
+  return { lead: text, rest: "", restStart: text.length };
+}
+
+function previewItem({ text, links }: Bullet): ReleaseNotesPreviewItem {
+  const { lead, rest, restStart } = splitLeadSentence(text);
+  const parts: ReleaseNotesLink[] = [];
+  for (const { start, end, href } of links) {
+    if (end <= lead.length) {
+      parts.push({ part: "lead", start, end, href });
+    } else if (start >= restStart) {
+      parts.push({
+        part: "rest",
+        start: start - restStart,
+        end: end - restStart,
+        href,
+      });
+    }
+  }
+  return { lead, rest, links: parts };
 }
 
 interface Collector {
@@ -705,10 +778,13 @@ interface Collector {
 
 function flush(collector: Collector): void {
   if (collector.current?.text) {
+    const { text, links } = collector.current;
+    const shown = truncate(text);
+    const kept = shown === text ? shown.length : shown.length - "...".length;
     collector.bullets.push({
-      text: truncate(collector.current.text),
+      text: shown,
       indent: collector.current.indent,
-      links: collector.current.links,
+      links: links.filter((link) => link.end <= kept),
     });
   }
   collector.current = null;
@@ -726,14 +802,10 @@ function takeBullet(
   labels: Set<string>,
 ): void {
   flush(collector);
-  const item = toPlainText(text, labels);
+  const { text: item, links } = plainWithLinks(text, labels);
   // A quoted list is example output, never a headline bullet.
   if (!line.quoted) {
-    collector.current = {
-      text: item,
-      indent: line.indent,
-      links: webLinks(text),
-    };
+    collector.current = { text: item, indent: line.indent, links };
   } else if (item) {
     collector.prose.push(truncate(item));
   }
@@ -745,7 +817,7 @@ function takeText(
   labels: Set<string>,
   quoted: boolean,
 ): void {
-  const plain = toPlainText(text, labels);
+  const { text: plain, links } = plainWithLinks(text, labels);
   if (!plain) {
     return;
   }
@@ -756,10 +828,18 @@ function takeText(
     collector.quotedParagraph = quoted;
     return;
   }
+  const offset = collector.current.text.length + 1;
   collector.current = {
     text: `${collector.current.text} ${plain}`,
     indent: collector.current.indent,
-    links: [...collector.current.links, ...webLinks(text)],
+    links: [
+      ...collector.current.links,
+      ...links.map((link) => ({
+        ...link,
+        start: link.start + offset,
+        end: link.end + offset,
+      })),
+    ],
   };
 }
 
@@ -890,9 +970,7 @@ export function releaseNotesPreview(
       ? topLevel
       : prose.map((text) => ({ text, indent: 0, links: [] }));
   return {
-    items: source
-      .slice(0, limit)
-      .map(({ text, links }) => ({ ...splitLeadSentence(text), links })),
+    items: source.slice(0, limit).map(previewItem),
     remaining: Math.max(source.length - limit, 0),
   };
 }
