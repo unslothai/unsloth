@@ -3833,7 +3833,7 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
             _remove_overlay_entry(home.joinpath(*parts))
     entries = []
     for name in _CODEX_USER_FILES:
-        # Resolved, so a relative CODEX_HOME or a temporary session home does not leave dangling links.
+        # Resolved: a relative or temporary source would leave dangling links.
         entry = (source / name).resolve(strict = False)
         target = home / name
         if not entry.exists():
@@ -3847,7 +3847,7 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
             and not target.is_symlink()
             and not _is_junction(target)
         ):
-            # Codex creates skills/.system in every home it runs in, so merge instead of skipping.
+            # Codex creates skills/.system in every home it runs in.
             for child in entry.iterdir():
                 if not os.path.lexists(target / child.name) and _link_codex_entry(
                     child.resolve(strict = False), target / child.name
