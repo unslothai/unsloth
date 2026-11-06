@@ -94,7 +94,7 @@ export type BrowserAccount = { username: string; accountId?: string | null };
 
 const ACCOUNT_ID_MARKER_PREFIX = "account:";
 
-/** Must match `auth/storage.py`: casefolded `[a-z0-9_-]{3,32}`. */
+/** Must match `auth/storage.py`: casefolded `[a-z0-9_.-]{3,32}`. */
 export function normalizeAccountUsername(username: string): string {
   return username.trim().toLowerCase();
 }

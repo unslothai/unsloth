@@ -489,6 +489,7 @@ test("username normalization matches the ASCII names the backend can store", () 
     [" UNSLOTH ", "unsloth"],
     ["Alice_01", "alice_01"],
     ["BOB-2", "bob-2"],
+    [" FirstName.LastName ", "firstname.lastname"],
     [" Straße ", "straße"],
   ])
     assert.equal(normalizeAccountUsername(input), expected);
