@@ -117,7 +117,7 @@ def test_trl_trainer_and_config_classes_match_getsource(trl_modules):
 def test_patched_trl_classes_take_fast_path(trl_modules, monkeypatch, module_name, class_name):
     module = trl_modules.get(module_name)
     if module is None or not hasattr(module, class_name):
-        pytest.skip(f"{module_name}.{class_name} not in this TRL")
+        pytest.skip(reason = f"older TRL lacks {module_name}.{class_name}")
     cls = getattr(module, class_name)
     expected = inspect.getsource(cls)
     fallbacks = []

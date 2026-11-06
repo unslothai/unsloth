@@ -57,11 +57,8 @@ import sys
 
 
 def _class_source(cls):
-    """inspect.getsource(cls), without the whole-module ast.parse Python < 3.13 does per call.
-
-    Finds the unique column-0 `class <Name>` line plus its single-line decorators and returns
-    inspect.getblock from there; anything ambiguous falls back to inspect.getsource.
-    """
+    """inspect.getsource(cls) without the per-call whole-module ast.parse of Python < 3.13;
+    anything ambiguous falls back to inspect.getsource."""
     if sys.version_info >= (3, 13):
         return inspect.getsource(cls)
     try:
@@ -71,21 +68,18 @@ def _class_source(cls):
         module = sys.modules.get(cls.__module__)
         if module is None or not getattr(module, "__file__", None):
             return inspect.getsource(cls)
-        # Same linecache read inspect.findsource(cls) does; a module needs no parse.
         lines, _ = inspect.findsource(module)
-        # Count indented definitions too (a TYPE_CHECKING stub would be what inspect returns).
+        # Indented hits count too: inspect returns the first one (e.g. a TYPE_CHECKING stub).
         pattern = re.compile(r"[ \t]*class\s+" + re.escape(name) + r"\b")
         hits = [i for i, line in enumerate(lines) if pattern.match(line)]
         if len(hits) != 1 or lines[hits[0]][:1] in (" ", "\t"):
             return inspect.getsource(cls)
         start = hits[0]
-        # Single-line column-0 decorators directly above the class line.
         decorator = re.compile(r"@[A-Za-z_][\w.]*(\([^()\[\]{}#'\"\\]*\))?[ \t]*\r?\n?$")
         while start > 0 and decorator.match(lines[start - 1]):
             start -= 1
-        # Anything not consumed above must be complete statements, else a multi-line or
-        # blank/comment-separated decorator may still belong to the class: parse only the
-        # region back to a column-0 code line where it compiles (a few steps up at most).
+        # The code above must compile as complete statements, else a multi-line or separated
+        # decorator may still belong to the class.
         prev = start
         for attempt in range(8):
             prev -= 1
@@ -93,7 +87,6 @@ def _class_source(cls):
                 prev -= 1
             if prev < 0:
                 if attempt:
-                    # Nothing above compiled as complete statements.
                     return inspect.getsource(cls)
                 break
             if lines[prev].startswith("@"):
@@ -109,8 +102,7 @@ def _class_source(cls):
             return inspect.getsource(cls)
         block = inspect.getblock(lines[start:])
         end = start + len(block)
-        # Methods defined in this file must lie inside the block found, and at least one must
-        # exist: a lone match could otherwise be `class <Name>` text inside a string.
+        # At least one own method, all inside the block: rules out a match inside a string.
         filename = inspect.getsourcefile(cls)
         verified = False
         for value in vars(cls).values():
