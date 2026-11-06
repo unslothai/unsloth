@@ -94,6 +94,17 @@ def conn(rag_home, rag_conn, stub_embeddings):
     return rag_conn
 
 
+def _fail_embedder(monkeypatch):
+    """Archiving then falls back to keyword-only copies, as with a llama.cpp that cannot load the embedder."""
+    from core.rag import embeddings
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+
+
 def _tool_part(
     *,
     type = "tool-call",
@@ -4072,8 +4083,13 @@ def test_a_retried_turn_is_numbered_on_the_branch_the_user_is_on(conn):
     assert ordinals == [0, 1, 2]
 
 
-def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_a_rewind_retires_the_copy_the_conversation_no_longer_holds(
+    conn, monkeypatch, embedder_fails
+):
     """Identical copies outnumber occurrences after a rewind, so surplus copies must be retired."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     first = _turn("set ZQXVARA123 to 1", "ok")
     second = _turn("set ZQXVARA123 to 2", "ok")
     repeat = _turn("set ZQXVARA123 to 1", "ok")
@@ -5064,8 +5080,13 @@ def test_a_tool_turn_with_a_preamble_still_gets_its_seat():
     assert conversation_archive._occurrences(positions, live) == [1]
 
 
-def test_the_same_text_over_a_longer_span_widens_the_stored_window(conn):
+@pytest.mark.parametrize("embedder_fails", [False, True])
+def test_the_same_text_over_a_longer_span_widens_the_stored_window(
+    conn, monkeypatch, embedder_fails
+):
     """Same text over a longer span must widen the stored window, or the turn is filtered out of recall."""
+    if embedder_fails:
+        _fail_embedder(monkeypatch)
     short = [
         _assistant_call("terminal", '{"command":"ls"}', id = "c2"),
         {"role": "tool", "tool_call_id": "c2", "content": "main.py readme.md"},

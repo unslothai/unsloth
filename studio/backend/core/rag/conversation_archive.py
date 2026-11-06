@@ -1124,6 +1124,9 @@ def _archive_turns_lexically(
             seats = _occurrences(positions, group)
             budget = _write_budget(positions, seats, live_positions, group)
             if len(store.documents_by_hash(conn, scope, digest)) >= budget:
+                # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
+                _restamp(conn, scope, digest, seats[:budget], commit = True)
+                _widen_span(conn, scope, digest, span)
                 continue
             chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
             if not chunks:
