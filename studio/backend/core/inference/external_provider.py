@@ -1156,6 +1156,7 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 # cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_anthropic_output_caps: dict[tuple[str, str], Optional[int]] = {}
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -2559,6 +2560,24 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _anthropic_output_cap(self, model: str) -> Optional[int]:
+        key = (self.base_url, model)
+        if key not in _anthropic_output_caps:
+            try:
+                response = await _client().get(
+                    f"{self.base_url}/models/{model}",
+                    headers = self._auth_headers(),
+                    timeout = self._timeout,
+                )
+                response.raise_for_status()
+                cap = response.json().get("max_tokens")
+            except (httpx.HTTPError, ValueError, AttributeError):
+                return None
+            _anthropic_output_caps[key] = (
+                cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None
+            )
+        return _anthropic_output_caps[key]
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -2884,7 +2903,7 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
-            "max_tokens": max_tokens or 1024,  # required by Anthropic
+            "max_tokens": max_tokens or await self._anthropic_output_cap(model) or 1024,
             "stream": True,
         }
         if not sampling_removed:
