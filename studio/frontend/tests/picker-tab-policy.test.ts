@@ -127,19 +127,6 @@ test("refreshes picker inventory only when it was ready at mount", () => {
   assert.deepEqual([false, true].map(shouldRefreshPickerInventoryOnMount), [false, true]);
 });
 
-test("explicit tab preference overrides a stale inferred lock", () => {
-  assert.equal(
-    resolvePickerTab({
-      ...inferredBase,
-      hasDeviceItems: true,
-      hasExplicitTabPreference: true,
-      lockedInferredTab: "device",
-      selectedTab: "hub",
-    }),
-    "hub",
-  );
-});
-
 test("preserves explicit, locked, and offline tab decisions", () => {
   assert.equal(
     resolvePickerTab({
@@ -219,4 +206,20 @@ test("a current visit's deliberate Device choice remains available when empty", 
   // Closing clears the current choice; reopening defaults to recommendations again.
   assert.equal(resolvePickerTab({ ...input, hasCurrentTabChoice: false }), "hub");
   assert.equal(resolvePickerTab({ ...input, hasDeviceItems: true }), "device");
+});
+
+test("a saved Device preference keeps the Hub search tab when a model lands", () => {
+  const savedDevice = {
+    ...inferredBase,
+    hasExplicitTabPreference: true,
+    isDeviceInventorySettled: true,
+    selectedTab: "device" as const,
+  };
+  const opening = { ...savedDevice, hasDeviceItems: false, lockedInferredTab: null };
+  assert.equal(resolvePickerTab(opening), "hub");
+  // Typing locks the shown tab; a model appearing mid-search must not flip it.
+  assert.equal(
+    resolvePickerTab({ ...savedDevice, hasDeviceItems: true, lockedInferredTab: "hub" }),
+    "hub",
+  );
 });
