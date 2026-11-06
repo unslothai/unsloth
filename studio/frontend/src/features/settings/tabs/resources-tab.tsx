@@ -779,7 +779,6 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
-        <GenerationStatsUpdatesRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -1148,6 +1147,7 @@ export function ResourcesTab() {
             })}
           </div>
         )}
+        <GenerationStatsUpdatesRow />
       </SettingsSection>
 
       <ModelMemorySection ref={modelMemoryRef} />
@@ -1208,7 +1208,7 @@ export function ResourcesTab() {
           >
             {hfCache?.isCustom ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 disabled={cacheSaving}
                 onClick={() => void saveCacheFolder(null)}

@@ -2758,7 +2758,7 @@ export const th = {
           "แบ็กเอนด์ การอนุมาน เอนจิน โฟลเดอร์ พาธ llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "หน่วยความจำโมเดล",
+        title: "การโหลดโมเดล",
         keepResident: "เก็บโมเดลไว้ในหน่วยความจำ GPU",
         keepResidentDescription: "คงอยู่ใน VRAM ระหว่างพรอมต์",
         keepResidentHint:
@@ -3023,6 +3023,8 @@ export const th = {
     },
     chat: {
       groups: {
+        replies: { title: "คำตอบ" },
+        thinkingTools: { title: "การคิดและเครื่องมือ" },
         conversations: {
           title: "การสนทนา",
         },
@@ -3114,9 +3116,9 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "รายละเอียดการสร้าง",
+      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
       showGenerationDetailsDescription:
-        "แสดงความเร็วของพรอมต์และการตอบกลับแบบเรียลไทม์พร้อมจำนวนโทเค็น และตำแหน่งที่โหลดเลเยอร์ของโมเดล",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
       showGenerationDetailsKeywords:
         "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "สถิติความเร็วและบริบท",

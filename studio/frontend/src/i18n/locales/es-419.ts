@@ -2918,7 +2918,7 @@ export const es419 = {
           "llama.cpp backend gguf inferencia inference cuda rocm hip vulkan metal cpu gpu acelerador accelerator prebuilt precompilado cambiar switch motor engine personalizado custom ruta path carpeta folder directorio directory llama-server ejecutable executable binario binary",
       },
       modelMemory: {
-        title: "Memoria del modelo",
+        title: "Carga del modelo",
         keepResident: "Mantener el modelo en la memoria de GPU",
         keepResidentDescription: "Permanece en la VRAM entre prompts.",
         keepResidentHint:
@@ -3197,6 +3197,8 @@ export const es419 = {
     },
     chat: {
       groups: {
+        replies: { title: "Respuestas" },
+        thinkingTools: { title: "Razonamiento y herramientas" },
         conversations: {
           title: "Conversaciones",
         },
@@ -3295,9 +3297,9 @@ export const es419 = {
         "Muestra debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora reloj fecha cuándo terminó llegó respuesta mensaje timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Detalles de generación",
+      showGenerationDetails: "Información detallada de velocidad y carga",
       showGenerationDetailsDescription:
-        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
+        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
       showGenerationDetailsKeywords:
         "detallado desarrollador estadísticas velocidad capas trasladar expertos verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Estadísticas de velocidad y contexto",

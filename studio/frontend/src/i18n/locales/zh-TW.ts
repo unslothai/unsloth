@@ -2742,7 +2742,7 @@ export const zhTW = {
           "llama.cpp 後端 推論 引擎 加速器 預先建置 切換 自訂 路徑 資料夾 目錄 執行檔 backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "模型記憶體",
+        title: "模型載入",
         keepResident: "將模型保留在 GPU 記憶體中",
         keepResidentDescription: "在提示詞之間持續保留在 VRAM 中。",
         keepResidentHint:
@@ -3003,6 +3003,8 @@ export const zhTW = {
     },
     chat: {
       groups: {
+        replies: { title: "回覆" },
+        thinkingTools: { title: "思考與工具" },
         conversations: {
           title: "對話",
         },
@@ -3096,9 +3098,9 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "生成詳細資料",
+      showGenerationDetails: "詳細速度與載入資訊",
       showGenerationDetailsDescription:
-        "即時顯示提示詞和回覆的速度及 token 數，以及模型各層的載入位置。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
       showGenerationDetailsKeywords:
         "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "速度與上下文統計",

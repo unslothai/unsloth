@@ -2879,7 +2879,7 @@ export const id = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary inferensi akselerator alihkan kustom jalur direktori",
       },
       modelMemory: {
-        title: "Memori model",
+        title: "Pemuatan model",
         keepResident: "Simpan model di memori GPU",
         keepResidentDescription: "Tetap di VRAM di antara prompt.",
         keepResidentHint:
@@ -3152,6 +3152,8 @@ export const id = {
     },
     chat: {
       groups: {
+        replies: { title: "Balasan" },
+        thinkingTools: { title: "Penalaran dan alat" },
         conversations: {
           title: "Percakapan",
         },
@@ -3250,9 +3252,9 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Detail pembuatan",
+      showGenerationDetails: "Info kecepatan dan pemuatan terperinci",
       showGenerationDetailsDescription:
-        "Tampilkan kecepatan prompt dan balasan secara langsung beserta jumlah token, serta tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung, serta menunjukkan tempat lapisan model dimuat.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
       generationStatsUpdates: "Statistik kecepatan dan konteks",

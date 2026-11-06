@@ -134,38 +134,57 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
               ))}
             </div>
           </SettingsRow>
-          <SettingsRow
-            label={t("composerSettings.plainText")}
-            description={t("composerSettings.plainTextDescription")}
-          >
-            <Switch
-              aria-label={t("composerSettings.plainText")}
-              checked={prefs.plainTextComposer}
-              onCheckedChange={prefs.setPlainTextComposer}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label={t("composerSettings.richPaste")}
-            badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
-            description={t("composerSettings.richPasteDescription", {
-              shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
-            })}
-          >
-            <Switch
-              aria-label={t("composerSettings.richPaste")}
-              checked={prefs.richTextPaste}
-              onCheckedChange={prefs.setRichTextPaste}
-            />
-          </SettingsRow>
-          <SettingsRow label={t("composerSettings.showContext")}>
-            <Switch
-              aria-label={t("composerSettings.showContext")}
-              checked={prefs.showContextWindowUsage}
-              onCheckedChange={prefs.setShowContextWindowUsage}
-            />
-          </SettingsRow>
         </div>
       </SettingsSection>
     </div>
+  );
+}
+
+/** Plain text composer and Rich text paste, at the end of Settings > Chat > Display. */
+export function ComposerFormatRows() {
+  const t = useT();
+  const prefs = useChatPreferencesStore();
+  return (
+    <>
+      <SettingsRow
+        label={t("composerSettings.plainText")}
+        description={t("composerSettings.plainTextDescription")}
+      >
+        <Switch
+          aria-label={t("composerSettings.plainText")}
+          checked={prefs.plainTextComposer}
+          onCheckedChange={prefs.setPlainTextComposer}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("composerSettings.richPaste")}
+        badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
+        description={t("composerSettings.richPasteDescription", {
+          shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+        })}
+      >
+        <Switch
+          aria-label={t("composerSettings.richPaste")}
+          checked={prefs.richTextPaste}
+          onCheckedChange={prefs.setRichTextPaste}
+        />
+      </SettingsRow>
+    </>
+  );
+}
+
+/** The chat header's context meter on or off: Settings > Chat > Display. */
+export function ContextWindowUsageRow() {
+  const t = useT();
+  const checked = useChatPreferencesStore((s) => s.showContextWindowUsage);
+  const setChecked = useChatPreferencesStore((s) => s.setShowContextWindowUsage);
+  return (
+    <SettingsRow label={t("composerSettings.showContext")}>
+      <Switch
+        aria-label={t("composerSettings.showContext")}
+        checked={checked}
+        onCheckedChange={setChecked}
+      />
+    </SettingsRow>
   );
 }

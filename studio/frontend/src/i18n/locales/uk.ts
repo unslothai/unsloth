@@ -2901,7 +2901,7 @@ export const uk = {
           "бекенд інференс прискорювач готова збірка перемкнути рушій власний шлях папка каталог виконуваний файл llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Пам’ять моделей",
+        title: "Завантаження моделей",
         keepResident: "Тримати модель у пам’яті GPU",
         keepResidentDescription: "Залишатися у VRAM між запитами.",
         keepResidentHint:
@@ -3177,6 +3177,8 @@ export const uk = {
     },
     chat: {
       groups: {
+        replies: { title: "Відповіді" },
+        thinkingTools: { title: "Міркування та інструменти" },
         conversations: {
           title: "Розмови",
         },
@@ -3276,9 +3278,9 @@ export const uk = {
         "Показувати під кожною відповіддю, коли її завершено.",
       showReplyTimesKeywords:
         "позначка часу час годинник дата година коли завершено надійшло відповідь повідомлення timestamp",
-      showGenerationDetails: "Відомості про генерування",
+      showGenerationDetails: "Докладна інформація про швидкість і завантаження",
       showGenerationDetailsDescription:
-        "Показувати поточну швидкість обробки запиту й відповіді з кількістю токенів, а також де завантажено шари моделі.",
+        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток, а також показує, куди завантажено шари моделі.",
       showGenerationDetailsKeywords:
         "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
       generationStatsUpdates: "Статистика швидкості й контексту",

@@ -298,7 +298,7 @@ test("settled mode keeps today's paths: no live subscription in the meter, the l
   assert.match(hook, /throttle\.cancel\(\)/);
 });
 
-test("one toggle row sits in Chat defaults and System > Live monitor, is searchable, and is translated in every locale", async () => {
+test("one toggle row sits in Chat defaults and System > Floating window, is searchable, and is translated in every locale", async () => {
   const row = readSrc(
     "features/settings/components/generation-stats-updates-row.tsx",
   );
@@ -325,15 +325,18 @@ test("one toggle row sits in Chat defaults and System > Live monitor, is searcha
     "the Chat tab renders the shared row, not its own copy",
   );
   const system = readSrc("features/settings/tabs/resources-tab.tsx");
-  const monitor = system.slice(
+  const floating = system.slice(
     system.indexOf(
-      '<SettingsSection title={t("settings.resources.liveMonitor.title")}>',
+      '<SettingsSection title={t("settings.resources.floatingWindow")}>',
     ),
-    system.indexOf(
-      '<SettingsSection title={t("settings.resources.gpu.title")}>',
-    ),
+    system.indexOf("<ModelMemorySection ref={modelMemoryRef} />"),
   );
-  assert.match(monitor, /<GenerationStatsUpdatesRow \/>/);
+  assert.match(floating, /<GenerationStatsUpdatesRow \/>/);
+  assert.equal(
+    system.match(/<GenerationStatsUpdatesRow \/>/g)?.length,
+    1,
+    "only once on System",
+  );
   const search = readSrc("features/settings/settings-search.ts");
   assert.match(
     search,

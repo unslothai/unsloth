@@ -2691,7 +2691,7 @@ export const fr = {
           "llama.cpp backend gguf inférence cuda rocm hip vulkan metal cpu gpu accélérateur prebuilt changer moteur",
       },
       modelMemory: {
-        title: "Mémoire du modèle",
+        title: "Chargement du modèle",
         keepResident: "Conserver le modèle dans la mémoire du GPU",
         keepResidentDescription: "Reste en VRAM entre les messages.",
         keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
@@ -2954,6 +2954,8 @@ export const fr = {
     },
     chat: {
       groups: {
+        replies: { title: "Réponses" },
+        thinkingTools: { title: "Réflexion et outils" },
         conversations: { title: "Conversations" },
         files: { title: "Fichiers et collage" },
         display: { title: "Affichage" },
@@ -3038,9 +3040,9 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
-      showGenerationDetails: "Détails de génération",
+      showGenerationDetails: "Infos détaillées de vitesse et de chargement",
       showGenerationDetailsDescription:
-        "Affiche en direct les vitesses du prompt et de la réponse avec le nombre de jetons, et où les couches d'un modèle ont été chargées.",
+        "Ajoute aux indicateurs en direct la vitesse de lecture du prompt, le nombre de tokens et l'acceptation des brouillons, et indique où les couches du modèle ont été chargées.",
       showGenerationDetailsKeywords:
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Statistiques de vitesse et de contexte",

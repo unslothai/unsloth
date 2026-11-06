@@ -2693,7 +2693,7 @@ export const de = {
           "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
       },
       modelMemory: {
-        title: "Modellspeicher",
+        title: "Modell laden",
         keepResident: "Modell im GPU-Speicher behalten",
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
@@ -2958,6 +2958,8 @@ export const de = {
     },
     chat: {
       groups: {
+        replies: { title: "Antworten" },
+        thinkingTools: { title: "Denken und Werkzeuge" },
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
@@ -3042,9 +3044,9 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
-      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetails: "Detaillierte Geschwindigkeits- und Ladeinfos",
       showGenerationDetailsDescription:
-        "Prompt- und Antwortgeschwindigkeit live mit Tokenzahlen anzeigen, und wo die Schichten eines Modells geladen wurden.",
+        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme und zeigt, wo die Schichten eines Modells geladen wurden.",
       showGenerationDetailsKeywords:
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",

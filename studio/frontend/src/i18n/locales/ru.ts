@@ -2673,7 +2673,7 @@ export const ru = {
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
       modelMemory: {
-        title: "Память модели",
+        title: "Загрузка модели",
         keepResident: "Держать модель в памяти GPU",
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
@@ -2933,6 +2933,8 @@ export const ru = {
     },
     chat: {
       groups: {
+        replies: { title: "Ответы" },
+        thinkingTools: { title: "Размышления и инструменты" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
@@ -3014,9 +3016,9 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности генерации",
+      showGenerationDetails: "Подробности о скорости и загрузке",
       showGenerationDetailsDescription:
-        "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Статистика скорости и контекста",

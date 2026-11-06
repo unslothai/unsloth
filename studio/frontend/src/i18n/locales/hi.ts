@@ -2667,7 +2667,7 @@ export const hi = {
           "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
       },
       modelMemory: {
-        title: "मॉडल मेमोरी",
+        title: "मॉडल लोडिंग",
         keepResident: "मॉडल को GPU मेमोरी में रखें",
         keepResidentDescription: "प्रॉम्प्ट के बीच VRAM में बना रहता है।",
         keepResidentHint: "जब तक मॉडल लोड रहता है, वेट्स सिस्टम RAM को वापस नहीं दिए जाते। निष्क्रिय होने पर स्वतः अनलोड बंद कर देता है, और जब वेट्स वास्तव में होस्ट RAM में रहते हैं (यूनिफाइड मेमोरी, या आंशिक GPU ऑफ़लोड) तब --mlock भी भेजता है, ताकि OS उन्हें पेज आउट करके आपके अगले प्रॉम्प्ट पर दोबारा अपलोड न करे।",
@@ -2926,6 +2926,8 @@ export const hi = {
     },
     chat: {
       groups: {
+        replies: { title: "उत्तर" },
+        thinkingTools: { title: "सोच और टूल" },
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },
@@ -3010,9 +3012,9 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
-      showGenerationDetails: "जनरेशन विवरण",
+      showGenerationDetails: "गति और लोडिंग की विस्तृत जानकारी",
       showGenerationDetailsDescription:
-        "टोकन गिनती के साथ प्रॉम्प्ट और जवाब की लाइव गति दिखाएँ, और यह भी कि मॉडल की परतें कहाँ लोड हुईं।",
+        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है, और दिखाता है कि मॉडल की लेयर कहाँ लोड हुईं।",
       showGenerationDetailsKeywords:
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "गति और संदर्भ आँकड़े",

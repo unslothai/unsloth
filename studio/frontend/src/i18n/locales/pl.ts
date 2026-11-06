@@ -2912,7 +2912,7 @@ export const pl = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary wnioskowanie akcelerator przełącz silnik ścieżka katalog plik wykonywalny",
       },
       modelMemory: {
-        title: "Pamięć modelu",
+        title: "Ładowanie modelu",
         keepResident: "Utrzymuj model w pamięci GPU",
         keepResidentDescription: "Pozostaje w VRAM między promptami.",
         keepResidentHint:
@@ -3188,6 +3188,8 @@ export const pl = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpowiedzi" },
+        thinkingTools: { title: "Myślenie i narzędzia" },
         conversations: {
           title: "Rozmowy",
         },
@@ -3286,9 +3288,9 @@ export const pl = {
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message znacznik czasu godzina data odpowiedź wiadomość",
-      showGenerationDetails: "Szczegóły generowania",
+      showGenerationDetails: "Szczegółowe informacje o szybkości i ładowaniu",
       showGenerationDetailsDescription:
-        "Pokazuj na żywo szybkość przetwarzania promptu i odpowiedzi z liczbą tokenów oraz miejsce wczytania warstw modelu.",
+        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców oraz pokazuje, gdzie załadowano warstwy modelu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
       generationStatsUpdates: "Statystyki szybkości i kontekstu",

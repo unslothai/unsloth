@@ -2725,7 +2725,7 @@ export const he = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
-        title: "זיכרון מודל",
+        title: "טעינת מודל",
         keepResident: "שמור מודל בזיכרון ה-GPU",
         keepResidentDescription: "הישאר ב-VRAM בין פרומפטים.",
         keepResidentHint:
@@ -2988,6 +2988,8 @@ export const he = {
     },
     chat: {
       groups: {
+        replies: { title: "תשובות" },
+        thinkingTools: { title: "חשיבה וכלים" },
         conversations: {
           title: "שיחות",
         },
@@ -3081,9 +3083,9 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
       showGenerationDetailsDescription:
-        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "נתוני מהירות והקשר",

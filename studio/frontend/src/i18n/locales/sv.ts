@@ -2800,7 +2800,7 @@ export const sv = {
           "llama.cpp bakände gguf inferens cuda rocm hip vulkan metal cpu gpu accelerator förbyggd byta motor anpassad sökväg katalog mapp llama-server körbar fil binär llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Modellminne",
+        title: "Modellinläsning",
         keepResident: "Behåll modellen i GPU-minnet",
         keepResidentDescription: "Ligger kvar i VRAM mellan uppmaningar.",
         keepResidentHint:
@@ -3067,6 +3067,8 @@ export const sv = {
     },
     chat: {
       groups: {
+        replies: { title: "Svar" },
+        thinkingTools: { title: "Tänkande och verktyg" },
         conversations: {
           title: "Konversationer",
         },
@@ -3163,9 +3165,9 @@ export const sv = {
       showReplyTimesDescription: "Visa under varje svar när det blev klart.",
       showReplyTimesKeywords:
         "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
-      showGenerationDetails: "Genereringsdetaljer",
+      showGenerationDetails: "Detaljerad hastighets- och laddningsinfo",
       showGenerationDetailsDescription:
-        "Visa live hastighet för prompt och svar med antal token, och var en modells lager lästes in.",
+        "Lägger till läshastighet för prompten, tokenantal och utkastgodkännande i livevisningen och visar var modellens lager laddades.",
       showGenerationDetailsKeywords:
         "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Hastighets- och kontextstatistik",

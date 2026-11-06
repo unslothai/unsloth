@@ -2675,7 +2675,7 @@ export const ptBR = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
       },
       modelMemory: {
-        title: "Memória do modelo",
+        title: "Carregamento do modelo",
         keepResident: "Manter o modelo na memória da GPU",
         keepResidentDescription: "Permanece na VRAM entre os prompts.",
         keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
@@ -2934,6 +2934,8 @@ export const ptBR = {
     },
     chat: {
       groups: {
+        replies: { title: "Respostas" },
+        thinkingTools: { title: "Raciocínio e ferramentas" },
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },
@@ -3015,9 +3017,9 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
-      showGenerationDetails: "Detalhes da geração",
+      showGenerationDetails: "Informações detalhadas de velocidade e carregamento",
       showGenerationDetailsDescription:
-        "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
+        "Adiciona às leituras ao vivo a velocidade de leitura do prompt, a contagem de tokens e a aceitação de rascunhos, e mostra onde as camadas do modelo foram carregadas.",
       showGenerationDetailsKeywords:
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Estatísticas de velocidade e contexto",

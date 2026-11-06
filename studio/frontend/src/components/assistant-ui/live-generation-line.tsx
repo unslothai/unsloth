@@ -14,7 +14,7 @@ import type { FC } from "react";
 
 /** Gated on the preferences first so a reply mounts no assistant-ui selector while both are off
  *  (composer-keystroke-subscription-budget), like AssistantMessageTime. Realtime stats show the line
- *  without Generation details. */
+ *  without Detailed speed and loading info. */
 export const LiveGenerationLine: FC = () => {
   const details = useChatPreferencesStore((state) => state.showGenerationDetails);
   const realtime = useChatPreferencesStore(

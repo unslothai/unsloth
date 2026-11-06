@@ -2643,7 +2643,7 @@ export const ja = {
           "llama.cpp backend gguf 推論 cuda rocm hip vulkan metal cpu gpu アクセラレータ prebuilt 切り替え エンジン",
       },
       modelMemory: {
-        title: "モデルメモリ",
+        title: "モデルの読み込み",
         keepResident: "モデルを GPU メモリに保持",
         keepResidentDescription: "プロンプト間も VRAM に常駐します。",
         keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、重みが実際にホスト RAM 上にある場合（ユニファイドメモリ、または GPU への部分オフロード）は --mlock も渡すため、OS が重みをページアウトして次のプロンプトで再アップロードすることがなくなります。",
@@ -2905,6 +2905,8 @@ export const ja = {
     },
     chat: {
       groups: {
+        replies: { title: "応答" },
+        thinkingTools: { title: "思考とツール" },
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },
@@ -2987,9 +2989,9 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
-      showGenerationDetails: "生成の詳細",
+      showGenerationDetails: "速度と読み込みの詳細情報",
       showGenerationDetailsDescription:
-        "プロンプトと応答の速度をトークン数とともにリアルタイムで表示し、モデルのレイヤーの読み込み先も表示します。",
+        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加し、モデルのレイヤーの読み込み先を表示します。",
       showGenerationDetailsKeywords:
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "速度とコンテキストの統計",

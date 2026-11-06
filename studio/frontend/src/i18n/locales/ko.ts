@@ -2655,7 +2655,7 @@ export const ko = {
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
       modelMemory: {
-        title: "모델 메모리",
+        title: "모델 로딩",
         keepResident: "모델을 GPU 메모리에 유지",
         keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
         keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고, 가중치가 실제로 호스트 RAM에 있는 경우(통합 메모리 또는 부분 GPU 오프로드)에는 --mlock도 전달하여 운영체제가 가중치를 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
@@ -2912,6 +2912,8 @@ export const ko = {
     },
     chat: {
       groups: {
+        replies: { title: "응답" },
+        thinkingTools: { title: "생각과 도구" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
@@ -2994,9 +2996,9 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "생성 세부 정보",
+      showGenerationDetails: "자세한 속도 및 로딩 정보",
       showGenerationDetailsDescription:
-        "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "속도 및 컨텍스트 통계",

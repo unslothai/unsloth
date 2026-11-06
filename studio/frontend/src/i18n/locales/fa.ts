@@ -2863,7 +2863,7 @@ export const fa = {
           "بک‌اند استنتاج شتاب‌دهنده موتور مسیر سفارشی پوشه تغییر llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "حافظهٔ مدل",
+        title: "بارگذاری مدل",
         keepResident: "نگه داشتن مدل در حافظهٔ GPU",
         keepResidentDescription: "میان پرامپت‌ها در VRAM بماند.",
         keepResidentHint:
@@ -3137,6 +3137,8 @@ export const fa = {
     },
     chat: {
       groups: {
+        replies: { title: "پاسخ‌ها" },
+        thinkingTools: { title: "تفکر و ابزارها" },
         conversations: {
           title: "گفتگوها",
         },
@@ -3236,9 +3238,9 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "جزئیات تولید",
+      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
       showGenerationDetailsDescription:
-        "سرعت زندهٔ پرامپت و پاسخ همراه با تعداد توکن‌ها، و محل بارگذاری لایه‌های مدل نمایش داده شود.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
       showGenerationDetailsKeywords:
         "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
       generationStatsUpdates: "آمار سرعت و زمینه",

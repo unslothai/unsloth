@@ -43,6 +43,18 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   exportChat: false,
 };
 
+/** Whether Reset to default has anything to undo. */
+export function plusMenuAtDefaults(
+  pins: Record<PlusMenuItemId, boolean>,
+  order: readonly PlusMenuItemId[],
+): boolean {
+  return (
+    order.length === PLUS_MENU_ORDER.length &&
+    order.every((id, index) => id === PLUS_MENU_ORDER[index]) &&
+    PLUS_MENU_ORDER.every((id) => pins[id] === DEFAULT_PINS[id])
+  );
+}
+
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
 
 /** A saved order with unknown ids dropped and missing ones (added in a later release) placed

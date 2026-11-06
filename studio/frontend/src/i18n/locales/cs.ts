@@ -2894,7 +2894,7 @@ export const cs = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu akcelerátor accelerator předsestavené prebuilt přepnout switch modul engine vlastní custom cesta path složka folder adresář directory llama-server spustitelný soubor executable binary",
       },
       modelMemory: {
-        title: "Paměť modelu",
+        title: "Načítání modelu",
         keepResident: "Ponechat model v paměti GPU",
         keepResidentDescription: "Zůstat ve VRAM mezi prompty.",
         keepResidentHint:
@@ -3168,6 +3168,8 @@ export const cs = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpovědi" },
+        thinkingTools: { title: "Přemýšlení a nástroje" },
         conversations: {
           title: "Konverzace",
         },
@@ -3266,9 +3268,9 @@ export const cs = {
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",
       showReplyTimesKeywords:
         "časové razítko čas hodiny datum kdy dokončeno odpověď zpráva timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Podrobnosti generování",
+      showGenerationDetails: "Podrobné informace o rychlosti a načítání",
       showGenerationDetailsDescription:
-        "Zobrazovat živé rychlosti promptu a odpovědi s počty tokenů a kam se načetly vrstvy modelu.",
+        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů a ukáže, kam se načetly vrstvy modelu.",
       showGenerationDetailsKeywords:
         "podrobné vývojář statistiky rychlost vrstvy verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "Statistiky rychlosti a kontextu",

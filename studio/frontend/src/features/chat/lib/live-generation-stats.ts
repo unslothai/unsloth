@@ -5,7 +5,7 @@
 
 import type { LiveGenerationProgress } from "../stores/chat-runtime-store";
 
-/** "settled": the context meter moves when a pass finishes, the reply speed only with Generation details.
+/** "settled": the context meter moves when a pass finishes, the reply speed only with Detailed speed and loading info.
  *  "realtime": both follow the stream, at most once per LIVE_STATS_INTERVAL_MS. */
 export type GenerationStatsUpdates = "settled" | "realtime";
 

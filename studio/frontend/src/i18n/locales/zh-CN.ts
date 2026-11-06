@@ -2631,7 +2631,7 @@ export const zhCN = {
           "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
       },
       modelMemory: {
-        title: "模型内存",
+        title: "模型加载",
         keepResident: "将模型保留在显存中",
         keepResidentDescription: "在两次提问之间保持驻留显存。",
         keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载；当权重确实位于主机内存中时（统一内存，或部分卸载到 GPU），还会传入 --mlock，使操作系统无法将其换出、并在你下次提问时重新上传。",
@@ -2878,6 +2878,8 @@ export const zhCN = {
     },
     chat: {
       groups: {
+        replies: { title: "回复" },
+        thinkingTools: { title: "思考与工具" },
         conversations: { title: "对话" },
         files: { title: "文件与粘贴" },
         display: { title: "显示" },
@@ -2958,9 +2960,9 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
-      showGenerationDetails: "生成详情",
+      showGenerationDetails: "详细速度与加载信息",
       showGenerationDetailsDescription:
-        "实时显示提示词和回复速度及 token 数，并显示模型各层的加载位置。",
+        "在实时读数中加入提示词读取速度、token 数和草稿采纳率，并显示模型各层加载在哪里。",
       showGenerationDetailsKeywords:
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
       generationStatsUpdates: "速度与上下文统计",

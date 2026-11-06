@@ -2917,7 +2917,7 @@ export const nl = {
           "llama.cpp backend gguf inferentie inference cuda rocm hip vulkan metal cpu gpu versneller accelerator prebuilt wisselen engine aangepast pad map directory llama-server uitvoerbaar bestand binary",
       },
       modelMemory: {
-        title: "Modelgeheugen",
+        title: "Model laden",
         keepResident: "Model in GPU-geheugen houden",
         keepResidentDescription: "Tussen prompts in VRAM blijven.",
         keepResidentHint:
@@ -3193,6 +3193,8 @@ export const nl = {
     },
     chat: {
       groups: {
+        replies: { title: "Antwoorden" },
+        thinkingTools: { title: "Denken en tools" },
         conversations: {
           title: "Gesprekken",
         },
@@ -3291,9 +3293,9 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Generatiedetails",
+      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
       showGenerationDetailsDescription:
-        "Live prompt- en antwoordsnelheden tonen met aantallen tokens, en waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
       showGenerationDetailsKeywords:
         "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
       generationStatsUpdates: "Snelheids- en contextstatistieken",

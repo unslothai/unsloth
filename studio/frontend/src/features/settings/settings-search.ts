@@ -148,6 +148,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.pastedTextThreshold",
     "settings.chat.turnNavigation",
     "settings.chat.groups.conversations.title",
+    "settings.chat.groups.replies.title",
+    "settings.chat.groups.thinkingTools.title",
     "settings.chat.library.label",
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
