@@ -1889,9 +1889,10 @@ def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist
     assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
 
 
+@pytest.mark.parametrize("step", [10, 0])
 @pytest.mark.parametrize("persisted", [False, True])
 def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
-    batch_queue, monkeypatch, persisted
+    batch_queue, monkeypatch, persisted, step
 ):
     client, calls, live, gpu, _backend = batch_queue
     clock = {"t": 1_700_000_000}
@@ -1912,7 +1913,7 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
         jobs = []
         for suffix, extra in (("a", {}), ("b", {"use_dora": True}), ("c", {})):
             jobs.append(await _create(client, uploaded.id, suffix = suffix, extra_body = extra))
-            clock["t"] += 10
+            clock["t"] += step
         gpu["busy"] = False
         await openai_fine_tuning._drain_once()
         for i in range(2):

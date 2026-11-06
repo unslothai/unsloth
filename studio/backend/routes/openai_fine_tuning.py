@@ -16,8 +16,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from heapq import heapify, heappop, heappush
-from itertools import chain
-from math import inf
+from itertools import chain, count
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -521,6 +520,9 @@ _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
 
 _ALIAS_CREATED: dict[str, int] = {}
+# Creation order within this process, for jobs created in the same second.
+_ALIAS_ORDER: dict[str, int] = {}
+_alias_counter = count()
 
 _aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
@@ -998,6 +1000,7 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
+    _ALIAS_ORDER[entry.alias] = next(_alias_counter)
     _ensure_drainer()
     return entry
 
@@ -1132,11 +1135,14 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # By creation time, queue entries first on ties: a started job keeps its place across pages.
-    # History is newest start first and no job starts before it is created, so a buffered row
-    # created after this row's start is final. Queued and live jobs sort as started last.
+    # Newest created first, ties broken by public id alone so a job keeps its place from queue
+    # to history. History is newest start first and no job starts before it is created, so
+    # a buffered row created after the current row's start is final.
+    def key(created_at: int, public_id: str) -> tuple[int, int, str]:
+        return -created_at, -_ALIAS_ORDER.get(public_id, -1), public_id
+
     buffered = [
-        (-job["created_at"], -inf, seq, job, False)
+        (key(job["created_at"], job["id"]), seq, job, False)
         for seq, job in enumerate(chain(pending, live.values()))
     ]
     heapify(buffered)
@@ -1145,11 +1151,12 @@ def _ordered_jobs(
         if run["id"] in live:
             continue
         started = _unix(run.get("started_at")) or 0
-        while buffered and buffered[0][:2] < (-started, -started):
-            yield heappop(buffered)[3:]
-        heappush(buffered, (-min(_run_created(run), started), -started, seq, run, True))
+        while buffered and -buffered[0][0][0] > started:
+            yield heappop(buffered)[2:]
+        public_id = _RUN_ALIAS.get(run["id"]) or _job_id(run["id"])
+        heappush(buffered, (key(min(_run_created(run), started), public_id), seq, run, True))
     while buffered:
-        yield heappop(buffered)[3:]
+        yield heappop(buffered)[2:]
 
 
 def _list_job_page(
