@@ -1438,6 +1438,24 @@ def test_dsh_resolver_searches_past_an_unrelated_earlier_path_entry(monkeypatch,
     assert Path(resolved).parent == harness_dir
 
 
+def test_dsh_first_run_installs_the_latest_dist_tag(monkeypatch):
+    hints = []
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    monkeypatch.setattr(start, "_which_deepseek_harness_with_install_dirs", lambda: None)
+    monkeypatch.setattr(start, "_install_agent", lambda name, hint: hints.append(hint))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *a, **k: pytest.fail("a missing dsh must stop before model connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["dsh"])
+
+    assert result.exit_code == 1
+    assert len(hints) == 1
+    assert shlex.split(hints[0])[-1] == "@deepseek-ai/dsh@latest", hints
+
+
 def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
     installs = []
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)

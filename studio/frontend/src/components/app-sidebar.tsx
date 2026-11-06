@@ -271,6 +271,7 @@ import {
   prefersReducedMotion,
 } from "@/features/settings/stores/appearance-custom-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   isSurfaceBackgrounded,
   useShortcutLabel,
@@ -3950,6 +3951,12 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
+    // Capture the unread result before Recents clears its persistent unread marker.
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(
+      item.type === "single" ? item.id : null,
+      ttsEnabled && autoReadAloud,
+    );
     clearThreadsUnread(getSidebarItemThreadIds(item));
   }
 
@@ -5914,7 +5921,8 @@ export function AppSidebar() {
             ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+              : // The chat header's top padding, so the two rows line up.
+                "pl-3 pr-3 pt-[var(--studio-chat-header-padding-top,11px)] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -5980,10 +5988,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent

@@ -377,3 +377,23 @@ def test_stt_status_reads_the_runtime_off_the_event_loop(monkeypatch):
     response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
     assert json.loads(response.body)["audio_cpp_runtime"] == {"available": False}
     assert seen == [False]
+
+
+def test_stt_status_probes_transformers_off_the_event_loop(monkeypatch):
+    import threading
+
+    from core.inference import stt_sidecar
+
+    seen = []
+
+    def available():
+        seen.append(threading.current_thread() is threading.main_thread())
+        return True
+
+    monkeypatch.setattr(stt_sidecar, "is_available", available)
+    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", lambda: {"available": False})
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
+    body = json.loads(response.body)
+    assert body["available"] is True and body["transformers"]["available"] is True
+    assert seen == [False]

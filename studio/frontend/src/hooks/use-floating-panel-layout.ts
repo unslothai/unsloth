@@ -171,12 +171,12 @@ export function useFloatingPanelLayout(
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
       const session = dragSessionRef.current;
-      // Mid-drag the measured box (transform included) is where the pointer has it.
+      // Mid-drag the pointer owns the spot: the measured box can be a frame behind it.
       let left = session
-        ? clamp(monitorBox.left - constraintsBox.left, 0, maxLeft)
+        ? clamp(session.left, 0, maxLeft)
         : placeAxis(intentRef.current.left, maxLeft);
       let top = session
-        ? clamp(monitorBox.top - constraintsBox.top, 0, maxTop)
+        ? clamp(session.top, 0, maxTop)
         : placeAxis(intentRef.current.top, maxTop);
       // Obstacle avoidance applies to the first placement only, and a remembered spot wins.
       if (
@@ -381,20 +381,18 @@ export function useFloatingPanelLayout(
       return;
     }
 
-    const left = clamp(
-      session.left + event.clientX - session.startX,
+    // From the grab point, not the last move: an edge clamp must not eat the overshoot, or the grip
+    // slides off the pointer when it comes back.
+    session.left = clamp(
+      session.baseLeft + event.clientX - session.startX,
       0,
       session.maxLeft,
     );
-    const top = clamp(
-      session.top + event.clientY - session.startY,
+    session.top = clamp(
+      session.baseTop + event.clientY - session.startY,
       0,
       session.maxTop,
     );
-    session.startX = event.clientX;
-    session.startY = event.clientY;
-    session.left = left;
-    session.top = top;
     if (!dragFrameRef.current) {
       dragFrameRef.current = requestAnimationFrame(paintDrag);
     }

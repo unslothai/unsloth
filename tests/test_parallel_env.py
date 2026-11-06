@@ -647,7 +647,8 @@ def test_every_cell_carries_three_kinds_of_evidence_that_exist():
 @pytest.mark.parametrize(
     "extra, missing",
     [
-        (dict(memory = "unsloth_offload"), "memory='unsloth_offload'"),
+        # unsloth_offload (Unsloth's checkpoint) is measured in the cp x tp cells; the legacy shim is not.
+        (dict(memory = "unsloth_gc"), "memory='unsloth_gc'"),
         (dict(mode = "qlora"), "mode='qlora'"),
         (dict(kernels = True), "kernels=True"),
         (dict(family = "qwen3"), "family='qwen3'"),
@@ -719,17 +720,23 @@ def test_query_reads_compile_memory_and_attention_from_the_model():
     Layer.forward._unsloth_block_compiled = True
     original = checkpoint.checkpoint
 
-    def unsloth_offloaded_gradient_checkpoint(*a, **k):
+    def unsloth_checkpoint(*a, **k):
         return original(*a, **k)
 
-    checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
-    try:
-        q = caps.query_from(
-            None, None, model, types.SimpleNamespace(gradient_checkpointing = True, packing = True)
-        )
-    finally:
-        checkpoint.checkpoint = original
-    assert (q.compile, q.memory, q.packing) == ("block", "unsloth_offload", True)
+    def unsloth_offloaded_gradient_checkpoint(*a, **k):  # the legacy zoo shim
+        return original(*a, **k)
+
+    seen = []
+    for fn in (unsloth_checkpoint, unsloth_offloaded_gradient_checkpoint):
+        checkpoint.checkpoint = fn
+        try:
+            q = caps.query_from(
+                None, None, model, types.SimpleNamespace(gradient_checkpointing = True, packing = True)
+            )
+        finally:
+            checkpoint.checkpoint = original
+        seen.append((q.compile, q.memory, q.packing))
+    assert seen == [("block", "unsloth_offload", True), ("block", "unsloth_offload_legacy", True)]
 
 
 def test_compile_counters_count_breaks_and_recompiles():
@@ -1254,6 +1261,162 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
     pp_env._refuse_split_router_aux(stage, 1)
     owner.config.output_router_logits = False
     pp_env._refuse_split_router_aux(stage, 2)
+
+
+def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
+    import types
+
+    import transformers
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    from unsloth.models import pp_env
+
+    config = Qwen3MoeConfig(
+        vocab_size = 32,
+        hidden_size = 8,
+        intermediate_size = 8,
+        moe_intermediate_size = 8,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 4,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        router_aux_loss_coef = 0.5,
+        output_router_logits = True,
+    )
+    model = Qwen3MoeForCausalLM(config)
+
+    def layout(mb = None, schedule = "gpipe"):
+        return types.SimpleNamespace(
+            pp = 2, microbatches = mb, schedule = schedule, env_vars = "UNSLOTH_PP_SIZE=2"
+        )
+
+    def args(
+        bs,
+        coef = "absent",
+        eval_strategy = "no",
+        eval_bs = 1,
+    ):
+        a = types.SimpleNamespace(
+            per_device_train_batch_size = bs,
+            eval_strategy = eval_strategy,
+            per_device_eval_batch_size = eval_bs,
+        )
+        if coef != "absent":
+            a.router_aux_loss_coef = coef
+        return a
+
+    rows = list(range(64))
+
+    def refuse(*a, **k):
+        k = {"train_dataset": rows, "eval_dataset": rows, **k}
+        return pp_env._refuse_split_router_aux_at_init(*a, **k)
+
+    T, SFT = transformers.Trainer, type("SFTTrainer", (transformers.Trainer,), {})
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(2), layout(), model)
+    with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
+        refuse(T, args(1), layout(schedule = "1f1b"), model)  # 1F1B pads up to pp
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(SFT, args(2, coef = None), layout(), model)  # TRL takes the architecture's coefficient
+    refuse(T, args(4), layout(mb = 1), model)
+    # UNSLOTH_PP_MICROBATCHES the schedule cannot run: the split refuses it with the schedule's own reason.
+    refuse(T, args(4), layout(mb = 1, schedule = "1f1b"), model)
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, args(1), layout(), model)
+    refuse(SFT, args(4, coef = 0.0), layout(), model)
+    refuse(T, args(4), layout(mb = 3), model)  # the step raises its own error
+    model.router_aux_loss_coef = 0.0
+    refuse(T, args(4), layout(), model)
+    model.router_aux_loss_coef = 0.5
+    config.output_router_logits = False
+    refuse(T, args(4), layout(), model)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(SFT, args(4, coef = 0.1), layout(), model)  # TRL turns it on inside its __init__
+    refuse(T, args(4), layout(), model.model)  # not a carried family: the split decides
+    # No train_dataset (evaluation only): the unused training batch is not checked.
+    config.output_router_logits = True
+    eval_only = args(8, eval_strategy = "steps", eval_bs = 1)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, eval_only, layout(), model)
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, eval_only, layout(), model, train_dataset = None)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, train_dataset = None)
+    # Fewer rows than one batch per dp rank, no len() or packing: only the step knows the batch size.
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, args(8), layout(), model, train_dataset = [0])
+        refuse(
+            T, args(8), types.SimpleNamespace(**vars(layout()), dp = 4), model, train_dataset = rows[:4]
+        )
+        refuse(
+            T,
+            args(8, eval_strategy = "steps", eval_bs = 8),
+            layout(),
+            model,
+            train_dataset = None,
+            eval_dataset = {"a": [0]},
+        )
+        refuse(
+            T, args(5), types.SimpleNamespace(**vars(layout()), dp = 2), model, train_dataset = rows[:8]
+        )
+    refuse(T, args(8), layout(), model, train_dataset = [0, 1])
+    with pytest.raises(NotImplementedError, match = "into 4 micro-batches"):
+        refuse(
+            T,
+            args(8),
+            types.SimpleNamespace(**vars(layout()), dp = 2),
+            model,
+            train_dataset = rows[:16],
+        )
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(
+            T,
+            args(8, eval_strategy = "steps", eval_bs = 8),
+            layout(),
+            model,
+            train_dataset = None,
+            eval_dataset = {"a": [0], "b": rows},
+        )
+    refuse(T, args(8), layout(), model, train_dataset = iter(rows))
+    packed = args(8)
+    packed.packing = True
+    refuse(T, packed, layout(), model)
+
+
+def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):
+    import types
+
+    import transformers
+
+    from unsloth.models import _utils as unsloth_utils
+    from unsloth.models import pp_env, tp_env
+
+    seen = []
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "2")
+    monkeypatch.setattr(
+        tp_env,
+        "env_layout",
+        lambda: types.SimpleNamespace(pp = 2, tp = 1, env_vars = "UNSLOTH_PP_SIZE=2"),
+    )
+    monkeypatch.setattr(
+        pp_env,
+        "pp_trainer_refusals",
+        lambda *a, **k: seen.append((k["train_dataset"], k["eval_dataset"])),
+    )
+    trainer = object.__new__(transformers.Trainer)
+    init = transformers.Trainer.__init__
+    a = types.SimpleNamespace()
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (), {"args": a})
+    unsloth_utils._pipeline_parallel_env_refusals(
+        trainer, init, (), {"args": a, "train_dataset": [1]}
+    )
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a, None, [1]), {})
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a), {"eval_dataset": [1]})
+    assert seen == [(None, None), ([1], None), ([1], None), (None, [1])]
 
 
 def test_pending_expert_lora_counts_in_the_capability_query():
