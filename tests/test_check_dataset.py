@@ -369,3 +369,28 @@ def test_lengths_keep_row_order_across_batches():
     expected = [i % 7 + 1 for i in range(2500)]
     expected[1500] = _lengths(rows[1500:1501], tok)[0]
     assert check_dataset(rows, tok, max_seq_length = 8)["lengths"] == expected
+
+
+def test_structured_blank_content_is_empty_and_sharegpt_media_is_flagged():
+    template = "{% for m in messages %}{{ m['role'] }} {% endfor %}"
+    blank = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": " "}]},
+            {"role": "assistant", "content": [{"type": "text", "text": ""}]},
+        ]
+    }
+    image = {"messages": [{"role": "user", "content": [{"type": "image"}]}]}
+    report = check_dataset([blank, image], _tokenizer(template), max_seq_length = 8)
+    assert report["empty"] == 1
+    assert report["media"] == 1
+
+    tok = get_chat_template(
+        _tokenizer(),
+        chat_template = "chatml",
+        mapping = {"role": "from", "content": "value", "user": "human", "assistant": "gpt"},
+        map_eos_token = False,
+        patch_saving = False,
+    )
+    tok.chat_template = tok.chat_template.replace("message['content']", "''")
+    row = {"conversations": [{"from": "human", "value": [{"type": "image"}]}]}
+    assert check_dataset([row], tok, max_seq_length = 8)["media"] == 1

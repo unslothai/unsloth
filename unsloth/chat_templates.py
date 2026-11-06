@@ -98,11 +98,21 @@ class _MalformedRow(Exception):
 def _has_media(row, messages):
     if any(row.get(k) for k in ("images", "image", "videos", "video", "audios", "audio")):
         return True
+    contents = (m.get("content", m.get("value")) for m in messages)
     return any(
         isinstance(part, dict) and part.get("type") in _MEDIA_TYPES
-        for m in messages
-        if isinstance(m.get("content"), list)
-        for part in m["content"]
+        for c in contents
+        if isinstance(c, list)
+        for part in c
+    )
+
+
+def _is_blank(content):
+    if isinstance(content, str):
+        return content.strip() == ""
+    return isinstance(content, list) and all(
+        isinstance(part, dict) and part.get("type") == "text" and not str(part.get("text") or "").strip()
+        for part in content
     )
 
 
@@ -157,7 +167,7 @@ def _render_dataset_row(row, tokenizer):
     except Exception as e:
         raise _MalformedRow(f"chat template failed: {e}") from e
     contents = (m["value"] if sharegpt else m.get("content") for m in value)
-    empty = all(isinstance(c, str) and c.strip() == "" for c in contents)
+    empty = all(_is_blank(c) for c in contents)
     return text, empty, False, _has_media(row, value)
 
 
