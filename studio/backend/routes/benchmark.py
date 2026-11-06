@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 import sys
 import threading
 import time
@@ -406,13 +407,15 @@ async def run_benchmark(
         # A sweep or llama-bench reloads the one llama-server: the Eval would score its variants.
         from routes.benchmarks import claim_run_lease
 
-        if not claim_run_lease(f"evals-{run_seq}", "evals"):
+        # Secret: a lease holder's loads pass the Eval fence, and run_seq is public through /status.
+        holder = f"evals-{run_seq}-{secrets.token_urlsafe(16)}"
+        if not claim_run_lease(holder, "evals"):
             raise HTTPException(
                 status_code = 409,
                 detail = "Another benchmark is running, or a model is still loading. "
                 "Let it finish, then try again.",
             )
-        lease_holder = f"evals-{run_seq}"
+        lease_holder = holder
 
         _run_start = time.monotonic()
 

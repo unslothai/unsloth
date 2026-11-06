@@ -676,10 +676,15 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
 
     monkeypatch.setattr(lease_routes, "_lease", None)
     seen = {}
-    backend = _orchestrator(
-        monkeypatch,
-        lambda params: seen.setdefault("lease", lease_routes._lease) and {"results": {}},
-    )
+
+    def task(params):
+        seen.setdefault("lease", dict(lease_routes._lease))
+        # The run's seq is public through /status, so it must not name the lease holder.
+        forged = {"X-Unsloth-Bench-Lease": f"evals-{backend.get_op_seq()}"}
+        seen["forged"] = client.post("/api/inference/load", headers = forged).status_code
+        return {"results": {}}
+
+    backend = _orchestrator(monkeypatch, task)
     monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
     monkeypatch.setattr(orch, "_orchestrator", backend)
     monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
@@ -720,6 +725,7 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     # An Eval holds the lease for its whole run, however long, and lets go after.
     asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
     assert seen["lease"]["kind"] == "evals"
+    assert seen["forged"] == 409
     assert lease_routes._lease is None
     lease_routes.claim_run_lease("evals-test", "evals")
     monkeypatch.setattr(lease_routes.time, "monotonic", lambda: 10**9)
