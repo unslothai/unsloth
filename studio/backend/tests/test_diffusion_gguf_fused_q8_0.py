@@ -17,7 +17,6 @@ from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 Q8_0 = gguf.GGMLQuantizationType.Q8_0
 Q4_K = gguf.GGMLQuantizationType.Q4_K
-# Below the floor the fused kernel is never installed (torch 2.6 inductor builds it wrong), so these cannot hold there.
 needs_fused = pytest.mark.skipif(
     not gc._torch_supports_fused_q8_0(torch.__version__),
     reason = "fused Q8_0 needs torch >= 2.7",
@@ -216,6 +215,6 @@ def test_fused_q8_0_torch_floor(version, ok):
 def test_torch_below_the_floor_keeps_the_stock_forward(monkeypatch):
     stock = gguf_utils.GGUFLinear.forward_native
     monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
-    assert gc.install_compiled_dequant() is True  # the dequant compile is unaffected
+    assert gc.install_compiled_dequant() is True
     assert gc.is_fused_q8_0_installed() is False
     assert gguf_utils.GGUFLinear.forward_native is stock

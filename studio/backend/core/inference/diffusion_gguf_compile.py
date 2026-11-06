@@ -46,8 +46,7 @@ _ENV_FUSED_Q8_0 = "UNSLOTH_DIFFUSION_GGUF_FUSED_Q8_0"
 _FORWARD_ATTR = "forward_native"
 _Q8_0 = 8  # gguf.GGMLQuantizationType.Q8_0
 _Q8_0_TYPE_SIZE = 34  # one fp16 scale + 32 int8 codes per block
-# torch 2.6's inductor lowers the fused kernel wrongly on CUDA (almost every weight differs from the stock dequant)
-# and fails to build it on CPU; 2.7.1 and later are bit-identical.
+# torch 2.6 inductor miscompiles the fused kernel (wrong weights on CUDA, no build on CPU); 2.7.1+ is bit-identical.
 _FUSED_Q8_0_MIN_TORCH = (2, 7)
 _fused_q8_0_installed = False
 
