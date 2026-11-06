@@ -12,6 +12,7 @@ import { useHfTokenStore } from "@/features/hub";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import {
   useDatasetPreviewDialogStore,
+  useScheduledTrainingLifecycle,
   useTrainingConfigStore,
   useTrainingRuntimeLifecycle,
   useTrainingRuntimeStore,
@@ -59,6 +60,7 @@ export function StudioPage(): ReactElement {
   const setImagesPageMode = useImageWorkflowStore((s) => s.setPageMode);
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
+  useScheduledTrainingLifecycle();
   useTrainingCacheReconciliation();
   const runtimeMessage = useTrainingRuntimeStore((state) => state.message);
   const isHydratingRuntime = useTrainingRuntimeStore(

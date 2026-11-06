@@ -14,6 +14,7 @@ from routes.auth import router as auth_router
 from routes.data_recipe import router as data_recipe_router
 from routes.export import router as export_router
 from routes.training_history import router as training_history_router
+from routes.training_schedules import router as training_schedules_router
 from routes.chat_history import router as chat_history_router
 from routes.external_import import router as external_import_router
 from routes.providers import router as providers_router
@@ -39,6 +40,7 @@ __all__ = [
     "data_recipe_router",
     "export_router",
     "training_history_router",
+    "training_schedules_router",
     "chat_history_router",
     "external_import_router",
     "providers_router",
@@ -61,4 +63,5 @@ _ = (
     chat_generation_runs_router,
     youtube_router,
     openai_fine_tuning_router,
+    training_schedules_router,
 )

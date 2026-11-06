@@ -42,10 +42,12 @@ import {
   scheduleFromForm,
   summarizeRepeats,
   summarizeSchedule,
-  timeChoices,
   titleFromPrompt,
-  zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
+import {
+  timeChoices,
+  zoneLabel,
+} from "../src/lib/schedule-time.ts";
 
 const ISO_ALL = [...ISO_WEEKDAYS];
 
