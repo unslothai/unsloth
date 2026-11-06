@@ -4087,20 +4087,17 @@ html[data-chat-font] .aui-root {
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
 		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1)) !important;
-		/* Long code scrolls inside its block; code-fence-defer.tsx colours only the lines in view. */
 		max-height: var(--unsloth-code-block-max-height, min(30rem, 55vh));
 		overflow-y: auto;
 		/* Lines up with the language label's ml-1. */
 		padding-left: var(--spacing) !important;
-		/* Runs into the block's side padding so the scrollbar hugs the block's edge; the text keeps its width. */
+		/* Bleeds into the block's padding so the scrollbar hugs its edge. */
 		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
 		padding-inline-end: calc(0.75rem * var(--ui-space-scale, 1)) !important;
-		/* The same right padding whether or not the block scrolls or shows its scrollbar. */
 		scrollbar-gutter: stable;
 	}
 
-	/* Code scrolled under the header fades out instead of being cut mid-line (code-fence-defer.tsx sets the
-	   flag); the second layer keeps the scrollbar's strip out of the fade. */
+	/* Fades scrolled code under the header; the second layer keeps the scrollbar's strip unfaded. */
 	.aui-thread-root [data-streamdown="code-block-body"][data-scrolled] {
 		mask-image:
 			linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1))),
@@ -4110,13 +4107,12 @@ html[data-chat-font] .aui-root {
 		mask-repeat: no-repeat;
 	}
 
-	/* Expand code (CodeBlockActions) shows the whole block for this one. */
 	.aui-thread-root [data-code-expanded] [data-streamdown="code-block-body"] {
 		max-height: none;
 		mask-image: none;
 	}
 
-	/* No padding below: long code runs to the bottom edge and the body's own bottom padding spaces short code. */
+	/* The body's own bottom padding spaces short code. */
 	.aui-thread-root [data-streamdown="code-block"] {
 		padding-top: calc(0.25rem * var(--ui-space-scale, 1));
 		padding-bottom: 0;
@@ -4855,8 +4851,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-/* A thin sideways scrollbar with no track, shown only while the pointer is over the block. Chromium ignores
-   ::-webkit-scrollbar while scrollbar-width or scrollbar-color is set. */
+/* Sideways scrollbar only on hover. Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		scrollbar-width: auto;
@@ -5660,7 +5655,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	height: round(var(--icon-size), 2px);
 }
 
-/* Code block actions one even step smaller (14px at the default size). */
+/* One even step smaller (14px by default). */
 .aui-root.aui-thread-root [data-code-block-actions] .aui-chat-icon-btn svg {
 	width: round(var(--icon-size) - 2px, 2px);
 	height: round(var(--icon-size) - 2px, 2px);

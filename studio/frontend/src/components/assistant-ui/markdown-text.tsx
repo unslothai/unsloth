@@ -656,7 +656,6 @@ export function CodeBlockActions({
     () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
   );
   const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
-  // Expand lifts this block's height cap; offered only while the capped body has more than it shows.
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
@@ -664,7 +663,6 @@ export function CodeBlockActions({
     if (!wrappable || !wrapper || typeof ResizeObserver === "undefined") return;
     const check = () => {
       const body = wrapper.querySelector<HTMLElement>('[data-streamdown="code-block-body"]');
-      // index.css lets a sideways scrollbar take the body's bottom padding instead of adding height under it.
       wrapper.toggleAttribute("data-scrolls-x", body !== null && body.scrollWidth > body.clientWidth + 1);
       if (wrapper.hasAttribute("data-code-expanded")) return;
       setOverflowing(body !== null && body.scrollHeight > body.clientHeight + 1);
