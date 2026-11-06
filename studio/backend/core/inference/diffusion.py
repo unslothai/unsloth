@@ -585,9 +585,8 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
 
 
 def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
-    """New weights for adapters merged into a quantized file's weights (diffusion_lora_quant_merge): the originals are
-    copied back in place and merged again, so compiled code and captured graphs keep reading the same tensors. False
-    when nothing was merged."""
+    """Re-merges adapters merged into a quantized file's weights in place (no recompile, no recapture). False when
+    nothing was merged."""
     if not lora_quant_merge.merged(pipe):
         return False
     if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
@@ -10466,8 +10465,7 @@ class DiffusionBackend:
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
-                        # A resident load merges them into the quantized weights, as ComfyUI patches them: the
-                        # compiled model then runs the base layers alone. An offloaded one keeps the adapter layers.
+                        # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
                         quant_merged = (
                             plan.offload_policy == OFFLOAD_NONE
                             and lora_quant_merge.merge(

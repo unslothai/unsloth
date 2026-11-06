@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Merges the LoRA and LoKR adapters of a ComfyUI-quantized single file into its quantized weights.
-
-A quantized single file loaded with adapters bakes them before the compile. Run as layers, a LoRA adds two small GEMMs
-per adapted Linear and a full-rank LoKR about a quarter of the Linear's own GEMM in bf16 (measured: +0.55 s per step on
-Krea 2 fp8, +0.66 s on MOSS-Image int8 ConvRot, both above the base model's own step). ComfyUI patches the adapters
-into the weights instead: dequantize, add the delta, quantize back. This does the same for torchao ``Float8Tensor`` and
-``Int8Tensor`` weights (ConvRot rotation included) and plain float weights, then removes the adapter layers, so the
-compiled model runs the base layers alone.
-
-The original quantized data of every touched layer is kept in host memory. A weight change copies it back into the same
-tensors and merges again, so compiled code and captured graphs, which read those tensors, stay valid."""
+"""Merges LoRA / LoKR adapters of a ComfyUI-quantized single file into its fp8 / int8 (ConvRot) / float weights, as
+ComfyUI patches them, and removes the adapter layers. Originals are backed up on the host; a weight change restores
+them into the same tensors and merges again, so compiled code and captured graphs stay valid."""
 
 from __future__ import annotations
 
@@ -21,7 +13,6 @@ from typing import Any, Optional
 
 MERGE_ENV = "UNSLOTH_DIFFUSION_LORA_QUANT_MERGE"
 _MERGED_ATTR = "_unsloth_lora_quant_merged"
-# Host RAM left free after the backups.
 _HOST_RESERVE = 8 << 30
 _FP8_MAX = 448.0
 _INT8_MAX = 127.0
@@ -37,7 +28,7 @@ def merged(pipe: Any) -> bool:
 
 @dataclass
 class _Term:
-    """One adapter's contribution to one layer: ``scale * weight * delta``, delta = ``B @ A`` or ``kron(w1, w2)``."""
+    """``scale * weight * delta`` on one layer, delta = ``B @ A`` or ``kron(w1, w2)``."""
 
     adapter: str
     kind: str  # "lora" or "lokr"
@@ -61,7 +52,7 @@ def _weight_kind(weight: Any) -> Optional[str]:
     name = type(weight).__name__
     if name in ("Float8Tensor", "Int8Tensor"):
         qdata, scale = getattr(weight, "qdata", None), getattr(weight, "scale", None)
-        # Per-row symmetric, the layout a ComfyUI file's fp8 / int8 layers load into; anything else keeps its adapters.
+        # Per-row symmetric (ComfyUI fp8 / int8 layout); anything else keeps its adapters.
         if (
             qdata is None
             or scale is None
@@ -126,9 +117,8 @@ def _dequant(module: Any, kind: str, group: int, device: Any) -> Any:
 
 
 def _stochastic_fp8(x: Any, dtype: Any, generator: Any) -> Any:
-    """Rounds ``x`` (float32, already within the fp8 range) to e4m3 at random, in proportion to its distance from the
-    two neighbours, as ComfyUI rounds a patched fp8 weight: a delta below half a step survives on average instead of
-    always rounding away."""
+    """Stochastic rounding of ``x`` (float32, in range) to e4m3, as ComfyUI rounds a patched fp8 weight: round to
+    nearest drops every delta below half a step."""
     import torch
 
     mag = x.abs()
@@ -141,8 +131,7 @@ def _stochastic_fp8(x: Any, dtype: Any, generator: Any) -> Any:
 
 
 def _requant_(module: Any, kind: str, group: int, w: Any, seed: int) -> None:
-    """Writes ``w`` (float32) into the layer's own tensors in the layout they already have, with a scale recomputed for
-    the merged weight and seeded stochastic rounding (the same codes for the same weights every time)."""
+    """Writes ``w`` (float32) into the layer's own tensors: per-row scale recomputed, seeded stochastic rounding."""
     import torch
 
     weight = module.weight
@@ -267,8 +256,7 @@ def _host_room(layers: list) -> bool:
 def _apply(layers: list, weights: dict, device: Any) -> None:
     import torch
 
-    # Full float32 matmuls (the rotation, B @ A), whatever the speed profile set: the same weights merge to the
-    # same codes before and after the profile engages.
+    # No TF32: the same weights must merge to the same codes before and after a speed profile engages.
     tf32 = torch.backends.cuda.matmul.allow_tf32
     torch.backends.cuda.matmul.allow_tf32 = False
     try:

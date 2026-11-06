@@ -2061,7 +2061,7 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
         return False
     from . import diffusion_lora_quant_merge as lora_quant_merge
 
-    # Merged adapters are re-merged in place on a weight change; a fused to_qkv copy would keep the old weights.
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
     if lora_quant_merge.merged(pipe):
         if logger is not None:
             logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
