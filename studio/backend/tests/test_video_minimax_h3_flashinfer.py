@@ -359,3 +359,30 @@ def test_release_drops_only_the_replaced_stock_weights(monkeypatch):
     for m in (blk.attn.to_out[0], blk.ff.net[0].proj, blk.ff.net[2]):
         assert m.weight.numel() == 0 and m._unsloth_h3fi_released
     assert fi._buf(blk, "o_q").numel() > 0  # the shared storage lives on in the buffer
+
+
+@pytest.mark.parametrize(
+    "backend, engaged",
+    [
+        (None, True),
+        ("native", True),
+        ("_native_cudnn", True),
+        ("_native_flash", False),
+        ("sage", False),
+    ],
+)
+def test_a_selected_attention_backend_the_block_cannot_reproduce_keeps_stock(
+    monkeypatch, backend, engaged
+):
+    events = []
+    t = _stub_install(monkeypatch, events)
+    if backend is not None:
+        for b in t.transformer_blocks:
+            b.attn.processor = types.SimpleNamespace(_attention_backend = backend)
+    before = [b.forward for b in t.transformer_blocks]
+    out = fi.install_h3_flashinfer(t)
+    if engaged:
+        assert out["blocks"] == 3 and out["reason"] is None
+    else:
+        assert out["blocks"] == 0 and repr(backend) in out["reason"]
+        assert [b.forward for b in t.transformer_blocks] == before and events == []

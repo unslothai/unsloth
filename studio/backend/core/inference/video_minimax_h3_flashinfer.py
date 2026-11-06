@@ -65,6 +65,10 @@ _T: dict = {}
 CALLS: dict = {"pre": 0, "out": 0, "mlp": 0, "stock": 0, "y_calibrations": 0}
 
 
+# Attention backends the fused block reproduces: unrestricted SDPA ("native" / unset) and cuDNN-pinned SDPA.
+_SDPA_BACKENDS = ("", "native", "_native_cudnn")
+
+
 def _env(name: str, default: str) -> str:
     return (os.environ.get(name) or default).strip().lower()
 
@@ -746,6 +750,12 @@ def install_h3_flashinfer(
         )
         or ""
     )
+    if backend not in _SDPA_BACKENDS:
+        # the fused block calls SDPA itself (cuDNN-pinned or unrestricted); any other selected backend would be overridden
+        result["reason"] = f"attention backend {backend!r} is not reproduced by the fused block"
+        if logger is not None:
+            logger.info("video.h3_flashinfer: off: %s", result["reason"])
+        return result
     try:
         margin = float(_env(NV_Y_MARGIN_ENV, "4"))
     except ValueError:
