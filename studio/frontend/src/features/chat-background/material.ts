@@ -185,8 +185,11 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   }, [here]);
   useEffect(() => {
     const root = document.documentElement;
-    if (shown === "solid" || !here) root.removeAttribute("data-glass");
-    else root.setAttribute("data-glass", shown);
+    const applied = shown === "solid" || !here ? null : shown;
+    // Transparent is the plain theme with see-through fills, so it takes none of the frosted glass rules.
+    if (applied && applied !== "transparent") root.setAttribute("data-glass", applied);
+    else root.removeAttribute("data-glass");
+    root.toggleAttribute("data-glass-clear", applied === "transparent");
   }, [shown, here]);
   useEffect(() => {
     const root = document.documentElement;
@@ -201,11 +204,16 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
       root.style.setProperty("--glass-strength", blur.toFixed(3));
       root.style.setProperty("--glass-opacity", opacity.toFixed(3));
     }
+    if (material === "transparent") {
+      root.style.setProperty("--glass-fill-alpha", `${strength}%`);
+    } else {
+      root.style.removeProperty("--glass-fill-alpha");
+    }
   }, [strength, material]);
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
-      menus && material !== "solid" && here,
+      menus && material !== "solid" && material !== "transparent" && here,
     );
   }, [menus, material, here]);
   useEffect(() => {

@@ -31,8 +31,8 @@ test("the glass Show on setting keeps old records on every page and maps routes 
 	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
 	assert.match(material, /scope: sanitizeScope\(stored\?\.scope, "all"\)/);
 	// Out of scope the page draws solid: no glass attribute, no glass menus, no lens or plain backdrop.
-	assert.match(material, /if \(shown === "solid" \|\| !here\) root\.removeAttribute\("data-glass"\);/);
-	assert.match(material, /menus && material !== "solid" && here,/);
+	assert.match(material, /const applied = shown === "solid" \|\| !here \? null : shown;/);
+	assert.match(material, /menus && material !== "solid" && material !== "transparent" && here,/);
 	for (const file of ["lens.tsx", "mount.tsx", "background.tsx"]) {
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
 		assert.match(source, /useAppliedMaterial\(\)/, file);
@@ -381,18 +381,19 @@ test("focused glass surfaces on pages show their Tailwind focus ring over the gl
 	assert.match(cards, /focus-visible:ring-2/);
 });
 
-test("transparent glass clears every fill and shadow but keeps overlays, state and colour", () => {
+test("transparent glass keeps each surface's colour at the strength's opacity, with no shadow or blur", () => {
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	// Its own attribute, so none of the frosted html[data-glass] rules apply on top.
+	assert.match(material, /if \(applied && applied !== "transparent"\) root\.setAttribute\("data-glass", applied\);/);
+	assert.match(material, /root\.toggleAttribute\("data-glass-clear", applied === "transparent"\);/);
+	assert.match(material, /root\.style\.setProperty\("--glass-fill-alpha", `\$\{strength\}%`\);/);
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const block = css.slice(css.indexOf("/* Transparent glass: no fill and no shadow"));
-	// In base: its !important must beat layered `bg-...!` utilities as well as unlayered glass rules.
-	assert.match(block, /^\/\*[^]*?\*\/\n@layer base \{/);
-	assert.match(block, /html\[data-glass="transparent"\] body :not\([^{]*\) \{\n\s*background-color: transparent !important;/);
-	const kept = /html\[data-glass="transparent"\] body :not\(([^{]*)\) \{/.exec(block)?.[1] ?? "";
-	for (const keep of ['[data-slot="dialog-content"]', '[data-slot$="menu-content"]', '[role="switch"]', '[aria-selected="true"]', '[class*="bg-primary"]', ".chat-wallpaper *", '[style*="background"]']) {
-		assert.ok(kept.includes(keep), keep);
+	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
+	// On #root from the html copies: a token cannot mix itself, and portalled overlays stay solid.
+	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
+		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
 	}
-	// Hover only on controls: a hovered page container must not get its fill back.
-	assert.match(kept, /:is\(button, a, \[role="button"\], \[role="menuitem"\], \[role="option"\], \[role="tab"\]\):is\(:hover, :focus-visible\)/);
-	assert.match(block, /body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
-	assert.match(block, /outline: 1px solid var\(--transparent-edge\) !important;\n\s*outline-offset: -1px !important;/);
+	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
+	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
+	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
 });
