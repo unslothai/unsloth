@@ -3,13 +3,13 @@
 
 import { useEffect, useState } from "react";
 import { useBrowserAgentStore } from "./agent/agent-store";
-import { FLOATING_SCALE_VAR } from "./floating-events";
+import { FLOATING_ATTRIBUTE, FLOATING_SCALE_VAR } from "./floating-events";
 import { useNativeBrowser } from "./native-view";
 import { currentEntry, entryKey, type BrowserTab, useBrowserStore } from "./store";
 import { WebPage } from "./tab-view";
 
 type Edges = { left: number; top: number; right: number; bottom: number };
-type Slot = { tabId: string; left: number; top: number; width: number; height: number; scale: number; readonly: boolean; clip: Edges };
+type Slot = { tabId: string; left: number; top: number; width: number; height: number; scale: number; zIndex: number; readonly: boolean; clip: Edges };
 type Size = { width: number; height: number };
 type Slots = { mounted: string[]; visible: Slot | null; sizes: Record<string, Size> };
 
@@ -32,7 +32,7 @@ function WebTransport({ tab, slot, size }: { tab: BrowserTab; slot: Slot | null;
       data-web-readonly={slot?.readonly ? tab.id : undefined}
       aria-hidden={!interactive}
       inert={!interactive}
-      style={{ position: "fixed", left: slot?.left ?? -10000, top: slot?.top ?? 0, width, height, transformOrigin: "top left", transform: scale === 1 ? undefined : `scale(${scale})`, clipPath, zIndex: 20, pointerEvents: interactive ? "auto" : "none", overflow: "hidden" }}
+      style={{ position: "fixed", left: slot?.left ?? -10000, top: slot?.top ?? 0, width, height, transformOrigin: "top left", transform: scale === 1 ? undefined : `scale(${scale})`, clipPath, zIndex: slot?.zIndex ?? 20, pointerEvents: interactive ? "auto" : "none", overflow: "hidden" }}
     >
       <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
     </div>
@@ -77,10 +77,12 @@ export function WebRuntime() {
       const tabId = readonly ? observed.dataset.webObserve : element?.dataset.webPage;
       const pageRoot = element?.closest<HTMLElement>("[data-browser-page]");
       const scale = pageRoot ? Number.parseFloat(getComputedStyle(pageRoot).getPropertyValue(FLOATING_SCALE_VAR)) || 1 : 1;
+      const floating = element?.closest<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+      const zIndex = floating ? (Number.parseInt(getComputedStyle(floating).zIndex, 10) || 20) + 1 : 20;
       const section = element?.closest("section")?.getBoundingClientRect();
       const page = element?.closest("[data-browser-page]")?.parentElement?.getBoundingClientRect() ?? element?.parentElement?.getBoundingClientRect();
       const clip = { left: Math.max(0, section?.left ?? 0, page?.left ?? 0), top: Math.max(0, section?.top ?? 0, page?.top ?? 0), right: Math.min(innerWidth, section?.right ?? innerWidth, page?.right ?? innerWidth), bottom: Math.min(innerHeight, section?.bottom ?? innerHeight, page?.bottom ?? innerHeight) };
-      const visible = box && tabId && box.width > 1 && box.height > 1 ? { tabId, left: box.left, top: box.top, width: box.width, height: box.height, scale, readonly, clip } : null;
+      const visible = box && tabId && box.width > 1 && box.height > 1 ? { tabId, left: box.left, top: box.top, width: box.width, height: box.height, scale, zIndex, readonly, clip } : null;
       setSlots((old) => {
         if (old.mounted.join("\0") === mounted.join("\0") && JSON.stringify(old.visible) === JSON.stringify(visible)) return old;
         const sizes = visible && !visible.readonly ? { ...old.sizes, [visible.tabId]: { width: visible.width / visible.scale, height: visible.height / visible.scale } } : old.sizes;

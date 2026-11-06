@@ -23,7 +23,7 @@ function Fixture() {
   const [menu, setMenu] = useState(false);
   const [scaled, setScaled] = useState(false);
   Object.assign(window, { showAnnotation: setAnnotating, observe: setObserving, watchTab: setWatched, showMenu: setMenu, setPreviewScale: setScaled });
-  return <><div id="slot" ref={setPage} style={{ position: "relative", width: scaled ? 300 : 600, height: scaled ? 200 : 400, overflow: "hidden" }}>
+  return <><div id="slot" ref={setPage} data-browser-floating={scaled ? "" : undefined} data-artifact-surface-visible="true" className={scaled ? "chat-artifact-pop-surface chat-browser-floating" : undefined} style={{ position: "relative", width: scaled ? 300 : 600, height: scaled ? 200 : 400, overflow: "hidden" }}>
     <div data-browser-page="" style={{ width: 600, height: 400, transform: scaled ? "scale(0.5)" : undefined, transformOrigin: "top left", ...{ "--browser-floating-scale": scaled ? 0.5 : 1 } }}>
       {state.open && tab && <div data-web-page={tab.id} style={{ width: 600, height: "100%", display: watched ? "none" : undefined }} />}
     </div>

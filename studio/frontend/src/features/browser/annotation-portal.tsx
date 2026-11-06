@@ -4,6 +4,7 @@
 import { type ReactNode, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { BROWSER_ANNOTATION_ROOT } from "./browser-runtime-root";
+import { FLOATING_ATTRIBUTE } from "./floating-events";
 
 export function AnnotationPortal({ page, tabId, hidden, children }: { page: HTMLElement; tabId: string; hidden: boolean; children: ReactNode }) {
   const [host] = useState(() => document.createElement("div"));
@@ -11,11 +12,13 @@ export function AnnotationPortal({ page, tabId, hidden, children }: { page: HTML
     let frame = 0;
     host.setAttribute("data-browser-annotation-portal", "");
     host.setAttribute("data-browser-scope-tab", tabId);
-    Object.assign(host.style, { position: "fixed", zIndex: "30", overflow: "hidden", pointerEvents: "none" });
+    Object.assign(host.style, { position: "fixed", overflow: "hidden", pointerEvents: "none" });
     const measure = () => {
       frame = 0;
       const box = page.getBoundingClientRect();
-      Object.assign(host.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px` });
+      const floating = page.closest<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+      const zIndex = floating ? (Number.parseInt(getComputedStyle(floating).zIndex, 10) || 20) + 2 : 30;
+      Object.assign(host.style, { left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, zIndex: String(zIndex) });
     };
     const schedule = () => { if (!host.hidden && !frame) frame = requestAnimationFrame(measure); };
     const observer = new ResizeObserver(schedule);

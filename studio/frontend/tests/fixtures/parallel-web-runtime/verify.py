@@ -258,6 +258,23 @@ with sync_playwright() as p:
     assert note.evaluate(
         "e => document.elementFromPoint(e.getBoundingClientRect().left + 5, e.getBoundingClientRect().top + 5) === e"
     )
+    page.evaluate("window.setPreviewScale(true)")
+    page.wait_for_function("document.querySelector('#slot').getBoundingClientRect().width === 300")
+    page.wait_for_function(
+        "e => e.getBoundingClientRect().right <= 300 && e.getBoundingClientRect().bottom <= 200",
+        arg = note.element_handle(),
+    )
+    note.click()
+    print(
+        "FLOATING_ANNOTATION_LAYER",
+        note.evaluate(
+            "e => ({layer:e.closest('[data-browser-annotation-portal]').style.zIndex, hit:document.elementFromPoint(e.getBoundingClientRect().left+5,e.getBoundingClientRect().top+5)?.tagName})"
+        ),
+        flush = True,
+    )
+    assert note.evaluate(
+        "e => document.elementFromPoint(e.getBoundingClientRect().left + 5, e.getBoundingClientRect().top + 5) === e"
+    ), "The floating card covers its annotation editor"
     page.evaluate("window.showMenu(true)")
     page.locator('[data-slot="dialog-overlay"]').wait_for(state = "visible")
     assert note.evaluate(
@@ -272,6 +289,7 @@ with sync_playwright() as p:
     page.evaluate("window.observe(false)")
     note.wait_for(state = "visible")
     assert note.input_value() == "Keep this annotation"
+    page.evaluate("window.setPreviewScale(false)")
     page.locator("#slot").evaluate("element => element.style.width='300px'")
     page.wait_for_function(
         "frame => frame.parentElement.style.clipPath.includes('300px')",
