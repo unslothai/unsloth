@@ -1171,6 +1171,9 @@ const innerLineWindow = (
   };
 };
 
+// Capped fences paused at their view sit outside the highlight queue; printing must still colour all of them.
+const pausedFences = new Set<() => void>();
+
 const lineWindowColoured = (
   tokens: FenceTokens["tokens"],
   progress: HighlightProgress,
@@ -1237,7 +1240,10 @@ function useFenceHighlightLimit(
       const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recheck);
       resized?.observe(body);
       body.addEventListener("scroll", recheck, { passive: true });
+      const finish = (): void => setPrevious({ tokens, progress: null });
+      pausedFences.add(finish);
       return () => {
+        pausedFences.delete(finish);
         resized?.disconnect();
         body.removeEventListener("scroll", recheck);
         cancelAnimationFrame(frameId);
@@ -1276,6 +1282,9 @@ const setPrinting = (value: boolean): void => {
     cancelAnimationFrame(windowFrame);
     windowFrame = 0;
   }
+  if (value && pausedFences.size > 0) flushSync(() => {
+    for (const finish of [...pausedFences]) finish();
+  });
   if (value) highlightQueue.flush();
   if (value) tokenizeForPrint();
   if (value) highlightQueue.flush();

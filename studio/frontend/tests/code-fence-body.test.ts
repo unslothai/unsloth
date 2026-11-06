@@ -421,6 +421,14 @@ test("Expand code resumes colouring a capped block that had stopped at its view"
   assert.match(hook, /resized\?\.observe\(body\);/);
 });
 
+test("printing colours capped blocks that paused at their view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, progress: null \}\);\s*pausedFences\.add\(finish\);/);
+  assert.match(hook, /pausedFences\.delete\(finish\);/);
+  const print = DEFER.slice(DEFER.indexOf("const setPrinting = "), DEFER.indexOf("const scheduleRemeasure"));
+  assert.match(print, /if \(value && pausedFences\.size > 0\) flushSync\(\(\) => \{\s*for \(const finish of \[\.\.\.pausedFences\]\) finish\(\);/);
+});
+
 test("only a finished body mounting right after a stream takes its scroll place, once", () => {
   const pin = DEFER.slice(DEFER.indexOf("type BodyScroll"), DEFER.indexOf("export const FenceBody = memo("));
   assert.match(pin, /if \(streamedRef\.current\) rememberBodyScroll\(keyRef\.current, body\);/);
