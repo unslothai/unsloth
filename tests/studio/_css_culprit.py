@@ -230,7 +230,8 @@ def thread_anchor(anchor: str) -> str | None:
     return None
 
 
-def changed_in_branch(path: str, line: int) -> bool | None:
+@lru_cache(maxsize = 64)
+def _changed_ranges(path: str) -> tuple | None:
     base = os.environ.get("GITHUB_BASE_REF") or "main"
     for ref in (f"origin/{base}...HEAD", "HEAD^1"):
         try:
@@ -244,12 +245,56 @@ def changed_in_branch(path: str, line: int) -> bool | None:
             return None
         if diff.returncode != 0:
             continue
-        for m in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff.stdout, re.M):
-            start, count = int(m.group(1)), int(m.group(2) or 1)
-            if start <= line < start + max(count, 1):
-                return True
-        return False
+        return tuple(
+            (int(m.group(1)), max(int(m.group(2) or 1), 1))
+            for m in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", diff.stdout, re.M)
+        )
     return None
+
+
+def changed_in_branch(path: str, line: int) -> bool | None:
+    ranges = _changed_ranges(path)
+    if ranges is None:
+        return None
+    return any(start <= line < start + count for start, count in ranges)
+
+
+STATE = re.compile(r":(?:hover|focus|focus-visible|focus-within|active|checked)\b|\[data-state")
+
+
+def suspect_rules(limit: int = 5) -> list[tuple[int, str, int, str, list[str]]]:
+    """:has() rules ranked by how likely they are to restyle much of the page on each keystroke."""
+    rows = []
+    for path, line, raw, _ in css_rules():
+        if ":has(" not in raw:
+            continue
+        reasons, score = [], 0
+        for anchor, _arg in has_descendant(raw)[:1]:
+            where = thread_anchor(anchor)
+            if where:
+                reasons.append(f"searches all descendants of {where}, which holds the thread")
+                score += 3
+            else:
+                reasons.append(f"searches all descendants of `{anchor[:60]}`")
+                score += 1
+        if any(STATE.search(arg) for _, arg in _has_args(raw)):
+            reasons.append(
+                "its :has() argument depends on hover / focus / open state, which input flips"
+            )
+            score += 2
+        tail = raw[raw.rfind(")") + 1 :].strip()
+        if " " in tail or re.search(r":not\(|\[class\*=|\*", tail):
+            reasons.append(
+                "its subject is a broad descendant of the :has() element, so one change re-matches that subtree"
+            )
+            score += 1
+        if changed_in_branch(path, line):
+            reasons.insert(0, "changed on this branch")
+            score += 4
+        if score:
+            rows.append((score, path, line, raw, reasons))
+    rows.sort(key = lambda r: (-r[0], r[1], r[2]))
+    return rows[:limit]
 
 
 def explain(selector: str, indent: str = "    ") -> list[str]:

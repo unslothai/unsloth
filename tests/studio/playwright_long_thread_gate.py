@@ -15,9 +15,13 @@ runner is:
   2. Total selector matching per keystroke does not grow with the chat: large / small at most
      MAX_MATCH_RATIO for LARGE / SMALL times the turns (healthy: 1.00x).
 
-Fails fast: the large chat is measured first and a blown `:has()` budget stops the run there; a
-second repeat runs only when the ratio is close to its limit. A failure prints the measured
-numbers, how far over budget they are, and the selectors responsible, with their cost per key.
+Fails fast: the large chat is measured first and a blown `:has()` budget stops the run there; an
+untraced pre-check shortens the traced window to 2 keys on a slow page; a second repeat runs only
+when the ratio is close to its limit. A failure prints the measured numbers, how far over budget
+they are, and the selectors responsible with their cost per key; selectors tried on most of the
+DOM are marked as likely victims of a whole-page restyle. It then pins the trigger down by
+switching :has() rules off in fresh pages (a bisection, time-boxed) and names the rule that costs
+the time on its own, with the CSS file and line it probably comes from.
 """
 
 from __future__ import annotations
@@ -55,6 +59,14 @@ RECHECK_BAND = (1.5, 3.0)
 MATCH_FLOOR_MS = 2.0
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
+PRECHECK_KEYS = "ab"
+# Untraced style recalc per key above this on the large chat means a regressed build (healthy:
+# 1-15 ms; #16603: 140-600 ms); its traced window is then 2 keys, not 10, to fail fast.
+SLOW_STYLE_MS = 60.0
+# Rule bisection on a failure: a smaller chat, 3 keys per probe, a time budget.
+PIN_TURNS = 100
+PIN_KEYS = "abc"
+PIN_BUDGET_S = 240.0
 TOP = 5
 SEED_OPTIONS = {"agent": {"rounds": 2, "compactionEvery": 10, "sources": True, "rich": True}}
 HINT = (
@@ -69,8 +81,12 @@ HINT = (
 def build() -> None:
     if os.environ.get("LONG_THREAD_DIST"):
         return
+    # npx is npx.cmd on Windows, which CreateProcess only finds through the shell.
     subprocess.run(
-        ["npx", "vite", "build", "--config", "vite.long-thread.config.ts"], cwd = FRONTEND, check = True
+        ["npx", "vite", "build", "--config", "vite.long-thread.config.ts"],
+        cwd = FRONTEND,
+        check = True,
+        shell = os.name == "nt",
     )
 
 
@@ -90,17 +106,72 @@ def metrics(cdp) -> dict:
     return {m["name"]: m["value"] for m in cdp.send("Performance.getMetrics")["metrics"]}
 
 
-def measure(browser, base: str, turns: int) -> dict:
+RULES_JS = """() => {
+  const out = [];
+  const walk = (list, path) => {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      const p = path.concat(i);
+      if (typeof r.selectorText === 'string' && r.selectorText.includes(':has(')) out.push({p, s: r.selectorText});
+      if (r.cssRules && r.cssRules.length) walk(r.cssRules, p);
+    }
+  };
+  [...document.styleSheets].forEach((sheet, i) => { try { walk(sheet.cssRules, [i]); } catch (e) {} });
+  return out;
+}"""
+DISABLE_JS = """(paths) => {
+  for (const p of paths) {
+    let list = document.styleSheets[p[0]].cssRules, rule = null;
+    for (let k = 1; k < p.length; k++) { rule = list[p[k]]; list = rule.cssRules; }
+    if (rule) rule.selectorText = '.__long_chat_gate_disabled__';
+  }
+  return paths.length;
+}"""
+
+
+def open_thread(
+    browser,
+    base: str,
+    turns: int,
+    disable: list | None = None,
+):
     ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
     page = ctx.new_page()
     page.goto(f"{base}/smoke-thread-weight.html?shell=1", wait_until = "load")
     page.wait_for_function("() => !!window.__threadWeight", timeout = 60_000)
+    if disable:
+        # Before the thread mounts, so no element carries :has() state from the rule.
+        page.evaluate(DISABLE_JS, disable)
     count = turns * 2
     page.evaluate("([n, o]) => window.__threadWeight.seed(n, o)", [count, SEED_OPTIONS])
     page.wait_for_function(
         "(n) => window.__threadWeight.messageCount() >= n", arg = count, timeout = 120_000
     )
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(1500 if disable is not None else 2500)
+    cdp = ctx.new_cdp_session(page)
+    cdp.send("Performance.enable")
+    box = page.locator(".aui-composer-input").first
+    box.click()
+    # Focusing the composer restyles focus-dependent rules once, across the thread; that one-off
+    # is not a per-keystroke cost, so let it and a warm-up key land before the window opens.
+    page.wait_for_timeout(800)
+    page.keyboard.press("x")
+    page.keyboard.press("Backspace")
+    page.wait_for_timeout(400)
+    return ctx, page, cdp
+
+
+def style_per_key(cdp, page, keys: str) -> float:
+    m0 = metrics(cdp)
+    for ch in keys:
+        page.keyboard.press("Space" if ch == " " else ch)
+        page.wait_for_timeout(60)
+    page.wait_for_timeout(200)
+    return 1000 * (metrics(cdp)["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / len(keys)
+
+
+def measure(browser, base: str, turns: int) -> dict:
+    ctx, page, cdp = open_thread(browser, base, turns)
     shape = page.evaluate("""() => ({
       messages: document.querySelectorAll('[data-role]').length,
       nodes: document.getElementsByTagName('*').length,
@@ -111,16 +182,10 @@ def measure(browser, base: str, turns: int) -> dict:
       tables: document.querySelectorAll('table').length,
       workspace: !!document.querySelector('[data-wallpaper-workspace] .thread-bottom-fade'),
     })""")
-    cdp = ctx.new_cdp_session(page)
-    cdp.send("Performance.enable")
-    box = page.locator(".aui-composer-input").first
-    box.click()
-    # Focusing the composer restyles focus-dependent rules once, across the thread; that one-off
-    # is not a per-keystroke cost, so let it and a warm-up key land before the window opens.
-    page.wait_for_timeout(800)
-    page.keyboard.press("x")
-    page.keyboard.press("Backspace")
-    page.wait_for_timeout(500)
+    # Untraced pre-check: selector statistics slow a regressed build ~50x, so a slow page gets a
+    # short traced window; the verdict still comes from the traced numbers.
+    pre = style_per_key(cdp, page, PRECHECK_KEYS)
+    keys = KEYS if pre < SLOW_STYLE_MS else KEYS[:2]
     events: list = []
     done: list = []
     cdp.on("Tracing.dataCollected", lambda d: events.extend(d["value"]))
@@ -136,7 +201,7 @@ def measure(browser, base: str, turns: int) -> dict:
             "transferMode": "ReportEvents",
         },
     )
-    for ch in KEYS:
+    for ch in keys:
         page.keyboard.press("Space" if ch == " " else ch)
         page.wait_for_timeout(60)
     page.wait_for_timeout(300)
@@ -145,9 +210,9 @@ def measure(browser, base: str, turns: int) -> dict:
         page.wait_for_timeout(50)
     typing_s = time.perf_counter() - t0
     m1 = metrics(cdp)
-    typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == KEYS
+    typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == PRECHECK_KEYS + keys
     ctx.close()
-    n = len(KEYS)
+    n = len(keys)
     selectors: dict[str, dict] = {}
     for event in events:
         stats = (event.get("args") or {}).get("selector_stats")
@@ -160,12 +225,96 @@ def measure(browser, base: str, turns: int) -> dict:
         "turns": turns,
         "shape": shape,
         "typed_ok": typed_ok,
+        "keys": n,
+        "precheck_style_ms": round(pre, 1),
         "typing_s": round(typing_s, 1),
         "match_ms": sum(r["ms"] for r in selectors.values()),
         "has_ms": sum(r["ms"] for s, r in selectors.items() if ":has(" in s),
         "style_ms": 1000 * (m1["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / n,
         "selectors": selectors,
     }
+
+
+def pin_down(
+    browser,
+    base: str,
+    budget_s: float = PIN_BUDGET_S,
+) -> list[str]:
+    """Find the :has() rules behind a slow keystroke by switching them off in fresh pages.
+
+    Style recalc per key (untraced) with every :has() rule on (E) and off (F); then bisect: a
+    group is guilty when switching on only that group (the rest off) costs well above F. Each
+    rule found is switched off for the next search, up to three. Evidence, not a guess: the
+    numbers say how much each rule costs on its own.
+    """
+    started = time.time()
+    ctx = browser.new_context()
+    page = ctx.new_page()
+    page.goto(f"{base}/smoke-thread-weight.html?shell=1", wait_until = "load")
+    page.wait_for_function("() => !!window.__threadWeight", timeout = 60_000)
+    rules = page.evaluate(RULES_JS)
+    ctx.close()
+    if not rules:
+        return ["  pin-down: the built stylesheet has no :has() rules to test"]
+    paths = [r["p"] for r in rules]
+
+    def cost(enabled_idx: list[int]) -> float:
+        on = set(enabled_idx)
+        c, pg, cd = open_thread(
+            browser, base, PIN_TURNS, [p for i, p in enumerate(paths) if i not in on]
+        )
+        try:
+            return style_per_key(cd, pg, PIN_KEYS)
+        finally:
+            c.close()
+
+    every = list(range(len(paths)))
+    e_all, f_none = cost(every), cost([])
+    out = [
+        f"  pin-down at {PIN_TURNS} turns, untraced style recalc per keystroke: {e_all:.1f} ms with all "
+        f"{len(paths)} :has() rules, {f_none:.1f} ms with none of them"
+    ]
+    if e_all < max(2 * f_none, f_none + 10):
+        out.append(
+            "    switching every :has() rule off does not remove the cost, so the cause is probably not "
+            "a :has() rule; see the selectors above"
+        )
+        return out
+    guilty = lambda ms: ms > max(2 * f_none, f_none + 0.25 * (e_all - f_none))  # noqa: E731
+    found: list[int] = []
+    remaining = every
+    while len(found) < 3 and time.time() - started < budget_s:
+        cand = list(remaining)
+        while len(cand) > 1 and time.time() - started < budget_s:
+            first, second = cand[: len(cand) // 2], cand[len(cand) // 2 :]
+            if guilty(cost(first)):
+                cand = first
+            elif guilty(cost(second)):
+                cand = second
+            else:
+                out.append(
+                    f"    {len(cand)} rules are slow together but no half is slow alone; stopping there"
+                )
+                cand = []
+        if len(cand) != 1:
+            break
+        i = cand[0]
+        alone = cost([i])
+        found.append(i)
+        remaining = [j for j in remaining if j != i]
+        rest = cost(remaining)
+        out.append(
+            f"  This rule on its own adds {alone - f_none:+.1f} ms per keystroke ({f_none:.1f} -> "
+            f"{alone:.1f} ms); every other :has() rule together costs {rest:.1f} ms (all on: {e_all:.1f} ms):"
+        )
+        out.append(f"    {short(rules[i]['s'], 240)}")
+        out += suspects_for(rules[i]["s"])
+        if not guilty(rest):
+            break
+    if not found:
+        out.append(f"    no single rule found within the {budget_s:.0f} s budget")
+    out.append(f"  (pin-down took {time.time() - started:.0f} s)")
+    return out
 
 
 def shape_problems(result: dict) -> list[str]:
@@ -188,13 +337,36 @@ def short(selector: str, width: int = 170) -> str:
 
 
 def top_selectors(result: dict, only_has: bool = False) -> list[str]:
+    nodes = max(1, result["shape"]["nodes"])
     rows = [(s, r) for s, r in result["selectors"].items() if not only_has or ":has(" in s]
     rows.sort(key = lambda x: x[1]["ms"], reverse = True)
-    out = [
-        f"    {r['ms']:8.2f} ms/key  {r['attempts']:>10,.0f} match attempts/key  {short(s)}"
-        for s, r in rows[:TOP]
-    ]
-    return out + suspects([s for s, r in rows[:2] if r["ms"] > 1.0])
+    out = []
+    for s, r in rows[:TOP]:
+        share = r["attempts"] / nodes
+        tag = (
+            f"  [tried on {share:.0%} of the DOM: likely restyled because of another rule]"
+            if share >= 0.5
+            else ""
+        )
+        out.append(
+            f"    {r['ms']:8.2f} ms/key  {r['attempts']:>10,.0f} match attempts/key  {short(s)}{tag}"
+        )
+    wide = sum(1 for r in result["selectors"].values() if r["attempts"] >= 0.5 * nodes)
+    if wide >= 3:
+        out.append(
+            f"  {wide} selectors were tried against at least half of the {nodes:,} elements on every "
+            "keystroke: the whole page is being restyled, so the slowest selectors above are probably "
+            "victims rather than the cause. The pin-down below switches rules off to find the trigger."
+        )
+        return out
+    return out + suspects([s for s, r in rows[:2] if r["ms"] > 1.0 and r["attempts"] < 0.5 * nodes])
+
+
+def suspects_for(selector: str) -> list[str]:
+    try:
+        return explain(selector, indent = "    ")
+    except Exception as exc:  # noqa: BLE001 - diagnosis must never hide the failure itself
+        return [f"    (source lookup failed: {exc!r})"]
 
 
 def suspects(selectors: list[str]) -> list[str]:
@@ -202,10 +374,7 @@ def suspects(selectors: list[str]) -> list[str]:
     out = []
     for s in selectors:
         out.append(f"  where `{short(s, 120)}` may come from:")
-        try:
-            out += explain(s, indent = "    ")
-        except Exception as exc:  # noqa: BLE001 - diagnosis must never hide the failure itself
-            out.append(f"    (source lookup failed: {exc!r})")
+        out += suspects_for(s)
     return out
 
 
@@ -233,14 +402,15 @@ def report(
         vals = [r[key] for r in runs.get(turns, [])]
         return statistics.median(vals) if vals else None
 
-    lines = [f"long-chat typing gate ({len(KEYS)} keys per window, {time.time() - started:.0f} s)"]
+    lines = [f"long-chat typing gate ({time.time() - started:.0f} s)"]
     for turns in (SMALL, LARGE):
         if runs.get(turns):
             lines.append(
                 f"  {turns:>3} turns: selector matching {med(turns, 'match_ms'):.2f} ms/key, :has() "
                 f"{med(turns, 'has_ms'):.2f} ms/key, style recalc {med(turns, 'style_ms'):.1f} ms/key "
-                f"(tracing on), {runs[turns][0]['shape']['nodes']:,} DOM nodes, typing took "
-                f"{runs[turns][-1]['typing_s']} s"
+                f"(tracing on; {runs[turns][-1]['precheck_style_ms']:.1f} ms/key untraced), "
+                f"{runs[turns][0]['shape']['nodes']:,} DOM nodes, {runs[turns][-1]['keys']} keys traced "
+                f"in {runs[turns][-1]['typing_s']} s"
             )
     print("\n".join(lines))
     if failures:
@@ -279,6 +449,7 @@ def main() -> int:
                 )
                 details.append(f"  most expensive :has() selectors at {LARGE} turns:")
                 details += top_selectors(large, only_has = True)
+                details += pin_down(browser, base)
                 details.append("  " + HINT)
             if not failures:
                 small = measure(browser, base, SMALL)
@@ -311,6 +482,7 @@ def main() -> int:
                         f"  selectors whose cost grew most from {SMALL} to {LARGE} turns:"
                     )
                     details += growth(runs[SMALL][-1], runs[LARGE][-1])
+                    details += pin_down(browser, base)
                     details.append("  " + HINT)
             browser.close()
     finally:
