@@ -123,6 +123,11 @@ def test_an_instance_forward_swap_keys_apart():
 @pytest.mark.parametrize("name,default", sorted(cc._GRAPH_SWITCHES.items()))
 @pytest.mark.parametrize("quant", ["int8", None])
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):
+    if default == "protect":
+        from core.inference import diffusion_nvfp4_protect as pr
+
+        # an sm_100-class card, whose unset default is auto
+        monkeypatch.setattr(pr, "default_model_spec", lambda device = None: "auto")
     m = _int8() if quant else _model()
     k0 = _key(m, quant)
     rows = default.partition(":")[2] if default.startswith(("rows:", "count:")) else None
@@ -146,7 +151,7 @@ def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, defa
             "auto": "0",
             "raw": "torchao",
             "raw:auto": "torchao",
-            "protect:auto": "off",
+            "protect": "all",
         }[default]
     monkeypatch.setenv(name, flipped)
     assert _key(m, quant) != k0
@@ -217,20 +222,23 @@ def test_a_bundle_saved_for_one_variant_is_a_miss_for_the_other(monkeypatch, tmp
     cc.restore(again)
 
 
-def test_protect_steps_auto_is_its_default_and_off_or_step_0_key_apart(monkeypatch):
+@pytest.mark.parametrize("default", ["auto", ""])
+def test_protect_steps_key_apart_only_off_the_cards_default(monkeypatch, default):
+    """sm_100-class cards default to auto, others to off: the unset run shares its card's default bundle."""
+    from core.inference import diffusion_nvfp4_protect as pr
+
+    monkeypatch.setattr(pr, "default_model_spec", lambda device = None: default)
     m = _int8()
     k0 = _key(m)
-    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "auto")
-    assert _key(m) == k0
     monkeypatch.setenv("UNSLOTH_NVFP4_BACKEND", "auto")
-    assert cc.graph_switches() == {}
-    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "off")
-    k_off = _key(m)
-    assert k_off != k0
-    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "off"}
-    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "0")
-    assert _key(m) not in (k0, k_off)
-    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "0"}
+    keys = {}
+    for value in ("auto", "off", "0"):
+        monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", value)
+        keys[value] = _key(m)
+        same = value == (default or "off")
+        assert (keys[value] == k0) is same, value
+        assert cc.graph_switches() == ({} if same else {"UNSLOTH_NVFP4_PROTECT_STEPS": value})
+    assert len(set(keys.values())) == 3
 
 
 def test_a_dequantizing_weight_property_is_never_read():

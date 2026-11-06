@@ -316,6 +316,7 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
     cg.uninstall_all([handle])
 
 
+@pytest.mark.parametrize("capability", [(10, 0), (10, 3), (12, 0), (9, 0), None])
 @pytest.mark.parametrize(
     "env,spec,steps",
     [
@@ -326,8 +327,15 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
         ("all", "all", tuple(range(9))),
     ],
 )
-def test_a_model_with_nvfp4_layers_defaults_to_auto(monkeypatch, env, spec, steps):
+def test_a_model_with_nvfp4_layers_defaults_to_auto_on_sm100_only(
+    monkeypatch, env, spec, steps, capability
+):
+    """Unset is auto on sm_100-class cards only (sm_120 measured slower with no LPIPS gain); explicit values hold."""
     torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: capability is not None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: capability)
+    if not env and capability is not None and capability[0] != 10 or not env and capability is None:
+        spec, steps = "", ()
     if env is None:
         monkeypatch.delenv(pr.PROTECT_STEPS_ENV, raising = False)
     else:
