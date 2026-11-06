@@ -348,6 +348,7 @@ test("paint containment is limited to large completed full-token bodies", () => 
     sameFenceBodyProps,
     updateFenceChunks,
     useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    usePinnedWhileStreaming: () => {},
     lineRendered,
     WINDOW_CAP_LINES,
     joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
@@ -388,4 +389,23 @@ test("paint containment is limited to large completed full-token bodies", () => 
       assert.match(html, /<pre>fallback<\/pre>/);
     }
   }
+});
+
+test("chat code blocks cap their height and scroll inside, except on paper", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf('.aui-thread-root [data-streamdown="code-block-body"] {');
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.match(rule, /max-height: var\(--unsloth-code-block-max-height, min\(30rem, 55vh\)\);/);
+  assert.match(rule, /overflow-y: auto;/);
+  assert.match(css, /@media print \{\s+\.aui-thread-root \[data-streamdown="code-block-body"\] \{\s+max-height: none;/);
+});
+
+test("a capped block colours only what is in view and a streaming one follows its last line", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("function usePinnedWhileStreaming("));
+  assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
+  assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
+  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, progress: null \}\), capped !== null\);/);
+  const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /following\.current = body\.scrollHeight - body\.scrollTop - body\.clientHeight < 24;/);
+  assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
 });

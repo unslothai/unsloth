@@ -52,6 +52,7 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { LineWrapDisableIcon, LineWrapIcon } from "@/lib/hugeicons-derived";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -636,16 +637,44 @@ export function CodeBlockActions({
   disabled,
   language,
   source,
+  wrappable = true,
 }: {
   disabled: boolean;
   language: string | null;
   source: string | (() => string);
+  /** False where the code is not one streamdown block (reasoning fragments), so a wrap toggle would reach nothing. */
+  wrappable?: boolean;
 }) {
   const { copied, showCopied } = useCopiedState();
+  const actionsRef = useRef<HTMLDivElement>(null);
+  // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
+  const [wrapped, setWrapped] = useState(
+    () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
+  );
+  const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end">
+    <div
+      className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end"
+      data-code-block-actions=""
+      ref={actionsRef}
+    >
       <div className={ACTION_PANEL_CLASS}>
+        {wrappable && <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title={wrapLabel}
+          aria-label={wrapLabel}
+          aria-pressed={wrapped}
+          onClick={() => {
+            const next = !wrapped;
+            // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
+            actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            setWrapped(next);
+          }}
+        >
+          <HugeiconsIcon icon={wrapped ? LineWrapDisableIcon : LineWrapIcon} strokeWidth={1.75} className="size-icon" />
+        </button>}
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
