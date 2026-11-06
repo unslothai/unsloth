@@ -4652,11 +4652,16 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
     return [npm, *args[1:]], env
 
 
-def _install_agent(name: str, install_hint: str) -> Optional[str]:
+def _install_agent(
+    name: str,
+    install_hint: str,
+    *,
+    update: bool = False,
+) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then re-resolve it on PATH. Consent-based, and a non-interactive stdin cannot answer the prompt, so both the no-TTY and declined cases return None and let the caller print the hint and exit.
     if not sys.stdin.isatty():
         return None
-    typer.echo(f"`{name}` is not installed.")
+    typer.echo(f"`{name}` is {'too old' if update else 'not installed'}.")
     # Make the supply-chain risk explicit before the prompt: these are the vendors' own installers (curl | bash, irm | iex, npm), run with the user's privileges, and nothing checks a signature or hash on the fetched content. Naming the source turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
     if source:
@@ -4680,7 +4685,8 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
             "there is no signature or hash check."
         )
     typer.secho(warning, fg = "yellow", err = True)
-    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
+    action = "Update" if update else "Install"
+    if not typer.confirm(f"{action} `{name}` now with `{install_hint}`?", default = False):
         return None
     install_command, install_env = _install_command(install_hint)
     try:
@@ -7563,11 +7569,15 @@ def codex(
     executable = _require_agent_for_launch("codex", install_hint, launch and not app)
     version = executable and _codex_executable_version(executable)
     if version and version < _CODEX_PROFILE_FILE_MIN_VERSION:
-        _fail(
+        needed = (
             f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
-            f"but {executable} is {'.'.join(map(str, version))}. Update it with "
-            f"`{_codex_update_hint(executable)}`."
+            f"but {executable} is {'.'.join(map(str, version))}."
         )
+        update_hint = _codex_update_hint(executable)
+        updated = _install_agent("codex", update_hint, update = True)
+        version = updated and _codex_executable_version(updated)
+        if updated is None or (version and version < _CODEX_PROFILE_FILE_MIN_VERSION):
+            _fail(f"{needed} Update it with `{update_hint}`.")
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None

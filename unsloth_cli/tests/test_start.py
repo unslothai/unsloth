@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -4303,6 +4304,45 @@ def test_codex_too_old_for_profile_files_stops_before_launch(
         assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
         assert f"`{start._npm_install_hint('@openai/codex@latest')}`" in result.output
         assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
+@pytest.mark.parametrize("after, launches", [((0, 134, 0), True), ((0, 133, 0), False)])
+def test_codex_too_old_offers_the_update_with_the_managed_npm(
+    after, launches, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/codex")
+    versions = iter([(0, 133, 0), after])
+    monkeypatch.setattr(start, "_codex_executable_version", lambda _: next(versions, after))
+    install_agent = start._install_agent
+
+    def install_from_a_tty(*args, **kwargs):
+        # CliRunner swaps sys.stdin, so fake the TTY only for the prompt.
+        with mock.patch.object(start.sys, "stdin", SimpleNamespace(isatty = lambda: True)):
+            return install_agent(*args, **kwargs)
+
+    monkeypatch.setattr(start, "_install_agent", install_from_a_tty)
+    prompts = []
+    monkeypatch.setattr(start.typer, "confirm", lambda text, **k: prompts.append(text) or True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/studio/node/bin/npm")
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env = None, **k: ran.append((command, env)) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda name, **k: f"/bin/{name}")
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex"])
+    hint = start._npm_install_hint("@openai/codex@latest")
+    assert prompts == [f"Update `codex` now with `{hint}`?"]
+    assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
+    assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
+    assert bool(launched) is launches
+    if not launches:
+        assert result.exit_code == 1
+        assert f"Update it with `{hint}`" in result.output
 
 
 def test_codex_update_hint_targets_the_resolved_install(tmp_path):
