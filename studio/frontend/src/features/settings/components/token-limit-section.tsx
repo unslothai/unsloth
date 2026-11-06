@@ -303,7 +303,7 @@ export function TokenLimitSection() {
       </SettingsRow>
       {locked ? (
         <SettingsRow
-          label={t("settings.profile.tokenLimit.currentPassword")}
+          label={t("settings.general.password")}
           description={t("settings.profile.tokenLimit.passwordRequired")}
         >
           <Input
@@ -311,7 +311,7 @@ export function TokenLimitSection() {
             autoComplete="current-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            aria-label={t("settings.profile.tokenLimit.currentPassword")}
+            aria-label={t("settings.general.password")}
             disabled={busy}
             className="w-40"
           />
@@ -343,7 +343,7 @@ export function TokenLimitSection() {
           disabled={busy || needsPassword || !capsValid}
           onClick={saveDraft}
         >
-          {t("settings.profile.tokenLimit.save")}
+          {t("common.save")}
         </Button>
       </div>
     </SettingsSection>

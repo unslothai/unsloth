@@ -14,10 +14,7 @@ from storage import studio_db
 
 
 @pytest.fixture
-def admission(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", set())
+def admission(monkeypatch):
     produced = []
 
     async def produce(payload, request, current_subject, *, cancel_on_disconnect):

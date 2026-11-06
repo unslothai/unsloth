@@ -212,7 +212,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
           {passwordRequired ? (
             <div className="space-y-2">
               <Label htmlFor={passwordId}>
-                {t("settings.profile.tokenLimit.currentPassword")}
+                {t("settings.general.password")}
               </Label>
               <Input
                 id={passwordId}
@@ -226,7 +226,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
           ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>
-              {t("settings.profile.tokenLimit.close")}
+              {t("common.close")}
             </AlertDialogCancel>
             {canOverride ? (
               <AlertDialogAction

@@ -19,14 +19,6 @@ from storage.api_usage_db import ApiUsageReceipt, record_api_usage
 from utils.paths import studio_db_path
 
 
-@pytest.fixture
-def limiter_db(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", set())
-    yield
-
-
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -103,7 +95,7 @@ def _pools() -> dict[str, dict]:
     return {pool["pool"]: pool for pool in token_limit.status()["pools"]}
 
 
-def test_deleting_a_chat_does_not_give_its_tokens_back(limiter_db):
+def test_deleting_a_chat_does_not_give_its_tokens_back():
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 900, completion = 100)
@@ -118,7 +110,7 @@ def test_deleting_a_chat_does_not_give_its_tokens_back(limiter_db):
     assert refused.value.status_code == 429
 
 
-def test_rewriting_a_reply_does_not_shrink_its_count(limiter_db):
+def test_rewriting_a_reply_does_not_shrink_its_count():
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
@@ -127,7 +119,7 @@ def test_rewriting_a_reply_does_not_shrink_its_count(limiter_db):
     assert _pools()["combined"]["used"] == 500
 
 
-def test_settings_reads_stay_fresh_across_keeper_lifetimes(limiter_db):
+def test_settings_reads_stay_fresh_across_keeper_lifetimes():
     import json
 
     studio_db.upsert_app_settings({"token_limit": {"limit": 100}})
@@ -147,7 +139,7 @@ def test_settings_reads_stay_fresh_across_keeper_lifetimes(limiter_db):
 
 
 @pytest.mark.parametrize("clock_offset", [-10, 1, 10])
-def test_a_fork_does_not_count_the_history_it_copies(limiter_db, clock_offset):
+def test_a_fork_does_not_count_the_history_it_copies(clock_offset):
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 400, completion = 100)
@@ -163,7 +155,7 @@ def test_a_fork_does_not_count_the_history_it_copies(limiter_db, clock_offset):
 
 
 @pytest.mark.parametrize("existing_ledger", [False, True])
-def test_history_from_before_the_limiter_existed_is_backfilled(limiter_db, existing_ledger):
+def test_history_from_before_the_limiter_existed_is_backfilled(existing_ledger):
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
@@ -184,7 +176,7 @@ def test_history_from_before_the_limiter_existed_is_backfilled(limiter_db, exist
     assert _pools()["combined"]["used"] == 100
 
 
-def test_malformed_metadata_never_blocks_the_chat_write(limiter_db):
+def test_malformed_metadata_never_blocks_the_chat_write():
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 70, completion = 30)
@@ -206,7 +198,7 @@ def test_malformed_metadata_never_blocks_the_chat_write(limiter_db):
     ],
 )
 def test_incremental_counting_skips_history_the_previous_reply_saw(
-    limiter_db, prompt, completion, context, next_prompt, next_completion, expected
+    prompt, completion, context, next_prompt, next_completion, expected
 ):
     now = _now_ms()
     _thread("t1", now)
@@ -218,7 +210,7 @@ def test_incremental_counting_skips_history_the_previous_reply_saw(
     assert _pools()["combined"]["used"] == expected
 
 
-def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches(limiter_db):
+def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches():
     now = _now_ms()
     _thread("t1", now)
     for index, parent, prompt, completion, context in (
@@ -262,7 +254,7 @@ def test_incremental_counting_uses_the_reply_ancestor_after_switching_branches(l
     assert _pools()["combined"]["used"] == 1755
 
 
-def test_context_refresh_cannot_refund_a_later_reply(limiter_db):
+def test_context_refresh_cannot_refund_a_later_reply():
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 100, completion = 10, context = 20)
@@ -273,7 +265,7 @@ def test_context_refresh_cannot_refund_a_later_reply(limiter_db):
     assert _pools()["combined"]["used"] == 220
 
 
-def test_split_mode_keeps_local_chats_apart_from_api_and_providers(limiter_db):
+def test_split_mode_keeps_local_chats_apart_from_api_and_providers():
     now = _now_ms()
     _thread("t1", now)
     _reply("local", "t1", now + 1, prompt = 90, completion = 10)
@@ -295,7 +287,7 @@ def test_split_mode_keeps_local_chats_apart_from_api_and_providers(limiter_db):
         token_limit.enforce(api = False)
 
 
-def test_usage_before_the_period_does_not_count(limiter_db):
+def test_usage_before_the_period_does_not_count():
     start, end = token_limit.period_window("day", "UTC")
     _thread("t1", start - 10_000)
     _reply("yesterday", "t1", start - 5_000, prompt = 5000, completion = 0)
@@ -304,7 +296,7 @@ def test_usage_before_the_period_does_not_count(limiter_db):
     assert _pools()["combined"]["used"] == 150
 
 
-def test_periods_start_at_local_midnight_monday_and_the_first(limiter_db):
+def test_periods_start_at_local_midnight_monday_and_the_first():
     now = int(datetime(2026, 11, 4, 5, 0, tzinfo = timezone.utc).timestamp() * 1000)
     tz = "Asia/Kolkata"
     for period, start, end in (
@@ -326,7 +318,7 @@ def test_periods_start_at_local_midnight_monday_and_the_first(limiter_db):
         assert start == int(datetime(2026, 11, 1, 4, tzinfo = timezone.utc).timestamp() * 1000)
 
 
-def test_the_override_lets_exactly_one_request_through_per_period(limiter_db):
+def test_the_override_lets_exactly_one_request_through_per_period():
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 990, completion = 10)
@@ -345,7 +337,7 @@ def test_the_override_lets_exactly_one_request_through_per_period(limiter_db):
     assert again.value.status_code == 409
 
 
-def test_no_override_is_granted_below_the_cap(limiter_db):
+def test_no_override_is_granted_below_the_cap():
     _enable(limit = 1000)
     with pytest.raises(HTTPException) as refused:
         token_limit.grant_override("combined")
@@ -353,7 +345,7 @@ def test_no_override_is_granted_below_the_cap(limiter_db):
 
 
 @pytest.mark.parametrize("via_api_key", [False, True])
-def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, via_api_key):
+def test_durable_usage_is_counted_before_a_browser_recovers_the_run(via_api_key):
     from storage import chat_generation_runs_db as runs
 
     now = _now_ms()
@@ -449,7 +441,7 @@ def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, 
         assert _pools()["api"]["used"] == 100
 
 
-def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(limiter_db, monkeypatch):
+def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(monkeypatch):
     from core.inference import api_monitor
 
     monkeypatch.setattr(api_monitor, "api_monitor", api_monitor.ApiMonitor(enabled = False))
@@ -469,7 +461,7 @@ def test_disabled_monitor_cannot_silently_leave_an_allowance_unenforced(limiter_
     token_limit.enforce(api = True)
 
 
-def test_a_password_locks_every_change_until_it_is_given(limiter_db):
+def test_a_password_locks_every_change_until_it_is_given():
     token_limit.update_settings(
         {"enabled": True, "limit": 1000}, password = None, new_password = "guardian"
     )
@@ -487,7 +479,7 @@ def test_a_password_locks_every_change_until_it_is_given(limiter_db):
     assert settings["enabled"] is False and settings["passwordHash"] is None
 
 
-def test_a_concurrent_save_cannot_remove_a_new_password(limiter_db, monkeypatch):
+def test_a_concurrent_save_cannot_remove_a_new_password(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     import threading
 
@@ -518,7 +510,7 @@ def test_a_concurrent_save_cannot_remove_a_new_password(limiter_db, monkeypatch)
     assert token_limit.status()["settings"]["passwordProtected"] is True
 
 
-def test_routes_refuse_api_key_changes_and_report_status(limiter_db):
+def test_routes_refuse_api_key_changes_and_report_status():
     app = FastAPI()
     app.include_router(token_limit_routes.router, prefix = "/api/token-limit")
     app.dependency_overrides[get_current_subject] = lambda: "owner"

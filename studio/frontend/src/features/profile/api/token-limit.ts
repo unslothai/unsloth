@@ -47,36 +47,45 @@ export type TokenLimitUpdate = Partial<
 
 export const TOKEN_LIMIT_CHANGED_EVENT = "unsloth:token-limit-changed";
 
-function announce(status: TokenLimitStatus): TokenLimitStatus {
-  window.dispatchEvent(
-    new CustomEvent(TOKEN_LIMIT_CHANGED_EVENT, { detail: status }),
+async function requestTokenLimit(
+  path: string,
+  fallbackMessage: string,
+  method: "GET" | "PUT" | "POST" = "GET",
+  body?: object,
+): Promise<TokenLimitStatus> {
+  const res = await authFetch(
+    `/api/token-limit${path}`,
+    method === "GET"
+      ? undefined
+      : {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
   );
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, fallbackMessage));
+  }
+  const status = (await res.json()) as TokenLimitStatus;
+  if (method !== "GET") {
+    window.dispatchEvent(
+      new CustomEvent(TOKEN_LIMIT_CHANGED_EVENT, { detail: status }),
+    );
+  }
   return status;
 }
 
 export async function fetchTokenLimitStatus(
   fallbackMessage: string,
 ): Promise<TokenLimitStatus> {
-  const res = await authFetch("/api/token-limit/status");
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res, fallbackMessage));
-  }
-  return (await res.json()) as TokenLimitStatus;
+  return requestTokenLimit("/status", fallbackMessage);
 }
 
 export async function updateTokenLimit(
   patch: TokenLimitUpdate,
   fallbackMessage: string,
 ): Promise<TokenLimitStatus> {
-  const res = await authFetch("/api/token-limit", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res, fallbackMessage));
-  }
-  return announce((await res.json()) as TokenLimitStatus);
+  return requestTokenLimit("", fallbackMessage, "PUT", patch);
 }
 
 export async function overrideTokenLimit(
@@ -84,13 +93,8 @@ export async function overrideTokenLimit(
   fallbackMessage: string,
   password?: string,
 ): Promise<TokenLimitStatus> {
-  const res = await authFetch("/api/token-limit/override", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pool, password }),
+  return requestTokenLimit("/override", fallbackMessage, "POST", {
+    pool,
+    password,
   });
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res, fallbackMessage));
-  }
-  return announce((await res.json()) as TokenLimitStatus);
 }
