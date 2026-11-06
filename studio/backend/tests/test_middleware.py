@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,31 @@ class TestMaxBodyMiddleware:
         assert len(bomb) < 64 * 1024
         assert r.status_code == 413
         assert "zstd" in r.json()["detail"]
+
+    def test_zstd_frame_flood_reads_each_byte_once(self, main_module, zstd):
+        fed = []
+
+        class CountingDecompressor:
+            def __init__(self):
+                self._d = zstd.ZstdDecompressor()
+
+            def decompress(self, data, *args, **kwargs):
+                fed.append(len(data))
+                return self._d.decompress(data, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._d, name)
+
+        counting = types.SimpleNamespace(
+            ZstdDecompressor = CountingDecompressor,
+            ZstdError = zstd.ZstdError,
+            get_frame_size = zstd.get_frame_size,
+        )
+        flood = zstd.compress(b"") * 1023 + zstd.compress(b"{}")
+        assert main_module._zstd_decode(counting, flood, 1 << 20) == b"{}"
+        assert sum(fed) == len(flood)
+        with pytest.raises(zstd.ZstdError):
+            main_module._zstd_decode(zstd, zstd.compress(b"") + flood, 1 << 20)
 
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)

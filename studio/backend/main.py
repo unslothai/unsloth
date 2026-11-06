@@ -1724,22 +1724,29 @@ async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
 _ZSTD_BODY_PATH = "/v1/systemone"
 _ZSTD_MIN_DECODED_BYTES = 8 * 1024 * 1024
 _ZSTD_MAX_RATIO = 64
+_ZSTD_MAX_FRAMES = 1024
 
 
 def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
+    view = memoryview(data)
     frames = []
     total = 0
+    pos = 0
     while True:
+        if len(frames) == _ZSTD_MAX_FRAMES:
+            raise zstd.ZstdError("too many zstd frames")
+        # Slice by get_frame_size, not unused_data: that copies the rest per frame (quadratic).
+        end = pos + zstd.get_frame_size(view[pos:])
         decompressor = zstd.ZstdDecompressor()
-        frame = decompressor.decompress(data, max_length = limit + 1 - total)
+        frame = decompressor.decompress(view[pos:end], max_length = limit + 1 - total)
         total += len(frame)
         if total > limit:
             return None
         if not decompressor.eof:
             raise zstd.ZstdError("truncated zstd frame")
         frames.append(frame)
-        data = decompressor.unused_data
-        if not data:
+        pos = end
+        if pos == len(data):
             return b"".join(frames)
 
 
