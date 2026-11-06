@@ -1108,11 +1108,8 @@ def _rss_anon_mib() -> Optional[int]:
 
 
 def trim_host_heap_after_load(logger: Any = None) -> bool:
-    """Give the OS back the heap pages a finished load freed, leaving live tensors and the pinned caches alone.
-
-    The load's pageable staging copies and temporaries are freed once the weights sit in pinned or device memory, but
-    glibc keeps freed chunks below its mmap threshold in its arenas: Qwen-Image-2.1 under an 8 GiB budget held 2.2 GiB
-    of free heap after the load, all of it counted as used host RAM for the life of the model."""
+    """Return the heap a finished load freed to the OS; glibc otherwise keeps it (Qwen-Image-2.1, 8 GiB budget:
+    0.65 GiB warm, 1.9 GiB on a first load). Live tensors and the pinned caches are untouched."""
     if _env_off(LOAD_HEAP_TRIM_ENV):
         return False
     try:

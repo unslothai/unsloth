@@ -112,7 +112,7 @@ def test_load_pipeline_trims_after_the_load_time_pins():
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "reads RssAnon from procfs")
 def test_trim_returns_fragmented_free_heap_to_the_os():
-    """Real glibc: chunks below the mmap threshold freed between live ones stay in the heap until a trim."""
+    """Real glibc: freed chunks between live ones stay in the heap until a trim."""
     import ctypes
 
     if not hasattr(ctypes.CDLL(None), "malloc_trim"):
