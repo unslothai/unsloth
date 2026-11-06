@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""The Colab-intro cleanup must not overwrite a save it did not see.
-
-`strip_notebook` read the file, serialised the cleaned copy and then `os.replace`d it
-unconditionally, while JupyterLab was already serving $DEST. A save landing in that
-window was destroyed, and `migrate` then recorded the cleaned hash, so the state
-machine treats the notebook as pristine forever after.
-"""
+"""The Colab-intro cleanup must not overwrite a save that landed after the notebook was read."""
 
 from __future__ import annotations
 
@@ -57,7 +51,7 @@ def racing(strip, tmp_path: Path):
         out = real_dump(obj, fp, *args, **kwargs)
         if state["save"] is not None and state["fired"] == 0:
             state["fired"] = 1
-            Path(state["path"]).write_text(state["save"], encoding = "utf-8")  # Ctrl+S
+            Path(state["path"]).write_text(state["save"], encoding = "utf-8")
         return out
 
     strip.json.dump = dump
@@ -88,8 +82,7 @@ def test_a_save_during_the_cleanup_is_not_overwritten(strip, racing, tmp_path: P
 def test_the_recorded_hash_still_matches_the_file_after_a_racing_save(
     strip, racing, tmp_path: Path
 ):
-    # migrate() rewrites STATE with the post-strip hash, so a clobbered save is also
-    # recorded as pristine and every later refresh overwrites it again
+    # migrate() records the post-strip hash, so a clobbered save would look pristine.
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"
@@ -121,7 +114,7 @@ def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: P
     assert strip.strip_notebook(str(path)) is True
     cleaned = json.loads(path.read_text(encoding = "utf-8"))
     assert cleaned["cells"][0]["source"] == ["# Llama\n"]
-    assert strip.strip_notebook(str(path)) is False  # idempotent
+    assert strip.strip_notebook(str(path)) is False
 
 
 @pytest.fixture
@@ -134,7 +127,7 @@ def racing_after_replace(strip, tmp_path: Path):
         out = real_replace(src, dst, *args, **kwargs)
         if state["save"] is not None and state["fired"] == 0 and str(dst) == state["path"]:
             state["fired"] = 1
-            Path(state["path"]).write_text(state["save"], encoding = "utf-8")  # Ctrl+S
+            Path(state["path"]).write_text(state["save"], encoding = "utf-8")
         return out
 
     strip.os.replace = replace
@@ -147,7 +140,6 @@ def racing_after_replace(strip, tmp_path: Path):
 def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
     strip, racing_after_replace, tmp_path: Path
 ):
-    # rename(2) is atomic, but migrate()'s re-read of the published file is not
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"
@@ -173,7 +165,7 @@ def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
 
 
 def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path: Path):
-    # over-reach guard: STATE must adopt the cleaned hash, or every boot re-strips it
+    # STATE must adopt the cleaned hash, or every boot re-strips it.
     dest = tmp_path / "unsloth-notebooks"
     dest.mkdir()
     path = dest / "Llama.ipynb"

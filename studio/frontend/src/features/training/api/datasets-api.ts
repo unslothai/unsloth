@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { hubTokenHeader } from "@/features/hub";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type {
   CheckFormatResponse,
@@ -138,7 +138,7 @@ type AiAssistMappingArgs = {
   datasetName?: string | null;
   hfToken?: string | null;
   modelName?: string | null;
-  modelType?: "text" | "vision" | "audio" | "embeddings" | null;
+  modelType?: "text" | "vision" | "audio" | "embeddings" | "decision" | null;
   signal?: AbortSignal;
 };
 
@@ -146,7 +146,6 @@ export type AiAssistMappingResponse = {
   success: boolean;
   suggested_mapping?: Record<string, string> | null;
   warning?: string | null;
-  // Conversion advisor fields
   system_prompt?: string | null;
   label_mapping?: Record<string, Record<string, string>> | null;
   dataset_type?: string | null;

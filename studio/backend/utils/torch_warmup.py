@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Import the ML stack on a background thread while the backend finishes booting.
-
-torch (plus the sympy/scipy/pandas it drags in) used to be imported by `import main`, so the port could not bind until it finished; deferring it alone would only move the cost to the first request, so this module pays it concurrently. Started from the last line of main.py's lifespan, since everything above is on the critical path to binding the socket and would contend for the GIL, and uvicorn binds as soon as the lifespan returns, so the warm overlaps serving rather than boot.
-
-Contract: idempotent (one thread per process); never fatal (a failed stage is logged, left cold and retried by whoever needs it); no half-initialised state, since stages delegate to the module owning the cache (utils.hardware, model_config) which caches under a lock and only on success; optional GPU consumers stay cold, with Hub downloads loading the Xet/Unsloth Zoo integration and RAG its embedding backend on demand.
-
-This does NOT make torch-dependent endpoints cheap while it runs: anything reaching get_device() blocks until the hardware stage finishes, so `async def` handlers on that path must use asyncio.to_thread (see main.py's /api/health).
-"""
+"""Imports the ML stack on a background thread, started last in main.py's lifespan so it overlaps
+serving; idempotent, never fatal, never half-initialised; torch endpoints block on get_device()
+until hardware stage ends, so async handlers must use asyncio.to_thread."""
 
 from __future__ import annotations
 
@@ -21,7 +16,7 @@ import time
 from contextlib import contextmanager
 from functools import partial, wraps
 from importlib._bootstrap import _ModuleLockManager
-from typing import Optional
+from typing import Collection, Optional
 
 from loggers import get_logger
 
@@ -92,11 +87,11 @@ def _synchronize_with_imports(fn):
 def purge_partial_import(package: str) -> list:
     """Drop the submodules a failed package import left behind in sys.modules.
 
-    When ``package/__init__.py`` raises, CPython evicts only the parent and keeps every submodule it already executed, so the next import re-runs ``__init__`` with each ``from .x import y`` served from that cache and attributes never rebound: the package imports "successfully" while missing pieces (the bitsandbytes case fixed in #7580). The warm makes this reachable, importing on a thread and swallowing the failure so the retry is somebody else's request.
+    When ``package/__init__.py`` raises, CPython evicts only the parent and keeps every submodule it executed, so the next import re-runs ``__init__`` with each ``from .x import y`` served from that cache: the package imports "successfully" while missing pieces (#7580).
 
     Acts only on that exact signature (parent gone, submodules present), so a concurrent still-running import is left alone; returns what it removed.
 
-    Declines when any submodule is a loaded C extension: evicting one re-runs its module init, and pybind11 answers a duplicate type registration with std::terminate. A torch missing attributes is bad, SIGABRT mid-serve is worse. Known native registries populated by pure-Python modules are reset only after every stale module has been removed and no importer has republished the parent.
+    Declines when any submodule is a loaded C extension: evicting one re-runs its module init, and pybind11 answers a duplicate type registration with std::terminate. Known native registries populated by pure-Python modules are reset only after every stale module has been removed and no importer has republished the parent.
     """
     if package in sys.modules:
         return []
@@ -153,7 +148,7 @@ _STAGE_PACKAGE = {
     "datasets": "datasets",
 }
 
-# Hold the import lock across a bare import AND its failure cleanup: locking only the purge leaves a window where a queued importer reuses stale submodules.
+# Hold the import lock across import and cleanup, or a queued importer sees stale submodules.
 _BARE_IMPORT_STAGES = frozenset({"datasets"})
 
 
@@ -194,40 +189,30 @@ def _warm_hardware(epoch: Optional[int] = None) -> None:
 def _warm_transformers() -> None:
     from utils.models.model_config import _detection_sets
     _detection_sets()
+    # The sets may skip the import now; keep warming it for the first request that loads a model.
+    try:
+        importlib.import_module("transformers.models.auto.modeling_auto")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("transformers registry import failed in the warm: %r", exc)
 
 
 def _warm_datasets() -> None:
-    # `import main` pulled it in; keep the first dataset op as cheap. Ungated: no torch needed.
+    # Independent of hardware detection; datasets may import shared libraries such as torch.
     importlib.import_module("datasets")
 
 
-# Keep metadata and framework registries ready without importing optional GPU consumers.
 # Unsloth Zoo is loaded by utils.hf_xet_fallback only when a Hub operation needs it.
 def _warm_inference_backend() -> None:
-    # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection, which lazily is some request, and sync helpers call the getter inline from async handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
 
     get_inference_backend()
-    # Before _prime_nvlink_topology, which is the first thread this module starts: once that
-    # exists, "the first torch._dynamo import is single-threaded" stops being true. Folded into
-    # this stage rather than added as a fifth one on purpose -- _STAGES carries a purge-on-
-    # failure contract (_STAGE_PACKAGE) whose only sensible entry here would be torch, and
-    # purging torch is never right. ensure_dynamo_imported never raises, so this stage's
-    # failure semantics are unchanged.
+    # Must precede _prime_nvlink_topology so the first dynamo import is single-threaded.
     ensure_dynamo_imported()
     _prime_nvlink_topology()
 
 
 def _prime_nvlink_topology() -> Optional[threading.Thread]:
-    """Build the P2P gate's interconnect matrix off the load path. Returns the thread,
-    for tests to join.
-
-    Fire and forget on its own thread: the probe can spend its NVML bound plus the
-    shell-out timeout, and a warm stage blocking that long delays every stage behind
-    it. Nothing here is critical-path, so a prime that never finishes costs one load
-    its head start. prime_nvlink_topology stays NVML-only and success-only: a
-    subprocess running its full timeout perturbs the process, and a miss cached this
-    early would keep P2P off for the life of it (#10613)."""
+    """Runs off the load path, fire and forget (its timeouts would delay every stage), and caches success only: an early miss keeps P2P off."""
 
     def _probe() -> None:
         try:
@@ -256,37 +241,76 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
 _dynamo_lock = threading.Lock()
 _dynamo_done = False
 
+# Kill switch for the request-side gates only; the gates in front of `import diffusers` stay on.
+DYNAMO_GATE_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DYNAMO_IMPORT_GATE"
+DYNAMO_GATE_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_DYNAMO_IMPORT_GATE_TIMEOUT"
+_DEFAULT_DYNAMO_GATE_TIMEOUT_S = 600.0
 
-def ensure_dynamo_imported() -> bool:
-    """Finish ``import torch._dynamo`` on ONE thread. True iff dynamo is importable.
 
-    ``torch/__init__.py`` makes ``_dynamo`` a LAZY submodule, so any ``torch._dynamo.X``
-    calls ``importlib.import_module``, which hands back whatever is in ``sys.modules`` -- a
-    still-initialising module included, since ``_lock_unlock_module`` swallows ``_DeadlockError``
-    to avoid deadlocking. The import takes ~0.6-3.9s and binds ``.config`` at ~0.007s but
-    ``.utils`` only at ~0.284s, so for most of it the module is present and ``.utils`` is not.
-    Anything reading it in that window raises ``partially initialized module 'torch._dynamo'
-    has no attribute 'utils'`` (#10350, #10963).
+def _dynamo_gate_timeout() -> float:
+    try:
+        value = float(os.environ.get(DYNAMO_GATE_TIMEOUT_ENV_VAR, _DEFAULT_DYNAMO_GATE_TIMEOUT_S))
+    except ValueError:
+        return _DEFAULT_DYNAMO_GATE_TIMEOUT_S
+    return min(value, threading.TIMEOUT_MAX) if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
 
-    The window is opened by ordinary loads, not by torch.compile: ``diffusers.hooks``
-    evaluates ``@torch.compiler.disable()`` at class-body time and ``torch/compiler/__init__.py``
-    is ``import torch._dynamo``, so the CPU-offload step of any diffusion load opens it well
-    outside every compile gate. Accelerate hit the same thing and wrapped it lazily; diffusers
-    does not.
 
-    Doing the first import once, early and single-threaded is what closes it: measured on torch
-    2.10.0 (the version both reports carry), 4-8 threads entering the dynamo/inductor cycle
-    together failed 19/20 runs without this and 0/20 with it.
+def gate_torch_stack_import(reason: str, log = None) -> bool:
+    """A racing torch._dynamo import can deadlock on package locks and leave a half-built module."""
+    if _dynamo_done:
+        _prime_cuda_driver()
+        return True
+    if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
+        _prime_cuda_driver()  # the kill switch skips only the dynamo wait
+        return False
+    imported = ensure_dynamo_imported(
+        log = log or logger, reason = reason, timeout = _dynamo_gate_timeout()
+    )
+    _prime_cuda_driver()
+    return imported
 
-    Honest limit: this makes the first import single-threaded IN PRACTICE by getting there
-    first. It cannot make a genuinely concurrent first import safe -- CPython's per-module lock
-    is the thing being contended, and third-party code reaches dynamo without passing through
-    here. Never fatal: a host with no torch, or a dynamo that legitimately fails to import,
-    reports False and leaves callers on their existing eager fallbacks."""
+
+def _prime_cuda_driver() -> None:
+    """``cuInit`` off the GIL before the gated importer probes CUDA. See utils/cuda_driver_prime.py."""
+    try:
+        from utils.cuda_driver_prime import prime_cuda_driver  # noqa: PLC0415
+        prime_cuda_driver()
+    except Exception as exc:  # noqa: BLE001 -- never fatal; torch initialises as before
+        logger.debug("cuda driver prime skipped: %r", exc)
+
+
+def ensure_dynamo_imported(
+    log = None,
+    reason: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> bool:
+    """Finishes torch._dynamo on one thread; it is lazy, so an early read sees a half-initialized module."""
     global _dynamo_done
     if _dynamo_done:
         return True
-    with _dynamo_lock:
+    if not _dynamo_lock.acquire(blocking = False):
+        waited = time.perf_counter()
+        if log is not None:
+            log.info(
+                "%s: waiting for another thread to finish importing torch._dynamo",
+                reason or "torch import",
+            )
+        if not _dynamo_lock.acquire(timeout = -1 if timeout is None else timeout):
+            (log or logger).warning(
+                "%s: gave up waiting for the torch._dynamo import after %.0fs; continuing "
+                "without it (set %s=1 to skip this wait)",
+                reason or "torch import",
+                time.perf_counter() - waited,
+                DYNAMO_GATE_DISABLE_ENV_VAR,
+            )
+            return False
+        if log is not None:
+            log.info(
+                "%s: torch._dynamo ready after waiting %.1fs",
+                reason or "torch import",
+                time.perf_counter() - waited,
+            )
+    try:
         if _dynamo_done:
             return True
         try:
@@ -294,9 +318,7 @@ def ensure_dynamo_imported() -> bool:
             import torch._dynamo  # noqa: PLC0415
             import torch._dynamo.utils  # noqa: F401, PLC0415
 
-            # By ATTRIBUTE, not just by import: a submodule already in sys.modules is returned
-            # by `import` without being bound on its parent, which is the broken state itself.
-            # torch's own compile stack reads it this way (_functorch/aot_autograd.py).
+            # Check the attribute: a cached submodule may be unbound on its parent (the broken state).
             if getattr(torch._dynamo, "utils", None) is None:
                 return False
         except Exception as exc:  # noqa: BLE001 -- no torch, or a dynamo that cannot import
@@ -304,28 +326,107 @@ def ensure_dynamo_imported() -> bool:
             return False
         _dynamo_done = True
         return True
+    finally:
+        _dynamo_lock.release()
 
 
 def close_dynamo_import_window(log) -> bool:
-    """``ensure_dynamo_imported()`` plus the breadcrumb, for a caller about to import diffusers.
-
-    Every media load path reaches diffusers, and `import diffusers` is itself a dynamo importer,
-    so each one owes this call in front of its first such import. The warning is deliberately not
-    a retry: measured on torch 2.10, a process that has lost this race does not recover (0 of 14
-    retries resolved), and evicting the half-built package to re-import is the C-extension purge
-    that ``purge_partial_import`` already refuses. What is useful is a breadcrumb, so that if
-    anything below dies on dynamo the log already says the condition predates the load.
-
-    Call sites still wrap the IMPORT of this module as well as the call: this file reaches
-    ``importlib._bootstrap._ModuleLockManager``, a private CPython name, and a build lacking it
-    must not take a load down. Best-effort throughout, never a new failure."""
-    if ensure_dynamo_imported():
+    """Call before importing diffusers, itself a dynamo importer that cannot recover a lost race; wrap the import of this module too."""
+    imported = ensure_dynamo_imported(log = log, reason = "diffusers import")
+    # `import diffusers` probes CUDA at module level (diffusers.utils.torch_utils) with the GIL held.
+    _prime_cuda_driver()
+    # Not nested in the dynamo gate: the background import it waits on reaches torch._dynamo.
+    claim_media_import_window(log)
+    if imported:
         return True
     log.warning(
         "torch._dynamo is not importable in this process; "
         "if this load fails on a dynamo import, restart Unsloth"
     )
     return False
+
+
+# diffusers and peft are circular: concurrent importers get a partially initialized module.
+_media_import_lock = threading.Lock()
+_media_import_claimed = False
+_media_import_owner: Optional[int] = None
+
+
+@contextmanager
+def background_media_import():
+    """Hold the window for background work; yields False once a load has claimed it (skip then)."""
+    global _media_import_owner
+    with _media_import_lock:
+        _media_import_owner = threading.get_ident()
+        try:
+            yield not _media_import_claimed
+        finally:
+            _media_import_owner = None
+
+
+def claim_media_import_window(log = None) -> bool:
+    """Wait out a background media import in flight, then keep later ones off. False on timeout."""
+    global _media_import_claimed
+    if _media_import_claimed or _media_import_owner == threading.get_ident():
+        return True
+    if not _media_import_lock.acquire(blocking = False):
+        waited = time.perf_counter()
+        if log is not None:
+            log.info("diffusers import: waiting for the background diffusers import to finish")
+        if not _media_import_lock.acquire(timeout = _dynamo_gate_timeout()):
+            (log or logger).warning(
+                "diffusers import: gave up waiting for the background diffusers import after %.0fs",
+                time.perf_counter() - waited,
+            )
+            return False
+        if log is not None:
+            log.info(
+                "diffusers import: background import finished after waiting %.1fs",
+                time.perf_counter() - waited,
+            )
+    try:
+        _media_import_claimed = True
+        return True
+    finally:
+        _media_import_lock.release()
+
+
+@contextmanager
+def hold_media_import_window(reason: str, log = None):
+    """Hold the window around a foreground import of the torch compile stack; an expired wait still imports."""
+    global _media_import_owner
+    if (
+        os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1"
+        or _media_import_owner == threading.get_ident()
+    ):
+        yield
+        return
+    held = _media_import_lock.acquire(blocking = False)
+    if not held:
+        waited = time.perf_counter()
+        (log or logger).info("%s: waiting for a background media import to finish", reason)
+        held = _media_import_lock.acquire(timeout = _dynamo_gate_timeout())
+        if held:
+            (log or logger).info(
+                "%s: background media import finished after waiting %.1fs",
+                reason,
+                time.perf_counter() - waited,
+            )
+        else:
+            (log or logger).warning(
+                "%s: gave up waiting for the background media import after %.0fs; importing unguarded",
+                reason,
+                time.perf_counter() - waited,
+            )
+    if not held:
+        yield
+        return
+    _media_import_owner = threading.get_ident()
+    try:
+        yield
+    finally:
+        _media_import_owner = None
+        _media_import_lock.release()
 
 
 _STAGES = (
@@ -336,23 +437,66 @@ _STAGES = (
 )
 
 
-def _warm(epoch: Optional[int] = None) -> None:
+def _selected_stage_names(features: Collection[str]) -> set[str]:
+    """Dependencies are shared, but an unselected feature never gets its own warm stage."""
+    selected = set(features)
+    stages = set()
+    if selected.intersection({"hardware", "text", "media", "quantization"}):
+        stages.add("hardware")
+    if selected.intersection({"text", "media", "quantization"}):
+        stages.add("inference_backend")  # Dynamo must finish before any compile-stack consumer.
+    if "text" in selected:
+        stages.add("transformers")
+    if "datasets" in selected:
+        stages.add("datasets")
+    return stages
+
+
+START_GATE_MAX_WAIT_S = 2.0
+
+
+def _wait_for_start_gate(gate: Optional[threading.Event]) -> None:
+    if gate is None:
+        return
+    waited = time.perf_counter()
+    opened = gate.wait(START_GATE_MAX_WAIT_S)
+    logger.info(
+        "torch warm leaving its start gate after %.0fms (%s)",
+        (time.perf_counter() - waited) * 1000,
+        "first response sent" if opened else "no request yet",
+    )
+
+
+def _warm(
+    epoch: Optional[int] = None,
+    gate: Optional[threading.Event] = None,
+    features: Optional[frozenset[str]] = None,
+) -> None:
+    _wait_for_start_gate(gate)
     started = time.perf_counter()
     if epoch is None:
         epoch = _detection_epoch()
-    # The boundary checks below only catch a shutdown between stages. Inside one, the orchestrator constructor reaches get_device(), which takes no epoch; the scope binds it to this pass so a mid-stage shutdown discards it instead of republishing DEVICE.
+    # None preserves explicit legacy callers; startup always supplies its immutable selection.
+    stages = None if features is None else _selected_stage_names(features)
+    warm_quantization = features is None or "quantization" in features
+    # The scope binds the epoch so a mid-stage shutdown discards this pass, not republishes DEVICE.
     with _owning_epoch(epoch):
         for name, fn in _STAGES:
+            if stages is not None and name not in stages:
+                continue
             if epoch is not None and _detection_epoch() != epoch:
-                # Checked before the first stage too: start_background_warm() reads the epoch before start(), so a shutdown in that gap retires this thread while it is still scheduled, with nothing yet run.
+                # Before the first stage too: a shutdown between the epoch read and start().
                 logger.info("torch warm stopped before %s: its lifespan ended", name)
                 return
             # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
             _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
             if epoch is not None and _detection_epoch() != epoch:
-                # Shutdown retired this lifespan's detection. Later stages build the orchestrator, which reaches get_device() and would start a fresh detection, republishing DEVICE after teardown cleared it.
+                # Later stages reach get_device(), republishing DEVICE after teardown.
                 logger.info("torch warm stopped after %s: its lifespan ended", name)
                 return
+            if name == "inference_backend" and warm_quantization:
+                # Dynamo is ready and this lifespan still owns the work.
+                _kick_early_quant_probe()
     _status["finished"] = True
     _status["seconds"] = round(time.perf_counter() - started, 3)
     logger.info("torch warm finished in %.1fms", (time.perf_counter() - started) * 1000)
@@ -380,32 +524,41 @@ def _detection_epoch() -> Optional[int]:
         return None
 
 
-def _warm_after(previous: threading.Thread, epoch: Optional[int]) -> None:
+def _warm_after(
+    previous: threading.Thread,
+    epoch: Optional[int],
+    gate: Optional[threading.Event] = None,
+    features: Optional[frozenset[str]] = None,
+) -> None:
     """Wait out a retired warm, then warm for ``epoch``. One importer at a time."""
     previous.join()
-    _warm(epoch)
+    _warm(epoch, gate, features)
 
 
-def start_background_warm() -> bool:
-    """Start the warm thread once. Returns True iff this call started it.
+def start_background_warm(
+    gate: Optional[threading.Event] = None, *, features: Optional[Collection[str]] = None
+) -> bool:
+    """Warm selected features; omitting features preserves an explicit caller's full warm.
 
-    Runs on every host, torch or not: stage one is hardware detection, which must not wait for a request (it feeds /api/health's chat_only). A finished thread from an earlier lifespan does not count as one already running, because reset_background_warm() declines mid-warm, so a shutdown leaves the object in place and treating that as "already started" would skip the warm over hardware state the same shutdown just cleared.
-    """
+    A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed.
+    ``gate``: reports started now, runs stages once set or after START_GATE_MAX_WAIT_S (utils/first_response_gate.py)."""
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
+    selection = None if features is None else frozenset(features)
+    if selection is not None and not _selected_stage_names(selection):
+        return False
     global _thread_epoch
-    # Epoch read before start(): the child may not run for a while, and a shutdown in that gap retires this lifespan. Reading it in the thread would adopt the post-shutdown one.
+    # Epoch read before start(): reading it in the child would adopt the post-shutdown one.
     epoch = _detection_epoch()
     with _start_lock:
-        target, args = _warm, (epoch,)
+        target, args = _warm, (epoch, gate, selection)
         if _thread is not None:
-            # A warm holds the latch while its own lifespan is current, so repeat calls are no-ops. Once shutdown retires that epoch the next lifespan warms again.
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
             if _thread.is_alive():
-                # Stale but mid-stage: it stops at the next boundary and nothing retries, so this lifespan would serve cold. Hand off; the successor joins it first, so only one thread imports.
-                target, args = _warm_after, (_thread, epoch)
+                # Stale but mid-stage: hand off to a successor that joins it first, keeping one importer.
+                target, args = _warm_after, (_thread, epoch, gate, selection)
             else:
                 _clear_finished_warm_locked()
         _thread = threading.Thread(
@@ -421,12 +574,7 @@ def start_background_warm() -> bool:
 
 
 def reset_background_warm() -> bool:
-    """Let a later lifespan in this process start a fresh warm. True iff reset.
-
-    The same app can start twice (repeated ASGI lifespans, an embedded restart) and shutdown clears the hardware state the first warm produced, so leaving the finished thread in place would make the second lifespan skip the warm and hand detection back to the first request, the stall this module removes.
-
-    Declines while the previous warm runs, so two warms never share the same imports. Detection self-heals then: shutdown clears DETECTION_COMPLETE and /api/health kicks start_background_detection().
-    """
+    """Resets so a later lifespan can warm afresh (shutdown cleared the state); declines while the previous warm still runs, so two never share imports."""
     with _start_lock:
         thread = _thread
         if thread is not None and thread.is_alive():
@@ -447,10 +595,10 @@ def _clear_finished_warm_locked() -> None:
 
 
 DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
+DIFFUSERS_PREWARM_MODELS_ENV_VAR = "UNSLOTH_STUDIO_DIFFUSERS_PREWARM_MODELS"
+_DIFFUSERS_PREWARM_MODEL_MODULES = ("diffusers.models.transformers",)
 
-# The catalog's own task identifiers, which _build_index compares with ==. Anything else
-# (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
-# so the gate would refuse forever. Pinned against the catalog by test_diffusers_prewarm.py.
+# Must equal the task ids of the catalog, else an empty index reads as no models and the gate refuses forever; pinned by test_diffusers_prewarm.py.
 _VIDEO_TASK = "text-to-video"
 _MEDIA_PREWARM_TASKS = ("text-to-image", _VIDEO_TASK)
 
@@ -459,22 +607,7 @@ _diffusers_prewarmed = False
 
 
 def _a_local_model_would_load_through_diffusers() -> bool:
-    """Whether any indexed media model would actually load through DIFFUSERS on this host.
-
-    Presence alone is the wrong question. A CPU or MPS host with a runnable native binary, or
-    any host with ``UNSLOTH_DIFFUSION_ENGINE=sd_cpp``, routes a supported GGUF to sd.cpp, which
-    imports no diffusers at all -- so prewarming there would add ~316 MB to exactly the
-    low-memory installs that can least afford it, and it would never be reclaimed by a load.
-
-    ``predict_engine`` is the same predicate selection and the download planner use, and it is
-    documented to activate nothing and install nothing, so asking it here cannot perturb a
-    resident model. A non-GGUF pick short-circuits it: only a GGUF can go native.
-
-    The family comes from ``detected_image_family``, the resolver the listing and locality
-    routes already share, rather than ``detect_family`` on the id: a local GGUF can carry its
-    family only in the FILENAME (``/models/custom/model.gguf`` holding ``z-image``), which
-    ``detect_family`` cannot see, and treating that as unknown would prewarm on exactly the
-    sd.cpp host this gate exists to spare."""
+    """A GGUF routed to sd.cpp imports no diffusers, so routing matters as well as presence."""
     from core.inference.diffusion_engine_router import (  # noqa: PLC0415
         ENGINE_DIFFUSERS,
         predict_engine,
@@ -485,12 +618,7 @@ def _a_local_model_would_load_through_diffusers() -> bool:
         resolve_local_media_model,
     )
 
-    # Scope limit, deliberate: the media index is keyed on current_account_id(), and this runs on
-    # a boot thread with no bound account, so it answers for the owner. On a multi-user install
-    # where only a non-owner has an image model, the gate says no and that user's first load
-    # still pays the import. Not worth fixing here: building an index per configured account
-    # means a filesystem scan per account on the boot thread, which is the cost this gate exists
-    # to avoid, and the failure mode is only the absence of a speedup, exactly as today.
+    # The media index is per account and this thread has none, so it answers for the owner.
     for task in _MEDIA_PREWARM_TASKS:
         for model_id in available_media_model_ids(task):
             pick = resolve_local_media_model(model_id, task = task)
@@ -500,10 +628,7 @@ def _a_local_model_would_load_through_diffusers() -> bool:
             if kind != "gguf":
                 return True  # only a GGUF can go native, by either backend
             if task == _VIDEO_TASK:
-                # The video backend has its own native path and its own family type, so the
-                # image resolver and the image router cannot answer for it: an H3 GGUF returns
-                # from _run_load_h3_native before video.py's own `import diffusers`, while every
-                # other video load reaches it.
+                # The image resolver cannot answer for video; see _is_native_video_pick.
                 if _is_native_video_pick(pick):
                     continue
                 return True
@@ -516,11 +641,7 @@ def _a_local_model_would_load_through_diffusers() -> bool:
 
 
 def _is_native_video_pick(pick) -> bool:
-    """Whether *pick* is the one video combination that never imports diffusers.
-
-    ``VideoBackend.load_pipeline`` asks ``is_h3_native(fam, kind)`` and returns through
-    ``_run_load_h3_native`` before its own ``import diffusers``; everything else falls through
-    to it. Asking the video backend's own predicate keeps this from drifting away from it."""
+    """The one video load that returns before its diffusers import; all other video loads reach it."""
     from core.inference.video_families import detect_video_family  # noqa: PLC0415
     from core.inference.video_minimax_h3 import is_h3_native  # noqa: PLC0415
 
@@ -528,9 +649,7 @@ def _is_native_video_pick(pick) -> bool:
     for base in (pick.model_path, pick.model_id):
         if not base:
             continue
-        # Repo id first, then repo id + picked filename, which is the order and the pair
-        # video.py's own _detect_load_family uses: a local directory or a generically named repo
-        # often carries the family token only in the checkpoint filename.
+        # Same order and pair as video.py's _detect_load_family; the token may be only in the filename.
         for needle in (base, f"{base}/{gguf}" if gguf else None):
             if not needle:
                 continue
@@ -540,53 +659,84 @@ def _is_native_video_pick(pick) -> bool:
                 continue
             if family is not None:
                 return bool(is_h3_native(family, "gguf"))
-    # Not covered on purpose: _detect_load_family also reads general.architecture out of a
-    # renamed GGUF's header. That is file IO on a boot thread to save memory, and guessing wrong
-    # in this direction only costs the prewarm, so an unidentifiable GGUF falls through to the
-    # safe default and prewarms.
+    # Deliberately skips reading general.architecture from a renamed GGUF: file IO on boot.
     return False
 
 
-def prewarm_diffusers_if_image_models_exist() -> bool:
-    """Import diffusers off the first image load. True iff this call did the import.
+EARLY_PROBE_ENV_VAR = "UNSLOTH_DIFFUSION_PROBE_EARLY"
 
-    Measured on this stack, the first diffusion load pays roughly 5.3s of pure import before it
-    touches a weight: ``diffusers`` 1.6s, ``diffusers.hooks`` 2.4s and the pipeline classes 1.3s,
-    for about 316 MB. None of it depends on which model was picked, so it is the same cost every
-    first load in a fresh process, and all of it can be paid earlier by a thread nobody is
-    waiting on.
 
-    Gated on the install actually having a local image or video model, which is the whole point:
-    a chat-only or training-only user never pays the 316 MB. The gate itself is stdlib only (it
-    does not import torch or diffusers) and its index is cached and needed by the Images page
-    anyway, so building it here is work moved earlier rather than work added.
+def _early_quant_probe() -> None:
+    try:
+        from core.inference.diffusion_probe_cache import has_file  # noqa: PLC0415 - stdlib only
+        if has_file():
+            # A later start reads the persisted table; importing the probe module here would only slow the warm.
+            return
+        if not _a_local_model_would_load_through_diffusers():
+            return
+    except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
+        logger.debug("early quant smoke probe skipped: %r", exc)
+        return
+    _prewarm_quant_probe()
 
-    Called from the POST-warm worker, after ``join_background_warm()``, so it cannot delay any
-    coordinated warm stage or the socket bind. Concurrency was measured rather than assumed: 4 to
-    8 threads importing diffusers submodules together failed 0 of 16 trials, with and without
-    dynamo already imported, because these are ordinary package imports that CPython's per module
-    lock serialises, unlike the dynamo/inductor cycle in #10350.
 
-    Never fatal, and opt out with ``UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1``."""
+def _kick_early_quant_probe() -> Optional[threading.Thread]:
+    """Start the quant smoke probe's child during the warm instead of after the diffusers import (a load posted right
+    after the warm waited ~3 s for it). ``UNSLOTH_DIFFUSION_PROBE_EARLY=0`` keeps the old timing."""
+    if os.environ.get(EARLY_PROBE_ENV_VAR, "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    thread = threading.Thread(target = _early_quant_probe, name = "early-quant-probe", daemon = True)
+    thread.start()
+    return thread
+
+
+def _prewarm_quant_probe() -> None:
+    """Run the 4-5 s quant smoke probe here instead of at the first image load; never fatal."""
+    try:
+        from core.inference.diffusion_transformer_quant import prewarm_probe_table  # noqa: PLC0415
+        started = time.perf_counter()
+        if prewarm_probe_table():
+            logger.info(
+                "quant smoke probe prewarmed in %.0fms; the first quantised load skips it",
+                (time.perf_counter() - started) * 1000,
+            )
+    except Exception as exc:  # noqa: BLE001 -- the load path probes again and reports
+        logger.debug("quant smoke probe prewarm skipped: %r", exc)
+
+
+def prewarm_quant_probe_if_image_models_exist() -> None:
+    """Fallback for a selected quantization check, including when early probing is disabled."""
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return
+    try:
+        if not _a_local_model_would_load_through_diffusers():
+            return
+    except Exception as exc:
+        logger.debug("quant smoke probe gate unavailable: %r", exc)
+        return
+    # Unlike the early hint, validate any persisted table against the current stack.
+    _prewarm_quant_probe()
+
+
+def prewarm_diffusers_if_image_models_exist(*, warm_quantization: bool = True) -> bool:
+    """Runs after the warm joins so it cannot delay a stage; skipped once a load claims the window; opt out with UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1."""
     global _diffusers_prewarmed
     if _diffusers_prewarmed:
         return False
     if os.environ.get(DIFFUSERS_PREWARM_DISABLE_ENV_VAR) == "1":
         return False
-    # The torch opt-out covers this too. start_background_warm() declines under DISABLE_ENV_VAR,
-    # but join_background_warm() reports True when no worker ever ran, so the post-warm thread
-    # arrives here regardless; importing diffusers imports torch, which is precisely what that
-    # variable exists to prevent. Checked here rather than at the call site so every caller gets
-    # it, and so the warm-window tests that assert no unsolicited torch import keep holding.
+    # join_background_warm() is True when no worker ran, so check the disable var here too.
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return False
-    with _diffusers_prewarm_lock:
+    with _diffusers_prewarm_lock, background_media_import() as window_open:
         if _diffusers_prewarmed:
+            return False
+        if not window_open:
+            logger.debug("diffusers prewarm skipped: a load is importing diffusers")
             return False
         try:
             if not _a_local_model_would_load_through_diffusers():
-                # Nothing diffusers would serve, so the import is pure cost. Not latched: a
-                # model downloaded later should let the next lifespan reconsider.
+                # Not latched: a model downloaded later lets the next lifespan reconsider.
                 logger.debug("diffusers prewarm skipped: no local model routes to diffusers")
                 return False
         except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
@@ -594,11 +744,10 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             return False
 
         try:
-            # core.inference.diffusion installs these at module scope, above its own lazy
-            # `import diffusers`, because on Windows ROCm diffusers reaches xformers and torchao
-            # and both land on an absent distributed backend. This prewarm can be the first
-            # importer in the process, so it owes the same three installs; they are idempotent.
+            # On Windows ROCm diffusers reaches xformers/torchao, which need these distributed stubs.
             from core._torchao_stub import (  # noqa: PLC0415
+                alias_torchao_fqn_to_config,
+                hide_xformers_built_for_another_torch,
                 install_torchao_windows_rocm_stub,
                 install_xformers_windows_rocm_stub,
             )
@@ -607,36 +756,16 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             )
 
             install_xformers_windows_rocm_stub()
+            hide_xformers_built_for_another_torch()
             install_torchao_windows_rocm_stub()
+            alias_torchao_fqn_to_config()
             install_torchao_int_mm_patch()
         except Exception as exc:  # noqa: BLE001 -- importing unprotected is the hazard; skip
             logger.debug("diffusers prewarm skipped: stubs unavailable: %r", exc)
             return False
 
         started = time.perf_counter()
-        # One lock at a time, never both. Each scope holds that package's own lock across its
-        # import AND its cleanup, the way _held_import_lock does for the bare warm stages,
-        # because releasing between the two is the bug: CPython drops the lock the moment the
-        # import raises, so a request already waiting on it wakes up, re-imports against the
-        # submodules that import left behind, and republishes the malformed package -- at which
-        # point purge_partial_import declines, since those leftovers now belong to a live
-        # importer. Reentrant per thread, so the nested acquire inside the purge is free.
-        #
-        # NOT nested, which is the part that is easy to get backwards. `import diffusers.hooks`
-        # makes CPython take the CHILD lock first and import the parent from inside it
-        # (_find_and_load -> _ModuleLockManager(name) -> _find_and_load_unlocked -> import
-        # parent). Holding parent-then-child here would invert that against any concurrent
-        # `from diffusers.hooks import ...` and produce a lock cycle, which surfaces as the
-        # _DeadlockError that _lock_unlock_module swallows -- i.e. exactly the partially
-        # initialised module this whole change exists to prevent. Sequential scopes have no
-        # cycle: by the time the hooks scope runs, the parent is published, so importing the
-        # child acquires nothing else.
-        # The try INSIDE each with, not around it: exiting the scope on the exception would
-        # release the lock and the handler would reacquire it, and that gap is the whole bug.
-        # A request already waiting on the lock wakes up in it, re-imports against the submodules
-        # the failed import left behind, and republishes the malformed package -- at which point
-        # purge_partial_import declines, because those leftovers now belong to a live importer.
-        # Reentrant per thread, so the nested acquire inside the purge is free.
+        # The try goes INSIDE each `with`, else a waiter can republish the package before the purge.
         with _ModuleLockManager("diffusers"):
             try:
                 import diffusers  # noqa: F401, PLC0415
@@ -645,31 +774,33 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
                 purge_partial_import("diffusers")
                 return False
 
-        # A separate scope, never nested inside the one above. `import diffusers.hooks` makes
-        # CPython take the CHILD lock first and import the parent from inside it (_find_and_load
-        # -> _ModuleLockManager(name) -> _find_and_load_unlocked -> import parent). Holding
-        # parent-then-child here would invert that against a concurrent `from diffusers.hooks
-        # import ...` and produce a lock cycle, which surfaces as the _DeadlockError that
-        # _lock_unlock_module swallows: exactly the partially initialised module this change
-        # exists to prevent. Sequentially there is no cycle, because the parent is already
-        # published by the time this runs, so importing the child acquires nothing else.
+        # Never nest in the scope above: CPython takes the child lock first, so nesting inverts order.
         with _ModuleLockManager("diffusers.hooks"):
             try:
                 import diffusers.hooks  # noqa: F401, PLC0415
             except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
                 logger.debug("diffusers prewarm skipped: %r", exc)
-                # The parent stays: it imported cleanly, and purging it would be a no-op anyway
-                # since it is in sys.modules and belongs to nobody. What has to go is the hook
-                # submodules that did execute, or the load path's own `from diffusers.hooks
-                # import ...` rebuilds an incomplete package from them (#7580, one level down).
+                # Purge the hook submodules that ran, or a later import rebuilds from them.
                 purge_partial_import("diffusers.hooks")
                 return False
 
-        # Outside both locks: it imports nothing under diffusers. diffusers hard-codes
-        # _tqdm_active = True at import and honours no env var, so a prewarm that skipped this
-        # would let "Loading pipeline components..." draw straight onto the structlog stream,
-        # mid-record. Not fatal to the prewarm: the imports above already succeeded, which is the
-        # work this exists to do, and the load path calls the same idempotent helper anyway.
+        # The model classes too (1.5-3.7 s of the first load); own scope for the same lock-order reason as above.
+        if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            for module_name in _DIFFUSERS_PREWARM_MODEL_MODULES:
+                with _ModuleLockManager(module_name):
+                    try:
+                        importlib.import_module(module_name)
+                    except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                        logger.debug("diffusers model prewarm of %s skipped: %r", module_name, exc)
+                        purge_partial_import(module_name)
+                        break
+
+        # Outside both locks (it imports nothing under diffusers); diffusers hard-codes _tqdm_active = True, so its bars would draw into structlog output.
         try:
             from loggers.config import quiet_third_party_progress_bars  # noqa: PLC0415
             quiet_third_party_progress_bars()
@@ -681,7 +812,10 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             "diffusers prewarmed in %.0fms; the first image load skips that import",
             (time.perf_counter() - started) * 1000,
         )
-        return True
+    # Outside the window: a child-process probe, not an import. Startup opts into it separately.
+    if warm_quantization:
+        _prewarm_quant_probe()
+    return True
 
 
 def warm_status() -> dict:

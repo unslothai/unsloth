@@ -1,0 +1,300 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""No backend needed; checks queue view localization and the editor's send-shortcut chord."""
+
+import os
+from playwright.sync_api import expect, sync_playwright
+from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
+
+PAGE = "/smoke-prompt-queue-actions.html"
+ENTRY = "/smoke-prompt-queue-actions-main.tsx"
+
+# The first navigation compiles vite's whole module graph, exceeding 30s on cold Windows runners.
+NAV_TIMEOUT_MS = 90_000
+
+JA = {
+    "steer": "方向を変更",
+    "edit": "メッセージを編集",
+    "copy": "メッセージをコピー",
+    "queueing": "キューをオフにする",
+    "removed": "メッセージをキューから削除しました。",
+}
+
+
+def seed(
+    page,
+    base,
+    *,
+    locale = "en",
+    shortcut = "enter",
+):
+    page.goto(base + PAGE, wait_until = "domcontentloaded", timeout = NAV_TIMEOUT_MS)
+    page.evaluate(
+        """([locale, shortcut]) => {
+            localStorage.setItem("unsloth_locale", locale);
+            localStorage.setItem(
+                "unsloth_chat_preferences",
+                JSON.stringify({ state: { sendShortcut: shortcut }, version: 0 }),
+            );
+        }""",
+        [locale, shortcut],
+    )
+    page.reload(wait_until = "domcontentloaded", timeout = NAV_TIMEOUT_MS)
+    page.get_by_role("button", name = "Reset fixture", exact = True).wait_for(
+        state = "visible", timeout = 60_000
+    )
+
+
+def open_editor(page, more_name, edit_name):
+    page.get_by_role("button", name = more_name, exact = True).click()
+    page.get_by_role("menuitem", name = edit_name, exact = True).click()
+    editor = page.locator('textarea[aria-label^="Edit queued prompt"]')
+    expect(editor).to_be_visible()
+    return editor
+
+
+def check_localized(page, base):
+    seed(page, base, locale = "ja")
+    # setLocale loads the catalog lazily; the harness never calls initializeLocale.
+    page.evaluate(
+        "async () => { const m = await import('/src/i18n/index.ts'); await m.setLocale('ja'); }"
+    )
+    row = page.locator("[data-queue-item-id]").first
+    expect(row).to_contain_text(JA["steer"])
+    expect(page.locator('[aria-label^="キューのメッセージ 1"]').first).to_be_visible()
+    page.get_by_role("button", name = "キューのメッセージ 1 のその他の操作", exact = True).click()
+    for name in (JA["edit"], JA["copy"], JA["queueing"]):
+        expect(page.get_by_role("menuitem", name = name, exact = True)).to_be_visible()
+    page.keyboard.press("Escape")
+    page.get_by_role("button", name = "キューのメッセージ 2 を削除", exact = True).click()
+    expect(page.locator('div[role="status"][aria-live="polite"]')).to_have_text(JA["removed"])
+    print("PASS: queue view, menu and announcements follow the selected locale", flush = True)
+
+
+def check_editor_shortcut(page, base):
+    seed(page, base, shortcut = "enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("shift-stays-open")
+    editor.press("Shift+Enter")
+    expect(editor).to_be_visible()
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    editor.fill("saved-with-enter")
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text("saved-with-enter")
+    expect(page.get_by_label("Composer submissions", exact = True)).to_have_text("0")
+
+    seed(page, base, shortcut = "mod-enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("plain-enter-stays-open")
+    editor.press("Enter")
+    expect(editor).to_be_visible()
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    editor.fill("saved-with-mod-enter")
+    editor.press("ControlOrMeta+Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text("saved-with-mod-enter")
+    expect(page.get_by_label("Composer submissions", exact = True)).to_have_text("0")
+    print("PASS: the queued-prompt editor follows the send-shortcut preference", flush = True)
+
+
+def check_escape_during_ime(page, base):
+    # An IME consumes Escape and reports it as composing, so the draft must be kept.
+    seed(page, base)
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("draft-survives-ime-escape")
+    for init in ("{isComposing: true}", "{keyCode: 229}"):
+        page.evaluate(
+            f"""() => {{
+                const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+                ta.dispatchEvent(new KeyboardEvent('keydown', Object.assign(
+                    {{key: 'Escape', bubbles: true, cancelable: true}}, {init})));
+            }}"""
+        )
+        expect(editor).to_be_visible()
+        expect(editor).to_have_value("draft-survives-ime-escape")
+    editor.press("Escape")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    print("PASS: Escape keeps the draft while an IME is composing", flush = True)
+
+
+def check_candidate_confirming_enter(page, base):
+    # A candidate-confirming Enter can arrive with isComposing false and no keyCode 229.
+    seed(page, base, shortcut = "enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("composition-in-progress")
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+            ta.dispatchEvent(new KeyboardEvent('keydown',
+                {key: 'Enter', bubbles: true, cancelable: true}));
+        }"""
+    )
+    expect(editor).to_be_visible()
+    expect(page.locator("[data-queue-item-id]").first).to_have_attribute(
+        "aria-label", "Queued prompt 1 of 3: First prompt"
+    )
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
+        }"""
+    )
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text("composition-in-progress")
+    print("PASS: a candidate-confirming Enter does not save the edit", flush = True)
+
+
+def start_composition(page):
+    page.evaluate(
+        """() => {
+            const ta = document.querySelector('textarea[aria-label^="Edit queued prompt"]');
+            ta.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+        }"""
+    )
+
+
+def check_stuck_composition_recovers(page, base):
+    # Some IMEs never send compositionend; the gate must not wedge Enter.
+    seed(page, base, shortcut = "enter")
+    editor = open_editor(page, "More options for queued prompt 1", "Edit message")
+    editor.fill("recovers-after-timeout")
+    start_composition(page)
+    editor.press("Enter")
+    expect(editor).to_be_visible()
+    page.wait_for_timeout(2800)
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").first).to_contain_text("recovers-after-timeout")
+
+    editor = open_editor(page, "More options for queued prompt 2", "Edit message")
+    editor.fill("recovers-after-blur")
+    start_composition(page)
+    editor.blur()
+    editor.focus()
+    editor.press("Enter")
+    expect(editor).to_have_count(0)
+    expect(page.locator("[data-queue-item-id]").nth(1)).to_contain_text("recovers-after-blur")
+    print("PASS: a stuck composition recovers on timeout and on blur", flush = True)
+
+
+# Reads the glyph's centre in the icon's own viewBox units: getBBox() is the
+# path's geometry, and its transform attribute is what moves it. Painted client
+# rects are not used: WebKit on hosted runners has measured them 0.1 to 0.3 units
+# off in both axes, a different amount on each attempt, while the same build
+# measures centred locally and on every other engine.
+GLYPH_GEOMETRY = """() => {
+    const item = [...document.querySelectorAll('[role="menuitem"]')]
+        .find((element) => element.textContent.trim() === 'Resume queue');
+    const svg = item.querySelector('svg'), path = svg.querySelector('path');
+    const view = svg.viewBox.baseVal, bbox = path.getBBox();
+    const shift = path.transform.baseVal.consolidate();
+    const centre = new DOMPoint(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2)
+        .matrixTransform(shift ? shift.matrix : new DOMMatrix());
+    return {
+        dx: centre.x - (view.x + view.width / 2),
+        dy: centre.y - (view.y + view.height / 2),
+        width: bbox.width,
+    };
+}"""
+
+
+def check_resume_icon_centred(page, base):
+    # Optically centred: 1/12 of the glyph's width right of centre (queue-resume-icon.tsx).
+    seed(page, base)
+    page.get_by_role("button", name = "Simulate paused queue", exact = True).click()
+    page.get_by_role("button", name = "More options for queued prompt 1", exact = True).click()
+    page.get_by_role("menuitem", name = "Resume queue", exact = True).wait_for()
+    offset = page.evaluate(GLYPH_GEOMETRY)
+    assert abs(offset["dx"] - offset["width"] / 12) < 0.1, offset
+    assert abs(offset["dy"]) < 0.05, offset
+    print("PASS: the resume glyph is optically centred in its icon box", flush = True)
+
+
+def check_queue_frame_clips_scrollbar(page, base):
+    # Scrollbars paint outside the scroller's radius, so the rounding has to clip from outside.
+    seed(page, base)
+    page.get_by_role("button", name = "Long queue", exact = True).click()
+    layout = page.evaluate(
+        """() => {
+            const scroller = document.querySelector('[aria-label^="Prompt queue"]');
+            const frame = scroller.parentElement;
+            const style = getComputedStyle(scroller), outer = getComputedStyle(frame);
+            const s = scroller.getBoundingClientRect(), f = frame.getBoundingClientRect();
+            return {
+                overflows: scroller.scrollHeight > scroller.clientHeight,
+                scrollerRadius: style.borderTopRightRadius,
+                scrollerOverflow: style.overflowY,
+                frameRadius: outer.borderTopRightRadius,
+                frameOverflow: outer.overflow,
+                frameBorder: parseFloat(outer.borderTopWidth),
+                insetRight: f.right - s.right,
+                insetTop: s.top - f.top,
+            };
+        }"""
+    )
+    assert layout["overflows"], layout
+    assert layout["scrollerOverflow"] == "auto", layout
+    assert layout["scrollerRadius"] == "0px", layout
+    assert layout["frameOverflow"] == "hidden", layout
+    assert parse_px(layout["frameRadius"]) > 0, layout
+    assert layout["insetRight"] >= layout["frameBorder"] - 0.5, layout
+    assert layout["insetTop"] >= layout["frameBorder"] - 0.5, layout
+    print("PASS: the queue frame rounds and clips the scrollbar corner", flush = True)
+
+
+def parse_px(value):
+    return float(value.removesuffix("px"))
+
+
+def main():
+    server = None
+    try:
+        base = os.environ.get("PW_BASE_URL", "").rstrip("/")
+        if not base:
+            port = int(os.environ.get("PW_PORT", "5424"))
+            server = start_vite(port)
+            base = f"http://127.0.0.1:{port}"
+        wait_for_smoke_page(base + PAGE, ENTRY, proc = server)
+        with sync_playwright() as pw:
+            options = {"headless": True}
+            if os.environ.get("PW_EXECUTABLE"):
+                options["executable_path"] = os.environ["PW_EXECUTABLE"]
+            if os.environ.get("PW_CHANNEL"):
+                options["channel"] = os.environ["PW_CHANNEL"]
+            browser = getattr(pw, os.environ.get("PW_ENGINE", "chromium")).launch(**options)
+            print(
+                f"Browser: {os.environ.get('PW_CHANNEL', os.environ.get('PW_ENGINE', 'chromium'))} {browser.version}",
+                flush = True,
+            )
+            try:
+                page = browser.new_page(viewport = {"width": 1100, "height": 850})
+                errors = []
+                page.on("pageerror", lambda error: errors.append(str(error)))
+                check_localized(page, base)
+                check_editor_shortcut(page, base)
+                check_escape_during_ime(page, base)
+                check_candidate_confirming_enter(page, base)
+                check_stuck_composition_recovers(page, base)
+                check_resume_icon_centred(page, base)
+                check_queue_frame_clips_scrollbar(page, base)
+                assert not errors, errors
+            finally:
+                browser.close()
+    finally:
+        if server:
+            stop_process(server)
+
+
+if __name__ == "__main__":
+    main()

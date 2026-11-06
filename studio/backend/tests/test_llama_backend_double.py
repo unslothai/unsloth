@@ -1,27 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shared backend double keeps up with the real backend, in both directions.
-
-Downward: the double must not claim attributes ``LlamaCppBackend`` lacks, or the tests pass against
-a backend that cannot exist.
-
-Upward, the one that bit: the route must still serve a request driven by a bare double. #8700 added
-an unguarded ``context_length`` read and updated five of eight test files, giving 19 failures split
-between ``AttributeError`` and 20-second timeouts, neither naming the attribute. The canary below
-fails in one place instead, with the attribute in the message.
-"""
+"""The shared double must not claim attributes LlamaCppBackend lacks, and routes must tolerate it."""
 
 from __future__ import annotations
 
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
+from models.inference import _InferenceRuntimeFields
 import routes.inference as inference_route
 
 from .llama_backend_double import FakeLlamaCppBackend
+
+
+def test_status_runtime_fields_survive_a_double_that_answers_none():
+    """Runtime fields that reject None need a real value on the double, since /status mirrors them all."""
+    fields = inference_route._llama_runtime_fields(FakeLlamaCppBackend())
+    # supplied by the route, not the backend, so _llama_runtime_fields excuses it
+    fields["requires_trust_remote_code"] = False
+
+    try:
+        _InferenceRuntimeFields(**fields)
+    except ValidationError as error:
+        rejected = sorted({str(item["loc"][0]) for item in error.errors()})
+        raise AssertionError(
+            f"/status cannot answer {rejected} from a backend double: the field is not Optional, "
+            "so None is not a value it accepts. Give it the value LlamaCppBackend.__init__ uses "
+            "in FakeLlamaCppBackend, rather than to one test's fake."
+        ) from None
 
 
 def test_the_double_claims_nothing_the_real_backend_lacks():

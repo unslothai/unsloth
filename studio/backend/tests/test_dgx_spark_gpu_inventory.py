@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An integrated CUDA SoC (Jetson, DGX Spark) publishes no capacity through nvidia-smi.
-
-``nvidia-smi --query-gpu=memory.total`` answers ``[N/A]`` on a DGX Spark, which NVIDIA
-documents as a known issue. The row is kept so the card stays in the inventory, but with
-no capacity the frontend maps it to zero, the GGUF fit classifier returns ``ram``, and
-the picker warns "No GPU detected. Runs on system RAM and CPU" on a 121 GiB Blackwell,
-while the live monitor names the GB10 and prints "Unknown / 0.00 GiB" beside it (#10691).
-
-Hermetic: torch, nvidia-smi and host memory are stubbed, so these run anywhere.
-"""
+"""nvidia-smi reports memory.total as [N/A] on integrated SoCs, so the card reads as zero capacity."""
 
 from __future__ import annotations
 
@@ -23,9 +14,38 @@ from utils.hardware import nvidia
 
 GIB = 1 << 30
 MIB = 1 << 20
-# What a DGX Spark actually reports.
 SPARK_TOTAL_BYTES = 124609 * MIB
 SPARK_TOTAL_GB = round(SPARK_TOTAL_BYTES / GIB, 2)
+
+
+def test_spark_npu_is_not_a_cuda_gpu_even_when_smi_lists_it(monkeypatch):
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA RTX Spark N1X, 8128\n1, NVIDIA NPU, [N/A]\n",
+        ),
+    )
+    result = nvidia.get_backend_visible_gpu_info([0, 1], None)
+    assert result["available"] is True
+    assert [(d["index"], d["name"]) for d in result["devices"]] == [(0, "NVIDIA RTX Spark N1X")]
+    assert len(nvidia.get_physical_gpu_inventory()["devices"]) == 1
+
+
+def test_npu_exclusion_keeps_real_gpus_with_unknown_memory_and_physical_ids(monkeypatch):
+    monkeypatch.setattr(
+        nvidia.gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0,
+            stdout = "0, NVIDIA NPU, [N/A]\n1, NVIDIA GB10, [N/A]\n2, NVIDIA H100, 81920\n",
+        ),
+    )
+    rows = nvidia._query_gpu_inventory("test")
+    assert [d["index"] for d in rows] == [1, 2]
+    assert rows[0]["memory_total_gb"] is None
+    assert rows[1]["memory_total_gb"] == 80
 
 
 class _SparkProps:
@@ -49,12 +69,7 @@ def _torch_module(props) -> types.SimpleNamespace:
 
 
 def _not_hip(monkeypatch) -> None:
-    """Stub the torch the CUDA classifier asks for HIP.
-
-    Without this the suite reads the HOST's torch, so every assertion about an integrated
-    CUDA part inverts on a ROCm machine, where ``torch.version.hip`` is set and the
-    classifier correctly declines. Caught on a real gfx1151 runner, not by reading it.
-    """
+    """Stub torch as non-HIP: on a ROCm host the real torch would invert every integrated-CUDA assertion."""
     monkeypatch.setitem(
         sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = None))
     )
@@ -91,7 +106,6 @@ def test_spark_recovers_the_capacity_nvidia_smi_will_not_report(monkeypatch):
 
     assert result["available"] is True
     assert device["name"] == "NVIDIA GB10"
-    # The regression: this was None, which the frontend reads as a 0 GiB card.
     assert device["memory_total_gb"] == SPARK_TOTAL_GB
 
 
@@ -137,25 +151,20 @@ def test_rocm_is_not_classified_by_the_cuda_integrated_flag(monkeypatch):
     assert hw._cuda_props_are_integrated(props) is False
 
 
-# ── nothing above may reach a host that is not one of these parts ────────────
-
-
-def test_a_readable_smi_host_never_consults_torch(monkeypatch):
-    """The repair is scoped to hosts with a missing capacity.
-
-    /api/system is polled every 5s by the floating monitor and every 3s from Settings.
-    A discrete card answers memory.total, so it must leave that poll exactly as it was:
-    no torch import, no property query, no new failure mode on a machine that was fine.
-    """
+def test_a_readable_smi_host_is_classified_but_never_rewritten(monkeypatch):
+    """Readable capacity is classified but never rewritten; a poll must never create a CUDA context."""
     _cuda_host(monkeypatch, _DiscreteProps())
     _smi_rows(monkeypatch, 23.99)
 
     def _forbidden(*args, **kwargs):
-        raise AssertionError("torch inventory consulted on a host with nothing to repair")
+        raise AssertionError("mem_get_info pins a primary context on the /api/system poll")
 
-    monkeypatch.setattr(hw, "_torch_get_device_inventory", _forbidden)
+    monkeypatch.setattr(hw, "trusted_mem_get_info", _forbidden)
 
-    assert hw.get_backend_visible_gpu_info()["devices"][0]["memory_total_gb"] == 23.99
+    device = hw.get_backend_visible_gpu_info()["devices"][0]
+
+    assert device["memory_total_gb"] == 23.99
+    assert device.get("unified_memory") is not True
 
 
 def test_multi_gpu_smi_host_is_untouched(monkeypatch):
@@ -202,9 +211,6 @@ def test_an_unsizeable_card_is_still_reported_when_torch_cannot_answer(monkeypat
     assert result["available"] is True
     assert result["devices"][0]["name"] == "NVIDIA GB10"
     assert result["devices"][0]["memory_total_gb"] is None
-
-
-# ── the live monitor ─────────────────────────────────────────────────────────
 
 
 def _smi_utilization(
@@ -254,7 +260,6 @@ def test_monitor_sizes_the_spark_instead_of_showing_unknown(monkeypatch):
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
     assert device["vram_used_gb"] == 21.0
     assert device["vram_utilization_pct"] == round(21.0 / SPARK_TOTAL_GB * 100, 1)
-    # Columns nvidia-smi DID answer are the CLI's, untouched.
     assert device["gpu_utilization_pct"] == 0.0
     assert device["temperature_c"] == 46.0
     assert device["power_draw_w"] == 12.09
@@ -300,12 +305,7 @@ def test_monitor_reconciliation_creates_no_driver_context(monkeypatch):
 
 
 def test_a_hip_torch_is_never_read_with_the_cuda_rule(monkeypatch):
-    """HIP reuses this namespace and a real APU sets the same flag.
-
-    IS_ROCM is a global that detection publishes, so the classifier also asks torch
-    directly: this covers the window before detection has settled, and the ROCm CI runner
-    where the previous revision of these tests inverted.
-    """
+    """Ask torch for version.hip directly; IS_ROCM is published only once detection has settled."""
     monkeypatch.setattr(hw, "IS_ROCM", False)
     monkeypatch.setitem(
         sys.modules, "torch", types.SimpleNamespace(version = types.SimpleNamespace(hip = "6.2.0"))
@@ -347,12 +347,7 @@ def _unsized_row(
 
 
 def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
-    """/api/system reads get_visible_gpu_utilization, NOT get_gpu_utilization.
-
-    main.py::_get_cached_system_gpu_info calls the former, so repairing only the latter
-    left the floating monitor showing Unknown / 0.00 GiB, which is the screen #10691 is
-    actually about.
-    """
+    """/api/system polls get_visible_gpu_utilization, so that is the function the repair must fix."""
     _cuda_host(monkeypatch, _SparkProps())
     _smi_visible_utilization(monkeypatch, [_unsized_row()])
     monkeypatch.setattr(
@@ -368,11 +363,7 @@ def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
 
 
 def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):
-    """A UUID or MIG mask resolves to numeric_ids=None, and nvidia.py answers anyway.
-
-    Its rows are relative-indexed and ordered by the mask, which is the order torch
-    enumerates too, so the join is on visible_ordinal rather than a physical id.
-    """
+    """A UUID or MIG mask gives numeric_ids=None; the join must use visible_ordinal, not a physical id."""
     _cuda_host(monkeypatch, _SparkProps())
     monkeypatch.setattr(
         hw,
@@ -388,25 +379,14 @@ def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):
 
 
 def test_a_mismatched_device_order_refuses_the_join(monkeypatch):
-    """FASTEST_FIRST puts torch ordinals in a different space from nvidia-smi rows.
-
-    Joining them anyway attaches another card's capacity to a row. The module already
-    rejects this exact cross-source mapping for its SMI VRAM query; the repair uses the
-    same gate rather than guessing.
-    """
+    """FASTEST_FIRST makes torch ordinals differ from nvidia-smi rows; a mismatched order must refuse."""
     _cuda_host(monkeypatch, _DiscreteProps())
     monkeypatch.setattr(hw, "_cuda_order_matches_smi", lambda: False)
     _smi_rows(monkeypatch, None)
 
-    # The resolver refuses outright rather than handing back a mapping to guess with.
     assert hw._integrated_cuda_inventory([0]) == ({}, "index")
 
-    # ...and the endpoint keeps the nvidia-smi rows rather than reaching the torch
-    # fallback. That fallback labels its rows with physical ids taken from the mask, so
-    # here it would publish one card's name and capacity under another card's index,
-    # which is the same wrong join by another route and is what GPU selection reads.
-    # An SMI row missing a total is the lesser answer, and the one this host had before
-    # the repair existed.
+    # Keep the SMI rows: the torch fallback labels rows by mask ids, the same wrong join.
     device = hw.get_backend_visible_gpu_info()["devices"][0]
     assert device["name"] == "NVIDIA GB10"
     assert device["memory_total_gb"] is None
@@ -432,7 +412,6 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
             {"index": 1, "name": "NVIDIA GB10", "memory_total_gb": None},
         ],
     )
-    # Only ordinal 0 answers, the shape a fallen-off-the-bus card produces.
     monkeypatch.setattr(
         hw,
         "_torch_get_device_inventory",
@@ -459,13 +438,7 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
 
 
 def test_a_repaired_spark_row_is_marked_shared(monkeypatch):
-    """gpu-vram.ts splits the dedicated and shared pools on `shared_memory` alone.
-
-    The host-backed figure is read only after that split, so a repaired row that carries
-    the figure without the flag lands in the dedicated total and is then counted a
-    second time beside the same system RAM, which is the double count this repair
-    exists to prevent.
-    """
+    """Set shared_memory on repaired rows: gpu-vram.ts splits pools on that flag alone."""
     _cuda_host(monkeypatch, _SparkProps())
     _smi_rows(monkeypatch, None)
 
@@ -488,13 +461,13 @@ def test_a_discrete_card_is_never_marked_shared(monkeypatch):
 
 
 def test_a_known_usage_still_gets_its_percentage(monkeypatch):
-    """memory.used can be readable on a row whose memory.total is [N/A].
-
-    Filling the total is what makes the percentage computable, so a device that already
-    carries a usage must not be skipped: it was the one case where both operands existed
-    and the monitor still showed an unknown.
-    """
+    """A row with known memory.used still needs its total filled, or the percentage stays unknown."""
     _cuda_host(monkeypatch, _SparkProps())
+    monkeypatch.setattr(
+        psutil,
+        "virtual_memory",
+        lambda: types.SimpleNamespace(total = 121 * GIB, available = 101 * GIB),
+    )
     utilization = {
         "devices": [
             {
@@ -511,6 +484,5 @@ def test_a_known_usage_still_gets_its_percentage(monkeypatch):
     device = utilization["devices"][0]
 
     assert device["vram_total_gb"] == SPARK_TOTAL_GB
-    # The CLI's own figure, not the host counter that stands in when it is absent.
     assert device["vram_used_gb"] == 30.0
     assert device["vram_utilization_pct"] == round((30.0 / SPARK_TOTAL_GB) * 100, 1)

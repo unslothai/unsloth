@@ -9,9 +9,7 @@ import {
   type ModelLifecycleLease,
 } from "./model-lifecycle-gate";
 
-// Re-exported so existing importers and the barrel keep their paths. Module scope readers should
-// use ./prompt-queue-events directly: this module has dependencies, so the cycle can catch it
-// mid-initialization.
+// Module-scope readers should import ./prompt-queue-events directly to avoid the import cycle.
 export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
@@ -40,8 +38,6 @@ export function requestPromptQueueStop(threadIds?: string[]) {
   );
 }
 
-/** Stop every materialized local queue and invalidate local queue factories that are still waiting
- *  for settings hydration. */
 export function requestLocalPromptQueueStop(
   additionalThreadIds: string[] = [],
 ) {
@@ -54,6 +50,19 @@ export function requestLocalPromptQueueStop(
         .map(([threadId]) => threadId),
     ]),
   ];
+  if (typeof window === "undefined" || threadIds.length === 0) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<PromptQueueStopEventDetail>(PROMPT_QUEUE_STOP_EVENT, {
+      detail: { threadIds, localOnly: true },
+    }),
+  );
+}
+
+/** The same local stop for the chats on one model of several: holds their unsent prompts without
+ *  advancing the boundary, which would also void queue starts on the models left loaded. */
+export function requestScopedLocalPromptQueueStop(threadIds: string[]) {
   if (typeof window === "undefined" || threadIds.length === 0) {
     return;
   }

@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useReducedMotionConfig } from "motion/react";
 import type { PromptQueueUIItem } from "@/features/chat";
+import { useT } from "@/i18n";
 
 const SETTLE_MS = 180;
 const EASING = "cubic-bezier(0.2, 0.8, 0.2, 1)";
@@ -51,6 +52,7 @@ export function usePromptQueueReorder(
   onMove: (id: string, targetId: string) => boolean,
   announce: (message: string) => void,
 ) {
+  const t = useT();
   const listRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const animations = useRef<Animation[]>([]);
@@ -106,12 +108,12 @@ export function usePromptQueueReorder(
     pendingPositions.current ??= capturePositions();
     if (onMove(id, targetId)) {
       const position = items.findIndex((item) => item.id === targetId) + 1;
-      announce(`Prompt moved to position ${position} of ${items.length}.`);
+      announce(
+        t("promptQueue.announceMoved", { position, total: items.length }),
+      );
     } else {
       if (!draggingId) pendingPositions.current = null;
-      announce(
-        "The queue changed before this prompt could be moved. Try again.",
-      );
+      announce(t("promptQueue.announceMoveFailed"));
     }
   }
 
@@ -120,9 +122,7 @@ export function usePromptQueueReorder(
     if (drag && (drag.signature !== signature || disabled)) {
       clearDrag(drag);
       setDraggingId(null);
-      announce(
-        "The queue changed. Drag again to reorder the remaining prompts.",
-      );
+      announce(t("promptQueue.announceDragReset"));
     }
     const previous = pendingPositions.current;
     pendingPositions.current = null;
@@ -155,6 +155,7 @@ export function usePromptQueueReorder(
     draggingId,
     clearDrag,
     stopAnimations,
+    t,
   ]);
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { resetChatBackground, useBackgroundStore } from "@/features/chat-background";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -24,16 +25,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useChatPreferencesStore } from "@/features/chat";
 import { Switch } from "@/components/ui/switch";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
+import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Folder01Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotionConfig } from "motion/react";
 import {
@@ -49,6 +53,7 @@ import {
   MAX_IMPORTED_FONTS,
   MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
   type ReduceMotionSetting,
+  type SentAttachmentsSetting,
   UI_FONT_SIZE_RANGE,
   isDefaultCustomization,
   useAppearanceCustomStore,
@@ -63,37 +68,23 @@ import {
   usePalette,
   useTheme,
 } from "../stores/theme-store";
+import { COLOR_THEMES } from "../lib/color-themes";
+import {
+  GLASS_ELEMENT_OUTLINE,
+  useThemeElementOutline,
+} from "../lib/element-outline-default";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
 /* ------------------------------- Colors -------------------------------- */
-
-// Seed values shown in the pickers while no override is set. Mirrors the
-// palette token values in index.css (foregrounds converted from oklch).
+// Mirrors the palette tokens in index.css (foregrounds converted from oklch).
 type DefaultModeColors = { [K in keyof CustomModeColors]: string };
 const PALETTE_DEFAULT_COLORS: Record<
   Palette,
   Record<ResolvedTheme, DefaultModeColors>
-> = {
-  standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#ececec" },
-  },
-  classic: {
-    light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#ececec" },
-  },
-  minimal: {
-    light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#ededed" },
-  },
-};
+> = COLOR_THEMES;
 
-/**
- * Color override control for the CURRENTLY ACTIVE resolved mode. Only the
- * active mode is editable; the other mode's overrides stay stored and take
- * effect when the color scheme flips.
- */
+/** Only the active mode is editable; the other mode's overrides apply when the scheme flips. */
 export function ActiveColorControl({
   colorKey,
   label,
@@ -133,16 +124,21 @@ export function ActiveColorControl({
 }
 
 /* ------------------------------ Typography ------------------------------ */
+// Mirrors html.client-mac (theme-boot.js), which swaps the sans default to the system font.
+const SYSTEM_SANS_NAME = "SF Pro";
+const DEFAULT_SANS_NAME =
+  typeof document !== "undefined" &&
+  document.documentElement.classList.contains("client-mac")
+    ? SYSTEM_SANS_NAME
+    : "Inter Variable";
 
-/** Font each slot resolves to when no override is set (see index.css). */
 const DEFAULT_FONT_NAMES = {
-  ui: "Inter Variable",
+  ui: DEFAULT_SANS_NAME,
   heading: "Hellix",
-  chat: "Inter Variable",
+  chat: DEFAULT_SANS_NAME,
   code: "JetBrains Mono",
 } as const;
 
-/** Fonts Unsloth already ships (bundled @font-face / fontsource). */
 const BUNDLED_FONTS = [
   "Inter Variable",
   "Hellix",
@@ -153,9 +149,7 @@ const BUNDLED_FONTS = [
 ] as const;
 
 /* ----------------------------- Device fonts ------------------------------ */
-
-// Fallback candidates probed by canvas measurement when the Local Font
-// Access API (Chromium-only) is unavailable or denied.
+// Probed by canvas measurement when the Local Font Access API is unavailable or denied.
 const CANDIDATE_DEVICE_FONTS = [
   "American Typewriter",
   "Andale Mono",
@@ -236,6 +230,13 @@ function detectFontsByMeasurement(candidates: string[]): string[] {
   );
 }
 
+// The system font has no addressable family name, so preview it through the token.
+function previewFamily(font: string): string {
+  return font === SYSTEM_SANS_NAME
+    ? "var(--font-sans-default)"
+    : `"${font}", var(--font-sans)`;
+}
+
 let deviceFontsCache: string[] | null = null;
 
 async function loadDeviceFonts(): Promise<string[]> {
@@ -266,11 +267,13 @@ function FontSelect({
   defaultFont,
   onCommit,
   ariaLabel,
+  className,
 }: {
   value: string | null;
   defaultFont: string;
   onCommit: (next: string | null) => void;
   ariaLabel: string;
+  className?: string;
 }) {
   const t = useT();
   const defaultLabel = `${defaultFont} (${t("settings.appearance.custom.fontDefault")})`;
@@ -287,8 +290,7 @@ function FontSelect({
 
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
-    // Kick off inside the click gesture: queryLocalFonts may need transient
-    // user activation for its permission prompt.
+    // Start inside the click: queryLocalFonts may need transient user activation.
     if (next && deviceFonts === null) {
       void loadDeviceFonts().then(setDeviceFonts);
     }
@@ -315,9 +317,8 @@ function FontSelect({
       value={font}
       onSelect={() => select(font)}
       data-checked={value === font}
-      className="cursor-pointer rounded-[11px]"
+      className="cursor-pointer rounded-md"
     >
-      {/* Preview each entry in its own typeface. */}
       <span
         className="min-w-0 truncate"
         style={{ fontFamily: `"${font}", var(--font-sans)` }}
@@ -334,11 +335,14 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+          className={cn(
+            "flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+            className,
+          )}
         >
           <span
             className="min-w-0 truncate"
-            style={{ fontFamily: `"${value ?? defaultFont}", var(--font-sans)` }}
+            style={{ fontFamily: previewFamily(value ?? defaultFont) }}
           >
             {value ?? defaultLabel}
           </span>
@@ -365,9 +369,9 @@ function FontSelect({
               value={defaultLabel}
               onSelect={() => select(null)}
               data-checked={value === null}
-              className="cursor-pointer rounded-[11px]"
+              className="cursor-pointer rounded-md"
             >
-              <span style={{ fontFamily: `"${defaultFont}", var(--font-sans)` }}>
+              <span style={{ fontFamily: previewFamily(defaultFont) }}>
                 {defaultLabel}
               </span>
             </CommandItem>
@@ -388,7 +392,7 @@ function FontSelect({
                     value={font.name}
                     onSelect={() => select(font.name)}
                     data-checked={value === font.name}
-                    className="cursor-pointer rounded-[11px]"
+                    className="cursor-pointer rounded-md"
                   >
                     <span
                       className="min-w-0 truncate"
@@ -404,7 +408,7 @@ function FontSelect({
                         e.stopPropagation();
                         removeImportedFont(font.name);
                       }}
-                      className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                      className="ml-auto rounded-full p-0.5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                     </button>
@@ -424,7 +428,7 @@ function FontSelect({
                       key={`folder-${name}`}
                       value={name}
                       onSelect={() => importFile(file)}
-                      className="cursor-pointer rounded-[11px]"
+                      className="cursor-pointer rounded-md"
                     >
                       <span className="min-w-0 truncate">{name}</span>
                     </CommandItem>
@@ -449,7 +453,7 @@ function FontSelect({
           <button
             type="button"
             onClick={requestUpload}
-            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Upload01Icon}
@@ -461,7 +465,7 @@ function FontSelect({
           <button
             type="button"
             onClick={requestFolder}
-            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-[11px] px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
+            className="flex flex-1 cursor-pointer items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground"
           >
             <HugeiconsIcon
               icon={Folder01Icon}
@@ -476,7 +480,7 @@ function FontSelect({
   );
 }
 
-export function UiFontRow() {
+export function UiFontRow({ className }: { className?: string }) {
   const t = useT();
   const uiFont = useAppearanceCustomStore((s) => s.customization.uiFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -486,11 +490,12 @@ export function UiFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.ui}
       onCommit={(next) => patch({ uiFont: next })}
       ariaLabel={t("settings.appearance.custom.uiFont.label")}
+      className={className}
     />
   );
 }
 
-export function HeadingFontRow() {
+export function HeadingFontRow({ className }: { className?: string }) {
   const t = useT();
   const headingFont = useAppearanceCustomStore(
     (s) => s.customization.headingFont,
@@ -502,11 +507,12 @@ export function HeadingFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.heading}
       onCommit={(next) => patch({ headingFont: next })}
       ariaLabel={t("settings.appearance.custom.headingFont.label")}
+      className={className}
     />
   );
 }
 
-export function ChatFontRow() {
+export function ChatFontRow({ className }: { className?: string }) {
   const t = useT();
   const chatFont = useAppearanceCustomStore((s) => s.customization.chatFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -516,11 +522,12 @@ export function ChatFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.chat}
       onCommit={(next) => patch({ chatFont: next })}
       ariaLabel={t("settings.appearance.custom.chatFont.label")}
+      className={className}
     />
   );
 }
 
-export function CodeFontRow() {
+export function CodeFontRow({ className }: { className?: string }) {
   const t = useT();
   const codeFont = useAppearanceCustomStore((s) => s.customization.codeFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -530,12 +537,12 @@ export function CodeFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.code}
       onCommit={(next) => patch({ codeFont: next })}
       ariaLabel={t("settings.appearance.custom.codeFont.label")}
+      className={className}
     />
   );
 }
 
 /* ---------------------------- Imported fonts ---------------------------- */
-
 const FONT_MIME_BY_EXTENSION: Record<string, string> = {
   woff2: "font/woff2",
   woff: "font/woff",
@@ -545,8 +552,7 @@ const FONT_MIME_BY_EXTENSION: Record<string, string> = {
 
 const MAX_FONT_FILE_BYTES = Math.floor(1.5 * 1024 * 1024);
 
-// Trailing style words stripped when matching a file name to a family the
-// user already has ("Roboto-Bold.ttf" should match an installed "Roboto").
+// Trailing style words are stripped so Roboto-Bold.ttf matches an installed Roboto.
 const FONT_STYLE_SUFFIXES = new Set([
   "regular",
   "bold",
@@ -588,10 +594,7 @@ function familyCandidates(base: string): string[] {
 }
 
 /* ----------------------------- Folder fonts ----------------------------- */
-
-// Font files found by a folder scan this session, shared by every dropdown.
-// File handles cannot be persisted from a plain directory input, so the list
-// lives for the session; picking one imports it through the normal path.
+// Directory-input file handles cannot be persisted, so the scan lives for the session.
 type FolderFont = { name: string; file: File };
 let folderFontsCache: FolderFont[] = [];
 const folderFontsListeners = new Set<() => void>();
@@ -622,13 +625,7 @@ function fontNameFromFile(fileName: string, taken: Set<string>): string {
   return candidate;
 }
 
-/**
- * File-import plumbing for the font dropdowns: hidden inputs, validation,
- * and persistence. Successful uploads call onImported with the font name
- * so the dropdown can select it for its slot right away. Fonts the user
- * already has (bundled, imported, or installed on the device) are selected
- * directly instead of embedding a duplicate copy.
- */
+/** Fonts the user already has are selected directly instead of embedding a duplicate. */
 function useFontImport(onImported: (name: string) => void) {
   const t = useT();
   const importedFonts = useAppearanceCustomStore(
@@ -638,7 +635,6 @@ function useFontImport(onImported: (name: string) => void) {
   const inputRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
 
-  // Match the file name against fonts that already exist somewhere.
   const findExisting = (fileName: string): string | null => {
     for (const candidate of familyCandidates(fontBaseName(fileName))) {
       const lower = candidate.toLowerCase();
@@ -682,11 +678,10 @@ function useFontImport(onImported: (name: string) => void) {
         toast.error(t("settings.appearance.custom.importFont.errorFailed"));
         return;
       }
-      // Rewrite whatever MIME the browser guessed to the extension's font
-      // type so the stored data URL passes frontend and backend validation.
+      // Use the extension's MIME so the data URL passes frontend and backend validation.
       const base64 = result.slice(result.indexOf(",") + 1);
       const dataUrl = `data:${mime};base64,${base64}`;
-      // Keep the persisted store under the localStorage quota.
+      // Stay under the localStorage quota.
       const existingTotal = importedFonts.reduce(
         (sum, f) => sum + f.dataUrl.length,
         0,
@@ -705,7 +700,6 @@ function useFontImport(onImported: (name: string) => void) {
         ...importedFonts.map((f) => f.name),
       ]);
       const name = fontNameFromFile(file.name, taken);
-      // Prove the file is a loadable font before persisting it.
       const face = new FontFace(name, `url(${dataUrl})`);
       face
         .load()
@@ -760,7 +754,6 @@ function useFontImport(onImported: (name: string) => void) {
         ref={folderRef}
         type="file"
         className="hidden"
-        // Non-standard but universal directory picker attributes.
         {...({ webkitdirectory: "", directory: "" } as object)}
         onChange={(e) => {
           if (e.target.files) scanFolder(e.target.files);
@@ -800,7 +793,8 @@ function SizeInput({
     onCommit(normalized.value);
   };
   return (
-    <div className="flex items-center gap-1.5">
+    // Tagged so settings search can land on a nested size input.
+    <div data-settings-label={ariaLabel} className="flex items-center gap-1.5">
       <Input
         type="number"
         inputMode="numeric"
@@ -873,6 +867,24 @@ export function CodeFontSizeRow() {
   );
 }
 
+export function CodeDisplaySwitch({
+  field,
+  label,
+}: {
+  field: "codeLineNumbers" | "codeWordWrap" | "codeLigatures";
+  label: string;
+}) {
+  const checked = useAppearanceCustomStore((s) => s.customization[field]);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Switch
+      aria-label={label}
+      checked={checked}
+      onCheckedChange={(next) => patch({ [field]: next })}
+    />
+  );
+}
+
 export function FontSmoothingSwitch() {
   const fontSmoothing = useAppearanceCustomStore(
     (s) => s.customization.fontSmoothing,
@@ -887,7 +899,6 @@ export function FontSmoothingSwitch() {
 }
 
 /* ------------------------------ Interface ------------------------------- */
-
 export function ChatWidthSelect() {
   const t = useT();
   const chatWidth = useAppearanceCustomStore((s) => s.customization.chatWidth);
@@ -918,23 +929,160 @@ export function ChatWidthSelect() {
   );
 }
 
+const SENT_ATTACHMENTS_OPTIONS: SentAttachmentsSetting[] = ["auto", "list", "chips"];
+
+export function SentAttachmentsSelect() {
+  const t = useT();
+  const value = useAppearanceCustomStore((s) => s.customization.sentAttachments);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => {
+        if (next === "auto" || next === "list" || next === "chips") {
+          patch({ sentAttachments: next });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.sentAttachments.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {SENT_ATTACHMENTS_OPTIONS.map((option) => (
+          <SelectItem key={option} value={option}>
+            {t(`settings.appearance.custom.sentAttachments.${option}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
+  const { draft, sliderProps } = useSliderDraft(contrast, (value) => patch({ contrast: value }));
   return (
-    <div className="flex w-48 items-center gap-3">
+    <div className="flex w-64 items-center gap-3">
       <Slider
-        value={[contrast]}
+        className="contrast-slider"
+        {...sliderProps}
         min={0}
         max={100}
-        step={5}
-        onValueChange={(values: number[]) => patch({ contrast: values[0] })}
+        step={1}
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
-      <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">
-        {contrast}
-      </span>
+      <NumericValueInput
+        value={draft ?? contrast}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(value) => patch({ contrast: value })}
+        ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ElementOutlineSliderRow() {
+  const t = useT();
+  const { resolved } = useTheme();
+  const outline = useAppearanceCustomStore((s) => s.customization.elementOutline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  // Unset starts at the theme's own strength, so the first drag does not jump.
+  const themeOutline = useThemeElementOutline(outline === null);
+  const value = outline ?? themeOutline ?? GLASS_ELEMENT_OUTLINE[resolved];
+  const set = (next: number) => patch({ elementOutline: next });
+  const label = t("settings.appearance.custom.elementOutline.label");
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={label}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={label}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ComposerOutlineSliderRow() {
+  const t = useT();
+  const outline = useAppearanceCustomStore((s) => s.customization.composerOutline);
+  const backgroundOutline = useBackgroundStore((s) => s.value?.outline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  const value = outline ?? backgroundOutline ?? 0;
+  const set = (next: number) => patch({ composerOutline: next });
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("chatBackground.outline")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("chatBackground.outline")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ComposerPositionSliderRow() {
+  const t = useT();
+  const value = useChatPreferencesStore((s) => s.newChatComposerPosition);
+  const set = useChatPreferencesStore((s) => s.setNewChatComposerPosition);
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("settings.chat.composerPosition")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("settings.chat.composerPosition")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
     </div>
   );
 }
@@ -1008,14 +1156,15 @@ export function ReduceMotionSegmented() {
 }
 
 /* ------------------------------- Reset all ------------------------------ */
-
 export function ResetCustomizationButton() {
   const t = useT();
   const customization = useAppearanceCustomStore((s) => s.customization);
   const resetAll = useAppearanceCustomStore((s) => s.resetAll);
   const interfaceScale = useInterfaceScaleStore((s) => s.scale);
   const resetInterfaceScale = useInterfaceScaleStore((s) => s.reset);
+  const background = useBackgroundStore((s) => s.value);
   const pristine =
+    background === null &&
     isDefaultCustomization(customization) &&
     interfaceScale === INTERFACE_SCALE_RANGE.default;
   return (
@@ -1025,6 +1174,7 @@ export function ResetCustomizationButton() {
       size="sm"
       disabled={pristine}
       onClick={() => {
+        void resetChatBackground();
         resetAll();
         resetInterfaceScale();
       }}

@@ -1,0 +1,797 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import { test } from "node:test";
+
+// minimal DOM for native-view.ts with one page placeholder and test-controlled overlays
+const frames: (() => void)[] = [];
+const mutations: (() => void)[] = [];
+const overlays: {
+  getBoundingClientRect: () => DOMRect;
+  closest: () => null;
+  querySelector: (selector: string) => object | null;
+}[] = [];
+const documentListeners = new Map<string, (event: { target: unknown }) => void>();
+const rect = (x: number, y: number, width: number, height: number) =>
+  ({
+    left: x,
+    top: y,
+    right: x + width,
+    bottom: y + height,
+    width,
+    height,
+  }) as DOMRect;
+let pageBox = rect(500, 100, 500, 600);
+const placeholder = {
+  style: {} as Record<string, string> & {
+    removeProperty: (name: string) => void;
+  },
+  offsetParent: {},
+  isConnected: true,
+  getBoundingClientRect: () => pageBox,
+  closest: () => null,
+};
+const rootVars = new Map<string, string>();
+const rootStyle = {
+  getPropertyValue: (name: string) => rootVars.get(name) ?? "",
+  setProperty: (name: string, value: string) => rootVars.set(name, value),
+  removeProperty: (name: string) => rootVars.delete(name),
+};
+placeholder.style.removeProperty = (name) => {
+  delete placeholder.style[
+    name.replace(/-(\w)/g, (_, letter: string) => letter.toUpperCase())
+  ];
+};
+const noop = () => undefined;
+Object.assign(globalThis, {
+  window: Object.assign(globalThis, {
+    innerWidth: 1000,
+    addEventListener: noop,
+    removeEventListener: noop,
+  }),
+  document: {
+    documentElement: { style: rootStyle },
+    body: {},
+    addEventListener: (type: string, listener: (event: { target: unknown }) => void) =>
+      documentListeners.set(type, listener),
+    removeEventListener: (type: string) => documentListeners.delete(type),
+    querySelector: (selector: string) =>
+      selector.startsWith("[data-native-page") ? placeholder : null,
+    querySelectorAll: (selector: string) =>
+      selector.startsWith(".chat-full-view-dock") ? [] : overlays,
+  },
+  CSS: { escape: (value: string) => value },
+  DOMRect: class {
+    constructor(x: number, y: number, width: number, height: number) {
+      // biome-ignore lint/correctness/noConstructorReturn: a plain rect stands in for DOMRect
+      return rect(x, y, width, height);
+    }
+  },
+  Image: class {
+    src = "";
+    decode() {
+      return Promise.resolve();
+    }
+  },
+  requestAnimationFrame: (callback: () => void) => frames.push(callback),
+  cancelAnimationFrame: noop,
+  ResizeObserver: class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+  MutationObserver: class {
+    constructor(callback: () => void) {
+      mutations.push(callback);
+    }
+    observe() {}
+    disconnect() {}
+  },
+});
+
+type Call = { command: string; args?: Record<string, unknown> };
+const calls: Call[] = [];
+let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
+(globalThis as { nativeViewCall?: unknown }).nativeViewCall = (
+  command: string,
+  args?: Record<string, unknown>,
+) => {
+  calls.push({ command, args });
+  if (command === "browser_capture")
+    return new Promise((resolve) => (captureDone = resolve));
+  return Promise.resolve();
+};
+
+register("./helpers/browser-store-resolver.mjs", import.meta.url);
+register("./helpers/native-view-resolver.mjs", import.meta.url);
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
+const { refreshCoveredPage, startNativeViews } = await import(
+  "../src/features/browser/native-view.ts"
+);
+const { cornerInsetScope, cornerInsets } = await import(
+  "../src/lib/toast-offset.ts"
+);
+const insetVars = new Map<string, string>();
+cornerInsetScope({
+  style: {
+    setProperty: (name: string, value: string) => insetVars.set(name, value),
+    removeProperty: (name: string) => insetVars.delete(name),
+  },
+} as unknown as HTMLElement);
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+// apply overlay mutations before their scheduled frame
+async function frame(): Promise<void> {
+  for (const callback of mutations) callback();
+  for (const callback of frames.splice(0)) callback();
+  await settle();
+}
+const menu = {
+  getBoundingClientRect: () => rect(900, 100, 100, 200),
+  closest: () => null,
+  querySelector: () => null,
+};
+
+test("a menu that closes and reopens while the page is captured keeps the snapshot", async () => {
+  useBrowserStore.getState().openUrl("https://example.com/");
+  const stop = startNativeViews();
+  try {
+    // the first frame waits for whether pages layer under the app (not here)
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    assert.ok(
+      calls.some(
+        ({ command, args }) =>
+          command === "browser_view_show" && args?.tabId === tabId,
+      ),
+    );
+
+    overlays.push(menu);
+    await frame();
+    assert.ok(captureDone, "the covered page is captured before it hides");
+    // close and reopen the menu before capture resolves
+    overlays.length = 0;
+    await frame();
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    await frame();
+
+    assert.match(placeholder.style.backgroundImage ?? "", /^url\(blob:/);
+    const shows = calls.filter(
+      ({ command }) => command === "browser_view_show",
+    );
+    assert.deepEqual(
+      [shows.at(-1)?.args?.tabId, shows.at(-1)?.args?.parked],
+      [tabId, true],
+      "the page is parked off the window under the menu, not hidden",
+    );
+
+    // zoom from the menu reaches the parked page, and the snapshot follows it
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+    if (tab) useBrowserStore.getState().setZoom(tab.id, 1.25);
+    await frame();
+    assert.ok(
+      calls.some(({ command, args }) => command === "browser_view_zoom" && args?.zoom === 1.25),
+      "the zoom applies while the menu is open",
+    );
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(
+      calls.filter(({ command }) => command === "browser_capture").length,
+      captures + 1,
+      "the covered page is captured again at its new zoom",
+    );
+
+    overlays.length = 0;
+    await frame();
+    assert.equal(
+      placeholder.style.backgroundImage,
+      undefined,
+      "the snapshot goes once the page shows",
+    );
+  } finally {
+    stop();
+  }
+});
+
+test("tooltips along the toolbar capture the page once, and it returns when the pointer reaches it", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.net/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const tooltip = (x: number) => ({
+      getBoundingClientRect: () => rect(x, 90, 120, 30),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.includes("tooltip") ? {} : null),
+    });
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const lastShow = () => calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    const before = captures();
+    overlays.push(tooltip(600));
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(captures(), before + 1);
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, true]);
+
+    // the next button's tooltip reuses the snapshot
+    overlays.length = 0;
+    await frame();
+    overlays.push(tooltip(700));
+    await frame();
+    overlays.length = 0;
+    await frame();
+    assert.equal(captures(), before + 1, "no capture per button");
+    assert.equal(lastShow()?.parked, true, "still parked just after the tooltip closes");
+
+    documentListeners.get("pointerover")?.({
+      target: { closest: (selector: string) => (selector === "[data-native-page]" ? {} : null) },
+    });
+    await frame();
+    assert.deepEqual([lastShow()?.tabId, lastShow()?.parked], [tabId, undefined], "the page is back");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("the dialog the browser opens in over compare, projects and phones leaves its page live", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/overlay", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = calls.filter(({ command }) => command === "browser_capture").length;
+    overlays.push({
+      getBoundingClientRect: () => rect(0, 0, 1000, 800),
+      closest: () => null,
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
+    await frame();
+    await frame();
+    const lastShow = calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args;
+    assert.deepEqual([lastShow?.tabId, lastShow?.parked], [tabId, undefined], "shown, not parked");
+    assert.equal(calls.filter(({ command }) => command === "browser_capture").length, captures, "nothing is captured");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a capture that never lands keeps the page on screen instead of parking it blank, and tries again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.edu/", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const parked = () =>
+      calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && args?.parked);
+    const before = captures();
+    overlays.push(menu);
+    await frame();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(parked(), false, "no snapshot, so the page stays where it is");
+    await frame();
+    assert.equal(captures(), before + 2, "the next sync captures again");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(parked(), true, "parked once a snapshot shows");
+
+    // a zoom whose capture misses is captured again, though nothing else changes
+    const zoomed = captures();
+    if (tabId) useBrowserStore.getState().setZoom(tabId, 1.5);
+    await frame();
+    assert.equal(captures(), zoomed + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    const retried = captures();
+    assert.ok(retried >= zoomed + 2, "the stale snapshot is retried");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), retried + 1, "and again while captures keep missing");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    await frame();
+    assert.equal(captures(), retried + 1, "and left alone once it lands");
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a tab opened under a lasting cover is shown and captured, not left blank, and find misses retry", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/a", { newTab: true });
+    await frame();
+    await frame();
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+
+    // switch tabs while the cover stays
+    useBrowserStore.getState().openUrl("https://example.org/b", { newTab: true });
+    const next = useBrowserStore.getState().activeTabId;
+    await frame();
+    const shows = () => calls.filter(({ command, args }) => command === "browser_view_show" && args?.tabId === next);
+    assert.ok(shows().some(({ args }) => args?.url && !args?.parked), "the new tab is shown first");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    assert.equal(shows().at(-1)?.args?.parked, true, "then parked under its snapshot");
+    assert.notEqual(calls.filter(({ command }) => command === "browser_view_show").at(-1)?.args?.tabId, null);
+
+    // a find step whose capture misses is captured again
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    if (next) refreshCoveredPage(next);
+    assert.equal(captures(), before + 1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await frame();
+    assert.equal(captures(), before + 2, "the missed refresh is retried");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+  } finally {
+    stop();
+    overlays.length = 0;
+  }
+});
+
+test("a resize under a lasting cover parks the page at its new size and captures it again", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/resize", { newTab: true });
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    overlays.push(menu);
+    await frame();
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+    const captures = () => calls.filter(({ command }) => command === "browser_capture").length;
+    const before = captures();
+    pageBox = rect(500, 100, 450, 600);
+    await frame();
+    const parked = calls.filter(({ command, args }) => command === "browser_view_show" && args?.parked).at(-1)?.args;
+    assert.deepEqual([parked?.tabId, (parked?.bounds as { width: number }).width], [tabId, 450]);
+    assert.equal(captures(), before + 1, "the snapshot is taken again at the new size");
+    captureDone?.(new Uint8Array([137, 80, 78, 71]).buffer);
+    await settle();
+  } finally {
+    stop();
+    overlays.length = 0;
+    pageBox = rect(500, 100, 500, 600);
+  }
+});
+
+test("toasts move left of a page that sits beside the Run settings panel", async () => {
+  const stop = startNativeViews();
+  try {
+    pageBox = rect(500, 100, 500, 600);
+    await frame();
+    assert.equal(insetVars.get("--studio-browser-page-inset"), "500px");
+
+    // ignore pages away from the window edge because they do not constrain toasts
+    pageBox = rect(400, 100, 300, 600);
+    await frame();
+    assert.equal(insetVars.has("--studio-browser-page-inset"), false);
+
+    // include the 300px Run settings panel between the page and window edge
+    cornerInsets.style.setProperty("--studio-chat-settings-inset", "300px");
+    await frame();
+    assert.equal(insetVars.get("--studio-browser-page-inset"), "600px");
+
+    // omit the inset when no toast column fits; an overlapping toast will hide the page instead
+    pageBox = rect(200, 100, 500, 600);
+    await frame();
+    assert.equal(insetVars.has("--studio-browser-page-inset"), false);
+    assert.equal(rootVars.size, 0, "the insets reach their consumers, never <html>");
+  } finally {
+    stop();
+    cornerInsets.style.removeProperty("--studio-chat-settings-inset");
+    cornerInsets.style.removeProperty("--studio-browser-page-inset");
+    rootVars.clear();
+    pageBox = rect(500, 100, 500, 600);
+  }
+});
+
+test("a finished download is listed and reported after its tab closed, and warns when it isn't marked", async () => {
+  const stop = startNativeViews();
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    useBrowserStore.getState().closeTab(tabId);
+    await frame();
+    const seen: { level: string; message: string }[] = [];
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown;
+    };
+    g.nativeViewSeen = seen;
+    const done = {
+      kind: "download",
+      tabId,
+      url: "https://example.com/a.zip",
+      name: "a.zip",
+      path: null,
+      size: 3,
+      done: true,
+      success: true,
+    };
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d1", marked: true } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d2", marked: false } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d3", marked: null } });
+    // A tab this page never opened: the account signed in before the last reload (an account switch) started it.
+    g.nativeViewListener?.({ payload: { ...done, tabId: "tab-before-reload", downloadId: "d4", marked: true } });
+    assert.deepEqual(seen, [
+      { level: "history", message: "d1" },
+      { level: "success", message: "browser.native.downloaded" },
+      { level: "history", message: "d2" },
+      { level: "warning", message: "browser.native.notMarked" },
+      { level: "history", message: "d3" },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    stop();
+  }
+});
+
+test("an approved download runs on the Downloads button until it lands or its save is cancelled", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+    nativeViewDownloadsButton?: boolean;
+  };
+  g.nativeViewApprove = true;
+  g.nativeViewDownloadsButton = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    const prompt = { kind: "downloadPrompt", tabId, site: "https://example.org/", name: "a.zip" };
+    g.nativeViewListener?.({ payload: { ...prompt, url: "https://example.org/a.zip", id: "p1" } });
+    g.nativeViewListener?.({ payload: { ...prompt, url: "https://example.org/b.zip", id: "p2" } });
+    await frame();
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download", tabId, url: "https://example.org/a.zip", name: "a.zip", path: null, size: 3,
+        done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
+      },
+    });
+    g.nativeViewListener?.({
+      payload: { kind: "downloadCancelled", tabId, url: "https://example.org/b.zip", promptId: "p2" },
+    });
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "begin native:p2", "finish native:p1", "abandon native:p2"]);
+    // The button shows it running, so no "downloading" toast.
+    assert.deepEqual(g.nativeViewSeen, [{ level: "history", message: "d1" }]);
+  } finally {
+    g.nativeViewApprove = false;
+    g.nativeViewDownloadsButton = false;
+    stop();
+  }
+});
+
+test("two downloads of one address run apart: the first to land doesn't end the other", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+  };
+  g.nativeViewApprove = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const url = "https://example.org/same.zip";
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    const prompt = { kind: "downloadPrompt", tabId, url, site: "https://example.org/", name: "same.zip" };
+    g.nativeViewListener?.({ payload: { ...prompt, id: "p1" } });
+    g.nativeViewListener?.({ payload: { ...prompt, id: "p2" } });
+    await frame();
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download", tabId, url, name: "same.zip", path: null, size: 3,
+        done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
+      },
+    });
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "begin native:p2", "finish native:p1"]);
+  } finally {
+    g.nativeViewApprove = false;
+    stop();
+  }
+});
+
+test("a download that finished while its prompt was open doesn't keep spinning", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+    nativeViewDecide?: () => void;
+  };
+  g.nativeViewApprove = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const url = "https://example.org/big.zip";
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    // Already in staging, so the app delivers it before the decide call returns.
+    g.nativeViewDecide = () =>
+      g.nativeViewListener?.({
+        payload: {
+          kind: "download", tabId, url, name: "big.zip", path: null, size: 3,
+          done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
+        },
+      });
+    g.nativeViewListener?.({
+      payload: { kind: "downloadPrompt", tabId, url, site: "https://example.org/", name: "big.zip", id: "p1" },
+    });
+    await frame();
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "finish native:p1"]);
+    // No button on screen: it says it downloaded, and not then that it's downloading.
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "history", message: "d1" },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    g.nativeViewApprove = false;
+    g.nativeViewDecide = undefined;
+    stop();
+  }
+});
+
+test("with a Downloads button on screen, a download shows there, not as a toast", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewDownloadsButton?: boolean;
+  };
+  g.nativeViewDownloadsButton = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const seen: { level: string; message: string }[] = [];
+    g.nativeViewSeen = seen;
+    const event = { kind: "download", tabId, url: "https://example.com/b.zip", name: "b.zip", path: null, size: 3 };
+    g.nativeViewListener?.({ payload: { ...event, done: false, success: false, downloadId: null } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: true, downloadId: "d1", marked: true } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: false, downloadId: null } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: true, downloadId: "d2", marked: false } });
+    // The unmarked warning still toasts: the button only says the file finished.
+    assert.deepEqual(seen, [
+      { level: "history", message: "d1" },
+      { level: "history", message: "d2" },
+      { level: "warning", message: "browser.native.notMarked" },
+    ]);
+  } finally {
+    g.nativeViewDownloadsButton = false;
+    stop();
+  }
+});
+
+test("a native page and its downloads begun beside a temporary chat stay temporary when they land after it", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewVisits?: unknown;
+    nativeViewApprove?: boolean;
+  };
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    const seen: { level: string; message: string; temporary?: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    g.nativeViewSeen = seen;
+    g.nativeViewApprove = true;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    const url = "https://example.org/a.zip";
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.org/next", true);
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "a.zip", id: "p1" } });
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "a.zip", id: "p2" } });
+    await settle();
+    useChatRuntimeStore.getState().setIncognito(false);
+    load("https://example.org/next", false);
+    const done = { kind: "download", tabId, url, name: "a.zip", path: null, size: 3, done: true, success: true, marked: true };
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d1", promptId: "p1" } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d2", promptId: "p2" } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d3", promptId: null } });
+    load("https://example.org/later", true);
+    load("https://example.org/later", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.org/next", temporary: true },
+      { url: "https://example.org/later", temporary: false },
+    ]);
+    assert.deepEqual(
+      seen.filter((item) => item.level === "history"),
+      [
+        { level: "history", message: "d1", temporary: true },
+        { level: "history", message: "d2", temporary: true },
+        { level: "history", message: "d3" },
+      ],
+    );
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    delete g.nativeViewApprove;
+    stop();
+  }
+});
+
+test("a native page begun beside a normal chat is kept in history though its tab opened beside a temporary chat", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    useBrowserStore.getState().openUrl("https://example.net/", { newTab: true });
+    useChatRuntimeStore.getState().setIncognito(false);
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    // The view's first page is the entry's, even when it starts loading after the chat turned normal.
+    load("https://example.net/", true);
+    load("https://example.net/", false);
+    load("https://example.net/next", true);
+    load("https://example.net/next", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.net/", temporary: true },
+      { url: "https://example.net/next", temporary: false },
+    ]);
+    const seen: { level: string; message: string; temporary?: boolean }[] = [];
+    (globalThis as { nativeViewSeen?: unknown }).nativeViewSeen = seen;
+    (globalThis as { nativeViewApprove?: boolean }).nativeViewApprove = true;
+    const url = "https://example.net/b.zip";
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "b.zip", id: "p3" } });
+    await settle();
+    g.nativeViewListener?.({
+      payload: { kind: "download", tabId, url, name: "b.zip", path: null, size: 3, done: true, success: true, marked: true, downloadId: "d5", promptId: "p3" },
+    });
+    assert.deepEqual(seen.filter((item) => item.level === "history"), [{ level: "history", message: "d5" }]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    delete (globalThis as { nativeViewApprove?: boolean }).nativeViewApprove;
+    stop();
+  }
+});
+
+test("a native page begun beside a temporary chat keeps it through a redirect and a clear", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewVisits?: unknown;
+    nativeViewsClosed?: () => void;
+  };
+  try {
+    useBrowserStore.getState().openUrl("https://example.edu/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://example.edu/", true);
+    load("https://example.edu/", false);
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.edu/go", true);
+    useChatRuntimeStore.getState().setIncognito(false);
+    // The redirect starts again inside the same navigation.
+    load("https://example.edu/landed", true);
+    load("https://example.edu/landed", false);
+    assert.deepEqual(visits.at(-1), { url: "https://example.edu/landed", temporary: true });
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.edu/private", true);
+    load("https://example.edu/private", false);
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewsClosed?.();
+    await frame();
+    const tab = useBrowserStore.getState().tabs.find((item) => item.id === tabId)!;
+    const reached = currentEntry(tab);
+    assert.ok(reached.kind === "web" && reached.temporary === true);
+    load("https://example.edu/private", true);
+    load("https://example.edu/private", false);
+    assert.deepEqual(visits.at(-1), { url: "https://example.edu/private", temporary: true });
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});
+
+test("a temporary chat's hidden page stays temporary when it navigates while another chat is shown", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const runtime = useChatRuntimeStore.getState();
+  const store = useBrowserStore.getState();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  const shown = store.chat;
+  runtime.setIncognito(true);
+  store.showChat("single:temporary-hidden");
+  store.openUrl("https://private.example/");
+  const tabId = useBrowserStore.getState().activeTabId as string;
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://private.example/", true);
+    load("https://private.example/", false);
+    store.showChat("single:ordinary-shown");
+    runtime.setIncognito(false);
+    await frame();
+    assert.ok(useBrowserStore.getState().tabs.some((tab) => tab.id === tabId));
+    load("https://private.example/next", true);
+    load("https://private.example/next", false);
+    assert.deepEqual(visits, [
+      { url: "https://private.example/", temporary: true },
+      { url: "https://private.example/next", temporary: true },
+    ]);
+  } finally {
+    runtime.setIncognito(false);
+    delete g.nativeViewVisits;
+    stop();
+    useBrowserStore.getState().showChat(shown);
+  }
+});
+
+test("a new address asked for beside a temporary chat stays temporary when its native load starts after it", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  try {
+    useBrowserStore.getState().openUrl("https://example.info/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://example.info/", true);
+    load("https://example.info/", false);
+    useChatRuntimeStore.getState().setIncognito(true);
+    useBrowserStore.getState().navigate(tabId, { url: "https://example.info/private" });
+    useChatRuntimeStore.getState().setIncognito(false);
+    load("https://example.info/private", true);
+    load("https://example.info/private", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.info/", temporary: false },
+      { url: "https://example.info/private", temporary: true },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});

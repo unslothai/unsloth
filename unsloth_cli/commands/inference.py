@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from pathlib import Path
 from typing import List, Optional
 
 import typer
@@ -10,30 +11,47 @@ from unsloth_cli._inference import (
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
+    image_part,
     load_chat_backend,
     mlx_distributed_info,
     mlx_distributed_uses_mpi,
     raise_on_streamed_error,
+    server_load_opts,
     stream_to_stdout,
+    user_turn,
 )
 
 
 def inference(
+    ctx: typer.Context,
     model: str = typer.Argument(..., help = "HF model id or local path."),
     prompt: str = typer.Argument(..., help = "Prompt to send to the model."),
+    image: Optional[List[Path]] = typer.Option(
+        None,
+        "--image",
+        help = "Image file to send with the prompt, for vision models. Repeat for several.",
+    ),
     hf_token: Optional[str] = typer.Option(
         None, "--hf-token", envvar = "HF_TOKEN", help = "Hugging Face token if needed."
     ),
-    temperature: float = typer.Option(0.7, "--temperature"),
-    top_p: float = typer.Option(0.9, "--top-p"),
-    top_k: int = typer.Option(40, "--top-k"),
+    temperature: Optional[float] = typer.Option(
+        None, "--temperature", help = "Unset uses the model's recommended value."
+    ),
+    top_p: Optional[float] = typer.Option(
+        None, "--top-p", help = "Unset uses the model's recommended value."
+    ),
+    top_k: Optional[int] = typer.Option(
+        None, "--top-k", help = "Unset uses the model's recommended value."
+    ),
     max_new_tokens: Optional[int] = typer.Option(
         None,
         "--max-new-tokens",
         help = "Cap on generated tokens. Unset lets a reply use whatever the "
         "model's context window leaves free after the conversation.",
     ),
-    repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
+    repetition_penalty: Optional[float] = typer.Option(
+        None, "--repetition-penalty", help = "Unset leaves it off (1.0)."
+    ),
     system_prompt: str = typer.Option(
         "",
         "--system-prompt",
@@ -46,7 +64,12 @@ def inference(
         "and MLX, and 2048 on the transformers backend. A value that differs from a "
         "running Unsloth server's reloads the model.",
     ),
-    load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
+    load_in_4bit: bool = typer.Option(
+        True,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Left unset, a running Unsloth server that already "
+        "has this model loaded keeps its precision.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -98,6 +121,13 @@ def inference(
     if not verbose:
         configure_quiet_logging()
 
+    # Read the images before the slow load, so a bad path fails at once.
+    try:
+        images = [image_part(path) for path in image or ()]
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err = True)
+        raise typer.Exit(code = 1)
+
     is_mlx_distributed, rank, _world_size = mlx_distributed_info()
     if is_mlx_distributed and mlx_distributed_uses_mpi():
         if rank == 0:
@@ -121,22 +151,46 @@ def inference(
         load_opts["speculative_type"] = speculative_type
     if spec_draft_n_max is not None:
         load_opts["spec_draft_n_max"] = spec_draft_n_max
+    from unsloth_cli._npu import npu_model_path, npu_needs_studio_message
+
+    # An NPU model runs inside Unsloth Studio, never in this process.
+    npu_path = npu_model_path(model)
+    if npu_path and (no_server or is_mlx_distributed):
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = True)}", err = True)
+        raise typer.Exit(code = 1)
     chat_backend = (
-        None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
+        None
+        if (no_server or is_mlx_distributed)
+        else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
+    if chat_backend is None and npu_path:
+        typer.echo(f"Error: {npu_needs_studio_message(npu_path, no_server = False)}", err = True)
+        raise typer.Exit(code = 1)
     if chat_backend is None:
         chat_backend = load_chat_backend(model, **load_opts)
     try:
-        stream = chat_backend.stream(
-            [{"role": "user", "content": prompt}],
-            system_prompt = system_prompt,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            max_new_tokens = max_new_tokens,
-            repetition_penalty = repetition_penalty,
-            enable_thinking = think,
-        )
+        if images and not getattr(chat_backend, "supports_images", False):
+            if rank == 0:
+                typer.echo(
+                    f"Error: {model} is not a vision model, so it can't read --image.",
+                    err = True,
+                )
+            raise typer.Exit(code = 1)
+        try:
+            stream = chat_backend.stream(
+                [user_turn(prompt, images)],
+                system_prompt = system_prompt,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                max_new_tokens = max_new_tokens,
+                repetition_penalty = repetition_penalty,
+                enable_thinking = think,
+            )
+        except ValueError as exc:
+            if rank == 0:
+                typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(code = 1)
         stream = raise_on_streamed_error(stream)
         if rank == 0:
             typer.echo("Assistant:")

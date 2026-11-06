@@ -4,6 +4,7 @@
 let threads: unknown[] = [];
 let messagesByThread = new Map<string, unknown[]>();
 let batchFails = false;
+let batchFailures = new Set<string>();
 let messageReadsFail = false;
 let messageReadFailures = new Set<string>();
 
@@ -18,25 +19,44 @@ export function listStoredChatMessages(threadId: string): Promise<unknown[]> {
   return Promise.resolve(messagesByThread.get(threadId) ?? []);
 }
 
-export function batchListChatMessages(): Promise<Map<string, unknown[]>> {
-  if (batchFails) {
+let batchRequests: { threadIds: string[]; options?: unknown }[] = [];
+
+export function batchListChatMessages(
+  threadIds: string[],
+  options?: unknown,
+): Promise<Map<string, unknown[]>> {
+  batchRequests.push({ threadIds, options });
+  if (batchFails || threadIds.some((id) => batchFailures.has(id))) {
     return Promise.reject(new Error("batch read failed"));
   }
-  return Promise.resolve(new Map(messagesByThread));
+  return Promise.resolve(
+    new Map(threadIds.map((id) => [id, messagesByThread.get(id) ?? []])),
+  );
 }
 
 export function configureChatSearchHistoryStub(options: {
   threads?: unknown[];
   messagesByThread?: Map<string, unknown[]>;
   batchFails?: boolean;
+  // A batch holding any of these threads fails.
+  batchFailures?: Set<string>;
   messageReadsFail?: boolean;
   messageReadFailures?: Set<string>;
 }): void {
+  batchRequests = [];
   threads = options.threads ?? [];
   messagesByThread = options.messagesByThread ?? new Map();
   batchFails = options.batchFails ?? false;
+  batchFailures = options.batchFailures ?? new Set();
   messageReadsFail = options.messageReadsFail ?? false;
   messageReadFailures = options.messageReadFailures ?? new Set();
+}
+
+export function chatSearchBatchRequests(): {
+  threadIds: string[];
+  options?: unknown;
+}[] {
+  return batchRequests;
 }
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";

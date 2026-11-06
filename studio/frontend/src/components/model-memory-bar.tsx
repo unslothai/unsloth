@@ -1,15 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * VRAM bar for a downloaded model row: weights, then KV cache, then the MTP
- * draft reserve.
- *
- * Deliberately shaped like the live monitor's meter -- same height, same track
- * -- so "how full is my GPU" looks the same wherever it's asked. Colours come
- * from the user's Appearance settings (`--primary`, `--foreground`), so it
- * re-themes with everything else instead of pinning its own palette.
- */
+/** VRAM bar: weights, KV cache, MTP draft reserve. Shaped like the live monitor's meter. */
 
 import {
   type ModelMemorySource,
@@ -24,11 +16,7 @@ import {
 } from "@/lib/model-memory";
 import { cn } from "@/lib/utils";
 
-/**
- * Self-sizing bar for one model. Use this inside a `.map()`, where calling the
- * hook directly would break the rules of hooks. Renders nothing if the model
- * can't be sized.
- */
+/** For use inside `.map()`, where calling the hook directly would break the rules of hooks. */
 export function ModelMemoryBarFor({
   gpuGb,
   showReadout,
@@ -53,25 +41,11 @@ export function ModelMemoryBarFor({
   );
 }
 
-/**
- * Minimum width for a segment that isn't zero. On a 128 GB host a 0.7 GB KV
- * cache works out to two pixels, which reads as "nothing here" rather than
- * "small". Presentational only -- the percentages behind it stay exact.
- */
+/** Non-zero segments get a minimum width; the percentages behind them stay exact. */
 const MIN_SEGMENT_PX = 3;
 
-/**
- * The MTP reserve is a darker shade of the accent rather than its own colour:
- * it's a second set of weights, so it belongs visually with the weights segment
- * while staying distinguishable from it.
- */
 const SPEC_COLOR = "color-mix(in oklab, var(--primary) 62%, black)";
 
-/**
- * Segment colours per pressure band. Below 80% the bar keeps the user's accent;
- * above it the hue takes over to signal how tight things are. Each band keeps
- * three distinguishable steps so the weights / KV / draft split survives.
- */
 const SEGMENT_COLORS: Record<
   ModelMemoryPressure,
   { weights: string; kv: string; spec: string }
@@ -100,11 +74,7 @@ export function ModelMemoryBar({
   className,
 }: {
   segments: ModelMemorySegments;
-  /** Print the GB breakdown beside the bar. For roomy surfaces (the hub card),
-   *  where a two-pixel segment alone cannot convey the numbers. */
   showReadout?: boolean;
-  /** Dense-list styling: thinner, and held back until the numbers matter. A row
-   *  in a scannable list should read as a row, not as a chart. */
   compact?: boolean;
   className?: string;
 }) {
@@ -124,9 +94,7 @@ export function ModelMemoryBar({
     pressure,
   } = segments;
   const colors = SEGMENT_COLORS[pressure];
-  // Two failures, two fixes: oversized weights need a smaller quant, while a total that only
-  // overflows with context needs a shorter context or a quantized KV cache. Both get said --
-  // staying silent on the first reads as "this is fine" on a model that can't load at all.
+  // Oversized weights need a smaller quant; context overflow needs shorter context or a quantized KV.
   const warning =
     segments.status === "model-exceeds"
       ? t("modelMemory.tooLarge")
@@ -150,9 +118,7 @@ export function ModelMemoryBar({
           budget: formatMemoryGb(budgetGb),
         });
 
-  // llama.cpp reserves the whole KV cache up front -- 131072 context allocates
-  // 131072 cells before a token arrives -- so the bar charts the reservation.
-  // The rate is what says whether a shorter context would help.
+  // llama.cpp reserves the whole KV cache up front, so the bar charts the reservation.
   const perTokenLine =
     kvBytesPerToken > 0
       ? t("modelMemory.kvRate", { rate: formatKvRate(kvBytesPerToken) })
@@ -160,16 +126,12 @@ export function ModelMemoryBar({
 
   return (
     <div className={cn("mt-1 w-full", className)}>
-      {/* Decorative: the row already carries a Radix tooltip, so a native
-          `title` here would stack a second one on hover, and an aria-label on a
-          descendant would be concatenated into the row button's accessible
-          name. The numbers stay reachable through `showReadout`. */}
+      {/* Decorative: the row has a Radix tooltip, and an aria-label here would join the button's name. */}
       <div
         aria-hidden="true"
         className={cn(
           "flex w-full overflow-hidden rounded-full bg-muted",
           compact ? "h-[3px]" : "h-1.5",
-          // Comfortable fits recede; the bar gains presence as it fills.
           compact && pressure === "normal" && "opacity-55",
         )}
       >

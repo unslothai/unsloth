@@ -3,6 +3,7 @@
 
 "use client";
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import {
   Sheet,
   SheetCloseButton,
@@ -19,13 +20,14 @@ import {
   useExternalProvidersStore,
   formatMcpToolName,
   mcpServerFromProvenance,
+  mcpToolFromProvenance,
 } from "@/features/chat";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
-import { HelpCircleIcon } from "@hugeicons/core-free-icons";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { FC, ReactNode } from "react";
+import { type FC, type ReactNode, useEffect, useState } from "react";
 
 type ResponseDetailsMetadata = {
   modelId?: string;
@@ -84,16 +86,16 @@ function formatDate(value: Date | number | string | undefined): string | null {
   if (value == null) return null;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "medium",
-  }).format(date);
+  return new Intl.DateTimeFormat(
+    undefined,
+    withTimeFormat({ dateStyle: "medium", timeStyle: "medium" }),
+  ).format(date);
 }
 
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
   search: "Search",
   fetch: "Fetch",
-  code: "Code",
+  code: "Tools",
   images: "Images",
   mcp: "MCP",
   docs: "Docs",
@@ -108,6 +110,8 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   terminal: "Terminal",
   edit_file: "Edit",
   image_generation: "Images",
+  generate_image: "Images",
+  generate_video: "Video",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
 };
@@ -128,17 +132,27 @@ function toolCategoryFromCall(toolName: string): string | null {
   ) {
     return "code";
   }
-  if (normalized === "image_generation") return "images";
+  if (
+    normalized === "image_generation" ||
+    normalized === "generate_image" ||
+    normalized === "generate_video"
+  ) {
+    return "images";
+  }
   if (normalized === "search_knowledge_base") return "docs";
   if (normalized === "render_html") return "artifacts";
   if (normalized.startsWith("mcp__")) return "mcp";
   return null;
 }
 
-function formatToolCallName(toolName: string, mcpServer?: string): string {
+function formatToolCallName(toolName: string, provenance?: unknown): string {
   const normalized = toolName.toLowerCase();
   if (TOOL_CALL_LABELS[normalized]) return TOOL_CALL_LABELS[normalized];
-  const mcpLabel = formatMcpToolName(toolName, mcpServer);
+  const mcpLabel = formatMcpToolName(
+    toolName,
+    mcpServerFromProvenance(provenance),
+    mcpToolFromProvenance(provenance),
+  );
   if (mcpLabel) return `MCP: ${mcpLabel}`;
   // Malformed but still MCP: keep the prefix so the category check agrees.
   if (normalized.startsWith("mcp__")) return `MCP: ${toolName.slice(5)}`;
@@ -166,17 +180,18 @@ function toolCallsFromContent(content: unknown): string[] {
   );
 }
 
-function mcpServersFromContent(content: unknown): Map<string, string> {
-  const servers = new Map<string, string>();
-  if (!Array.isArray(content)) return servers;
+function mcpProvenanceFromContent(content: unknown): Map<string, unknown> {
+  const provenance = new Map<string, unknown>();
+  if (!Array.isArray(content)) return provenance;
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as { type?: unknown; toolName?: unknown; provenance?: unknown };
     if (p.type !== "tool-call" || typeof p.toolName !== "string") continue;
-    const server = mcpServerFromProvenance(p.provenance);
-    if (server) servers.set(p.toolName, server);
+    if (mcpServerFromProvenance(p.provenance)) {
+      provenance.set(p.toolName, p.provenance);
+    }
   }
-  return servers;
+  return provenance;
 }
 
 function enabledTools(
@@ -200,11 +215,11 @@ function enabledTools(
 
 function calledTools(
   toolCalls: string[],
-  mcpServers: Map<string, string>,
+  mcpProvenance: Map<string, unknown>,
 ): string | null {
   if (toolCalls.length === 0) return null;
   return uniqueValues(
-    toolCalls.map((name) => formatToolCallName(name, mcpServers.get(name))),
+    toolCalls.map((name) => formatToolCallName(name, mcpProvenance.get(name))),
   ).join(", ");
 }
 
@@ -216,7 +231,7 @@ function DetailSection({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-md bg-muted/45 p-3">
+    <section className="rounded-lg bg-muted/45 p-3">
       <h3 className="mb-2 font-heading text-foreground text-sm">{title}</h3>
       <div className="grid gap-2">{children}</div>
     </section>
@@ -314,10 +329,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 
   return (
     <span
-      // Out of find-in-page's reach: this is a hover affordance, transparent and unclickable until
-      // the message is hovered, so a match here would be counted and walked to under a highlight
-      // nobody can see. The index leaves opacity alone otherwise, so a message still fading in
-      // stays findable.
+      // Hidden from find-in-page: this hover affordance is invisible until the message is hovered.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className={cn(
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
@@ -331,6 +343,27 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 };
 
 export const MessageResponseDetailsSheet: FC<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ open, onOpenChange }) => {
+  const [mounted, setMounted] = useState(open);
+  useTimeFormat();
+  if (open && !mounted) setMounted(true);
+  useEffect(() => {
+    if (open) return;
+    const timer = window.setTimeout(() => setMounted(false), 500);
+    return () => window.clearTimeout(timer);
+  }, [open]);
+  if (!mounted && !open) return null;
+  return (
+    <MessageResponseDetailsSheetContent
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+};
+
+const MessageResponseDetailsSheetContent: FC<{
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }> = ({ open, onOpenChange }) => {
@@ -354,7 +387,6 @@ export const MessageResponseDetailsSheet: FC<{
     (promptTokens != null && completionTokens != null
       ? promptTokens + completionTokens
       : undefined);
-  // Same gate as the timing tooltip: a one-token prompt or a missing rate has no speed to show.
   const promptRate = asNumber(serverTimings?.prompt_per_second);
   const promptSpeed =
     (asNumber(serverTimings?.prompt_n) ?? 0) > 1 && (promptRate ?? 0) > 0
@@ -365,7 +397,7 @@ export const MessageResponseDetailsSheet: FC<{
   const summaryLabel =
     modelLabel === "Not recorded" ? "Model not recorded" : `Used ${modelLabel}`;
   const messageToolCalls = toolCallsFromContent(message.content);
-  const mcpServers = mcpServersFromContent(message.content);
+  const mcpProvenance = mcpProvenanceFromContent(message.content);
   const toolCalls =
     responseDetails?.toolCalls && responseDetails.toolCalls.length > 0
       ? responseDetails.toolCalls
@@ -375,14 +407,14 @@ export const MessageResponseDetailsSheet: FC<{
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        className="w-[min(calc(28rem*var(--ui-space-scale,1)),100vw)] p-0 sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
         showCloseButton={false}
       >
         <SheetHeader className="border-b p-4">
           <div className="relative">
             <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
               <HugeiconsIcon
-                icon={HelpCircleIcon}
+                icon={InformationCircleIcon}
                 strokeWidth={1.75}
                 className="size-icon text-chat-icon-fg"
               />
@@ -396,7 +428,7 @@ export const MessageResponseDetailsSheet: FC<{
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-          <div className="min-w-0 rounded-md border border-border/70 bg-card p-3">
+          <div className="min-w-0 rounded-lg border border-border/70 bg-card p-3">
             <p className="min-w-0 break-words font-heading text-foreground text-sm">
               {summaryLabel}
             </p>
@@ -500,7 +532,7 @@ export const MessageResponseDetailsSheet: FC<{
               label="Enabled"
               value={enabledTools(responseDetails?.tools, toolCalls)}
             />
-            <DetailRow label="Called" value={calledTools(toolCalls, mcpServers)} />
+            <DetailRow label="Called" value={calledTools(toolCalls, mcpProvenance)} />
             <DetailRow
               label="Confirmation"
               value={

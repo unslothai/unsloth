@@ -1,47 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Two defects that presented as one, and neither names this driver in its
-traceback.
-
-Measured over six sessions from ONE commit, deterministic per arm:
-
-| arm | Default leg python | torch | datasets | verdict |
-|---|---|---|---|---|
-| A (3 runs) | 3.12.13 | 2.10.0+cu128 | 4.3.0 | pass 3/3 |
-| B (3 runs) | **3.13.13** | 2.12.1+cu130 | 5.0.1 | **fail 3/3** |
-
-Every other leg in both arms stayed on 3.12.13.
-
-**Defect one: the venv interpreter was never pinned.** uv's default
-python-preference is `managed`, so once any managed CPython exists under
-``~/.local/share/uv/python`` a bare ``uv venv`` builds on that instead of the
-Kaggle image's interpreter. ``--system-site-packages`` is still accepted and
-still inherits nothing, because a 3.13 venv cannot see a 3.12 site-packages. The
-leg then resolves torch, datasets and pyarrow from PyPI -- a stack no Kaggle
-user has -- and pays minutes for the privilege, with nothing red.
-
-**Defect two: the overlay directory was hostile to dill**, which is what turned
-the wrong interpreter into a crash. ``dill._dill._is_builtin_module`` pickles a
-module by REFERENCE only if its ``__file__`` starts with a sys prefix, ends with
-an extension suffix, or contains the literal string ``site-packages``. A plain
-``pip install --target /tmp/t4ci_venvs/overlay_X`` satisfies none of the three,
-so everything in the overlay is pickled BY VALUE. ``Dataset.from_dict``
-fingerprints through dill, ``datasets/utils/_dill.py:_save_arrowTable`` saves
-``create_arrowTable``, dill walks its globals into the pyarrow module and dies
-on pyarrow's Cython ``MonthDayNano``, whose ``__module__`` is ``builtins``:
-
-    PicklingError: Can't pickle <class 'MonthDayNano'>:
-    it's not found as builtins.MonthDayNano
-
-Reproduced on CPU in seconds against a byte-identical package tree with the
-DIRECTORY NAME as the only variable: the plain ``--target`` directory raised,
-the copy named ``site-packages`` returned a fingerprint.
-
-The rules below are asserted through the GENERATED driver source and, for the
-dill half, by executing the real path expression against the real dill
-predicate. A rule written against the template would not have caught either.
-"""
+"""Pin the venv interpreter, and name the overlay site-packages so dill pickles by reference."""
 
 from __future__ import annotations
 
@@ -75,11 +35,6 @@ def _driver_source() -> str:
         overlays = {f"t4_{legs.LEGS[n].name}.ipynb": tuple(legs.LEGS[n].overlay) for n in names},
     )
     return "".join("".join(c["source"]) for c in driver["cells"])
-
-
-# --------------------------------------------------------------------------
-# Defect one: the interpreter
-# --------------------------------------------------------------------------
 
 
 def test_the_venv_is_built_on_the_drivers_own_interpreter():
@@ -118,17 +73,8 @@ def test_the_resulting_python_version_is_REPORTED():
     ), "nothing compares the venv against the driver's own interpreter"
 
 
-# --------------------------------------------------------------------------
-# Defect two: the overlay directory, driven against the real dill predicate
-# --------------------------------------------------------------------------
-
-
 def _overlay_dir_from_generated_source() -> pathlib.Path:
-    """Evaluate the driver's OWN `_ov_dir` expression.
-
-    Not a hand-written copy of the path: the rule below is only worth having if
-    it fails when the generated expression changes.
-    """
+    """Evaluates the driver's generated _ov_dir expression, so the rule fails if that expression changes."""
     source = _driver_source()
     line = [ln.strip() for ln in source.splitlines() if ln.strip().startswith("_ov_dir = ")]
     assert len(line) == 1, f"expected one _ov_dir assignment, found {len(line)}"
@@ -142,11 +88,7 @@ def _overlay_dir_from_generated_source() -> pathlib.Path:
 
 
 def test_the_overlay_lands_where_dill_will_pickle_by_reference():
-    """The real dill predicate, against the real generated path.
-
-    `_is_builtin_module` needs only `__file__`, so a module object standing in
-    for pyarrow is enough to execute the decision that crashed the leg.
-    """
+    """Real dill `_is_builtin_module` on the overlay path; a stand-in pyarrow only needs `__file__`."""
     dill_dill = pytest.importorskip("dill._dill")
     ov = _overlay_dir_from_generated_source()
 
@@ -164,8 +106,7 @@ def test_the_mutation_this_rule_exists_for_is_actually_caught():
     dill answers True for everything, which it does not."""
     dill_dill = pytest.importorskip("dill._dill")
     before = types.ModuleType("pyarrow")
-    # The path the driver used until this was found: a --target directory that
-    # is neither under a sys prefix nor named site-packages.
+    # The old --target path: neither under a sys prefix nor named site-packages.
     before.__file__ = "/tmp/t4ci_venvs/overlay_t4_Default/pyarrow/__init__.py"
     assert not dill_dill._is_builtin_module(before), (
         "dill no longer distinguishes the two paths, so the fix above may have "

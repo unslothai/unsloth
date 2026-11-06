@@ -28,7 +28,8 @@ def _atomic_write_text(
     path.parent.mkdir(parents = True, exist_ok = True)
     fd, tmp_path = tempfile.mkstemp(prefix = ".stamp_studio.", dir = dirpath)
     try:
-        with os.fdopen(fd, "w", encoding = encoding) as handle:
+        # newline="\n": the target is a tracked .py pinned to LF by .gitattributes.
+        with os.fdopen(fd, "w", encoding = encoding, newline = "\n") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())

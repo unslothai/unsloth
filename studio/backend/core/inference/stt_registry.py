@@ -15,13 +15,14 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional, Sequence
 
+from core.inference.inference_gate import holds_inference
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 logger = get_logger(__name__)
 
-# Every engine a dictation model can be resident on. Order is the order an unload sweeps them, which matters only for
-# logging.
-STT_ENGINES = ("transformers", "gguf", "mtmd")
+# Unload sweep order; only matters for logging.
+STT_ENGINES = ("transformers", "gguf", "mtmd", "audiocpp")
 
 # Serialises load-then-release so two loads on different engines cannot leave both resident.
 _load_lock = threading.Lock()
@@ -35,16 +36,22 @@ def sidecar_for(engine: str) -> Any:
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         return get_ggml_stt_sidecar()
+    if engine == "audiocpp":
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+        return get_audio_cpp_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
 
     return get_stt_sidecar()
 
 
+@_invalidates_gpu_memory("stt load")
+@holds_inference
 def load(
     model: Optional[str],
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
     device: Optional[str] = None,
+    **options,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
 
@@ -60,28 +67,22 @@ def load(
     """
     others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
-        # Release the other engines BEFORE allocating, but only once the checkpoint is known to be on disk. Holding
-        # two engines across the load is what makes a switch OOM on a device that fits either alone; releasing blind
-        # would let a 409 for a model that was never downloaded cost the user the engine they were already using. When
-        # the answer is not certain, keep the old order and accept the peak.
+        # Release other engines before allocating only once the checkpoint is on disk, so a switch
+        # does not OOM but a 409 never costs the current engine.
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
         else:
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
             unload(others, wait = False)
 
 
 def _model_is_downloaded(engine: str, model: str) -> bool:
-    """True only when the load is certain not to be turned away for a missing checkpoint.
-
-    Deliberately conservative: any doubt, including an import or lookup failure, answers
-    False so the caller keeps the ordering that cannot lose a resident engine.
-    """
+    """Any doubt, including an import or lookup failure, answers False, so a resident engine is kept."""
     try:
         if engine == "mtmd":
             from core.inference import stt_mtmd_sidecar
@@ -89,6 +90,13 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         if engine == "gguf":
             from core.inference import stt_ggml_sidecar
             return stt_ggml_sidecar._cached_model_path(model) is not None
+        if engine == "audiocpp":
+            from core.inference import stt_audiocpp_sidecar
+
+            # A missing runtime refuses the load just as surely as missing weights.
+            return stt_audiocpp_sidecar.is_available() and stt_audiocpp_sidecar.is_model_downloaded(
+                model
+            )
         from core.inference import stt_sidecar
 
         return (
@@ -99,6 +107,7 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         return False
 
 
+@_invalidates_gpu_memory("stt unload")
 def unload(
     engines: Optional[Sequence[str]] = None,
     *,
@@ -126,11 +135,7 @@ def unload(
 
 
 def resident() -> dict:
-    """What dictation currently holds, for the shared inference status.
-
-    Never raises: a sidecar that cannot even be imported reports nothing rather
-    than taking the status endpoint down with it.
-    """
+    """Never raises: a sidecar that cannot be imported reports nothing rather than break status."""
     for engine in STT_ENGINES:
         try:
             sidecar = sidecar_for(engine)

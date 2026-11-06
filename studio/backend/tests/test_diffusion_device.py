@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic, CPU-only tests for the diffusion device/dtype resolver.
-
-`torch` is stubbed via a fake module so no GPU/torch is needed, and
-`utils.hardware` is either stubbed (studio-layer path) or forced to fail
-(torch-probe fallback path). Both paths are asserted.
-"""
+"""Device resolver on CPU with torch faked; both the studio-layer and torch-probe fallback paths."""
 
 from __future__ import annotations
 
@@ -19,9 +14,6 @@ import pytest
 from core.inference import diffusion_device as dd
 
 
-# ── Fakes ─────────────────────────────────────────────────────────────
-
-
 class _FakeDtype:
     def __init__(self, name: str) -> None:
         self.name = name
@@ -32,7 +24,7 @@ class _FakeDtype:
     def __hash__(self) -> int:
         return hash(self.name)
 
-    def __repr__(self) -> str:  # str(dtype) -> "torch.bfloat16"
+    def __repr__(self) -> str:
         return f"torch.{self.name}"
 
 
@@ -75,9 +67,7 @@ def _make_torch(
     xpu_available = None,  # None -> no xpu attr; True/False -> present
     xpu_bf16: bool = False,
     device_count: int = 1,
-    # Free VRAM per physical index, for the multi-card pick. Absent -> 0.
     free_vram_by_index: Optional[dict] = None,
-    # Records every torch.cuda.set_device() this fake receives, so a test can assert the pin.
     set_device_calls: Optional[list] = None,
 ) -> types.ModuleType:
     torch = types.ModuleType("torch")
@@ -153,9 +143,6 @@ def _install(
     monkeypatch.setitem(sys.modules, "utils.hardware", fake_uh)
 
 
-# ── Unsloth-layer path ─────────────────────────────────────────────────
-
-
 def test_cuda_ampere_bf16(monkeypatch):
     torch = _make_torch(cuda_available = True, capability = (8, 0))
     _install(monkeypatch, torch, studio_device = "cuda")
@@ -196,7 +183,15 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    assert t.supports_default_torch_compile is False  # ROCm disables default compile
+    assert t.supports_default_torch_compile is True
+
+
+def test_rocm_target_compile_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    torch = _make_torch(cuda_available = True, bf16_supported = True)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    t = dd.resolve_diffusion_device_target()
+    assert t.backend == "rocm" and t.supports_default_torch_compile is False
 
 
 def test_rocm_without_bf16_uses_fp16(monkeypatch):
@@ -237,7 +232,7 @@ def test_mps_probe_raises_uses_fp32_not_fp16(monkeypatch):
     torch = _make_torch(mps_available = True, mps_probe = "raise")
     _install(monkeypatch, torch, studio_device = "mlx")
     t = dd.resolve_diffusion_device_target()
-    assert t.device == "mps" and t.dtype == FP32  # strict: never silent fp16
+    assert t.device == "mps" and t.dtype == FP32
 
 
 def test_mps_probe_nonfinite_uses_fp32(monkeypatch):
@@ -249,7 +244,7 @@ def test_mps_probe_nonfinite_uses_fp32(monkeypatch):
 
 def test_studio_cpu_on_apple_prefers_mps(monkeypatch):
     torch = _make_torch(mps_available = True, mps_probe = "pass")
-    _install(monkeypatch, torch, studio_device = "cpu")  # Unsloth reports CPU (no mlx pkg)
+    _install(monkeypatch, torch, studio_device = "cpu")
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
 
@@ -262,9 +257,6 @@ def test_cpu_when_nothing_available(monkeypatch):
     assert not any(
         (t.supports_model_cpu_offload, t.supports_default_torch_compile, t.supports_pinned_transfer)
     )
-
-
-# ── torch-probe fallback path (utils.hardware import fails) ────────────
 
 
 def test_fallback_cuda(monkeypatch):
@@ -302,15 +294,24 @@ def test_fallback_cpu(monkeypatch):
     assert t.device == "cpu" and t.dtype == FP32
 
 
-# ── from-torch-device reconstruction + public dict ────────────────────
-
-
 def test_from_torch_device_cuda(monkeypatch):
     torch = _make_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
     t = dd.diffusion_device_target_from_torch_device("cuda:0", FP32)
     assert (t.device, t.backend, t.vendor, t.dtype) == ("cuda", "cuda", "nvidia", FP32)
     assert t.is_cuda_torch_device
+
+
+def test_from_torch_device_tag_only_rocm(monkeypatch):
+    # AMD SDK / Radeon wheels: no torch.version.hip, ROCm only in __version__. Must stay ROCm so the
+    # probe and UNSLOTH_DIFFUSION_ROCM_COMPILE apply.
+    torch = _make_torch()
+    torch.__version__ = "2.9.0+rocm7.1.0"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.backend, t.vendor, t.ordinal) == ("rocm", "amd", 1)
+    assert t.supports_default_torch_compile is False
 
 
 def test_from_torch_device_mps_and_cpu(monkeypatch):
@@ -339,9 +340,6 @@ def test_public_dict_dtype_string(dtype, expected):
     assert d["dtype"] == expected and "torch." not in d["dtype"]
 
 
-# -- float64 capability + the RoPE demotion it drives -------------------------------------------
-
-
 def test_only_mps_lacks_float64(monkeypatch):
     torch = _make_torch(mps_available = True, mps_probe = "pass")
     _install(monkeypatch, torch)
@@ -349,6 +347,15 @@ def test_only_mps_lacks_float64(monkeypatch):
     for device in ("cuda", "xpu", "cpu"):
         assert dd.diffusion_device_target_from_torch_device(device, FP32).supports_float64 is True
     assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
+
+
+def test_float64_is_built_on_the_device_unless_it_lacks_it():
+    for device in ("cuda", "cuda:1", "xpu", "cpu", "meta"):
+        assert dd.float64_device(device) is device
+    # Callers pass torch.device objects, which only stringify to the device name.
+    mps = type("Device", (), {"__str__": lambda self: "mps:0"})()
+    for device in ("mps", "mps:0", mps):
+        assert dd.float64_device(device) == "cpu"
 
 
 class _RopeModule:
@@ -378,8 +385,7 @@ def _cuda_target():
 
 
 def test_force_float32_rope_demotes_every_component_on_mps():
-    # Two components, several modules each: the connectors and the transformer both carry RoPE,
-    # so demoting only the first one found would still crash inside the denoise loop.
+    # Connectors and transformer both carry RoPE, so every module must be demoted.
     conn, dit_a, dit_b = _RopeModule(), _RopeModule(), _RopeModule()
     pipe = _Pipe(connectors = _Component(conn), transformer = _Component(dit_a, dit_b))
     assert dd.force_float32_rope(pipe, _mps_target()) == 3
@@ -401,7 +407,6 @@ def test_force_float32_rope_skips_modules_without_the_flag():
 
 
 def test_force_float32_rope_tolerates_non_module_components():
-    # Pipelines carry schedulers and tokenizers with no .modules(); they must not abort the walk.
     rope = _RopeModule()
     pipe = _Pipe(scheduler = object(), tokenizer = None, transformer = _Component(rope))
     assert dd.force_float32_rope(pipe, _mps_target()) == 1
@@ -409,15 +414,8 @@ def test_force_float32_rope_tolerates_non_module_components():
 
 
 def test_the_video_loader_demotes_rope():
-    # The tests above prove the helper works, not that anything calls it: deleting the call site
-    # leaves every one of them green while LTX-2 goes back to raising on Metal. Where in the
-    # loader is not asserted -- the flag is read when a pipeline first builds its frequency
-    # tables, after load_pipeline returns -- but reaching it unconditionally is, since the helper
-    # already no-ops on a float64 device and a guard here could only ever get the polarity wrong.
-    #
-    # Asserted as "reached with no condition above it" rather than by rejecting `if`: a guard can
-    # equally be written `target.supports_float64 and force_float32_rope(...)` or as a ternary,
-    # and naming the shapes only rejects the ones already thought of.
+    # Guards that the call site exists and is unconditional (the helper no-ops on float64 devices);
+    # checked via AST so `and` / ternary guards are caught too.
     import ast
     from pathlib import Path
 
@@ -437,7 +435,6 @@ def test_the_video_loader_demotes_rope():
             and node.func.id == "force_float32_rope"
         )
 
-    # Everything a condition could skip, whatever syntax expresses it.
     conditional = {
         id(inner)
         for node in ast.walk(loader)
@@ -454,7 +451,74 @@ def test_the_video_loader_demotes_rope():
     )
 
 
-# ── Pressure-gated decoder sync ───────────────────────────────────────
+# ── Frame padding by concatenation on Metal ───────────────────────────
+
+
+def _frame_pad_pipe(factor_t: int, name: str = "AvgDown3D"):
+    torch = pytest.importorskip("torch")
+
+    class Shortcut(torch.nn.Module):
+        """The diffusers shortcut's padding, recording how much of it ``F.pad`` was left to do."""
+
+        def __init__(self):
+            super().__init__()
+            self.factor_t = factor_t
+            self.padded = []
+
+        def forward(self, x):
+            pad_t = (self.factor_t - x.shape[2] % self.factor_t) % self.factor_t
+            self.padded.append(pad_t)
+            return torch.nn.functional.pad(x, (0, 0, 0, 0, pad_t, 0))
+
+    Shortcut.__name__ = name
+    shortcut = Shortcut()
+    return torch, shortcut, _Pipe(vae = torch.nn.Sequential(shortcut), scheduler = object())
+
+
+@pytest.mark.parametrize("name", ["AvgDown3D", "QwenImage21AvgDown3D"])
+@pytest.mark.parametrize("factor_t, frames", [(2, 1), (2, 3), (4, 5), (2, 4)])
+def test_frame_pad_fix_pads_by_concatenation_on_mps(factor_t, frames, name):
+    torch, shortcut, pipe = _frame_pad_pipe(factor_t, name)
+    x = torch.arange(2 * 3 * frames * 2 * 2, dtype = torch.float32).reshape(2, 3, frames, 2, 2)
+    expected = shortcut(x)
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0  # one hook, however often a load runs
+    shortcut.padded.clear()
+    assert torch.equal(shortcut(x), expected)
+    assert shortcut.padded == [0]  # nothing left for the pad Metal gets wrong
+
+
+def test_frame_pad_fix_is_metal_only():
+    torch, shortcut, pipe = _frame_pad_pipe(2)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    shortcut(torch.zeros(1, 1, 1, 2, 2))
+    assert shortcut.padded == [1]
+
+
+def test_the_image_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
+
+
+def test_the_image_loader_syncs_every_decoder_call():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference import diffusion
+
+    src = textwrap.dedent(
+        inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline))
+    )
+    calls = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "install_vae_sync"
+    ]
+    assert len(calls) == 1
 
 
 def _target(device: str) -> dd.DiffusionDeviceTarget:
@@ -490,151 +554,62 @@ class _FakeDecoder:
         return outputs
 
 
-def _pipe_with(decoder) -> types.SimpleNamespace:
-    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder))
+def _pipe_with(decoder, encoder = None) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder, encoder = encoder))
 
 
-def _mps_torch(used = 0, recommended = 100) -> types.ModuleType:
-    """torch whose mps backend counts synchronize() calls over a settable memory reading."""
+def _mps_torch() -> types.ModuleType:
     torch = types.ModuleType("torch")
     torch.syncs = 0
-    torch.used = used
 
     def _bump():
         torch.syncs += 1
 
-    torch.mps = types.SimpleNamespace(
-        synchronize = _bump,
-        recommended_max_memory = lambda: recommended,
-        driver_allocated_memory = lambda: torch.used,
-    )
+    torch.mps = types.SimpleNamespace(synchronize = _bump)
     return torch
 
 
 @pytest.mark.parametrize("device", ["cuda", "xpu", "cpu"])
-def test_decoder_sync_is_metal_only(monkeypatch, device):
+def test_vae_sync_is_metal_only(monkeypatch, device):
     monkeypatch.setitem(sys.modules, "torch", _mps_torch())
     decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target(device)) is False
+    assert dd.install_vae_sync(_pipe_with(decoder), _target(device)) is False
     assert decoder.hooks == []
 
 
-def test_decoder_sync_idle_while_memory_is_plentiful(monkeypatch):
-    # The whole point of the gate: a decode that fits pays nothing at all.
-    torch = _mps_torch(recommended = 100, used = 10)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    decoder.decode(5)
-    assert torch.syncs == 0
-
-
-def test_decoder_sync_runs_once_per_decoder_call_above_the_threshold(monkeypatch):
-    torch = _mps_torch(recommended = 100, used = 10)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    decoder.decode(2)
-    assert torch.syncs == 0
-    # The growth this bounds is per decoder call, so every call above the threshold syncs.
-    torch.used = 100 * dd.DECODE_SYNC_FRACTION
-    decoder.decode(3)
-    assert torch.syncs == 3
-    # ...and it stands down again once the allocator has given the memory back.
-    torch.used = 10
-    decoder.decode(4)
-    assert torch.syncs == 3
-
-
-def test_decoder_sync_threshold_scales_with_the_device(monkeypatch):
-    # Pins the policy AND that the budget is a fraction of this device's working set rather than a
-    # fixed byte count -- a decode is only "running out" relative to the machine it runs on.
-    torch = _mps_torch(recommended = 200, used = 169)
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    decoder.decode(1)
-    assert torch.syncs == 0
-    torch.used = 170
-    decoder.decode(1)
-    assert torch.syncs == 1
-    assert dd.DECODE_SYNC_FRACTION == 0.85
-
-
-def test_decoder_sync_preserves_the_decoder_output(monkeypatch):
+def test_vae_sync_runs_after_every_decoder_call_and_keeps_its_output(monkeypatch):
     # An nn.Module forward hook that returns non-None REPLACES the output; this one must not.
-    torch = _mps_torch(recommended = 100, used = 100)
+    torch = _mps_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    assert decoder.decode(2) == ["out0", "out1"]
-    assert torch.syncs == 2
-
-
-@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
-def test_decoder_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
-    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
-    assert dd.install_decoder_sync(pipe, _target("mps")) is False
-
-
-def _mps_torch_without_recommended(used = 0) -> types.ModuleType:
-    """torch 2.4's mps surface: driver_allocated_memory and synchronize, no working-set reading.
-
-    Verified against torch/mps/__init__.py at v2.4.0 (absent) and v2.5.0 (present), and against
-    an installed torch 2.4.1.
-    """
-    torch = _mps_torch(used = used)
-    del torch.mps.recommended_max_memory
-    return torch
-
-
-def test_decoder_sync_survives_a_torch_without_the_memory_reading(monkeypatch):
-    # install.sh keeps an existing venv's torch (>=2.4), and reading a 2.5 API there raised
-    # AttributeError from inside the video load -- after the download, with no OOM to explain it.
-    torch = _mps_torch_without_recommended()
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    # No budget to compare against, so it must not silently decide the decode is fine: an
-    # unbounded Wan decode is what grew past 148 GiB.
+    assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(3) == ["out0", "out1", "out2"]
     assert torch.syncs == 3
 
 
-def test_decoder_sync_survives_a_working_set_reading_that_raises(monkeypatch):
+def test_vae_sync_runs_after_every_encoder_call_too(monkeypatch):
     torch = _mps_torch()
-
-    def _boom():
-        raise RuntimeError("MPS backend is not available")
-
-    torch.mps.recommended_max_memory = _boom
     monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
-    decoder.decode(2)
+    decoder, encoder = _FakeDecoder(), _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(decoder, encoder), _target("mps")) is True
+    assert encoder.decode(2) == ["out0", "out1"]
     assert torch.syncs == 2
+    decoder.decode(1)
+    assert torch.syncs == 3
+    lone = _FakeDecoder()
+    assert dd.install_vae_sync(_pipe_with(object(), lone), _target("mps")) is True
+    lone.decode(1)
+    assert torch.syncs == 4
 
 
-def test_decoder_sync_survives_a_gauge_that_raises_mid_decode(monkeypatch):
-    torch = _mps_torch(recommended = 100, used = 10)
-
-    def _boom():
-        raise RuntimeError("driver reading unavailable")
-
-    torch.mps.driver_allocated_memory = _boom
-    monkeypatch.setitem(sys.modules, "torch", torch)
-    decoder = _FakeDecoder()
-    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
-    # The decode survives, and an unreadable gauge takes the safe side rather than skipping.
-    assert decoder.decode(2) == ["out0", "out1"]
-    assert torch.syncs == 2
+@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
+def test_vae_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    assert dd.install_vae_sync(pipe, _target("mps")) is False
 
 
-def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
-    # The no-budget fallback synchronises every call, so a torch whose mps surface is degraded
-    # enough to hide recommended_max_memory would then raise on every decoder call. The bound is
-    # an optimisation; losing the generation to it is not a trade worth making.
-    torch = _mps_torch_without_recommended()
+def test_vae_sync_survives_a_synchronize_that_raises(monkeypatch):
+    torch = _mps_torch()
 
     def _boom():
         raise RuntimeError("Torch not compiled with MPS enabled")
@@ -642,11 +617,8 @@ def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
     torch.mps.synchronize = _boom
     monkeypatch.setitem(sys.modules, "torch", torch)
     decoder = _FakeDecoder()
-    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    assert dd.install_vae_sync(_pipe_with(decoder), _target("mps")) is True
     assert decoder.decode(2) == ["out0", "out1"]
-
-
-# ── GPU selection ─────────────────────────────────────────────────────
 
 
 def _mask(
@@ -669,7 +641,6 @@ def _mask(
 
 
 def test_no_selection_leaves_the_target_on_the_default_device(monkeypatch):
-    # The automatic pick must stay byte-for-byte what it was: no index, nothing pinned.
     calls: list = []
     torch = _make_torch(cuda_available = True, capability = (8, 0), set_device_calls = calls)
     _install(monkeypatch, torch, studio_device = "cuda")
@@ -698,8 +669,7 @@ def test_a_single_card_pick_is_honoured_exactly(monkeypatch):
 
 
 def test_physical_ids_are_translated_through_the_visibility_mask(monkeypatch):
-    # CUDA_VISIBLE_DEVICES=4,5: physical 4 and 5 are the valid picks and torch sees 0 and 1.
-    # Validating against torch.cuda.device_count() would reject both.
+    # CUDA_VISIBLE_DEVICES=4,5: physical 4 and 5 are valid but torch sees 0 and 1.
     torch = _make_torch(cuda_available = True, capability = (8, 0), device_count = 2)
     _install(monkeypatch, torch, studio_device = "cuda")
     _mask(monkeypatch, [4, 5], physical_count = 8)
@@ -708,14 +678,13 @@ def test_physical_ids_are_translated_through_the_visibility_mask(monkeypatch):
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinal([0])
 
-    # A REORDERED mask: physical 1 is torch ordinal 0, so the order matters, not just membership.
     _mask(monkeypatch, [1, 0], physical_count = 2)
     assert dd.resolve_selected_cuda_ordinal([1]) == 0
     assert dd.resolve_selected_cuda_ordinal([0]) == 1
 
 
 def test_several_cards_resolve_to_the_one_with_the_most_free_vram(monkeypatch):
-    # The mixed box this exists for: ordinal 0 is the SMALL card, so taking the first id lands on the GPU that cannot hold the checkpoint.
+    # Ordinal 0 is the SMALL card here, so taking the first id picks the wrong GPU.
     torch = _make_torch(
         cuda_available = True,
         capability = (8, 0),
@@ -726,7 +695,6 @@ def test_several_cards_resolve_to_the_one_with_the_most_free_vram(monkeypatch):
     _mask(monkeypatch, [0, 1])
     assert dd.resolve_selected_cuda_ordinal([0, 1]) == 1
 
-    # Equal cards take the lowest ordinal, so the same selection always resolves the same way.
     torch.cuda.mem_get_info = lambda index = None: (8 * 1024**3, 0)
     assert dd.resolve_selected_cuda_ordinal([0, 1]) == 0
 
@@ -752,7 +720,6 @@ def test_an_unreadable_card_sorts_last_rather_than_failing_the_load(monkeypatch)
     _install(monkeypatch, torch, studio_device = "cuda")
     _mask(monkeypatch, [0, 1, 2])
     assert dd.resolve_selected_cuda_ordinal([0, 2]) == 2
-    # Nothing readable at all: a stable answer, not an exception.
     assert dd.resolve_selected_cuda_ordinal([0, 1]) == 0
 
 
@@ -764,13 +731,11 @@ def test_an_index_this_host_does_not_have_is_refused(monkeypatch):
         dd.resolve_selected_cuda_ordinal([5])
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinal([-1])
-    # Empty and None are "automatic", never a refusal.
     assert dd.resolve_selected_cuda_ordinal([]) is None
     assert dd.resolve_selected_cuda_ordinal(None) is None
 
 
 def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
-    # Ordinal 0 is pre-Ampere and ordinal 1 is not, so an index-less probe picks the wrong dtype.
     torch = _make_torch(cuda_available = True, device_count = 2)
     seen: list = []
     _NOTHING = object()
@@ -792,7 +757,6 @@ def test_the_capability_probe_asks_about_the_selected_card(monkeypatch):
 
 
 def test_an_indexed_override_string_keeps_its_card(monkeypatch):
-    # _pick_device_and_dtype hands back the indexed string; rebuilding must not drop to ordinal 0.
     torch = _make_torch(cuda_available = True, capability = (8, 0))
     _install(monkeypatch, torch, studio_device = "cuda")
     t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
@@ -801,15 +765,13 @@ def test_an_indexed_override_string_keeps_its_card(monkeypatch):
 
 
 def test_a_selection_is_ignored_where_physical_indices_mean_nothing(monkeypatch):
-    # MPS has one device and no applicator for an index; the pick must not become a refusal.
     torch = _make_torch(mps_available = True)
     _install(monkeypatch, torch, studio_device = "mlx")
     assert dd.resolve_diffusion_device_target(ordinal = 1).ordinal is None
 
 
 def test_the_device_scope_restores_the_previous_card(monkeypatch):
-    # Route preflights run on a pooled executor, so a pin left set there is inherited by the
-    # NEXT request on that thread, including an automatic one.
+    # Route preflights run on a pooled executor, so a leftover pin leaks into the next request.
     calls: list = []
     torch = _make_torch(cuda_available = True, device_count = 2, set_device_calls = calls)
 
@@ -830,7 +792,6 @@ def test_the_device_scope_restores_the_previous_card(monkeypatch):
         pass
     assert calls == [("enter", 1), ("exit", None)]
 
-    # No selection is a plain no-op, so the automatic path never touches the current device.
     calls.clear()
     with dd.diffusion_device_scope(None):
         pass
@@ -838,8 +799,7 @@ def test_the_device_scope_restores_the_previous_card(monkeypatch):
 
 
 def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
-    # is_bf16_supported() takes no device argument, so asking about the selected card means
-    # making it current; otherwise a bf16-capable pick behind an older default goes to fp32.
+    # is_bf16_supported() takes no device, so the selected card must be made current to ask it.
     torch = _make_torch(cuda_available = True, hip = "6.0", device_count = 2)
     scoped: list = []
 
@@ -861,8 +821,7 @@ def test_the_rocm_bf16_probe_asks_about_the_selected_card(monkeypatch):
 
 
 def test_the_device_scope_lets_the_body_exception_through(monkeypatch):
-    # Catching around the yield made contextlib raise "generator didn't stop after throw()",
-    # replacing a precision refusal with an error the route maps to the wrong status.
+    # Catching around the yield makes contextlib raise "generator didn't stop after throw()".
     torch = _make_torch(cuda_available = True, device_count = 2)
 
     class _Scope:
@@ -883,7 +842,6 @@ def test_the_device_scope_lets_the_body_exception_through(monkeypatch):
 
 
 def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
-    # Entering may fail on a stale index; the probe then runs unpinned rather than not at all.
     torch = _make_torch(cuda_available = True, device_count = 2)
 
     def _boom(_index):
@@ -898,9 +856,7 @@ def test_the_device_scope_still_runs_the_body_on_an_unusable_index(monkeypatch):
 
 
 def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch):
-    # /images/generate runs on a pooled worker, so a pinned load leaves that thread on its card
-    # for good and a later automatic load has no ordinal to re-pin with. The card it landed on is
-    # recorded separately and puts the worker back.
+    # Pooled workers keep a pinned load's card; the placed card is recorded to put the worker back.
     current = [3]
     torch = _make_torch(cuda_available = True, device_count = 4)
     torch.cuda.current_device = lambda: current[0]
@@ -909,13 +865,12 @@ def test_the_placed_ordinal_records_the_card_an_automatic_load_used(monkeypatch)
     _install(monkeypatch, torch, studio_device = "cuda")
 
     automatic = dd.resolve_diffusion_device_target()
-    assert automatic.ordinal is None  # the target itself stays un-indexed
-    assert dd.placed_cuda_ordinal(automatic) == 3  # but the card is known
+    assert automatic.ordinal is None
+    assert dd.placed_cuda_ordinal(automatic) == 3
 
     selected = dd.resolve_diffusion_device_target(ordinal = 1)
-    assert dd.placed_cuda_ordinal(selected) == 1  # a selection needs no observation
+    assert dd.placed_cuda_ordinal(selected) == 1
 
-    # Nothing to record off CUDA: there is no thread-local device to put back.
     cpu_torch = _make_torch(cuda_available = False)
     monkeypatch.setitem(sys.modules, "torch", cpu_torch)
     _install(monkeypatch, cpu_torch, studio_device = "cpu")
@@ -930,20 +885,16 @@ def test_pinning_an_automatic_load_puts_a_shared_worker_back(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", torch)
     _install(monkeypatch, torch, studio_device = "cuda")
 
-    # A pinned load runs here first and leaves the thread on its card.
     dd.apply_diffusion_device_ordinal(dd.resolve_diffusion_device_target(ordinal = 2))
     assert current == [2]
-    # The next model loaded automatically; its weights are on 0, so the worker goes back to 0.
     dd.pin_cuda_ordinal(0)
     assert current == [0]
-    # And a None never moves anything.
     dd.pin_cuda_ordinal(None)
     assert current == [0]
 
 
 def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
-    # The plan routes must not open a CUDA context while a trainer holds the cards; validating
-    # and translating the ids costs none, so a bad pick is still refused at the plan.
+    # Plan routes must not open a CUDA context while a trainer holds the cards.
     torch = _make_torch(cuda_available = True, device_count = 4, free_vram_by_index = {0: 1, 1: 2})
     probed: list = []
     torch.cuda.mem_get_info = lambda index = None: (probed.append(index), (1, 2))[1]
@@ -955,8 +906,100 @@ def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
     monkeypatch.setattr(hw, "get_physical_gpu_count", lambda: 4)
 
     assert dd.resolve_selected_cuda_ordinal([2], allow_ranking = False) == 2
-    assert probed == []  # no free-VRAM probe, so no CUDA context
+    assert probed == []
     assert dd.resolve_selected_cuda_ordinal([0, 1], allow_ranking = False) is None
     assert probed == []
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinal([9], allow_ranking = False)
+
+
+# ── MPS allocation cap ────────────────────────────────────────────────
+
+GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "recommended_gib, ram_gib, expected_cap_gib",
+    [
+        (5.33, 8, 6.5),  # 8 GB Mac: RAM - 1.5 GiB floor reserve
+        (10.67, 16, 14.4),  # RAM - 10%
+        (96, 128, 115.2),
+        (5.0, 5.5, 5.0),  # reserve would go below the working set: never cap under it
+    ],
+)
+def test_mps_ratio_caps_below_ram_never_below_working_set(
+    recommended_gib, ram_gib, expected_cap_gib
+):
+    ratio = dd.mps_high_watermark_ratio(int(recommended_gib * GIB), int(ram_gib * GIB))
+    cap_gib = ratio * recommended_gib
+    assert cap_gib == pytest.approx(expected_cap_gib, rel = 1e-3)
+    assert cap_gib < ram_gib
+    assert 1.0 <= ratio <= 2.0
+    assert cap_gib < 1.7 * recommended_gib  # tighter than torch's own default, which is above RAM
+
+
+def test_mps_ratio_unknown_readings_mean_no_cap():
+    assert dd.mps_high_watermark_ratio(None, 16 * GIB) is None
+    assert dd.mps_high_watermark_ratio(10 * GIB, 0) is None
+    assert dd.mps_high_watermark_ratio("x", 16 * GIB) is None
+
+
+def _mps_cap_torch(
+    recorded,
+    *,
+    recommended = 10 * GIB,
+    fraction_raises = False,
+):
+    torch = _make_torch(mps_available = True, mps_probe = "pass")
+
+    def _set(fraction):
+        if fraction_raises:
+            raise AttributeError("old torch")
+        recorded.append(fraction)
+
+    torch.mps = types.SimpleNamespace(
+        recommended_max_memory = lambda: recommended, set_per_process_memory_fraction = _set
+    )
+    return torch
+
+
+def test_mps_target_sets_finite_cap(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == [pytest.approx(14.4 / 10, rel = 1e-3)]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {dd.MPS_HIGH_WATERMARK_ENV: "0.0"},  # explicit "no cap" stays no cap
+        {dd.MPS_HIGH_WATERMARK_ENV: "1.2"},
+        {"UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD": "1"},
+    ],
+)
+def test_mps_cap_respects_user_override(monkeypatch, env):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == []
+    if dd.MPS_HIGH_WATERMARK_ENV in env:
+        import os
+        assert os.environ[dd.MPS_HIGH_WATERMARK_ENV] == env[dd.MPS_HIGH_WATERMARK_ENV]
+
+
+def test_mps_cap_failure_keeps_target(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
+    t = dd.resolve_diffusion_device_target()
+    assert t.device == "mps" and t.dtype == BF16

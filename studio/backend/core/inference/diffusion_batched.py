@@ -1,41 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batched multi-image planning for the local diffusion backend.
-
-One generation call can produce N images three ways: a prompt LIST (one image per
-prompt), one prompt x a seed LIST, or the legacy single prompt + ``batch_size``
-(whose per-image seeds derive as base..base+batch_size-1, matching the native
-sd.cpp engine and the gallery recipe replay). These helpers turn the request into
-an explicit per-image ``(prompt, seed)`` job list, chunk it into per-forward
-batches, and support OOM backoff by splitting a failed chunk in half.
-
-Measured on the 32-image eval suites (diffusers 0.39 / torch 2.10): one batched
-forward with per-image ``torch.Generator``s is numerics-safe (LPIPS deltas within
-0.002 of serial) and 10-22x faster end-to-end than serial per-image engines --
-batch 32 fits 4-step 12B-class models on one GPU, batch 8 fits a 20B model at
-1024px with CFG batching. Per-image generators keep every image individually
-reproducible: same-seed images within the same batch shape are bit-identical
-once the compiled graph is settled (the very first generation during an
-in-flight deferred compile can deviate transiently by a few ulps);
-regenerating an image alone with its recorded seed reproduces it up to
-batch-size-dependent kernel numerics (measured mean abs pixel delta ~2.5/255,
-LPIPS delta under 0.002), not bit-exactly.
-
-Pure and torch-free so the CPU unit tests stay light; the engine owns the
-torch.Generator construction and the actual pipeline calls.
-"""
+"""Explicit per-image (prompt, seed) jobs for batched generation; OOM backoff splits a chunk in half."""
 
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# Upper bound on images per generation call (mirrors the route's cap): a longer prompt/seed list is a client error,
-# not an OOM to back off from.
+# Upper bound per call, mirroring the route cap; longer lists are a client error, not an OOM.
 MAX_BATCH_IMAGES = 32
 
-# Seeds stay in JS's safe-integer range so they round-trip through the JSON gallery recipes (a raw 64-bit seed loses
-# precision).
+# JS safe-integer range so seeds round-trip through JSON recipes.
 SEED_MASK = (1 << 53) - 1
 
 
@@ -48,17 +23,7 @@ def resolve_batch_jobs(
     batch_size: int,
     draw_seed: Callable[[], int],
 ) -> tuple[list[tuple[str, int]], int]:
-    """The per-image ``(prompt, seed)`` jobs plus the base seed for this call.
-
-    - ``prompts`` (list): one image per prompt. With ``seeds`` too, lengths must
-      match (seed i drives prompt i); without, seeds derive from the base.
-    - ``seeds`` (list) alone: one image per seed, all with ``prompt``.
-    - neither: ``batch_size`` images of ``prompt`` with derived seeds
-      base..base+batch_size-1 (each masked JSON-safe).
-
-    ``draw_seed`` supplies a fresh random base when the caller sent none (the
-    engine passes a ``torch.Generator`` draw). Raises ``ValueError`` on empty /
-    oversized lists, a length mismatch, or an out-of-range seed."""
+    """Builds (prompt, seed) jobs; seeds derive from the base unless given; bad input raises ValueError."""
     if prompts is not None:
         if not prompts or not all(isinstance(p, str) and p.strip() for p in prompts):
             raise ValueError("prompts must be a non-empty list of non-empty strings")
@@ -97,13 +62,7 @@ def resolve_batch_jobs(
 
 
 def chunk_jobs(jobs: list[tuple[str, int]], batch_size: int) -> list[list[tuple[str, int]]]:
-    """Split the jobs into per-forward chunks.
-
-    ``batch_size`` doubles as the per-forward cap when a prompt/seed list drives
-    the image count: an explicit ``batch_size > 1`` bounds each forward, while
-    the untouched default (1) lets the whole list run as ONE forward -- the
-    measured sweet spot (batch 32 on 4-step models) -- with OOM backoff as the
-    safety net rather than a serial default."""
+    """An explicit batch_size above 1 caps each forward; the default runs the whole list as one forward."""
     if not jobs:
         return []
     per_forward = len(jobs) if batch_size <= 1 else min(int(batch_size), len(jobs))
@@ -122,19 +81,20 @@ def split_chunk(
 
 
 def uniform_prompt(chunk: list[tuple[str, int]]) -> Optional[str]:
-    """The chunk's single shared prompt, or None when prompts differ.
-
-    A uniform chunk encodes its prompt ONCE (``num_images_per_prompt`` fans it
-    out); a mixed chunk passes the prompt list with one image per prompt."""
+    """Returns the shared prompt when every job in the chunk uses it, so it encodes once; else None."""
     first = chunk[0][0]
     return first if all(p == first for p, _ in chunk) else None
 
 
 def is_oom_error(exc: BaseException) -> bool:
-    """Whether an exception is a CUDA/accelerator out-of-memory, worth a smaller
-    retry. Matched structurally (class name across torch versions / devices) and
-    by message, so the caller needn't import torch to classify."""
-    for klass in type(exc).__mro__:
-        if klass.__name__ == "OutOfMemoryError":
+    """Matches OOM by class name and message, walking the cause chain, since torch.compile wraps OOMs."""
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if any(klass.__name__.startswith("OutOfMemory") for klass in type(cur).__mro__):
             return True
-    return "out of memory" in str(exc).lower()
+        if "out of memory" in str(cur).lower():
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False

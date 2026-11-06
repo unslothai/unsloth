@@ -1,10 +1,6 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Truth-table tests for `resolve_tool_policy`: no flag installs no process-wide
-OVERRIDE on any bind (loopback, --secure tunnel, raw network), so a request's own
-`enable_tools: false` is honored -- tools still default on for a request that
-omits the field, via the backend's separate tool-policy default. Explicit on/off
-wins, and the resolver never prompts (yes/silent/prompt kept for compatibility)."""
+"""Truth table for `resolve_tool_policy`: no flag sets no override, so a request's enable_tools wins."""
 
 import pytest
 
@@ -18,7 +14,6 @@ def _never_prompt(_msg: str) -> bool:
 class TestLocalhostHost:
     @pytest.mark.parametrize("flag", [None, True, False])
     def test_no_prompt(self, flag):
-        # localhost never prompts regardless of flag
         result = resolve_tool_policy(
             host = "127.0.0.1",
             flag = flag,
@@ -57,12 +52,9 @@ class TestZeroHost:
     @pytest.mark.parametrize(
         "flag, yes, silent, expected",
         [
-            # A network bind installs no override, so the UI's tool pills (which send enable_tools: false when all
-            # off) are honored rather than overridden.
             pytest.param(None, False, False, None, id = "default_is_unset"),
             pytest.param(False, False, False, False, id = "explicit_off_no_prompt"),
             pytest.param(True, False, False, True, id = "explicit_on_no_prompt"),
-            # Retained for backward compatibility; they no longer gate the result.
             pytest.param(
                 None, True, True, None, id = "yes_and_silent_accepted_but_do_not_change_result"
             ),

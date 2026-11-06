@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The seeded-vs-streamed mirror has to contain every turn that streamed.
-
-From 10K upwards a rung plans two follow-up turns and the scene streams both through `send_turn`
-before the peak census is taken. The mirror was seeded from the prefix plus the OPENING unit only,
-so the gated `assistant_messages` compared six assistant turns against four: 33% drift against a 2%
-tolerance, on every healthy cell. The check then reported SEEDED IS NOT EQUIVALENT TO STREAMED as a
-finding about the app, and labelled every larger rung `fidelity: seeded_only`, for a difference the
-mirror had introduced itself.
-
-A `send_turn` that did NOT run put nothing in the thread, so it must not go into the mirror either;
-that is the case the small rungs hit, where the stream queue is empty by design.
-"""
+"""The seeded mirror must contain every streamed turn, or it reports false drift on healthy cells."""
 
 from __future__ import annotations
 

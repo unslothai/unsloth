@@ -3,11 +3,121 @@
 
 """Pydantic schemas for the external LLM providers API."""
 
-from typing import Literal, Optional
+from __future__ import annotations
 
-from pydantic import BaseModel, Field
+import re
+from typing import Literal, Optional
+from urllib.parse import quote
+
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
+
+ProviderApiType = Literal["chat_completions", "responses", "systemone"]
+
+
+class ProviderReasoningConfig(BaseModel):
+    """Explicit Custom Chat Completions wire dialect, never inferred from the URL."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    enabled: StrictBool
+    style: Literal[
+        "reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"
+    ]
+
+
+def normalize_provider_reasoning_config(value) -> Optional[dict]:
+    """Treat absent or corrupt persisted/internal configuration as unconfigured."""
+    if isinstance(value, ProviderReasoningConfig):
+        value = value.model_dump()
+    try:
+        return ProviderReasoningConfig.model_validate(value).model_dump()
+    except (ValidationError, TypeError, ValueError):
+        return None
+
+
+def validate_provider_reasoning_contract(provider_type: str, api_type: str, config) -> None:
+    if config is None:
+        return
+    if provider_type != "custom":
+        raise ValueError("reasoning_config is supported only for Custom connections.")
+    normalized = normalize_provider_reasoning_config(config)
+    if normalized and normalized["enabled"] and api_type != "chat_completions":
+        raise ValueError("Enabled Custom reasoning requires the Chat Completions API.")
+
 
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
+_MAX_EXTRA_HEADERS = 16
+_MAX_HEADER_NAME = 64
+_MAX_HEADER_VALUE = 1024
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+# httpx encodes header values as ASCII; anything else fails every request to the connection.
+_HEADER_VALUE_RE = re.compile(r"^[\t\x20-\x7e]*$")
+_HEADER_SAFE_CHARS = "".join(chr(c) for c in range(0x20, 0x7F) if chr(c) != "%")
+_HEADER_TEMPLATE_RE = re.compile(r"\{\{\s*([A-Z][A-Z0-9_]*)\s*\}\}")
+_FORBIDDEN_EXTRA_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "host",
+        "content-length",
+        "content-type",
+        "connection",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "keep-alive",
+        "api-key",
+        "x-api-key",
+        "x-goog-api-key",
+    }
+)
+
+
+def normalize_provider_extra_headers(value) -> dict[str, str]:
+    """Validate a connection's extra headers. Empty or absent becomes {}."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("extra_headers must be an object of header name to value.")
+    if len(value) > _MAX_EXTRA_HEADERS:
+        raise ValueError(f"At most {_MAX_EXTRA_HEADERS} extra headers are allowed.")
+    headers: dict[str, str] = {}
+    for raw_name, raw_value in value.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            raise ValueError("extra_headers keys and values must be strings.")
+        name = raw_name.strip()
+        if not name or len(name) > _MAX_HEADER_NAME or not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"Invalid extra header name: {raw_name!r}.")
+        if name.lower() in _FORBIDDEN_EXTRA_HEADERS:
+            raise ValueError(f"Cannot set reserved header {name!r}.")
+        if not _HEADER_VALUE_RE.fullmatch(raw_value):
+            raise ValueError(f"Header {name!r} must be printable ASCII on one line.")
+        if len(raw_value) > _MAX_HEADER_VALUE:
+            raise ValueError(f"Header {name!r} is too long.")
+        # h11 refuses a value with surrounding whitespace.
+        headers[name] = raw_value.strip(" \t")
+    return headers
+
+
+def render_provider_extra_headers(
+    headers: dict[str, str] | None, variables: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Replace ``{{ VAR }}`` placeholders. Unknown names become empty strings."""
+    if not headers:
+        return {}
+    values = variables or {}
+
+    def replace(match: re.Match[str]) -> str:
+        # Substituted ids and model names are arbitrary text; percent-encode what httpx cannot send.
+        return quote(values.get(match.group(1), ""), safe = _HEADER_SAFE_CHARS)
+
+    return {
+        name: _HEADER_TEMPLATE_RE.sub(replace, value).strip(" \t")
+        for name, value in headers.items()
+    }
 
 
 class ProviderRegistryEntry(BaseModel):
@@ -48,8 +158,25 @@ class ProviderRegistryEntry(BaseModel):
     )
 
 
-class ProviderCreate(BaseModel):
+class ExtraHeadersMixin(BaseModel):
+    extra_headers: Optional[dict[str, str]] = Field(
+        default = None,
+        description = "Optional request headers. Values may include {{CHAT_SESSION_ID}}.",
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_extra_headers(cls, value):
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
+
+class ProviderCreate(ExtraHeadersMixin):
     """Request to create a saved provider configuration."""
+
+    api_type: ProviderApiType = "chat_completions"
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
@@ -77,10 +204,17 @@ class ProviderCreate(BaseModel):
         None,
         description = "Optional RSA-encrypted API key to persist for this connection",
     )
+    shared: bool = Field(
+        False,
+        description = "Let every account on this installation use this connection (owner only)",
+    )
 
 
-class ProviderUpdate(BaseModel):
+class ProviderUpdate(ExtraHeadersMixin):
     """Request to update a saved provider configuration."""
+
+    api_type: Optional[ProviderApiType] = None
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
@@ -106,6 +240,10 @@ class ProviderUpdate(BaseModel):
         False,
         description = "Explicitly remove the saved API key",
     )
+    shared: Optional[bool] = Field(
+        None,
+        description = "Let every account on this installation use this connection (owner only)",
+    )
 
 
 class ProviderCredentialMigration(BaseModel):
@@ -120,6 +258,9 @@ class ProviderCredentialMigration(BaseModel):
 
 class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
+
+    api_type: ProviderApiType = "chat_completions"
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")
@@ -143,6 +284,15 @@ class ProviderResponse(BaseModel):
         None,
         description = "Configured maximum Max Tokens cap for this connection",
     )
+    extra_headers: dict[str, str] = Field(
+        default_factory = dict,
+        description = "Optional request headers. Values may include {{CHAT_SESSION_ID}}.",
+    )
+    shared: bool = Field(False, description = "Whether every account on this installation can use it")
+    shared_by_owner: bool = Field(
+        False,
+        description = "The installation owner shared this connection; this account can use but not edit it",
+    )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
 
@@ -154,6 +304,10 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    capabilities: Optional[list[str]] = Field(
+        None,
+        description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
+    )
 
 
 class ProviderModelReasoningInfo(BaseModel):
@@ -171,8 +325,15 @@ class ProviderModelCapabilityInfo(BaseModel):
     supported_parameters: Optional[list[str]] = None
 
 
-class ProviderModelsRequest(BaseModel):
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
+
+
+class ProviderModelsRequest(ExtraHeadersMixin):
     """Request to list models from an external provider."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"
@@ -188,8 +349,10 @@ class ProviderModelsRequest(BaseModel):
     )
 
 
-class ProviderTestRequest(BaseModel):
+class ProviderTestRequest(ExtraHeadersMixin):
     """Request to test connectivity to an external provider."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"

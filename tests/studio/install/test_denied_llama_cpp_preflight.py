@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Check managed llama.cpp access before Windows installer work.
-
-The standalone installer copies setup.ps1's preflight helpers. These tests enforce
-their parity and cover real denied trees through the PowerShell harness.
-"""
+"""Parity of the preflight helpers in setup.ps1 and the standalone copy, plus denied-tree runs."""
 
 import re
 from pathlib import Path
@@ -30,11 +26,24 @@ SHARED_FUNCTIONS = (
     "Get-PathState",
     "Get-LlamaCppInstallReadState",
     "Get-PathDenialDetail",
+    "Get-SecuritySoftwareNote",
     "Write-PathAccessDenied",
     "Get-CanonicalDir",
     "Test-StudioHomeIsCustom",
+    "Get-MasterRootOverride",
     "Get-ManagedLlamaCppDir",
     "Invoke-ManagedLlamaCppPreflight",
+    "Test-MirrorConfigured",
+    "Start-MirrorProbe",
+    "Wait-MirrorProbe",
+    "Get-MirrorDnsServers",
+    "Test-MirrorInChina",
+    "Invoke-MirrorFallback",
+    "Get-MirrorName",
+    "Set-MirrorEnv",
+    "Pop-MirrorSpare",
+    "Use-MirrorSpare",
+    "Get-MirrorFailedHost",
 )
 
 
@@ -65,9 +74,10 @@ def _normalized(source: str) -> str:
 @pytest.mark.parametrize("name", SHARED_FUNCTIONS)
 def test_installer_copy_matches_setup(name: str) -> None:
     """Edit one file, not the other, and this fails naming the function."""
-    assert _normalized(_function_source(INSTALL_PS1, name)) == _normalized(
-        _function_source(SETUP_PS1, name)
-    ), name
+    assert (
+        _normalized(_function_source(INSTALL_PS1, name))
+        == _normalized(_function_source(SETUP_PS1, name))
+    ), f"{name} differs between install.ps1 and studio/setup.ps1; run python3 scripts/sync_shared_ps1_helpers.py"
 
 
 def test_every_function_in_the_shared_block_is_compared() -> None:
@@ -106,10 +116,8 @@ def test_the_probe_keeps_all_three_answers() -> None:
     probe = _function_source(SETUP_PS1, "Get-LlamaCppInstallReadState")
     for verdict in ('return "Denied"', 'return "Absent"', 'return "Readable"'):
         assert verdict in probe, verdict
-    # Listing catches denied directories whose missing marker appears absent.
     assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in probe
     assert "Test-AccessDeniedError" in probe
-    # A readable marker is not enough: replacement also needs directory listing.
     # Regex, not a literal: whitespace alone must not reintroduce the early return.
     assert not re.search(r'"Present"\s*\{\s*return\s+"Readable"', probe)
     assert probe.index("Get-ChildItem -LiteralPath") < probe.rindex('return "Readable"')
@@ -133,7 +141,6 @@ def test_the_preflight_runs_before_anything_expensive() -> None:
         'Write-TauriLog "STEP" "Running studio setup"',
     ):
         assert position < INSTALL_PS1.index(later), later
-    # Relocation decides which user profile owns the managed cache.
     relocation = "# ── Leave Windows system directories before installing ──"
     assert INSTALL_PS1.index(relocation) < position
 
@@ -204,7 +211,6 @@ def test_the_preflight_cannot_be_the_thing_that_breaks_the_run() -> None:
     guard = "if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }"
     assert guard in body
     assert body.index(guard) < body.index("Get-ManagedLlamaCppDir")
-    # Both probes swallow their own failures rather than terminating.
     probe = _function_source(INSTALL_PS1, "Get-LlamaCppInstallReadState")
     assert "-ErrorAction Stop" in probe and "catch" in probe
     assert "Get-PathState" in probe
@@ -213,12 +219,11 @@ def test_the_preflight_cannot_be_the_thing_that_breaks_the_run() -> None:
 def test_a_custom_studio_home_is_never_called_a_cache_we_own() -> None:
     """Do not call an unreadable custom Unsloth home a managed cache."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
-    # Use the same predicate for path selection and ownership wording.
-    assert "$homeIsCustom = Test-StudioHomeIsCustom" in body
+    assert "$homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)" in body
     assert "-OwnershipUnverified:$homeIsCustom" in body
     assert (
         'Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"'
-        " -OwnershipUnverified:$StudioHomeIsCustom" in SETUP_PS1
+        " -OwnershipUnverified:$RuntimeRootIsCustom" in SETUP_PS1
     )
 
 
@@ -230,8 +235,10 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
-    # Compare canonical paths, including denied paths whose spelling differs.
-    assert "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)" in body
+    # Compare canonical paths, and every ancestor of the override: a build inside the
+    # managed tree is the user's too.
+    assert "$probe = [string](Get-CanonicalDir -Path $suppliedDir)" in body
+    assert "if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
     assert (
         "Exit-PathAccessDenied -Path $ResolvedLocal"
@@ -253,7 +260,6 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     assert 'Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp"' in resolver
     assert INSTALL_PS1.count('Join-Path $StudioHome "llama.cpp"') == 0
     assert INSTALL_PS1.count("$_llamaPath = Get-ManagedLlamaCppDir") == 1
-    # The resolver uses the single default-versus-custom predicate.
     assert "if (-not (Test-StudioHomeIsCustom)) {" in resolver
     assert "$legacyStudio" not in resolver
     predicate = _function_source(INSTALL_PS1, "Test-StudioHomeIsCustom")
@@ -288,9 +294,11 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     assert "$LlamaCppDir =" not in phase
 
 
+_LABELS_OUR_OWN_DIRECTORY = re.compile(r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)')
+
+
 def test_the_installer_never_repairs_permissions_by_itself() -> None:
     """Print ACL repair commands but never run them."""
-    # Match direct, chained, captured, and delegated invocation forms.
     invocation = re.compile(
         r"(^|[&|;=]\s*|\(\s*|Start-Process\s+|Invoke-Expression\s+)(takeown|icacls)\b"
     )
@@ -299,7 +307,27 @@ def test_the_installer_never_repairs_permissions_by_itself() -> None:
             code = line.split("#", 1)[0].strip()
             if "takeown" not in code and "icacls" not in code:
                 continue
+            if _LABELS_OUR_OWN_DIRECTORY.search(code):
+                continue
             assert not invocation.search(code), f"{label}: {line.strip()}"
+
+
+def test_the_label_exemption_is_narrow() -> None:
+    """Only our new directory may skip the ACL rule; widening the carve-out would hide a stopped rule."""
+    forbidden = (
+        'icacls.exe "$LlamaCppDir" /setintegritylevel (OI)(CI)H',
+        'icacls.exe "$dir" /grant "$env:USERNAME:(F)"',
+        'takeown.exe /f "$dir"',
+        '& icacls "$StudioHome" /reset',
+    )
+    for line in forbidden:
+        assert not _LABELS_OUR_OWN_DIRECTORY.search(line), line
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1'
+    )
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288")'
+    )
 
 
 def test_setup_sh_reports_a_denied_default_home_cache() -> None:
@@ -309,5 +337,101 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
     # Listing, not just search: mode 111 passes cd and still breaks the installer.
     assert 'if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then' in block
     assert '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"' in block
-    # Preserve the custom-home ownership guard's more cautious wording.
     assert block.index("_assert_studio_owned_or_absent") < block.index("_studio_dir_unreadable")
+
+
+def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
+    """Get-Item returns nothing for a directory whose ACL denies read, which is the
+    one case this detail exists for, so the attributes have to come through an API
+    that needs only FILE_READ_ATTRIBUTES."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Get-PathDenialDetail")
+        assert "[System.IO.File]::GetAttributes($Path)" in body
+        assert body.index("GetAttributes($Path)") < body.index("Get-Item -LiteralPath")
+        assert "Encrypted" in body
+        assert "cloud placeholder" in body
+        assert "ReparsePoint" in body
+        # On a directory, Encrypted only affects new descendants; listing never needs the key.
+        assert body.index("FileAttributes]::Directory") < body.index("FileAttributes]::Encrypted")
+        assert "-not $isDirectory" in body
+        # RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS are missing from the
+        # FileAttributes enum on Windows PowerShell 5.1.
+        assert "0x00040000" in body and "0x00400000" in body
+
+
+def test_the_security_software_holding_the_folder_is_named() -> None:
+    """Denial by a filter driver is not fixed by takeown, icacls or elevation, so name the product."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Get-SecuritySoftwareNote")
+        assert "will not help" not in body
+        # 0xF000 carries the product run state; a stopped product cannot hold the folder.
+        assert "productState" in body and "0xF000" in body
+        assert body.count("1123 and 1124") == 2
+        assert "Get-Command Get-MpPreference -ErrorAction SilentlyContinue" in body
+        assert "catch { $mode = $null }" in body
+        assert "catch { $others = @() }" in body
+        assert _normalized(body).rstrip().endswith('return ""\n}')
+        # Only mode 1 blocks file access; 2 only audits; 3 and 4 are disk writes and cannot be the cause
+        assert "$mode -eq 1" in body
+        assert "$mode -eq 2" in body
+        assert "$mode -eq 3" not in body and "$mode -eq 4" not in body
+        assert "root/SecurityCenter2" in body
+        assert "AntiVirusProduct" in body
+        assert "Windows Defender" in body and "Microsoft Defender" in body
+        reporter = _function_source(text, "Write-PathAccessDenied")
+        assert "Get-SecuritySoftwareNote" in reporter
+        assert reporter.index("Antivirus or Controlled folder access") < reporter.index(
+            "$securitySoftware = Get-SecuritySoftwareNote"
+        )
+
+
+def test_a_denied_cache_is_moved_aside_only_when_it_is_ours_to_move() -> None:
+    """Directory.Move, not Move-Item, whose copy fallback leaves a llama.cpp.denied-* folder behind."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Invoke-ManagedLlamaCppPreflight")
+        assert "[System.IO.Directory]::Move($dir, $asideDir)" in body
+        # Code only: a comment above the call names Move-Item to say why it is not used.
+        code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+        assert "Move-Item" not in code
+        guard = "if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {"
+        assert guard in body
+        assert body.index("ReparsePoint") < body.index(guard)
+        assert "$isLink = $true" in body
+        assert body.index(guard) < body.index("Write-PathAccessDenied -Path $dir")
+        assert "Split-Path -Parent $probe" in body
+        assert body.index("$probe = $parent") < body.index(guard)
+        # Runs before the install lock, so another run may have moved the folder already.
+        reprobe = '(Get-LlamaCppInstallReadState -Path $dir) -ne "Denied"'
+        assert body.count(reprobe) == 2
+        assert body.rindex(reprobe) < body.index("Write-PathAccessDenied -Path $dir")
+
+
+def test_the_shared_helpers_have_a_sync_script() -> None:
+    """Hand-copying ten helpers between two files is how they drifted before."""
+    script = (ROOT / "scripts" / "sync_shared_ps1_helpers.py").read_text(encoding = "utf-8")
+    assert SHARED_BEGIN in script
+    assert "--check" in script
+
+
+def test_a_denied_node_cache_gets_the_same_guidance_as_the_llama_cache() -> None:
+    """A denied Node cache gets the same guidance as the llama.cpp cache, not a generic network error."""
+    node = (ROOT / "studio" / "install_node_prebuilt.py").read_text(encoding = "utf-8")
+    assert "EXIT_DENIED = 4" in node
+    assert "except PermissionError as exc:" in node
+    # Windows does not always deliver winerror 5 as PermissionError.
+    assert 'getattr(exc, "winerror", None) == 5' in node
+    assert "errno.EACCES" in node
+    assert "import errno" in node
+    # The catch-all must stay last, or the classification never runs.
+    tail = node[node.rindex("def main(") :]
+    assert tail.index("except PermissionError") < tail.index("except Exception as exc:")
+    caller = SETUP_PS1.split("install_node_prebuilt.py", 1)[1].split("$env:PATH = ", 1)[0]
+    assert "$nodeExit -eq 4" in caller
+    assert 'Exit-PathAccessDenied -Path $NodeDir -Label "Node install"' in caller
+    assert caller.index("$nodeExit -eq 4") < caller.index("https://nodejs.org/")
+    # The lock and .staging root live in the parent, so many exit-4 denials are not on the cache.
+    assert 'DENIED_SCOPE_MARKER = "denied-scope: "' in node
+    assert 'DENIED_SCOPE_PARENT = "parent"' in node
+    assert '$nodeOut -match "denied-scope: parent"' in caller
+    assert "Exit-PathAccessDenied -Path $NodeParent" in caller
+    assert "-OwnershipUnverified" in caller

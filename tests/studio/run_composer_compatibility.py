@@ -7,8 +7,10 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from _playwright_robust import stop_process
 
@@ -24,8 +26,40 @@ def main():
     output = (root / args.output).resolve()
     output.relative_to(root)
     output.mkdir(parents = True, exist_ok = True)
-    temp = root / "temp/queue-validation/tmp"
-    temp.mkdir(parents = True, exist_ok = True)
+    temp = browser_tmpdir()
+    try:
+        return _run(args, root, output, temp)
+    finally:
+        shutil.rmtree(temp, ignore_errors = True)
+
+
+# Branded Chrome/Edge put `$TMPDIR/<vendor dir>/SingletonSocket` at launch and abort if it exceeds
+# sun_path (108 bytes Linux, 104 macOS/BSD); Edge's dir name is the longer one.
+BROWSER_SOCKETS = (
+    "/com.google.Chrome.XXXXXX/SingletonSocket",
+    "/com.microsoft.Edge.XXXXXX/SingletonSocket",
+)
+LONGEST_SOCKET = max(BROWSER_SOCKETS, key = len)
+
+
+def sun_path_max() -> int:
+    return 107 if sys.platform.startswith("linux") else 103
+
+
+def browser_tmpdir() -> Path:
+    """Fresh temp dir short enough for Chrome's socket, never inside the checkout; falls back to /tmp."""
+    root = Path(__file__).resolve().parents[2]
+    made = Path(tempfile.mkdtemp(prefix = "uqv-"))
+    if os.name == "nt" or (
+        len(os.fsencode(made)) + len(LONGEST_SOCKET) <= sun_path_max()
+        and root not in made.resolve().parents
+    ):
+        return made
+    made.rmdir()
+    return Path(tempfile.mkdtemp(prefix = "uqv-", dir = "/tmp"))
+
+
+def _run(args, root: Path, output: Path, temp: Path) -> int:
     env = {**os.environ, "TMPDIR": str(temp), "TMP": str(temp), "TEMP": str(temp)}
     verdicts = []
     for browser in args.browsers:

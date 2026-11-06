@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
-# transformers 5.x passes model positionally when optimizer creation is delayed (FSDP);
-# 4.x passes nothing. The override must satisfy both.
+# transformers 5.x passes model positionally when optimizer creation is delayed (FSDP); 4.x
+# passes nothing. The override must satisfy both.
 
 import inspect
 
@@ -47,7 +46,7 @@ def test_create_optimizer_does_not_raise_typeerror_on_a_positional_model():
         if "positional argument" in message and "create_optimizer" in message:
             pytest.fail(f"create_optimizer rejected a positional model: {message}")
     except Exception:
-        pass  # reached the body and failed on the fake self: the expected outcome
+        pass  # reached the body and failed on the fake self: expected
 
 
 def test_q_galore_refuses_a_model_with_no_projectable_parameters():
@@ -132,4 +131,7 @@ def test_embedding_lr_without_embeddings_is_still_fine_off_the_delayed_path():
 
     plain = nn.Linear(8, 8, bias = False)
     optimizer = _create_unsloth_optimizer(plain, torch.optim.AdamW, {"lr": 1e-3}, 5e-5)
-    assert optimizer.param_groups[1]["params"] == []
+    # Empty groups are dropped, so assert by meaning, not group index.
+    groups = optimizer.param_groups
+    assert [p for group in groups for p in group["params"]] == [plain.weight]
+    assert all(group["lr"] == 1e-3 for group in groups), groups

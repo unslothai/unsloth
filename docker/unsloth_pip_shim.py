@@ -16,9 +16,8 @@ import os, re, sys, tempfile
 REAL = {"pip": "/opt/unsloth-venv/bin/pip", "uv": "/opt/unsloth-venv/bin/uv"}
 MARKER = os.environ.get("UNSLOTH_NB_TF_MARKER", "/tmp/unsloth_nb/requested_transformers")
 
-# Membership criterion: replacing the package invalidates the stack the image was
-# built and tested against, either an ABI/CUDA-matched wheel the Dockerfile resolved
-# deliberately, or a library unsloth/unsloth_zoo patches by version at import time.
+# Kept: packages whose replacement invalidates the tested stack (ABI/CUDA-matched wheels,
+# or libraries unsloth patches by version).
 _KEEP = {
     "torch",
     "torchvision",
@@ -130,6 +129,7 @@ _VALUE_FLAGS = {
     "--only-final",
     "--requirements-from-script",
     "--uploaded-prior-to",
+    "--output-format",
 }
 _REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
@@ -139,12 +139,9 @@ _UPGRADE_PKG_FLAGS = {"-P", "--upgrade-package", "--reinstall-package"}
 _ATTACHED_SHORT_FLAGS = {"-r", "-c", "-e", "-P"}
 # these rebuild baked deps; the kept target still installs once they are dropped
 _REINSTALL_FLAGS = {"--force-reinstall", "--ignore-installed", "-I", "--reinstall", "--exact"}
-# dropped with their value; eager would upgrade every dep of a kept target
-# Hidden ALIASES of flags already listed above. pip's --help prints only the
-# canonical spelling, so no amount of help-scraping can find these; the selfcheck now
-# introspects pip's own option table instead, which is where they came from.
-# --python-preference is a uv GLOBAL that appears in neither `uv --help` nor
-# `uv help`, and uv still accepts it.
+# Dropped with their value; eager would upgrade every dep of a kept target.
+# Hidden aliases of the flags above (absent from --help; the selfcheck reads pip's option
+# table). --python-preference is an undocumented uv global.
 _ALIAS_VALUE_FLAGS = {
     "--default-timeout",
     "--local-log",
@@ -165,6 +162,16 @@ _TARGET_VALUE_FLAGS = {"--group", "--upgrade-group", "--requirements-from-script
 
 
 _ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
+
+
+def _restore_install_privileges():
+    if os.environ.get("UNSLOTH_NB_ROOT_INSTALL") != "1":
+        return
+    try:
+        os.setgid(0)
+        os.setuid(0)
+    except OSError as exc:
+        raise SystemExit(f"unsloth notebook install could not restore root: {exc}") from exc
 
 
 def _norm_name(name):
@@ -275,11 +282,7 @@ def _sdist_name(basename):
 def _canon(token):
     if token.startswith("-"):
         return None
-    # IGNORECASE: URL schemes are case insensitive and pip normalises them, so
-    # `unsloth@GIT+HTTPS://...` is the same direct reference as the lowercase
-    # spelling. Matching only lowercase missed the explicit name, fell through to the
-    # URL branch, and returned None (or, for a .whl URL, the wheel's own stem), so a
-    # protected package was classified unknown and forwarded.
+    # IGNORECASE: URL schemes are case insensitive and pip normalises them.
     _dref = re.match(
         r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*@(?:\s|git\+|hg\+|bzr\+|svn\+|[a-z]+://)",
         token,
@@ -341,11 +344,7 @@ def _local_project_name(token):
     """Name pip/uv would build for a local project dir, falling back to the basename
     only when the dir is an installable project at all. None for a metadata-less dir,
     so ordinary paths pass through."""
-    # from uv's working directory, not ours: `uv pip --directory X install -e ./p`
-    # stats ./p from X, so resolving it here against our own cwd misses and reports
-    # the project as unknown. That is silent, and worse than the requirements-file
-    # case, because the injected constraint only rejects a version MISMATCH: a local
-    # checkout whose version equals the baked one installs and replaces it.
+    # Resolve from uv's --directory, not our cwd, or the project is misclassified as unknown.
     path = _resolve_read_path(token.split("#", 1)[0])
     if not os.path.isdir(path):
         return None
@@ -527,6 +526,9 @@ def _logical_lines(lines):
 # own cwd, which is what pip always uses. main() sets it for uv.
 _WORKING_DIR = None
 
+# Set for `pip uninstall`, where `pkg[extra]` names pkg itself rather than extras to add.
+_UNINSTALLING = False
+
 
 def _uv_working_dir(tool, argv):
     """The directory uv will change to before resolving a relative requirements
@@ -559,9 +561,7 @@ def _filter_requirements_file(path, _depth = 0):
     Returns (path_to_use, recorded_transformers_version, dropped_specs)."""
     read_path = _resolve_read_path(path)
     try:
-        # utf-8-sig, not utf-8: a BOM would otherwise leave "\ufefftransformers==X" on
-        # line 1, matching no handler, so a file whose ONLY protected pin is first
-        # forwards unchanged. Both real tools strip it and honour the line.
+        # utf-8-sig: a BOM would hide a protected pin on line 1.
         with open(read_path, encoding = "utf-8-sig") as f:
             lines = f.readlines()
     except OSError:
@@ -612,11 +612,12 @@ def _filter_requirements_file(path, _depth = 0):
             v = _version_pin(classified)
             if v and not recorded:
                 recorded = v
-            # extras of the BAKED transformers are additive exactly as they are for
-            # every _KEEP package below, and the sidecar only replaces the version:
-            # dropping the whole token loses deepspeed/sentencepiece/... and still
-            # reports ok. The pin is stripped, so this can only ADD.
-            extras = _extras_only_target(spec) if _is_installed("transformers") else None
+            # Extras of the baked transformers are additive; only the pin is stripped.
+            extras = (
+                _extras_only_target(spec)
+                if _is_installed("transformers") and not _UNINSTALLING
+                else None
+            )
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -625,7 +626,7 @@ def _filter_requirements_file(path, _depth = 0):
             changed = True
             continue
         if _is_protected(name):
-            extras = _extras_only_target(spec)
+            extras = None if _UNINSTALLING else _extras_only_target(spec)
             if extras is not None:
                 out.append(extras + ("\n" if group[-1].endswith("\n") else ""))
                 changed = True
@@ -670,9 +671,7 @@ def _protected_constraints_file():
         scope = _base_site_packages()
         if not scope:
             raise RuntimeError(f"could not locate the site-packages of {REAL['pip']}")
-        # scoped, NOT a bare distributions(): see _base_site_packages. An activated
-        # sidecar sits ahead of the venv on PYTHONPATH and would otherwise be pinned
-        # here in place of the baked version.
+        # Scoped, not a bare distributions(): an active sidecar is ahead on PYTHONPATH.
         dists = list(distributions(path = scope))
     except Exception as exc:
         raise SystemExit(
@@ -849,7 +848,11 @@ def _install_index(tool, argv):
     outcome available here: the install runs unfiltered and unconstrained, free to
     replace the baked torch/CUDA stack. _VALUE_FLAGS is the same set the tail scanner
     uses and _selfcheck_value_flags() holds it to the real CLIs at build time."""
-    expect = ["install"] if tool == "pip" else ["pip", "install"]
+    return _subcommand_index(tool, argv, "install")
+
+
+def _subcommand_index(tool, argv, sub):
+    expect = [sub] if tool == "pip" else ["pip", sub]
     got = _positionals(argv)
     if len(got) < len(expect):
         return None
@@ -857,6 +860,82 @@ def _install_index(tool, argv):
         if tok != want:
             return None
     return got[len(expect) - 1][0]
+
+
+def _uninstall_file(path, dropped):
+    """Filtered path, or None when nothing is left: pip errors on an empty file."""
+    filtered, _, drp = _filter_requirements_file(path)
+    dropped.extend(drp)
+    if filtered == path:
+        return filtered
+    with open(filtered, encoding = "utf-8") as f:
+        if any(ln.strip() and not ln.strip().startswith("#") for ln in f):
+            return filtered
+    return None
+
+
+def _uninstall(tool, argv, i):
+    global _UNINSTALLING
+    _UNINSTALLING = True
+    head, tail = argv[: i + 1], _expand_short_clusters(argv[i + 1 :])
+    child_env = None
+    if tool == "pip":
+        env_tail = [x for val in os.environ.get("PIP_REQUIREMENT", "").split() for x in ("-r", val)]
+        if env_tail:
+            tail = env_tail + tail
+            child_env = {k: v for k, v in os.environ.items() if k != "PIP_REQUIREMENT"}
+    keep, dropped = [], []
+    has_target = False
+    pending = None
+    for tok in tail:
+        if pending is not None:
+            if pending in _REQ_FILE_FLAGS:
+                tok = _uninstall_file(tok, dropped)
+                if tok is not None:
+                    keep += [pending, tok]
+                    has_target = True
+            else:
+                keep += [pending, tok]
+            pending = None
+            continue
+        if tok.startswith("--") and "=" in tok:
+            flag, _, val = tok.partition("=")
+            if flag in _REQ_FILE_FLAGS:
+                filtered = _uninstall_file(val, dropped)
+                if filtered is not None:
+                    keep.append(flag + "=" + filtered)
+                    has_target = True
+                continue
+            keep.append(tok)
+            continue
+        if len(tok) > 2 and tok[:2] in _REQ_FILE_FLAGS:
+            filtered = _uninstall_file(tok[2:], dropped)
+            if filtered is not None:
+                keep += [tok[:2], filtered]
+                has_target = True
+            continue
+        if tok in _VALUE_FLAGS:
+            pending = tok
+            continue
+        if tok.startswith("-"):
+            keep.append(tok)
+            continue
+        name = _canon(tok)
+        if _is_protected(name) or (name == "transformers" and _is_installed(name)):
+            dropped.append(tok)
+            continue
+        keep.append(tok)
+        has_target = True
+    if dropped:
+        print("[unsloth-nb] kept baked versions, skipped: " + " ".join(dropped))
+    if not has_target and dropped:
+        print("[unsloth-nb] nothing to uninstall after keeping the baked stack; ok.")
+        return
+    cmd = [REAL[tool]] + head + keep
+    sys.stdout.flush()
+    if child_env is not None:
+        os.execve(REAL[tool], cmd, child_env)
+    os.execv(REAL[tool], cmd)
 
 
 def _positionals(argv):
@@ -889,36 +968,15 @@ def _is_uv_pip_sync(argv):
     return [tok for _, tok in _positionals(argv)][:2] == ["pip", "sync"]
 
 
-# Options that send the install somewhere OTHER than the venv this shim guards.
-# pip documents --target as "Install packages into <dir>" and --python as "Run pip
-# with the specified Python interpreter"; uv documents --python as "The Python
-# interpreter into which packages should be installed".
+# Options that install somewhere OTHER than the guarded venv.
 _DEST_DIR_FLAGS = {"--target", "-t", "--prefix"}
-# --root is NOT a destination directory. pip documents it as "Install everything
-# relative to this alternate root directory" and applies it as a relocation PREFIX:
-# the computed scheme path is unchanged and then re-anchored under the root, so
-# `--root /` is the identity and still writes the venv's own site-packages. Measured:
-# `pip install --root / idna==3.6` put idna in the venv's purelib, while a real root
-# relocated it under that directory and left the venv untouched.
+# --root is a relocation prefix, not a destination: `--root /` still writes the venv.
 _DEST_ROOT_FLAGS = {"--root"}
 _DEST_PYTHON_FLAGS = {"--python", "-p"}
-# pip honours PIP_<OPTION> for every option and uv documents --python as
-# [env: UV_PYTHON=]; both redirect with nothing on the command line at all.
-# Per TOOL, because each ignores the other's variables and a bypass granted on a
-# variable the invoked tool never reads is the dangerous direction: the install lands
-# in the baked venv with no filtering at all. Measured against both CLIs: pip honours
-# PIP_TARGET, PIP_PREFIX, PIP_ROOT and PIP_PYTHON and ignores UV_PYTHON; uv honours
-# UV_PYTHON, ignores every PIP_ variable, and has no environment form for its
-# --target/--prefix at all.
-# pip options that carry INSTALL TARGETS rather than a destination, in their
-# environment spelling. Both are space separated when they name more than one.
-# Flags that supply install TARGETS the shim cannot read. --group names a PEP 735
-# table inside a pyproject.toml (pip 25.3+ and uv), --requirements-from-script a PEP
-# 723 header inside a script (pip 26+). Measured: both are consumed for real, and a
-# group holding `unsloth @ file:///checkout` at the baked version installs over it
-# because pip reinstalls a same-version LOCAL PATH or sdist. --upgrade-group is NOT
-# here: `uv pip install` rejects it outright and pip has no such option, so it can
-# never supply a target on the command lines this shim sees.
+# Per tool: pip honours PIP_TARGET/PREFIX/ROOT/PYTHON, uv only UV_PYTHON. A bypass granted
+# on a variable the tool ignores would install unfiltered.
+# --group (PEP 735) and --requirements-from-script (PEP 723) supply targets the shim
+# cannot read. --upgrade-group is rejected by both tools.
 _UNINSPECTABLE_TARGET_FLAGS = {"--group", "--requirements-from-script"}
 _PIP_TARGET_ENV = {"PIP_REQUIREMENT": "-r", "PIP_EDITABLE": "-e"}
 _DEST_DIR_ENV = {"pip": ("PIP_TARGET", "PIP_PREFIX"), "uv": ()}
@@ -984,10 +1042,13 @@ def _installs_elsewhere(tool, argv):
     baked interpreter, so it keeps the protective behaviour. Environment variables
     count only for the tool that actually reads them; a flag is left unscoped because
     a tool that does not accept one fails loudly on it rather than silently."""
+    # pip uninstall has no --target/--prefix/--root and ignores their variables, so
+    # they still leave it pointed at the baked venv
+    dest_env = not (tool == "pip" and _subcommand_index(tool, argv, "uninstall") is not None)
     dirs = _flag_values(argv, _DEST_DIR_FLAGS)
-    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if os.environ.get(v)]
+    dirs += [os.environ[v] for v in _DEST_DIR_ENV[tool] if dest_env and os.environ.get(v)]
     roots = _flag_values(argv, _DEST_ROOT_FLAGS)
-    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if os.environ.get(v)]
+    roots += [os.environ[v] for v in _DEST_ROOT_ENV[tool] if dest_env and os.environ.get(v)]
     # a root re-anchors the venv's OWN paths beneath it, so resolve where each one
     # actually lands rather than classifying the root value itself
     dirs += [_relocated_under_root(r, _base_venv_root()) for r in roots]
@@ -1004,6 +1065,8 @@ def main():
 
     if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
         _selfcheck_value_flags()
+
+    _restore_install_privileges()
 
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
         os.execv(REAL[tool], [REAL[tool]] + argv)
@@ -1027,6 +1090,11 @@ def main():
     _wd = _uv_working_dir(tool, argv)
     _WORKING_DIR = os.path.abspath(_wd) if _wd else None
 
+    i = _subcommand_index(tool, argv, "uninstall")
+    if i is not None:
+        _uninstall(tool, argv, i)
+        return
+
     i = _install_index(tool, argv)
     if i is None:
         os.execv(REAL[tool], [REAL[tool]] + argv)
@@ -1048,14 +1116,8 @@ def main():
             "same requirements with `-r <file>`, which IS filtered."
         )
 
-    # pip reads PIP_<OPTION> for every option, so a requirements file or an editable
-    # target can arrive with nothing on the command line to show for it. The scan below
-    # only walks argv, so `PIP_REQUIREMENT=/tmp/r.txt pip install packaging` filtered
-    # `packaging` and handed the real pip an uninspected file. The injected constraints
-    # do not save it: a same-version editable or direct reference resolves cleanly.
-    # Fold them in as ordinary flags so they go through the same filtering, and clear
-    # them from the child so the real tool cannot consume them a second time. uv has no
-    # environment form for --requirements, so this is pip-only.
+    # pip reads PIP_<OPTION> for every option, so fold PIP_REQUIREMENT etc. into argv for
+    # filtering and clear them from the child. uv has no env form for --requirements.
     env_tail = []
     child_env = None
     if tool == "pip":
@@ -1225,12 +1287,8 @@ def main():
             with open(MARKER, "w") as f:
                 f.write(recorded)
         except OSError as exc:
-            # do NOT abort: nothing has been installed or mis-forwarded, and the baked
-            # transformers still works, so hard-failing a notebook cell over an
-            # unwritable path the user cannot act on is the worse trade. But do not
-            # report success either: transformers is already out of the real arguments,
-            # so staying silent leaves the cell claiming the pin was honoured while the
-            # model cells import the baked version.
+            # Do not abort, but do not report success: the pin was dropped and the baked version
+            # will be imported.
             print(
                 f"[unsloth-nb] WARNING: could not record the requested "
                 f"transformers=={recorded} at {MARKER} ({exc}); the sidecar will NOT "

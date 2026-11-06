@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Replayed tool-call ids must fit provider limits (#8913).
-
-The frontend stores them as "<provider id>:<uuid4>" (66 chars for OpenAI), and a
-provider that validates ids rejects the whole request, permanently breaking the chat.
-"""
+"""Replayed tool-call ids must fit provider limits, or the provider rejects the whole request."""
 
 import re
 
@@ -109,10 +105,7 @@ def test_mistral_native_ids_pass_through_unchanged():
     assert output_id == "AbCdEfGhI"
 
 
-# Anthropic states its charset in the 400 it raises: "tool_use.id: String should match
-# pattern '^[a-zA-Z0-9_-]+$'". A colon is not in it, and the two stored shapes carrying
-# one (the duplicate-base fallback, and "<sandbox>:<thread>:<approval>" confirmation ids)
-# are both under 64 chars, so the length branch never touched them.
+# Anthropic requires ids matching ^[a-zA-Z0-9_-]+$; colon ids are under 64 chars, so the length branch misses them
 ANTHROPIC_ID = re.compile(r"[a-zA-Z0-9_-]+")
 
 
@@ -136,16 +129,14 @@ def test_anthropic_colliding_bases_stay_legal_and_distinct():
 
 
 def test_anthropic_legal_ids_pass_through_unchanged():
-    # Only ids Anthropic would already have refused may change, so a chat that works
-    # today keeps byte-identical ids.
+    # only ids Anthropic would refuse may change, so working chats keep identical ids
     for legal in ("toolu_01A1B2C3D4E5F6G7H8I9J0K1", "call_abc123", "a-b_c"):
         call_id, output_id = _replayed_ids(legal, provider_type = "anthropic")
         assert call_id == output_id == legal
 
 
 def test_anthropic_sanitizing_alone_would_collide():
-    # "pre:fix" and "pre_fix" both sanitize to "pre_fix", a silent mispairing, so the
-    # sha256 tail over the unsanitized value is what keeps the map injective.
+    # "pre:fix" and "pre_fix" both sanitize alike; the sha256 tail keeps the map injective
     out = _build_external_messages(
         _history("pre:fix") + _history("pre_fix"),
         supports_vision = True,
@@ -156,9 +147,115 @@ def test_anthropic_sanitizing_alone_would_collide():
 
 
 def test_replay_is_idempotent_for_every_provider():
-    # A normalized id replayed again on turn three must not drift, or the call and its
-    # result stop matching.
     for provider in ("openai", "anthropic", "mistral", "gemini", "deepseek", None):
         once, _ = _replayed_ids(MINTED, provider_type = provider)
         twice, paired = _replayed_ids(once, provider_type = provider)
         assert twice == once == paired, (provider, once, twice)
+
+
+def _mcp_image_history():
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    return [
+        ChatMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": ORIGINAL,
+                        "type": "function",
+                        "function": {"name": "mcp__fs__read_media_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        ),
+        ChatMessage.model_validate(
+            {
+                "role": "tool",
+                "tool_call_id": ORIGINAL,
+                "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+            }
+        ),
+    ]
+
+
+def test_replayed_mcp_images_become_an_image_turn_on_a_vision_provider():
+    out = _build_external_messages(
+        _mcp_image_history(), supports_vision = True, provider_type = "openai"
+    )
+
+    assert [message["role"] for message in out] == ["assistant", "tool", "user"]
+    assert out[1]["content"] == "[1 image returned]"
+    assert out[2]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_replayed_mcp_images_are_stripped_on_a_text_only_provider():
+    out = _build_external_messages(
+        _mcp_image_history(), supports_vision = False, provider_type = "openai"
+    )
+
+    assert [message["role"] for message in out] == ["assistant", "tool"]
+    assert out[1]["content"] == "[1 image returned]"
+
+
+def test_replay_promotion_is_moved_off_the_event_loop(monkeypatch):
+    """Promoting an envelope decodes and re-encodes every picture in it. That is
+    PIL work, and _proxy_to_external_provider calls the builder from the loop."""
+    import asyncio
+
+    import routes.inference as inference_route
+
+    hops: list = []
+    real_to_thread = asyncio.to_thread
+
+    async def counting_to_thread(fn, *a, **kw):
+        hops.append(getattr(fn, "__name__", str(fn)))
+        return await real_to_thread(fn, *a, **kw)
+
+    monkeypatch.setattr(inference_route.asyncio, "to_thread", counting_to_thread)
+
+    out = asyncio.run(
+        inference_route._build_external_messages_async(
+            _mcp_image_history(), True, provider_type = "openai"
+        )
+    )
+
+    assert hops == ["_build_external_messages"]
+    assert out[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_a_plain_conversation_keeps_its_direct_call(monkeypatch):
+    """No envelope, no PIL work: the thread hop would be pure overhead."""
+    import asyncio
+
+    import routes.inference as inference_route
+
+    hops: list = []
+
+    async def counting_to_thread(fn, *a, **kw):
+        hops.append(getattr(fn, "__name__", str(fn)))
+        return await asyncio.to_thread(fn, *a, **kw)
+
+    monkeypatch.setattr(inference_route.asyncio, "to_thread", counting_to_thread)
+
+    asyncio.run(
+        inference_route._build_external_messages_async(
+            [ChatMessage.model_validate({"role": "user", "content": "hello"})],
+            True,
+            provider_type = "openai",
+        )
+    )
+
+    assert hops == []

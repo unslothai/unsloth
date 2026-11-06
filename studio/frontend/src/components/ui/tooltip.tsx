@@ -7,6 +7,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -18,6 +19,8 @@ import {
   subscribeModalLayer,
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
+import { isTouchClick } from "@/components/ui/touch-click";
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -85,22 +88,6 @@ function getServerModalBlock(): boolean {
   return false;
 }
 
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
-* that answers for the pointer actually used: the media query reports the primary device, so on
-* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
-function isTouchClick(event: React.MouseEvent): boolean {
-  const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
-  if (typeof pointerType === "string") return pointerType === "touch";
-  // No PointerEvent (older WebViews): fall back to the device class.
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches
-  );
-}
-
-// Default to instant open (no hover delay): icon labels, nav labels and the token calculators
-// should feel snappy. Consumers that want a delay pass an explicit `delayDuration`.
 function TooltipProvider({
   delayDuration = 0,
   ...props
@@ -120,13 +107,10 @@ function Tooltip({
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   const isControlled = controlledOpen !== undefined;
-  // Radix's own open state is never handed back once a modal forces the tooltip shut, so hover is
-  // tracked here and `open` is always supplied. Falling back to `undefined` would re-expose a
-  // `true` from before the dialog, with the pointer somewhere else entirely.
+  // Hover is tracked here and `open` always supplied: `undefined` would re-expose a stale `true`.
   const [hoverOpen, setHoverOpen] = useState(false);
   const [clickOpen, setClickOpen] = useState(false);
-  // A controlled tooltip's owner cannot be reset from here, and it never saw the pointerleave a
-  // modal swallowed, so stay shut until the owner says false at least once.
+  // A controlled tooltip missed the swallowed pointerleave; stay shut until owner says false.
   const [dismissedUntilOwnerResets, setDismissedUntilOwnerResets] =
     useState(false);
   const [modalBlockStore] = useState(createModalBlockStore);
@@ -152,31 +136,28 @@ function Tooltip({
   // Drop what is open when a modal takes over, so closing the dialog does not
   // bring the tooltip back on its own. Owners of a controlled tooltip are told,
   // since their state (a `hovered` flag) never sees the pointerleave either.
+  // Latch only a tooltip its owner held open: one already shut never sends another false.
+  const controlledOpenRef = useRef(controlledOpen);
+  controlledOpenRef.current = controlledOpen;
   useEffect(() => {
     if (!blocked) return;
     setHoverOpen(false);
     setClickOpen(false);
-    setDismissedUntilOwnerResets(true);
+    if (controlledOpenRef.current) setDismissedUntilOwnerResets(true);
     controlledOnOpenChange?.(false);
   }, [blocked, controlledOnOpenChange]);
 
-  // `panel-resize-handle.tsx` passes `open` with no onOpenChange, so telling it
-  // does nothing and its `hovered` stays true. Releasing on its say-so alone
-  // would put the tooltip back with the pointer somewhere else entirely.
+  // `panel-resize-handle.tsx` passes `open` with no onOpenChange, so its say-so alone is not enough.
   useEffect(() => {
     if (controlledOpen === false) setDismissedUntilOwnerResets(false);
   }, [controlledOpen]);
 
-  // A pin must not outlive its interaction: once a dialog covers the trigger,
-  // pointerleave never fires and Radix can no longer close it. Presses on a
-  // trigger are skipped so tapping the same one still toggles it shut.
+  // A pin must not outlive its interaction: under a dialog Radix can no longer close it.
   useEffect(() => {
     if (!clickOpen) return;
     const release = (event: Event) => {
       const target = event.target as Node | null;
-      // The trigger is matched by element, not by data-slot: an `asChild` child can drop the
-      // attribute (a component that does not spread props), and then a press on this very trigger
-      // read as outside, cleared the pin, and the click handler toggled it straight back on.
+      // Matched by element, not data-slot: an `asChild` child can drop the attribute.
       if (target && modalBlockStore.getTriggerElement()?.contains(target)) {
         return;
       }
@@ -206,8 +187,6 @@ function Tooltip({
       <TooltipToggleCtx.Provider value={isControlled ? null : toggle}>
         <TooltipPrimitive.Root
           data-slot="tooltip"
-          // Always a boolean, so Radix keeps no separate open state that could
-          // survive a modal and resurface after it closes.
           open={resolveTooltipOpen({
             blocked,
             controlledOpen,
@@ -234,8 +213,7 @@ function TooltipTrigger({
   const toggle = useContext(TooltipToggleCtx);
   const setTriggerElement = useContext(TooltipTriggerElementCtx);
 
-  // The trigger says which layer this tooltip belongs to, and unlike the
-  // content it is mounted the whole time, so the answer never goes missing.
+  // The trigger stays mounted, unlike the content, so it always says which layer owns this.
   const triggerRef = useCallback(
     (el: HTMLElement | null) => {
       assignRef(ref, el);
@@ -246,16 +224,11 @@ function TooltipTrigger({
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
-      // Run the composed handler first: when this trigger wraps another Radix
-      // trigger (e.g. DialogTrigger around an attachment tile), that trigger's
-      // action is skipped if the event is already default-prevented.
+      // Composed handler first: a wrapped Radix trigger skips its action if already default-prevented.
       onClick?.(e);
-      // With a mouse, hover already shows it and pinning only strands it. Let
-      // Radix's own close-on-click run instead. `toggle` is absent when the
-      // consumer controls `open`, where a pin would be dead state anyway.
+      // With a mouse, hover already shows it and a pin only strands it.
       if (disableClickToggle || !toggle || !isTouchClick(e)) return;
-      // preventDefault keeps Radix Tooltip's internal close-on-click from
-      // undoing the tap-toggle below (its composed handler checks it).
+      // preventDefault stops Radix's close-on-click undoing the tap-toggle below.
       e.preventDefault();
       toggle();
     },
@@ -274,33 +247,22 @@ function TooltipTrigger({
 
 type TooltipVariant = "default" | "rich" | "none";
 
-// `default` applies the compact black-pill styling shared with the sidebar/chat icon labels. `rich`
-// opts into the larger multi-row popover surface used for timing/context breakdowns. `none` is an
-// escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
   variant = "default",
   className,
   sideOffset = 0,
+  collisionPadding = 8,
   children,
   ref,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
-  // Single-line compact tooltips render as a full pill; wrapped ones keep the squarer corners so
-  // tall pills do not look like capsules. A ref callback measures on mount: Radix mounts the portal
-  // content without re-rendering this wrapper, so an effect here would never see the node.
+  // A ref callback, not an effect: Radix mounts the portal content without re-rendering this.
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);
-      if (!el || variant !== "default") return;
-      const cs = getComputedStyle(el);
-      const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
-      const innerHeight =
-        el.clientHeight -
-        Number.parseFloat(cs.paddingTop) -
-        Number.parseFloat(cs.paddingBottom);
-      el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
+      if (variant === "default") roundIfSingleLine(el);
     },
     [ref, variant],
   );
@@ -310,8 +272,9 @@ function TooltipContent({
         ref={contentRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          "z-[999999] w-fit max-w-xs",
+          "z-[999999] w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-[state=delayed-open]:ease-out",
           variant === "default" && "tooltip-compact",
           variant === "rich" && "tooltip-rich",
           className,

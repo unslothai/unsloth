@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import copy
 import os
 import sys
 import threading
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 
 _backend = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _backend not in sys.path:
@@ -62,7 +64,6 @@ def studio_embedder(monkeypatch):
         model_name = None,
         normalize = True,
     ):
-        # Delegates to the test's encode, so a blowing-up or blocking one still drives the route.
         return rag_embeddings.encode(texts, model_name = model_name, normalize = normalize), IDENTITY
 
     monkeypatch.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
@@ -144,6 +145,58 @@ def test_resident_embedding_gguf_still_uses_the_proxy(studio_embedder):
     assert payload == {"data": [{"embedding": [0.5]}]}
 
 
+@pytest.mark.parametrize("encoding_format", ["float", "base64"])
+@pytest.mark.parametrize("dimensions, status", [(2, 200), (256, 400)])
+def test_resident_embedding_gguf_checks_dimensions_against_its_width(
+    studio_embedder, encoding_format, dimensions, status
+):
+    import httpx
+
+    forwarded = []
+
+    class _Client:
+        async def post(
+            self,
+            *_args,
+            json = None,
+            **_kwargs,
+        ):
+            forwarded.append(json)
+            vector = [0.5, 0.5]
+            if encoding_format == "base64":
+                vector = base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode()
+            return httpx.Response(200, json = {"data": [{"embedding": vector}]})
+
+        async def aclose(self):
+            return None
+
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", _Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    body = {
+        "input": "alpha",
+        "model": "org/E-GGUF",
+        "encoding_format": encoding_format,
+        "dimensions": dimensions,
+    }
+    if status == 200:
+        _call(body)
+    else:
+        error = _http_error(body)
+        assert error.status_code == 400
+        assert "'dimensions' is not supported" in error.detail
+    assert "dimensions" not in forwarded[0]
+
+
 def test_base64_encoding_format(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -174,14 +227,171 @@ def test_invalid_requests_are_400(studio_embedder, body):
     assert _http_error(body).status_code == 400
 
 
-def test_over_length_input_is_rejected_not_truncated(studio_embedder):
+def test_over_length_input_is_truncated_by_default(studio_embedder):
+    encoded = []
+
+    def _encode(texts, **_):
+        encoded.append(list(texts))
+        return _vectors(texts)
+
+    studio_embedder.setattr(rag_embeddings, "encode", _encode)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
     studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
-    error = _http_error({"input": ["ab", "abcd"]})
+    payload = _call({"input": ["ab", "abcd"]})
+    assert encoded == [["ab", "abc"]]
+    assert len(payload["data"]) == 2
+    assert payload["usage"]["prompt_tokens"] == 5
+
+
+def test_over_length_input_is_rejected_when_truncate_is_false(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    error = _http_error({"input": ["ab", "abcd"], "truncate": False})
     assert error.status_code == 400
     assert "3-token limit" in error.detail
+
+
+def test_non_boolean_truncate_is_400(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    error = _http_error({"input": "ab", "truncate": "yes"})
+    assert error.status_code == 400
+    assert "'truncate'" in error.detail
+
+
+_CLS, _SEP = 101, 102
+
+
+def _llama_overflow_server(
+    ubatch,
+    n_ctx,
+    can_split = False,
+):
+    import httpx
+
+    embedded, tokenized = [], []
+
+    def _tokens(item):
+        if isinstance(item, list):
+            return item
+        return [_CLS, *(len(word) for word in item.split()), _SEP]
+
+    class _Client:
+        async def post(
+            self,
+            url,
+            *_args,
+            json = None,
+            **_kwargs,
+        ):
+            if url.endswith("/tokenize"):
+                tokenized.append(json["content"])
+                tokens = _tokens(json["content"])
+                return httpx.Response(
+                    200, json = {"tokens": tokens if json["add_special"] else tokens[1:-1]}
+                )
+            # The route reuses the dict.
+            embedded.append(copy.deepcopy(json))
+            items = [json["input"]] if isinstance(json["input"], str) else json["input"]
+            for item in items:
+                n = len(_tokens(item))
+                if can_split and n >= n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"request ({n} tokens) exceeds the available context "
+                                f"size ({n_ctx} tokens), try increasing it"
+                            }
+                        },
+                    )
+                if can_split:
+                    continue
+                if n > ubatch:
+                    return httpx.Response(
+                        500,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is too large to process. increase "
+                                f"the physical batch size (current batch size: {ubatch})"
+                            }
+                        },
+                    )
+                if n > n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is larger than the max context "
+                                f"size ({n_ctx} tokens). skipping"
+                            }
+                        },
+                    )
+            return httpx.Response(200, json = {"data": [{"embedding": [0.5]} for _ in items]})
+
+        async def aclose(self):
+            return None
+
+    return _Client, embedded, tokenized
+
+
+_OVERFLOW_LIMITS = [(4, 512), (512, 4)]
+
+
+def _resident_embedding_gguf(studio_embedder, client):
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+
+
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, ubatch, n_ctx):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 2
+    assert len(embedded) == 2
+    assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
+    assert "truncate" not in embedded[0]
+
+
+def test_resident_embedding_gguf_truncates_for_a_splittable_slot(studio_embedder):
+    client, embedded, _ = _llama_overflow_server(512, 5, can_split = True)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 2
+    assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
+
+
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_keeps_the_error_when_truncate_is_false(
+    studio_embedder, ubatch, n_ctx
+):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
+    _resident_embedding_gguf(studio_embedder, client)
+    response = asyncio.run(
+        inference_route.openai_embeddings(
+            _Request({"input": "aa bbb c dddd e", "model": "org/E-GGUF", "truncate": False}),
+            "tester",
+        )
+    )
+    assert response.status_code == (500 if ubatch < n_ctx else 400)
+    assert len(embedded) == 1
+    assert "truncate" not in embedded[0]
 
 
 def test_embedder_failure_is_502(studio_embedder):
@@ -196,13 +406,7 @@ def test_embedder_failure_is_502(studio_embedder):
 
 
 def test_identity_redaction_leaves_the_backend_tag_alone(tmp_path, monkeypatch):
-    """A local model whose name occurs inside the backend tag.
-
-    `transformers` is a real directory people have lying around, and is_local_path accepts a
-    bare relative name that exists. A substring replace then rewrites the
-    `sentence-transformers` tag too, and the identity we advertise is one no backend claims
-    and _names_studio_embedder cannot match on the next request.
-    """
+    """Redacting a local model name must not rewrite the backend tag, e.g. sentence-transformers."""
     from core.rag import config as rag_config
 
     (tmp_path / "transformers").mkdir()
@@ -244,11 +448,7 @@ def test_identity_redaction_covers_the_gguf_repo_segment(monkeypatch):
 
 
 def test_identity_redaction_covers_a_local_repo_under_a_hub_model(monkeypatch):
-    """A hub model id whose GGUF companion is a local path.
-
-    RAG_EMBED_GGUF_REPO takes any path, so the model segment can need no redaction while the
-    repo segment beside it is an absolute path on the server.
-    """
+    """Redact a local path in RAG_EMBED_GGUF_REPO even when the model segment is a plain hub id."""
     from core.rag import config as rag_config
 
     monkeypatch.setattr(
@@ -321,12 +521,7 @@ def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fra
 
 
 def test_pending_gguf_download_is_classified_like_the_st_one(tmp_path, monkeypatch):
-    """The GGUF backend hits the same condition and used to raise a bare RuntimeError.
-
-    Both backends refuse the same way when the picker's download has not finished, so both
-    have to reach the 409; untyped, this one fell into the catch-all and came back as a 502
-    saying only that an internal error occurred.
-    """
+    """A pending GGUF download must be typed like the sentence-transformers one, so both reach the 409."""
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -348,13 +543,7 @@ def test_pending_gguf_download_is_classified_like_the_st_one(tmp_path, monkeypat
 
 
 def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch):
-    """Passing the message through must not undo the redaction the rest of the route does.
-
-    _get resolves a cached model to its absolute snapshot directory and hands that to
-    _guard_model_security, so the raised text can carry the server's HF cache layout, and a
-    configured model can be a local path in its own right. Both go out over /v1/embeddings,
-    where the identity and the limit errors already report the hashed label instead.
-    """
+    """Pass-through error text must not expose a local path, since the route hashes labels elsewhere."""
     studio_embedder.setattr(
         rag_config, "effective_embedding_model", lambda: "/srv/models/bge-small"
     )
@@ -373,7 +562,7 @@ def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch
     assert error.status_code == 409
     assert "/srv/models" not in error.detail
     assert "flagged as unsafe" in error.detail
-    assert "bge-small-" in error.detail  # the hashed public label, not the path
+    assert "bge-small-" in error.detail
 
 
 def test_guard_model_security_names_the_configured_model_not_the_snapshot(monkeypatch):
@@ -435,8 +624,7 @@ def test_studio_embedder_requests_are_admission_limited(studio_embedder):
 
 
 def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedder):
-    # An _INFERENCE_SUFFIXES path not in _NON_LLM_SLOT_SUFFIXES: a 2xx reaching _finish claims the
-    # llama slot the studio embedder never touched, so it untracks first, as the chat branch does.
+    # A 2xx reaching _finish would claim a llama slot the studio embedder never used, so untrack first.
     from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
@@ -450,7 +638,6 @@ def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedde
     try:
         response = asyncio.run(inference_route.openai_embeddings(request, "tester"))
         assert response.status_code == 200
-        # Set => _finish() skips both _claim_non_preview_slot() and the activity stamp.
         assert request.scope.get(kw._UNTRACKED_SCOPE_KEY) is True
         assert kw._inflight == before
     finally:
@@ -458,7 +645,6 @@ def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedde
 
 
 def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
-    # The proxy path DOES run against the resident GGUF, so it must stay tracked.
     import httpx
 
     class _Client:
@@ -488,8 +674,7 @@ def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
 
 
 def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
-    # api_monitor divides the batch's summed prompt_tokens by that 3rd arg, so passing the
-    # per-text limit reports 100% context use for a batch that used a fraction per text.
+    # api_monitor divides summed prompt_tokens by this, so per-text limit overstates context use.
     seen = []
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -513,8 +698,7 @@ def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
 
 
 def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
-    # to_thread cannot cancel the worker, so releasing on the awaiting task's cancellation lets
-    # the next batch in while the old threads still embed and the cap stops holding.
+    # to_thread cannot cancel the worker, so permits must outlive the awaiting task's cancellation.
     lock = threading.Lock()
     gate = threading.Event()
     active = {"now": 0, "peak": 0}
@@ -545,7 +729,6 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
                 break
         assert active["now"] == cap
 
-        # Every in-flight request goes away, but its thread is still inside encode().
         for task in first:
             task.cancel()
         await asyncio.gather(*first, return_exceptions = True)
@@ -555,7 +738,6 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
             for _ in range(cap)
         ]
         await asyncio.sleep(0.3)
-        # The permits are still held by the running threads, so nothing new started.
         assert active["peak"] == cap, f"admission cap exceeded: peak={active['peak']}"
         gate.set()
         await asyncio.gather(*second, return_exceptions = True)
@@ -565,8 +747,7 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
 
 
 def test_reported_model_follows_the_backend_that_made_the_vectors(studio_embedder):
-    # An ST failure swaps the process to llama-server, a different space: the response has to
-    # name the space the vectors are in, or a client files two under one label.
+    # ST failure swaps to llama-server (different space); the response must name the real space.
     llama_identity = f"llama-server:{MODEL}:unsloth/bge-small-en-v1.5-GGUF"
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -619,8 +800,7 @@ def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
 
 
 def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
-    # Admission happens before the route decides how to serve, and load_model_for_preview reads
-    # the admitted tally, not _inflight, so a slow encode keeps 503ing preview swaps.
+    # Admission precedes routing and preview reads the admitted tally, so slow encodes keep 503ing swaps.
     from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
@@ -629,7 +809,7 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
         lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
     )
     request = _Request({"input": "alpha"})
-    # Relative: the tally is module state shared with the suite, so absolutes need this file alone.
+    # Relative: the tally is module state shared with the suite.
     before = kw.other_admitted_inference_count()
     kw.note_admitted_inference(request.scope)
     assert kw.other_admitted_inference_count() == before + 1
@@ -637,15 +817,13 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
     try:
         asyncio.run(inference_route.openai_embeddings(request, "tester"))
         assert kw.other_admitted_inference_count() == before
-        # Popped, so the middleware's finally cannot decrement the tally a second time.
         assert request.scope.get(kw._ADMITTED_SCOPE_KEY) is None
     finally:
         kw._admitted_inference = before
 
 
 def test_cancelled_request_closes_its_monitor_row(studio_embedder):
-    # start() runs before admission and running rows dodge retention trimming, so a request
-    # cancelled while queued has to close its own row.
+    # Running rows dodge retention trimming, so a request cancelled while queued closes its own row.
     closed = []
     gate = threading.Event()
     studio_embedder.setattr(
@@ -801,13 +979,7 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
 
 
 def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkeypatch):
-    """Changing the custom llama.cpp path respawns onto the same GGUF.
-
-    _current() goes stale on the binary revision, so _ensure_ready kills and respawns, but
-    _resolve_model_path takes its same-repo fast path and never reaches _adopt_model_path.
-    The limit is not a pure model fact -- it clamps the GGUF context by the server's n_ctx
-    and n_ubatch, whose defaults differ between builds -- so it has to go with the binary.
-    """
+    """The token limit depends on the binary's n_ctx and n_ubatch, so a binary swap must drop it."""
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -838,7 +1010,7 @@ def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkey
     backend._ensure_ready()
 
     assert backend._max_tokens is None
-    assert backend._model_path is not None  # the GGUF itself did not change
+    assert backend._model_path is not None
 
 
 def test_st_max_tokens_reserves_the_default_prompt(monkeypatch):
@@ -870,11 +1042,7 @@ def test_llama_max_tokens_is_capped_by_the_running_context(tmp_path, monkeypatch
 
 
 def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, monkeypatch):
-    """/props reports n_ctx and no batch field, so the launch value is the only one there is.
-
-    A prompt past one physical batch is refused by llama-server with a 500, which this route
-    turns into a 502; the limit exists to answer 400 before that.
-    """
+    """/props has no batch field, so the launch ubatch caps the limit; past it llama-server 500s."""
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -919,7 +1087,7 @@ def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    # A warm index is what makes this reachable: cold, the name falls back to "has a slash".
+    # Warm index needed: cold, any slashed name counts as decisive.
     from core.inference import local_model_resolver
 
     studio_embedder.setattr(local_model_resolver, "index_is_built", lambda: True)
@@ -983,7 +1151,7 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
     reported = _call({"input": "alpha"})["model"]
     assert reported.startswith("sentence-transformers:bge-") and str(tmp_path) not in reported
     studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
-    error = _http_error({"input": "alphabet"})
+    error = _http_error({"input": "alphabet", "truncate": False})
     assert error.status_code == 400
     assert "bge" in error.detail and str(tmp_path) not in error.detail
 
@@ -1103,8 +1271,9 @@ def test_disconnected_client_leaves_the_queue_without_embedding(studio_embedder)
             await asyncio.sleep(0.01)
             if calls["n"] == cap:
                 break
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls["n"] == cap
         gate.set()
         await asyncio.gather(*blockers)
@@ -1126,8 +1295,7 @@ def test_batch_cap_applies_only_to_the_studio_fallback():
 
 
 def test_a_decisively_named_model_is_refused_when_nothing_is_loaded(studio_embedder):
-    # #7454: a reference clearly meant for this server 404s rather than being answered by other
-    # weights. The slot being empty makes _reject_unservable_model defer, so the fallback decides.
+    # A reference clearly meant for this server 404s rather than being served by other weights.
     _identity_names(studio_embedder)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -1152,7 +1320,6 @@ def test_reference_is_decisive_only_on_positive_evidence(monkeypatch):
     monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
     # An explicit quant label is evidence no foreign id carries.
     assert inference_route._reference_is_decisive("unsloth/gemma-3-270m-it-GGUF:Q8_0") is True
-    # A vendor id is not, so LiteLLM/OpenRouter style names keep working.
     assert inference_route._reference_is_decisive("text-embedding-3-small") is False
     assert inference_route._reference_is_decisive("openai/text-embedding-3-large") is False
 
@@ -1191,8 +1358,9 @@ def test_disconnected_client_is_dropped_even_with_a_free_permit(studio_embedder)
     )
 
     async def run():
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(HTTPException) as exc:
             await inference_route.openai_embeddings(_Gone({"input": "gone"}), "t")
+        assert exc.value.status_code == 499
         assert calls == []
         response = await inference_route.openai_embeddings(_Request({"input": "later"}), "t")
         assert response.status_code == 200
@@ -1224,8 +1392,7 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
 
 
 def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch):
-    # Embedding is non-causal, so llama.cpp refuses rather than splits: an 8k-context limit on a
-    # 512 batch turned a legitimate 600-token input into a 502 instead of a 400.
+    # Embedding is non-causal, so llama.cpp refuses rather than splits over-batch inputs.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1240,8 +1407,7 @@ def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch
 
 
 def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
-    # n_vocab * n_ubatch * 4 is allocated at startup, hundreds of MiB, against the 1024 MiB free
-    # this backend calls enough to offload everything: max_tokens bounds the advert instead.
+    # n_vocab*n_ubatch*4 is allocated at startup, so max_tokens bounds the advert instead.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1254,8 +1420,7 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
 
 
 def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
-    # A header context can exceed what the server runs at, so freezing it while /props is silent
-    # outlives the readback that would have corrected it.
+    # A header context can exceed the running one; freezing it outlives the /props correction.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1268,7 +1433,6 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "_server_context", lambda: None)
     assert backend.max_tokens() == 8190
     assert backend._max_tokens is None
-    # Once /props answers with both bounds, the smaller real context is what sticks.
     monkeypatch.setattr(backend, "_server_context", lambda: 512)
     monkeypatch.setattr(backend, "_server_batch", lambda: 512)
     assert backend.max_tokens() == 510
@@ -1278,8 +1442,7 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
 def test_props_probe_never_raises_before_the_server_is_up():
     from core.rag import embed_llama_server
 
-    # An un-started server has no port, so the URL itself is invalid: the probe must swallow
-    # that and fall back to the batch we launch with rather than propagate.
+    # An un-started server has no port; the probe must swallow that and use the launch batch.
     assert (
         embed_llama_server.LlamaServerBackend()._server_batch() == embed_llama_server._UBATCH_SIZE
     )
@@ -1340,13 +1503,11 @@ def test_a_boolean_is_not_a_token_id():
     assert exc.value.status_code == 400
     with pytest.raises(HTTPException):
         inference_route._embeddings_items({"input": [[1, True, 3]]}, tokens_ok = True)
-    # A real token array is still one text.
     assert inference_route._embeddings_items({"input": [1, 2, 3]}, tokens_ok = True) == [[1, 2, 3]]
 
 
 def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
-    # Before the first scan resolve_local_gguf answers None for a model that IS downloaded, and
-    # reading that as foreign served another embedding space under the requested name.
+    # Before the first scan resolve_local_gguf returns None for downloaded models; that is not foreign.
     from core.inference import local_model_resolver as _resolver
 
     monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
@@ -1354,7 +1515,6 @@ def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
     monkeypatch.setattr(_resolver, "warm_index_soon", lambda: None)
     assert inference_route._reference_is_decisive("org/my-local-model") is True
     assert inference_route._reference_is_decisive("/models/local.gguf") is True
-    # A bare vendor alias is still not evidence, cold index or not.
     assert inference_route._reference_is_decisive("text-embedding-3-small") is False
 
     # Once the index is built, absence really is evidence.
@@ -1403,3 +1563,59 @@ def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(inference_route, "_probe_backend", _Probe)
     assert inference_route._stashed_gguf_embeds() is True
+
+
+def test_resident_embedding_gguf_recuts_for_a_context_below_the_batch(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(6, 4)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e ff gg hh"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 1
+    assert [body["input"] for body in embedded[1:]] == [
+        [[_CLS, 2, 3, 1, 4, _SEP]],
+        [[_CLS, 2, 3, _SEP]],
+    ]
+    assert len(tokenized) == 2
+
+
+def test_resident_embedding_gguf_skips_tokenizing_strings_that_cannot_overflow(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(20, 512)
+    _resident_embedding_gguf(studio_embedder, client)
+    long = " ".join(["a"] * 30)
+    _call({"input": [long, "x", "y z", "\ufdfa"], "model": "org/E-GGUF"})
+    assert embedded[1]["input"][1:] == ["x", "y z", "\ufdfa"]
+    assert set(tokenized) == {long, "\ufdfa"}
+
+
+def test_resident_embedding_gguf_cancel_during_the_retry_is_499(studio_embedder):
+    from fastapi import HTTPException
+
+    server, _, _ = _llama_overflow_server(4, 512)
+    request = _Request({"input": ["aa bbb c dddd e"], "model": "org/E-GGUF"})
+    disconnected = False
+
+    async def _is_disconnected():
+        return disconnected
+
+    request.is_disconnected = _is_disconnected
+
+    class _Client(server):
+        closed = False
+
+        async def post(self, url, *args, **kwargs):
+            nonlocal disconnected
+            if self.closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            response = await super().post(url, *args, **kwargs)
+            if response.status_code == 500:
+                disconnected = True
+                while not self.closed:
+                    await asyncio.sleep(0.05)
+            return response
+
+        async def aclose(self):
+            self.closed = True
+
+    _resident_embedding_gguf(studio_embedder, _Client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert exc.value.status_code == 499

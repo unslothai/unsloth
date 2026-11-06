@@ -14,30 +14,11 @@ import {
   isSemanticTargetHandle,
   normalizeRecipeHandleId,
 } from "../handles";
+import { isSemanticRelation } from "../graph/relations";
 import { extractRefs } from "./helpers";
 
 function isSemanticConnection(source: NodeConfig, target: NodeConfig): boolean {
-  if (source.kind === "model_provider" && target.kind === "model_config") {
-    return true;
-  }
-  if (source.kind === "model_config" && target.kind === "llm") {
-    return true;
-  }
-  if (source.kind === "tool_config" && target.kind === "llm") {
-    return true;
-  }
-  if (
-    source.kind === "llm" &&
-    source.llm_type === "code" &&
-    target.kind === "validator"
-  ) {
-    return true;
-  }
-  return (
-    source.kind === "validator" &&
-    target.kind === "llm" &&
-    target.llm_type === "code"
-  );
+  return isSemanticRelation(source, target);
 }
 
 export function buildEdges(

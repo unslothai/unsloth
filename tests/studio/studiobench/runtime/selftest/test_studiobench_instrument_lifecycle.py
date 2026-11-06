@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One broken instrument must not take a healthy one down with it.
-
-`_safe` exists so a single instrument that raises never costs the window: it logs, drops that
-instrument, and lets the cell continue. But it drops it from the SAME list the lifecycle loop is
-iterating, and a list that shrinks under `for x in list_` makes Python skip whatever slid into the
-freed index. So `heap` raising in `start_cell` did not cost only `heap`; it also silently skipped
-`input`, whose keystroke latency is the highest-weight metric in the table. The cell then completed
-and reported, with one instrument's measurements simply absent and nothing saying so.
-"""
+"""Removing a failed instrument from the list being iterated makes Python silently skip the next."""
 
 import sys
 from pathlib import Path
@@ -78,8 +70,6 @@ def test_an_instrument_after_a_failing_one_still_gets_its_hook():
 
     s.each_instrument("start_cell", "c1")
 
-    # `input` sits immediately behind the instrument that raised, which is exactly the position
-    # the old loop skipped.
     assert keys.started == ["c1"], "the instrument behind the failing one was skipped"
     assert frames.started == ["c1"]
     assert rss.started == ["c1"]

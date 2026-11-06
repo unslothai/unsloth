@@ -21,10 +21,8 @@ JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 STATE="${UNSLOTH_STUDIO_PASSWORD_STATE:-}"
 [[ -z "$STATE" && -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]] && STATE=initial
 
-# Same rules as studio/backend/auth/bootstrap_timeout.py: unset, blank or malformed
-# means the 3600 s default (a typo must not hide the note), 0 or negative disables.
-# Only the surrounding whitespace is stripped, as int() does: "- 5" is malformed,
-# "1_000" is 1000 (single underscores between digits).
+# Same rules as studio/backend/auth/bootstrap_timeout.py: unset/blank/malformed = 3600,
+# <= 0 disables; whitespace stripped and single underscores allowed, as int() does.
 raw="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}"
 raw="${raw#"${raw%%[![:space:]]*}"}"
 raw="${raw%"${raw##*[![:space:]]}"}"
@@ -54,12 +52,10 @@ case "$STATE" in
     *)
         deadline=$(( $(date +%s) + WAIT ))
         STUDIO_LINE=""
-        # The file alone is not enough: the CLI writes it before committing the admin
-        # row, so a launch interrupted between the two leaves a file the next launch
-        # replaces. Wait for the row, and read the file after it.
+        # The CLI writes the file before committing the admin row, so wait for the row.
         while [[ ! -s "$FILE" ]] || ! unsloth-studio-run --initialized; do
             if (( $(date +%s) >= deadline )); then
-                STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the studio log above"
+                STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the Unsloth Studio log above"
                 break
             fi
             sleep 1
@@ -69,22 +65,21 @@ case "$STATE" in
             password="$(tr -d '\r\n' < "$FILE")"
             note=""
             if (( TIMEOUT > 0 )); then
-                note="   (change it on first sign-in: Studio stops after $(duration "$TIMEOUT") with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)"
+                note="   (change it on first sign-in: Unsloth Studio stops after $(duration "$TIMEOUT") with the default password; UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 disables)"
             fi
             STUDIO_LINE="username: unsloth   password: ${password}${note}"
         fi ;;
 esac
 echo "Unsloth Studio login -> ${STUDIO_LINE}"
 
-# The summary waits for real answers: Studio's socket opens before torch is loaded,
-# and /api/health only turns 200 once the app is serving.
+# Studio's socket opens before torch loads; wait for /api/health 200.
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
-    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health; then
+    if [[ -z "$studio_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${UNSLOTH_STUDIO_PORT:-8000}/api/health"; then
         studio_ok=1
     fi
-    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${JUPYTER_PORT}/login"; then
+    if [[ -z "$jupyter_ok" ]] && curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${JUPYTER_PORT}/login"; then
         jupyter_ok=1
     fi
     { [[ -n "$studio_ok" && -n "$jupyter_ok" ]] || (( $(date +%s) >= deadline )); } && break
@@ -100,10 +95,16 @@ studio_text="not answering"
 [[ -n "$studio_ok" ]] && studio_text="$STUDIO_LINE"
 jupyter_text="not answering"
 [[ -n "$jupyter_ok" ]] && jupyter_text="${UNSLOTH_JUPYTER_NOTE:-password from JUPYTER_PASSWORD env}"
+# Colour the summary so it stands out from the startup noise; NO_COLOR turns it off.
+if [[ -n "${NO_COLOR:-}" ]]; then
+    _b=""; _g=""; _y=""; _r=""
+else
+    _b=$'\033[1m'; _g=$'\033[1;32m'; _y=$'\033[1;33m'; _r=$'\033[0m'
+fi
 rule="$(printf '=%.0s' $(seq 1 72))"
-echo "$rule"
-echo "  ${title}"
-echo "  Studio      http://localhost:8000   ${studio_text}"
-echo "  JupyterLab  http://localhost:${JUPYTER_PORT}   ${jupyter_text}"
-echo "  Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
-echo "$rule"
+printf '%s\n' "${_g}${rule}${_r}"
+printf '  %s\n' "${_g}${title}${_r}"
+printf '  Unsloth     %s   %s\n' "${_b}http://localhost:${UNSLOTH_STUDIO_PORT:-8000}${_r}" "${_y}${studio_text}${_r}"
+printf '  JupyterLab  %s   %s\n' "${_b}http://localhost:${JUPYTER_PORT}${_r}" "${_y}${jupyter_text}${_r}"
+printf '  %s\n' "Ports are the container's: use the host side of your -p flags, or an SSH tunnel to a remote host."
+printf '%s\n' "${_g}${rule}${_r}"

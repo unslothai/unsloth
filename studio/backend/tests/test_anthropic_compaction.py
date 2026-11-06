@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for Anthropic server-side context compaction wiring.
-
-Compaction is a beta (header ``compact-2026-01-12``) gated to Opus 4.6/4.7,
-Sonnet 4.6, and Mythos preview. When enabled, Unsloth attaches
-``context_management.edits[{type:"compact_20260112", trigger:{type:"input_tokens",
-value:N}}]``; the 50k-token minimum is clamped up so the request doesn't 400.
-
-Pins body shape per model, beta header merge with code-execution, threshold
-clamping, and silent no-op on unsupported models.
-"""
+"""The compaction trigger is clamped up to the 50k-token minimum so the request does not 400."""
 
 import asyncio
 import json
@@ -78,9 +69,6 @@ def _capture(
     return captured
 
 
-# ── support gate matches the doc table ───────────────────────────────
-
-
 @pytest.mark.parametrize(
     "model, supported",
     [
@@ -88,7 +76,6 @@ def _capture(
         ("claude-opus-4-6", True),
         ("claude-sonnet-4-6", True),
         ("claude-mythos-preview", True),
-        # NOT supported per the docs.
         ("claude-opus-4-5-20251101", False),
         ("claude-sonnet-4-5-20250929", False),
         ("claude-haiku-4-5-20251001", False),
@@ -100,9 +87,6 @@ def _capture(
 )
 def test_supports_compaction_gate(model, supported):
     assert _anthropic_supports_compaction(model) is supported
-
-
-# ── outbound shape on supported model ────────────────────────────────
 
 
 def test_supported_model_attaches_compaction_block_and_beta(monkeypatch):
@@ -120,11 +104,15 @@ def test_supported_model_attaches_compaction_block_and_beta(monkeypatch):
 
 
 def test_threshold_clamped_to_50k_minimum(monkeypatch):
-    # Below-min values get clamped UP so we don't 400 upstream.
     captured = _capture(monkeypatch, "claude-opus-4-7", 60_000)
     assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 60_000
     captured = _capture(monkeypatch, "claude-opus-4-7", 1)
     assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 50_000
+
+
+def test_threshold_capped_at_200k(monkeypatch):
+    captured = _capture(monkeypatch, "claude-opus-4-7", 750_000)
+    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 200_000
 
 
 # ── beta header merge with code execution ────────────────────────────
@@ -142,17 +130,10 @@ def test_compaction_beta_merges_with_code_execution_beta(monkeypatch):
     assert "compact-2026-01-12" in beta
 
 
-# ── silent no-op on unsupported model ────────────────────────────────
-
-
 def test_unsupported_model_silently_drops_compaction(monkeypatch):
     captured = _capture(monkeypatch, "claude-haiku-4-5-20251001", 150_000)
     assert "context_management" not in captured["body"]
-    # The beta header must not carry compact-2026-01-12 either.
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
-
-
-# ── omitted threshold leaves body untouched ─────────────────────────
 
 
 def test_omitted_threshold_no_body_field(monkeypatch):
@@ -161,12 +142,8 @@ def test_omitted_threshold_no_body_field(monkeypatch):
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
 
 
-# ── ChatCompletionRequest schema accepts sub-50k threshold ──────────
-
-
 def test_chat_completion_request_accepts_sub_50k_compaction_threshold():
-    # ge=50_000 on the field would 422 before the in-helper clamp fires; the
-    # schema must accept any positive int and let _stream_anthropic clamp up.
+    # ge=50_000 would 422 before the in-helper clamp fires.
     from models.inference import ChatCompletionRequest
 
     req = ChatCompletionRequest.model_validate(
@@ -187,8 +164,6 @@ def test_chat_completion_request_accepts_sub_50k_compaction_threshold():
     )
     assert req.compaction_threshold == 49_999
 
-    # Non-positive values are still rejected so blank-string posts
-    # don't sneak through.
     with pytest.raises(Exception):
         ChatCompletionRequest.model_validate(
             {
@@ -199,14 +174,8 @@ def test_chat_completion_request_accepts_sub_50k_compaction_threshold():
         )
 
 
-# ── usage.iterations[] surfaces compaction tokens ──────────────────
-
-
 def test_message_delta_iterations_array_aggregates_compaction_tokens(monkeypatch, capsys):
-    # On mid-stream compaction the message_delta usage carries
-    # `iterations: [{type:"compaction", ...}, ...]`. Top-level tokens only cover
-    # the `message` iteration, so the helper folds compaction totals into
-    # last_usage and surfaces them in the closing summary log.
+    # Compaction tokens live in usage.iterations and must be folded into the summary.
 
     def http_handler(request: httpx.Request) -> httpx.Response:
         body = (
@@ -249,7 +218,6 @@ def test_message_delta_iterations_array_aggregates_compaction_tokens(monkeypatch
 
     _drive(run())
 
-    # structlog renders the closing summary onto stdout; check the rendered line.
     out = capsys.readouterr().out
     summary = next(
         (line for line in out.splitlines() if "Anthropic stream complete" in line),
@@ -260,8 +228,7 @@ def test_message_delta_iterations_array_aggregates_compaction_tokens(monkeypatch
 
 
 def test_message_delta_no_iterations_leaves_compaction_keys_unset(monkeypatch, capsys):
-    # Re-applying a prior compaction block emits no fresh iterations array;
-    # the helper must not invent compaction keys (would double-bill).
+    # No fresh iterations array: must not invent compaction keys (double-bill).
     def http_handler(request: httpx.Request) -> httpx.Response:
         body = (
             b"event: message_delta\n"
@@ -306,9 +273,6 @@ def test_message_delta_no_iterations_leaves_compaction_keys_unset(monkeypatch, c
     assert "compaction_output_tokens=None" in summary, summary
 
 
-# ── compaction block round-trip (Codex P1) ──────────────────────────
-
-
 def _async_collect(agen):
     async def run():
         out = []
@@ -320,14 +284,9 @@ def _async_collect(agen):
 
 
 def test_compaction_block_emitted_as_tool_event(monkeypatch):
-    # When Anthropic compacts during a turn, the response carries a
-    # `{type:"compaction", content:"<summary>"}` block. The translator must surface
-    # it so the chat-adapter persists it; else the next turn loses state and re-compacts.
+    # The compaction block must surface so the next turn keeps state.
 
     def http_handler(request: httpx.Request) -> httpx.Response:
-        # Compaction blocks arrive as a content_block_start with type:"compaction",
-        # with the summary on the start event AND/OR streamed via text_delta on the
-        # same index. Test the streamed-delta path (harder case).
         body = (
             b"event: message_start\n"
             b'data: {"type":"message_start","message":{"usage":{}}}\n\n'
@@ -381,8 +340,6 @@ def test_compaction_block_emitted_as_tool_event(monkeypatch):
     )
     _drive(client.close())
 
-    # Pull tool_events out of the SSE stream and check for the
-    # compaction_block payload.
     events = []
     for line in lines:
         if not line.startswith("data:"):
@@ -394,16 +351,12 @@ def test_compaction_block_emitted_as_tool_event(monkeypatch):
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        # tool_event payloads ride inside the chunk as JSON; just match the marker.
         if "compaction_block" in raw:
             events.append(raw)
     assert events, f"no compaction_block tool event found in {lines}"
-    # The summary text must come through intact.
     payload = events[0]
     assert "Summary so far: user asked about caching." in payload, payload
 
-    # The user-visible content stream must NOT carry the compaction
-    # summary -- only the assistant prose ("Here is my answer.").
     content_text = ""
     for line in lines:
         if not line.startswith("data:"):
@@ -426,9 +379,75 @@ def test_compaction_block_emitted_as_tool_event(monkeypatch):
     assert "Here is my answer." in content_text, content_text
 
 
+def test_failed_compaction_block_is_not_replayed_or_persisted(monkeypatch):
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b"event: message_start\n"
+            b'data: {"type":"message_start","message":{"usage":{}}}\n\n'
+            b"event: content_block_start\n"
+            b'data: {"type":"content_block_start","index":0,'
+            b'"content_block":{"type":"compaction","content":null,'
+            b'"encrypted_content":"opaque-failed"}}\n\n'
+            b"event: content_block_stop\n"
+            b'data: {"type":"content_block_stop","index":0}\n\n'
+            b"event: message_delta\n"
+            b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            b'"usage":{"input_tokens":100,"output_tokens":1}}\n\n'
+            b"event: message_stop\n"
+            b'data: {"type":"message_stop"}\n\n'
+        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+    lines = _async_collect(
+        client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            compaction_threshold = 150_000,
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "description": "Run a command",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+    )
+    _drive(client.close())
+
+    payloads = [
+        json.loads(line[len("data:") :])
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
+    ]
+    assert not any(
+        (payload.get("_toolEvent") or {}).get("type") == "compaction_block" for payload in payloads
+    )
+    native_blocks = [
+        block
+        for payload in payloads
+        for choice in payload.get("choices") or []
+        for block in (
+            ((choice.get("delta") or {}).get("extra_content") or {})
+            .get("anthropic", {})
+            .get("content", [])
+        )
+    ]
+    assert not any(block.get("type") == "compaction" for block in native_blocks)
+
+
 def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
-    # The next turn's outbound body must forward a persisted
-    # {type:"compaction", content:"..."} block verbatim so the API recognises the state.
     captured: dict = {}
 
     def http_handler(request: httpx.Request) -> httpx.Response:
@@ -475,7 +494,6 @@ def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
     _drive(client.close())
 
     msgs = captured["body"]["messages"]
-    # The assistant turn must include the compaction block on the wire.
     assistant = next((m for m in msgs if m["role"] == "assistant"), None)
     assert assistant is not None, msgs
     parts = assistant["content"]
@@ -486,7 +504,7 @@ def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
 
 
 def test_compaction_content_part_accepted_by_chat_message_schema():
-    # Without the Pydantic Tag the discriminated Union would 422 at parse time.
+    # Without the Pydantic Tag the discriminated Union would 422.
     from models.inference import ChatMessage
 
     msg = ChatMessage.model_validate(
@@ -505,8 +523,6 @@ def test_compaction_content_part_accepted_by_chat_message_schema():
 
 
 def test_build_external_messages_passes_compaction_for_anthropic_only():
-    # Compaction is Anthropic-only; the builder must gate it on
-    # provider_type=="anthropic" since others 400 on the unknown content type.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -515,7 +531,11 @@ def test_build_external_messages_passes_compaction_for_anthropic_only():
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "compaction", "content": "prior summary"},
+                    {
+                        "type": "compaction",
+                        "content": "prior summary",
+                        "encrypted_content": "opaque-compaction",
+                    },
                     {"type": "text", "text": "answer"},
                 ],
             }
@@ -524,14 +544,16 @@ def test_build_external_messages_passes_compaction_for_anthropic_only():
     out = _build_external_messages(msgs, supports_vision = True, provider_type = "anthropic")
     assert len(out) == 1
     parts = out[0]["content"]
-    assert parts[0] == {"type": "compaction", "content": "prior summary"}
+    assert parts[0] == {
+        "type": "compaction",
+        "content": "prior summary",
+        "encrypted_content": "opaque-compaction",
+    }
     assert parts[1] == {"type": "text", "text": "answer"}
 
 
 def test_build_external_messages_strips_compaction_for_non_anthropic_providers():
-    # A provider switch or reused history can hand compaction blocks to a
-    # non-Anthropic provider whose validator rejects the unknown type, so the
-    # builder must strip the part for every non-anthropic provider.
+    # Non-Anthropic validators reject compaction parts, so strip them.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -552,12 +574,10 @@ def test_build_external_messages_strips_compaction_for_non_anthropic_providers()
         parts = out[0]["content"]
         types = [p.get("type") for p in parts if isinstance(p, dict)]
         assert "compaction" not in types, (provider, parts)
-        # Text part survives.
         assert {"type": "text", "text": "answer"} in parts, (provider, parts)
 
 
 def test_build_external_messages_strips_compaction_when_provider_type_unknown():
-    # Defensive: provider_type=None (legacy path) must also strip the part.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -579,8 +599,6 @@ def test_build_external_messages_strips_compaction_when_provider_type_unknown():
 
 
 def test_build_external_messages_non_vision_anthropic_keeps_compaction():
-    # Defensive: gate the non-vision branch by provider_type too, so future
-    # config changes don't drop compaction for Anthropic.
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
 
@@ -589,7 +607,11 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "compaction", "content": "prior summary"},
+                    {
+                        "type": "compaction",
+                        "content": "prior summary",
+                        "encrypted_content": "opaque-compaction",
+                    },
                     {"type": "text", "text": "answer"},
                 ],
             }
@@ -597,8 +619,190 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
     ]
     out = _build_external_messages(msgs, supports_vision = False, provider_type = "anthropic")
     parts = out[0]["content"]
-    assert {"type": "compaction", "content": "prior summary"} in parts
+    assert {
+        "type": "compaction",
+        "content": "prior summary",
+        "encrypted_content": "opaque-compaction",
+    } in parts
     # Non-anthropic + non-vision -> compaction stripped, text collapsed
     # back to a string.
     out2 = _build_external_messages(msgs, supports_vision = False, provider_type = "deepseek")
     assert out2[0]["content"] == "answer", out2
+
+
+def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b"event: content_block_start\n"
+            b'data: {"type":"content_block_start","index":0,'
+            b'"content_block":{"type":"compaction","content":null}}\n\n'
+            b"event: content_block_delta\n"
+            b'data: {"type":"content_block_delta","index":0,'
+            b'"delta":{"type":"compaction_delta","content":"User is planning a trip.",'
+            b'"encrypted_content":"opaque-compaction"}}\n\n'
+            b"event: content_block_stop\n"
+            b'data: {"type":"content_block_stop","index":0}\n\n'
+            b"event: message_stop\n"
+            b'data: {"type":"message_stop"}\n\n'
+        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+    lines = _async_collect(
+        client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-sonnet-4-6",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            compaction_threshold = 150_000,
+        )
+    )
+    _drive(client.close())
+
+    events = [
+        json.loads(line[len("data:") :])["_toolEvent"]
+        for line in lines
+        if line.startswith("data:") and "compaction_block" in line
+    ]
+    assert events == [
+        {
+            "type": "compaction_block",
+            "content": "User is planning a trip.",
+            "encrypted_content": "opaque-compaction",
+        }
+    ]
+
+
+def _replay(monkeypatch, model: str, threshold) -> dict:
+    captured: dict = {}
+
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+
+    async def run():
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "turn 1"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "compaction",
+                            "content": "PRIOR SUMMARY",
+                            "encrypted_content": "opaque-compaction",
+                        },
+                        {"type": "text", "text": "answer"},
+                    ],
+                },
+                {"role": "user", "content": "turn 2"},
+            ],
+            model = model,
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 32,
+            compaction_threshold = threshold,
+        ):
+            pass
+
+    _drive(run())
+    _drive(client.close())
+    return captured
+
+
+def test_a_replayed_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
+    captured = _replay(monkeypatch, "claude-sonnet-4-6", None)
+    assistant = captured["body"]["messages"][1]
+    assert assistant["content"][0] == {
+        "type": "compaction",
+        "content": "PRIOR SUMMARY",
+        "encrypted_content": "opaque-compaction",
+    }
+    assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
+    assert "context_management" not in captured["body"]
+
+
+def test_a_model_without_compaction_is_never_sent_a_compaction_block(monkeypatch):
+    captured = _replay(monkeypatch, "claude-haiku-4-5", 150_000)
+    assistant = captured["body"]["messages"][1]
+    assert [part["type"] for part in assistant["content"]] == ["text"]
+    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
+
+
+def _native_replay(monkeypatch, model: str, threshold) -> dict:
+    captured: dict = {}
+
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+    native = [
+        {"type": "compaction", "content": "PRIOR SUMMARY"},
+        {"type": "text", "text": "answer"},
+    ]
+
+    async def run():
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "turn 1"},
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "extra_content": {"anthropic": {"content": native}},
+                },
+                {"role": "user", "content": "turn 2"},
+            ],
+            model = model,
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 32,
+            compaction_threshold = threshold,
+        ):
+            pass
+
+    _drive(run())
+    _drive(client.close())
+    return captured
+
+
+def test_a_replayed_native_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
+    captured = _native_replay(monkeypatch, "claude-sonnet-4-6", None)
+    assistant = captured["body"]["messages"][1]
+    assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
+    assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
+
+
+def test_a_model_without_compaction_is_never_sent_a_native_compaction_block(monkeypatch):
+    captured = _native_replay(monkeypatch, "claude-haiku-4-5", 150_000)
+    assistant = captured["body"]["messages"][1]
+    assert [part["type"] for part in assistant["content"]] == ["text"]
+    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")

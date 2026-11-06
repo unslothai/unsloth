@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ``unsloth_<model>_<timestamp>`` directory-name fallback for base model detection.
-
-The last resort in ``get_base_model_from_checkpoint`` / ``get_base_model_from_lora`` and in the
-two resolvers in ``utils.transformers_version``. It used to slice a two-segment
-``unsloth_<model>`` name down to nothing and return the bogus repo id ``unsloth/``.
-
-The round-trip tests are the real specification: a name we write must parse back to the model
-it was written from.
-"""
+"""Folder-name fallback for base model detection; a two-segment name must not yield unsloth/."""
 
 import importlib.util
 import json
@@ -18,9 +10,7 @@ import types
 
 import pytest
 
-# Keep this runnable where optional logging deps are absent. Probe the installed distribution,
-# not sys.modules: structlog is a real dependency, and stubbing it merely because nothing has
-# imported it yet would replace the package for every test collected afterwards.
+# Probe the installed dist, not sys.modules, before stubbing structlog.
 if importlib.util.find_spec("structlog") is None:  # pragma: no cover - minimal environments
 
     class _DummyLogger:
@@ -39,41 +29,54 @@ from utils.models.model_config import (  # noqa: E402
 from utils.training_runs import (  # noqa: E402
     base_model_from_run_dir_name,
     build_default_output_dir_name,
+    model_segment_from_default_output_dir_name,
 )
+
+
+# Names `\w` accepts but the Hub's ASCII charset rejects.
+_NON_ASCII_NAMES = (
+    "Café-8B",
+    "naïve_v2",
+    "модель-8B",
+    "μοντέλο",
+    "מודל",
+    "نموذج",
+    "文件夹",
+    "モデル",
+    "ｑwen",
+    "Ａ",
+)
+
+
+def test_the_non_ascii_cases_are_word_characters():
+    """Non-vacuity: every name above must be one `\\w` accepts, or it proves nothing."""
+    import re
+    for name in _NON_ASCII_NAMES:
+        assert re.fullmatch(r"[\w.-]+", name), name
+        assert not name.isascii(), name
 
 
 @pytest.mark.parametrize(
     "dir_name,expected",
     [
-        # The shape the heuristic is written for.
         ("unsloth_Qwen3-8B_1771227800", "unsloth/Qwen3-8B"),
-        # A hand-made or foreign folder may carry a date-time stamp instead of an epoch.
         ("unsloth_Qwen3-8B_20260101-120000", "unsloth/Qwen3-8B"),
         ("unsloth_Qwen3-8B_20260101", "unsloth/Qwen3-8B"),
-        # Underscores inside the model name survive the round trip.
         ("unsloth_llama_3_8b_1771227800", "unsloth/llama_3_8b"),
-        # No model segment between the prefix and the timestamp: the originally reported bug.
         ("unsloth_Qwen3-8B", None),
         ("unsloth_", None),
         ("unsloth", None),
         ("unsloth__1771227800", None),
-        # A doubled separator means the name really does start with '_', which HF allows.
-        # Stripping it would resolve a different, equally valid repo.
         ("unsloth__Qwen3-8B_1771227800", "unsloth/_Qwen3-8B"),
-        # The project suffix is not part of the model name.
         ("unsloth_Qwen3-8B__project-demo_1771227800", "unsloth/Qwen3-8B"),
-        # ...and a name containing the marker is escaped by the generator.
         ("unsloth_x__project--y_1771227800", "unsloth/x__project-y"),
-        # A non-timestamp tail belongs to the model name, so the whole name is unparseable
-        # rather than truncated. Truncating gave 'unsloth/llama_3' -- valid, but nonexistent.
+        # A non-timestamp tail is part of the name, so the whole name is unparseable.
         ("unsloth_llama_3_8b", None),
         ("unsloth_gpt_oss_20b", None),
         ("unsloth_Qwen3-8B_final", None),
         ("unsloth_Qwen3-8B_v2", None),
         ("unsloth_Qwen3-8B_checkpoint-500", None),
-        # A model name that is itself all digits still round-trips.
         ("unsloth_20260101_1771227800", "unsloth/20260101"),
-        # Not ours: leave it to the caller's "could not detect" path.
         ("my-finetune_1771227800", None),
         ("meta-llama_Llama-3.1-8B_1771227800", None),
         ("Unsloth_Qwen3-8B_1771227800", None),
@@ -121,24 +124,20 @@ def test_the_bare_org_is_never_returned():
 @pytest.mark.parametrize(
     "dir_name",
     [
-        "unsloth_ _1771227800",  # space
-        "unsloth_._1771227800",  # bare dot
+        "unsloth_ _1771227800",
+        "unsloth_._1771227800",
         "unsloth_-_1771227800",  # a name may not start or end with '-'
-        "unsloth_..._1771227800",  # '..' is rejected outright
-        "unsloth_--_1771227800",  # so is '--'
+        "unsloth_..._1771227800",
+        "unsloth_--_1771227800",
         "unsloth_.git_1771227800",  # a repo id may not end with '.git'
-        "unsloth_a\tb_1771227800",  # control characters
+        "unsloth_a\tb_1771227800",
         "unsloth_\n_1771227800",
-        "unsloth_🦥_1771227800",  # not a word character
-        "unsloth_" + "a" * 97 + "_1771227800",  # the Hub caps a name at 96 characters
+        "unsloth_🦥_1771227800",
+        "unsloth_" + "a" * 97 + "_1771227800",
     ],
 )
 def test_a_folder_name_that_cannot_be_a_repo_id_is_refused(dir_name):
-    """A folder name is user input. Only trust the parse if the Hub would accept the result.
-
-    ``build_default_output_dir_name`` sanitises everything here, so these shapes only arise
-    from a hand-made folder -- which is exactly the case the fallback exists to serve.
-    """
+    """A hand-made folder name is user input; refuse any parse the Hub would not accept as a repo id."""
     assert base_model_from_run_dir_name(dir_name) is None
 
 
@@ -176,8 +175,9 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
         " ",
         "a b",
         "a\tb",
-        "Café-8B",
         "a-b.c_d",
+        # Non-ASCII word chars: `\w` matches them, the Hub charset does not.
+        *_NON_ASCII_NAMES,
     ]
     looser = [
         n
@@ -188,9 +188,33 @@ def test_the_transcribed_repo_id_rule_is_never_looser_than_the_hubs():
     assert looser == []
 
 
+def test_no_non_ascii_letter_or_digit_can_reach_a_repo_id():
+    """Non-ASCII letters or digits must never reach a repo id; sweeps one character from each block."""
+    escaped = [
+        name
+        for name in _NON_ASCII_NAMES
+        if base_model_from_run_dir_name(f"unsloth_{name}_1771227800") is not None
+    ]
+    assert escaped == [], "a non-ASCII folder name parsed into a repo id the Hub rejects"
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "١٧٧١٢٢٧٨٠٠",
+        "१२३४५६",
+        "１７７１２２",
+    ],
+)
+def test_a_non_ascii_digit_run_is_not_a_timestamp(stamp):
+    """Non-ASCII digits must not count as a timestamp; the regex and isdigit() are Unicode aware."""
+    assert stamp.isdigit(), "the case is only meaningful if str.isdigit() accepts it"
+    assert base_model_from_run_dir_name(f"unsloth_Qwen3-8B_{stamp}") is None
+    assert model_segment_from_default_output_dir_name(f"unsloth_Qwen3-8B_{stamp}") is None
+
+
 def _write_adapter(directory):
     directory.mkdir(parents = True)
-    # No base_model_name_or_path, so detection has to fall through to the directory name.
     (directory / "adapter_config.json").write_text(json.dumps({}), encoding = "utf-8")
     (directory / "adapter_model.safetensors").write_bytes(b"")
 
@@ -243,9 +267,7 @@ def test_a_trailing_separator_does_not_change_the_answer(tmp_path):
     assert get_base_model_from_lora(str(adapter) + "/") == "unsloth/Qwen3-8B"
 
 
-# --- the two resolvers in utils.transformers_version ---------------------------------------
-# _resolve_base_model is reached *through* get_base_model_from_lora, so while it kept its own
-# copy of the parse it rebuilt the bogus id one branch after the fixed function returned None.
+# _resolve_base_model is reached through get_base_model_from_lora.
 
 
 def test_the_transformers_resolvers_agree_with_the_model_config_one(tmp_path):

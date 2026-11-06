@@ -65,7 +65,7 @@ if [ -z "$PY" ] && [ -L "$STUDIO_HOME/bin/unsloth" ]; then
     venv_bin="$(dirname "$(readlink -f "$STUDIO_HOME/bin/unsloth")")"
     [ -x "$venv_bin/python" ] && PY="$venv_bin/python"
 fi
-[ -n "$PY" ] || { echo "unsloth-studio-update: could not find the Studio venv under $STUDIO_HOME" >&2; exit 1; }
+[ -n "$PY" ] || { echo "unsloth-studio-update: could not find the Unsloth Studio venv under $STUDIO_HOME" >&2; exit 1; }
 
 # The editable tree may sit behind a symlink from the home into the image's copy: work
 # on the real path, but keep pip pointed at the home path (SRC_INSTALL) so the recorded
@@ -134,7 +134,7 @@ find_supctl() {
     [ -x "$SUPCTL" ] && { "$SUPCTL" status studio >/dev/null 2>&1 || _st=$?; } || _st=4
 }
 
-log "Studio venv: $PY"
+log "Unsloth Studio venv: $PY"
 log "before: unsloth $(version_of)"
 
 # One updater at a time: two would take each other's trees for leftovers. Held on an
@@ -148,11 +148,8 @@ if ! flock -n 9; then
     exit 1
 fi
 
-# Leftovers of a run killed outright (no trap ran): .src-prev.* and .src-update.* beside
-# src. The kept package record is the one marker of an uncommitted update: with it, a
-# previous tree goes back over the unverified one and the packages are reinstalled;
-# without it a previous tree is scratch. No src at all means the kill landed between
-# the two moves, and the lone previous tree goes back either way.
+# Leftovers of a killed run: with the kept record, restore the previous tree and
+# packages; without it, previous trees are scratch. No src means restore either way.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
 if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
@@ -189,7 +186,7 @@ if [ -s "$KEEP_ROLLBACK" ]; then
                 fi
             fi
         else
-            log "--no-restart: Studio may still be running the interrupted update; restart it to load the restored install"
+            log "--no-restart: Unsloth Studio may still be running the interrupted update; restart it to load the restored install"
         fi
     else
         echo "unsloth-studio-update: could not put the previous packages back (see the CRITICAL lines above); fix the cause and run this again. Nothing else was changed." >&2
@@ -428,7 +425,7 @@ if [ -n "$REF" ]; then
         fi
     fi
     if [ ! -d "$SRC" ]; then
-        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none, and a broken src link points at nothing); --ref needs the image's Studio checkout. Use a plain update instead; nothing was changed." >&2
+        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none, and a broken src link points at nothing); --ref needs the image's Unsloth Studio checkout. Use a plain update instead; nothing was changed." >&2
         exit 1
     fi
     log "installing from git: unsloth @${REF}, unsloth-zoo @${_zoo_ref}"
@@ -492,13 +489,29 @@ log "after:  unsloth $(version_of)"
 # parks supervisord's program in FATAL, so check first and put the old one back.
 if ! studio_tree_ok; then
     if restore && studio_tree_ok; then
-        log "the update could not start Studio, so the previous install was restored and Studio was not restarted."
+        log "the update could not start Unsloth Studio, so the previous install was restored and Unsloth Studio was not restarted."
     else
-        log "CRITICAL: the previous install could not be restored cleanly; Studio will fail to start until this is fixed."
+        log "CRITICAL: the previous install could not be restored cleanly; Unsloth Studio will fail to start until this is fixed."
     fi
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
+# Move the image's managed Node (never a user's) to the new pin; failure keeps the old Node.
+refresh_managed_node() {
+    local node_dir="$STUDIO_HOME/node" installer out
+    [ "${UNSLOTH_SKIP_NODE_INSTALL:-0}" = "1" ] && return 0
+    [ -f "$node_dir/UNSLOTH_NODE_PREBUILT_INFO.json" ] || return 0
+    installer="$( (cd / && "$PY" -c 'import os, studio; print(os.path.join(os.path.dirname(studio.__file__), "install_node_prebuilt.py"))') 2>/dev/null)" || return 0
+    [ -f "$installer" ] || return 0
+    # The installer exits 0 when it keeps a usable old Node after a failed download (as setup.sh reads it).
+    if out="$( (cd / && "$PY" "$installer" --install-dir "$node_dir") 2>&1)" \
+        && ! printf '%s\n' "$out" | grep -Fq "keeping existing isolated Node"; then
+        log "managed Node matches the new pin"
+    else
+        log "WARNING: could not move the managed Node to the new pin; keeping the current one"
+    fi
+}
+refresh_managed_node
 # The previous tree stays until the restarted service proves it can serve. The record
 # is unlinked first: a kill before that leaves a full recovery for the next run, after
 # it only scratch. Signals held off, so the exit trap cannot restore over the commit.
@@ -557,29 +570,34 @@ if [ "$RESTART" = "1" ]; then
             log "health check skipped (UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=0); the update is committed"
         else
             _deadline=$(( $(date +%s) + _wait ))
+            _port="${UNSLOTH_STUDIO_PORT:-8000}"
             _up=0
-            while [ "$(date +%s)" -lt "$_deadline" ]; do
+            # probe before reading the clock: date +%s has whole-second steps, so a
+            # short wait could expire before the first check and roll back a Studio
+            # that was never asked
+            while :; do
                 # --noproxy: a container-wide HTTP_PROXY must not answer for the loopback
-                curl -sf -o /dev/null --max-time 3 --noproxy '*' http://127.0.0.1:8000/api/health && { _up=1; break; }
+                curl -sf -o /dev/null --max-time 3 --noproxy '*' "http://127.0.0.1:${_port}/api/health" && { _up=1; break; }
+                [ "$(date +%s)" -lt "$_deadline" ] || break
                 sleep 2
             done
             if [ "$_up" = "1" ]; then
                 commit_update
-                log "Studio is answering on port 8000"
+                log "Unsloth Studio is answering on port ${_port}"
             else
-                back_out "Studio did not answer on port 8000 within ${_wait}s (see docker logs)"
+                back_out "Unsloth Studio did not answer on port ${_port} within ${_wait}s (see docker logs)"
             fi
         fi
     else
         # nothing here can start Studio, so the import and frontend checks above are
         # the whole validation
         commit_update
-        log "supervisor not managing 'studio' here; restart Studio yourself"
+        log "supervisor not managing 'studio' here; restart Unsloth Studio yourself"
         log "  (e.g. 'docker restart <container>')"
     fi
 else
     commit_update
-    log "--no-restart: restart Studio to load the update"
+    log "--no-restart: restart Unsloth Studio to load the update"
     log "  docker exec <container> supervisorctl restart studio"
 fi
 

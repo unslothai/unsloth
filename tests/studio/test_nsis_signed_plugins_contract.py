@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the NSIS plugin DLLs coming from the signed copy.
-
-NSIS runs its plugin DLLs out of $PLUGINSDIR, so the installer being signed says
-nothing about them. tauri-bundler signs a copy and points at it two different
-ways depending on version: the NSISPLUGINS env var up to bundler 2.8.1, and the
-signed_plugins_path template variable from 2.9.3 (tauri-apps/tauri#15422). The
-template carries both, because a missing plugin directory is a silent no-op, so
-dropping the wrong one ships unsigned DLLs with no build error.
-"""
+"""Carry both NSISPLUGINS and signed_plugins_path: a missing plugin dir silently ships unsigned DLLs."""
 
 from pathlib import Path
 
@@ -34,8 +26,7 @@ def test_both_signed_plugin_directory_forms_are_present(template: str) -> None:
 
 
 def test_the_template_form_is_guarded(template: str) -> None:
-    # Unsigned builds omit signed_plugins_path entirely; rendering it unguarded
-    # would point !addplugindir at an empty path.
+    # Unsigned builds omit signed_plugins_path; unguarded, !addplugindir gets an empty path.
     guard = template.index("{{#if signed_plugins_path}}")
     assert guard < template.index(TEMPLATE_FORM) < template.index("{{/if}}", guard)
 
@@ -46,7 +37,6 @@ def _line_of(template: str, needle: str) -> int:
 
 
 def _signed_dir_lines(template: str) -> dict[str, int]:
-    # Each form is checked on its own.
     return {
         "env var": _line_of(template, ENV_FORM),
         "template var": _line_of(template, TEMPLATE_FORM),
@@ -55,8 +45,7 @@ def _signed_dir_lines(template: str) -> dict[str, int]:
 
 @pytest.mark.parametrize("form", ["env var", "template var"])
 def test_signed_plugin_dir_precedes_every_plugin_use(template: str, form: str) -> None:
-    # !addplugindir after a plugin call raises "conflicts with a plugin in another directory" at
-    # compile time, or silently loses to an already packed default.
+    # !addplugindir after a plugin call conflicts at compile time or loses to a packed default.
     lines = template.splitlines()
     plugin_calls = [
         i

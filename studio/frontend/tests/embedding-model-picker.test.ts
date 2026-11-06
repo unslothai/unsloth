@@ -12,7 +12,6 @@ function read(path: string): string {
   return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8");
 }
 
-// These reach the hub and chat barrels and cannot be imported here, so this asserts on source, like ~50 sibling tests.
 const PICKER = read(
   "../src/features/settings/components/embedding-model-picker.tsx",
 );
@@ -37,6 +36,14 @@ test("the field says it reaches the whole Hub", () => {
 test("an empty query lists unsloth, a typed one searches everything", () => {
   assert.match(PICKER, /ownerScope: debouncedQuery \? "all" : "unsloth"/);
   assert.match(PICKER, /useDebouncedValue\(query\.trim\(\)\)/);
+});
+
+test("embeddinggemma-2 leads the empty list, ahead of the older embeddinggemma", () => {
+  // Pinned ahead of the by-downloads listing, where a new release would sit last.
+  assert.match(PICKER, /PINNED_EMBEDDING_MODELS: readonly string\[\] = \["unsloth\/embeddinggemma-2"\]/);
+  assert.match(PICKER, /priorityIds: PINNED_EMBEDDING_MODELS,/);
+  // The older model comes from the listing, so it isn't pinned above the new one.
+  assert.doesNotMatch(PICKER, /PINNED_EMBEDDING_MODELS[^\n]*embeddinggemma-300m/);
 });
 
 test("only the query searches; the saved model never becomes one", () => {
@@ -101,7 +108,6 @@ test("cross-surface save order is claimed before model resolution", () => {
 });
 
 test("the repo the resolve picked is what gets stored", () => {
-  // A GGUF repo need not follow a naming rule, and a model with no GGUF runs on safetensors, so the loader has to be told the filename.
   assert.match(
     SECTION,
     /plan\?\.backend === "llama" \? \(plan\.downloadRepo \?\? null\) : null/,
@@ -125,8 +131,8 @@ test("the action slot offers Download or Unload, not Reset to default", () => {
     !SECTION.includes("resetEmbeddingModelSettings"),
     "reset is reachable by picking the default in the list",
   );
-  assert.match(SECTION, /settings\.general\.rag\.unload/);
-  assert.match(SECTION, /embeddingModel\?\.backendLoaded \? \(/);
+  assert.match(SECTION, /settings\.general\.rag\.unloadFailed/);
+  assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \? \(\) => void unload\(\) : undefined\}/);
   assert.ok(
     !SECTION.includes("): embeddingModel?.loaded ? ("),
     "Unload is not an alternative to Download",
@@ -287,15 +293,13 @@ test("a force save re-resolves even though the model string did not change", () 
 });
 
 test("the configured default stays reachable when the listing drops it", () => {
-  // The empty query is scoped to `unsloth`, so a private, other-owner or local default has no row.
   assert.match(PICKER, /rows\.push\(\{ id: fallback, sizeBytes: null \}\)/);
   assert.match(PICKER, /const fallback = defaultModel\?\.trim\(\)/);
-  assert.match(PICKER, /\}, \[results, value, defaultModel\]\)/);
+  assert.match(PICKER, /\}, \[results, value, defaultModel, pinnedModels\]\)/);
   assert.match(SECTION, /defaultModel=\{embeddingModel\?\.defaultEmbeddingModel\}/);
 });
 
 test("backend residency is re-read, not just loaded once on mount", () => {
-  // A running job's first encode makes a backend resident with no settings mutation, and there is no lifecycle event to subscribe to.
   assert.match(SECTION, /const RESIDENCY_POLL_MS = \d+;/);
   assert.match(SECTION, /window\.setInterval\(refresh, RESIDENCY_POLL_MS\)/);
   assert.match(SECTION, /if \(document\.hidden\) return;/);
@@ -305,7 +309,6 @@ test("backend residency is re-read, not just loaded once on mount", () => {
 });
 
 test("the on-device dot follows the resolved repo, not the displayed id", () => {
-  // The inventory records what was fetched, not what was picked, so an exact-id lookup left the dot off a downloaded model.
   assert.match(PICKER, /export function cachedRepoCandidates\(model: string\): string\[\]/);
   assert.match(PICKER, /`\$\{id\}-GGUF`/);
   assert.match(PICKER, /`sentence-transformers\/\$\{id\}`/);
@@ -318,9 +321,8 @@ test("the on-device dot follows the resolved repo, not the displayed id", () => 
 });
 
 test("an unquantized re-upload's GGUF companion counts as on device", () => {
-  // The backend strips the quant suffix, so unsloth/embeddinggemma-300m-qat-q8_0-unquantized resolves under unsloth/embeddinggemma-300m-GGUF.
   assert.match(PICKER, /\(\?:-qat\)\?\(\?:-q\\d\+_\\d\+\[a-z\]\*\)\?-unquantized\$/i);
   assert.match(PICKER, /if \(base !== name\) candidates\.push\(`\$\{owner\}\$\{base\}-GGUF`\)/);
-  // No lookbehind: this build target ships regex verbatim, so anything Safari 16 cannot parse breaks the bundle rather than failing a test.
+  // No lookbehind: Safari 16 cannot parse it and the regex ships verbatim.
   assert.ok(!PICKER.includes("(?<="), "no lookbehind in shipped regex");
 });

@@ -1,23 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for cached GGUF reuse and load/download exclusion.
-
-No GPU, network, or subprocesses are required.
-"""
+"""Cached GGUF reuse and load/download exclusion; runs without GPU, network, or subprocesses."""
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import logging
+import os
 import sys
 import threading
 import types as _types
 from contextlib import contextmanager, nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -26,14 +26,12 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub optional dependencies before importing the modules under test.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 
 _structlog_stub = _types.ModuleType("structlog")
-# routes/inference.py binds structlog.get_logger at import time, and setdefault
-# keeps a bare stub an earlier test left behind: repair it rather than rely on order.
+# routes/inference binds structlog.get_logger at import; setdefault may keep an earlier bare stub.
 _structlog_stub.get_logger = lambda *_args, **_kwargs: logging.getLogger("structlog_stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
@@ -84,6 +82,9 @@ from core.inference.llama_cpp import (
     gguf_load_in_flight,
     hf_gguf_load_in_flight,
 )
+from core.inference.openai_auto_download import _DISK_RESERVE_BYTES
+
+from ._fake_llama_server import fake_llama_server
 
 
 REPO = "unsloth/gemma-test-GGUF"
@@ -130,6 +131,53 @@ def _fail_get_paths_info(*_args, **_kwargs):
     raise AssertionError("cached reuse must return before the sizing preflight")
 
 
+GIB = 1024**3
+_LOW_DISK_SIZES = {
+    "gemma-test-UD-IQ1_S.gguf": GIB,
+    "gemma-test-Q4_K_M.gguf": 2 * GIB,
+    "gemma-test-Q6_K.gguf": 6 * GIB,
+    "gemma-test-Q8_0.gguf": 8 * GIB,
+}
+
+
+@contextmanager
+def _low_disk_hub(
+    free: int,
+    *,
+    snap: Path | None = None,
+    served: str | None = None,
+    sizes: dict[str, int] | None = None,
+):
+    sizes = sizes or _LOW_DISK_SIZES
+    downloaded: list[str] = []
+
+    def fake_get_paths_info(
+        _repo,
+        paths,
+        *,
+        revision = None,
+        token = None,
+    ):
+        on_disk = snap is not None and revision == snap.name
+        return [
+            _types.SimpleNamespace(path = path, size = 4 if on_disk else sizes[path]) for path in paths
+        ]
+
+    def fake_download(_repo, filename, *_args, **_kwargs):
+        downloaded.append(filename)
+        return served or f"/fake/{REPO}/{filename}"
+
+    usage = _types.SimpleNamespace(total = 100 * GIB, used = 100 * GIB - free, free = free)
+    with (
+        patch("huggingface_hub.list_repo_files", lambda *_a, **_k: list(sizes)),
+        patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+        patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+        patch("shutil.disk_usage", lambda *_a, **_k: usage),
+        patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+    ):
+        yield downloaded
+
+
 def _load_route_module(name: str, relative_path: str):
     """Import a route module under a private name so patches can't leak."""
     spec = importlib.util.spec_from_file_location(name, Path(_BACKEND_DIR) / relative_path)
@@ -172,7 +220,6 @@ async def _inline_to_thread(func, /, *args, **kwargs):
 
 
 async def _no_gguf_gpu_ids(*_args, **_kwargs):
-    # Mirrors the resolver's no-gpu_ids early return: no ids, not Vulkan ordinals.
     return None, False
 
 
@@ -528,7 +575,7 @@ class TestLoadReusesCachedCopy:
             patch("shutil.disk_usage", lambda *_a, **_k: _types.SimpleNamespace(free = 10)),
             patch.object(
                 backend,
-                "_find_smallest_fitting_variant",
+                "_find_fitting_variant",
                 lambda *_a, **_k: (fallback, 4, []),
             ),
             patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _fail_download),
@@ -536,6 +583,142 @@ class TestLoadReusesCachedCopy:
             out = backend._download_gguf(hf_repo = REPO, hf_variant = VARIANT)
 
         assert out == str(snap / fallback)
+
+    def test_low_disk_fallback_picks_largest_variant_leaving_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-Q4_K_M.gguf"]
+        assert out == f"/fake/{REPO}/gemma-test-Q4_K_M.gguf"
+        variant, notice = backend._pending_variant_fallback
+        assert variant == "Q4_K_M"
+        assert notice == (
+            "Not enough disk space to download Q8_0 (8.6 GB needed, 8.1 GB free), "
+            "so Q4_K_M (2.1 GB) was loaded instead."
+        )
+
+    def test_low_disk_fallback_keeps_smallest_when_none_leaves_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+        assert backend._pending_variant_fallback[0] == "UD-IQ1_S"
+
+    def test_low_disk_fallback_reuses_cached_variant_before_downloading(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == []
+        assert out == str(snap / "gemma-test-Q4_K_M.gguf")
+
+    def test_low_disk_fallback_prefers_the_largest_cached_variant_under_the_reserve(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(
+            hf_cache, REPO, {"gemma-test-Q4_K_M.gguf": 4, "gemma-test-Q6_K.gguf": 4}
+        )
+        with _low_disk_hub(GIB // 2, snap = snap) as downloaded:
+            out = backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == []
+        assert out == str(snap / "gemma-test-Q6_K.gguf")
+
+    def test_low_disk_fallback_never_picks_a_larger_cached_variant(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {"gemma-test-Q8_0.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2, snap = snap) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q6_K")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
+    def test_low_disk_fallback_stays_on_the_requested_checkpoint(self, hf_cache):
+        backend = LlamaCppBackend()
+        sizes = {
+            "gemma-test-Q4_K_M.gguf": 2 * GIB,
+            "gemma-test-Q8_0.gguf": 16 * GIB,
+            "distilled/gemma-test-distilled-Q6_K.gguf": 6 * GIB,
+        }
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 13 * GIB // 2, sizes = sizes) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-Q4_K_M.gguf"]
+        assert backend._pending_variant_fallback[0] == "Q4_K_M"
+
+    def test_low_disk_fallback_ignores_a_truncated_cached_variant(self, hf_cache):
+        backend = LlamaCppBackend()
+        _build_cache(hf_cache, REPO, {"gemma-test-Q6_K.gguf": 4})
+        with _low_disk_hub(_DISK_RESERVE_BYTES + GIB // 2) as downloaded:
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+        assert downloaded == ["gemma-test-UD-IQ1_S.gguf"]
+
+    def test_low_disk_without_any_fitting_variant_refuses(self, hf_cache):
+        backend = LlamaCppBackend()
+        with _low_disk_hub(GIB // 2), pytest.raises(RuntimeError, match = "any variant"):
+            backend._download_gguf(hf_repo = REPO, hf_variant = "Q8_0")
+
+    def test_a_fallback_and_a_memory_notice_are_both_reported(self):
+        backend = LlamaCppBackend()
+        backend._variant_fallback_warning = "Q4_K_M was loaded instead."
+        backend._record_load_warning("The model does not fit in GPU memory.")
+
+        assert backend.last_load_warning == (
+            "Q4_K_M was loaded instead. The model does not fit in GPU memory."
+        )
+
+        backend._begin_load_warnings()
+        assert backend.last_load_warning == "Q4_K_M was loaded instead."
+
+    def test_low_disk_fallback_load_records_the_served_variant(
+        self, hf_cache, tmp_path, monkeypatch
+    ):
+        backend = LlamaCppBackend()
+        served = tmp_path / "gemma-test-Q4_K_M.gguf"
+        served.write_bytes(b"GGUF" + b"\0" * 4096)
+        fake_server = fake_llama_server(tmp_path / "bin")
+        backend._find_llama_server_binary = lambda *_a, **_k: fake_server
+        backend._remote_non_chat_gguf_refusal = lambda **_k: None
+        backend._non_chat_gguf_refusal_for_path = lambda *_a, **_k: None
+        backend._non_chat_gguf_refusal = lambda *_a, **_k: None
+        backend._kill_process = lambda *_a, **_k: None
+        backend._wait_for_health = lambda timeout = 600.0, interval = 0.5, cancelled = None: True
+        # Apple's unified-memory planner adds a notice for this header-only GGUF.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+        )
+
+        def _start(cmd, env, **_kwargs):
+            backend._process = Mock(pid = 424242, returncode = None)
+            backend._process.poll.return_value = None
+            backend._stdout_lines = ["build: 6543", "main: loading model"]
+            return backend._process
+
+        backend._start_llama_process = _start
+        requested = GgufLoadIntent(
+            model_identifier = REPO,
+            hf_repo = REPO,
+            hf_variant = "Q8_0",
+            speculative_type = "none",
+            n_ctx = 4096,
+        )
+        with _low_disk_hub(_DISK_RESERVE_BYTES + 5 * GIB // 2, served = str(served)):
+            assert backend.load_model(requested) is True
+
+        assert backend.hf_variant == "Q4_K_M"
+        assert "Q4_K_M" in (backend.last_load_warning or "")
+        assert not backend.matches_load_source(requested)
+        assert backend.matches_load_source(replace(requested, hf_variant = "Q4_K_M"))
+        # Replayed by the crash respawn, so it must name the running quant.
+        assert backend.last_load_intent.hf_variant == "Q4_K_M"
+
+        with _low_disk_hub(100 * GIB, served = str(served)):
+            assert backend.load_model(requested) is True
+
+        assert backend.hf_variant == "Q8_0"
+        assert backend.last_load_warning is None
 
     def test_companion_prefers_main_snapshot_sibling(self, hf_cache):
         """A cached mmproj is reused from the main model's snapshot."""
@@ -549,6 +732,134 @@ class TestLoadReusesCachedCopy:
             out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
 
         assert out == str(snap / "mmproj-F16.gguf")
+
+    def test_companion_reuses_a_projector_at_the_hf_repo_root(self, hf_cache):
+        """A repo that publishes none falls back to a hand-added one (#9286)."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_a_published_projector_still_wins_over_the_repo_root(self, hf_cache):
+        """The fallback runs last, so a repo that ships one resolves as it did before."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = "/remote/image.gguf"):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == "/remote/image.gguf"
+
+    def test_a_dropped_fetch_of_a_published_projector_does_not_fall_back(self, hf_cache):
+        """The repo lists one, so None is a dropped fetch: no fallback."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
+
+        def _drop(*_args, **_kwargs):
+            raise OSError("connection reset")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN, "mmproj-F16.gguf"]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _drop),
+        ):
+            assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
+
+    def test_a_stale_cached_name_does_not_pass_for_a_published_projector(self, hf_cache):
+        """Only an older snapshot names a projector; the live listing has none."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
+        projector = snap.parent.parent / "mmproj-kquant.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _gone(*_args, **_kwargs):
+            raise OSError("404 for a file this revision no longer publishes")
+
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: [MAIN]),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", _gone),
+        ):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_empty_resolved_projector_does_not_shadow_the_repo_root(self, hf_cache):
+        """A zero-byte resolved copy is not returned."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "stale-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        with patch.object(backend, "_download_companion_gguf", return_value = str(empty)):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_empty_published_projector_still_reaches_the_repo_root(self, hf_cache):
+        """A zero-byte listed copy falls back: the next Apply would not heal it."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        empty = snap.parent.parent / "published-mmproj.gguf"
+        empty.write_bytes(b"")
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _resolve_empty(
+            *_a,
+            outcome = None,
+            **_k,
+        ):
+            if outcome is not None:
+                outcome["listed_live"] = True
+                outcome["listed"] = True
+            return str(empty)
+
+        with patch.object(backend, "_download_companion_gguf", _resolve_empty):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
+        """An unanswered (offline) listing still falls back."""
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        projector = snap.parent.parent / "mmproj-F16.gguf"
+        projector.write_bytes(b"mmproj")
+
+        def _unreachable(*_args, **_kwargs):
+            raise OSError("name resolution failed")
+
+        with patch("huggingface_hub.list_repo_files", _unreachable):
+            out = backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN))
+
+        assert out == str(projector)
+
+    def test_companion_cancelled_before_scanning_cached_projectors(self, hf_cache):
+        backend = LlamaCppBackend()
+        snap = _build_cache(hf_cache, REPO, {MAIN: 4})
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with patch(
+            "utils.models.model_config.detect_mmproj_file",
+            side_effect = AssertionError("cancelled lookup scanned the cache"),
+        ):
+            out = backend._download_mmproj(
+                hf_repo = REPO,
+                near_path = str(snap / MAIN),
+                cancel_event = cancel_event,
+            )
+
+        assert out is None
 
     def test_companion_finds_snapshot_through_hf_symlink(self, hf_cache):
         backend = LlamaCppBackend()
@@ -724,8 +1035,7 @@ class TestLoadHubDownloadExclusion:
             model_identifier = REPO,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
-            # The reuse fast path consults this before asserting CHAT ownership; a real
-            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            # The real LlamaCppBackend exposes this property and the reuse fast path reads it.
             holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
@@ -775,8 +1085,6 @@ class TestLoadHubDownloadExclusion:
             matches_load_source = lambda _intent: True,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
-            # The reuse fast path consults this before asserting CHAT ownership; a real
-            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
             holds_no_vram = False,
         )
         config = SimpleNamespace(
@@ -867,22 +1175,59 @@ class TestLoadHubDownloadExclusion:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend.__init__()
         supplied = {
+            "engine",
+            "engine_parallelism",
+            "engine_precision",
+            "engine_kv_cache_dtype",
+            "engine_seed",
+            "engine_gpu_memory_utilization",
             "requires_trust_remote_code",
             "speculative_type",
             "requested_parallel_slots",
             "parallel_slots",
             "is_mlx",
+            "is_npu",
+            "speaks",
+            "mlx_kv_quant",
+            "mlx_kv_quant_requested",
             "mlx_kv_bits",
             "mlx_kv_bits_requested",
             "mlx_kv_quant_eligibility",
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
+            "mlx_int8_prefill",
+            "mlx_int8_prefill_requested",
+            "mlx_int8_prefill_reason",
+            "mlx_ane_prefill",
+            "mlx_ane_prefill_requested",
+            "mlx_ane_prefill_reason",
+            "mlx_fast_verify",
+            "mlx_fast_verify_requested",
+            "mlx_fast_verify_reason",
+            "mlx_offload",
+            "mlx_context_budget",
+            "spec_draft_model",
             "chat_template_override_reason",
-            # Constant True: llama.cpp allocates the window it reports.
             "context_length_enforced",
-            # Read from requested_extra_args, which is what the load was invoked
-            # with rather than the rewritten launch list.
+            "context_length_fitted",
+            "context_unbounded_when_batched",
+            # From requested_extra_args, not the rewritten launch list.
             "requested_llama_extra_args",
+            "audio_family",
+            "audio_options",
+            "audio_workflows",
+            "audio_reference_text",
+            "audio_required_inputs",
+            "audio_request_inputs",
+            "audio_device_fallback",
+            # Constant None: nor converts one.
+            "audio_options_by_workflow",
+            "audio_workflow_tasks",
+            "audio_server_task",
+            "audio_convert",
+            "audio_convert_route",
+            "audio_clone",
+            "audio_music",
         }
         unresolved = sorted(
             name
@@ -892,8 +1237,9 @@ class TestLoadHubDownloadExclusion:
         assert unresolved == []
 
         fields = route._llama_runtime_fields(backend)
+        assert fields["engine"] == "auto"
         assert fields["is_mlx"] is False
-        assert fields["mlx_kv_bits_requested"] is None
+        assert fields["mlx_kv_quant_requested"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
@@ -909,7 +1255,7 @@ class TestLoadHubDownloadExclusion:
             assert not hf_gguf_load_in_flight("")
 
     def test_chat_load_marker_is_repo_agnostic_and_nests(self):
-        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths and safetensors too, so this marker carries no repo key.
+        # Marker carries no repo key: the GPU arbiter needs it for local and safetensors loads too.
         from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
 
         assert not chat_load_active()
@@ -964,6 +1310,9 @@ class TestLoadHubDownloadExclusion:
             return frozenset()
 
         class _Registry:
+            def get_job_metadata(self, _key):
+                return None
+
             def claim(self, *_args, admission_check, **_kwargs):
                 assert admission_check() is False
                 return False, "admission_blocked"
@@ -1075,7 +1424,7 @@ class TestLoadHubDownloadExclusion:
 
         class FakeBackend:
             @_with_gguf_load_marker
-            # The marker forwards the scoped cancel event, so a loader must accept it.
+            # The marker forwards a cancel event, so loaders must accept it.
             def load_model(
                 self,
                 intent,
@@ -1117,17 +1466,13 @@ class TestLoadHubDownloadExclusion:
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
-        # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
+        # Anchor on the enclosing function, not a nearby `if config.is_gguf:` that may move.
         marker = source.index("enter_context(gguf_load_in_flight")
         gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
-        # One chain, in this order:
-        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes the guard's require_mmproj.
-        # - the gguf_load_in_flight marker before the hub-download guard: that handshake keeps a load and the download manager off the same files.
-        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it later destroyed a resident pipeline for a load that could never start.
-        # - the resident unload last. Anchored on call forms so each assertion pins a call site, not a definition.
+        # Order: inherited extras (shape require_mmproj), load marker, hub guard, CHAT handoff, unload.
+        # The guard's 409 must precede the handoff or a resident pipeline is torn down for nothing.
         assert (
             gguf_branch.index("= _resolve_inherited_extra_args(")
             < gguf_branch.index("enter_context(gguf_load_in_flight")
@@ -1138,18 +1483,24 @@ class TestLoadHubDownloadExclusion:
         llama_source = (
             Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         ).read_text(encoding = "utf-8")
-        assert "@_with_gguf_load_marker\n    def load_model(" in llama_source
+        # Any position in the stack (#14546 put @holds_inference under it); the marker must wrap load_model.
+        loads = [
+            node
+            for cls in ast.parse(llama_source).body
+            if isinstance(cls, ast.ClassDef) and cls.name == "LlamaCppBackend"
+            for node in cls.body
+            if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+        ]
+        assert len(loads) == 1
+        assert "_with_gguf_load_marker" in [ast.unparse(d) for d in loads[0].decorator_list]
 
     def _capture_hub_guard_require_mmproj(
         self,
         stored_extra_args,
         request_extra_args = None,
     ):
-        """Drive /load's GGUF path and return the hub guard's require_mmproj.
-
-        The guard reports a conflicting download, so the 409 is the observation
-        point and no llama-server ever starts.
-        """
+        """Drives /load's GGUF path; the hub guard's 409 is the observation point, so no llama-
+        server starts."""
         import core.inference.llama_cpp as llama_cpp_module
 
         from fastapi import HTTPException
@@ -1173,7 +1524,6 @@ class TestLoadHubDownloadExclusion:
             captured["require_mmproj"] = require_mmproj
             return True
 
-        # A vision GGUF: require_mmproj is True unless the extras say --no-mmproj.
         config = SimpleNamespace(
             is_gguf = True,
             is_lora = False,
@@ -1188,7 +1538,6 @@ class TestLoadHubDownloadExclusion:
             identifier = REPO,
             display_name = REPO,
         )
-        # Pass-through extras the running backend recorded for the last load.
         llama_backend = SimpleNamespace(
             is_loaded = False,
             extra_args = list(stored_extra_args),
@@ -1241,16 +1590,322 @@ class TestLoadHubDownloadExclusion:
         return captured["require_mmproj"]
 
     def test_inherited_extra_args_shape_hub_guard_require_mmproj(self):
-        # Inheritance must resolve before the hub-download guard: an inherited
-        # --no-mmproj decides require_mmproj, so resolving later rejects a load
-        # over a download the effective arguments disable (#7251).
+        # Inherited --no-mmproj decides require_mmproj, so inheritance must resolve before the hub guard.
         assert self._capture_hub_guard_require_mmproj(["--no-mmproj"]) is False
-        # Control: nothing to inherit, so a vision GGUF still needs its mmproj.
         assert self._capture_hub_guard_require_mmproj([]) is True
-        # An explicit request list wins over the stored one, both ways.
         assert (
             self._capture_hub_guard_require_mmproj([], request_extra_args = ["--no-mmproj"]) is False
         )
         assert (
             self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
         )
+
+
+class _CompanionMetadataReached(BaseException):
+    """Raised from a stubbed from_identifier so the load stops with its kwargs captured."""
+
+
+def _companion_cache_repo(tmp_path, *, weights: str = "weights-revision"):
+    """Weights snapshot predates the companion revision; MTP head and mmproj sit in a sibling snapshot."""
+    repo = tmp_path / "models--org--Vision-GGUF"
+    selected = repo / "snapshots" / weights
+    companions = repo / "snapshots" / "companion-revision"
+    selected.mkdir(parents = True)
+    companions.mkdir(parents = True)
+    (repo / "blobs").mkdir(exist_ok = True)
+    (repo / "refs").mkdir(exist_ok = True)
+    (repo / "refs" / "main").write_text("companion-revision")
+    (selected / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (companions / "mtp-vision-model-Q4_0.gguf").write_bytes(b"GGUF drafter")
+    (companions / "mmproj-vision-model-F16.gguf").write_bytes(b"GGUF companion")
+    os.utime(selected, (1_000, 1_000))
+    os.utime(companions, (2_000, 2_000))
+    return repo, selected, companions
+
+
+@contextmanager
+def _capture_load_config(
+    route,
+    seen,
+    *,
+    native_grant_backed = False,
+    model_identifier = None,
+):
+    backend = SimpleNamespace(
+        is_loaded = False,
+        model_identifier = None,
+        holds_no_vram = False,
+        active_model_name = None,
+        _audio_probed = True,
+        adopt_load_intent_if_matched = lambda _intent: False,
+    )
+
+    def _from_identifier(**kwargs):
+        seen.update(kwargs)
+        raise _CompanionMetadataReached()
+
+    with (
+        patch.object(
+            route,
+            "_resolve_model_identifier_for_request",
+            return_value = (model_identifier, model_identifier, native_grant_backed),
+        ),
+        patch.object(route, "resolve_effective_chat_template_override", return_value = None),
+        patch.object(route, "get_llama_cpp_backend", return_value = backend),
+        patch.object(route, "get_inference_backend", return_value = backend),
+        patch.object(route, "ModelConfig", SimpleNamespace(from_identifier = _from_identifier)),
+    ):
+        yield
+
+
+class TestPathLoadCompanionRoots:
+    """Path loads skip repo-level widening, so an MTP head or mmproj published later stays invisible."""
+
+    def _roots_for(self, tmp_path, name, **kwargs):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(name, "routes/inference.py")
+        load_path = kwargs.pop("load_path")
+        preset = kwargs.pop("preset_roots", None)
+        preset_set = kwargs.pop("preset_set", False)
+        request = LoadRequest(model_path = load_path, gguf_variant = "Q4_K_M")
+        if preset is not None:
+            request._gguf_companion_roots = preset
+        if preset_set:
+            request._gguf_companion_roots_set = True
+        seen = {}
+        with _capture_load_config(route, seen, model_identifier = load_path, **kwargs):
+            with pytest.raises(_CompanionMetadataReached):
+                _run_route_load(route, request)
+        return seen.get("gguf_companion_roots")
+
+    def test_path_load_widens_to_the_sibling_snapshot_holding_the_companions(self, tmp_path):
+        _repo, selected, companions = _companion_cache_repo(tmp_path)
+        roots = self._roots_for(
+            tmp_path,
+            "inference_route_module_for_path_load_widening",
+            load_path = str(selected),
+        )
+        assert tuple(map(Path, roots or ())) == (selected, companions)
+
+    def test_path_load_resolves_both_the_mtp_head_and_the_mmproj(self, tmp_path):
+        """The user-visible symptom, through the real ModelConfig: both companions."""
+        from utils.models.model_config import ModelConfig
+        from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+        _repo, selected, companions = _companion_cache_repo(tmp_path)
+        assert (
+            ModelConfig.from_identifier(str(selected), gguf_variant = "Q4_K_M").gguf_mtp_file is None
+        )
+        config = ModelConfig.from_identifier(
+            str(selected),
+            gguf_variant = "Q4_K_M",
+            gguf_companion_roots = local_path_gguf_companion_roots(str(selected)),
+        )
+        assert config.gguf_mtp_file == str((companions / "mtp-vision-model-Q4_0.gguf").resolve())
+        assert config.gguf_mmproj_file == str(
+            (companions / "mmproj-vision-model-F16.gguf").resolve()
+        )
+
+    def test_a_pinned_non_selected_revision_is_not_widened(self, tmp_path):
+        """Naming a revision the repo-level selection would not hand out pins it."""
+        repo, pinned, _companions = _companion_cache_repo(tmp_path)
+        newer_weights = repo / "snapshots" / "newer-weights-revision"
+        newer_weights.mkdir(parents = True)
+        (newer_weights / "vision-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+        os.utime(newer_weights, (3_000, 3_000))
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_pinned_revision",
+            load_path = str(pinned),
+        )
+
+    def test_a_native_grant_backed_load_is_not_widened(self, tmp_path):
+        """A native grant covers one directory; a sibling revision is outside it."""
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_native_grant_widening",
+            load_path = str(selected),
+            native_grant_backed = True,
+        )
+
+    def test_roots_the_caller_already_set_are_left_alone(self, tmp_path):
+        """Auto-switch resolved these from the repo, and the idle stash restores what
+        the last load actually used: neither may be recomputed from the path."""
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        roots = self._roots_for(
+            tmp_path,
+            "inference_route_module_for_preset_roots",
+            load_path = str(selected),
+            preset_roots = (str(selected),),
+        )
+        assert tuple(map(Path, roots or ())) == (selected,)
+
+    def test_an_explicitly_empty_scope_is_left_alone(self, tmp_path):
+        """An explicit () scope from an exact revision is left alone, not recomputed from the path."""
+        _repo, selected, _companions = _companion_cache_repo(tmp_path)
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_empty_preset_roots",
+            load_path = str(selected),
+            preset_roots = (),
+            preset_set = True,
+        )
+
+    def test_a_bare_repo_id_is_not_widened(self, tmp_path):
+        assert not self._roots_for(
+            tmp_path,
+            "inference_route_module_for_repo_id_load",
+            load_path = REPO,
+        )
+
+
+def _mtp_cache_repo(tmp_path):
+    """Weights in the older snapshot, the MTP head alone in the newer one (#10599)."""
+    repo = tmp_path / "models--org--Draft-GGUF"
+    weights = repo / "snapshots" / "weights-revision"
+    companions = repo / "snapshots" / "companion-revision"
+    weights.mkdir(parents = True)
+    companions.mkdir(parents = True)
+    (weights / "draft-model-Q4_K_M.gguf").write_bytes(b"GGUF weights")
+    (companions / "mtp-draft-model.gguf").write_bytes(b"GGUF drafter")
+    os.utime(weights, (1_000, 1_000))
+    os.utime(companions, (2_000, 2_000))
+    return repo, weights, companions
+
+
+def test_the_apply_dedup_sees_the_drafter_the_launch_opened(tmp_path):
+    """Apply dedup must recompute the drafter from the sibling snapshot, or a healthy server restarts."""
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+    from models.inference import LoadRequest
+    from utils.models.model_config import ModelConfig
+
+    route = _load_route_module("inference_route_module_for_apply_dedup", "routes/inference.py")
+    _repo, weights, companions = _mtp_cache_repo(tmp_path)
+    main = weights / "draft-model-Q4_K_M.gguf"
+    head = companions / "mtp-draft-model.gguf"
+
+    roots = local_path_gguf_companion_roots(str(weights))
+    assert tuple(map(Path, roots)) == (weights, companions)
+    launched = ModelConfig.from_identifier(
+        str(weights), gguf_variant = "Q4_K_M", gguf_companion_roots = roots
+    ).gguf_mtp_file
+    assert launched == str(head.resolve())
+
+    backend = SimpleNamespace(
+        extra_args = (),
+        last_load_intent = None,
+        hf_repo = None,
+        hf_variant = None,
+        gguf_path = str(main),
+        layer_preserves_tensor_intent = False,
+        _openai_gguf_companion_roots = tuple(roots),
+    )
+    intent = route._active_gguf_intent(
+        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        backend,
+        model_identifier = str(weights),
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    assert intent.mtp_draft_path == launched
+
+    # No recorded widening: a pinned revision compares only against its own root.
+    backend._openai_gguf_companion_roots = ()
+    pinned = route._active_gguf_intent(
+        LoadRequest(model_path = str(weights), gguf_variant = "Q4_K_M"),
+        backend,
+        model_identifier = str(weights),
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    assert pinned.mtp_draft_path is None
+
+
+def test_a_symlinked_sibling_snapshot_is_not_a_trusted_root(tmp_path):
+    """A symlinked sibling snapshot must not be a trusted search root, since is_dir follows symlinks."""
+    from core.inference.local_model_resolver import local_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "rev1"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    real_sibling = snapshots / "rev2"
+    real_sibling.mkdir()
+    (real_sibling / "mmproj.gguf").touch()
+    outside = tmp_path / "other_tenant"
+    outside.mkdir()
+    (outside / "leaked.gguf").touch()
+    (snapshots / "rev3").symlink_to(outside, target_is_directory = True)
+
+    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    names = [os.path.basename(root) for root in roots]
+    assert "rev1" in names and "rev2" in names
+    assert "rev3" not in names, f"escaped symlink returned as a trusted root: {roots}"
+    assert all(str(outside) not in root for root in roots)
+
+
+def test_a_repo_with_no_sibling_snapshot_widens_nothing(tmp_path):
+    """No sibling snapshot gives no roots; a lone root would wrongly relax allow_disjoint_search_root."""
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "only"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+
+    assert local_path_gguf_companion_roots(str(selected)) == ()
+
+
+def test_a_sibling_symlinked_to_the_selected_snapshot_is_not_a_second_root(tmp_path):
+    """Symlink aliases of the selected snapshot must be detected with samefile, not path equality."""
+    from core.inference.local_model_resolver import local_path_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "only"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+
+    assert local_path_gguf_companion_roots(str(selected)) == ()
+
+
+def test_an_aliased_sibling_does_not_displace_a_real_one(tmp_path):
+    """The alias drops out; a genuine sibling revision still widens the scope."""
+    from core.inference.local_model_resolver import local_gguf_companion_roots
+
+    repo = tmp_path / "cache" / "models--a--b"
+    snapshots = repo / "snapshots"
+    selected = snapshots / "weights"
+    selected.mkdir(parents = True)
+    (selected / "model.gguf").touch()
+    real = snapshots / "companion"
+    real.mkdir()
+    (real / "mmproj.gguf").touch()
+    (snapshots / "alias").symlink_to(selected, target_is_directory = True)
+
+    roots = local_gguf_companion_roots(str(selected), repo_level = True)
+    assert tuple(map(Path, roots)) == (selected, real)
+
+
+def test_an_explicitly_empty_companion_scope_is_not_recomputed():
+    """Explicit () companion scope means do not widen, and must be told apart from the unset default."""
+    from models.inference import LoadRequest
+
+    unset = LoadRequest(model_path = "/models/x")
+    assert unset._gguf_companion_roots == ()
+    assert unset._gguf_companion_roots_set is False
+
+    pinned = LoadRequest(model_path = "/models/x")
+    pinned._gguf_companion_roots = ()
+    pinned._gguf_companion_roots_set = True
+    assert pinned._gguf_companion_roots == ()
+    assert "_gguf_companion_roots_set" not in pinned.model_dump()
+    injected = LoadRequest(model_path = "/models/x", _gguf_companion_roots_set = True)
+    assert injected._gguf_companion_roots_set is False

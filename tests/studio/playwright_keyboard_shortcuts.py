@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keyboard shortcut behaviour, in a real browser, on three emulated platforms.
-
-Drives smoke-shortcuts.html: the real registry, the real store and the real
-useShortcut against a browser's own keyboard. The node suite reaches the pure
-functions, but a listener is not a pure function, so what a chord does to a
-focused button, to a text field, on auto-repeat, under AltGr, or to a stored
-binding carried over from another platform is only answerable here.
-
-    SMOKE_ENGINES=chromium,firefox,webkit python3 tests/studio/playwright_keyboard_shortcuts.py
-
-Platform is emulated the way the app reads it, through navigator.platform and
-the user agent, because isMacPlatform() is memoised on first call.
-"""
+"""Keyboard shortcuts in real browsers on three emulated platforms, set via navigator.platform."""
 
 import json
 import os
@@ -28,13 +16,13 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    wait_for_smoke_page,
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5407"))
 ENGINES = [e for e in os.environ.get("SMOKE_ENGINES", "chromium").split(",") if e]
 URL = f"http://127.0.0.1:{PORT}/smoke-shortcuts.html"
 
-# navigator.platform, and a user agent to match.
 PLATFORMS = {
     "macOS": ("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) SmokeUA"),
     "Windows": ("Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SmokeUA"),
@@ -142,6 +130,42 @@ def check_defaults(page, engine: str, platform: str) -> None:
         check(engine, platform, "no unreachable Ctrl default off macOS", not ctrl, str(ctrl))
 
 
+def check_every_default(page, engine: str, platform: str) -> None:
+    """Presses every shipped default chord through the real dispatch, not a sample of named ones."""
+    rows = page.evaluate(
+        """() => {
+            const r = window.__shortcutsSmoke.registry;
+            const mac = r.isMacPlatform();
+            const out = [];
+            for (const def of r.SHORTCUT_DEFS) {
+                for (const slot of r.SHORTCUT_SLOTS) {
+                    const value = r.defaultBindingFor(def, slot, mac);
+                    if (value != null) out.push({ id: def.id, slot, value });
+                }
+            }
+            return out;
+        }"""
+    )
+    recorded_as = page.evaluate("window.__shortcutsSmoke.recordedAs")
+    missed: list[str] = []
+    for row in rows:
+        reset(page)
+        # A focused control keeps its own Enter, so blur first.
+        page.evaluate("document.activeElement && document.activeElement.blur()")
+        page.keyboard.press(to_press(row["value"], platform))
+        expected = recorded_as.get(row["id"], row["id"])
+        if expected not in actions(page):
+            missed.append(f"{row['id']}.{row['slot']} {row['value']}")
+    reset(page)
+    check(
+        engine,
+        platform,
+        f"every shipped chord fires its action ({len(rows)} slots)",
+        not missed,
+        ", ".join(missed)[:300],
+    )
+
+
 def check_dispatch(page, engine: str, platform: str) -> None:
     reset(page)
     page.keyboard.press(to_press("Mod+Comma", platform))
@@ -153,7 +177,6 @@ def check_dispatch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # Exact match: the chord is this set of modifiers, not at least this set.
     reset(page)
     page.keyboard.press(f"{MOD[platform]}+Alt+Comma")
     check(
@@ -164,7 +187,6 @@ def check_dispatch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # Both slots answer. newChat is the only action that ships a pair.
     reset(page)
     page.keyboard.press(to_press("Mod+Shift+KeyO", platform))
     page.keyboard.press(to_press("Mod+KeyN", platform))
@@ -208,7 +230,6 @@ def check_text_fields(page, engine: str, platform: str) -> None:
     page.focus("#smoke-composer")
     page.keyboard.press("Escape")
     declined = actions(page)
-    # Escape types nothing in the composer, so declining keeps working there, and Enter, which sends, does not.
     reset(page)
     page.focus("#smoke-composer")
     page.keyboard.press("Enter")
@@ -244,8 +265,7 @@ def check_bare_keys(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # The whole reason the stand-aside exists: preventDefault runs before the
-    # handler, so without it Enter on Deny would cancel the click and approve.
+    # preventDefault runs before the handler, so without stand-aside Enter on Deny would approve.
     reset(page)
     page.focus("#smoke-button")
     page.keyboard.press("Enter")
@@ -269,7 +289,6 @@ def check_bare_keys(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # Escape activates nothing, so it is deliberately not stood aside.
     reset(page)
     page.focus("#smoke-button")
     page.keyboard.press("Escape")
@@ -338,8 +357,7 @@ def check_altgr(page, engine: str, platform: str) -> None:
 
 
 def check_foreign_binding(page, engine: str, platform: str) -> None:
-    # A binding stored on a Mac must not fire on the bare key elsewhere. Before the registry grew, matchesBinding
-    # ignored the ctrl flag off macOS instead of rejecting it, and a Mac Ctrl chord fired on the unmodified key.
+    # A Mac-stored Ctrl chord must not fire on the bare key elsewhere.
     reload_with(page, json.dumps({"copySessionId": {"primary": "Ctrl+KeyG"}}))
     reset(page)
     page.evaluate(
@@ -432,7 +450,6 @@ def check_storage(page, engine: str, platform: str) -> None:
             ok, detail = False, f"{type(exc).__name__}: {exc}"
         check(engine, platform, f"storage: {name}", ok, detail)
 
-    # A rebind has to reach the live listener, and survive a restart.
     reload_with(page, None)
     page.evaluate(
         """() => window.__shortcutsSmoke.store.useKeyboardShortcutsStore
@@ -473,8 +490,7 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         page.wait_for_function("document.getElementById('smoke-selection').textContent === '3'")
         reset(page)
 
-    # A selection chord clears the selection, so an immediate second press would
-    # otherwise land on the open chat, which was never selected.
+    # A selection chord clears the selection, so a second press would hit the open chat.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -487,8 +503,6 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # A different command straight after is not the repeat this guards against,
-    # and swallowing it would trade one silent wrong action for another.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -501,8 +515,6 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # And a deliberate press afterwards still works, or the latch has traded one
-    # silent wrong action for a silent dead key.
     with_selection()
     page.keyboard.press(archive)
     page.wait_for_function("document.getElementById('smoke-selection').textContent === '0'")
@@ -516,7 +528,6 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # With no selection the latch is never stamped, so nothing is swallowed.
     reset(page)
     page.keyboard.press(archive)
     page.keyboard.press(archive)
@@ -528,7 +539,6 @@ def check_selection_latch(page, engine: str, platform: str) -> None:
         str(actions(page)),
     )
 
-    # Deleting needs no latch: it has no open-chat branch to fall through to.
     reset(page)
     page.evaluate(
         """() => window.__shortcutsSmoke.store.useKeyboardShortcutsStore
@@ -594,6 +604,7 @@ def run_engine(pw, engine: str) -> None:
             page.wait_for_selector("#smoke-ready", timeout = 120000)
             try:
                 check_defaults(page, engine, platform)
+                check_every_default(page, engine, platform)
                 check_dispatch(page, engine, platform)
                 check_text_fields(page, engine, platform)
                 check_bare_keys(page, engine, platform)
@@ -619,6 +630,7 @@ def run_engine(pw, engine: str) -> None:
 def main() -> int:
     server = start_vite(PORT)
     try:
+        wait_for_smoke_page(URL, "smoke-shortcuts-main.tsx", proc = server)
         with sync_playwright() as pw:
             for engine in ENGINES:
                 run_engine(pw, engine)

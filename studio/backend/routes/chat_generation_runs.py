@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
@@ -19,14 +21,26 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from auth import policy
-from state import active_generations
+from state import active_generations, run_subscribers, unattended_runs
 from utils.account_context import current_account, current_account_id, run_as
+from core.inference.chat_generation_runs import detach_embedded_images
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
 from utils.api_errors import safe_validation_errors
+from utils.current_date_prompt_settings import (
+    CURRENT_DATE_TIMEZONE_HEADER,
+    CURRENT_DATE_TIMEZONE_OFFSET_HEADER,
+)
 
 router = APIRouter()
+
+
+def _encode_json(value: Any) -> str:
+    """The SSE frame encoding; chat_generation_runs_db stores event payloads with the same options."""
+    return json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+
+
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
     max_workers = 32,
     thread_name_prefix = "chat-generation-events",
@@ -65,7 +79,9 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
+    "mcp_image",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
@@ -80,6 +96,9 @@ class CreateChatGenerationRun(BaseModel):
     userMessageId: str = Field(min_length = 1, max_length = 256)
     assistantMessageId: str = Field(min_length = 1, max_length = 256)
     requestPayload: dict[str, Any]
+    # The owner's "stop when I close the tab": cancel the run once no tab has followed it for a
+    # while (state/unattended_runs.py) rather than letting it finish in the background.
+    stopWhenUnattended: bool = False
 
 
 def _normalized_key(key: object) -> str:
@@ -154,15 +173,17 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
+        _admit_tool_access,
+        _messages_have_embedded_image,
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
     )
 
+    _admit_tool_access(request)
     _reject_unsupported_content_parts(request)
 
-    # Message content/reasoning are user-authored data, not routing configuration. Scan every
-    # other persisted field, including extra message-envelope fields, with the credential policy.
+    # Message content is user data; scan every other persisted field for credentials.
     durable_config = {
         key: value
         for key, value in raw.items()
@@ -184,26 +205,34 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
-    # needs _request_has_video.
+    # This turn's media stays legacy; images of earlier turns are detached before the request persists.
+    latest_user = max(
+        (index for index, message in enumerate(request.messages) if message.role == "user"),
+        default = 0,
+    )
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)
+        or _messages_have_embedded_image(request.messages[latest_user:])
         or _request_has_video(request)
     ):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
-    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
-    # replayable.
+    # UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands the legacy stream the tool policy and checkpoint recall.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # Default ON (env scoping proved unreliable across launchers); UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores the legacy refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # The guard must wrap the whole or-chain: `A and B or C` parses as `(A and B) or C`.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)
@@ -217,6 +246,9 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
+    if request.permission_mode == "off" and not request._off_confirm_opt_out:
+        # Persisted False would read as an explicit opt-out and skip the no-sandbox confirm gate.
+        sanitized.pop("confirm_tool_calls", None)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
@@ -226,11 +258,25 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     return sanitized
 
 
+def _timezone_headers(request: Request) -> dict[str, str]:
+    return {
+        name: value
+        for name in (CURRENT_DATE_TIMEZONE_HEADER, CURRENT_DATE_TIMEZONE_OFFSET_HEADER)
+        if 0 < len(value := request.headers.get(name, "").strip()) <= 64
+    }
+
+
 def _require_run(run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
     return run
+
+
+def _require_run_exists(run_id: str) -> None:
+    """_require_run's 404 without reading or parsing the stored request."""
+    if db.get_run_state(run_id) is None:
+        raise HTTPException(status_code = 404, detail = "Chat generation run not found")
 
 
 def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
@@ -247,6 +293,37 @@ def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -
         from routes.inference import _cancel_by_cancel_id_or_stash
         active_generations.cancel_run(run_id)
         _cancel_by_cancel_id_or_stash(run_id)
+
+
+def _watch_unattended(request: Request, run_id: str) -> None:
+    """Cancel ``run_id`` the way the cancel route does once no tab is following it."""
+    account = current_account()
+
+    def settled() -> bool:
+        run = run_as(account, db.get_run, run_id)
+        return run is None or run["status"] in db.TERMINAL_STATUSES or bool(run["cancelRequested"])
+
+    async def cancel() -> None:
+        run = await asyncio.to_thread(run_as, account, db.request_cancel, run_id)
+        if (
+            run is not None
+            and run["status"] in {"cancelling", "cancelled"}
+            and (
+                getattr(request.app.state, "chat_generation_supervisor", None) is not None
+                or policy.installation_has_managed_accounts()
+            )
+        ):
+            # On the loop: the supervisor's cancel may cancel its asyncio task.
+            run_as(
+                account,
+                cancel_account_run,
+                request,
+                run_id,
+                supervisor_name = "chat_generation_supervisor",
+            )
+
+    # The id the events stream stamps, under the same account it stamps it with.
+    unattended_runs.watch(run_id, current_account_id() or "", settled = settled, cancel = cancel)
 
 
 def _require_available_supervisor_run_id(run_id: str) -> None:
@@ -282,8 +359,13 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
-    # after an unload/swap, never mid-swap.
+    images = detach_embedded_images(sanitized)
+    from routes.inference import _request_used_api_key
+
+    sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
+    if timezone_headers := _timezone_headers(request):
+        sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
+    # Serialize with model lifecycle so a run never registers mid-swap.
     async with inference_lifecycle_gate():
         _require_available_supervisor_run_id(payload.runId)
         try:
@@ -310,7 +392,10 @@ async def create_chat_generation_run(
                 run["id"],
                 thread_id = run["threadId"],
                 model = run["requestPayload"].get("model"),
+                images = images,
             )
+    if payload.stopWhenUnattended and run["status"] not in db.TERMINAL_STATUSES:
+        _watch_unattended(request, run["id"])
     return {**run, "created": created}
 
 
@@ -332,7 +417,7 @@ def cancel_chat_generation_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
@@ -352,46 +437,58 @@ async def chat_generation_events(
     last_event_id: str | None = Header(None, alias = "Last-Event-ID"),
     current_subject: str = Depends(get_current_subject),
 ):
-    _require_run(run_id)
+    _require_run_exists(run_id)
     cursor = _event_cursor(after, last_event_id)
     wait_for_events = db.wait_for_events
     if policy.installation_has_managed_accounts():
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
+    # One token per stream so concurrent tabs don't delete each other's heartbeat.
+    follower = run_subscribers.new_follower_token()
+    follower_account = current_account_id() or ""
+
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
-        # A reconnect to an already-settled run has nothing to replay, and wait_for_events would hold it for the full
-        # timeout and tie up an event-wait worker.
-        opening = await asyncio.to_thread(db.get_run, run_id)
+        # A settled run has nothing to replay; don't hold an event-wait worker for it.
+        opening = await asyncio.to_thread(db.get_run_state, run_id)
         if opening is None:
             return
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
+            # Stamp before the wait so a parked approval's ceiling sees this follower immediately.
+            run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 wait_for_events,
                 run_id,
                 cursor,
                 15,
+                True,
             )
-            snapshot = await asyncio.to_thread(db.get_run, run_id)
+            # Only non-chunk events carry the run, spliced in as already encoded text.
+            run_json = None
+            if any(event["type"] != "chunk" for event in events):
+                frame = await asyncio.to_thread(db.get_run_frame, run_id)
+                snapshot, run_json = frame if frame is not None else (None, None)
+            else:
+                snapshot = await asyncio.to_thread(db.get_run_state, run_id)
             if snapshot is None:
                 return
             for event in events:
                 cursor = int(event["seq"])
-                data = {
-                    "seq": cursor,
-                    "type": event["type"],
-                    "payload": event["payload"],
-                    "createdAt": event["createdAt"],
-                }
-                if event["type"] != "chunk":
-                    data["run"] = snapshot
-                encoded = json.dumps(data, ensure_ascii = False, separators = (",", ":"))
-                yield f"id: {cursor}\nevent: {event['type']}\ndata: {encoded}\n\n"
+                event_type = event["type"]
+                # Spliced, not re-encoded: the stored payload is already this encoder's output, so the
+                # bytes match json.dumps of the parsed event dict with the same key order.
+                encoded = (
+                    f'{{"seq":{cursor},"type":{_encode_json(event_type)},'
+                    f'"payload":{event["payloadJson"]},"createdAt":{int(event["createdAt"])}'
+                )
+                if event_type != "chunk":
+                    encoded += f',"run":{run_json}'
+                yield f"id: {cursor}\nevent: {event_type}\ndata: {encoded}}}\n\n"
             if snapshot["status"] in db.TERMINAL_STATUSES and cursor >= int(
                 snapshot["lastEventSeq"]
             ):
@@ -399,14 +496,20 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                # Carries the run's progress stamp, which the lease renewals move. A bare keep-alive proves only that the
-                # CONNECTION is healthy, so a follower rearming its no-progress deadline on one could never settle a wedged
-                # run while the socket stayed up, the one case that fallback exists for. Comment framing, so _SSEDecoder
-                # still drops it and no client parsing it as an event is affected.
+                # Carries the progress stamp so followers can detect a wedged run; comment framing keeps
+                # _SSEDecoder ignoring it.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
+    async def stream_while_attended():
+        """Marks this follower as gone, so a cleanly closed tab stops counting as attended at once."""
+        try:
+            async for frame in stream():
+                yield frame
+        finally:
+            run_subscribers.subscriber_departed(run_id, follower, follower_account)
+
     return StreamingResponse(
-        stream(),
+        stream_while_attended(),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

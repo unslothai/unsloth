@@ -35,8 +35,7 @@ def test_loopback_peers_are_local():
 def test_non_loopback_peers_are_remote():
     from main import _is_local_bootstrap_request
 
-    # ::1%eth0 is a scope-id'd address, which ipaddress treats as loopback on
-    # 3.9+; it must not count as a direct local peer.
+    # ipaddress treats scope-id'd ::1%eth0 as loopback on 3.9+; it must not count as local.
     for host in ("192.168.1.10", "::ffff:192.168.1.10", "::1%eth0"):
         assert _is_local_bootstrap_request(_request(host)) is False, host
 
@@ -107,11 +106,43 @@ def test_colab_allows_notebook_proxy_but_not_shareable_tunnel(monkeypatch):
     import main
 
     monkeypatch.setattr(main, "_IS_COLAB", True)
-    # In-notebook proxy: same-origin, no tunnel header, injects off-loopback too.
-    assert main._should_inject_bootstrap(_request("10.0.0.2", "colab.proxy")) is True
-    # Shareable Cloudflare link marks visitors with cf-connecting-ip; withhold.
+    notebook = _request(
+        "10.0.0.2",
+        "abc123-496ff2e9c6d22116-8888-colab.googleusercontent.com",
+        headers = {"x-forwarded-for": "10.0.0.2"},
+    )
+    assert main._should_inject_bootstrap(notebook) is True
     tunnel = _request("127.0.0.1", "localhost", headers = {"cf-connecting-ip": "203.0.113.7"})
     assert main._should_inject_bootstrap(tunnel) is False
+
+
+def test_colab_withholds_from_every_relay_not_just_cloudflare(monkeypatch):
+    """On Colab, any relay header marks the caller remote; otherwise GET / serves the admin password."""
+    import main
+
+    monkeypatch.setattr(main, "_IS_COLAB", True)
+    for header in main._PROXIED_CLIENT_HEADERS:
+        relayed = _request("127.0.0.1", "abc.ngrok-free.app", headers = {header: "203.0.113.7"})
+        assert main._should_inject_bootstrap(relayed) is False, header
+
+    # A raw TCP forward (bore, ssh -R) sets no header at all; the authority is still not Colab's.
+    assert main._should_inject_bootstrap(_request("127.0.0.1", "abc.ngrok-free.app")) is False
+
+    # Nor can a relay claim the authority: x-forwarded-for is tolerated, its companions are not.
+    spoofed = _request(
+        "127.0.0.1",
+        "abc123-8888-colab.googleusercontent.com",
+        headers = {"x-forwarded-host": "abc.ngrok-free.app"},
+    )
+    assert main._should_inject_bootstrap(spoofed) is False
+
+
+def test_colab_still_serves_a_direct_loopback_browser(monkeypatch):
+    """A browser inside the notebook VM keeps its autofill: Colab only widens, never narrows."""
+    import main
+
+    monkeypatch.setattr(main, "_IS_COLAB", True)
+    assert main._should_inject_bootstrap(_request("127.0.0.1", "localhost")) is True
 
 
 def test_non_colab_gate_requires_local_client(monkeypatch):

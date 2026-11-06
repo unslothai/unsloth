@@ -7,7 +7,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from auth.storage import MIN_PASSWORD_LENGTH, validate_account_username
+from auth.storage import (
+    MIN_PASSWORD_LENGTH,
+    normalize_model_allowlist,
+    validate_account_username,
+)
 
 
 class AuthLoginRequest(BaseModel):
@@ -47,8 +51,8 @@ class AuthStatusResponse(BaseModel):
     full_access: bool = Field(
         True,
         description = (
-            "Whether the unsandboxed tool modes (Full access, bypass permissions) may be "
-            "offered. False whenever another account exists, active or not."
+            "Legacy pre-login hint: false whenever another account exists, active or not. "
+            "Signed-in clients offer Full access only to the installation owner."
         ),
     )
     requires_password_change: bool = Field(
@@ -94,7 +98,10 @@ class CreateApiKeyRequest(BaseModel):
 
     name: str = Field(..., description = "Human-readable label for this key")
     expires_in_days: Optional[int] = Field(
-        None, description = "Number of days until the key expires (None = never)"
+        None,
+        ge = 1,
+        le = 36500,
+        description = "Number of days until the key expires (None = never)",
     )
 
 
@@ -108,6 +115,8 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[str] = None
     expires_at: Optional[str] = None
     is_active: bool
+    # Read-only: set by the server at mint ("unsloth_start" for the desktop `unsloth start` key).
+    purpose: Optional[str] = None
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -136,6 +145,18 @@ class AccountActiveRequest(BaseModel):
     is_active: bool
 
 
+class AccountModelAccessRequest(BaseModel):
+    model_allowlist: Optional[list[str]] = Field(
+        None,
+        description = "Hugging Face repo ids or org/* patterns; null or empty allows every model",
+    )
+
+    @field_validator("model_allowlist")
+    @classmethod
+    def validate_model_allowlist(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return normalize_model_allowlist(value)
+
+
 class AccountResponse(BaseModel):
     account_id: str
     username: str
@@ -143,6 +164,16 @@ class AccountResponse(BaseModel):
     is_active: bool
     created_at: str
     setup_code_pending: bool
+    model_allowlist: Optional[list[str]] = None
+    login_alias: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class OwnerLoginAliasRequest(BaseModel):
+    login_alias: Optional[str] = Field(
+        None, description = 'Owner sign-in name; null, empty or "unsloth" clears it'
+    )
 
 
 class AccountListResponse(BaseModel):

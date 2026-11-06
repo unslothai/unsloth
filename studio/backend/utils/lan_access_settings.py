@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
 
 import threading
@@ -21,6 +22,10 @@ DEFAULT_LAN_ACCESS_AUTO_START = False
 LAN_ACCESS_PORT_KEY = "lan_access_port"
 DEFAULT_LAN_ACCESS_PORT = 8888
 LAST_LAN_ACCESS_PORT = 8908
+
+LAN_ACCESS_ADDRESSES_KEY = "lan_access_addresses"
+_MAX_LAN_ACCESS_ADDRESSES = 64
+_UNREADABLE = object()
 
 
 _management_lock = threading.RLock()
@@ -232,6 +237,110 @@ def lan_access_port_candidates() -> tuple[int, ...]:
     return tuple(range(DEFAULT_LAN_ACCESS_PORT, LAST_LAN_ACCESS_PORT + 1))
 
 
+def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
+    """``None`` is Automatic; else a de-duplicated tuple of bindable IPv4 literals, detected right now or not."""
+    if addresses is None:
+        return None
+    if not isinstance(addresses, (list, tuple)):
+        raise ValueError("LAN access addresses must be a list of IPv4 addresses.")
+    # counted before de-duplicating, so a padded list cannot make validation quadratic
+    if len(addresses) > _MAX_LAN_ACCESS_ADDRESSES:
+        raise ValueError(f"At most {_MAX_LAN_ACCESS_ADDRESSES} LAN access addresses can be chosen.")
+    normalized: list[str] = []
+    for value in addresses:
+        if not isinstance(value, str):
+            raise ValueError("LAN access addresses must be a list of IPv4 addresses.")
+        try:
+            parsed = ipaddress.IPv4Address(value.strip())
+        except ValueError:
+            raise ValueError(f"{value!r} is not an IPv4 address.") from None
+        if (
+            parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_multicast
+            or parsed.is_unspecified
+            or parsed.is_reserved
+        ):
+            raise ValueError(f"{value!r} cannot be reached from another device.")
+        if str(parsed) not in normalized:
+            normalized.append(str(parsed))
+    if not normalized:
+        raise ValueError("Choose at least one LAN access address, or Automatic.")
+    return tuple(normalized)
+
+
+def _read_lan_access_addresses(*, strict: bool) -> Optional[tuple[str, ...]]:
+    """Strict reads (a start) fail closed: Automatic here would bind the addresses the user excluded."""
+    try:
+        from storage.studio_db import get_app_setting, get_app_settings
+        stored = get_app_setting(LAN_ACCESS_ADDRESSES_KEY, _UNREADABLE)
+        # the fallback also answers an undecodable row; only a missing row is Automatic
+        if stored is _UNREADABLE and LAN_ACCESS_ADDRESSES_KEY not in get_app_settings(
+            [LAN_ACCESS_ADDRESSES_KEY]
+        ):
+            stored = None
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("lan_access_addresses_unavailable") from exc
+        return None
+    if stored is _UNREADABLE:
+        if strict:
+            raise RuntimeError("lan_access_addresses_invalid")
+        return None
+    try:
+        return normalize_lan_access_addresses(stored)
+    except ValueError:
+        if strict:
+            raise RuntimeError("lan_access_addresses_invalid") from None
+        return None
+
+
+def get_lan_access_addresses() -> Optional[tuple[str, ...]]:
+    return _read_lan_access_addresses(strict = False)
+
+
+def set_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
+    normalized = normalize_lan_access_addresses(addresses)
+    from storage.studio_db import upsert_app_settings
+
+    upsert_app_settings(
+        {LAN_ACCESS_ADDRESSES_KEY: list(normalized) if normalized is not None else None}
+    )
+    return normalized
+
+
+def save_lan_access_addresses(app, addresses: Any) -> dict:
+    normalized = normalize_lan_access_addresses(addresses)
+    with _management_lock:
+        status = lan_access_status(app)
+        if bool(getattr(app.state, "lan_access_is_colab", False)):
+            raise RuntimeError("colab")
+        if status["state"] == "online":
+            raise RuntimeError("lan_access_running")
+        set_lan_access_addresses(normalized)
+        from lan_access import clear_lan_listener_error
+
+        clear_lan_listener_error()
+        return lan_access_status(app)
+
+
+def _available_lan_addresses() -> list[dict]:
+    """Detected addresses with a public flag; a detection failure offers nothing rather than failing status."""
+    try:
+        from lan_access import detect_lan_addresses, is_public_address
+        return [
+            {"address": address, "public": is_public_address(address)}
+            for address in detect_lan_addresses()
+        ]
+    except Exception:
+        return []
+
+
+def _public_lan_addresses(addresses) -> list[str]:
+    from lan_access import is_public_address
+    return [address for address in addresses if is_public_address(address)]
+
+
 def save_lan_access_port(app, port: Optional[int]) -> dict:
     with _management_lock:
         status = lan_access_status(app)
@@ -281,31 +390,90 @@ def configure_lan_access(
     app_state.lan_access_ready = False
 
 
+_CONTAINER_NETWORKS = (ipaddress.ip_network("172.16.0.0/12"), ipaddress.ip_network("10.88.0.0/16"))
+
+
+def _container_network_address(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in _CONTAINER_NETWORKS if ip.version == network.version)
+
+
+def _veth_addresses(sysfs: str = "/sys/class/net") -> set[str]:
+    """Addresses on a link whose peer (iflink) is outside this namespace: a bridged container's veth. A NIC or VLAN
+    links to an index visible here, so host networking keeps a 172.16/12 LAN (kernel ABI sysfs-class-net)."""
+
+    def read(name: str, attr: str) -> str:
+        with open(f"{sysfs}/{name}/{attr}", encoding = "utf-8") as handle:
+            return handle.read().strip()
+
+    try:
+        import psutil
+        interfaces = psutil.net_if_addrs()
+        indexes = {read(name, "ifindex") for name in os.listdir(sysfs)}
+    except Exception:
+        return set()
+    addresses = set()
+    for name, entries in interfaces.items():
+        try:
+            if read(name, "iflink") in indexes:
+                continue
+        except OSError:
+            continue
+        addresses.update(entry.address.split("%", 1)[0] for entry in entries)
+    return addresses
+
+
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network. A wildcard launch cannot rely only on ``server_url``: run.py gives that direct base one LAN-reachable address, while Settings must show every currently reachable address in each family the launch serves."""
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
+        from utils.paths.file_manager import _in_container
 
         addresses = []
         for ip_version in getattr(app_state, "lan_access_wildcard_ip_versions", ()) or (4,):
             for address in detect_lan_addresses(ip_version):
                 if address not in addresses:
                     addresses.append(address)
+        if _in_container():
+            # A bridged container's own IP reaches nothing outside it; host networking's addresses stay.
+            bridged = _veth_addresses()
+            addresses = [
+                a for a in addresses if not (a in bridged and _container_network_address(a))
+            ]
         return _listener_urls(
             addresses,
             getattr(app_state, "lan_access_port", None),
+            _url_scheme(app_state),
         )
     url = getattr(app_state, "server_url", None)
+    if url is None and _url_scheme(app_state) == "https":
+        # run.py publishes no server_url for TLS; the bound host is still where LAN peers reach it
+        return _listener_urls(
+            (getattr(app_state, "lan_access_bind_host", ""),),
+            getattr(app_state, "lan_access_port", None),
+            "https",
+        )
     return [url] if url else []
 
 
-def _listener_urls(addresses, port: Optional[int]) -> list[str]:
+def _url_scheme(app_state) -> str:
+    return "https" if getattr(app_state, "studio_tls", None) is not None else "http"
+
+
+def _listener_urls(
+    addresses,
+    port: Optional[int],
+    scheme: str = "http",
+) -> list[str]:
     if not port:
         return []
     urls = []
     for address in addresses:
         url_host = f"[{address}]" if ":" in address else address
-        urls.append(f"http://{url_host}:{port}")
+        urls.append(f"{scheme}://{url_host}:{port}")
     return urls
 
 
@@ -331,12 +499,7 @@ def _public_urls(urls: list[str], resolved_addresses: tuple[str, ...] = ()) -> l
 
 
 def _has_keyless_lan_url(urls: list[str]) -> bool:
-    """Whether any of these URLs is one a keyless caller can actually reach.
-
-    Resolution alone is not enough: `keyless_api_access._host_authority_is_direct` refuses a `Host` that names anything, so a hostname bind yields a URL that resolves to a private address and is still refused. Reporting it eligible is what made the LAN panel advertise `Bearer not-needed` against a URL that answers 401, so the literal is required here too.
-
-    Admission decides, through the shared `keyless_api_access.keyless_authority_address_allowed`. A second copy of the test is what let an IPv4-mapped literal like `::ffff:192.168.1.24` be advertised while admission refused it: `_normalized_ip` un-maps, which is exactly what that form is refused for.
-    """
+    """Shares admission's check, so a hostname bind or an IPv4-mapped literal is never advertised."""
     import ipaddress
     from urllib.parse import urlparse
 
@@ -386,13 +549,14 @@ def lan_access_status(app) -> dict:
 
     running = bool(listener["running"])
     configured_port = get_lan_access_port()
+    configured_addresses = get_lan_access_addresses()
     if launch_managed:
         state, urls, managed_by = "online", _launch_urls(app_state), "launch"
         active_port = getattr(app_state, "lan_access_port", None)
     elif running:
         state, urls, managed_by = (
             "online",
-            _listener_urls(listener["addresses"], listener["port"]),
+            _listener_urls(listener["addresses"], listener["port"], _url_scheme(app_state)),
             "settings",
         )
         active_port = listener["port"]
@@ -403,7 +567,13 @@ def lan_access_status(app) -> dict:
     controllable = block_reason is None
     try:
         from utils.keyless_api_access import get_keyless_api_access_settings
+
         keyless_scope, keyless_tools = get_keyless_api_access_settings()
+        from auth.policy import installation_has_managed_accounts
+
+        # Effective, not saved: one managed account turns keyless admission off install-wide.
+        if installation_has_managed_accounts():
+            keyless_scope, keyless_tools = "off", False
     except Exception:
         keyless_scope, keyless_tools = "off", False
     return {
@@ -416,6 +586,12 @@ def lan_access_status(app) -> dict:
         "error": listener["error"],
         "auto_start": get_lan_access_auto_start(),
         "configured_port": configured_port,
+        "configured_addresses": list(configured_addresses)
+        if configured_addresses is not None
+        else None,
+        "available_addresses": [] if launch_managed else _available_lan_addresses(),
+        # a saved address that is down still needs its public warning
+        "configured_public_addresses": _public_lan_addresses(configured_addresses or ()),
         "active_port": active_port,
         "managed_by": managed_by,
         "can_start": controllable and not running,
@@ -449,11 +625,13 @@ def start_lan_access(app) -> dict:
             raise RuntimeError(status["block_reason"] or "operation_in_progress")
 
         ports = lan_access_port_candidates()
+        selected = _read_lan_access_addresses(strict = True)
         addresses = start_lan_listener(
             app,
             _server_loop(app.state),
             ports[0],
             ports[1:],
+            selected,
         )
         logger.info("LAN access started on %s", ", ".join(addresses))
         return lan_access_status(app)

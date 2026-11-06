@@ -132,7 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     pkg["allowScripts"] = {renames.get(k, k): v for k, v in policy.items()}
-    pkg_path.write_text(json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8")
+    # newline="\n" keeps package.json LF on Windows; write_text(newline=) needs Python 3.10.
+    with open(pkg_path, "w", encoding = "utf-8", newline = "\n") as handle:
+        handle.write(json.dumps(pkg, indent = 2, ensure_ascii = False) + "\n")
     print(
         f"sync-allow-scripts: re-pinned {len(renames)} entr{'y' if len(renames) == 1 else 'ies'} in {pkg_path}"
     )

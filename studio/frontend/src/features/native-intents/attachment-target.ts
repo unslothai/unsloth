@@ -3,6 +3,8 @@
 
 import { createContext, useContext } from "react";
 
+export const NativeAttachmentDragContext = createContext(false);
+
 export const NativeAttachmentTargetContext = createContext<string | null>(null);
 
 export function useNativeAttachmentTargetKey(): string | null {

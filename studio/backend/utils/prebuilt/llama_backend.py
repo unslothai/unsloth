@@ -7,17 +7,19 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-# The standalone installer imports this map, so planning and marker reads share
-# one vocabulary instead of relying on mirrored definitions.
+# The standalone installer imports this map, so both share one vocabulary.
 INSTALL_KIND_BACKENDS: dict[str, str] = {
     "linux-cuda": "cuda",
     "linux-arm64-cuda": "cuda",
     "windows-cuda": "cuda",
+    # Distinct from windows-cuda: the arm64 bundle ships its own ARM64 cudart/cublas.
+    "windows-arm64-cuda": "cuda",
     "linux-rocm": "rocm",
     "windows-hip": "rocm",
     "windows-rocm": "rocm",
     "linux-vulkan": "vulkan",
     "windows-vulkan": "vulkan",
+    "windows-arm64-vulkan": "vulkan",
     "linux-cpu": "cpu",
     "linux-arm64": "cpu",
     "windows-cpu": "cpu",
@@ -26,8 +28,7 @@ INSTALL_KIND_BACKENDS: dict[str, str] = {
     "macos-x64": "metal",
 }
 
-# Backends a user may ask for. "metal" is absent on purpose: it is the only macOS build, so
-# there is nothing to choose.
+# metal is absent: it is the only macOS build, so there is nothing to choose.
 REQUESTABLE_BACKENDS = ("auto", "cpu", "cuda", "rocm", "vulkan")
 
 # Longest-token-first, so "cuda13-older" cannot read as something else.
@@ -81,11 +82,7 @@ def install_kinds_for_backend(backend: Any) -> frozenset[str]:
 
 
 def environment_backend_override(primary: Any, legacy_vulkan: Any) -> Optional[str]:
-    """Resolve the public selector over the legacy Vulkan boolean.
-
-    A recognized public value is authoritative, including ``auto``. Unknown or
-    absent public values leave the legacy flag in effect for compatibility.
-    """
+    """Public selector wins over the legacy Vulkan boolean when its value is recognized, auto included."""
     backend = normalize_backend_request(primary)
     if backend is not None:
         return backend
@@ -122,13 +119,7 @@ def marker_backend(marker: Optional[Mapping[str, Any]]) -> Optional[str]:
 
 
 def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
-    """Return the recorded choice; ``auto`` means hardware detection.
-
-    Always a name, never None, so "detect" and "chosen" can never be confused.
-    A value this build does not recognize is returned verbatim: it was written by
-    a newer Unsloth, and every reader here treats it as a choice to leave alone
-    rather than as an absent one to overwrite.
-    """
+    """Never None: auto means detect; an unknown value is returned verbatim, since a newer Unsloth wrote it and must not be overwritten."""
     if not marker:
         return "auto"
     recorded = marker.get("backend_request")
@@ -146,19 +137,10 @@ def marker_backend_request(marker: Optional[Mapping[str, Any]]) -> str:
 
 
 def marker_backend_was_chosen(marker: Optional[Mapping[str, Any]]) -> bool:
-    """Whether the backend was chosen rather than detected.
-
-    Deliberately not ``marker_backend_request(marker) != "auto"``. The only caller
-    is crash recovery, asking whether it may quietly replace a Vulkan install with
-    CPU placement, so it answers "chosen" for anything but a plainly automatic
-    marker. The two readers part ways on the pre-#7188 Vulkan marker with no
-    ``llama_backend`` key, which cannot tell a chosen Vulkan install from the
-    automatic Windows-AMD/Intel route: recovery treats it as detected so a startup
-    crash stays repairable, while an update keeps the bundle rather than swapping
-    backends behind the user. They part ways on a corrupt value too -- recovery
-    keeps its hands off it, an update re-detects.
-    """
+    """Chosen unless plainly automatic or unsatisfied; not request != auto, since crash recovery must not swap a chosen Vulkan install for CPU."""
     if not marker:
+        return False
+    if marker.get("backend_request_unsatisfied"):
         return False
     recorded = marker.get("backend_request")
     if isinstance(recorded, str) and recorded.strip():

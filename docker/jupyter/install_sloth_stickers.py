@@ -47,7 +47,7 @@ CURATED = [
 
 def main() -> int:
     parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--src", required = True, help = "Studio 'Sloth emojis' dir")
+    parser.add_argument("--src", required = True, help = "Unsloth 'Sloth emojis' dir")
     parser.add_argument("--dest", required = True, help = "output dir (static/sloth)")
     args = parser.parse_args()
 

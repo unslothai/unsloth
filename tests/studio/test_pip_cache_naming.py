@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every installing job must own its pip cache key, and no two may share one.
-
-Five jobs did share one, and neither consequence showed up as red.
-
-pip-cache-save is gated on `cache-hit != 'true'`, so whichever job finished
-first on main wrote the cache and the other four restored it EXACTLY, installed
-their own extra wheels, and never saved them -- re-downloading those on every
-run of main, forever.
-
-And a shared prefix cannot be ranked. cache-janitor.yml prunes by generation
-within a prefix, and five live jobs under `pip-<os>-<arch>-py<ver>-` are
-indistinguishable from five generations of one, so the family could not be
-pruned at all: 57 stale entries on 2026-08-26, against 41.4 of 50 GiB.
-
-`name` fixes both, and only stays fixed if nothing silently reuses one.
-"""
+"""Each installing job needs its own pip cache key; sharing one leaves jobs unsaved and unprunable."""
 
 import re
 import pathlib
@@ -29,6 +14,11 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.yml"))
 RESTORE_SUFFIX = "actions/pip-cache-restore"
 SAVE_SUFFIX = "actions/pip-cache-save"
+
+# Jobs that restore another job's entry and never save. Only safe when the install
+# is identical, so a borrower's extras cannot exist; consolidated-zoo runs the same
+# core-cpu-setup on the same matrix, asserted by test_zoo_suite_parallel_isolation.py.
+READ_ONLY_BORROWERS = {"consolidated-tests-ci.yml:consolidated-zoo": "consolidated"}
 
 
 def _jobs(path):
@@ -73,6 +63,14 @@ def test_every_restore_names_itself(path):
             assert files, f"{path.name}:{job} passes no key-files"
 
 
+def _saves(steps):
+    return [s for s in steps if str(s.get("uses", "")).endswith(SAVE_SUFFIX)]
+
+
+def _key_files(steps):
+    return " ".join(((_restores(steps)[0].get("with") or {}).get("key-files") or "").split())
+
+
 def test_no_two_jobs_share_a_cache_name():
     seen = {}
     for path in WORKFLOWS:
@@ -80,6 +78,8 @@ def test_no_two_jobs_share_a_cache_name():
             for step in _restores(steps):
                 name = (step.get("with") or {}).get("name") or ""
                 where = f"{path.name}:{job}"
+                if READ_ONLY_BORROWERS.get(where) == name:
+                    continue
                 assert name not in seen, (
                     f"cache name {name!r} is used by both {seen[name]} and {where}. "
                     f"A shared name is a shared key: only the first job to finish on "
@@ -89,21 +89,48 @@ def test_no_two_jobs_share_a_cache_name():
 
 
 def test_jobs_sharing_key_files_still_have_distinct_names():
-    # Jobs given the same key-files are the likeliest to be given the same name, which is the exact case that produced
-    # the original defect.
     by_files = {}
     for path in WORKFLOWS:
         for job, steps in _jobs(path):
+            where = f"{path.name}:{job}"
             for step in _restores(steps):
                 with_ = step.get("with") or {}
+                if READ_ONLY_BORROWERS.get(where) == with_.get("name"):
+                    continue
                 files = " ".join((with_.get("key-files") or "").split())
-                by_files.setdefault(files, []).append((f"{path.name}:{job}", with_.get("name")))
+                by_files.setdefault(files, []).append((where, with_.get("name")))
     for files, entries in by_files.items():
         names = [n for _, n in entries]
         assert len(names) == len(set(names)), (
             f"{len(entries)} jobs share key-files {files!r} and reuse a name among "
             f"{names}; each needs its own so each can save its own wheels"
         )
+
+
+@pytest.mark.parametrize("where,owner", sorted(READ_ONLY_BORROWERS.items()))
+def test_read_only_borrowers_never_save_and_their_owner_does(where, owner):
+    jobs = {f"{p.name}:{j}": steps for p in WORKFLOWS for j, steps in _jobs(p)}
+    assert where in jobs, f"{where} no longer exists; drop it from READ_ONLY_BORROWERS"
+    restores = _restores(jobs[where])
+    assert [(s.get("with") or {}).get("name") for s in restores] == [
+        owner
+    ], f"{where} must restore exactly one pip cache, {owner!r}'s"
+    assert not _saves(jobs[where]), (
+        f"{where} borrows {owner!r}'s entry, so it must not save: two writers of one key "
+        f"race, and the loser's wheels are never written"
+    )
+    owners = [
+        w
+        for w, steps in jobs.items()
+        if w != where
+        and _saves(steps)
+        and any((s.get("with") or {}).get("name") == owner for s in _restores(steps))
+    ]
+    assert len(owners) == 1, f"{owner!r} needs exactly one saving job, found {owners}"
+    assert _key_files(jobs[where]) == _key_files(jobs[owners[0]]), (
+        f"{where} keys on different files than {owners[0]}, so it would look up a key "
+        f"its owner never writes"
+    )
 
 
 def test_key_is_versioned_and_carries_the_name():

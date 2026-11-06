@@ -884,7 +884,6 @@ class TestInstallPythonStackFiltering:
         ):
             assert ips._infer_no_torch() is False
 
-        # Unset on Intel Mac -> True (platform fallback).
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
@@ -925,8 +924,7 @@ def _server_port() -> int:
 
 server = pytest.mark.server
 
-# from_name as well as discover: only 3.11+ routes named lookups through discover, and
-# Distribution.name is absent on 3.9.
+# Patch from_name too: only 3.11+ routes it through discover; Distribution.name absent on 3.9.
 _HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
     """
     import importlib.metadata as _metadata
@@ -979,14 +977,12 @@ class TestLiveServerStartup:
         port = _server_port()
         backend_dir = BACKEND_DIR
 
-        # Preserve packages in the user's Studio venv.
         hide_dir = tmp_path_factory.mktemp("hide_torch")
         (hide_dir / "sitecustomize.py").write_text(_HIDE_TORCH_SITECUSTOMIZE, encoding = "utf-8")
 
         env = os.environ.copy()
         env["PYTHONPATH"] = os.pathsep.join([str(hide_dir), str(backend_dir)])
 
-        # A sitecustomize that never loaded otherwise reads as a puzzling chat_only failure.
         hidden = subprocess.run(
             [
                 str(py),
@@ -1095,7 +1091,7 @@ class TestLiveServerStartup:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}{ep}", timeout = 5)
             except urllib.error.HTTPError:
-                pass  # 4xx/5xx fine -- server didn't crash
+                pass
             except urllib.error.URLError:
                 pytest.fail(f"Server stopped responding at {ep}")
 

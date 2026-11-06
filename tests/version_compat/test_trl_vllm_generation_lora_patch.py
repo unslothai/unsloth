@@ -1,25 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Behavioural check on `vllm_generation_init_patch()` across TRL `generate` shapes.
-
-`fast_inference = True` GRPO hands its own vLLM engine to TRL's
-`VLLMGeneration`, and the adapter only reaches vLLM if `lora_request=` is
-passed on the rollout call. That injection used to be a source rewrite of
-TRL's `VLLMGeneration.generate`, anchored on a
-`self.llm.collective_rpc("reload_weights")` line. TRL 1.10.0 deleted that
-call (it invokes `self.sync_weights()` instead), so the anchor matched
-nothing and raised, the `lora_request` injection that ran after it in the
-same function never happened, and `_init_vllm` / `sync_weights` were already
-installed -- rollouts came from the BASE model, exit 0, finite losses, no
-warning a user would connect to it.
-
-So these tests are shape-driven, not version-driven: they build a synthetic
-`trl.generation.vllm_generation` module whose `_init_vllm` / `sync_weights`
-are TRL-shaped (those two are still source-patched) and whose `generate`
-reaches the engine the way a given TRL era reaches it, then run the real
-patch over it and watch what arrives at a fake engine. No vLLM, no GPU, no
-network, and no dependence on which TRL happens to be installed.
-"""
+"""Checks lora_request reaches vLLM rollouts across TRL generate shapes, not by version."""
 
 from __future__ import annotations
 
@@ -34,17 +15,12 @@ import types
 import pytest
 
 
-# Collection must stay cheap and safe where the runtime is absent (the daily-fresh-fetch job collects
-# tests/version_compat/ with only pytest).
+# Collection must stay cheap and safe with no runtime; daily-fresh-fetch collects with only pytest.
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed; this test drives the real patch", allow_module_level = True)
 
 
-# --- TRL-shaped method sources ------------------------------------------------
-#
-# `_init_vllm` and `sync_weights` are still rewritten from source, so their text
-# has to carry the anchors the regexes look for: an `self.llm = LLM(...)` block
-# and a bare `def sync_weights(self):` line.
+# _init_vllm and sync_weights are rewritten from source, so these must carry the regex anchors.
 _INIT_VLLM = """
 def _init_vllm(self, model):
     if self.mode == "colocate":
@@ -64,14 +40,12 @@ def sync_weights(self):
     self.llm.collective_rpc("update_weights")
 """
 
-# TRL >= 1.10.0: no `collective_rpc("reload_weights")` anywhere in `generate`.
 _GENERATE_TRL_1_10 = """
 def generate(self, prompts, **kwargs):
     self.sync_weights()
     return self.llm.generate(prompts, sampling_params = self.sampling_params, use_tqdm = False)
 """
 
-# TRL 0.22.2 era: reloads the checkpoint into the engine before sampling.
 _GENERATE_TRL_0_22 = """
 def generate(self, prompts, **kwargs):
     if self.enable_sleep_mode:
@@ -86,14 +60,12 @@ def generate(self, prompts, **kwargs):
     return self.llm.chat(prompts, sampling_params = self.sampling_params)
 """
 
-# Server mode: TRL talks to a remote vLLM over HTTP and `self.llm` is None.
 _GENERATE_SERVER = """
 def generate(self, prompts, **kwargs):
     return self.client.generate(prompts)
 """
 
-# A `sync_weights` the source patch cannot anchor on -- stands in for any future
-# TRL signature change, and is how we reach the all-or-nothing rollback branch.
+# Unanchorable sync_weights: reaches the all-or-nothing rollback branch.
 _SYNC_WEIGHTS_UNPATCHABLE = """
 def sync_weights(self, tags = None):
     self.llm.collective_rpc("update_weights")
@@ -101,12 +73,7 @@ def sync_weights(self, tags = None):
 
 
 class FakeEngine:
-    """Stand-in for the vLLM `LLM` object unsloth hands to TRL.
-
-    `shared_weights = True` is what marks an engine as unsloth's own, i.e. one
-    that already holds the live training weights and therefore needs the LoRA
-    passed explicitly on every call.
-    """
+    """shared_weights = True marks an engine holding live training weights; pass the LoRA on each call."""
 
     shared_weights = True
 
@@ -147,11 +114,7 @@ def _build_fake_trl(
     sync_src = _SYNC_WEIGHTS,
     version = "1.10.0",
 ):
-    """Install a synthetic `trl.generation.vllm_generation` and return its class.
-
-    Everything goes through `monkeypatch`, so sys.modules is exactly as it was
-    once the test ends no matter which order tests run in.
-    """
+    """Installs the fake module through monkeypatch, so sys.modules reverts regardless of test order."""
     class_src = (
         "class VLLMGeneration:\n"
         + "\n".join(
@@ -161,7 +124,7 @@ def _build_fake_trl(
         + "\n"
     )
 
-    # `inspect.getsource` is how the patch reads these methods back out.
+    # inspect.getsource is how the patch reads these methods back out.
     filename = f"<fake_trl_{version}_vllm_generation>"
     monkeypatch.setitem(
         linecache.cache,
@@ -176,7 +139,6 @@ def _build_fake_trl(
         loader = None,
         origin = filename,
     )
-    # Referenced by the unpatched `_init_vllm` branch; never actually called here.
     vllm_generation.LLM = FakeEngine
     exec(compile(class_src, filename, "exec"), vllm_generation.__dict__)
 
@@ -188,8 +150,7 @@ def _build_fake_trl(
     )
     generation.vllm_generation = vllm_generation
 
-    # A fake `trl` package too, so nothing here depends on a real TRL install: the patch gates on
-    # `importlib.util.find_spec("trl")`, which resolves out of sys.modules when the name is already there.
+    # The patch gates on find_spec('trl'), which resolves from sys.modules.
     trl = types.ModuleType("trl")
     trl.__spec__ = importlib.machinery.ModuleSpec(name = "trl", loader = None, origin = "<fake trl>")
     trl.__spec__.submodule_search_locations = []
@@ -233,11 +194,7 @@ def _lora_requests(log, kind = "generate"):
 
 
 def _lora_name():
-    """The adapter directory the patch derives, device suffix and all.
-
-    Recomputed rather than hardcoded: the suffix depends on CUDA_VISIBLE_DEVICES,
-    which is set on any CI runner that has a GPU and unset on the ones that do not.
-    """
+    """Recomputed, not hardcoded: the suffix depends on whether CUDA_VISIBLE_DEVICES is set."""
     name = "vllm_gen_lora"
     if "CUDA_VISIBLE_DEVICES" in os.environ:
         name += "_" + os.environ.get("CUDA_VISIBLE_DEVICES", "0").replace(",", "")
@@ -245,12 +202,7 @@ def _lora_name():
 
 
 def test_lora_reaches_engine_without_reload_weights_anchor(monkeypatch):
-    """TRL >= 1.10.0 `generate`: no reload_weights line, adapter still passed.
-
-    This is the reported bug. Before the fix the anchor regex matched nothing,
-    raised, and took the `lora_request` injection down with it, so vLLM sampled
-    the base model.
-    """
+    """TRL >= 1.10.0 generate has no reload_weights line; the LoRA adapter must still reach the engine."""
     cls = _build_fake_trl(monkeypatch, _GENERATE_TRL_1_10)
     _rl_replacements().vllm_generation_init_patch()
 
@@ -282,8 +234,7 @@ def test_trl_0_22_shape_keeps_working(monkeypatch):
     assert requests and all(
         str(r).startswith("LORA[vllm_gen_lora") for r in requests
     ), f"adapter missing on the 0.22.2-era shape: {log}"
-    # The shared engine already holds the live training weights, so a reload_weights would drag the original checkpoint
-    # back off disk.
+    # The shared engine already holds live weights; reload_weights would reload the checkpoint.
     assert (
         ("collective_rpc", "reload_weights") not in log
     ), f"reload_weights reached the shared engine and clobbered the trained weights: {log}"
@@ -305,11 +256,7 @@ def test_chat_rollouts_get_the_adapter_too(monkeypatch):
 
 
 def test_engine_is_restored_after_the_call(monkeypatch):
-    """The override lasts one `generate` call and no longer.
-
-    The same engine object backs `model.fast_generate`, so a leaked override
-    would silently attach the training adapter to unrelated user generations.
-    """
+    """The override must not outlive generate, since the same engine backs model.fast_generate."""
     cls = _build_fake_trl(monkeypatch, _GENERATE_TRL_1_10)
     _rl_replacements().vllm_generation_init_patch()
 
@@ -383,11 +330,7 @@ def test_server_mode_falls_through(monkeypatch):
 
 
 def test_sleeping_engine_is_woken_before_sync_weights_returns(monkeypatch):
-    """TRL >= 1.x only wakes the engine inside `sync_weights`.
-
-    The shared-weights guard returns early from that method, so without an
-    explicit wake-up the next rollout runs against a sleeping engine.
-    """
+    """The shared-weights guard returns early in sync_weights, so the engine needs an explicit wake-up."""
     cls = _build_fake_trl(monkeypatch, _GENERATE_TRL_1_10)
     _rl_replacements().vllm_generation_init_patch()
 
@@ -397,18 +340,12 @@ def test_sleeping_engine_is_woken_before_sync_weights_returns(monkeypatch):
 
     assert self.llm.woken == 1, f"engine was never woken: {log}"
     assert self._llm_weights_sleeping is False
-    # ...and the sleep flag means it is woken once, not once per rollout.
     cls.generate(self, ["again"])
     assert self.llm.woken == 1, f"engine woken again while already awake: {log}"
 
 
 def test_failed_patch_rolls_all_three_methods_back(monkeypatch):
-    """Half-patched is worse than unpatched, so it must be unreachable.
-
-    `_init_vllm` + `sync_weights` without the adapter injection means no weight
-    sync AND no LoRA, which is exactly the silent base-model sampling this fix
-    exists to stop.
-    """
+    """A failed patch must roll back all three methods; half-patched samples the base model silently."""
     cls = _build_fake_trl(monkeypatch, _GENERATE_TRL_1_10, sync_src = _SYNC_WEIGHTS_UNPATCHABLE)
     originals = {name: getattr(cls, name) for name in ("_init_vllm", "sync_weights", "generate")}
 
@@ -433,8 +370,7 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     for name, method in after_first.items():
         assert getattr(cls, name) is method, f"{name} was re-patched on the second call"
 
-    # One layer of wrapping, and it unwraps to TRL's own function so that `inspect.getsource` / `inspect.signature`
-    # still report TRL's `generate`.
+    # Unwraps to TRL's function so inspect.getsource / signature still report TRL's generate.
     wrapped = getattr(cls.generate, "__wrapped__", None)
     assert wrapped is not None, "the wrapper did not set __wrapped__"
     assert getattr(wrapped, "__wrapped__", None) is None, "generate was wrapped twice"
@@ -445,20 +381,8 @@ def test_patching_twice_does_not_double_wrap(monkeypatch):
     assert len(_lora_requests(log)) == 1, f"generate reached the engine twice: {log}"
 
 
-# --- vLLM signature fidelity --------------------------------------------------
-#
-# The tests above use an engine whose methods take `*args, **kwargs`, so they say
-# nothing about how the injection behaves against vLLM's ACTUAL parameter lists.
-# Those differ between the two entry points, and that difference matters:
-#
-#   LLM.generate(self, prompts, sampling_params = None, *, use_tqdm, lora_request, ...)
-#   LLM.chat(self, messages, sampling_params = None, use_tqdm = True, lora_request = None, ...)
-#
-# `lora_request` is KEYWORD-ONLY on `generate` in every vLLM release from 0.11.0 to
-# 0.27.1, so nothing can reach it positionally there. On `chat` it is an ordinary
-# positional parameter, and its index has already moved once (`tokenization_kwargs`
-# was inserted in 0.18.0). A caller that fills it positionally and an injector that
-# then adds it as a keyword is `TypeError: got multiple values for argument`.
+# `lora_request` is keyword-only on LLM.generate but positional on LLM.chat (index moved in 0.18.0),
+# so injecting it as a keyword can raise 'got multiple values'.
 class VLLMSignatureEngine(FakeEngine):
     """`FakeEngine` with vLLM 0.27.1's real parameter lists on both entry points."""
 
@@ -495,7 +419,6 @@ class VLLMSignatureEngine(FakeEngine):
         return ["chatted"]
 
 
-# TRL reaching `chat` with `lora_request` as the fourth POSITIONAL argument.
 _GENERATE_CHAT_POSITIONAL = """
 def generate(self, prompts, **kwargs):
     self.sync_weights()
@@ -517,12 +440,7 @@ def test_the_adapter_still_reaches_a_signature_accurate_engine(monkeypatch):
 
 
 def test_a_positionally_supplied_adapter_is_not_injected_over(monkeypatch):
-    """The caller already filled `lora_request`; a keyword on top is a TypeError.
-
-    Not hypothetical arithmetic: `chat` takes `lora_request` positionally in every
-    vLLM release checked, so this is reachable from any TRL that spells the call
-    that way. Before the signature check the wrapper raised here.
-    """
+    """A positionally passed lora_request must not get a keyword added on top; that is a TypeError."""
     cls = _build_fake_trl(monkeypatch, _GENERATE_CHAT_POSITIONAL)
     _rl_replacements().vllm_generation_init_patch()
 
@@ -532,17 +450,11 @@ def test_a_positionally_supplied_adapter_is_not_injected_over(monkeypatch):
     self.caller_lora = "CALLER_LORA"
 
     assert cls.generate(self, [[{"role": "user", "content": "hi"}]]) == ["chatted"]
-    # The caller's own adapter, untouched, and exactly one call.
     assert _lora_requests(log, kind = "chat") == ["CALLER_LORA"], log
 
 
 def test_an_explicit_none_adapter_is_overridden(monkeypatch):
-    """`lora_request = None` by keyword means base-model rollouts, which is the bug.
-
-    A shared-weights engine holds the BASE weights, so honouring the None is how
-    the adapter goes missing in the first place. Only a non-None value from the
-    caller is treated as a choice worth keeping.
-    """
+    """A keyword lora_request=None is overridden; the shared-weights engine has only base weights."""
     cls = _build_fake_trl(
         monkeypatch,
         """
@@ -559,3 +471,115 @@ def generate(self, prompts, **kwargs):
 
     assert cls.generate(self, ["hello"]) == ["generated"]
     assert _lora_requests(log) == ["LORA[%s|True]" % _lora_name()], log
+
+
+# TRL >= 0.28 builds SamplingParams inside generate, so the trainer passes _unsloth_vllm_sampling_params.
+_GENERATE_BUILDS_SAMPLING_PARAMS = """
+def generate(self, prompts, **kwargs):
+    self.sync_weights()
+    generation_kwargs = {"n": 1, "temperature": 1.0, "min_p": 0.0, "max_tokens": 64, "logprobs": 0}
+    generation_kwargs.update(self.generation_kwargs)
+    sampling_params = SamplingParams(**generation_kwargs)
+    if self.fail:
+        raise RuntimeError("generate failed")
+    return self.llm.generate(prompts, sampling_params = sampling_params)
+"""
+
+
+class FakeSamplingParams:
+    def __init__(
+        self,
+        n = 1,
+        temperature = 1.0,
+        min_p = 0.0,
+        seed = None,
+        max_tokens = 16,
+        logprobs = None,
+        stop = None,
+        include_stop_str_in_output = False,
+    ):
+        self.n = n
+        self.temperature = temperature
+        self.min_p = min_p
+        self.seed = seed
+        self.max_tokens = max_tokens
+        self.logprobs = logprobs
+        self.stop = [] if stop is None else stop
+        self.include_stop_str_in_output = include_stop_str_in_output
+
+
+class SamplingParamsEngine(FakeEngine):
+    def generate(self, *args, **kwargs):
+        self.log.append(("sampling_params", kwargs.get("sampling_params")))
+        return ["generated"]
+
+
+def _sampling_generation(
+    monkeypatch,
+    user_sampling_params,
+    shared_weights = True,
+):
+    cls = _build_fake_trl(monkeypatch, _GENERATE_BUILDS_SAMPLING_PARAMS)
+    module = sys.modules["trl.generation.vllm_generation"]
+    module.SamplingParams = FakeSamplingParams
+    _rl_replacements().vllm_generation_init_patch()
+    log = []
+    self = _make_generation(cls, log, shared_weights = shared_weights, with_lora = shared_weights)
+    self.llm = SamplingParamsEngine(log, shared_weights = shared_weights)
+    self.generation_kwargs = {}
+    self.fail = False
+    if user_sampling_params is not None:
+        self._unsloth_vllm_sampling_params = user_sampling_params
+    return cls, module, self, log
+
+
+def _sent_sampling_params(log):
+    sent = [entry[1] for entry in log if entry[0] == "sampling_params"]
+    assert len(sent) == 1, log
+    return sent[0]
+
+
+def test_user_vllm_sampling_params_reach_the_engine(monkeypatch):
+    user = FakeSamplingParams(
+        min_p = 0.1,
+        seed = 3407,
+        temperature = 0.6,
+        stop = ["<|im_end|>"],
+        include_stop_str_in_output = True,
+    )
+    cls, module, self, log = _sampling_generation(monkeypatch, user)
+    assert cls.generate(self, ["hello"]) == ["generated"]
+    sent = _sent_sampling_params(log)
+    assert isinstance(sent, FakeSamplingParams)
+    assert sent.min_p == 0.1
+    assert sent.stop == ["<|im_end|>"]
+    assert sent.include_stop_str_in_output is True
+    assert sent.seed is None
+    assert sent.temperature == 1.0
+    assert sent.max_tokens == 64
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_no_user_sampling_params_leaves_trl_untouched(monkeypatch):
+    cls, module, self, log = _sampling_generation(monkeypatch, None)
+    cls.generate(self, ["hello"])
+    sent = _sent_sampling_params(log)
+    assert (sent.min_p, sent.stop, sent.include_stop_str_in_output) == (0.0, [], False)
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_server_mode_ignores_user_sampling_params(monkeypatch):
+    cls, module, self, log = _sampling_generation(
+        monkeypatch, FakeSamplingParams(min_p = 0.1), shared_weights = False
+    )
+    cls.generate(self, ["hello"])
+    assert _sent_sampling_params(log).min_p == 0.0
+    assert module.SamplingParams is FakeSamplingParams
+
+
+def test_sampling_params_restored_when_generate_raises(monkeypatch):
+    cls, module, self, log = _sampling_generation(monkeypatch, FakeSamplingParams(min_p = 0.1))
+    self.fail = True
+    with pytest.raises(RuntimeError, match = "generate failed"):
+        cls.generate(self, ["hello"])
+    assert module.SamplingParams is FakeSamplingParams

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Follow-ups to the STT HTTP download work.
-
-Pinning downloads to a commit stopped huggingface_hub writing refs/main, and
-reserving the repository made a cancelled or wedged run everyone else's problem.
-These cover what that changed.
-"""
+"""Pinned STT downloads write no refs/main, and a cancelled run must not hold the shared repository."""
 
 import subprocess
 import sys
@@ -18,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import stt_download_worker as worker_mod
+from core.inference import stt_audiocpp_sidecar as audiocpp_mod
 from core.inference import stt_ggml_sidecar as ggml_mod
 from core.inference import stt_mtmd_sidecar as mtmd_mod
 from core.inference import stt_sidecar as snapshot_mod
@@ -50,11 +46,8 @@ def _write_snapshot(hub_cache: Path, repo: str, revision: str, filename: str) ->
 
 
 def test_a_lost_revision_record_still_finds_the_downloaded_model(tmp_path, monkeypatch):
-    """A pinned download writes no refs/main, so the record is the only pointer.
-
-    Its write swallows OSError, so without a snapshot fallback an unwritable
-    profile would re-download the model on every launch.
-    """
+    """Pinned download writes no refs/main and its record write can fail, so the snapshot is the
+    fallback."""
     revision = "a" * 40
     repo = ggml_mod.GGML_STT_REPOS["tiny"]
     _write_snapshot(tmp_path, repo, revision, ggml_mod.GGML_STT_MODELS["tiny"])
@@ -92,15 +85,9 @@ def test_fallback_revisions_prefers_refs_main_and_skips_junk(tmp_path):
 def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     module, state_factory, model_id, monkeypatch, tmp_path
 ):
-    """cancel() has no child to stop while metadata resolves.
-
-    Claiming the repository would lock out the Model Hub, and preparing the
-    cache would purge partials, both after the user was told it stopped.
-    """
+    """A cancel during metadata resolution must not claim the repository or purge the cache."""
     claims, prepares, spawns = [], [], []
-    # Stub the Hub metadata call. Unstubbed it reaches huggingface.co, and when that
-    # fails (offline CI) the exception lands in _run's handler before the guard under
-    # test, so every assertion below passes without the guard existing at all.
+    # Stub the Hub call: offline, it fails in _run's handler before the guard, passing vacuously.
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", lambda *a, **k: _FakeMeta())
@@ -120,7 +107,7 @@ def test_a_cancel_during_metadata_leaves_the_shared_cache_alone(
     )
 
     state = state_factory()
-    state._cancelled = True  # as cancel() leaves it during metadata
+    state._cancelled = True
     state._run(model_id, None, hub_cache = tmp_path)
 
     assert claims == [], "a cancelled run still reserved the repository"
@@ -150,6 +137,178 @@ def test_restarting_a_cancelling_download_is_not_a_silent_no_op(state_factory, m
     finally:
         release.set()
         state._thread.join(timeout = 5)
+
+
+@pytest.mark.parametrize(
+    "state_factory, active_model, stale_model",
+    [
+        (snapshot_mod._SnapshotDownloadState, "unsloth/whisper-small", "unsloth/whisper-tiny"),
+        (ggml_mod._GgmlDownloadState, "small", "tiny"),
+        (mtmd_mod._MtmdDownloadState, "qwen3-asr-1.7b", "qwen3-asr-0.6b"),
+        (
+            audiocpp_mod._AudioCppDownloadState,
+            "homebrew/repo:new-quant",
+            "homebrew/repo:old-quant",
+        ),
+        (
+            audiocpp_mod._AudioCppDownloadState,
+            "audiocpp-moonshine-small",
+            "audiocpp-moonshine-tiny",
+        ),
+    ],
+)
+def test_a_stale_cancel_cannot_stop_a_newer_download(
+    state_factory, active_model, stale_model, monkeypatch
+):
+    state = state_factory()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = active_model
+    state._download_id = "new-download"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.status()["download_id"] == "new-download"
+        assert state.cancel(active_model, "old-download") is False
+        assert state.cancel(stale_model) is False
+        assert state._cancelled is False
+        assert stopped == []
+        assert state.cancel(active_model, "new-download") is True
+        assert state._cancelled is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+@pytest.mark.parametrize(
+    "state_factory, model_id",
+    [
+        (snapshot_mod._SnapshotDownloadState, "unsloth/whisper-tiny"),
+        (ggml_mod._GgmlDownloadState, "tiny"),
+        (mtmd_mod._MtmdDownloadState, "qwen3-asr-0.6b"),
+        (audiocpp_mod._AudioCppDownloadState, "homebrew/repo:Q4_K_M"),
+    ],
+)
+def test_a_completed_attempt_cannot_be_cancelled_during_thread_teardown(
+    state_factory, model_id, monkeypatch
+):
+    state = state_factory()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = model_id
+    state._download_id = "completed-download"
+    state._completed_download_ids.append("completed-download")
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.cancel(model_id, "completed-download") is False
+        assert state._cancelled is False
+        assert stopped == []
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_the_download_identity_is_authoritative_for_an_audio_variant(monkeypatch):
+    state = audiocpp_mod._AudioCppDownloadState()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = "homebrew/repo:new-quant"
+    state._download_id = "new-download"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.status()["variant"] == "new-quant"
+        assert state.cancel("homebrew/repo", "new-download") is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_completed_download_history_is_bounded_and_ignores_missing_identity():
+    history = [f"attempt-{index}" for index in range(8)]
+
+    assert snapshot_mod._remember_completed_download(history, None, cancelled = False) is False
+    assert snapshot_mod._remember_completed_download(history, "cancelled", cancelled = True) is False
+    assert snapshot_mod._remember_completed_download(history, "attempt-8", cancelled = False) is True
+
+    assert history == [f"attempt-{index}" for index in range(1, 9)]
+
+
+@pytest.mark.parametrize(
+    "state_factory",
+    [
+        snapshot_mod._SnapshotDownloadState,
+        ggml_mod._GgmlDownloadState,
+        mtmd_mod._MtmdDownloadState,
+        audiocpp_mod._AudioCppDownloadState,
+    ],
+)
+def test_download_status_copies_completed_attempt_history(state_factory):
+    state = state_factory()
+    state._completed_download_ids.append("attempt-a")
+
+    status = state.status()
+    status["completed_download_ids"].append("caller-mutation")
+
+    assert state.status()["completed_download_ids"] == ["attempt-a"]
+
+
+def test_a_bare_audio_row_remains_a_legacy_cancel_target(monkeypatch):
+    state = audiocpp_mod._AudioCppDownloadState()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = "homebrew/repo:new-quant"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.cancel("homebrew/repo") is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_cancel_route_forwards_the_request_identity():
+    from routes import inference
+
+    cancelled = []
+    module = SimpleNamespace(
+        cancel_model_download = lambda model, download_id: cancelled.append((model, download_id))
+        or False,
+        download_status = lambda: {"downloading": True, "model": "new"},
+    )
+
+    result = inference._cancel_account_stt_download(module, "transformers", "old", "old-download")
+
+    assert cancelled == [("old", "old-download")]
+    assert result["cancelled"] is False
+
+
+def test_start_account_download_returns_the_attempt_identity(monkeypatch):
+    from routes import inference
+
+    monkeypatch.setattr(inference.account_access, "account_scope", lambda: None)
+    module = SimpleNamespace(start_model_download = lambda *args: "attempt-a")
+
+    assert (
+        inference._start_account_stt_download(module, "transformers", "small", None, "a" * 40)
+        == "attempt-a"
+    )
 
 
 def test_a_worker_that_ignores_sigterm_is_killed():
@@ -223,11 +382,7 @@ def test_status_never_stats_the_cache_under_the_download_lock(state_factory, mod
 def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     state_factory, model_id, restart, tmp_path
 ):
-    """status() reports bytes_total from under the lock and probes the cache after.
-
-    A run that starts in that gap replaces the fields the probe reads, so reading
-    them there paired one run's total with another's bytes, or blanked it.
-    """
+    """status() reads bytes_total under the lock: a run starting before the cache probe would mix totals."""
     state = state_factory()
     state._model_id = model_id
     state._repo = "org/repo"
@@ -242,7 +397,7 @@ def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
     real = state._downloaded_bytes
 
     def probe_after_a_restart(*args, **kwargs):
-        restart(state)  # the next run lands between the lock release and the probe
+        restart(state)
         return real(*args, **kwargs)
 
     state._downloaded_bytes = probe_after_a_restart

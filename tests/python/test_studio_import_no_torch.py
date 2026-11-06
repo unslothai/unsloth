@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -66,9 +67,6 @@ def no_torch_venv(request, tmp_path_factory):
     assert check.returncode != 0, f"torch should NOT be importable in fresh {py_version} venv"
 
     return str(venv_python)
-
-
-# ── AST structural checks ─────────────────────────────────────────────
 
 
 class TestDataCollatorsAST:
@@ -145,9 +143,6 @@ class TestChatTemplatesAST:
             )
 
 
-# ── data_collators.py: exec + dataclass instantiation in no-torch venv ──
-
-
 class TestDataCollatorsNoTorchVenv:
     """Run data_collators.py in an isolated no-torch venv, verify classes load."""
 
@@ -221,9 +216,6 @@ class TestDataCollatorsNoTorchVenv:
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
-# ── chat_templates.py: exec in no-torch venv ─────────────────────────
-
-
 class TestChatTemplatesNoTorchVenv:
     """Run chat_templates.py in an isolated no-torch venv with stubs."""
 
@@ -261,6 +253,7 @@ class TestChatTemplatesNoTorchVenv:
             # rather than another stub: the suite checks what actually ships.
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
 
             exec(source)
 
@@ -305,6 +298,7 @@ class TestChatTemplatesNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             exec(source, ns)
 
             assert 'DEFAULT_ALPACA_TEMPLATE' in ns, "DEFAULT_ALPACA_TEMPLATE not defined"
@@ -316,9 +310,6 @@ class TestChatTemplatesNoTorchVenv:
             result.returncode == 0
         ), f"DEFAULT_ALPACA_TEMPLATE check failed:\n{result.stderr.decode()}"
         assert b"OK: DEFAULT_ALPACA_TEMPLATE defined and valid" in result.stdout
-
-
-# ── format_conversion.py: AST + runtime tests ────────────────────────
 
 
 class TestFormatConversionAST:
@@ -343,7 +334,6 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -357,6 +347,44 @@ class TestFormatConversionAST:
                             f"torch import at line {child.lineno} in {node.name}() "
                             "is not inside a try/except block"
                         )
+
+
+def test_the_hardware_stub_covers_what_format_conversion_imports():
+    """The venv tests below replace utils.hardware with a stub. A name format_conversion.py
+    imports from it that the stub lacks only surfaces as an ImportError inside the venv,
+    after the venv build, so check the two lists against each other here."""
+    imported = set()
+    for node in ast.walk(ast.parse(FORMAT_CONVERSION.read_text(encoding = "utf-8"))):
+        if isinstance(node, ast.ImportFrom) and node.module == "utils.hardware":
+            imported.update(alias.name for alias in node.names)
+    assert imported, "format_conversion.py no longer imports from utils.hardware; drop the stubs"
+    stubbed_per_test = [
+        set(re.findall(r"\bhardware_mod\.(\w+)\s*=", text)) for text in _venv_test_sources()
+    ]
+    assert stubbed_per_test, "no utils.hardware stub found in TestFormatConversionNoTorchVenv"
+    for stubbed in stubbed_per_test:
+        assert imported <= stubbed, f"utils.hardware stub lacks {sorted(imported - stubbed)}"
+
+
+def _venv_test_sources() -> list:
+    """The child scripts of TestFormatConversionNoTorchVenv that stub utils.hardware, as text."""
+    tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
+    out = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "TestFormatConversionNoTorchVenv":
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and getattr(call.func, "attr", "") == "dedent"
+                    and call.args
+                    and isinstance(call.args[0], ast.JoinedStr)
+                ):
+                    text = "".join(
+                        part.value for part in call.args[0].values if isinstance(part, ast.Constant)
+                    )
+                    if "hardware_mod" in text:
+                        out.append(text)
+    return out
 
 
 class TestFormatConversionNoTorchVenv:
@@ -389,6 +417,9 @@ class TestFormatConversionNoTorchVenv:
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
             hardware_mod.dataset_map_num_proc = lambda n=None: 1
+            # In process, as the real one answers for an in-memory dataset with no cache files.
+            hardware_mod.light_map_num_proc = lambda dataset, desired=None: None
+            hardware_mod.safe_thread_num_proc = lambda desired=None: 1
             utils_mod.hardware = hardware_mod
             sys.modules['utils'] = utils_mod
             sys.modules['utils.hardware'] = hardware_mod
@@ -399,11 +430,14 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
             # Test convert_chatml_to_alpaca with a simple dataset
             class FakeDataset:
+                column_names = ['messages']
+
                 def map(self, fn, **kw):
                     result = fn({{
                         'messages': [[
@@ -449,6 +483,9 @@ class TestFormatConversionNoTorchVenv:
             utils_mod = types.ModuleType('utils')
             hardware_mod = types.ModuleType('utils.hardware')
             hardware_mod.dataset_map_num_proc = lambda n=None: 1
+            # In process, as the real one answers for an in-memory dataset with no cache files.
+            hardware_mod.light_map_num_proc = lambda dataset, desired=None: None
+            hardware_mod.safe_thread_num_proc = lambda desired=None: 1
             utils_mod.hardware = hardware_mod
             sys.modules['utils'] = utils_mod
             sys.modules['utils.hardware'] = hardware_mod
@@ -458,6 +495,7 @@ class TestFormatConversionNoTorchVenv:
             source = source.replace('from .iterable import', 'from iterable import')
             sys.path.insert(0, {str(FORMAT_CONVERSION.parent)!r})
             source = source.replace('from .cells import', 'from cells import')
+            source = source.replace('from .remote_images import', 'from remote_images import')
             ns = {{'__name__': '__test__'}}
             exec(source, ns)
 
@@ -482,9 +520,6 @@ class TestFormatConversionNoTorchVenv:
             result.returncode == 0
         ), f"convert_alpaca_to_chatml failed without torch:\n{result.stderr.decode()}"
         assert b"OK: convert_alpaca_to_chatml works without torch" in result.stdout
-
-
-# ── Negative controls ─────────────────────────────────────────────────
 
 
 class TestNegativeControls:
@@ -534,10 +569,8 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected.
             pass
         else:
-            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,

@@ -8,6 +8,7 @@ export {
   openModelsDir,
   pickNativeDocumentFolder,
   pickHuggingFaceCacheDir,
+  pickNativeModelFolder,
   readNativeAttachmentFile,
   registerNativeAttachmentPath,
   registerNativeDatasetPath,
@@ -21,6 +22,7 @@ export { useNativeFileDrop } from "./use-native-file-drop";
 export type { NativeFileDrop, NativeFileDropOptions } from "./use-native-file-drop";
 export {
   NativeAttachmentTargetContext,
+  NativeAttachmentDragContext,
   useNativeAttachmentTargetKey,
 } from "./attachment-target";
 export { useNativeIntentStore } from "./store";

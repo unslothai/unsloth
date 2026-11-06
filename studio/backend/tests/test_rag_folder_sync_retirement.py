@@ -162,3 +162,23 @@ def test_the_shared_worker_still_syncs_accounts_behind_a_corrupt_database(two_ac
         stop.set()
         folder_sync._wake.set()
         worker.join(30)
+
+
+@requires_sqlite_vec
+def test_pipelined_ingestion_writes_into_the_syncing_accounts_database(two_accounts):
+    from core.rag import store
+
+    folder, bob_job = _link(BOB, two_accounts[BOB.account_id], "bob")
+    run_as(BOB, folder_sync.reconcile_folder, bob_job)
+
+    def indexed():
+        assert folder_sync.get_job(bob_job)["status"] == "completed"
+        with rag_db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT d.id FROM linked_folder_files f JOIN documents d ON d.id = f.document_id"
+                " WHERE f.folder_id = ?",
+                (folder["id"],),
+            ).fetchone()
+            return row is not None and bool(store.search_lexical(conn, folder["scope"], "bob", 5))
+
+    assert run_as(BOB, indexed), "a pool thread indexed the file outside the account's database"

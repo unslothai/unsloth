@@ -165,10 +165,8 @@ def test_the_default_source_prefers_the_running_session():
 
 
 def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
-    """ntpath.realpath decides per call whether to keep the \\\\?\\ prefix, so
-    the directory and the file in it can come back spelled differently. pathlib
-    reads that as two different drives, and the whole family disappears with no
-    error anywhere."""
+    """Windows extended-length prefixes can differ between directory and file, so pathlib sees two
+    drives."""
     import ntpath
 
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
@@ -177,10 +175,8 @@ def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
     directory = "C:\\Users\\dan\\.unsloth\\studio\\logs\\server"
     entry = "\\\\?\\C:\\Users\\dan\\.unsloth\\studio\\logs\\server\\server-1-pid2.log"
     assert debug_log_sources._is_inside(entry, directory) is True
-    # The protection it exists for must still hold under the same spelling.
     assert debug_log_sources._is_inside("\\\\?\\C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
     assert debug_log_sources._is_inside("C:\\Users\\dan\\.ssh\\id_rsa", directory) is False
-    # A sibling directory whose name merely starts with ours is not inside it.
     assert debug_log_sources._is_inside(directory + "-old\\x.log", directory) is False
 
 
@@ -270,8 +266,7 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
     monkeypatch.setattr(Path, "stat", _counting_stat)
     files = debug_log_sources._family_files("llama-server")
     assert len(files) == debug_log_sources.MAX_SOURCES_PER_FAMILY
-    # Cost must track the presort slice (MAX * 3 candidates, an is_file plus a
-    # stat each), not the 400 files present.
+    # Cost tracks the presort slice (MAX * 3 candidates, is_file + stat each), not the 400 files.
     ceiling = debug_log_sources.MAX_SOURCES_PER_FAMILY * 3 * 2 + 8
     assert (
         calls["n"] <= ceiling
@@ -280,13 +275,8 @@ def test_a_huge_directory_does_not_stat_every_file(monkeypatch):
 
 
 def test_a_literal_tilde_home_is_scanned_both_ways(tmp_path, monkeypatch):
-    """The writer and the reader disagreed about the tilde.
-
-    _swa_cache_path builds Path(home) raw, so a value passed literally (systemd
-    EnvironmentFile, dotenv) makes the runners write into a directory NAMED
-    "~", while expanduser sent discovery to the real home. Scanning one of the
-    two lost the llama logs the viewer exists to reach.
-    """
+    """A literal ~ home makes runners write to a dir named ~, so scan both spellings or llama logs
+    vanish."""
     monkeypatch.chdir(tmp_path)
     literal = tmp_path / "~" / "studio"
     (literal / "logs" / "llama-server").mkdir(parents = True)
@@ -303,7 +293,6 @@ def test_no_live_session_defaults_to_the_newest_log_not_an_old_server_one(tmp_pa
     llama_dir = tmp_path / "logs" / "llama-server"
     server_dir.mkdir(parents = True)
     llama_dir.mkdir(parents = True)
-    # A retained log from a previous run: a pid that is not ours.
     old = server_dir / "server-20260101-000000-pid1.log"
     old.write_text("previous run\n", encoding = "utf-8")
     newest = llama_dir / "llama-1786000000.log"
@@ -330,3 +319,58 @@ def test_a_live_server_session_still_wins(tmp_path, monkeypatch):
 
     chosen = debug_log_sources.resolve_source_id(debug_log_sources.default_source_id())
     assert chosen == current
+
+
+def test_a_writers_own_spelling_of_a_path_resolves_to_its_source():
+    """Only the backend can match the raw path llama_cpp.py printed to a listed source."""
+    path = _seed("llama-server", "llama-1765000101-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    assert debug_log_sources.source_id_for_path(str(path)) == expected
+    assert debug_log_sources.source_id_for_path(os.path.realpath(path)) == expected
+
+
+def test_a_relative_spelling_resolves_to_the_same_source(monkeypatch):
+    """A relative UNSLOTH_STUDIO_HOME makes the runner print a relative path; it still matches."""
+    path = _seed("llama-server", "llama-1765000102-port-8080.log")
+    expected = next(s for s in debug_log_sources.list_sources() if s.label == path.name).id
+    monkeypatch.chdir(_home())
+    relative = os.path.join("logs", "llama-server", path.name)
+    assert not os.path.isabs(relative)
+    assert relative != str(path), "the two spellings must differ for this to mean anything"
+    assert debug_log_sources.source_id_for_path(relative) == expected
+
+
+def test_an_unexpanded_home_spelling_resolves_to_the_same_source(monkeypatch, tmp_path):
+    """An unexpanded home (systemd EnvironmentFile, dotenv) still matches its listed source."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "~/studio")
+    directory = tmp_path / "~" / "studio" / "logs" / "llama-server"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama-1765000103-port-8080.log"
+    path.write_text("boom\n", encoding = "utf-8")
+
+    listed = [s for s in debug_log_sources.list_sources() if s.label == path.name]
+    assert listed, "the runner's own directory must be discoverable at all"
+    raw = os.path.join("~", "studio", "logs", "llama-server", path.name)
+    assert debug_log_sources.source_id_for_path(raw) == listed[0].id
+    assert raw != listed[0].realpath, "the spellings must differ for this to mean anything"
+
+
+def test_a_path_naming_nothing_listed_matches_nothing():
+    """An unmatched path falls back to family recency rather than inventing a match."""
+    _seed("llama-server", "llama-1765000104-port-8080.log")
+    for absent in ("", "   ", None, "/nowhere/llama-9.log", "/etc/passwd"):
+        assert debug_log_sources.source_id_for_path(absent) is None, absent
+
+
+def test_a_path_is_matched_against_the_listing_it_is_given(monkeypatch):
+    """The sources route already listed every file; matching must not walk the logs again."""
+    path = _seed("llama-server", "llama-1765000104-port-8080.log")
+    sources = debug_log_sources.list_sources()
+    expected = next(s for s in sources if s.label == path.name).id
+
+    def _no_second_walk():
+        raise AssertionError("listed the logs a second time")
+
+    monkeypatch.setattr(debug_log_sources, "list_sources", _no_second_walk)
+    assert debug_log_sources.source_id_for_path(str(path), sources) == expected

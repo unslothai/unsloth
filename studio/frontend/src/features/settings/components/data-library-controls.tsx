@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { useMemo, useState, type ReactNode } from "react";
 import { useLocale, useT, type TranslationKey } from "@/i18n";
 import { useLibraryProjectLabels } from "./use-library-project-labels";
-import { Folder01Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  FilterMailIcon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -66,6 +71,7 @@ export function LibraryToolbar({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   const compare = useMemo(() => new Intl.Collator(locale).compare, [locale]);
   const [projectOpen, setProjectOpen] = useState(false);
   const projectLabel =
@@ -97,11 +103,12 @@ export function LibraryToolbar({
       <DropdownMenu>
         <DropdownMenuTrigger asChild={true}>
           <Button
-            variant="outline"
+            variant="picker"
             disabled={disabled}
-            className="h-10 gap-2 rounded-xl"
+            className="h-10 gap-2 rounded-full"
             aria-label={t("settings.data.library.filterSort")}
           >
+            <HugeiconsIcon icon={FilterMailIcon} className="size-4 shrink-0" />
             {projects
               ? t(TYPE_LABELS[filters.type])
               : filters.sort === "default"
@@ -157,12 +164,12 @@ export function LibraryToolbar({
         <Popover open={projectOpen} onOpenChange={setProjectOpen}>
           <PopoverTrigger asChild={true}>
             <Button
-              variant="outline"
+              variant="picker"
               disabled={disabled}
-              className="h-10 max-w-full gap-2 rounded-xl"
+              className="h-10 max-w-full gap-2 rounded-full"
               aria-label={t("settings.data.library.filterProject")}
             >
-              <HugeiconsIcon icon={Folder01Icon} className="size-4 shrink-0" />
+              <HugeiconsIcon icon={ProjectIcon} className="size-4 shrink-0" />
               <span className="max-w-40 truncate">{projectLabel}</span>
               <HugeiconsIcon
                 icon={ChevronDownStandardIcon}
@@ -223,6 +230,7 @@ export function LibraryRow({
 }) {
   const t = useT();
   const locale = useLocale();
+  useTimeFormat();
   return (
     <div className="flex min-w-0 items-center gap-3 py-3.5 text-sm">
       {leading}
@@ -256,10 +264,13 @@ export function ChatLibraryGroups<T extends LibraryItem>({
   items,
   projects,
   children,
+  groupActions,
 }: {
   items: readonly T[];
   projects: ReadonlyMap<string, string>;
   children: (item: T) => ReactNode;
+  /** Trailing control on a group's heading, given the group's id ("" for no project) and name. */
+  groupActions?: (group: { id: string; name: string }) => ReactNode;
 }) {
   const t = useT();
   const labels = useLibraryProjectLabels();
@@ -269,7 +280,7 @@ export function ChatLibraryGroups<T extends LibraryItem>({
         <section key={group.id} className="space-y-2">
           <div className="flex items-center gap-2 px-1 text-sm">
             <HugeiconsIcon
-              icon={Folder01Icon}
+              icon={ProjectIcon}
               className="size-4 shrink-0 text-muted-foreground"
             />
             <h3
@@ -286,8 +297,9 @@ export function ChatLibraryGroups<T extends LibraryItem>({
                 { count: group.items.length },
               )}
             </span>
+            {groupActions?.(group)}
           </div>
-          <div className="divide-y divide-border/50 rounded-2xl border border-border/60 px-3 sm:px-4">
+          <div className="divide-y divide-border/50 rounded-xl border border-border/60 px-3 sm:px-4">
             {group.items.map((item) => (
               <div key={item.id}>{children(item)}</div>
             ))}

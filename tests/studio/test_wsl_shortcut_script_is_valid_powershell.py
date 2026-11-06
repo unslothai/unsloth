@@ -1,35 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The PowerShell install.sh generates for the WSL shortcut has to be valid PowerShell.
-
-Nothing else checks. install.sh is shell, so `bash -n` covers the here-string as a here-string
-and says nothing about its contents; the contents only ever run on a Windows machine, through
-`powershell.exe -File`, with stdout and stderr both sent to /dev/null and the exit status folded
-into a best-effort `&& _css_created=1`. A parse error there is not a crash and not a message: the
-whole script fails to load, no shortcut appears, and the user gets the "WSL interop may be
-disabled" notice, which points at the wrong thing entirely.
-
-That path is one edit away at all times. The block this guards was just rewritten from a
-one-line `Add-Type -MemberDefinition` into a twenty-line reflection-emit sequence with nested
-calls, an array literal and a here-string escaping every `$` it means to keep -- and it sits
-inside `try { } catch { }`, so even at RUNTIME on the right machine a mistake inside it is
-swallowed.
-
-The emit test is the other half: syntax is not enough, the API sequence has to be real. shell32
-is Windows-only, but DefineDynamicAssembly / DefineDynamicModule / DefineType /
-DefinePInvokeMethod / CreateType is not, so the same sequence is pointed at a symbol this host
-does export and the resulting method is called. A wrong call order or a wrong argument count
-fails here, on Linux, instead of silently on a user's desktop.
-
-What that is worth, measured rather than asserted. Mutating the shipped file five ways: a dropped
-closing paren in DefinePInvokeMethod, an unterminated string literal in DefineType and a stray
-closing brace all fail both tests or the parse one; giving the P/Invoke the wrong number of
-parameters fails the emit one. Dropping SetImplementationFlags does NOT fail, and cannot: it sets
-PreserveSig, whose only effect is on how a failing HRESULT is surfaced, and the retargeted symbol
-here returns a plain int. That line is unguarded and is the one place a reviewer still has to
-read for themselves.
-"""
+"""The PowerShell install.sh writes for the WSL shortcut must parse; bash -n does not check it."""
 
 from __future__ import annotations
 
@@ -50,21 +22,14 @@ INSTALL_SH = REPO / "install.sh"
 
 needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 
-# What `_render` produces is a pure function of install.sh's bytes and the four values below, so the
-# Linux and macOS legs cover the subject completely and a Windows leg adds no coverage of it. What a
-# Windows leg does add is a different shell: `bash` there is Git Bash or the WSL stub in System32,
-# neither of which install.sh is ever run by -- its WSL arm is gated on /proc/version naming
-# microsoft, so the shell that reads this here-string is always a POSIX one inside the distro. The
-# repository already draws this line the same way for its other bash-driven installer tests
-# (tests/python/test_install_uv_override_space.py:21,
-# tests/studio/install/test_selection_logic.py:4185).
+# `_render` is a pure function of install.sh's bytes, so Linux and macOS cover it; on Windows
+# `bash` is Git Bash or the WSL stub, neither of which ever runs install.sh.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason = "renders install.sh with bash; POSIX shell installer test",
 )
 
-# Values install.sh would interpolate, chosen to be awkward: a distro name with a space, and the
-# apostrophe the surrounding single-quoted PowerShell literals have to be doubling.
+# Awkward on purpose: a distro name with a space, and an apostrophe PowerShell must double.
 _RENDER_VARS = {
     "_css_sc_target": "wt.exe",
     "_css_sc_args_ps": 'wsl.exe -d "O\'\'Brien 24.04" -- bash -l -c "exec /home/u/launch.sh"',
@@ -74,16 +39,9 @@ _RENDER_VARS = {
 
 
 def _render() -> str:
-    """The here-string as bash would actually write it, not a copy of it.
-
-    Extracted from the shipped file and expanded by a real shell, so every backslash escape in
-    it is resolved the way install.sh resolves it. A test holding its own copy of this script
-    would keep passing after install.sh broke.
-    """
+    """Extracted from the shipped install.sh and expanded by a real shell, so a copy cannot drift."""
     text = INSTALL_SH.read_text(encoding = "utf-8")
     body = re.search(
-        # The body is captured into a variable now, because it is either written to a file or piped
-        # to powershell on stdin depending on whether a Windows directory is reachable.
         r"(?ms)^            _css_ps1_body=\$\(cat << WSLPS1_EOF\n(.*?)^WSLPS1_EOF$",
         text,
     )
@@ -92,13 +50,10 @@ def _render() -> str:
         "moved or it is no longer generated, and until this locates it again nothing checks that "
         "what install.sh writes is PowerShell at all."
     )
-    # shlex.quote, not repr: these values deliberately contain the apostrophes and double quotes
-    # the real ones do, and Python's repr quotes for Python.
+    # shlex.quote, not repr: the values contain shell quotes and repr quotes for Python.
     assigns = "".join(f"{k}={shlex.quote(v)}\n" for k, v in _RENDER_VARS.items())
     script = assigns + "cat << WSLPS1_EOF\n" + body.group(1) + "WSLPS1_EOF\n"
-    # check = False, then asserted. CalledProcessError carries the command and the return code and
-    # drops the shell's own diagnostic, so a rendering that fails to render reported a 6 KB repr of
-    # the script and not the one line saying what was wrong with it.
+    # check = False then assert: CalledProcessError drops the shell's own diagnostic.
     done = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert done.returncode == 0, (
         f"bash could not render the here-string (exit {done.returncode}):\n"
@@ -135,47 +90,127 @@ def test_the_generated_wsl_shortcut_script_parses() -> None:
     )
 
 
-@needs_pwsh
-def test_the_icon_refresh_emit_sequence_builds_a_callable_type() -> None:
-    rendered = _render()
-    emit = re.search(r"(?ms)^try \{\n(    \$refreshType = .*?)\n\} catch \{\}", rendered)
-    assert emit, (
-        "could not find the icon-refresh emit block in the generated script; if SHChangeNotify "
-        "is now declared some other way, update this test rather than deleting it"
-    )
-    # Retargeted, not rewritten: only the library, the symbol and its signature change, so the
-    # call sequence under test is the shipped one character for character.
-    body = emit.group(1)
-    body = body.replace(
-        "'SHChangeNotify', 'shell32.dll', 'SHChangeNotify'", "'getpid', 'libc', 'getpid'"
-    )
-    body = re.sub(r"\[System\.Void\],", "[int],", body)
-    body = re.sub(r"@\(\[int\], \[uint32\], \[string\], \[IntPtr\]\),", "@(),", body)
-    body = body.replace(
-        "[System.Runtime.InteropServices.CharSet]::Unicode)",
-        "[System.Runtime.InteropServices.CharSet]::Ansi)",
-    )
-    body = "\n".join(l for l in body.splitlines() if "SHChangeNotify(" not in l)
-    body = body.replace("UnslothShellIconRefresh", "UnslothEmitProbe")
-    assert "DefinePInvokeMethod" in body and "getpid" in body, body
+_SHELL32_STUB = """
+import ctypes, json, os, sys
+calls = []
+class _Fn:
+    def __call__(self, *a):
+        calls.append(list(a))
+class _Dll:
+    def __init__(self, name):
+        assert name == "shell32", name
+        self.SHChangeNotify = _Fn()
+ctypes.WinDLL = _Dll
+exec(sys.argv[1])
+sys.stderr.write(json.dumps(calls))
+"""
 
-    # Twice, because the block caches on `-as [type]`: a second pass must reuse the type rather
-    # than throw on a duplicate name, which is what makes the guard safe to leave in.
-    script = body + "\nWrite-Output ('EMIT_A ' + [string]$refreshType::getpid())\n"
-    script += body + "\nWrite-Output ('EMIT_B ' + [string]$refreshType::getpid())\n"
-    done = run_pwsh(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+
+def _refresh_code(rendered: str) -> str:
+    match = re.search(r'(?m)^    \$refreshCode = "([^"\r\n]*)"$', rendered)
+    assert match, "could not find the icon refresh's Python in the generated script"
+    return match.group(1)
+
+
+_LINKS = [
+    "C:\\Users\\O'Brien\\Desktop\\Unsloth Studio (WSL - O'Brien 24.04).lnk",
+    "C:\\Users\\O'Brien\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\x.lnk",
+]
+_EXPECTED_CALLS = [[0x2000, 0x1005, link, None] for link in _LINKS] + [
+    [0x8000000, 0x1000, None, None]
+]
+
+
+def test_the_icon_refresh_python_notifies_each_shortcut_then_the_shell() -> None:
+    """Per-item SHCNE_UPDATEITEM for every shortcut, then SHCNE_ASSOCCHANGED, all flushed."""
+    import json
+
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", _SHELL32_STUB, _refresh_code(_render())],
         capture_output = True,
         text = True,
-        verdict = "EMIT_B",
+        env = {"UNSLOTH_SHORTCUT_PATHS": "|".join(_LINKS)},
     )
-    pids = re.findall(r"EMIT_[AB] (\d+)", done.stdout)
-    assert len(pids) == 2, (
-        "the reflection-emit sequence in the generated script does not build a callable P/Invoke "
-        "type. shell32 is Windows-only but this sequence is not, so this is the sequence itself "
-        f"being wrong:\n{done.stdout.strip()}\n{done.stderr.strip()}"
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "ok", done.stdout
+    assert json.loads(done.stderr) == _EXPECTED_CALLS
+
+
+@needs_pwsh
+def test_the_icon_refresh_launch_runs_one_interpreter_with_every_shortcut(tmp_path: Path) -> None:
+    """The PowerShell half: candidate order, the WindowsApps skip, argv quoting, stop on success.
+
+    The block is lifted from the rendered script as written; only the elevation probe, which has
+    no answer off Windows, is pinned to "not elevated".
+    """
+    import json
+
+    rendered = _render()
+    match = re.search(r"(?ms)^(if \(\$created\.Count -gt 0\) \{\n.*?^\})\n", rendered)
+    assert match, "could not find the icon refresh block in the generated script"
+    block = match.group(1)
+    elevation = re.search(r"(?m)^        \$isAdmin = \(\[Security.*$", block)
+    assert elevation, "the refresh no longer checks elevation before launching an interpreter"
+    block = block.replace(elevation.group(0), "        $isAdmin = $false")
+
+    log = tmp_path / "calls.jsonl"
+    stub = tmp_path / "stub.py"
+    stub.write_text(
+        _SHELL32_STUB.replace(
+            "sys.stderr.write(json.dumps(calls))",
+            "open(os.environ['STUB_LOG'], 'a').write(json.dumps("
+            "{'argv': sys.argv[2:], 'cwd': os.getcwd(), 'calls': calls}) + '\\n')",
+        )
     )
-    assert pids[0] == pids[1], f"the cached type was rebuilt instead of reused: {pids}"
+    venv_python = (
+        tmp_path / "home" / ".unsloth" / "studio" / "unsloth_studio" / "Scripts" / "python.exe"
+    )
+    venv_python.parent.mkdir(parents = True)
+    venv_python.write_text(
+        "#!/bin/sh\n"
+        f'[ "$1 $2 $3 $4" = "-I -S -B -c" ] || exit 7\n'
+        f'exec {shlex.quote(sys.executable)} -I -S -B {shlex.quote(str(stub))} "$5"\n'
+    )
+    venv_python.chmod(0o755)
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    (path_dir / "python3").write_bytes(venv_python.read_bytes())
+    (path_dir / "python3").chmod(0o755)
+    links = ", ".join("'" + link.replace("'", "''") + "'" for link in _LINKS)
+    script = (
+        f"$env:USERPROFILE = '{tmp_path / 'home'}'\n"
+        f"$env:STUB_LOG = '{log}'\n"
+        f"$env:PATH = '{path_dir}' + [IO.Path]::PathSeparator + $env:PATH\n"
+        f"$created = @({links})\n" + block + "\n"
+        "Write-Output 'BLOCK_DONE'\n"
+    )
+    runner = tmp_path / "refresh.ps1"
+    runner.write_text(script, encoding = "utf-8")
+    done = run_pwsh(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(runner)],
+        capture_output = True,
+        text = True,
+        verdict = "BLOCK_DONE",
+    )
+    assert "BLOCK_DONE" in done.stdout, f"{done.stdout}\n{done.stderr}"
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(entries) == 1, entries
+    assert entries[0]["calls"] == _EXPECTED_CALLS
+    assert entries[0]["cwd"] == str(venv_python.parent)
+
+
+def test_the_generated_script_defines_no_native_type() -> None:
+    """install.sh held the last reflection-emit P/Invoke in the tree; it must not come back."""
+    rendered = _render()
+    for token in (
+        "Add-Type",
+        "DefinePInvoke" + "Method",
+        "DefineDynamic" + "Assembly",
+        "DllImport",
+    ):
+        assert (
+            token not in rendered
+        ), f"the WSL shortcut script declares a native type again: {token}"
 
 
 if __name__ == "__main__":
@@ -183,14 +218,7 @@ if __name__ == "__main__":
 
 
 def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
-    """A search run after the install cannot see the compile it is looking for.
-
-    CodeDom deletes its whole intermediate directory once the assembly is loaded, which
-    `.github/scripts/Watch-ForCompiler.ps1` records as a before-and-after diff seeing "nothing at
-    all while 4688 recorded csc.exe". So a post-hoc listing of `*.cmdline` cannot fail for the case
-    this lane exists to catch, and a positive control that plants persistent files only proves the
-    search can traverse a directory. The install has to run INSIDE the watcher.
-    """
+    """The install must run inside the watcher; CodeDom deletes its temp dir once the assembly loads."""
     import yaml
 
     workflow = yaml.safe_load(
@@ -202,8 +230,7 @@ def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
         step
         for job in workflow["jobs"].values()
         for step in (job.get("steps") or [])
-        # The WSL leg specifically. The Linux container legs run the same piped install and
-        # have no Windows side to watch.
+        # The WSL leg only: Linux container legs run the same piped install with no Windows side.
         if "cat install.sh | sh" in str(step.get("run", ""))
         and "wsl -d unsloth-ci" in str(step.get("run", ""))
     ]
@@ -222,15 +249,7 @@ def test_the_wsl_install_is_watched_live_for_a_compiler() -> None:
 
 
 def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
-    """The watcher's process half was dead in this lane, and a dead half reads as a clean one.
-
-    `Watch-ForCompiler.ps1` says outright that 4688 "needs auditing enabled by the caller". Its
-    no-match path returns an empty compiler list whenever the Security log is merely readable, so
-    with auditing off `$seen.Compilers` is empty no matter what ran, and the step still prints that
-    no compiler process was seen. That leaves the FileSystemWatcher carrying the whole result alone
-    while the output claims two detectors. Require the audit policy to be turned on, verified, and
-    shown to produce a real detection before the install is judged.
-    """
+    """The 4688 process audit must be enabled and verified, or the watcher's process half sees nothing."""
     import yaml
 
     workflow = yaml.safe_load(
@@ -249,7 +268,7 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
     )
     runs = [str(step.get("run", "")) for step in (job.get("steps") or [])]
     index = next(i for i, run in enumerate(runs) if "cat install.sh | sh" in run)
-    # Only the steps BEFORE the install count: auditing turned on afterwards measures nothing.
+    # Only steps before the install count: auditing turned on afterwards measures nothing.
     earlier = "\n".join(runs[:index])
     assert 'auditpol /set /subcategory:"Process Creation" /success:enable' in earlier, (
         "the WSL lane never enables process creation auditing, so the 4688 half of the watch is "
@@ -270,29 +289,3 @@ def test_the_wsl_lane_arms_the_4688_half_of_the_watch() -> None:
         "nothing proves the detector fires on this runner, so a clean verdict is indistinguishable "
         "from a detector that never attached"
     )
-
-
-def test_the_generated_emit_carries_both_spellings_of_define_dynamic_assembly() -> None:
-    """The outer catch is empty, so guessing the wrong spelling costs the icon refresh silently.
-
-    `install.ps1`'s `New-StudioDynamicAssembly` tries the static
-    `AssemblyBuilder::DefineDynamicAssembly` and falls back to
-    `AppDomain.CurrentDomain.DefineDynamicAssembly`, and says why: the static form is documented for
-    .NET Framework 4.5 through 4.8.1, so the Windows PowerShell 5.1 host this script is launched
-    under should take the first branch, but nothing in this repository can run a .NET Framework host
-    to confirm it. The generated WSL script had only the static form under a bare `catch {}`, which
-    is the combination that fails invisibly. Carry the same fallback.
-    """
-    script = _render()
-    assert (
-        "[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly" in script
-    ), "the generated script no longer tries the documented static spelling first"
-    assert "[AppDomain]::CurrentDomain.DefineDynamicAssembly" in script, (
-        "the generated script has no AppDomain fallback, so on a host without the static overload "
-        "the empty outer catch swallows the failure and both icon refreshes stop happening"
-    )
-    static_at = script.index("[System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly")
-    appdomain_at = script.index("[AppDomain]::CurrentDomain.DefineDynamicAssembly")
-    assert (
-        static_at < appdomain_at
-    ), "AppDomain.CurrentDomain is absent on .NET Core, so leading with it would break pwsh"

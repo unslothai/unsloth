@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A cell that dies after `--click-probe` ran still reports what the probe measured.
-
-THE PROBE HAS NOWHERE ELSE TO LIVE. `composer_click_ms` is taken inside a `setup:composer_click`
-window, and that window's row is emitted by the session whatever happens next, so the click
-timing survives a cell that fails later. The attribution block has no window of its own: it runs
-before the window opens, it is not noted on one, and the only copy of it is the field the cell row
-is built from.
-
-AND THE CELL CAN STILL DIE AFTER IT. `_press_send` sets the 90 s bound on the composer click
-alone. Everything after it -- the `page.fill`, the send-button lookup and its click -- still runs
-under the 8 s default action timeout installed in `runtime/browser.py`, which is the timeout a
-large rung was already observed to blow through: that is why the click needed a bound of its own.
-So the exact run that pays for the probe, at the rung the probe exists for, is the one that loses
-it. Assigned on the way out of `_run_inner`, the whole block went missing from the failure cell.
-
-`CellRunner.run` is driven, with the browser stubbed at the boundary it crosses. The row that gets
-asserted is read back out of the payload the REAL recorder wrote.
-"""
+"""Attribution has no window row, so it must reach the cell row even when the cell dies later."""
 
 from __future__ import annotations
 
@@ -39,12 +22,7 @@ CENSUS = {"messages": 4, "elements": 31_637, "highlight_spans": 1_485}
 
 
 class _Page:
-    """Everything `_run_inner` touches before the send, and a `fill` that fails like the real one.
-
-    Playwright raises `TimeoutError` out of `page.fill` when the composer cannot be filled inside
-    the default action timeout. Raised from `fill` rather than from the send click because it is
-    the first unbounded step after the probe.
-    """
+    """Stub page whose fill raises TimeoutError, as Playwright does past the default action timeout."""
 
     def __init__(self, fail_on: str = "fill") -> None:
         self.fail_on = fail_on
@@ -119,14 +97,10 @@ class _Pacer:
 
 
 class _Seeder:
-    #:`None`, so `measure_chars_per_token` cannot reach for the network from a unit test.
     auth = None
 
     def seed(self, plan):
-        # No messages, so the mount wait is the selector and not a count that never arrives, and both
-        # markers `SeededThread` declares are present and `None`: `_wait_for_thread` reads `last_marker`
-        # unconditionally, and a stub that omits it fails on the attribute rather than on the failure
-        # these tests are about.
+        # No messages, and both markers present as None: _wait_for_thread reads last_marker unconditionally.
         return types.SimpleNamespace(
             thread_id = "t-1",
             seconds = 0.0,
@@ -210,29 +184,19 @@ def test_a_cell_that_dies_after_the_probe_still_reports_the_attribution(tmp_path
     assert row["completed"] is False
     assert row["failure"]["kind"] == "TimeoutError"
 
-    # Out of the payload, not the returned dict: the file is what a failed run leaves behind, and where
-    # the diagnostic has to be readable from.
     cells = _cell_rows(paths)
     assert len(cells) == 1
     attribution = cells[0]["click_attribution"]
     assert attribution["click_attribution_attempted"] is True
-    # The two readings the flag exists to produce: what the driver pays and what a user pays.
     assert "click_ms" in attribution and "mouse_ms" in attribution
 
 
 def test_the_attribution_of_one_cell_never_lands_on_the_next(tmp_path):
-    """CONTROL. A cell that dies BEFORE its own probe has no attribution to report.
-
-    The reading is filed from the cell's `finally`, so the field has to be cleared per cell rather
-    than beside the click that sets it. A stale block re-filed under the next cell id would be
-    worse than the loss this test's neighbour is about: a measurement of one rung reported as
-    another's.
-    """
+    """A cell dying before its probe must not inherit the previous cell's attribution; clear it per cell."""
 
     runner, paths, recorder = _runner(tmp_path, click_probe = True)
     runner.run(_cell(), _plan())
 
-    # The same runner, and this time the page is gone before the probe can run.
     runner.session.ctx.page = _Page(fail_on = "goto")
     runner.run(_cell("r500K.A0.rep1"), _plan())
     recorder.close()

@@ -46,6 +46,27 @@ def test_find_gguf_in_dir_matches_quant_label(tmp_path):
     assert _find_gguf_in_dir(tmp_path, "Q4_K") is None
 
 
+def test_find_gguf_in_dir_matches_a_same_quant_build_key(tmp_path):
+    alpha = tmp_path / "alpha-Q4_K_M.gguf"
+    beta = tmp_path / "beta-Q4_K_M-00001-of-00002.gguf"
+    alpha.write_bytes(b"GGUF")
+    beta.write_bytes(b"GGUF")
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+
+    assert _find_gguf_in_dir(tmp_path, "beta-Q4_K_M") == beta
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == alpha
+
+
+def test_find_gguf_in_dir_matches_a_filename_build_key(tmp_path):
+    first = tmp_path / "0-model-Q4_K_M.gguf"
+    bare = tmp_path / "Q4_K_M.gguf"
+    first.write_bytes(b"GGUF")
+    bare.write_bytes(b"GGUF")
+
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M.gguf") == bare
+    assert _find_gguf_in_dir(tmp_path, "Q4_K_M") == first
+
+
 def test_find_gguf_in_dir_without_variant_prefers_largest_model(tmp_path):
     smaller = tmp_path / "a-model-Q4_K_M.gguf"
     larger = tmp_path / "z-model-Q8_0.gguf"
@@ -146,14 +167,12 @@ def test_chat_template_from_dir_with_variant_still_prefers_tokenizer(tmp_path, m
     )
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # Selecting a variant must not flip precedence to the embedded GGUF template.
     assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_CONFIG"
 
 
 def test_chat_template_from_dir_with_variant_falls_back_to_gguf(tmp_path, monkeypatch):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"")
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no tokenizer sidecar, the embedded GGUF template is still the fallback.
     assert _chat_template_from_dir(tmp_path, "Q4_K_M") == "FROM_GGUF"
 
 
@@ -169,7 +188,6 @@ def test_read_default_chat_template_direct_gguf_prefers_sidecar(tmp_path, monkey
     )
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # A directly selected .gguf must prefer a maintained sidecar over its embedded copy.
     assert read_default_chat_template(str(gguf)) == "FROM_CONFIG"
 
 
@@ -178,13 +196,11 @@ def test_read_default_chat_template_direct_gguf_falls_back_to_embedded(tmp_path,
     gguf.write_bytes(b"")
     monkeypatch.setattr("picker.service._build_browse_allowlist", lambda: [tmp_path])
     monkeypatch.setattr("picker.service.read_gguf_chat_template", lambda _path: "FROM_GGUF")
-    # With no sidecar next to the file, the embedded GGUF template is the fallback.
     assert read_default_chat_template(str(gguf)) == "FROM_GGUF"
 
 
 def test_tokenizer_config_over_size_limit_is_skipped_not_parsed(tmp_path):
-    # An oversized tokenizer_config.json must be skipped before json.loads so a
-    # hostile sidecar cannot exhaust memory.
+    # Skip an oversized tokenizer_config.json before json.loads (hostile sidecar).
     padding = "x" * (MAX_TEMPLATE_METADATA_BYTES + 1024)
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({"chat_template": "HELLO", "_pad": padding}), encoding = "utf-8"
@@ -201,16 +217,15 @@ def test_processor_json_over_size_limit_is_skipped_not_parsed(tmp_path):
 
 
 def test_tokenizer_config_at_size_limit_is_still_read(tmp_path):
-    # A normal-sized config is unaffected by the bound (regression guard).
-    (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({"chat_template": "FROM_CONFIG"}), encoding = "utf-8"
-    )
+    # The bound is inclusive: a file of exactly MAX_TEMPLATE_METADATA_BYTES is read.
+    body = json.dumps({"chat_template": "FROM_CONFIG", "_pad": ""})
+    body = body[:-2] + "x" * (MAX_TEMPLATE_METADATA_BYTES - len(body)) + body[-2:]
+    assert len(body.encode("utf-8")) == MAX_TEMPLATE_METADATA_BYTES
+    (tmp_path / "tokenizer_config.json").write_text(body, encoding = "utf-8", newline = "")
     assert _chat_template_from_tokenizer_dir(tmp_path) == "FROM_CONFIG"
 
 
 def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch):
-    # An uncached Hub repo whose template exceeds the cap must be skipped via the
-    # remote size pre-check, never downloaded.
     import huggingface_hub
 
     monkeypatch.setattr("picker.service.resolve_cached_repo_id_case", lambda name: name)
@@ -231,10 +246,8 @@ def test_remote_template_over_size_limit_is_skipped_before_download(monkeypatch)
 
 
 def test_remote_oversized_jinja_falls_through_to_tokenizer_template(tmp_path, monkeypatch):
-    # A raw chat_template.jinja between the response cap (MAX_CHAT_TEMPLATE_BYTES)
-    # and the download bound (MAX_TEMPLATE_METADATA_BYTES) must not be returned: the
-    # route drops it, so the remote path must skip the oversized Jinja and fall
-    # through to the smaller tokenizer_config.json.
+    # A Jinja between MAX_CHAT_TEMPLATE_BYTES and MAX_TEMPLATE_METADATA_BYTES is dropped by the
+    # route, so fall through to tokenizer_config.json.
     import huggingface_hub
     from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 

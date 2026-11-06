@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-# install_python_stack.py lives at repo_root/studio/install_python_stack.py
 _INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
 
 OFFICIAL_URL = "https://download.pytorch.org/whl"
@@ -28,7 +27,6 @@ def _reload_whl_base(monkeypatch, mirror_value = None):
     else:
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", mirror_value)
 
-    # Add the script's directory to sys.path for import.
     script_dir = str(_INSTALL_SCRIPT.parent)
     monkeypatch.syspath_prepend(script_dir)
 

@@ -16,10 +16,26 @@ from utils.coding_agents import (
 
 
 def test_matches_unsloth_start_subcommands():
-    # Each entry must be an actual `unsloth start <agent>` subcommand name
-    # (unsloth_cli/commands/start.py). Spelled out here rather than imported
-    # from that module, which pulls in the CLI's heavier dependencies.
-    assert CODING_AGENTS == ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
+    # Each entry must be a real unsloth start subcommand name; spelled out to avoid heavy imports
+    assert CODING_AGENTS == (
+        "claude",
+        "codex",
+        "vscode",
+        "dsh",
+        "opencode",
+        "hermes",
+        "openclaw",
+        "pi",
+        "vibe",
+    )
+
+
+def test_detects_vscode_by_its_code_launcher():
+    with patch(
+        "utils.coding_agents.shutil.which",
+        side_effect = lambda name: "/usr/local/bin/code" if name == "code" else None,
+    ):
+        assert detect_installed_coding_agents() == ["vscode"]
 
 
 def test_detects_only_agents_present_on_path():
@@ -45,9 +61,6 @@ def test_preserves_declared_order_regardless_of_path_lookup_order():
 
 
 def test_treats_a_path_lookup_error_as_not_installed():
-    # An advisory check: shutil.which raising for one entry (e.g. a permission
-    # error walking a PATH directory) should not take down the whole endpoint,
-    # and should not stop the remaining agents from being checked.
     def flaky_which(name: str):
         if name == "codex":
             raise OSError("permission denied")

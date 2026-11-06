@@ -23,9 +23,8 @@ from _playwright_robust import (  # noqa: E402
     wait_for_smoke_page,
 )
 
-# 8000 collides with whatever else is on a shared box; sit by chat (5193) and research (5183).
+# Avoid 8000 on a shared box; sits by chat (5193) and research (5183).
 PORT = int(os.environ.get("SMOKE_PORT", "5203"))
-# Unset: start and stop our own server. Set: drive that one and leave it running.
 _EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
 BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
 OWNS_SERVER = not _EXTERNAL
@@ -45,18 +44,11 @@ def info(msg: str) -> None:
 
 
 def dump(page: Page, vite: subprocess.Popen[str] | None) -> None:
-    """Write down what the page actually was, since CI keeps no live browser.
-
-    `dump_diagnostics` records the browser side (screenshot, URL, body excerpt). The
-    dev server's own output is the other half: a transform error or a forced reload
-    is reported there and nowhere else.
-    """
+    """Capture the page and the vite tail, since transform errors and forced reloads show only in vite."""
     dump_diagnostics(page, ART, "smoke-ansi-failure", info = info)
     if vite is not None:
         info("vite tail:")
-        # Snapshot first: the drain thread is still appending, and printing releases the GIL, so lazy iteration raises
-        # "deque mutated during iteration" and loses the tail in the noisy failure it exists for. `list()` runs in C,
-        # so it is atomic.
+        # Snapshot with list() (atomic in C): the drain thread still appends and lazy iteration raises.
         for line in list(getattr(vite, "vite_tail", [])) or ["(no output)"]:
             info(f"  {line.rstrip()}")
     info(f"artifacts in {ART}")
@@ -78,7 +70,7 @@ def main() -> None:
             launch_args = chromium_launch_args() if browser_name == "chromium" else []
             browser = browser_type.launch(headless = True, args = launch_args)
             page = browser.new_page()
-            echo_browser_errors(page, info)
+            thrown = echo_browser_errors(page, info)
             try:
                 page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
                 page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
@@ -95,6 +87,13 @@ def main() -> None:
                     assert "[32m" not in text, f"{section} still shows SGR garbage"
             except Exception:
                 dump(page, vite)
+                # The smoke renders components outside the app's providers, so a new context dependency kills the
+                # React root; name the thrown error instead of a locator timeout.
+                if thrown:
+                    raise AssertionError(
+                        "the smoke page threw before rendering, so no pane exists to check: "
+                        + "; ".join(dict.fromkeys(thrown))
+                    )
                 raise
 
             info("all production panes rendered clean text (no ANSI escapes)")

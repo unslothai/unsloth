@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for short-alias clashes with llama-server flags.
-
-`unsloth studio run` passes unknown flags through to llama-server.
-Pre-cleanup it exposed 1-char shorts ``-m`` / ``-f`` plus ``-hfr``;
-Click clustered llama-server tokens against them (``-fa`` -> ``-f a``,
-``-mg 0`` -> ``-m g``, ``-fitt 1024`` -> ``-f itt``, ...), silently
-breaking ~11 pass-through flags.
-
-The cleanup drops ``-m``, ``-f``, ``-hfr``. The 2-char ``-hf`` stays
-(documented; multi-char shorts don't cluster). Long forms remain.
-``studio_default`` keeps ``-f`` because it has no pass-through.
-
-See ``test_studio_run_parallel_flag.py`` for ``--parallel`` /
-``-np`` coverage and re-exec forwarding.
-"""
+"""Drops -m, -f and -hfr: Click clusters llama-server tokens like -fa against them; -hf stays."""
 
 from __future__ import annotations
 
@@ -43,9 +29,6 @@ def _decls_for(param_name):
     return set(getattr(opt, "param_decls", []) or [])
 
 
-# Surface checks: removed shorts must not reappear.
-
-
 def test_model_short_aliases_removed():
     """`-m` / `-hfr` removed from --model; `-hf` kept (multi-char,
     doesn't cluster)."""
@@ -70,9 +53,6 @@ def test_studio_default_keeps_dash_f():
     opt = sig.parameters["frontend"].default
     decls = set(getattr(opt, "param_decls", []) or [])
     assert "-f" in decls
-
-
-# Behaviour checks: llama-server shorts must reach the child verbatim.
 
 
 class _ExecCaptured(SystemExit):
@@ -126,7 +106,6 @@ def _invoke(monkeypatch, args):
     return captured
 
 
-# (short_flag, value, llama-server long name). All were silently mis-parsed pre-cleanup.
 _PREVIOUSLY_BROKEN = [
     ("-fa", None, "--flash-attn"),
     ("-fit", None, "--fit"),
@@ -168,14 +147,8 @@ def test_dash_hf_documented_alias_still_works(monkeypatch):
     )
     assert len(captured) == 1
     argv = captured[0]
-    # `_split_repo_variant` peels the `:variant` suffix before re-exec.
     assert argv[argv.index("--model") + 1] == ("unsloth/gemma-4-26B-A4B-it-GGUF"), argv
     assert argv[argv.index("--gguf-variant") + 1] == "UD-Q4_K_XL", argv
-
-
-# Legacy `-m` / `-hfr` / `-f` were typer aliases pre-PR. The preprocessor promotes EXACT matches
-# back to their typer params and leaves clustered tokens (`-mg`, `-fa`, ...) in the pass-through
-# tail.
 
 
 @pytest.mark.parametrize(
@@ -193,7 +166,6 @@ def test_legacy_model_aliases_still_promote_to_model(monkeypatch, legacy_args, e
     assert len(captured) == 1, f"parent did not re-exec for {legacy_args}"
     argv = captured[0]
     assert argv[argv.index("--model") + 1] == expected_model, argv
-    # Promoted alias must not also leak into the pass-through tail.
     for alias in ("-m", "-hfr"):
         if alias in legacy_args:
             assert alias not in argv, f"legacy {alias} leaked into child argv: {argv}"
@@ -254,9 +226,6 @@ def test_legacy_m_inline_value_form(monkeypatch):
     assert len(captured) == 1
     argv = captured[0]
     assert argv[argv.index("--model") + 1] == "unsloth/Qwen3-1.7B-GGUF", argv
-
-
-# Unit tests for _consume_legacy_short_aliases.
 
 
 def test_consume_helper_exact_match_space_form():
@@ -333,10 +302,6 @@ def test_consume_helper_preserves_value_when_no_match():
     assert remaining == ["--top-k", "20"]
 
 
-# `-p` is typer short for --port, so Click clusters `-np8` as `-n -p 8` (port=8, parallel dropped).
-# The rewrite splits to `-np 8` pre-parse.
-
-
 def test_expand_np_rewrites_attached_form(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -367,7 +332,6 @@ def test_expand_np_leaves_equals_form_alone(monkeypatch):
 
 
 def test_expand_np_leaves_non_digit_suffix_alone(monkeypatch):
-    # `-npfoo` isn't a numeric attached value; let typer reject it.
     monkeypatch.setattr(sys, "argv", ["unsloth", "run", "-npfoo"])
     _studio_mod()._expand_attached_np_short()
     assert sys.argv == ["unsloth", "run", "-npfoo"]
@@ -416,10 +380,6 @@ def test_consume_helper_rejects_empty_inline_value():
     helper = _studio_mod()._consume_legacy_short_aliases
     with pytest.raises(_typer.BadParameter, match = "non-empty"):
         helper(["-m="], ("-m",), None, "--model")
-
-
-# Gate isolation: importing unsloth_cli from a third-party script must leave its sys.argv intact.
-# Pins the narrow basename set.
 
 
 @pytest.mark.parametrize(

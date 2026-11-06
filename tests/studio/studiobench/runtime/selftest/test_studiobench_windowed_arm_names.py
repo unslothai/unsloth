@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A MISTYPED FLAG MUST NOT COST A BROWSER AND TWO STUDIO SERVERS.
-
-`--windowed-arm` names the arm that is allowed the windowed readiness gate, and the name is checked
-against the arms the run actually has. That check used to happen after both Unsloth installs had
-been launched, the pacer bound and the browser opened, and the `SystemExit` it raises for
-`--windowed-arm treatments` was raised from a place with no cleanup around it: the `finally` that
-calls `bundle.close()`, `pacer.stop()`, `stop_studio()` and cancels the watchdog does not begin
-until the cell loop far below. So the typo exited the process and left the heavy children running,
-holding their ports.
-
-It is a pure argument check -- it needs nothing that has been launched -- so it now runs before any
-of it. These tests pin both halves: the check itself, and the fact that it happens FIRST.
-
-    python -m pytest tests/studio/studiobench/runtime/selftest/test_studiobench_windowed_arm_names.py -q
-"""
+"""A bad --windowed-arm name is refused before any process is started, so nothing is left running."""
 
 from __future__ import annotations
 
@@ -29,9 +15,6 @@ if str(_STUDIO_TESTS) not in sys.path:
     sys.path.insert(0, str(_STUDIO_TESTS))
 
 from studiobench import __main__ as M  # noqa: E402
-
-
-# ── the check itself ────────────────────────────────────────────────
 
 
 def test_the_arms_of_the_run_are_accepted():
@@ -58,16 +41,8 @@ def test_naming_the_treatment_arm_of_a_run_that_has_no_treatment_is_refused():
         M._windowed_arms("treatment", ["base"])
 
 
-# ── and it happens before anything is started ───────────────────────
-
-
 def test_a_bad_arm_name_is_refused_before_any_process_is_started(monkeypatch):
-    """THE DEFECT. Every entry point that starts something is trapped here, so if the refusal moves
-    back below any of them this fails with the trap's own error instead of the SystemExit.
-
-    The watchdog is the first of them in `run`, then the Unsloth install or the health check on an
-    attached one, then the pacer, then the browser. None of them is reached.
-    """
+    """The refusal must precede the watchdog, install, pacer and browser, which each start something."""
     from studiobench import pacer as pacer_mod
     from studiobench.runtime import browser as browser_mod
     from studiobench.runtime import lifecycle

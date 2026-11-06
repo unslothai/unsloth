@@ -8,6 +8,7 @@ export type {
   BlockKind,
   BlockType,
   SeedBlockType,
+  ValidatorBlockType,
 } from "./definitions";
 export {
   BLOCK_GROUPS,

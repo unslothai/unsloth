@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 from typing import Optional
 
@@ -96,8 +97,16 @@ def installation_has_managed_accounts() -> bool:
 
 
 def full_access_permitted() -> bool:
-    """Unsandboxed tool modes: refused install-wide, owner included, if a managed account exists."""
-    return not installation_has_managed_accounts()
+    """Only the installation owner may run tools outside the sandbox."""
+    from utils.account_context import is_owner_context
+    return is_owner_context()
+
+
+def api_full_access_refused() -> bool:
+    """An API key (or keyless API access) asked for full access: like a local stdio MCP command, running
+    outside the sandbox is the Unsloth UI's to choose, unless the operator sets the env opt-in."""
+    from utils.account_context import via_api_key_context
+    return via_api_key_context() and os.environ.get("UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS") != "1"
 
 
 def _forbid(detail: str) -> HTTPException:

@@ -4,12 +4,14 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** One day of the activity series. Dense: every day in range is present. */
+/** Dense: every day in range is present. */
 export type ProfileStatsDay = {
   date: string;
   tokens: number;
   messages: number;
   chats: number;
+  /** Absent from older backends. */
+  apiRequests?: number;
 };
 
 export type ProfileStatsModel = {
@@ -89,20 +91,35 @@ export type ProfileStats = {
   };
 };
 
-export async function loadProfileStats(
-  signal?: AbortSignal,
-): Promise<ProfileStats> {
-  // Bucket days and hours in this browser's timezone, which is not the
-  // server's when Unsloth is reached over the network. The IANA name is what
-  // gives each historical date its own daylight-saving offset; the current
-  // offset only covers callers whose host cannot resolve the name.
-  const query = new URLSearchParams({
+// Bucket days and hours in this browser's timezone, which is not the server's
+// when Unsloth is reached over the network. The IANA name is what gives each
+// historical date its own daylight-saving offset; the current offset only
+// covers callers whose host cannot resolve the name.
+function timezoneQuery(): URLSearchParams {
+  return new URLSearchParams({
     tz_offset_minutes: String(new Date().getTimezoneOffset()),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
   });
-  const res = await authFetch(`/api/profile/stats?${query}`, { signal });
+}
+
+export async function loadProfileStats(
+  signal?: AbortSignal,
+): Promise<ProfileStats> {
+  const res = await authFetch(`/api/profile/stats?${timezoneQuery()}`, {
+    signal,
+  });
   if (!res.ok) {
     throw new Error(await readFastApiError(res, "Failed to load your stats"));
   }
   return (await res.json()) as ProfileStats;
+}
+
+export async function exportProfileUsageCsv(): Promise<string> {
+  const res = await authFetch(`/api/profile/stats/export?${timezoneQuery()}`);
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to export your token usage"),
+    );
+  }
+  return await res.text();
 }

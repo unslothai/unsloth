@@ -13,14 +13,16 @@ def test_thinking_control_has_compact_hooks_in_both_composers():
     for path in (THREAD_TSX, SHARED_TSX):
         source = path.read_text(encoding = "utf-8")
         assert 'className="unsloth-thinking-label"' in source
-        assert "unsloth-thinking-caret size-[15px]" in source
+        # Wrapped in the space scale so it grows with the composer; a bare 15px would not.
+        assert (
+            "unsloth-thinking-caret size-[calc(15px*var(--ui-space-scale,1))]" in source
+        ), f"{path.name}: the Thinking caret lost its hook or its scaled 15px size"
         assert 'data-pill-label="Thinking settings"' in source
 
 
 def test_narrow_composer_collapses_thinking_to_the_bulb():
     css = INDEX_CSS.read_text(encoding = "utf-8")
 
-    # Query the composer width instead of the full viewport.
     assert css.count("container-type: inline-size;") >= 2
     compact_start = css.index("@container (max-width: 36rem)")
     compact_end = css.index("\t.unsloth-tick {", compact_start)

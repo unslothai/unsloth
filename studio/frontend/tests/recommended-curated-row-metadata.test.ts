@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Recommended list paints curated catalog seeds as well as live Hub listing rows.
-// Everything a row shows beyond its id used to come from the listing alone, so a curated
-// model the listing does not return (a repo it has not indexed, a non-unsloth owner, one
-// this account cannot see) rendered bare and, once downloaded, stopped matching search
-// entirely. These pin the catalog fallbacks that close both gaps.
+// Curated seeds the listing does not return need catalog fallbacks for metadata and search.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 import {
@@ -23,9 +19,15 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
   paramsFromId,
+  pickerSearchMatches,
   searchRowFitsDevice,
   searchableRecommendedIds,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
+import {
+  AUDIO_CPP_MODELS,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../src/features/audio/audio-cpp-catalog.ts";
 
 const H3_GGUF = "unsloth/MiniMax-H3-GGUF";
 const H3_BF16 = "MiniMaxAI/MiniMax-H3";
@@ -34,10 +36,36 @@ const WAN_BF16 = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
 
 // ── search: a downloaded curated row stays findable ───────────────────────────
 
+test("a bundled folder is searched on the folder name its row shows", () => {
+  const folders = AUDIO_CPP_MODELS.filter((model) => isAudioCppFolderId(model.id));
+  const hits = (query: string) =>
+    folders.filter((model) => pickerSearchMatches(model.id, [model.id], null, query));
+  const audioNamed = folders.filter((model) =>
+    audioCppDisplayName(model.id).toLowerCase().includes("audio"),
+  );
+  assert.ok(audioNamed.length > 0 && audioNamed.length < folders.length);
+  assert.deepEqual(hits("audio"), audioNamed);
+  assert.deepEqual(hits("cpp"), []);
+  assert.deepEqual(hits("gguf"), []);
+  assert.deepEqual(hits("GGUF"), []);
+  assert.equal(hits("kokoro").length, 1);
+  // The full name the row shows, and its tail, still find it.
+  assert.equal(hits("Kokoro-82M-GGUF").length, 1);
+  assert.equal(hits("82M-GGUF").length, 1);
+  assert.equal(hits("kokoro 82m gguf").length, 1);
+});
+
+test("any other row is searched on its aliases and label", () => {
+  const id = "unsloth/Qwen3-8B-GGUF";
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "unsloth/qwen3"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "qwen3 8b"), true);
+  assert.equal(pickerSearchMatches(id, [id], null, "gguf"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "llama"), false);
+  assert.equal(pickerSearchMatches("a/b", ["a/b"], "", ""), true);
+});
+
 test("a seed the listing pool dropped is still searchable", () => {
-  // recommendedIds (the listing pool) filters out everything already on disk, because a
-  // downloaded model has its own On Device row. The unfiltered Recommended list keeps
-  // painting it from the seeds, so search has to as well.
+  // recommendedIds drops downloaded models, but Recommended still paints them from seeds.
   const seeds = [H3_GGUF, LTX_GGUF];
   const listing = [LTX_GGUF, "unsloth/Wan2.2-TI2V-5B-GGUF"]; // H3 downloaded -> dropped
   assert.deepEqual(searchableRecommendedIds(seeds, listing), [
@@ -48,7 +76,6 @@ test("a seed the listing pool dropped is still searchable", () => {
 });
 
 test("seeds come first and no id is listed twice", () => {
-  // Same order orderRecommendedRows renders: curated in catalog order, then the rest.
   const out = searchableRecommendedIds(
     [H3_GGUF, LTX_GGUF],
     ["unsloth/Other-GGUF", LTX_GGUF, H3_GGUF],
@@ -63,23 +90,17 @@ test("a listing row that only differs in case does not duplicate its seed", () =
 });
 
 test("with no seeds the listing pool is passed through unchanged", () => {
-  // Chat (no catalog) must behave exactly as before.
   const listing = ["unsloth/a-GGUF", "unsloth/b-GGUF"];
   assert.deepEqual(searchableRecommendedIds([], listing), listing);
 });
 
-// ── row metadata: size chip + capability glyphs ───────────────────────────────
-
 test("a curated GGUF carries the param count its id cannot spell", () => {
-  // "MiniMax-H3-GGUF" has no "<n>B" token, and the listing does not return the repo, so
-  // without the catalog the row has no size chip at all.
   assert.equal(paramsFromId(H3_GGUF), undefined);
   assert.equal(curatedTotalParamsFor(H3_GGUF, VIDEO_CATALOG), 20_111_438_744);
 });
 
 test("the curated param count is the artifact's own, not the group's", () => {
-  // The BF16 pipeline row is a different checkpoint (it bundles the encoder and VAEs);
-  // it declares no count rather than borrowing the denoiser's.
+  // The BF16 pipeline bundles encoder and VAEs, so it must not borrow the denoiser's count.
   assert.equal(curatedTotalParamsFor(H3_BF16, VIDEO_CATALOG), undefined);
   assert.equal(curatedTotalParamsFor(LTX_GGUF, VIDEO_CATALOG), 21_005_004_544);
 });
@@ -87,24 +108,20 @@ test("the curated param count is the artifact's own, not the group's", () => {
 test("a curated audio family reports audio the repo name never mentions", () => {
   assert.equal(detectCapabilities({ id: H3_GGUF }).audio, false);
   assert.equal(curatedCapabilitiesFor(H3_GGUF, VIDEO_CATALOG)?.audio, true);
-  // Group-level, so every artifact of the model agrees.
   assert.equal(curatedCapabilitiesFor(H3_BF16, VIDEO_CATALOG)?.audio, true);
   assert.equal(curatedCapabilitiesFor(LTX_GGUF, VIDEO_CATALOG)?.audio, true);
 });
 
 test("curated capabilities claim nothing they were not given, beyond the scope", () => {
   const caps = curatedCapabilitiesFor(H3_GGUF, VIDEO_CATALOG);
-  // vision and reasoning stay false: nothing declared them, and nothing may infer them.
   assert.deepEqual(caps, {
     vision: false,
     reasoning: false,
     audio: true,
     imageGen: false,
-    // Not a declaration but not a guess either: the group sits in the video catalog.
     videoGen: true,
   });
-  // A group declaring no capabilities still answers, because its scope alone says what it makes.
-  // Undefined is reserved for an id the catalog does not know.
+  // A group declaring no capabilities still answers from its scope; undefined is for unknown ids.
   assert.deepEqual(curatedCapabilitiesFor(WAN_BF16, VIDEO_CATALOG), {
     vision: false,
     reasoning: false,
@@ -122,8 +139,7 @@ test("an image group reports image generation, not video", () => {
 });
 
 test("every video group whose description says audio declares the capability", () => {
-  // The catalog description is the human-facing claim; the flag is what draws the glyph.
-  // A new audio family that sets one and forgets the other is the failure this catches.
+  // Catches a family that sets the description but forgets the glyph flag.
   for (const group of VIDEO_CATALOG) {
     const saysAudio = /\baudio\b/i.test(group.description);
     assert.equal(
@@ -135,10 +151,7 @@ test("every video group whose description says audio declares the capability", (
 });
 
 test("the curated param count is what makes a curated row sizable in search", () => {
-  // The search fit check hides anything it cannot size (`requireKnown`), while the
-  // unfiltered Recommended list judges the seed row, which carries its own metadata.
-  // Without the catalog fallback the same model is kept in one list and hidden in the
-  // other the moment the "Fits on device" toggle is on.
+  // Search hides unsized rows while Recommended judges the seed, so both need the fallback.
   const gpu = {
     available: true,
     memoryTotalGb: 80,
@@ -161,8 +174,6 @@ test("the curated param count is what makes a curated row sizable in search", ()
   );
 });
 
-// ── wiring: the picker actually reads the fallbacks ───────────────────────────
-
 const PICKERS = fileURLToPath(
   new URL(
     "../src/features/model-picker/components/model-selector/pickers.tsx",
@@ -170,7 +181,6 @@ const PICKERS = fileURLToPath(
   ),
 );
 
-/** Source text of the top-level `const <name> = ...` initializer in pickers.tsx. */
 function declarationText(name: string): string {
   const source = ts.createSourceFile(
     PICKERS,
@@ -207,19 +217,16 @@ test("the search list is built from the seeds as well as the listing pool", () =
 
 test("row meta falls back to the curated seeds", () => {
   const text = declarationText("recommendedMeta");
-  // Ordered: seeds behind the listing, community last. A community row ahead of the seeds
-  // would let a metadata-poor listing row shadow a curated one, and the map keeps the first.
+  // The map keeps the first entry, so community rows must come after seeds.
   assert.match(
     text,
     /recommendedSearch\.results\s*,\s*\.\.\.catalogSeedRows\s*,\s*\.\.\.communityBrowse\.results/,
   );
-  // Listing first, and the first entry per id wins.
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
 });
 
 test("a family name is not read out of a longer word", () => {
-  // The fallbacks match model FAMILIES, and a stem runs into its own version digits, so what
-  // must not follow is more word. Every one of these is a real repo naming shape.
+  // Family stems run into version digits, so only a following word must not match.
   for (const id of [
     "org/fluxion-7b",
     "org/pixartful-7b",
@@ -231,8 +238,6 @@ test("a family name is not read out of a longer word", () => {
     assert.equal(caps.imageGen, false, `${id} read as an image generator`);
     assert.equal(caps.videoGen, false, `${id} read as a video generator`);
   }
-  // ...while the versions themselves still resolve, including the family whose name ends in a
-  // letter of its own.
   assert.equal(detectCapabilities({ id: "org/flux1-dev-fp8" }).imageGen, true);
   assert.equal(detectCapabilities({ id: "stabilityai/sd3.5-large" }).imageGen, true);
   assert.equal(detectCapabilities({ id: "THUDM/CogVideoX-5b" }).videoGen, true);
@@ -240,8 +245,7 @@ test("a family name is not read out of a longer word", () => {
 });
 
 test("every pipeline tag the Video picker lists reads as video generation", () => {
-  // Same contract as the Images one below, and the reason image-text-to-video had to reach
-  // VIDEO_GEN_TASKS: a row the glyph calls video must route to the Video page, not to a chat load.
+  // A row the glyph calls video must route to the Video page, not a chat load.
   const tags = declarationText("VIDEO_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
   assert.ok(tags.length > 0, "no tags parsed out of VIDEO_GEN_TASKS");
   for (const quoted of tags) {
@@ -255,8 +259,7 @@ test("every pipeline tag the Video picker lists reads as video generation", () =
 });
 
 test("every pipeline tag the Images picker lists reads as image generation", () => {
-  // A row the picker lists has to draw the glyph whatever its repo is called, so the tags
-  // detectCapabilities knows cannot be a subset of the ones the picker filters on.
+  // Detected tags cannot be a subset of the picker's filter tags, or listed rows lack glyphs.
   const tags = declarationText("IMAGE_GEN_TASKS").match(/"([^"]+)"/g) ?? [];
   assert.ok(tags.length > 0, "no tags parsed out of IMAGE_GEN_TASKS");
   for (const quoted of tags) {
@@ -269,22 +272,16 @@ test("every pipeline tag the Images picker lists reads as image generation", () 
   }
 });
 
-// Both lists that badge a Recommended row: the unfiltered one and the searched one. A model
-// must not change what it says about the device just because it was searched for.
 for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
   test(`${declaration} asks the catalog about a curated pipeline`, () => {
     const text = declarationText(declaration);
-    // The catalog knows the resident size and any measured offload tier. estimateLoadingVram
-    // assumes a language model it can 4-bit quantize, and reads the 30 GB Wan 2.2 TI2V
-    // pipeline as 5.9 GB, so it must not be what answers for these rows.
+    // estimateLoadingVram assumes a 4-bit-quantizable LM and misreads the 30 GB Wan pipeline as 5.9 GB.
     const curatedAt = text.indexOf("catalogFit(");
     const estimatorAt = text.indexOf("estimateLoadingVram");
     assert.ok(curatedAt >= 0, `${declaration} ignores the curated fit`);
     assert.ok(estimatorAt >= 0, `${declaration} no longer estimates VRAM at all`);
     assert.ok(curatedAt < estimatorAt, "the QLoRA estimator runs first");
-    // A task load puts the whole pipeline on one device, and torch is not the GGUF backend's
-    // inventory, so the budget is the load-scoped one the list's own fit filter uses. Inline or
-    // via a local, as long as what reaches artifactBudget went through loadScopedGpu(gpu, ...).
+    // A task load uses one device and torch's inventory, so the budget must go through loadScopedGpu.
     assert.match(
       text,
       /artifactBudget\(loadScopedGpu\(gpu, Boolean\(task\)\)\)|rowGpu = loadScopedGpu\(gpu, Boolean\(task\)\);[\s\S]{0,400}artifactBudget\(rowGpu\)/,
@@ -293,12 +290,10 @@ for (const declaration of ["recommendedMeta", "recommendedVramMap"]) {
 }
 
 test("every list that judges a row against the device asks the same helper", () => {
-  // One verdict, four readers: the unfiltered Recommended list, its device filter, the two
-  // search lists, and the badge. Splitting them is how a row ends up kept by a filter that
-  // calls it a fit and painted with the OOM badge at the same time.
+  // One verdict for all readers, or a filter calls a row a fit while the badge says OOM.
   assert.match(
     declarationText("catalogFit"),
-    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+    /curatedPickerFit\(id, catalog, budget\)/,
   );
   for (const declaration of ["recommendedRows", "searchRowFits"]) {
     assert.match(
@@ -310,16 +305,11 @@ test("every list that judges a row against the device asks the same helper", () 
 });
 
 test("GGUF rows keep the inference backend's budget", () => {
-  // They load through llama.cpp, so its inventory is the right one for them, load-scoped the way
-  // the quant rows and the fit filter scope it: a task load lands on ONE device, and judging the
-  // parent by the multi-GPU sum let a downloaded media row read as safe over oom variants.
   assert.match(
     declarationText("recommendedMeta"),
-    /ggufRowFit\(sizeBytes, rowInferenceGpu\)/,
+    /ggufRowFit\(sizeBytes, rowInferenceGpu, r\.id\)/,
   );
-  // And it is the inventory of the runtime that PLACES the row, not of its file format: an
-  // Images or Video GGUF goes to torch, which on a Vulkan chat build is a different device set
-  // than llama.cpp reports.
+  // Use the inventory of the runtime that places the row, not its file format.
   assert.match(
     declarationText("recommendedMeta"),
     /rowInferenceGpu = diffusionLoad\n\s*\? rowGpu\n\s*: loadScopedGpu\(inferenceGpu, Boolean\(task\)\)/,
@@ -345,4 +335,38 @@ test("seed rows carry the curated param count", () => {
     declarationText("catalogSeedRows"),
     /totalParams:\s*catalog\s*\?\s*curatedTotalParamsFor\(id, catalog\)/,
   );
+});
+
+
+test("Hub settings configure the cached alias and share the row selection", () => {
+  const compiled = ts.transpileModule(
+    `const render = ${declarationText("renderHubModelRow")};`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const calls: unknown[][] = [];
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown>, ...children: unknown[]) =>
+      ({ type, props, children }),
+  };
+  const render = new Function(
+    "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
+    "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
+    `${compiled}; return render;`,
+  )(
+    React, () => false, (...args: unknown[]) => calls.push(args),
+    (selected: boolean) => selected ? "selected" : "idle", () => true,
+    "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
+    new Map([["mirror/model", "text-generation"]]),
+  );
+  const row = render("mirror/model", "model row");
+  assert.equal(row.props.className, "selected");
+  row.children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[0], ["vendor/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: true,
+    pipelineTag: "text-generation",
+  }]);
+  render("new/model", "model row").children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[1], ["new/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,
+  }]);
 });

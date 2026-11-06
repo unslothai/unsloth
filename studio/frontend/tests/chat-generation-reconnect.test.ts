@@ -179,6 +179,40 @@ test("durable replay normalizes reasoning summary control frames", async () => {
   assert.deepEqual(chunks, [{ _reasoningDurationMs: 3200 }]);
 });
 
+test("durable replay re-tags persisted tool control frames for the shared consumer", async () => {
+  const toolStart = { type: "tool_start", name: "web_search", input: { q: "x" } };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/events")) {
+      return sse([
+        frame(1, "chunk", { type: "tool_status", content: "Searching…" }),
+        frame(2, "chunk", toolStart),
+        frame(
+          3,
+          "chunk",
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
+        ),
+        frame(4, "run.completed", { status: "completed" }, run("completed", 4)),
+      ]);
+    }
+    return new Response(JSON.stringify(run("completed", 4)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const chunks: object[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+  })) {
+    if (update.event?.type === "chunk") chunks.push(update.event.payload);
+  }
+  assert.deepEqual(chunks, [
+    { _toolStatus: "Searching…" },
+    { _toolEvent: toolStart },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
+  ]);
+});
+
 test("a backend without chat runs selects the legacy path", async () => {
   globalThis.fetch = (async () =>
     new Response(null, { status: 404 })) as typeof fetch;
@@ -212,6 +246,20 @@ test("credential-safe durable admission errors select the legacy stream", async 
       assert.equal(isLegacyFallbackChatGenerationAdmissionError(error), true);
       return true;
     },
+  );
+});
+
+test("an older backend's unknown-field refusal selects the legacy stream", async () => {
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        detail: "Unsupported durable request fields: sandbox_level",
+      }),
+      { status: 400, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+  await assert.rejects(
+    createChatGenerationRun(createInput()),
+    (error: unknown) => isLegacyFallbackChatGenerationAdmissionError(error),
   );
 });
 
@@ -330,7 +378,6 @@ test("Stop during create cancels the run after its delayed reply", async () => {
 });
 
 test("a null admission does not mean the run was stopped", async () => {
-  // json() makes an unparseable 2xx body null and `ok` keeps it, so the create resolves null.
   globalThis.fetch = (async () =>
     new Response("", { status: 200 })) as typeof fetch;
   const controller = new AbortController();
@@ -343,10 +390,7 @@ test("a null admission does not mean the run was stopped", async () => {
 });
 
 test("Stop before admission resolves still reaches the server", () => {
-  // Admission resolves long after the abort listener is installed (model auto-load,
-  // RAG, attachment upload, first history save). A Stop in that window has no run id
-  // and the turn may still fall back to the legacy stream, so it has to send the
-  // cancel_id POST the backend stashes for a generation that registers afterwards.
+  // A Stop before admission has no run id, so the cancel_id POST must still be sent.
   assert.deepEqual(chatGenerationStopPlan("pending", null), {
     cancelRunId: null,
     postLegacyCancel: true,
@@ -356,7 +400,6 @@ test("Stop before admission resolves still reaches the server", () => {
     postLegacyCancel: true,
   });
 
-  // Once the run exists, cancelling it is enough and is the precise thing to do.
   assert.deepEqual(chatGenerationStopPlan("pending", "run-7"), {
     cancelRunId: "run-7",
     postLegacyCancel: false,
@@ -366,8 +409,7 @@ test("Stop before admission resolves still reaches the server", () => {
     postLegacyCancel: false,
   });
 
-  // Durable with no id means create was aborted before it replied; that path chains
-  // its own cancel onto the pending create, so a second POST would be noise.
+  // Durable with no id chains its own cancel onto the pending create.
   assert.deepEqual(chatGenerationStopPlan("durable", null), {
     cancelRunId: null,
     postLegacyCancel: false,

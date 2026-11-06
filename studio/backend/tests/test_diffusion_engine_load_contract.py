@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The load contract the two image engines share, and the native engine's offline half.
-
-``POST /images/load`` calls ``begin_load`` through ONE call site for whichever engine was
-activated, so every keyword it passes has to be accepted by both. That is not a style rule: the
-native engine is what a CPU-only host, an opted-in MPS host and ``UNSLOTH_DIFFUSION_ENGINE=sd_cpp``
-select, so a keyword only the diffusers engine declares TypeErrors every single load on those
-hosts -- including the ordinary user-initiated ones from the Images page, which pass the flag's
-default. ``local_files_only`` shipped exactly that way.
-
-The engine doubles here are ``create_autospec`` mocks on purpose. A hand-written fake with
-``**kwargs`` accepts anything, which is why the existing route tests passed against an engine that
-could not be called at all; autospec binds against the real signature and raises the TypeError the
-user would have seen.
-"""
+"""Shared begin_load contract: every keyword the route passes must bind on both image engines."""
 
 from __future__ import annotations
 
@@ -33,15 +20,8 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
 
-# ── What the route actually passes ─────────────────────────────────────────
-
-
 def _route_begin_load_keywords() -> list[str]:
-    """The keyword names ``_start_engine_load`` hands ``engine.begin_load``, read off the route.
-
-    Parsed rather than duplicated so this test cannot drift: the next keyword added to that call
-    is covered the moment it is added, which is the whole failure mode here.
-    """
+    """Parses the begin_load keywords off the route so the test cannot drift from it."""
     import routes.inference as route_module
 
     source = textwrap.dedent(inspect.getsource(route_module.load_diffusion_model_gated))
@@ -80,11 +60,7 @@ def test_both_engines_accept_every_keyword_the_route_passes(engine):
 
 
 def test_the_two_begin_load_signatures_declare_local_files_only_alike():
-    """Same name, same keyword-only kind, same default on both engines.
-
-    A native ``**kwargs`` catch-all would satisfy the bind test above while silently DROPPING the
-    flag, so the shape is asserted, not just the acceptance.
-    """
+    """Both engines declare local_files_only alike; a **kwargs catch-all would silently drop it."""
     params = {
         engine: inspect.signature(engine.begin_load).parameters
         for engine in (DiffusionBackend, SdCppDiffusionBackend)
@@ -102,7 +78,14 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
 # ── The route, driven onto the native engine ───────────────────────────────
 
 
-def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
+def _drive_the_images_load(
+    monkeypatch,
+    *,
+    user_initiated: bool,
+    engine_choice = None,
+    begin_load_error = None,
+    notes = None,
+):
     """Run ``POST /images/load``'s body with the NATIVE engine selected; return the mock engine.
 
     Autospec'd off the real class, so the call the route makes is bound against the real
@@ -116,6 +99,22 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
 
     engine = create_autospec(SdCppDiffusionBackend, instance = True)
     engine.begin_load.return_value = {"loaded": False, "repo_id": None}
+    if begin_load_error is not None:
+        engine.begin_load.side_effect = begin_load_error
+    if notes is not None:
+        # The before-load snapshot is taken before begin_load starts the worker.
+        monkeypatch.setattr(
+            router_module,
+            "loaded_state_of",
+            lambda e: notes.append(("snapshot", engine.begin_load.call_count, e is engine)),
+        )
+        monkeypatch.setattr(
+            router_module,
+            "note_engine_pick",
+            lambda pick, loaded_by = None, before = None: notes.append(
+                (pick, engine.begin_load.call_count, loaded_by is engine)
+            ),
+        )
     engine.preflight_base_access.return_value = None
 
     monkeypatch.setattr(router_module, "predict_engine", lambda *a, **k: ENGINE_SD_CPP)
@@ -124,7 +123,6 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: engine)
     monkeypatch.setattr(router_module, "begin_load_on", lambda _engine, start: start())
     monkeypatch.setattr(router_module, "annotate_status", lambda status: status)
-    # A CPU-only host is where the native engine is selected in the first place.
     monkeypatch.setattr(
         device_module,
         "resolve_diffusion_device_target",
@@ -142,6 +140,7 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
             DiffusionLoadRequest(
                 model_path = "unsloth/FLUX.1-dev-GGUF",
                 gguf_filename = "flux1-dev-Q4_K_M.gguf",
+                engine = engine_choice,
             ),
             "test-user",
             user_initiated = user_initiated,
@@ -152,13 +151,27 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
 
 @pytest.mark.parametrize("user_initiated", [True, False])
 def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiated):
-    # The regression: this raised TypeError for BOTH values, so the Images page could not load a
-    # model at all on any host that selects sd.cpp. The parametrisation keeps the user-initiated
-    # case explicit, because that is the one nobody expects an offline flag to break.
     engine = _drive_the_images_load(monkeypatch, user_initiated = user_initiated)
 
     engine.begin_load.assert_called_once()
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
+
+
+def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monkeypatch):
+    # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
+    notes = []
+    _drive_the_images_load(monkeypatch, user_initiated = True, engine_choice = "sd_cpp", notes = notes)
+    assert notes == [("snapshot", 0, True), ("sd_cpp", 1, True)]
+    notes.clear()
+    with pytest.raises(Exception):
+        _drive_the_images_load(
+            monkeypatch,
+            user_initiated = True,
+            engine_choice = "sd_cpp",
+            begin_load_error = RuntimeError("busy"),
+            notes = notes,
+        )
+    assert notes == [("snapshot", 0, True)]
 
 
 # ── The native loader honours it ───────────────────────────────────────────
@@ -177,11 +190,7 @@ def _no_hub(monkeypatch):
 
 
 def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
-    """The size probe and the companion preflight are both pure network; neither may run.
-
-    Their failure mode is quiet -- ``_set_expected_bytes`` swallows everything and the preflight
-    fails open -- so an unguarded call would not fail the load, it would just download.
-    """
+    """Cache-only native loads make no Hub call; the size probe and preflight would fail open silently."""
     from core.inference.diffusion_families import detect_family
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
 
@@ -200,6 +209,7 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         token,
         cancel_event = None,
         local_files_only = False,
+        vision_optional = True,
     ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")
@@ -218,8 +228,6 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         _load_token = 1,
     )
 
-    # Reached the fetch (so the probe and preflight were skipped, not merely tolerated) and the
-    # flag arrived there, which is the only call that can still pull bytes.
     assert fetched == [True]
 
 
@@ -268,9 +276,39 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
         )
     message = str(caught.value)
     assert "ae.safetensors" in message
-    # The FETCH repo, which is where the bytes were looked for: the gated vendor base is swapped
-    # to its ungated mirror before the lookup, so naming the upstream id would misdirect.
     assert "unsloth/FLUX.1-dev" in message
+
+
+def test_an_uncached_vision_projector_does_not_fail_an_offline_load(monkeypatch, tmp_path):
+    """Text-to-image never reads --llm_vision, so a Qwen-Image-2.1 GGUF cached before the projector
+    was listed must still restore offline. Only the projector is optional: the encoder it sits
+    beside still fails loudly."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_xet_fallback as xet
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
+
+    cached = tmp_path / "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf"
+    cached.write_bytes(b"")
+
+    def _download(repo_id, filename, token, **kwargs):
+        if filename == "mmproj-F16.gguf":
+            raise LocalEntryNotFoundError("Cannot find the requested files in the disk cache")
+        return str(cached)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    paths = Native(engine = None)._fetch_assets(
+        [(repo, cached.name, "llm"), (repo, "mmproj-F16.gguf", "llm_vision")],
+        None,
+        local_files_only = True,
+    )
+    assert paths == {"llm": str(cached)}
+
+    with pytest.raises(RuntimeError, match = "mmproj-F16.gguf"):
+        Native(engine = None)._fetch_assets(
+            [(repo, "mmproj-F16.gguf", "llm")], None, local_files_only = True
+        )
 
 
 def test_the_default_still_takes_the_xet_fallback_ladder(monkeypatch, tmp_path):
@@ -295,12 +333,7 @@ def test_the_default_still_takes_the_xet_fallback_ladder(monkeypatch, tmp_path):
 
 
 def test_the_offline_download_never_reaches_the_shared_ladder(monkeypatch, tmp_path):
-    """And with the flag on it goes straight to huggingface_hub.
-
-    Deliberately NOT forwarded to unsloth_zoo: ``start_watchdog`` already showed that an older
-    installed zoo silently drops kwargs it does not declare, and a dropped ``local_files_only``
-    downloads -- the one outcome the flag exists to prevent.
-    """
+    """Offline downloads go straight to huggingface_hub: an older zoo drops local_files_only kwargs."""
     import huggingface_hub
 
     import utils.hf_xet_fallback as xet
@@ -346,13 +379,7 @@ def test_a_cancelled_offline_download_still_stops(monkeypatch, tmp_path):
 
 
 def test_the_binary_install_is_not_covered_by_the_flag():
-    """Stated as a test so the boundary is not re-litigated by accident.
-
-    ``local_files_only`` is about MODEL ASSETS. The sd-cli / sd-server binary lives in a separate
-    managed tree with its own install policy, and ``_run_load`` resolves it before any asset is
-    fetched; a background load may still install one, exactly as before. If that ever needs to
-    change it is a deliberate decision, not a side effect of this flag.
-    """
+    """The sd.cpp binary install is outside local_files_only; it resolves before assets are fetched."""
     source = inspect.getsource(SdCppDiffusionBackend._run_load)
     resolve = source.index("self._resolve_backend()")
     fetch = source.index("self._fetch_assets(")

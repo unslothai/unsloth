@@ -15,15 +15,12 @@ export type GgufVariantPresentationGroup<T extends PresentableGgufVariant> = {
   variants: T[];
 };
 
-// `.gguf` optional: an H3 quant KEY is the file stem the backend keyed it by
-// (`_unknown_gguf_variant_key`), so the same parser reads both. Lazy quant group so the suffix
-// wins when present.
+// `.gguf` optional: an H3 quant key is the file stem; lazy quant group so the suffix wins.
 const H3_FILENAME = /^minimax_h3_(fl2va|ref2va)(?:_pruned)?-(.+?)(?:\.gguf)?$/i;
 const GGUF_SHARD_SUFFIX = /-\d{5}-of-\d{5}$/i;
 const PATH_SEPARATOR = /[\\/]/;
 
-// The backend's own wording (`_apply_gguf_display_labels`), so the Hub card and a row's tooltip
-// name one checkpoint the same way.
+// Matches the backend's _apply_gguf_display_labels wording.
 const H3_WORKFLOW_LABEL = {
   "text-frames": "Text & frames",
   "reference-media": "References",
@@ -55,14 +52,22 @@ function h3Presentation(
   return h3PresentationFor(variant.filename);
 }
 
+const QUANT_TOKEN_RE = /^(?:ud-)?(?:bf16|f16|f32|q\d\w*|iq\d\w*|tq\d\w*)$/i;
+
+/** A raw quant key ("bf16", "sub/q8_0") as shown: the quant token uppercased. Keys stay raw. */
+export function quantDisplayCase(q: string): string {
+  const cut = q.lastIndexOf("/") + 1;
+  const leaf = q.slice(cut);
+  return QUANT_TOKEN_RE.test(leaf) ? q.slice(0, cut) + leaf.toUpperCase() : q;
+}
+
 /** A GGUF quant KEY as the row's mono chip: the quant alone, since that column is capped at 7.2em
  *  and an H3 key is a whole file stem that clips to nonsense. The workflow and build go to
  *  `ggufQuantDetailLabel`. Other quants pass through. */
 export function ggufQuantChipLabel(quant: string): string {
-  return h3PresentationFor(quant)?.quantLabel ?? quant;
+  return h3PresentationFor(quant)?.quantLabel ?? quantDisplayCase(quant);
 }
 
-/** The same key in full, for a tooltip with room for it: workflow and build. */
 export function ggufQuantDetailLabel(quant: string): string {
   const h3 = h3PresentationFor(quant);
   if (!h3) {
@@ -81,7 +86,7 @@ export function ggufVariantPickerLabel(
       ? h3.quantLabel
       : `${h3.quantLabel} · ${h3.build}`;
   }
-  return variant.display_label?.trim() || variant.quant;
+  return variant.display_label?.trim() || quantDisplayCase(variant.quant);
 }
 
 export function h3PickerHasOnlyPrunedBuilds(
@@ -179,4 +184,12 @@ export function preferredGgufVariantByGroup<T extends PresentableGgufVariant>(
       return [group.key, nearestSize ?? null];
     }),
   );
+}
+
+/** Missing on older responses; null means unknown. */
+export function ggufVariantContextLength(
+  variant: { context_length?: number | null },
+  fallback: number | null,
+): number | null {
+  return variant.context_length === undefined ? fallback : variant.context_length;
 }

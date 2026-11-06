@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Tombstones mask deleted threads in the Dexie read fallback. Each carries a `deletedAt` so old
- *  entries can be GC'd, keeping localStorage bounded. Reads accept both the legacy plain-string
- *  format and the {id, deletedAt} tuple. */
+/** Reads accept both the legacy plain-string format and {id, deletedAt}. */
 
 interface Tombstone {
   id: string;
@@ -11,7 +9,7 @@ interface Tombstone {
 }
 
 const TOMBSTONES_KEY = "unsloth_chat_deleted_thread_ids";
-const TOMBSTONE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+const TOMBSTONE_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const TOMBSTONE_MAX_COUNT = 5000;
 
 const deletedThreads = new Map<string, Tombstone>();
@@ -42,7 +40,6 @@ function loadTombstones(): Tombstone[] {
     const out: Tombstone[] = [];
     for (const item of raw) {
       if (typeof item === "string") {
-        // Legacy plain-string format from pre-B6 installs.
         out.push({ id: item, deletedAt: now });
       } else if (isTombstone(item)) {
         out.push(item);
@@ -59,7 +56,6 @@ function gc(): void {
   for (const [id, t] of deletedThreads) {
     if (t.deletedAt < cutoff) deletedThreads.delete(id);
   }
-  // Cap size: drop oldest if we exceed the limit (e.g. a bulk thread clear).
   if (deletedThreads.size > TOMBSTONE_MAX_COUNT) {
     const sorted = Array.from(deletedThreads.entries()).sort(
       (a, b) => a[1].deletedAt - b[1].deletedAt,
@@ -84,26 +80,41 @@ for (const t of loadTombstones()) {
 }
 gc();
 
+const deletedListeners = new Set<(threadIds: string[], pairIds: string[]) => void>();
+
 export function markChatThreadDeleted(threadId: string): void {
   deletedThreads.set(threadId, { id: threadId, deletedAt: nowMs() });
   gc();
   persist();
+  for (const listener of deletedListeners) listener([threadId], []);
 }
 
-export function markChatThreadsDeleted(threadIds: Iterable<string>): void {
+/** `listener(threadIds, pairIds)` when chats are deleted, so state kept per chat elsewhere can go too. */
+export function onChatThreadsDeleted(listener: (threadIds: string[], pairIds: string[]) => void): () => void {
+  deletedListeners.add(listener);
+  return () => deletedListeners.delete(listener);
+}
+
+/** `quiet` hides the rows without telling listeners: a delete that can still fail and roll back. */
+export function markChatThreadsDeleted(threadIds: Iterable<string>, { quiet = false } = {}): void {
   const now = nowMs();
-  for (const id of threadIds) {
+  const ids = [...threadIds];
+  for (const id of ids) {
     deletedThreads.set(id, { id, deletedAt: now });
   }
   gc();
   persist();
+  if (!quiet) notifyChatThreadsDeleted(ids, []);
+}
+
+export function notifyChatThreadsDeleted(threadIds: string[], pairIds: string[]): void {
+  for (const listener of deletedListeners) listener(threadIds, pairIds);
 }
 
 export function isChatThreadDeleted(threadId: string): boolean {
   return deletedThreads.has(threadId);
 }
 
-/** Rollback support: drop tombstones when a backend delete fails. */
 export function removeChatThreadTombstones(threadIds: Iterable<string>): void {
   let changed = false;
   for (const id of threadIds) {

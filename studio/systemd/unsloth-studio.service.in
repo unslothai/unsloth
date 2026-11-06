@@ -1,0 +1,19 @@
+# unsloth-studio-managed-systemd
+# Written by the Unsloth Studio installer; opting in again overwrites it.
+[Unit]
+Description=Unsloth Studio inference server
+Documentation=https://github.com/unslothai/unsloth
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+@@ENVIRONMENT_LINES@@
+ExecStart=@@EXEC_START@@
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

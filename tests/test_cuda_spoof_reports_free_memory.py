@@ -12,15 +12,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Every CUDA spoof must report a plausible amount of FREE memory.
-
-`torch.cuda.mem_get_info` returns `(free, total)` and delegates to
-`cudart().cudaMemGetInfo`, so a spoof answering zero free describes an exhausted
-card. The fused cross entropy then raises rather than chunking, which failed
-`test_sft_trains_on_cpu` on a host with four idle GPUs and read as a product bug.
-
-Source-level, because importing either spoof mutates the interpreter's torch.
-"""
+"""CUDA spoofs must report plausible free memory; zero free makes fused cross entropy raise."""
 
 import ast
 import pathlib

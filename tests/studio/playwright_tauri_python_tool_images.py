@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser regression for the desktop Python tool image boundary.
-
-Runs as a standalone script. It serves a page with the exact Tauri CSP, then
-checks that trusted code can fetch an authenticated sandbox image into a blob
-URL while an allowed HTTPS image redirect cannot reach the HTTP Unsloth backend.
-The same policy intentionally continues to allow ordinary HTTPS images,
-including HTTPS loopback, which is outside this PR's HTTP-backend boundary.
-"""
+"""Under the exact Tauri CSP, an allowed HTTPS redirect must not reach the HTTP Unsloth backend."""
 
 from __future__ import annotations
 

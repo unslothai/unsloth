@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""`docker logs` must show how to sign in to Studio, and a preset password must
-survive restarts.
-
-Studio writes its generated first-boot password to a file and prints only the
-path, so a launcher banner saying "password below" left users with nothing to
-type. The one-shot `studio-password` supervisord program prints the credential
-once the file exists, or says why there is none, then a ready block once both
-services answer. `unsloth studio` exits 1 when handed an initial password after
-one is stored, so `unsloth-studio-run` applies UNSLOTH_STUDIO_PASSWORD only while
-nothing is stored and the launcher keeps it out of supervisord's environment.
-These run the shipped scripts against a fake Studio home.
-"""
+"""Studio prints only the password file path, so studio-password prints the credential itself."""
 
 from __future__ import annotations
 
@@ -81,21 +70,18 @@ def _auth_db(
     conn.close()
 
 
-# --- studio-password: the login line and the ready summary -----------------------
-
-
 def _run(
     home: Path,
     *,
     env: dict | None = None,
     wait: str = "3",
     services_up: bool = True,
+    curl: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the shipped script against *home*, with curl stubbed: the ready probes
     must never reach a real Studio on the test host."""
     bin_dir = home / "stub-bin"
-    _stub(bin_dir, "curl", "exit 0\n" if services_up else "exit 7\n")
-    # the admin row is "committed" unless the test parks a not-initialized marker
+    _stub(bin_dir, "curl", curl or ("exit 0\n" if services_up else "exit 7\n"))
     _stub(
         bin_dir, "unsloth-studio-run", f'[[ -e "{home / "not-initialized"}" ]] && exit 1\nexit 0\n'
     )
@@ -104,6 +90,8 @@ def _run(
         UNSLOTH_STUDIO_HOME = str(home),
         UNSLOTH_STUDIO_PASSWORD_WAIT = wait,
         UNSLOTH_STUDIO_READY_WAIT = "2",
+        # Colour splits the matched lines; colour has its own test below.
+        NO_COLOR = "1",
     )
     e.update(env or {})
     return subprocess.run(["bash", str(SCRIPT)], capture_output = True, text = True, env = e, timeout = 60)
@@ -126,7 +114,7 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "60 minutes" in res.stdout, "the change-it-or-shut-down window is not explained"
     assert "Unsloth container ready" in res.stdout
     assert (
-        "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
+        "Unsloth     http://localhost:8000   username: unsloth   password: s3cret pass"
         in res.stdout
     )
 
@@ -174,6 +162,42 @@ def test_services_that_never_answer_are_reported_not_hidden(tmp_path: Path):
     assert res.returncode == 0
     assert "startup incomplete" in res.stdout, res.stdout
     assert res.stdout.count("not answering") == 2
+
+
+@behavioural
+def test_the_ready_probes_bypass_a_container_wide_proxy(tmp_path: Path):
+    log = tmp_path / "curl.log"
+    res = _run(
+        tmp_path,
+        env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "stored", "STUB_LOG": str(log)},
+        curl = 'echo "$*" >> "$STUB_LOG"\nexit 0\n',
+    )
+    assert res.returncode == 0, res.stderr
+    calls = log.read_text().splitlines()
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8000/api/health") for c in calls), calls
+    assert any(c.endswith("--noproxy * http://127.0.0.1:8888/login") for c in calls), calls
+
+
+@behavioural
+def test_the_jupyter_tunnel_probe_bypasses_a_container_wide_proxy(tmp_path: Path):
+    bin_dir = tmp_path / "stub-bin"
+    log = tmp_path / "curl.log"
+    _stub(bin_dir, "curl", 'echo "$*" >> "$STUB_LOG"\nexit 0\n')
+    _stub(tmp_path / "bin", "cloudflared", 'echo "STUB-CLOUDFLARED $*"\n')
+    e = _clean_env(bin_dir)
+    e.update(UNSLOTH_JUPYTER_CLOUDFLARE = "1", UNSLOTH_STUDIO_HOME = str(tmp_path), STUB_LOG = str(log))
+    res = subprocess.run(
+        ["bash", str(DOCKER / "unsloth_jupyter_tunnel.sh")],
+        capture_output = True,
+        text = True,
+        env = e,
+        timeout = 60,
+    )
+    assert res.returncode == 0, res.stderr
+    assert "STUB-CLOUDFLARED tunnel" in res.stdout, res.stdout
+    assert log.read_text().splitlines() == [
+        "-fsS -o /dev/null --noproxy * http://localhost:8888/login"
+    ]
 
 
 @behavioural
@@ -253,9 +277,6 @@ def test_a_stored_password_is_reported_at_once(tmp_path: Path):
     assert "reset-password" in res.stdout
 
 
-# --- unsloth-studio-run: the initial password is applied only while none is stored
-
-
 def _run_wrapper(
     home: Path,
     *,
@@ -263,7 +284,6 @@ def _run_wrapper(
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     bin_dir = home / "bin"
-    # what supervisord would spawn: prints what the CLI would have been handed
     _stub(bin_dir, "unsloth", 'printf "%s|%s\\n" "${UNSLOTH_STUDIO_PASSWORD:-<unset>}" "$*"\n')
     e = _clean_env(home / "stub-bin")
     (home / "stub-bin").mkdir(exist_ok = True)
@@ -293,7 +313,6 @@ def test_stored_means_an_admin_row_whose_password_was_changed(
     elif db == "changed":
         _auth_db(tmp_path, must_change = 0)
     elif db == "legacy":
-        # the CLI migrates this row with default 0 and then rejects an initial password
         _auth_db(tmp_path, must_change = None, legacy = True)
     res = _run_wrapper(tmp_path, args = ["--stored"])
     assert (res.returncode == 0) is stored, res.stderr
@@ -366,9 +385,6 @@ def test_the_staged_password_reaches_the_cli_byte_for_byte(tmp_path: Path):
 def test_no_file_means_no_initial_password(tmp_path: Path):
     res = _run_wrapper(tmp_path, env = {"UNSLOTH_STUDIO_PASSWORD": "hunter22hunter"})
     assert res.stdout.startswith("<unset>|"), res.stdout + res.stderr
-
-
-# --- the launcher: where the initial password goes -------------------------------
 
 
 def _launcher_banner_block() -> str:
@@ -449,11 +465,10 @@ def test_the_image_wires_the_scripts_in():
     assert "autorestart=false" in block and "stdout_logfile=/dev/stdout" in block
     studio = conf.split("[program:studio]", 1)[1].split("[program:", 1)[0]
     assert "command=/usr/local/bin/unsloth-studio-run" in studio
-    # the bootstrap timeout ends Studio with exit 0; autorestart=true would bring it
-    # straight back with the same default credential and a fresh timer
+    # Bootstrap timeout exits 0; autorestart=true would restart with the default credential.
     assert "autorestart=unexpected" in studio and "exitcodes=0" in studio
     dockerfile = DOCKERFILE.read_text(encoding = "utf-8")
-    # the Studio build uses context ./docker behind a deny-all .dockerignore
+    # The Studio build uses context ./docker behind a deny-all .dockerignore.
     allow = (DOCKER / ".dockerignore").read_text(encoding = "utf-8").splitlines()
     for script, target in (
         ("studio_password.sh", "unsloth-studio-password"),
@@ -469,3 +484,17 @@ def test_the_image_wires_the_scripts_in():
         "first-boot password below" not in launch
     ), "the banner promises what Studio no longer prints"
     assert "unset UNSLOTH_STUDIO_PASSWORD" in launch
+
+
+def test_the_summary_is_coloured_unless_no_color_is_set(tmp_path: Path):
+    """The block is the one thing worth reading in a long startup log; plain text
+    left it indistinguishable from the supervisord and Jupyter lines around it.
+    NO_COLOR (no-color.org) is the documented way off, for log collectors."""
+    env = {"UNSLOTH_STUDIO_PASSWORD_STATE": "generated"}
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    coloured = _run(a, env = {**env, "NO_COLOR": ""})
+    plain = _run(b, env = env)
+    assert "\033[1;32m" in coloured.stdout.replace("\x1b", "\033"), coloured.stdout
+    assert "\x1b[" not in plain.stdout, plain.stdout

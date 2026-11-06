@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic tests for the combined llama+whisper update item.
-
-llama.cpp is the single main update item; whisper.cpp piggybacks on it. These
-pin the union status (update_available = llama behind OR whisper behind), the
-chained apply (llama phase first, whisper phase only when behind), the failure
-policy (llama failure aborts; whisper failure keeps the llama partial success),
-the silent whisper skips, and the backward-compatible payload shape.
-"""
+"""whisper.cpp rides on the llama update: a llama failure aborts, a whisper failure does not."""
 
 from __future__ import annotations
 
@@ -23,6 +16,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import utils.audio_cpp_update as aupd  # noqa: E402
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
 import utils.whisper_cpp_freshness as wfresh  # noqa: E402
@@ -31,8 +25,7 @@ import utils.whisper_cpp_update as wupd  # noqa: E402
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 WHISPER_MARKER = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
-# The top-level status and job fields that predate the whisper piggyback; the
-# combined payload must stay an exact superset so current UI code keeps working.
+# Pre-whisper fields; the combined payload must stay an exact superset for the UI.
 LEGACY_STATUS_FIELDS = {
     "supported",
     "update_available",
@@ -73,7 +66,7 @@ class _FakeInstallerPopen:
     ):
         if on_start is not None:
             on_start(list(cmd))
-        self.pid = 515151  # a real Popen has one; the lifetime record needs it
+        self.pid = 515151
         self.returncode = returncode
         self.stdout = iter(lines or [])
 
@@ -94,12 +87,9 @@ def _patch_llama_installer(
     lines = None,
     on_start = None,
 ):
-    # Only intercept the installer invocation: importing routes.inference inside
-    # the worker can Popen unrelated host probes (ldconfig etc).
     def _popen(cmd, **kw):
         parts = [str(part) for part in cmd]
-        # The read-only resolvers run the same script, so faking them would answer the
-        # backend-drift probe with an install's canned output.
+        # Resolvers run the same script; faking them would answer the drift probe with install output.
         is_installer = any("install_llama_prebuilt" in part for part in parts) and not any(
             part.startswith("--resolve-") for part in parts
         )
@@ -173,9 +163,19 @@ def _clean_state(monkeypatch, tmp_path):
         "UNSLOTH_WHISPER_CPP_PATH",
     ):
         monkeypatch.delenv(var, raising = False)
-    # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     monkeypatch.setattr(wfresh, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    # A dev box may hold a real managed audio.cpp; tests that want the phase opt in with _setup_audio.
+    monkeypatch.setattr(
+        aupd,
+        "chained_phase_plan",
+        lambda **_kw: {
+            "status": None,
+            "update_available": False,
+            "skip_reason": "not_installed",
+            "phase": None,
+        },
+    )
     yield
     freshness.reset_caches()
     wfresh.reset_caches()
@@ -240,6 +240,48 @@ def _patch_whisper_phase(
     monkeypatch.setattr(wupd, "run_chained_phase", _run)
 
 
+_AUDIO_STATUS = {
+    "installed_tag": "v0.8.2-audio8-perf-hotfix-unsloth.1",
+    "latest_tag": "v0.9.0-unsloth.1",
+    "update_size_bytes": None,
+}
+
+
+def _setup_audio(
+    monkeypatch,
+    events,
+    *,
+    error = None,
+    reload_required = False,
+):
+    """An offered audio.cpp phase whose runs are recorded instead of installing."""
+    plans = []
+
+    def _plan(**kw):
+        plans.append(("audio", kw))
+        return {
+            "status": dict(_AUDIO_STATUS),
+            "update_available": True,
+            "skip_reason": None,
+            "phase": {"to_tag": "v0.9.0-unsloth.1"},
+        }
+
+    def _run(phase, set_progress):
+        events.append("audio")
+        if error is not None:
+            raise RuntimeError(error)
+        set_progress(0.5)
+        return {
+            "to_tag": "v0.9.0-unsloth.1",
+            "reload_required": reload_required,
+            "message": "Updated audio.cpp to v0.9.0-unsloth.1.",
+        }
+
+    monkeypatch.setattr(aupd, "chained_phase_plan", _plan)
+    monkeypatch.setattr(aupd, "run_chained_phase", _run)
+    return plans
+
+
 def _wait_for_job():
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -252,31 +294,28 @@ def _wait_for_job():
         return dict(upd._job)
 
 
-# --- status: the single item folds whisper in ---
-
-
 def test_status_payload_is_exact_superset_of_legacy_fields(monkeypatch, tmp_path):
     _setup_llama(monkeypatch, tmp_path)
     _setup_whisper(monkeypatch, tmp_path)
     st = upd.get_update_status(force_refresh = True)
     assert LEGACY_STATUS_FIELDS <= set(st)
     assert LEGACY_JOB_FIELDS <= set(st["job"])
-    # The new fields ride alongside, never replacing the legacy ones.
     assert st["llama_update_available"] is True
     assert st["whisper"]["update_available"] is True
     assert st["whisper"]["latest_tag"] == "v1.9.2-unsloth.1"
     assert st["update_component"] == "llama"
 
 
-def test_status_union_whisper_only_surfaces_update(monkeypatch, tmp_path):
-    # llama current, whisper behind: the single item still shows an update.
+def test_status_whisper_only_release_waits_for_llama(monkeypatch, tmp_path):
+    # llama current, whisper behind: whisper.cpp alone never raises the update item.
     _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
     _setup_whisper(monkeypatch, tmp_path)
     st = upd.get_update_status(force_refresh = True)
     assert st["llama_update_available"] is False
-    assert st["whisper"]["update_available"] is True
-    assert st["update_available"] is True
-    assert st["update_component"] == "whisper"
+    assert st["whisper"]["update_available"] is False
+    assert st["whisper"]["skip_reason"] == "waits_for_llama"
+    assert st["update_available"] is False
+    assert st["update_component"] is None
     assert st["installed_tag"] == "b9518"
     assert st["latest_tag"] == "b9518"
     assert st["whisper"]["installed_tag"] == "v1.9.1-unsloth.1"
@@ -293,7 +332,6 @@ def test_status_whisper_current_does_not_flip_union(monkeypatch, tmp_path):
 
 
 def test_status_survives_whisper_probe_failure(monkeypatch, tmp_path):
-    # The piggyback fails open: llama status still works without a whisper probe.
     _setup_llama(monkeypatch, tmp_path)
 
     def _boom(*, force_refresh = False):
@@ -305,7 +343,45 @@ def test_status_survives_whisper_probe_failure(monkeypatch, tmp_path):
     assert st["whisper"] is None
 
 
-# --- whisper chained_phase_plan: silent skips ---
+def test_status_skips_github_when_update_checks_disabled(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    _setup_whisper(monkeypatch, tmp_path)
+
+    def _network(*args, **kwargs):
+        raise AssertionError("reached GitHub despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _network)
+    monkeypatch.setattr(wfresh, "_fetch_latest_release_tag", _network)
+    monkeypatch.setattr(upd, "_pending_backend_migration", _network)
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", _network)
+    monkeypatch.setattr(wupd.sys, "platform", "darwin")
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["update_component"] is None
+    assert st["backend_migration_available"] is False
+    assert st["supported"] is True
+    assert st["installed_tag"] == "b9493"
+    assert st["latest_tag"] is None
+    assert st["whisper"]["installed_tag"] == "v1.9.1-unsloth.1"
+    assert st["whisper"]["update_available"] is False
+
+
+def test_whisper_source_build_skips_probe_when_update_checks_disabled(monkeypatch, tmp_path):
+    binary = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(wupd, "_find_binary", lambda: str(binary))
+
+    def _resolve(**kwargs):
+        raise AssertionError("probed for a prebuilt despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(wupd, "_resolve_prebuilt_for_host", _resolve)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    st = wupd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["source_build"] is False
 
 
 def test_whisper_plan_skips_local_link(monkeypatch, tmp_path):
@@ -320,7 +396,7 @@ def test_whisper_plan_skips_local_link(monkeypatch, tmp_path):
 def test_whisper_plan_skips_source_build(monkeypatch, tmp_path):
     binary = tmp_path / "whisper.cpp" / "build" / "bin" / "whisper-server"
     binary.parent.mkdir(parents = True)
-    binary.write_text("stub")  # no marker
+    binary.write_text("stub")
     monkeypatch.setattr(wupd, "_find_binary", lambda: str(binary))
     plan = wupd.chained_phase_plan()
     assert plan["skip_reason"] == "source_build"
@@ -354,9 +430,7 @@ def test_whisper_plan_eligible_when_behind(monkeypatch, tmp_path):
     assert plan["phase"]["install_dir"] == install_dir
     assert plan["phase"]["repo"] == "unslothai/whisper.cpp"
     assert plan["phase"]["backend"] == "cpu"
-    # Pin to the exact release the freshness check offered: unpinned, the
-    # installer's download-host /releases/latest pointer can lag published_at
-    # and reinstall an older build in a loop.
+    # Unpinned, the installer's /releases/latest can lag and reinstall an older build in a loop.
     assert plan["phase"]["pin_release_tag"] == "v1.9.2-unsloth.1"
 
 
@@ -414,8 +488,6 @@ def test_whisper_phase_pins_installer_to_checked_release(monkeypatch, tmp_path):
 
 
 def test_whisper_phase_exit_2_is_a_failed_phase(monkeypatch, tmp_path):
-    # No install occurred, so incompatibility must remain an actionable job
-    # error instead of producing a false success toast and hiding the banner.
     def _raise_exit_2(cmd, env, **kw):
         raise wupd._flow.InstallerExit(2, "installer exited 2: incompatible release")
 
@@ -462,8 +534,6 @@ def test_llama_update_survives_unavailable_whisper_module(monkeypatch, tmp_path)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
 
-    # A failed optional whisper probe must not be followed by an unconditional
-    # import. The valid llama phase still starts and completes.
     assert upd.start_update()["started"] is True
     job = _wait_for_job()
     assert job["state"] == "success", job
@@ -517,9 +587,6 @@ def test_whisper_phase_integrity_failure_is_not_swallowed(monkeypatch, tmp_path)
         )
 
 
-# --- apply: the chained job ---
-
-
 def test_apply_runs_llama_then_whisper(monkeypatch, tmp_path):
     llama_dir = _setup_llama(monkeypatch, tmp_path)
     _setup_whisper(monkeypatch, tmp_path)
@@ -536,12 +603,11 @@ def test_apply_runs_llama_then_whisper(monkeypatch, tmp_path):
     assert res["started"] is True, res
     job = _wait_for_job()
     assert job["state"] == "success", job
-    assert events == ["llama", "whisper"]  # llama phase strictly first
+    assert events == ["llama", "whisper"]
     assert job["phases"]["llama"]["state"] == "success"
     assert job["phases"]["llama"]["to_tag"] == "b9518"
     assert job["phases"]["whisper"]["state"] == "success"
     assert job["phases"]["whisper"]["to_tag"] == "v1.9.2-unsloth.1"
-    # Legacy top-level fields keep their llama meaning.
     assert job["from_tag"] == "b9493"
     assert job["to_tag"] == "b9518"
     assert "Updated llama.cpp to b9518." in job["message"]
@@ -569,9 +635,8 @@ def test_apply_llama_only_when_whisper_current(monkeypatch, tmp_path):
     assert job["phases"]["whisper"]["reason"] == "up_to_date"
 
 
-def test_apply_whisper_only_noops_llama(monkeypatch, tmp_path):
-    # llama current + whisper behind: the same single apply runs, with the llama
-    # phase a cheap already-matches no-op and the whisper phase doing the work.
+def test_apply_whisper_only_release_starts_no_job(monkeypatch, tmp_path):
+    # llama current + whisper behind: nothing to ride with, so the apply refuses as up to date.
     _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
     _setup_whisper(monkeypatch, tmp_path)
     (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
@@ -581,26 +646,60 @@ def test_apply_whisper_only_noops_llama(monkeypatch, tmp_path):
     _patch_whisper_phase(monkeypatch, events)
 
     res = upd.start_update()
-    assert res["started"] is True, res
+    assert res["started"] is False, res
+    assert res["reason"] == "up_to_date"
+    assert events == []
+
+
+def test_a_failed_whisper_phase_can_be_retried_alone(monkeypatch, tmp_path):
+    # llama updated but whisper failed: llama is now current, and Retry must still reach whisper.
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+    failed = upd._flow.new_job()
+    failed.update(state = "error", phases = {"whisper": {"state": upd._flow.PHASE_ERROR}})
+    monkeypatch.setattr(upd, "_job", failed)
+
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+    assert st["update_component"] == "whisper"
+    assert st["whisper"]["update_available"] is True
+
+    events = []
+    _patch_llama_installer(monkeypatch, on_start = lambda cmd: events.append("llama"))
+    _patch_whisper_phase(monkeypatch, events)
+    assert upd.start_update()["started"] is True
     job = _wait_for_job()
     assert job["state"] == "success", job
-    assert events == ["whisper"]  # the llama installer never ran
-    # The legacy job-level to_tag means "llama tag"; a whisper-only round
-    # leaves it unset so the UI never reports a llama update that never ran.
-    assert job["to_tag"] is None
-    assert job["phases"]["llama"]["state"] == "skipped"
-    assert job["phases"]["llama"]["reason"] == "up_to_date"
+    assert events == ["whisper"]
+
+
+def test_apply_whisper_rides_with_audio(monkeypatch, tmp_path):
+    # llama current, whisper and audio.cpp behind: whisper updates in the audio.cpp round.
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+
+    events = []
+    _patch_llama_installer(monkeypatch, on_start = lambda cmd: events.append("llama"))
+    _patch_whisper_phase(monkeypatch, events)
+    _setup_audio(monkeypatch, events)
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["whisper", "audio"]
     assert job["phases"]["whisper"]["state"] == "success"
-    assert "Updated whisper.cpp to v1.9.2-unsloth.1." in job["message"]
 
 
 def test_whisper_reload_never_raises_job_reload_flag(monkeypatch, tmp_path):
-    # A whisper-only update that had to unload a warm sidecar reports
+    # A whisper update (riding with audio.cpp) that had to unload a warm sidecar reports
     # reload_required on its phase, but the JOB flag stays down: the chat
     # frontend resyncs (and clears the local checkpoint) off the job flag,
     # which must mean "the llama server changed", not "the sidecar restarted".
     _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
     _setup_whisper(monkeypatch, tmp_path)
+    _setup_audio(monkeypatch, [])
     (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
 
     def _whisper_phase(phase, set_progress):
@@ -639,7 +738,7 @@ def test_apply_llama_failure_aborts_before_whisper(monkeypatch, tmp_path):
     job = _wait_for_job()
     assert job["state"] == "error", job
     assert "boom" in (job["error"] or "")
-    assert events == []  # whisper never attempted
+    assert events == []
     assert job["phases"]["llama"]["state"] == "error"
     assert job["phases"]["whisper"]["state"] == "skipped"
     assert job["phases"]["whisper"]["reason"] == "aborted"
@@ -651,7 +750,6 @@ def test_apply_whisper_failure_keeps_llama_partial_success(monkeypatch, tmp_path
     _setup_whisper(monkeypatch, tmp_path)
     (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
 
-    # An active model makes the llama phase report reload_required.
     import threading
     from types import ModuleType
 
@@ -683,11 +781,9 @@ def test_apply_whisper_failure_keeps_llama_partial_success(monkeypatch, tmp_path
     job = _wait_for_job()
     assert job["state"] == "error", job
     assert events == ["llama", "whisper"]
-    # The message says both halves: llama landed, whisper did not.
     assert "Updated llama.cpp to b9518." in job["message"]
     assert "whisper.cpp update failed." in job["message"]
     assert "whisper installer exploded" in (job["error"] or "")
-    # The llama phase's reload_required survives the whisper failure.
     assert job["reload_required"] is True
     assert job["to_tag"] == "b9518"
     assert job["phases"]["llama"]["state"] == "success"
@@ -716,7 +812,6 @@ def test_apply_skips_whisper_local_link_silently(monkeypatch, tmp_path):
 
 
 def test_chained_progress_windows(monkeypatch, tmp_path):
-    # The llama phase fills roughly the first 0.7 slice and whisper the rest.
     llama_dir = _setup_llama(monkeypatch, tmp_path)
     _setup_whisper(monkeypatch, tmp_path)
     (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
@@ -762,9 +857,10 @@ def _slim_phase(**over):
 def _llama_installed_as(monkeypatch, backend, asset, *, whisper_kind):
     monkeypatch.setattr(wupd, "_installed_llama_bundle", lambda: (backend, asset))
     monkeypatch.setattr(wupd, "_find_binary", lambda: "whisper-server")
-    monkeypatch.setattr(
-        wupd, "read_install_marker", lambda _b: {"install_kind": whisper_kind, "backend": "rocm"}
-    )
+    marker = {"backend": "rocm"}
+    if whisper_kind is not None:
+        marker["install_kind"] = whisper_kind
+    monkeypatch.setattr(wupd, "read_install_marker", lambda _b: dict(marker))
 
 
 def test_a_migrated_llama_re_pairs_the_chained_phase(monkeypatch):
@@ -866,12 +962,7 @@ def test_a_workable_pairing_still_installs(monkeypatch):
 
 
 def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
-    """The pre-flight asks about the TARGET release, not the installed one.
-
-    A fat marker omits install_kind by design ("fat markers keep the legacy payload
-    exactly"), and releases are slim-only now, so gating on the installed marker would
-    skip exactly the host about to be handed its first slim bundle.
-    """
+    """The pre-flight checks the target release, since a fat marker omits install_kind by design."""
     monkeypatch.setattr(
         wupd,
         "_resolve_prebuilt_for_host",
@@ -883,7 +974,8 @@ def test_a_legacy_fat_install_is_pre_flighted_too(monkeypatch):
 
     monkeypatch.setattr(wupd, "run_chained_phase", must_not_install)
 
-    # No install_kind at all: the legacy fat marker.
+    # No install_kind at all: the legacy fat marker, read because llama moved backends.
+    _llama_installed_as(monkeypatch, "vulkan", "vulkan.zip", whisper_kind = None)
     assert wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None) == {
         "skipped": True,
         "skip_reason": "paired_llama_unavailable",
@@ -906,12 +998,9 @@ def test_a_fat_target_release_is_never_reported_incompatible(monkeypatch):
 @pytest.mark.parametrize(
     "resolved",
     [
-        # --resolve-prebuilt maps an unreachable API to exit 0 with no prebuilt, so
-        # this is what a network failure looks like, not a pairing gap.
+        # --resolve-prebuilt maps an unreachable API to exit 0 with no prebuilt.
         {"prebuilt_available": False, "unavailable_reason": "unresolved"},
-        # An installer that predates unavailable_reason. Unknown, so not a gap.
         {"prebuilt_available": False},
-        # The wrapper's own fail-open: nonzero exit, timeout, or unparseable output.
         None,
     ],
 )
@@ -948,3 +1037,187 @@ def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(mon
 
     with pytest.raises(wupd._flow.InstallerExit):
         wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)
+
+
+# --- audio.cpp: the third phase ---
+
+
+def test_status_union_audio_only_surfaces_update(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    _setup_audio(monkeypatch, [])
+    st = upd.get_update_status(force_refresh = True)
+    assert LEGACY_STATUS_FIELDS <= set(st)
+    assert st["update_available"] is True
+    assert st["llama_update_available"] is False
+    assert st["update_component"] == "audio"
+    assert st["audio"] == {**_AUDIO_STATUS, "update_available": True, "skip_reason": None}
+    # The top-level version fields keep their llama meaning.
+    assert st["installed_tag"] == "b9518"
+
+
+@pytest.mark.parametrize("force_refresh", [True, False])
+def test_status_force_refresh_reaches_audio(monkeypatch, tmp_path, force_refresh):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    plans = _setup_audio(monkeypatch, [])
+    upd.get_update_status(force_refresh = force_refresh)
+    assert plans == [("audio", {"force_refresh": force_refresh})]
+
+
+def test_status_llama_keeps_the_card_name_over_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    _setup_audio(monkeypatch, [])
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_component"] == "llama"
+    assert st["audio"]["update_available"] is True
+
+
+def test_status_whisper_rides_beside_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    _setup_audio(monkeypatch, [])
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_component"] == "audio"
+    assert st["whisper"]["update_available"] is True
+
+
+def test_status_survives_audio_probe_failure(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+
+    def _boom(**_kw):
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(aupd, "chained_phase_plan", _boom)
+    st = upd.get_update_status(force_refresh = True)
+    assert st["audio"] is None
+    assert st["update_available"] is True
+    assert st["update_component"] == "llama"
+
+
+def test_status_skipped_audio_does_not_flip_union(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["update_component"] is None
+    assert st["audio"]["skip_reason"] == "not_installed"
+
+
+def test_apply_audio_only_runs_only_the_audio_phase(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    events = []
+    _patch_llama_installer(monkeypatch, on_start = lambda cmd: events.append("llama"))
+    _patch_whisper_phase(monkeypatch, events)
+    _setup_audio(monkeypatch, events)
+
+    res = upd.start_update()
+    assert res["started"] is True, res
+    assert "audio.cpp" in res["job"]["message"]
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["audio"]
+    assert job["phases"]["llama"]["state"] == "skipped"
+    assert job["phases"]["whisper"]["state"] == "skipped"
+    assert job["phases"]["audio"]["state"] == "success"
+    assert job["phases"]["audio"]["to_tag"] == "v0.9.0-unsloth.1"
+    # The job-level to_tag stays the llama.cpp build, as for a whisper-only round.
+    assert job["to_tag"] is None
+    assert "Updated audio.cpp to v0.9.0-unsloth.1." in job["message"]
+    assert job["progress"] == 1.0
+
+
+def test_apply_runs_llama_then_whisper_then_audio(monkeypatch, tmp_path):
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+    events = []
+    _patch_llama_installer(
+        monkeypatch,
+        on_start = lambda cmd: (events.append("llama"), _write_llama_install(llama_dir, "b9518")),
+    )
+    _patch_whisper_phase(monkeypatch, events)
+    _setup_audio(monkeypatch, events)
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["llama", "whisper", "audio"]
+    # The legacy to_tag still names the llama build.
+    assert job["to_tag"] == "b9518"
+
+
+def test_apply_llama_failure_aborts_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    events = []
+    _patch_llama_installer(monkeypatch, returncode = 2, lines = ["boom: disk full\n"])
+    _setup_audio(monkeypatch, events)
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "error", job
+    assert events == []
+    assert job["phases"]["audio"]["state"] == "skipped"
+    assert job["phases"]["audio"]["reason"] == "aborted"
+
+
+def test_apply_audio_failure_keeps_llama_partial_success(monkeypatch, tmp_path):
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    events = []
+    _patch_llama_installer(
+        monkeypatch,
+        on_start = lambda cmd: (events.append("llama"), _write_llama_install(llama_dir, "b9518")),
+    )
+    _setup_audio(monkeypatch, events, error = "sha256 mismatch")
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "error", job
+    assert events == ["llama", "audio"]
+    assert "Updated llama.cpp to b9518." in job["message"]
+    assert "audio.cpp update failed." in job["message"]
+    assert "sha256 mismatch" in (job["error"] or "")
+    assert job["phases"]["llama"]["state"] == "success"
+    assert job["phases"]["audio"]["state"] == "error"
+
+
+def test_audio_unload_raises_the_job_reload_flag(monkeypatch, tmp_path):
+    # Unlike the dictation sidecars, an audio.cpp model in the main slot is a server model change.
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_audio(monkeypatch, [], reload_required = True)
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert job["reload_required"] is True
+
+
+def test_backend_switch_never_plans_audio(monkeypatch, tmp_path):
+    plans = _setup_audio(monkeypatch, [])
+    monkeypatch.setattr(
+        upd,
+        "_plan_llama_phase",
+        lambda backend_request = None: {
+            "skip_reason": "already_selected",
+            "refusal": {
+                "started": False,
+                "reason": "already_selected",
+                "message": "llama.cpp is already set to cpu.",
+            },
+        },
+    )
+    monkeypatch.setattr(upd, "_repair_pairing_plan_or_empty", lambda *a, **k: {})
+    monkeypatch.setattr(upd, "_env_backend_override", lambda: None)
+    res = upd.start_backend_switch("cpu")
+    assert res["started"] is False
+    assert res["reason"] == "already_selected"
+    assert plans == []
+
+
+def test_update_checks_disabled_refuses_before_planning_audio(monkeypatch, tmp_path):
+    plans = _setup_audio(monkeypatch, [])
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "update_checks_disabled"
+    assert plans == []

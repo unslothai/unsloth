@@ -81,7 +81,7 @@ def test_default_template_is_unchanged_when_parameter_is_omitted():
     assert result["dataset"][0]["text"] == (
         "Below is an instruction that describes a task, paired with an input that provides "
         "further context. Write a response that appropriately completes the request.\n\n"
-        "### Instruction:\nWhat is 2+2?\n\n### Input:\n\n\n### Response:\n4"
+        "### Instruction:\nWhat is 2+2?\n\n### Input:\n\n\n### Response:\n4</s>"
     )
 
 
@@ -130,7 +130,7 @@ def test_main_entry_point_keeps_default_alpaca_output():
     assert result["final_format"] == "alpaca"
     assert len(result["dataset"]) == 1
     assert result["dataset"].column_names == dataset.column_names + ["text"]
-    assert result["dataset"][0]["text"].endswith("### Response:\n4")
+    assert result["dataset"][0]["text"].endswith("### Response:\n4</s>")
 
 
 def test_main_entry_point_keeps_raw_text_path_unchanged():

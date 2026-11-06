@@ -51,7 +51,7 @@ A product name cannot tell you whether the box has a bridge.
 asking it again is not verification. vLLM reached the same conclusion and performs a real
 data-integrity check (`can_actually_p2p`, from vllm#2728).
 
-Studio reads the topology itself and requires a confirmed NVLink between every selected pair.
+Unsloth Studio reads the topology itself and requires a confirmed NVLink between every selected pair.
 NVLink traffic does not traverse the PCIe root complex, so the IOMMU fault class above
 cannot apply to it. The probe fails closed: a missing `nvidia-smi`, a non-zero exit, a
 timeout, an unparsable matrix, or a device mask that cannot be mapped to PCI indices all
@@ -144,6 +144,6 @@ bool use_peer_access = getenv("GGML_CUDA_P2P") != nullptr;
 ```
 
 So `GGML_CUDA_P2P=0` turns peer access **on**. The variable must be unset entirely.
-Studio deletes it from the llama-server environment when its inherited value reads as off
+Unsloth Studio deletes it from the llama-server environment when its inherited value reads as off
 (`0`, `false`, `no`, `off`, empty), on every backend, so the intuitive spelling of the
 opt-out does what the user meant. Set it to `1` and it is honoured as a deliberate request.

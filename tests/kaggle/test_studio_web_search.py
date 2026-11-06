@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The web_search tool must be executed, and the log is the only witness.
-
-`assert_code_execution` reads its verdict off the filesystem; a web search
-leaves nothing there. What it does leave is Studio's own
-`execute_tool: name=...` line, emitted from INSIDE `execute_tool`, so it is
-written by execution rather than by selection. A loop that hands the model the
-schema and never runs the call produces no such line.
-
-Two rules stop the check drifting into vacuity in opposite directions.
-
-It must count only what THIS request wrote. The payload runs several
-tool-driven assertions against one long-lived server, and a whole-file grep
-would let `assert_code_execution`'s call satisfy this one.
-
-And it must NOT fail on an empty result set. `_web_search` fans out through
-ddgs with no API key, so a provider rate-limiting a Kaggle egress IP is a fact
-about the day rather than a Studio defect, and failing on it would put a red in
-front of every PR that no reader could act on.
-"""
+"""Checks the execute_tool log line from this request only, and never fails on empty search results."""
 
 from __future__ import annotations
 
@@ -73,9 +55,7 @@ def test_it_counts_only_what_this_request_wrote():
     this one, which is a green tick for a search that never happened."""
     body = _body()
     assert "before = self.server_log.read_text" in body
-    # Whitespace-insensitive: the repo's formatter rewrites this slice to
-    # `after[len(before) :]`, and a guard that matched the unformatted spelling
-    # went red on a reformat rather than on a regression.
+    # Whitespace-insensitive: the formatter rewrites the slice spacing.
     assert "fresh=after[len(before):]" in "".join(body.split())
     assert "fresh.count(marker)" in body, "counted over the fresh slice, not the file"
 
@@ -105,9 +85,7 @@ def test_an_empty_result_set_is_reported_and_not_failed():
 
 def test_the_failure_fires_when_nothing_executed():
     func = _func("assert_web_search")
-    # Only the branches that DECIDE the verdict. The loop also breaks early on
-    # a positive count, which is a control-flow test rather than a rule, and
-    # reading it as one made this guard red on a correct body.
+    # Only verdict branches; the early break on a positive count is control flow.
     guarded = [
         node
         for node in ast.walk(func)
@@ -131,37 +109,15 @@ def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
 
 
 def test_the_search_tool_call_is_FORCED_rather_than_hoped_for():
-    """Otherwise this measures a model's judgement, not Studio's plumbing.
-
-    On kernel unsloth-probe-studio-full2-815a0c the 2B model answered "The
-    current version of the Linux kernel is 6.10" straight from parametric
-    knowledge, never emitted a call, and the assertion reported that Studio had
-    offered web_search and not run it. Studio had done nothing wrong.
-
-    `assert_tool_calling` already forces its own tool the same way. The claim
-    here is that Studio EXECUTES the call, and the `execute_tool` log check
-    still decides that, so forcing the call narrows the assertion onto the
-    thing it is about rather than weakening it.
-    """
+    """The search call is forced by name, since a bare required let the model answer without searching."""
     body = _body()
-    # BY NAME, not the bare "required": that was tried on kernel
-    # unsloth-probe-studio-r3-0b85d4 and the model still answered from
-    # parametric knowledge with executions 0.
+    # By name: a bare "required" still let the model answer without searching.
     assert '"function": {"name": "web_search"}' in body
     assert 'tool_choice = "required"' not in body
 
 
 def test_both_tool_selections_are_tried_before_the_verdict():
-    """One attempt cannot tell a selection bug from a model that will not
-    search.
-
-    `enabled_tools = ["web_search"]` is one name out of ALL_TOOLS, and
-    `routes/inference.py` also reads a request naming only hosted-tool names as
-    a provider-hosted ask. Omitting `enabled_tools` selects every local tool,
-    which is a different path through the same loop. Reporting "the loop
-    offered web_search and never ran it" off the first alone was a guess: no
-    evidence in that run showed the tool had been offered at all.
-    """
+    """One attempt cannot tell a selection bug from a model that will not search, so both selections run."""
     body = _body()
     assert '("named", {"enabled_tools": ["web_search"]})' in body
     assert '("all_local_tools", {})' in body

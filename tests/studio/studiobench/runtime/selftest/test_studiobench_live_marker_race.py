@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two runs that start at the same moment: exactly one may have the output directory.
-
-THE EXISTING GUARD TEST BUILDS ITS TWO RECORDERS ONE AFTER THE OTHER, which the broken code passed
-trivially. A sequential test cannot see a race, and the guard was racy from the day it landed:
-
-    the marker was named `.running.{session_id}`, so the two contenders raced on DIFFERENT paths.
-    Each globbed the directory, each found no marker but its own, and each then wrote one. Scan
-    and write are two syscalls and the window between them is wide enough to lose.
-
-Measured on the shipped guard with two processes released together, holding their recorders open so
-the overlap is real rather than sequential reuse: 107 of 200 trials admitted BOTH, and with four
-processes 68 of 100 admitted more than one. That is the defect-9 corruption reproduced through the
-guard written to prevent it -- two `run_meta` rows, one `cell_id` completed twice, the two copies
-carrying 73.4 ms and 144.5 ms because the runs were contending with each other.
-
-With the lock acquired by exclusive create on ONE fixed name, the same harness admits exactly one
-in 200 trials at two processes and 100 at four.
-
-A BARRIER, NOT SPAWNED PROCESSES ON A SHARED FLAG FILE. The window between the scan and the write
-is roughly 100 to 200 microseconds, so the release has to be tighter than that or the contenders
-simply arrive at different times and the broken guard looks fine. The first version of this test
-used `subprocess.Popen` children spinning on a flag file and PASSED against the racy code three
-times out of three, which is worth recording: a concurrency test that does not synchronise finely
-enough is not a weak test, it is a green one that proves nothing.
-
-Processes rather than threads: the liveness check is `os.kill(pid, 0)`, so two threads would be
-judged against this process's own pid and the test would say nothing about two runs.
-"""
+"""Two simultaneous runs must not both take one output directory; the lock needs one fixed name."""
 
 from __future__ import annotations
 
@@ -41,12 +14,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
-#: SIZED BY MEASUREMENT. Under `spawn` the per-trial collision rate on the broken guard is well below
-#: the 50% a barrier reaches under `fork`, because each contender pays its own interpreter startup
-#: first. At 10 trials the two headline tests missed the defect in one run out of four; at 40 they
-#: caught it in six runs out of six, and the file still costs about ten seconds.
-#: `spawn` rather than `fork` because pytest has already started threads by the time this runs, and
-#: forking a multi-threaded process is deprecated because the child can deadlock.
+# Sized by measurement: spawn collides less than fork, and 40 trials reliably catch the defect.
+# spawn, not fork: pytest has threads running and forking them can deadlock.
 TRIALS = 40
 
 
@@ -65,8 +34,7 @@ def _contend(repo_root: str, outdir: str, index: int, start, hold, q) -> None:
     except Exception as exc:  # noqa: BLE001 - reported rather than lost
         q.put((False, f"UNEXPECTED {type(exc).__name__}: {exc}"))
     finally:
-        # Nobody releases the marker until everyone has attempted, so an admission is genuine overlap rather
-        # than sequential reuse of a directory the first run already let go.
+        # Nobody releases until all have attempted, so an admission is genuine overlap.
         try:
             hold.wait(timeout = 60)
         except Exception:  # noqa: BLE001
@@ -89,7 +57,6 @@ def _trial(
     out = tmp_path / f"out{trial}"
     out.mkdir()
     if stale:
-        # What a crashed run leaves behind: a marker naming a pid that is gone.
         (out / ".running.lock").write_text(f"{_dead_pid()} crashedsession\n", encoding = "utf-8")
     ctx = mp.get_context("spawn")
     start, hold, q = ctx.Barrier(n), ctx.Barrier(n), ctx.Queue()
@@ -120,10 +87,7 @@ def _admissions(
 
 
 def test_two_simultaneous_runs_cannot_both_take_one_output_directory(tmp_path):
-    """The property the guard exists for, asserted against genuine concurrency.
-
-    Against the racy guard this reports about half the trials admitting two.
-    """
+    """Exactly one of two simultaneous runs may take an output directory; the racy guard let both in."""
     counts = _admissions(tmp_path, 2)
     assert set(counts) == {1}, (
         f"admitted-per-trial counts were {counts}; every trial must admit exactly one. Two runs "
@@ -159,17 +123,7 @@ def test_the_directory_is_free_again_once_the_holder_exits(tmp_path):
 
 
 def test_a_crashed_run_does_not_let_two_launchers_in_at_once(tmp_path):
-    """The reclaim path was the half the exclusive create did not fix.
-
-    A marker naming a dead pid used to be cleared by unlinking it, and two launchers meeting the
-    same stale marker both judged it dead: one unlinked and created its own, the other's unlink
-    then deleted THAT, and both were admitted. Measured on the shipped code, 23 of 200 trials with
-    two processes and 40 of 100 with four.
-
-    There is no atomic "unlink if this is still the same file", so the fix is not a better check
-    but a lock the kernel releases when the holder dies -- which leaves nothing to reclaim and no
-    reclaim path to race.
-    """
+    """A stale marker reclaimed by unlinking raced; a kernel-released lock leaves nothing to reclaim."""
     counts = _admissions(tmp_path, 2, stale = True)
     assert set(counts) == {1}, (
         f"admitted-per-trial counts were {counts} against a crashed run's marker. Two launchers "
@@ -194,12 +148,9 @@ def test_a_crashed_run_does_not_lock_the_directory_forever(tmp_path):
     rec.close()
 
 
-# A retained record is not a holder. The marker is deliberately never unlinked, so a directory used
-# before already contains the PREVIOUS run's `pid session` line. These two are deterministic on
-# purpose: they stand in the window rather than racing for it.
+# The marker is never unlinked, so a reused directory holds the previous run's line; not a holder.
 
 
-# ── a retained record is not a holder ────────────────────────────────
 def _stalled_holder(
     marker: Path,
     write_after_s: float,
@@ -238,11 +189,7 @@ def _refusal(out: Path) -> str:
 
 
 def test_a_clean_close_leaves_no_identity_behind(tmp_path):
-    """`close()` blanks the marker while it still holds the lock.
-
-    The file stays, because unlinking it reintroduces the reclaim race in reverse. Its CONTENT does
-    not, because a retained `pid session` line outlives the run that wrote it.
-    """
+    """close() blanks the marker record but keeps the file; unlinking it reopens the reclaim race."""
     sys.path.insert(0, str(REPO_ROOT))
     from tests.studio.studiobench.runtime.types import Recorder
 
@@ -257,16 +204,10 @@ def test_a_clean_close_leaves_no_identity_behind(tmp_path):
 
 
 def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
-    """THE MISATTRIBUTION. A refusal that names the wrong run is worse than one that names none.
-
-    Seeded as an UNCLEAN exit leaves it -- a killed run never reaches the blanking above -- so the
-    stale line survives. A new holder then takes the lock and has not rewritten yet, and a reader
-    that stops at the first non-empty record is handed the dead run and prints it as the holder.
-    """
+    """A record left by a dead run must not be named as the current holder of the directory."""
     out = tmp_path / "out0"
     out.mkdir()
     marker = out / ".running.lock"
-    # A pid that is definitely not running: spawn and reap.
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
     dead.wait()
     marker.write_text(f"{dead.pid} sessionGONE\n")
@@ -282,11 +223,7 @@ def test_a_retained_record_is_not_named_as_the_current_holder(tmp_path):
 
 
 def test_the_refusal_stays_generic_when_no_live_holder_can_be_named(tmp_path):
-    """The bound is not load-bearing: when it expires the wording gets less specific, never wrong.
-
-    A holder that never publishes itself is the shape a run killed between the lock and the write
-    leaves behind, and there is nothing truthful to say about who holds the directory.
-    """
+    """When no live holder can be named within the bound, the refusal stays generic rather than wrong."""
     out = tmp_path / "out0"
     out.mkdir()
     marker = out / ".running.lock"

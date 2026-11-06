@@ -7,6 +7,8 @@ import {
   type ConversationMarkdownMessage,
   buildConversationMarkdown,
 } from "./conversation-markdown.ts";
+import { parseExternalModelId } from "../external-providers.ts";
+import { modelDisplayName } from "../../hub/lib/model-identity.ts";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
 
 type StoredConversationMessage = {
@@ -25,12 +27,10 @@ type ConversationMarkdownExportDependencies<
     filename: string,
     mimeType: string,
   ) => Promise<void>;
-  readonly exportTimestamp: () => string;
+  readonly exportBasename: (threadId: string) => Promise<string>;
   readonly notifyNoContent: () => void;
 };
 
-/** The markdown for one thread: null when it could not be loaded, empty when it holds nothing
- *  exportable. Shared by the download and the copy shortcut. */
 export function createConversationMarkdownBuilder<
   Message extends StoredConversationMessage,
 >({
@@ -48,13 +48,59 @@ export function createConversationMarkdownBuilder<
     const normalizedMessages: ConversationMarkdownMessage[] = messages.map(
       (message) => ({
         role: String(message.role ?? ""),
-        // Renderer markup, never prose: an exported answer must not carry raw tokens. Here rather than in
-        // the exporter, so the copy chord strips them too.
+        // Strip renderer tokens here, not in the exporter, so the copy chord strips them too.
         content: stripSearchImageTokens(renderMessage(message)),
       }),
     );
-    return buildConversationMarkdown(normalizedMessages);
+    return buildConversationMarkdown(normalizedMessages, {
+      includeImportMetadata: true,
+    });
   };
+}
+
+// UTF-8 bytes, leaving room under the usual 255-byte name limit for " (YYYY-MM-DD).jsonl".
+const MAX_EXPORT_BASENAME_BYTES = 200;
+
+function filenamePart(text: string): string {
+  return (
+    text
+      .replace(/\s+/g, " ")
+      // Bidi controls too: `x\u202egpj.exe` would display as `xexe.jpg`.
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\\/:*?"<>|\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "_")
+      .trim()
+  );
+}
+
+function localDateStamp(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = its display name. */
+export function conversationExportBasename(
+  thread:
+    | { readonly title?: string | null; readonly modelId?: string | null }
+    | null
+    | undefined,
+  date: Date,
+): string {
+  const modelId = parseExternalModelId(thread?.modelId)?.modelId ?? thread?.modelId ?? "";
+  // Not split("/"): a Windows local path has no "/" and would put the whole path in the name.
+  const model = filenamePart(modelDisplayName(modelId));
+  const title = filenamePart(thread?.title ?? "");
+  const name = [model, title].filter(Boolean).join(" - ") || "conversation";
+  // Cut on a code point (no lone surrogate); Windows refuses a trailing dot or space.
+  const encoder = new TextEncoder();
+  let capped = "";
+  let bytes = 0;
+  for (const char of name) {
+    bytes += encoder.encode(char).length;
+    if (bytes > MAX_EXPORT_BASENAME_BYTES) break;
+    capped += char;
+  }
+  capped = capped.replace(/[. ]+$/, "");
+  return `${capped || "conversation"} (${localDateStamp(date)})`;
 }
 
 /** A title safe to interpolate into a heading: a line break would end it. */
@@ -62,9 +108,7 @@ function headingText(title: string): string {
   return title.replace(/\s+/g, " ").trim();
 }
 
-/** One document from several threads, each under its own heading. A compare row is two models
- *  answering the same prompt, and the transcripts carry only role headings, so unnamed halves
- *  cannot be told apart. A lone thread is left exactly as the download writes it. */
+/** Named headings so the two halves of a compare row can be told apart. */
 export async function buildNamedConversationsMarkdown(
   conversations: readonly { readonly id: string; readonly title: string }[],
   build: (threadId: string) => Promise<string | null>,
@@ -88,7 +132,7 @@ export function createConversationMarkdownExporter<
   loadMessages,
   renderMessage,
   download,
-  exportTimestamp,
+  exportBasename,
   notifyNoContent,
 }: ConversationMarkdownExportDependencies<Message>): (
   threadId: string,
@@ -99,7 +143,6 @@ export function createConversationMarkdownExporter<
   });
   return async (threadId) => {
     const markdown = await build(threadId);
-    // null already reported itself.
     if (markdown === null) return;
     if (!markdown) {
       notifyNoContent();
@@ -107,7 +150,7 @@ export function createConversationMarkdownExporter<
     }
     await download(
       markdown,
-      `conversation-${exportTimestamp()}.${CONVERSATION_MARKDOWN_EXTENSION}`,
+      `${await exportBasename(threadId)}.${CONVERSATION_MARKDOWN_EXTENSION}`,
       CONVERSATION_MARKDOWN_MIME_TYPE,
     );
   };

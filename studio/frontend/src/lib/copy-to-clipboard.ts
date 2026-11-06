@@ -15,12 +15,19 @@ async function copyWithTauriClipboard(text: string): Promise<boolean> {
   }
 }
 
-/**
- * Synchronous textarea + execCommand copy so it runs in the same user gesture
- * as the click (required by Safari's clipboard security).
- */
+/** Synchronous so it runs inside the click gesture, as Safari requires. */
 function copyWithExecCommand(text: string): boolean {
   if (typeof document === "undefined" || !document.body) return false;
+
+  // A modal focus trap empties the selection; the copy event writes the text anyway.
+  let written = false;
+  const onCopy = (event: ClipboardEvent) => {
+    if (!event.clipboardData) return;
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    written = true;
+  };
 
   const textarea = document.createElement("textarea");
   textarea.value = text;
@@ -35,13 +42,14 @@ function copyWithExecCommand(text: string): boolean {
   textarea.focus({ preventScroll: true });
   textarea.select();
 
+  document.addEventListener("copy", onCopy, true);
   try {
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
+    return document.execCommand("copy") && written;
   } catch {
-    document.body.removeChild(textarea);
     return false;
+  } finally {
+    document.removeEventListener("copy", onCopy, true);
+    document.body.removeChild(textarea);
   }
 }
 
@@ -50,43 +58,32 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 
-  // Exactly one writer runs per call. Pre-arming the web write would keep the click's
-  // activation for a native failure, but it also leaves a second write in flight that a
-  // rapid second copy can lose a race to, and a silently stale clipboard is worse than a
-  // visible failure. Gated synchronously, so a browser still writes inside the gesture.
+  // Exactly one writer per call: a pre-armed second write could lose a race and leave a stale
+  // clipboard. Gated synchronously so browsers still write inside the gesture.
   if (isTauri && (await copyWithTauriClipboard(text))) {
     return true;
   }
 
-  // Primary: async Clipboard API
   if (typeof navigator?.clipboard?.writeText === "function") {
     try {
       await navigator.clipboard.writeText(text);
       return true;
     } catch (error) {
       console.warn("Async clipboard API failed, falling back to execCommand", error);
-      // Rejected (NotAllowedError, insecure context, etc.); fall through.
     }
   }
 
-  // Fallback: execCommand (works in Safari when called during user gesture)
+  // execCommand works in Safari during a user gesture.
   return copyWithExecCommand(text);
 }
 
-/**
- * Copy the result of a read that has to happen first, without losing the
- * gesture that asked for it. Safari drops transient activation across an
- * await, so both writers below fail when the text only arrives after one; the
- * write starts synchronously with a promised payload instead, where the
- * browser has it. A payload that rejects, which is how a caller says it found
- * nothing to copy, leaves the clipboard untouched.
- */
+/** Safari drops activation across an await, so the write starts synchronously with a promised
+ * payload. A rejecting payload leaves the clipboard untouched. */
 export async function copyToClipboardFrom(
   load: () => Promise<string>,
 ): Promise<boolean> {
   const payload = load();
-  // The write paths below each decide what to do with a rejection; this keeps
-  // it from being reported as unhandled in the meantime.
+  // Keep the rejection from being reported as unhandled meanwhile.
   payload.catch(() => undefined);
 
   if (
@@ -114,4 +111,17 @@ export async function copyToClipboardFrom(
   } catch {
     return false;
   }
+}
+
+export async function asPng(blob: Blob): Promise<Blob> {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("PNG encoding failed"))), "image/png"),
+  );
 }

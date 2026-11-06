@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shared fenced-code helpers for the HTML-artifact render paths, hoisted from markdown-text.tsx
-// so the in-place collapse and the post-message auto-render agree on what counts as a renderable
-// HTML fence.
+// Shared so the in-place collapse and the post-message auto-render agree on renderable fences.
 
 export type CodeFence = {
   language: string | null;
   source: string;
 };
 
-// Matches one fenced block spanning the whole string (one pre-split block).
-export const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
+// One fenced block spanning the whole string. The close is THREE OR MORE backticks (CommonMark
+// "at least as many"), and needs a line break before it unless the body is empty.
+export const CODE_FENCE_RE =
+  /^```([^\r\n`]*)\r?\n(?:([\s\S]*?)\r?\n`{3,}|`{3,})$/;
 
 export type ToolCallPartLike = {
   type?: string;
@@ -47,10 +47,16 @@ export function getCodeFence(blockContent: string): CodeFence | null {
   if (!match) {
     return null;
   }
+  // CommonMark closes a fence at the FIRST bare run on its own line, so a body still holding one
+  // means the match overran; a delimiter line with an info string is ordinary code.
+  if (/^ {0,3}`{3,}[\t ]*\r?$/m.test(match[2])) {
+    return null;
+  }
 
   return {
     language: match[1]?.trim() || null,
-    source: match[2],
+    // Absent only for a fence that closes on the line after it opens.
+    source: match[2] ?? "",
   };
 }
 
@@ -79,8 +85,7 @@ export function isFullHtmlDocument(source: string): boolean {
 export interface HtmlFence {
   source: string;
   isFullDocument: boolean;
-  // Plain 3-backtick unindented fence: the only form the in-place collapser (CODE_FENCE_RE)
-  // recognizes, so only these may be skipped as already shown.
+  // The only fence form CODE_FENCE_RE collapses, so only these may be skipped as shown.
   isPlainFence: boolean;
   index: number;
 }
@@ -88,9 +93,7 @@ export interface HtmlFence {
 // Opening fence: up to 3 leading spaces, >=3 backticks, then a backtick-free info string.
 const FENCE_OPEN_RE = /^( {0,3})(`{3,})([^`\r\n]*)$/;
 
-// Scan a full message for every closed ```html fence. Line-based so multiple fences are found and
-// backticks inside a <script> string never split a block (a close must be its own fence line).
-// Drops unterminated and SVG fences.
+// Line-based so multiple fences are found and backticks inside a <script> never split a block.
 export function extractHtmlFences(text: string): HtmlFence[] {
   const lines = text.split(/\r?\n/);
   const fences: HtmlFence[] = [];
@@ -142,4 +145,88 @@ export function extractHtmlFences(text: string): HtmlFence[] {
   }
 
   return fences;
+}
+
+export type ReactFenceLang = "jsx" | "tsx";
+
+export interface ReactFence {
+  source: string;
+  lang: ReactFenceLang;
+  index: number;
+}
+
+const IMPORTS_REACT_RE = /\bfrom\s*["'](?:react|react-dom)(?:\/[^"']*)?["']/;
+const RENDERABLE_ENTRY_RE =
+  /\bexport\s+default\b|\bas\s+default\s*[,}]|\b(?:function|const|let|var|class)\s+App\b/;
+
+// A fence gets a React preview only when it has something to mount: without a default export or an
+// App, every TS snippet in a coding answer would get a card that can only fail.
+export function reactFenceLang(language: string | null, source: string): ReactFenceLang | null {
+  const lang = language?.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (!RENDERABLE_ENTRY_RE.test(source)) return null;
+  if (lang === "jsx" || lang === "tsx") return lang;
+  if (!IMPORTS_REACT_RE.test(source)) return null;
+  if (lang === "js" || lang === "javascript" || lang === "mjs") return "jsx";
+  if (lang === "ts" || lang === "typescript") return "tsx";
+  return null;
+}
+
+// Same line scanner as extractHtmlFences, for every closed fence that reactFenceLang accepts.
+export function extractReactFences(text: string): ReactFence[] {
+  const lines = text.split(/\r?\n/);
+  const fences: ReactFence[] = [];
+  let i = 0;
+  let index = 0;
+
+  while (i < lines.length) {
+    const open = lines[i].match(FENCE_OPEN_RE);
+    if (!open) {
+      i++;
+      continue;
+    }
+    const indent = open[1].length;
+    const ticks = open[2].length;
+    const closeRe = new RegExp(`^ {0,3}\`{${ticks},}\\s*$`);
+    const indentRe = indent > 0 ? new RegExp(`^ {0,${indent}}`) : null;
+    let j = i + 1;
+    const body: string[] = [];
+    let closed = false;
+    while (j < lines.length) {
+      if (closeRe.test(lines[j])) {
+        closed = true;
+        break;
+      }
+      body.push(indentRe ? lines[j].replace(indentRe, "") : lines[j]);
+      j++;
+    }
+
+    if (!closed) {
+      break;
+    }
+
+    const source = body.join("\n");
+    const lang = reactFenceLang(open[3], source);
+    if (lang) fences.push({ source, lang, index: index++ });
+
+    i = j + 1;
+  }
+
+  return fences;
+}
+
+const COMPONENT_NAME_RES = [
+  /\bexport\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/,
+  /\bexport\s+default\s+class\s+([A-Za-z_$][\w$]*)/,
+  // Tabs and spaces only, around an optional `;`: `\s*;?\s*` backtracks quadratically on a long run.
+  /\bexport\s+default\s+([A-Za-z_$][\w$]*)[ \t]*(?:;[ \t]*)?\r?$/m,
+  /\bexport\s*\{[^{}]*?\b([A-Za-z_$][\w$]*)\s+as\s+default\b/,
+];
+
+/** The component's name for the card title, or null. */
+export function reactComponentName(source: string): string | null {
+  for (const re of COMPONENT_NAME_RES) {
+    const name = re.exec(source)?.[1];
+    if (name && name !== "function" && name !== "class") return name;
+  }
+  return /\b(?:function|const|let|var|class)\s+App\b/.test(source) ? "App" : null;
 }

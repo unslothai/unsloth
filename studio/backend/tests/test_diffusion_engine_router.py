@@ -23,10 +23,10 @@ _ENVS = (
 
 @pytest.fixture(autouse = True)
 def _clean_env_and_state(monkeypatch):
+    r._supported_family_capabilities.cache_clear()
     for e in _ENVS:
         monkeypatch.delenv(e, raising = False)
-    # A light status-capable stub so selection / active_status() never import the heavy diffusers or sd.cpp
-    # backends; the active engine NAME is module state. unload() is part of the engine contract, so it is honoured.
+    # Light stub so selection never imports the heavy diffusers or sd.cpp backends.
     monkeypatch.setattr(
         r,
         "get_active_diffusion_engine",
@@ -34,18 +34,21 @@ def _clean_env_and_state(monkeypatch):
             status = lambda: {"loaded": False, "repo_id": None}, unload = lambda: None
         ),
     )
-    # Default: no resident sd-server (tests exercise the sd-cli path) and a stubbed runnability probe, so neither reaches a real install/exec.
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
     monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
-    # The selection is module state and several tests below set it by plain assignment, so monkeypatch cannot undo it. A leaked ENGINE_SD_CPP left
-    # get_active_diffusion_engine() returning the sd.cpp backend for the rest of the process, 503ing eight tests in a full-suite run.
+    # Module state set by plain assignment; monkeypatch cannot undo it, so save and restore.
     saved_engine = r._active_engine_name
     saved_reason = r._fallback_reason
+    saved_pick = r._engine_pick
+    saved_pending = r._pending_engine_pick
     try:
         yield
     finally:
         r._active_engine_name = saved_engine
         r._fallback_reason = saved_reason
+        r._engine_pick = saved_pick
+        r._pending_engine_pick = saved_pending
+        r._supported_family_capabilities.cache_clear()
 
 
 def _set_device(monkeypatch, backend):
@@ -72,9 +75,6 @@ def _select(fam_name = "z-image"):
     return r.active_engine_name()
 
 
-# ── core selection matrix ─────────────────────────────────────────────────────
-
-
 def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
@@ -84,16 +84,14 @@ def test_cpu_with_binary_and_supported_family_picks_sd_cpp(monkeypatch):
 
 
 def test_cpu_with_only_sd_server_picks_sd_cpp(monkeypatch):
-    # An sd-server-only install (no runnable sd-cli) still routes to native: the backend prefers the resident server.
     _set_device(monkeypatch, "cpu")
-    _set_binary(monkeypatch, None)  # no sd-cli
+    _set_binary(monkeypatch, None)
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
     monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: "/usr/bin/sd-server")
     assert _select() == ENGINE_SD_CPP
 
 
 def test_present_but_not_runnable_binary_falls_back(monkeypatch):
-    # A binary that exists but cannot run falls back to diffusers at selection, not commit native and fail inside the load.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: None))
@@ -104,7 +102,7 @@ def test_present_but_not_runnable_binary_falls_back(monkeypatch):
 @pytest.mark.parametrize("gpu", ["cuda", "rocm", "xpu"])
 def test_gpu_backends_use_diffusers(monkeypatch, gpu):
     _set_device(monkeypatch, gpu)
-    _set_binary(monkeypatch, "/usr/bin/sd-cli")  # even with a binary, GPU stays diffusers
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
     assert _select() == ENGINE_DIFFUSERS
     assert "uses diffusers" in (r.active_status()["fallback_reason"] or "")
 
@@ -129,9 +127,7 @@ def test_mps_default_diffusers_but_optin_sd_cpp(monkeypatch):
     _set_device(monkeypatch, "mps")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
-    # Default: MPS is not native-eligible -> diffusers.
     assert _select() == ENGINE_DIFFUSERS
-    # Opt in: MPS routes to sd.cpp.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MPS", "1")
     assert _select() == ENGINE_SD_CPP
 
@@ -146,7 +142,7 @@ def test_unsupported_family_falls_back(monkeypatch):
 
 def test_missing_binary_falls_back(monkeypatch):
     _set_device(monkeypatch, "cpu")
-    _set_binary(monkeypatch, None)  # install unavailable
+    _set_binary(monkeypatch, None)
     assert _select() == ENGINE_DIFFUSERS
     assert "binary unavailable" in (r.active_status()["fallback_reason"] or "")
 
@@ -190,24 +186,30 @@ def test_force_native_install_uses_gpu_accelerator(monkeypatch):
     assert seen.get("accelerator") == "rocm"
 
 
-# ── active_status annotation ──────────────────────────────────────────────────
-
-
 def test_active_status_injects_engine_and_reason(monkeypatch):
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)
-    _select()  # -> diffusers fallback (no binary)
+    _select()
     st = r.active_status()
     assert st["engine"] == ENGINE_DIFFUSERS
     assert st["fallback_reason"] and "binary unavailable" in st["fallback_reason"]
 
 
-# ── engine-switch eviction ordering ───────────────────────────────────────────
+def test_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        r,
+        "pipeline_available_family_names",
+        lambda: calls.append("probe") or ("z-image", "flux.1"),
+    )
+
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert r.active_status()["supported_families"] == ["z-image", "flux.1"]
+    assert calls == ["probe"]
 
 
 def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
-    # The arbiter's diffusion evictor unloads get_active_diffusion_engine(): publishing the new (empty) engine before the old
-    # one finished unloading would let a concurrent acquire take the GPU with the old model still resident.
+    # The evictor unloads the active engine, so publish the new one only after the old unloaded.
     seen = {}
 
     def _fake_engine():
@@ -224,7 +226,6 @@ def test_switch_unloads_old_engine_before_publishing_new(monkeypatch):
 
 
 def test_no_switch_keeps_engine_and_refreshes_reason(monkeypatch):
-    # When the engine does not change, _activate must not unload anything but must still refresh the recorded fallback reason.
     calls = {"unload": 0}
 
     def _fake_engine():
@@ -261,22 +262,21 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
     switch_done = threading.Event()
 
     def _switch():
-        r._activate(ENGINE_SD_CPP, None)  # diffusers -> sd_cpp: unloads the old engine (blocks)
+        r._activate(ENGINE_SD_CPP, None)
         switch_done.set()
 
     t = threading.Thread(target = _switch)
     t.start()
-    assert unload_started.wait(2.0)  # switch is mid-unload, holding the transition lock
+    assert unload_started.wait(2.0)
 
     query_done = threading.Event()
 
     def _query():
-        r._activate(ENGINE_DIFFUSERS, None)  # would hit the "no change" branch pre-fix
+        r._activate(ENGINE_DIFFUSERS, None)
         query_done.set()
 
     q = threading.Thread(target = _query)
     q.start()
-    # Serialized: the query cannot complete while the switch holds the transition lock.
     assert not query_done.wait(0.4)
 
     release_unload.set()
@@ -286,8 +286,7 @@ def test_activate_serializes_switch_and_concurrent_query(monkeypatch):
 
 
 def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
-    # A load selects its engine, then yields (device probe, arbiter acquire) before registering. A second load choosing the
-    # OTHER engine unloads the captured engine in that gap, so registering there strands a model nothing can reach.
+    # Engine capture and registration must be atomic: a competing switch can unload it in between.
     diffusers = SimpleNamespace(name = "diffusers")
     sd_cpp = SimpleNamespace(name = "sd_cpp")
     active = {"engine": diffusers}
@@ -297,7 +296,6 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
     assert r.begin_load_on(diffusers, lambda: started.append("ok") or "status") == "status"
     assert started == ["ok"]
 
-    # A competing request switched the active engine after this one captured `diffusers`.
     active["engine"] = sd_cpp
     with pytest.raises(RuntimeError, match = "engine changed"):
         r.begin_load_on(diffusers, lambda: started.append("leaked"))
@@ -305,7 +303,6 @@ def test_begin_load_on_refuses_an_engine_that_was_switched_away(monkeypatch):
 
 
 def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
-    # The check and the registration must be one operation under the lock a switch takes, so no _activate can slip between them.
     import threading
 
     engine = SimpleNamespace(name = "diffusers")
@@ -328,8 +325,7 @@ def test_begin_load_on_holds_the_transition_lock_while_registering(monkeypatch):
 
 
 def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
-    # A swallowed teardown failure published the new engine anyway and stranded the old model: the evictor, /images/unload and the next load all
-    # resolve through get_active_diffusion_engine(), so nothing could reclaim the resident pipeline. Keep the old engine published and fail the switch.
+    # A failed teardown keeps the old engine published so the resident model stays reclaimable.
     def _fake_engine():
         def _boom():
             raise RuntimeError("sd-server would not die")
@@ -340,15 +336,10 @@ def test_switch_aborts_when_the_old_engine_fails_to_unload(monkeypatch):
     r._active_engine_name = ENGINE_SD_CPP
     with pytest.raises(RuntimeError, match = "Could not switch the diffusion engine"):
         r._activate(ENGINE_DIFFUSERS, "switch test")
-    # Still the old engine, so the resident model remains reachable and reclaimable.
     assert r.active_engine_name() == ENGINE_SD_CPP
 
 
-# ── predict_engine: the download plan's read-only twin of the selection ───────
-
-
 def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
-    # The download plan is built from this prediction, so it must agree with the selection the load will make, but staging must not unload a resident model: it activates nothing.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
@@ -358,8 +349,7 @@ def test_predict_engine_matches_the_selection_without_activating(monkeypatch):
 
 
 def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
-    # The first native load on a fresh CPU host installs the binary, so predicting diffusers just because nothing is on disk
-    # yet would stage components the load never opens. It must not install anything itself.
+    # The first native load installs the binary, so predict native even with nothing on disk.
     _set_device(monkeypatch, "cpu")
     installs: list[dict] = []
 
@@ -374,7 +364,6 @@ def test_predict_engine_counts_an_installable_binary_as_available(monkeypatch):
 
 
 def test_predict_engine_falls_back_when_install_is_disabled_and_nothing_is_installed(monkeypatch):
-    # With installs off and no binary present, the load really will fall back to diffusers.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, None)
@@ -398,8 +387,410 @@ def test_predict_engine_returns_diffusers_where_the_load_would(monkeypatch, kwar
 
 
 def test_predict_engine_returns_diffusers_for_a_family_without_native_assets(monkeypatch):
-    # sdxl has no single-file VAE / text-encoder mapping, so sd-cli cannot serve it.
     _set_device(monkeypatch, "cpu")
     _set_binary(monkeypatch, "/usr/bin/sd-cli")
     _set_runnable(monkeypatch)
     assert r.predict_engine(detect_family("sdxl"), model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+def _write_binary(tmp_path, name, *, marker: bool):
+    """A stand-in sd.cpp executable, with or without the 2.1 architecture literal in it."""
+    path = tmp_path / name
+    body = b"ELF-ish padding " * 64
+    if marker:
+        body += b"qwen_image_2_1.hpp"
+    path.write_bytes(body + b" trailing")
+    return str(path)
+
+
+def test_a_build_that_predates_the_family_does_not_get_the_native_route(monkeypatch, tmp_path):
+    # Old runnable sd.cpp builds are never upgraded and may lack newer architectures (Qwen-Image-2.1).
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old", marker = False))
+    assert _select("qwen-image-2.1") == ENGINE_DIFFUSERS
+    assert "predates" in (r._fallback_reason or "")
+
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-new", marker = True))
+    assert _select("qwen-image-2.1") == ENGINE_SD_CPP
+
+
+def test_the_gate_only_speaks_for_families_that_declare_a_marker(monkeypatch, tmp_path):
+    # Families with no marker (z-image) must still route native: no marker is not "cannot run".
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old2", marker = False))
+    assert _select("z-image") == ENGINE_SD_CPP
+
+
+def test_the_prediction_agrees_with_the_selection_about_an_incapable_build(monkeypatch, tmp_path):
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    _set_binary(monkeypatch, _write_binary(tmp_path, "sd-cli-old3", marker = False))
+    fam = detect_family("qwen-image-2.1")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    _set_binary(monkeypatch, None)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+
+
+def test_the_prediction_counts_the_upgrade_a_load_performs_for_a_moved_pin(monkeypatch, tmp_path):
+    # #12470: the load replaces a moved-pin build before selecting, so the plan must not stage diffusers.
+    _set_device(monkeypatch, "cpu")
+    _set_runnable(monkeypatch)
+    old = _write_binary(tmp_path, "sd-cli-old4", marker = False)
+    _set_binary(monkeypatch, old)
+    monkeypatch.setattr(r, "ensure_sd_server_binary", lambda **_: None)
+    moved: list = []
+    monkeypatch.setattr(r, "_pin_moved", lambda binary, accel: moved.append(binary) or True)
+    fam = detect_family("qwen-image-2.1")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+    assert moved == [old]
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+# ── per-load engine pick (/images/load's ``engine``) ──────────────────────────
+
+
+def _select_with(fam_name = "z-image", **kwargs):
+    r.select_and_activate_engine(detect_family(fam_name), **kwargs)
+    return r.active_engine_name()
+
+
+def test_a_load_can_ask_for_native_on_a_gpu_host(monkeypatch):
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    # Auto keeps the GPU host's own choice; the pick moves only this load.
+    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+    assert _select_with(model_kind = "gguf", engine = "auto") == ENGINE_DIFFUSERS
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+    assert (
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "sd_cpp")
+        == ENGINE_SD_CPP
+    )
+    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+def test_a_load_can_ask_for_diffusers_on_a_cpu_host(monkeypatch):
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    assert _select_with(model_kind = "gguf") == ENGINE_SD_CPP
+    assert _select_with(model_kind = "gguf", engine = "diffusers") == ENGINE_DIFFUSERS
+    assert r._fallback_reason == "selected for this load"
+    assert (
+        r.predict_engine(detect_family("z-image"), model_kind = "gguf", engine = "diffusers")
+        == ENGINE_DIFFUSERS
+    )
+
+
+def test_a_native_pick_that_cannot_run_is_refused_before_any_unload(monkeypatch):
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, None)
+    unloads = []
+    monkeypatch.setattr(
+        r,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(status = lambda: {"loaded": True}, unload = lambda: unloads.append(1)),
+    )
+    r._active_engine_name = ENGINE_DIFFUSERS
+    fallbacks = []
+    with pytest.raises(
+        ValueError,
+        match = "native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable",
+    ):
+        _select_with(
+            model_kind = "gguf", engine = "sd_cpp", before_fallback = lambda: fallbacks.append(1)
+        )
+    assert unloads == [] and fallbacks == [] and r.active_engine_name() == ENGINE_DIFFUSERS
+    # Without a pick the old silent fallback stands.
+    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize(
+    "fam_name, kind, engine, match",
+    [
+        ("z-image", "pipeline", "sd_cpp", "GGUF models only"),
+        ("lumina-2", "gguf", "sd_cpp", "no support for the lumina-2 model family"),
+    ],
+)
+def test_native_picks_the_engine_cannot_serve_are_refused(
+    monkeypatch, fam_name, kind, engine, match
+):
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    with pytest.raises(ValueError, match = match):
+        r.refuse_engine_pick(detect_family(fam_name), engine = engine, model_kind = kind)
+    with pytest.raises(ValueError, match = match):
+        _select_with(fam_name, model_kind = kind, engine = engine)
+
+
+def test_a_diffusers_pick_needs_the_pipeline_class(monkeypatch):
+    monkeypatch.setattr(r, "family_pipeline_available", lambda fam: False)
+    with pytest.raises(ValueError, match = "Diffusers cannot build the z-image model family"):
+        r.refuse_engine_pick(detect_family("z-image"), engine = "diffusers", model_kind = "gguf")
+    r.refuse_engine_pick(detect_family("z-image"), engine = "auto", model_kind = "gguf")
+    r.refuse_engine_pick(detect_family("z-image"), engine = None, model_kind = "gguf")
+
+
+def test_an_unknown_engine_pick_is_refused():
+    with pytest.raises(ValueError, match = "engine must be one of auto, diffusers, sd_cpp"):
+        r.refuse_engine_pick(detect_family("z-image"), engine = "vulkan", model_kind = "gguf")
+
+
+def test_the_env_override_wins_over_a_load_pick(monkeypatch):
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "diffusers")
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_DIFFUSERS
+    # Not refused either: the pin decides, and the status says so.
+    r.refuse_engine_pick(detect_family("lumina-2"), engine = "sd_cpp", model_kind = "gguf")
+    assert r.engine_choice_status({"loaded": False})["engine_forced"] == ENGINE_DIFFUSERS
+
+
+@pytest.mark.parametrize(
+    "status, eligible, lora",
+    [
+        # A FLUX.2 klein GGUF on diffusers: LoRA hidden there, applies natively.
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "flux.2-klein",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            True,
+            True,
+        ),
+        # Already native.
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "flux.2-klein",
+                "engine": "sd_cpp",
+                "supports_lora": True,
+            },
+            True,
+            False,
+        ),
+        # Qwen-Image runs natively but sd.cpp applies no LoRA to it.
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "qwen-image",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            True,
+            False,
+        ),
+        # A pipeline pick is diffusers-only.
+        (
+            {
+                "loaded": True,
+                "model_kind": "pipeline",
+                "family": "flux.2-klein",
+                "engine": "diffusers",
+                "supports_lora": True,
+            },
+            False,
+            False,
+        ),
+        # No sd.cpp assets for the family.
+        (
+            {
+                "loaded": True,
+                "model_kind": "gguf",
+                "family": "lumina-2",
+                "engine": "diffusers",
+                "supports_lora": False,
+            },
+            False,
+            False,
+        ),
+        ({"loaded": False}, False, False),
+    ],
+)
+def test_engine_choice_status(status, eligible, lora):
+    out = r.engine_choice_status(status)
+    assert {k: out[k] for k in ("engine_forced", "native_engine_eligible", "lora_via_native")} == {
+        "engine_forced": None,
+        "native_engine_eligible": eligible,
+        "lora_via_native": lora,
+    }
+
+
+def test_the_engine_pick_is_reported_as_resolved_provenance(monkeypatch):
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    loaded = {
+        "loaded": True,
+        "model_kind": "gguf",
+        "family": "z-image",
+        "resolved": {"speed_mode": {"value": "off"}},
+    }
+
+    def resolved_engine():
+        out = r.engine_choice_status({**loaded, "engine": r.active_engine_name()})
+        assert out["resolved"]["speed_mode"] == {"value": "off"}
+        return out["resolved"]["engine"]
+
+    def load_with(**kwargs):
+        # The route records the pick once the engine accepted the load.
+        _select_with(**kwargs)
+        r.note_engine_pick(kwargs.get("engine"))
+
+    load_with(model_kind = "gguf", engine = "sd_cpp")
+    entry = resolved_engine()
+    assert (
+        entry["value"] == ENGINE_SD_CPP
+        and entry["requested"] == ENGINE_SD_CPP
+        and entry["source"] == "explicit"
+    )
+    load_with(model_kind = "gguf")
+    entry = resolved_engine()
+    assert (
+        entry["value"] == ENGINE_DIFFUSERS
+        and entry["source"] == "auto"
+        and "GPU backend" in entry["reason"]
+    )
+    # A refused pick leaves the resident model's provenance alone.
+    _set_binary(monkeypatch, None)
+    with pytest.raises(ValueError):
+        _select_with(model_kind = "gguf", engine = "sd_cpp")
+    assert resolved_engine()["source"] == "auto"
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "diffusers")
+    entry = resolved_engine()
+    assert entry["source"] == "auto" and "UNSLOTH_DIFFUSION_ENGINE=diffusers" in entry["reason"]
+    assert "resolved" not in r.engine_choice_status({"loaded": False})
+
+
+def test_selection_alone_does_not_relabel_the_resident_model(monkeypatch):
+    # A same-engine reload whose admission / preflight / arbiter then fails keeps the old model resident: the
+    # pick is recorded only by note_engine_pick, after the engine accepted the load.
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    r._engine_pick = None
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+    assert r._engine_pick is None
+    r.note_engine_pick("sd_cpp")
+    assert r._engine_pick == ENGINE_SD_CPP
+    r.note_engine_pick(None)
+    assert r._engine_pick is None
+
+
+def test_the_plan_refuses_a_native_pick_the_load_would_refuse(monkeypatch):
+    # No runnable binary and no install allowed: the load raises, so the plan must not stage a diffusers plan.
+    _set_device(monkeypatch, "cuda")
+    _set_binary(monkeypatch, None)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_INSTALL", "0")
+    fam = detect_family("z-image")
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load this model here"):
+        r.predict_engine(fam, model_kind = "gguf", engine = "sd_cpp")
+    with pytest.raises(ValueError, match = "native sd.cpp engine cannot load this model here"):
+        _select_with(model_kind = "gguf", engine = "sd_cpp")
+    # Auto still plans the fallback it will take.
+    assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_DIFFUSERS
+    assert r.predict_engine(fam, model_kind = "gguf", engine = "auto") == ENGINE_DIFFUSERS
+
+
+def test_a_native_pick_honours_the_native_disable(monkeypatch):
+    _set_device(monkeypatch, "cpu")
+    _set_binary(monkeypatch, "/usr/bin/sd-cli")
+    _set_runnable(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    fam = detect_family("z-image")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.refuse_engine_pick(fam, engine = "sd_cpp", model_kind = "gguf")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.predict_engine(fam, model_kind = "gguf", engine = "sd_cpp")
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        _select_with(model_kind = "gguf", engine = "sd_cpp")
+    assert _select_with(model_kind = "gguf") == ENGINE_DIFFUSERS
+    # The administrator's pin still overrides the disable.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    r.refuse_engine_pick(fam, engine = "sd_cpp", model_kind = "gguf")
+    assert _select_with(model_kind = "gguf", engine = "sd_cpp") == ENGINE_SD_CPP
+
+
+def test_component_file_loads_are_not_native_eligible():
+    # Separate text-encoder / VAE files are diffusers-only: the plan and the load refuse them on native.
+    out = r.engine_choice_status(
+        {
+            "loaded": True,
+            "model_kind": "gguf",
+            "family": "flux.2-klein",
+            "engine": "diffusers",
+            "supports_lora": False,
+            "component_files": {"vae": "ae.safetensors"},
+        }
+    )
+    assert out["native_engine_eligible"] is False and out["lora_via_native"] is False
+
+
+def test_the_engine_pick_commits_only_when_the_background_load_lands():
+    # begin_load only starts the worker; a same-engine reload keeps the old state resident while it fetches, and a
+    # worker failure before publishing keeps it for good. The pick follows the published state, not the start.
+    old_state = object()
+    engine = SimpleNamespace(_state = old_state)
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    r.note_engine_pick("sd_cpp", engine)
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
+    # Torn down mid-load: nothing loaded to label yet.
+    engine._state = None
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "auto"
+    engine._state = object()
+    entry = r._engine_resolved(ENGINE_SD_CPP)
+    assert entry["source"] == "explicit" and entry["requested"] == ENGINE_SD_CPP
+    # A later reload that fails before publishing leaves the landed pick in place.
+    r.note_engine_pick(None, engine)
+    assert r._engine_resolved(ENGINE_SD_CPP)["requested"] == ENGINE_SD_CPP
+    # A load that landed before the next one started is committed, not lost.
+    r.note_engine_pick("diffusers", engine)
+    engine._state = object()
+    r.note_engine_pick(None, engine)
+    assert r._engine_pick == ENGINE_DIFFUSERS
+
+
+def test_a_load_that_publishes_before_begin_load_returns_still_commits_its_pick():
+    # begin_load starts the worker before it returns; a cached load can publish in that gap. The route snapshots the
+    # state before starting it, so the published state still reads as new.
+    old_state = object()
+    engine = SimpleNamespace(_state = old_state)
+    r._engine_pick = None
+    r._pending_engine_pick = None
+    before = r.loaded_state_of(engine)
+    engine._state = object()  # the worker published before the route noted the pick
+    r.note_engine_pick("sd_cpp", engine, before)
+    assert r._engine_pick == ENGINE_SD_CPP
+    assert r._engine_resolved(ENGINE_SD_CPP)["source"] == "explicit"
+
+
+def test_the_native_disable_hides_the_native_actions(monkeypatch):
+    # A pick refuse_engine_pick would 400 is never advertised: no Native select, no "Reload with native engine".
+    status = {
+        "loaded": True,
+        "model_kind": "gguf",
+        "family": "flux.2-klein",
+        "engine": "diffusers",
+        "supports_lora": False,
+    }
+    assert r.engine_choice_status(status)["lora_via_native"] is True
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    out = r.engine_choice_status(status)
+    assert out["native_engine_eligible"] is False and out["lora_via_native"] is False
+    with pytest.raises(ValueError, match = "disabled on this server"):
+        r.refuse_engine_pick(detect_family("flux.2-klein"), engine = "sd_cpp", model_kind = "gguf")
+    # The administrator's sd_cpp pin overrides the disable, as it does for the load.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ENGINE", "sd_cpp")
+    assert r.engine_choice_status(status)["native_engine_eligible"] is True

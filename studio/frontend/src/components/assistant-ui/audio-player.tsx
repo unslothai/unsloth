@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { PauseIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PlayIcon } from "lucide-react";
 import { type FC, useRef, useState } from "react";
 
 interface AudioPlayerProps {
@@ -33,8 +34,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
       setIsPlaying(false);
       return;
     }
-    // An uploaded file can carry a codec the webview cannot decode, so the
-    // button only flips once playback has actually started.
+    // The file may carry a codec the webview cannot decode, so flip only once playback starts.
     audio.play().then(
       () => setIsPlaying(true),
       () => setIsPlaying(false),
@@ -81,7 +81,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
   };
 
   return (
-    <div className="my-2 flex max-w-md items-center gap-3 rounded-xl border bg-muted/50 px-4 py-3">
+    <div className="my-2 flex max-w-md items-center gap-3 rounded-lg border bg-muted/50 px-4 py-3">
       <audio
         ref={audioRef}
         src={src}
@@ -98,7 +98,7 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
         onClick={togglePlay}
       >
         {isPlaying ? (
-          <PauseIcon className="size-4" />
+          <HugeiconsIcon icon={PauseIcon} className="size-4" />
         ) : (
           <PlayIcon className="size-4" />
         )}
@@ -111,7 +111,11 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({
           step={0.01}
           value={progress}
           onChange={handleSeek}
-          className="h-1.5 w-full cursor-pointer accent-primary"
+          className="native-range w-full"
+          style={{
+            ["--range-ratio" as string]:
+              duration > 0 ? Math.min(1, progress / duration) : 0,
+          }}
         />
         <div className="flex justify-between text-ui-10 text-muted-foreground">
           <span>{formatTime(progress)}</span>

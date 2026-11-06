@@ -1,0 +1,959 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Remote code whose config shares a native class name (Nemotron-H hub checkpoints), and
+LoRA targets on per-expert submodules (`mixer.experts.<i>.up_proj`)."""
+
+import re
+import sys
+import types
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+
+def _utils():
+    from unsloth.models import _utils
+    return _utils
+
+
+def test_old_flag_alone_is_not_flash_support_on_new_transformers():
+    U = _utils()
+    from transformers.modeling_utils import PreTrainedModel
+
+    class OldRemote:
+        _supports_flash_attn_2 = True
+
+    class NewNative:
+        _supports_flash_attn = True
+
+    class Neither:
+        pass
+
+    # transformers 5.0 to 5.3 define the new flag but dispatch still accepts the old one.
+    legacy_ok = not hasattr(PreTrainedModel, "_supports_flash_attn") or (
+        U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
+    )
+    assert U._model_class_supports_flash_attention(OldRemote) is legacy_ok
+    assert U._model_class_supports_flash_attention(NewNative) is True
+    assert U._model_class_supports_flash_attention(Neither) is False
+    assert U._model_class_supports_flash_attention(None) is False
+
+
+def test_resolver_does_not_request_flash_for_old_flag_remote_class(monkeypatch):
+    U = _utils()
+    # Without flash-attn installed the ladder never reaches flash, so this would pass anyway.
+    monkeypatch.setattr(U, "HAS_FLASH_ATTENTION", True)
+    from transformers.modeling_utils import PreTrainedModel
+
+    if not hasattr(PreTrainedModel, "_supports_flash_attn") or (
+        U._flash_dispatch_reads_legacy_flag(PreTrainedModel)
+    ):
+        pytest.skip("transformers still dispatches on _supports_flash_attn_2")
+
+    class OldRemote:
+        _supports_flash_attn_2 = True
+        _supports_sdpa = True
+
+    class NewRemote:
+        _supports_flash_attn = True
+        _supports_sdpa = True
+
+    config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
+    impl = U.resolve_attention_implementation(OldRemote, config, dtype = torch.bfloat16)
+    assert "flash" not in str(impl)
+    config = SimpleNamespace(model_type = "nemotron_h", _attn_implementation = None)
+    impl = U.resolve_attention_implementation(NewRemote, config, dtype = torch.bfloat16)
+    assert impl == "flash_attention_2"
+
+
+def _install_fake_remote_modules(monkeypatch, package = "transformers_modules.fake_repo.abc123"):
+    """A remote config/model pair whose config class name collides with a native one."""
+    from transformers import PretrainedConfig
+    from transformers.models.llama.configuration_llama import LlamaConfig  # noqa: F401  (the collision target)
+
+    pkg = types.ModuleType(package)
+    cfg_mod = types.ModuleType(package + ".configuration_llama")
+    model_mod = types.ModuleType(package + ".modeling_llama")
+
+    class LlamaConfig(PretrainedConfig):  # same name as the native class on purpose
+        model_type = "llama"
+
+    class LlamaForCausalLM:
+        _supports_flash_attn_2 = True
+
+    LlamaConfig.__module__ = cfg_mod.__name__
+    LlamaForCausalLM.__module__ = model_mod.__name__
+    cfg_mod.LlamaConfig = LlamaConfig
+    model_mod.LlamaForCausalLM = LlamaForCausalLM
+    for m in (pkg, cfg_mod, model_mod):
+        monkeypatch.setitem(sys.modules, m.__name__, m)
+    config = LlamaConfig()
+    config.auto_map = {
+        "AutoConfig": "configuration_llama.LlamaConfig",
+        "AutoModelForCausalLM": "modeling_llama.LlamaForCausalLM",
+    }
+    config._name_or_path = "fake/repo"
+    return config, LlamaForCausalLM
+
+
+def test_remote_config_resolves_to_remote_model_class(monkeypatch):
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+
+    config, remote_cls = _install_fake_remote_modules(monkeypatch)
+    assert U.resolve_model_class(AutoModelForCausalLM, config) is remote_cls
+
+
+def test_fetch_of_a_missing_modeling_module_uses_the_load_options(monkeypatch):
+    """A cold-cache fetch uses the load's revision, token and offline flag."""
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+    import transformers.dynamic_module_utils as dmu
+
+    config, _ = _install_fake_remote_modules(monkeypatch)
+    monkeypatch.delitem(sys.modules, "transformers_modules.fake_repo.abc123.modeling_llama")
+    seen = {}
+
+    class Fetched:
+        pass
+
+    def fake_get(class_ref, repo_id, **kw):
+        seen.update(class_ref = class_ref, repo_id = repo_id, **kw)
+        return Fetched
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
+    got = U.resolve_model_class(
+        AutoModelForCausalLM,
+        config,
+        trust_remote_code = True,
+        revision = "deadbeef",
+        code_revision = "cafe",
+        token = "tok",
+        cache_dir = "/c",
+        local_files_only = True,
+        proxies = {"https": "http://proxy"},
+    )
+    assert got is Fetched
+    assert seen == dict(
+        class_ref = "modeling_llama.LlamaForCausalLM",
+        repo_id = "fake/repo",
+        revision = "deadbeef",
+        code_revision = "cafe",
+        token = "tok",
+        cache_dir = "/c",
+        local_files_only = True,
+        proxies = {"https": "http://proxy"},
+    )
+
+
+def test_cross_repository_auto_map_skips_the_local_sibling(monkeypatch):
+    """An `other/repo--module.Class` reference must not resolve to a same-named sibling module."""
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+    import transformers.dynamic_module_utils as dmu
+
+    config, local_cls = _install_fake_remote_modules(monkeypatch)
+    config.auto_map["AutoModelForCausalLM"] = "other/repo--modeling_llama.LlamaForCausalLM"
+    seen = {}
+
+    class Remote:
+        pass
+
+    def fake_get(class_ref, repo_id, **kw):
+        seen.update(class_ref = class_ref, repo_id = repo_id)
+        return Remote
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get)
+    got = U.resolve_model_class(AutoModelForCausalLM, config, trust_remote_code = True)
+    assert got is Remote and got is not local_cls
+    assert seen == dict(
+        class_ref = "other/repo--modeling_llama.LlamaForCausalLM", repo_id = "fake/repo"
+    )
+
+
+def test_native_config_keeps_native_resolution():
+    U = _utils()
+    from transformers import AutoModelForCausalLM, LlamaConfig
+    from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
+    config = LlamaConfig()
+    config.auto_map = {
+        "AutoModelForCausalLM": "modeling_llama.LlamaForCausalLM"
+    }  # ignored: not remote
+    assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
+
+
+def test_remote_config_without_auto_class_entry_stays_native(monkeypatch):
+    U = _utils()
+    from transformers import AutoModelForCausalLM
+    from transformers.models.llama.modeling_llama import LlamaForCausalLM
+
+    config, _ = _install_fake_remote_modules(monkeypatch)
+    config.auto_map = {"AutoConfig": "configuration_llama.LlamaConfig"}
+    assert U.resolve_model_class(AutoModelForCausalLM, config) is LlamaForCausalLM
+
+
+class _Expert(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.up_proj = torch.nn.Linear(8, 16, bias = False)
+        self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+
+class _MoE(torch.nn.Module):
+    def __init__(self, n = 4):
+        super().__init__()
+        self.experts = torch.nn.ModuleList([_Expert() for _ in range(n)])
+        self.shared_experts = _Expert()
+        self.fc1_latent_proj = torch.nn.Identity()
+        self.gate = _Router(n)
+
+
+_Expert.__module__ = "transformers_modules.fake_teacher.modeling_nemotron_h"
+sys.modules.setdefault(_Expert.__module__, sys.modules[__name__])
+
+
+class _Router(torch.nn.Module):
+    def __init__(self, n):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(n, 8))
+
+
+class _Mamba(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.in_proj = torch.nn.Linear(8, 32, bias = False)
+
+
+class _Layer(torch.nn.Module):
+    def __init__(self, mixer):
+        super().__init__()
+        self.mixer = mixer
+
+
+class _Inner(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = torch.nn.ModuleList(
+            [_Layer(_Mamba()), _Layer(_MoE()), _Layer(_Mamba()), _Layer(_MoE())]
+        )
+
+
+class _Model(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.config = SimpleNamespace(n_routed_experts = 4, model_type = "nemotron_h")
+        self.model = _Inner()
+
+
+def _text_only_regex():
+    """The default FastModel.get_peft_model regex misses nested experts in a text-only model."""
+    import importlib
+
+    stub = sys.modules.get("unsloth_zoo.peft_utils")
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        # Another test file leaves a stub in sys.modules; the real module is wanted here.
+        del sys.modules["unsloth_zoo.peft_utils"]
+    peft_utils = importlib.import_module("unsloth_zoo.peft_utils")
+    return peft_utils.get_peft_regex(_Model())
+
+
+def test_text_only_regex_misses_nested_experts_on_its_own():
+    regex = _text_only_regex()
+    names = [n for n, m in _Model().named_modules() if isinstance(m, torch.nn.Linear)]
+    assert not any(re.fullmatch(regex, n) for n in names if ".experts." in n)
+
+
+def test_expert_submodule_leaves_and_regex_reach_every_expert():
+    U = _utils()
+    model = _Model()
+    regex = _text_only_regex()
+    leaves = U.get_moe_expert_submodule_leaves(model, regex)
+    assert leaves == ["down_proj", "up_proj"]
+    extended = f"(?:{regex})|(?:{U.moe_expert_submodule_regex(leaves)})"
+    matched = {n for n, m in model.named_modules() if re.fullmatch(extended, n)}
+    linears = {n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)}
+    experts = {n for n in linears if ".experts." in n or ".shared_experts." in n}
+    assert experts <= matched
+    assert "model.layers.1.mixer.gate" not in matched
+    assert "model.layers.1.mixer.fc1_latent_proj" not in matched
+    assert "model.layers.0.mixer.in_proj" in matched
+    assert all(isinstance(dict(model.named_modules())[n], torch.nn.Linear) for n in matched)
+
+
+def test_expert_submodule_leaves_follow_the_request():
+    U = _utils()
+    model = _Model()
+    assert U.get_moe_expert_submodule_leaves(model, ["down_proj"]) == ["down_proj"]
+    assert U.get_moe_expert_submodule_leaves(model, ["q_proj", "k_proj"]) == []
+    assert U.get_moe_expert_submodule_leaves(model, None) == []
+
+
+def test_non_moe_model_adds_nothing():
+    U = _utils()
+    model = _Model()
+    model.config = SimpleNamespace(model_type = "llama")
+    assert U.get_moe_expert_submodule_leaves(model, ["up_proj", "down_proj"]) == []
+
+
+def test_only_a_generated_regex_is_widened_to_the_routed_experts():
+    """A caller-written regex is never widened; the generated text-only regex is."""
+    U = _utils()
+    model = _Model()
+    caller_regex = r".*\.shared_experts\.down_proj"
+    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, caller_regex, caller_regex, auto_regex = False
+    )
+    assert kept == caller_regex and detect == caller_regex and leaves == []
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(kept, n)}
+    assert matched and all(".shared_experts." in n for n in matched)
+
+    generated = _text_only_regex()
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
+    assert leaves == ["down_proj", "up_proj"]
+    assert detect == widened != generated
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(".experts." in n for n in matched)
+
+    widened, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, ["down_proj"], auto_regex = True
+    )
+    assert leaves == ["down_proj"] and detect == ["down_proj"] and widened != generated
+
+
+def test_gate_and_up_expert_leaves_stay_separate():
+    U = _utils()
+    model = _Model()
+    assert U.get_moe_expert_submodule_leaves(model, ["up_proj"]) == ["up_proj"]
+    assert (
+        U.get_moe_expert_submodule_leaves(model, ["gate_proj"]) == []
+    )  # the fixture has no gate leaf
+    assert U.get_moe_expert_submodule_leaves(model, ["gate_up_proj"]) == ["up_proj"]
+
+
+def test_legacy_flash_flag_follows_the_installed_dispatch_check():
+    """The helper reads the installed dispatch check for the legacy flag."""
+    U = _utils()
+
+    class OldDispatch:
+        _supports_flash_attn = False
+
+        def _flash_attn_can_dispatch(self):
+            if not (self._supports_flash_attn or getattr(self, "_supports_flash_attn_2", False)):
+                raise ValueError("no")
+
+    class NewDispatch:
+        _supports_flash_attn = False
+
+        def _flash_attn_can_dispatch(self):
+            if not self._supports_flash_attn:
+                message = "x"
+                if self._supports_flash_attn or getattr(self, "_supports_flash_attn_2", False):
+                    message += ", "
+                raise ValueError(message)
+
+    assert U._flash_dispatch_reads_legacy_flag(OldDispatch) is True
+    assert U._flash_dispatch_reads_legacy_flag(NewDispatch) is False
+
+
+def test_force_download_bypasses_the_imported_sibling(monkeypatch):
+    U = _utils()
+    calls = []
+
+    def fake_get_class(class_ref, repo_id, **kw):
+        calls.append((class_ref, repo_id, kw))
+        return type("Built", (), {})
+
+    import transformers.dynamic_module_utils as dmu
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", fake_get_class)
+    import sys, types
+
+    module = types.ModuleType("transformers_modules.fake.configuration_fake")
+    sys.modules["transformers_modules.fake.configuration_fake"] = module
+    sibling = types.ModuleType("transformers_modules.fake.modeling_fake")
+    sibling.FakeForCausalLM = type("FakeForCausalLM", (), {})
+    sys.modules["transformers_modules.fake.modeling_fake"] = sibling
+    try:
+        cfg_cls = type("FakeConfig", (), {})
+        cfg_cls.__module__ = "transformers_modules.fake.configuration_fake"
+        cfg = cfg_cls()
+        cfg.auto_map = {"AutoModelForCausalLM": "modeling_fake.FakeForCausalLM"}
+        cfg._name_or_path = "fake/repo"
+        auto = type("AutoModelForCausalLM", (), {})
+        assert U._resolve_remote_model_class(auto, cfg) is sibling.FakeForCausalLM
+        assert calls == []
+        built = U._resolve_remote_model_class(
+            auto, cfg, trust_remote_code = True, force_download = True
+        )
+        assert (
+            built is not sibling.FakeForCausalLM
+            and calls
+            and calls[0][2].get("force_download") is True
+        )
+        assert U._resolve_remote_model_class(auto, cfg, trust_remote_code = False) is None
+    finally:
+        sys.modules.pop("transformers_modules.fake.configuration_fake", None)
+        sys.modules.pop("transformers_modules.fake.modeling_fake", None)
+
+
+def test_every_resolver_probe_forwards_the_trust_decision():
+    """Class probes pass trust_remote_code and the load's hub kwargs."""
+    import ast, inspect
+    from unsloth.models import llama, loader, loader_utils, vision
+
+    probes = ("resolve_model_class", "_resolve_omni_auto_model")
+    planner = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(loader_utils)))
+        if isinstance(node, ast.FunctionDef) and node.name == "planner_model_class"
+    )
+    for module, tree in (
+        (loader, ast.parse(inspect.getsource(loader))),
+        (vision, ast.parse(inspect.getsource(vision))),
+        (llama, ast.parse(inspect.getsource(llama))),
+        (loader_utils, planner),
+    ):
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) in probes):
+                continue
+            names = {k.arg for k in node.keywords}
+            splats = [getattr(k.value, "id", "") for k in node.keywords if k.arg is None]
+            assert "trust_remote_code" in names or "_probe_hub_kwargs" in splats, (
+                module.__name__,
+                node.lineno,
+            )
+            if module in (loader, vision) and not splats:
+                assert {"revision", "token", "local_files_only", "proxies"} <= names, (
+                    module.__name__,
+                    node.lineno,
+                )
+
+
+def test_a_code_revision_skips_the_materialised_sibling(monkeypatch):
+    """With a code_revision the resolver must ask transformers, not the sibling module."""
+    import importlib
+    import types
+
+    from unsloth.models import _utils
+
+    sibling = types.ModuleType("transformers_modules.tiny_rev.modeling_tiny")
+
+    class FromConfigRevision:
+        pass
+
+    class FromCodeRevision:
+        pass
+
+    sibling.TinyForCausalLM = FromConfigRevision
+    config_cls = type(
+        "TinyConfig", (), {"__module__": "transformers_modules.tiny_rev.configuration_tiny"}
+    )
+    config = config_cls()
+    config.auto_map = {"AutoModelForCausalLM": "modeling_tiny.TinyForCausalLM"}
+    config._name_or_path = "someone/tiny"
+    monkeypatch.setitem(__import__("sys").modules, sibling.__name__, sibling)
+    import transformers.dynamic_module_utils as dmu
+
+    monkeypatch.setattr(dmu, "get_class_from_dynamic_module", lambda *a, **k: FromCodeRevision)
+    auto = type("AutoModelForCausalLM", (), {})
+    assert _utils._resolve_remote_model_class(auto, config) is FromConfigRevision
+    assert (
+        _utils._resolve_remote_model_class(
+            auto, config, trust_remote_code = True, code_revision = "abc123"
+        )
+        is FromCodeRevision
+    )
+    # A load revision is the code revision for same-repo code, so it skips the sibling too.
+    assert (
+        _utils._resolve_remote_model_class(auto, config, trust_remote_code = True, revision = "b")
+        is FromCodeRevision
+    )
+
+
+def test_native_per_expert_layouts_are_not_widened():
+    """Qwen3-MoE on transformers 4.x nests native per-expert Linears the same way; those
+    keep main's targets instead of gaining LoRA on every routed expert."""
+    U = _utils()
+
+    class _NativeExpert(_Expert):
+        pass
+
+    _NativeExpert.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+    model = _Model()
+    for layer in model.model.layers:
+        mixer = layer.mixer
+        if isinstance(mixer, _MoE):
+            mixer.experts = torch.nn.ModuleList([_NativeExpert() for _ in mixer.experts])
+            mixer.shared_experts = _NativeExpert()
+    generated = _text_only_regex()
+    kept, detect, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
+    assert kept == generated and detect == generated and leaves == []
+
+
+def test_a_native_expert_tower_next_to_remote_code_is_not_widened():
+    """Only the remote expert blocks' own parents gain the nested alternative."""
+    U = _utils()
+
+    class _NativeExpert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.up_proj = torch.nn.Linear(8, 16, bias = False)
+            self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+    class _NativeTower(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
+
+    _NativeExpert.__module__ = "transformers.models.some_vlm.modeling_some_vlm"
+    model = _Model()
+    model.visual = torch.nn.ModuleList([_NativeTower(), _NativeTower()])
+    generated = _text_only_regex()
+    widened, _, leaves = U.widen_target_regex_to_expert_submodules(
+        model, generated, generated, auto_regex = True
+    )
+    assert leaves == ["down_proj", "up_proj"]
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
+    assert not any(n.startswith("visual.") for n in matched)
+
+
+def test_a_load_that_did_not_ask_for_remote_code_never_fetches(monkeypatch):
+    """Without trust_remote_code the resolver may reuse an imported sibling, never the Hub."""
+    import transformers.dynamic_module_utils as dmu
+    from unsloth.models import _utils
+
+    fetched = []
+    monkeypatch.setattr(
+        dmu, "get_class_from_dynamic_module", lambda *a, **k: fetched.append(k) or object
+    )
+    config_cls = type(
+        "TinyConfig", (), {"__module__": "transformers_modules.not_imported.configuration_tiny"}
+    )
+    config = config_cls()
+    config.auto_map = {"AutoModel": "modeling_tiny.TinyModel"}
+    config._name_or_path = "someone/tiny"
+    auto = type("AutoModel", (), {})
+    for trust in (None, False):
+        assert _utils._resolve_remote_model_class(auto, config, trust_remote_code = trust) is None
+    assert fetched == []
+
+
+def test_sentence_transformer_probes_use_the_loads_options(monkeypatch):
+    """Both FastSentenceTransformer class probes see the load's trust, revision, token,
+    cache and offline mode."""
+    import ast
+    import inspect
+
+    from unsloth.models import _utils, sentence_transformer
+
+    seen = []
+    monkeypatch.setattr(
+        _utils, "resolve_model_class", lambda auto, config, **kw: seen.append(kw) or None
+    )
+    options = dict(
+        trust_remote_code = True,
+        revision = "abc",
+        token = "t",
+        local_files_only = True,
+        proxies = {"https": "http://proxy"},
+    )
+    _utils.resolve_encoder_attention_implementation(object, object(), **options)
+    monkeypatch.setattr(
+        sentence_transformer, "resolve_model_class", lambda auto, config, **kw: seen.append(kw)
+    )
+    sentence_transformer.FastSentenceTransformer._has_add_pooling_layer(object(), object, **options)
+    assert seen == [options, options]
+    probes = {"resolve_encoder_attention_implementation", "_has_add_pooling_layer"}
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(sentence_transformer)))
+        if isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) in probes or getattr(node.func, "attr", None) in probes)
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        splats = [getattr(k.value, "id", "") for k in call.keywords if k.arg is None]
+        assert "_remote_class_probe_kwargs" in splats, call.lineno
+
+
+def _native_qwen3_moe_4x_model(with_visual = False, dense_first = False):
+    """Qwen3-MoE / Mixtral on transformers 4.x: native per-expert Linears under mlp.experts.<i>."""
+
+    class _NativeExpert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = torch.nn.Linear(8, 16, bias = False)
+            self.up_proj = torch.nn.Linear(8, 16, bias = False)
+            self.down_proj = torch.nn.Linear(16, 8, bias = False)
+
+    _NativeExpert.__module__ = "transformers.models.qwen3_moe.modeling_qwen3_moe"
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+            self.o_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _SparseMoe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_NativeExpert() for _ in range(4)])
+
+    class _DecoderLayer(torch.nn.Module):
+        def __init__(self, dense = False):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.mlp = _NativeExpert() if dense else _SparseMoe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList(
+                [_DecoderLayer(dense_first and i == 0) for i in range(2)]
+            )
+
+    class _Qwen3Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_experts = 4, model_type = "qwen3_moe")
+            self.model = _Body()
+            if with_visual:
+                self.visual = torch.nn.ModuleList([_SparseMoe(), _SparseMoe()])
+
+    return _Qwen3Moe()
+
+
+def _explicit_list_regex(model, leaves):
+    """FastLanguageModel's regex for an explicit list (skips mlp.experts.<i>)."""
+    import importlib
+
+    stub = sys.modules.get("unsloth_zoo.peft_utils")
+    if stub is not None and getattr(stub, "__file__", None) is None:
+        del sys.modules["unsloth_zoo.peft_utils"]
+    peft_utils = importlib.import_module("unsloth_zoo.peft_utils")
+    return peft_utils.get_peft_regex(
+        model,
+        finetune_vision_layers = False,
+        finetune_language_layers = True,
+        finetune_attention_modules = True,
+        finetune_mlp_modules = True,
+        target_modules = list(leaves),
+    )
+
+
+def test_explicit_leaf_list_reaches_native_per_expert_linears():
+    """An explicit gate/up/down list must LoRA native experts, as plain PEFT does."""
+    U = _utils()
+    model = _native_qwen3_moe_4x_model()
+    leaves = ["q_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    regex = _explicit_list_regex(model, leaves)
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    assert not any(re.fullmatch(regex, n) for n in names if ".experts." in n)
+
+    widened, detect, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj", "gate_proj", "up_proj"] and detect == leaves
+    matched = {n for n in names if re.fullmatch(widened, n)}
+    peft_leaf_match = {n for n in names if n.rpartition(".")[2] in leaves}
+    assert matched == peft_leaf_match
+    assert "model.layers.0.mlp.gate" not in matched
+
+    regex = _explicit_list_regex(model, ["q_proj", "down_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "down_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["down_proj"]
+    assert not any(
+        re.fullmatch(widened, n) for n in names if n.endswith((".gate_proj", ".up_proj"))
+    )
+
+    for dense_first in (False, True):
+        model = _native_qwen3_moe_4x_model(dense_first = dense_first)
+        names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+        for leaves in (["down_proj"], ["gate_proj", "up_proj", "down_proj"]):
+            regex = _explicit_list_regex(model, leaves)
+            widened, _, _ = U.widen_target_regex_to_expert_submodules(
+                model, regex, leaves, auto_regex = True, explicit_leaves = True
+            )
+            matched = {n for n in names if re.fullmatch(widened, n)}
+            assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+            assert any(".experts." in n for n in matched)
+
+
+def test_explicit_leaf_list_widening_respects_the_family_filters():
+    U = _utils()
+    leaves = ["q_proj", "gate_proj", "up_proj", "down_proj"]
+    model = _native_qwen3_moe_4x_model()
+    regex = _explicit_list_regex(model, ["q_proj", "o_proj"])
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "o_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert kept == regex and found == []
+    kept, _, found = U.widen_target_regex_to_expert_submodules(model, regex, regex, auto_regex = True)
+    assert kept == regex and found == []
+    model = _native_qwen3_moe_4x_model(with_visual = True)
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    matched = {n for n, _ in model.named_modules() if re.fullmatch(widened, n)}
+    assert any(n.startswith("model.layers.") and ".experts." in n for n in matched)
+    assert not any(n.startswith("visual.") for n in matched)
+
+
+def _native_mixtral_4x_model():
+    """Mixtral on transformers 4.x: block_sparse_moe.experts.<i>.w1 / w2 / w3."""
+
+    class _Expert(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w1 = torch.nn.Linear(8, 16, bias = False)
+            self.w2 = torch.nn.Linear(16, 8, bias = False)
+            self.w3 = torch.nn.Linear(8, 16, bias = False)
+
+    class _Moe(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate = torch.nn.Linear(8, 4, bias = False)
+            self.experts = torch.nn.ModuleList([_Expert() for _ in range(4)])
+
+    class _Attn(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias = False)
+
+    class _Layer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Attn()
+            self.block_sparse_moe = _Moe()
+
+    class _Body(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([_Layer() for _ in range(2)])
+
+    class _Mixtral(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(num_local_experts = 4, model_type = "mixtral")
+            self.model = _Body()
+
+        def get_decoder(self):
+            return self.model
+
+    return _Mixtral()
+
+
+def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    leaves = ["q_proj", "w1", "w2", "w3"]
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["w1", "w2", "w3"]
+    assert {n for n in names if re.fullmatch(widened, n)} == {
+        n for n in names if n.rpartition(".")[2] in leaves
+    }
+
+    model = _native_qwen3_moe_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = _explicit_list_regex(model, ["q_proj", "gate_up_proj"])
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, ["q_proj", "gate_up_proj"], auto_regex = True, explicit_leaves = True
+    )
+    assert found == ["gate_proj", "up_proj"]
+    matched = {n for n in names if re.fullmatch(widened, n) and ".experts." in n}
+    assert matched == {
+        n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
+    }
+
+
+def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
+    """[w1, w2, w3] alone: Zoo's regex matches nothing (no MLP tag), plain PEFT reaches every expert."""
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    with pytest.raises(RuntimeError):
+        _explicit_list_regex(model, ["w1", "w2", "w3"])
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
+    assert U.native_expert_only_regex(model, ["q_proj"]) is None
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3", "gate"])
+    want = {n for n in names if n.endswith((".w1", ".w2", ".w3", ".gate"))}
+    assert any(n.endswith(".block_sparse_moe.gate") for n in want)
+    assert {n for n in names if re.fullmatch(regex, n)} == want
+    # Zoo already dropped the other families (finetune_attention_modules=False).
+    regex = U.native_expert_only_regex(model, ["q_proj", "w1", "w2", "w3"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
+    model = _native_qwen3_moe_4x_model()
+    model.get_decoder = lambda: model.model
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = U.native_expert_only_regex(model, ["gate_up_proj"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
+    }
+
+
+def _expert_counts(names, regex):
+    counts = {"gate_proj": 0, "up_proj": 0, "down_proj": 0}
+    for name in names:
+        leaf = name.rpartition(".")[2]
+        if ".experts." in name and leaf in counts and re.fullmatch(regex, name):
+            counts[leaf] += 1
+    return counts
+
+
+@pytest.mark.parametrize(
+    "leaves",
+    [
+        ["gate_up_proj", "down_proj"],
+        ["q_proj", "gate_up_proj", "down_proj"],
+        ["q_proj", "o_proj", "gate_up_proj", "down_proj"],
+    ],
+)
+def test_gate_up_shorthand_with_down_proj_reaches_split_gate_and_up_experts(leaves):
+    """Zoo's regex already matches experts.<i>.down_proj; gate_proj / up_proj must still be added."""
+    U = _utils()
+    model = _native_qwen3_moe_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    regex = _explicit_list_regex(model, leaves)
+    widened, _, found = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert _expert_counts(names, widened) == {"gate_proj": 8, "up_proj": 8, "down_proj": 8}
+    assert "gate_proj" in found and "up_proj" in found
+    assert "model.layers.0.mlp.gate" not in {n for n in names if re.fullmatch(widened, n)}
+    kept, _, found = U.widen_target_regex_to_expert_submodules(
+        model, widened, leaves, auto_regex = True, explicit_leaves = True
+    )
+    assert kept == widened and found == []
+
+
+def test_gate_up_shorthand_with_down_proj_peft_injects_real_hf_split_experts():
+    """Real tiny Qwen3-MoE (text and inside a Llava VLM) with per-expert nn.Linear layers."""
+    from transformers import CLIPVisionConfig, LlavaConfig, LlavaForConditionalGeneration
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    peft = pytest.importorskip("peft")
+    U = _utils()
+    text_config = dict(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        moe_intermediate_size = 64,
+        num_experts = 2,
+        num_experts_per_tok = 1,
+        max_position_embeddings = 128,
+    )
+    text = Qwen3MoeForCausalLM(Qwen3MoeConfig(**text_config))
+    if not any(
+        ".experts." in n and isinstance(m, torch.nn.Linear) for n, m in text.named_modules()
+    ):
+        pytest.skip("this transformers fuses Qwen3-MoE experts into Parameters")
+    vlm = LlavaForConditionalGeneration(
+        LlavaConfig(
+            text_config = Qwen3MoeConfig(**text_config),
+            vision_config = CLIPVisionConfig(
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 1,
+                num_attention_heads = 4,
+                image_size = 8,
+                patch_size = 2,
+            ),
+            image_token_index = 63,
+        )
+    )
+    for model in (text, vlm):
+        for leaves in (["gate_up_proj", "down_proj"], ["q_proj", "gate_up_proj", "down_proj"]):
+            regex = _explicit_list_regex(model, leaves)
+            widened, _, _ = U.widen_target_regex_to_expert_submodules(
+                model, regex, leaves, auto_regex = True, explicit_leaves = True
+            )
+            peft_model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = widened))
+            lora = [n for n, m in peft_model.named_modules() if hasattr(m, "lora_A")]
+            assert _expert_counts(lora, r".*") == {"gate_proj": 2, "up_proj": 2, "down_proj": 2}
+            assert not any("vision_tower" in n for n in lora)
+            model = peft_model.unload()
+
+
+@pytest.mark.parametrize(
+    "leaves", [["w1", "w2", "w3", "gate"], ["q_proj", "w1", "w2", "w3", "gate"]]
+)
+def test_requested_router_sibling_is_kept_when_attention_is_also_listed(leaves):
+    """q_proj forces the widen path, which must still keep a requested router."""
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    model.get_decoder = lambda: model.model
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    try:
+        regex = _explicit_list_regex(model, leaves)
+    except RuntimeError:
+        regex = U.native_expert_only_regex(model, leaves)
+    widened, _, _ = U.widen_target_regex_to_expert_submodules(
+        model, regex, leaves, auto_regex = True, explicit_leaves = True
+    )
+    matched = {n for n in names if re.fullmatch(widened, n)}
+    assert matched == {n for n in names if n.rpartition(".")[2] in leaves}
+    unrequested = [leaf for leaf in leaves if leaf != "gate"]
+    regex = _explicit_list_regex(model, unrequested) if "q_proj" in leaves else None
+    if regex is not None:
+        widened, _, _ = U.widen_target_regex_to_expert_submodules(
+            model, regex, unrequested, auto_regex = True, explicit_leaves = True
+        )
+        assert not any(
+            n.endswith(".block_sparse_moe.gate") and re.fullmatch(widened, n) for n in names
+        )
+
+
+def test_requested_router_sibling_peft_injects_real_hf_mixtral():
+    from transformers import MixtralConfig, MixtralForCausalLM
+
+    peft = pytest.importorskip("peft")
+    U = _utils()
+    config = MixtralConfig(
+        vocab_size = 32,
+        hidden_size = 8,
+        intermediate_size = 16,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+    )
+    model = MixtralForCausalLM(config)
+    if not any(n.endswith(".experts.0.w1") for n, _ in model.named_modules()):
+        pytest.skip("this transformers fuses Mixtral experts into Parameters")
+    for leaves in (["w1", "w2", "w3", "gate"], ["q_proj", "w1", "w2", "w3", "gate"]):
+        try:
+            regex = _explicit_list_regex(model, leaves)
+        except RuntimeError:
+            regex = U.native_expert_only_regex(model, leaves)
+        widened, _, _ = U.widen_target_regex_to_expert_submodules(
+            model, regex, leaves, auto_regex = True, explicit_leaves = True
+        )
+        peft_model = peft.get_peft_model(model, peft.LoraConfig(r = 2, target_modules = widened))
+        lora = [n for n, m in peft_model.named_modules() if hasattr(m, "lora_A")]
+        assert sum(".experts." in n for n in lora) == 24
+        assert sum(n.endswith(".block_sparse_moe.gate") for n in lora) == 2
+        assert sum(n.endswith(".q_proj") for n in lora) == (2 if "q_proj" in leaves else 0)
+        model = peft_model.unload()

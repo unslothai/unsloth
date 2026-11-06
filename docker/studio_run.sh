@@ -32,10 +32,8 @@ PY
 }
 
 password_stored() {
-    # The admin row with must_change_password=0. A bare auth.db from an interrupted
-    # first launch, or a seeded row nobody changed, still accepts an initial password.
-    # A row from before that column existed counts as stored: the CLI migrates it
-    # with default 0 and then rejects an initial password.
+    # Stored = admin row with must_change_password=0; a row predating that column counts as
+    # stored (the CLI migrates it with default 0).
     python3 - "${STUDIO_HOME}/auth/auth.db" <<'PY'
 import sqlite3, sys
 from urllib.parse import quote
@@ -69,4 +67,18 @@ if [[ -s "$INITIAL" ]] && ! password_stored; then
     IFS= read -r -d '' UNSLOTH_STUDIO_PASSWORD < "$INITIAL" || true
     export UNSLOTH_STUDIO_PASSWORD
 fi
-exec "${STUDIO_HOME}/bin/unsloth" studio -H 0.0.0.0 -p 8000
+# Default -H 0.0.0.0 so a published -p is reachable; the container is the boundary.
+# UNSLOTH_STUDIO_SECURE=1: --secure (Cloudflare only, loopback bind, fails closed).
+# UNSLOTH_STUDIO_CLOUDFLARE=1: --cloudflare (link plus local port). Mutually exclusive;
+# refused here so supervisord does not restart Studio forever.
+STUDIO_ARGS=(-H 0.0.0.0 -p "${UNSLOTH_STUDIO_PORT:-8000}")
+if [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" && "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
+    echo "ERROR: set UNSLOTH_STUDIO_SECURE=1 or UNSLOTH_STUDIO_CLOUDFLARE=1, not both:" >&2
+    echo "       --secure serves only the tunnel, --cloudflare serves the tunnel and the local port." >&2
+    exit 2
+elif [[ "${UNSLOTH_STUDIO_SECURE:-0}" == "1" ]]; then
+    STUDIO_ARGS=(--secure -p "${UNSLOTH_STUDIO_PORT:-8000}")
+elif [[ "${UNSLOTH_STUDIO_CLOUDFLARE:-0}" == "1" ]]; then
+    STUDIO_ARGS+=(--cloudflare)
+fi
+exec "${STUDIO_HOME}/bin/unsloth" studio "${STUDIO_ARGS[@]}"

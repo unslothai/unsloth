@@ -1,0 +1,380 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""`studio update` torch repairs on the cu130 torch 2.13 route keep the resident release.
+
+install.sh and install.ps1 give new Linux x86_64 and Windows x64 cu130 Python 3.13 installs
+torch 2.13; a repair on that route must not move an existing install to another torch, and every
+other route must get exactly the specs it got before.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+_INSTALL_SCRIPT = Path(__file__).resolve().parents[2] / "install_python_stack.py"
+CU130 = "https://download.pytorch.org/whl/cu130"
+
+
+@pytest.fixture
+def mod(monkeypatch):
+    sys.modules.pop("install_python_stack", None)
+    monkeypatch.syspath_prepend(str(_INSTALL_SCRIPT.parent))
+    import install_python_stack
+
+    return install_python_stack
+
+
+def _route(
+    monkeypatch,
+    mod,
+    *,
+    platform = "linux",
+    machine = "x86_64",
+    py = (3, 13),
+    torch = None,
+    woa = False,
+):
+    monkeypatch.setattr(mod.sys, "platform", platform)
+    monkeypatch.setattr(mod.platform, "machine", lambda: machine)
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: woa)
+    monkeypatch.setattr(mod.sys, "version_info", (*py, 0, "final", 0))
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: torch)
+
+
+@pytest.mark.parametrize(
+    "resident, expected",
+    [
+        ("2.11.0", ("torch==2.11.0", "torchvision==0.26.*", "torchaudio==2.11.*")),
+        ("2.10.0", ("torch==2.10.0", "torchvision==0.25.*", "torchaudio==2.10.*")),
+        ("2.12.1", ("torch==2.12.1", "torchvision==0.27.*", "torchaudio==2.11.*")),
+        ("2.13.0", ("torch==2.13.0", "torchvision==0.28.*", "torchaudio==2.11.*")),
+        ("2.14.0", ("torch==2.14.0", "torchvision==0.29.*", "torchaudio==2.11.*")),
+    ],
+)
+@pytest.mark.parametrize(
+    "host",
+    [
+        {"platform": "linux"},
+        {"platform": "linux", "machine": "aarch64"},
+        {"platform": "win32", "machine": "AMD64"},
+    ],
+)
+def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected, host):
+    _route(monkeypatch, mod, torch = resident, **host)
+    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == expected
+    assert mod._cuda_repair_torch_specs(CU130, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC) == expected
+
+
+# 2.4-2.8 predate anything the cu130 index serves, so pinning them would fail the repair.
+@pytest.mark.parametrize("resident", [None, "2.15.0", "2.3.1", "2.6.0", "2.8.0"])
+def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resident):
+    _route(monkeypatch, mod, torch = resident)
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(CU130, default) is default
+
+
+@pytest.mark.parametrize("machine", ["aarch64", "arm64"])
+def test_aarch64_torch_2_9_repairs_to_the_default_range(monkeypatch, mod, machine):
+    # cu130 serves aarch64 torch 2.9 but no torchvision 0.24 / torchaudio 2.9 for it.
+    _route(monkeypatch, mod, torch = "2.9.1", machine = machine)
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(CU130, default) is default
+
+
+def test_x86_64_torch_2_9_is_kept(monkeypatch, mod):
+    _route(monkeypatch, mod, torch = "2.9.1")
+    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
+        "torch==2.9.1",
+        "torchvision==0.24.*",
+        "torchaudio==2.9.*",
+    )
+
+
+@pytest.mark.parametrize(
+    "index_url, kwargs",
+    [
+        ("https://download.pytorch.org/whl/cu128", {}),
+        ("https://download.pytorch.org/whl/cu126", {}),
+        ("https://download.pytorch.org/whl/cpu", {}),
+        ("https://download.pytorch.org/whl/rocm7.2", {}),
+        # Windows on ARM, native or an emulated x64 interpreter: not this route.
+        (CU130, {"platform": "win32", "machine": "ARM64", "woa": True}),
+        (CU130, {"platform": "win32", "machine": "AMD64", "woa": True}),
+        (CU130, {"platform": "win32", "machine": "AMD64", "py": (3, 12)}),
+        (CU130, {"platform": "darwin"}),
+        (CU130, {"machine": "armv7l"}),
+        (CU130, {"platform": "darwin", "machine": "arm64"}),
+        (CU130, {"py": (3, 12)}),
+        (CU130, {"py": (3, 11)}),
+        (None, {}),
+    ],
+)
+def test_every_other_route_is_unchanged(monkeypatch, mod, index_url, kwargs):
+    _route(monkeypatch, mod, torch = "2.13.0", **kwargs)
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(index_url, default) is default
+
+
+def test_resident_release_reads_metadata_and_rejects_non_releases(monkeypatch, mod):
+    import importlib.metadata as md
+
+    for raw, want in (
+        ("2.13.0+cu130", "2.13.0"),
+        ("2.11.0", "2.11.0"),
+        ("2.14.0.dev20260801+cu130", None),
+        ("2.13.0a0+git1234", None),
+    ):
+        monkeypatch.setattr(md, "version", lambda _name, raw = raw: raw)
+        assert mod._resident_torch_release() == want, raw
+
+    def missing(_name):
+        raise md.PackageNotFoundError("torch")
+
+    monkeypatch.setattr(md, "version", missing)
+    assert mod._resident_torch_release() is None
+
+
+def test_both_cuda_repairs_use_the_route_aware_specs(mod):
+    import re
+
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    calls = re.findall(r"_cuda_repair_torch_specs\(\s*index_url,\s*(\w+)\s*\)", source)
+    assert sorted(calls) == [
+        "_CUDA_TORCH_PKG_SPEC",
+        "_CUDA_TORCH_PKG_SPEC",
+        "_TORCH_FLAVOR_REPAIR_PKG_SPEC",
+    ]
+
+
+@pytest.mark.parametrize(
+    "platform, resident, pinned",
+    [
+        ("linux", "2.13.0", True),
+        ("linux", "2.14.0", True),
+        ("linux", "2.12.1", False),
+        ("linux", "2.11.0", False),
+        ("linux", None, False),
+        ("win32", "2.13.0", True),
+        ("win32", "2.14.0", True),
+        ("win32", "2.11.0", False),
+        ("darwin", "2.13.0", False),
+    ],
+)
+def test_core_update_freezes_only_torch_past_the_released_ceiling(
+    monkeypatch, tmp_path, mod, platform, resident, pinned
+):
+    monkeypatch.setattr(mod.sys, "platform", platform)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: resident)
+    monkeypatch.setattr(
+        mod,
+        "_resident_torch_trio_pins",
+        lambda: ["torch==2.13.0+cu130", "torchvision==0.28.0+cu130", "torchaudio==2.11.0+cu130"],
+    )
+    inherited = tmp_path / "overrides.txt"
+    inherited.write_text("Torch<2.13\ntorchvision>=0.1\nnumpy<3\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        value = mod.os.environ["UV_OVERRIDE"]
+        assert mod._TORCH_FREEZE_ACTIVE is pinned
+        if pinned:
+            # One file: the inherited trio lines would make uv's resolution unsatisfiable.
+            assert Path(value).read_text(encoding = "utf-8").split() == [
+                "torch==2.13.0+cu130",
+                "torchvision==0.28.0+cu130",
+                "torchaudio==2.11.0+cu130",
+                "numpy<3",
+            ]
+        else:
+            assert value == str(inherited)
+    assert mod.os.environ["UV_OVERRIDE"] == str(inherited)
+    assert mod._TORCH_FREEZE_ACTIVE is False
+    if pinned:
+        assert not freeze._path.exists()
+
+
+def test_core_update_freeze_restores_an_unset_override(monkeypatch, mod):
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod.os.environ["UV_OVERRIDE"].endswith(".txt")
+    assert "UV_OVERRIDE" not in mod.os.environ
+
+
+def _spaced_windows_freeze(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    spaced = tmp_path / "John Smith"
+    spaced.mkdir()
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(spaced))
+    # No 8.3 short name: uv_safe_path hands the spaced path back.
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    return spaced
+
+
+def test_core_update_freeze_never_writes_to_a_shared_windows_directory(monkeypatch, tmp_path, mod):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    public = tmp_path / "Public"
+    public.mkdir()
+    monkeypatch.setenv("PUBLIC", str(public))
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    monkeypatch.setattr(mod.sys, "prefix", str(venv))
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        value = mod.os.environ["UV_OVERRIDE"]
+        assert Path(value).parent == venv and " " not in value
+        assert Path(value).read_text(encoding = "utf-8").split() == ["torch==2.13.0+cu130"]
+        assert mod._TORCH_FREEZE_ACTIVE is True
+    assert not freeze._path.exists()
+    assert list(spaced.iterdir()) == [] and list(public.iterdir()) == []
+
+
+def test_windows_without_a_private_space_free_directory_resolves_as_before(
+    monkeypatch, tmp_path, mod
+):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    public = tmp_path / "Public"
+    public.mkdir()
+    monkeypatch.setenv("PUBLIC", str(public))
+    monkeypatch.setattr(mod.sys, "prefix", str(spaced))
+    with mod._FreezeNewTorchForCoreUpdate() as freeze:
+        assert "UV_OVERRIDE" not in mod.os.environ
+        assert mod._TORCH_FREEZE_ACTIVE is False
+    assert freeze._path is None
+    assert list(spaced.iterdir()) == [] and list(public.iterdir()) == []
+
+
+def test_linux_stops_rather_than_resolving_unfrozen(monkeypatch, tmp_path, mod):
+    spaced = _spaced_windows_freeze(monkeypatch, tmp_path, mod)
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(mod.sys, "prefix", str(spaced))
+    real_isdir = mod.os.path.isdir
+    monkeypatch.setattr(
+        mod.os.path, "isdir", lambda d: str(d).startswith(str(tmp_path)) and real_isdir(d)
+    )
+    with pytest.raises(SystemExit):
+        with mod._FreezeNewTorchForCoreUpdate():
+            pass
+    assert "UV_OVERRIDE" not in mod.os.environ
+    assert mod._TORCH_FREEZE_ACTIVE is False
+    assert list(spaced.iterdir()) == []
+
+
+def test_both_core_updates_run_under_the_freeze():
+    source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
+    assert (
+        source.count(
+            'with _FreezeNewTorchForCoreUpdate():\n            pip_install(\n                "Updating core packages"'
+        )
+        == 2
+    )
+
+
+def test_a_uv_failure_under_the_freeze_never_falls_back_to_pip(monkeypatch, mod):
+    import subprocess
+
+    monkeypatch.setattr(mod, "USE_UV", True)
+    monkeypatch.setattr(mod, "_TORCH_FREEZE_ACTIVE", True)
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, b"no solution")
+    )
+    ran = []
+    monkeypatch.setattr(mod, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(SystemExit):
+        mod._pip_install_once("Updating core packages", "unsloth")
+    assert ran == []
+
+
+def test_inherited_relative_includes_still_resolve(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0+cu130"])
+    (tmp_path / "nested.txt").write_text("numpy<3\n", encoding = "utf-8")
+    inherited = tmp_path / "overrides.txt"
+    inherited.write_text(
+        "-r nested.txt\n--constraint=/abs/c.txt\n-r https://example.com/r.txt\n", encoding = "utf-8"
+    )
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
+    with mod._FreezeNewTorchForCoreUpdate():
+        merged = Path(mod.os.environ["UV_OVERRIDE"]).read_text(encoding = "utf-8").splitlines()
+    assert merged == [
+        "torch==2.13.0+cu130",
+        f"-r {(tmp_path / 'nested.txt').resolve()}",
+        "--constraint=/abs/c.txt",
+        "-r https://example.com/r.txt",
+    ]
+
+
+def test_core_update_freeze_leaves_windows_on_arm_to_its_own_overrides(monkeypatch, tmp_path, mod):
+    # install.ps1 writes the WoA UV_OVERRIDE; a second trio pin here would conflict with it.
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.14.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.14.0+cu134"])
+    inherited = tmp_path / "woa-overrides.txt"
+    inherited.write_text("torch>=2.4\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(inherited))
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod.os.environ["UV_OVERRIDE"] == str(inherited)
+        assert mod._TORCH_FREEZE_ACTIVE is False
+
+
+def test_an_emulated_x64_venv_on_windows_on_arm_is_frozen(monkeypatch, tmp_path, mod):
+    # The WoA override only exists for a native win-arm64 interpreter.
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(mod, "_is_windows_arm64", lambda: True)
+    monkeypatch.setattr(mod, "_is_win_arm64_interpreter", lambda: False)
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: True)
+    monkeypatch.setattr(mod, "_resident_torch_release", lambda: "2.13.0")
+    monkeypatch.setattr(mod, "_resident_torch_trio_pins", lambda: ["torch==2.13.0"])
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.delenv("UV_OVERRIDE", raising = False)
+    with mod._FreezeNewTorchForCoreUpdate():
+        assert mod._TORCH_FREEZE_ACTIVE is True
+
+
+def test_the_windows_override_is_private_before_its_contents_land(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    calls = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "whoami":
+            return mod.subprocess.CompletedProcess(
+                cmd, 0, '"host\\me","S-1-5-21-1-2-3-1001"\r\n', ""
+            )
+        calls.append((cmd, Path(cmd[1]).stat().st_size))
+        return mod.subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    name, safe = mod._write_space_free_override("--index-url https://user:token@example/simple\n")
+    assert safe == name and Path(name).read_text(encoding = "utf-8").startswith("--index-url")
+    assert calls == [(["icacls", name, "/inheritance:r", "/grant:r", "*S-1-5-21-1-2-3-1001:F"], 0)]
+
+
+def test_a_directory_whose_acl_cannot_be_set_is_skipped(monkeypatch, tmp_path, mod):
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    temp, venv = tmp_path / "temp", tmp_path / "venv"
+    temp.mkdir()
+    venv.mkdir()
+    monkeypatch.setattr(mod.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(mod.sys, "prefix", str(venv))
+    monkeypatch.setattr(mod, "_uv_safe_path", lambda path: str(path))
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: Path(path).parent == venv)
+    name, safe = mod._write_space_free_override("torch==2.13.0\n")
+    assert Path(name).parent == venv and list(temp.iterdir()) == []
+    monkeypatch.setattr(mod, "_restrict_to_current_user", lambda path: False)
+    assert mod._write_space_free_override("torch==2.13.0\n") == ("", None)
+    assert list(temp.iterdir()) == [] and list(venv.iterdir()) == [Path(name)]

@@ -1,0 +1,421 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import { en } from "../src/i18n/locales/en.ts";
+import { loadWithStubs, stubJsxRuntime } from "./helpers/module-stubs.ts";
+
+const ROWS_URL = new URL(
+  "../src/features/settings/components/cache-storage-rows.tsx",
+  import.meta.url,
+);
+
+type Rows = {
+  singleClearDescriptionKeys: (key: string) => string[];
+  presentCaches: (inventory: unknown) => { key: string; sizeBytes: number }[];
+};
+
+function loadRows(): Rows {
+  const noop = () => undefined;
+  return loadWithStubs<Rows>(ROWS_URL, {
+    react: {
+      useCallback: noop,
+      useEffect: noop,
+      useRef: () => ({ current: 0 }),
+      useState: () => [null, noop],
+    },
+    "react/jsx-runtime": stubJsxRuntime(),
+    "@/components/ui/button": { Button: noop },
+    "@/components/ui/dialog": {
+      Dialog: noop,
+      DialogContent: noop,
+      DialogDescription: noop,
+      DialogFooter: noop,
+      DialogHeader: noop,
+      DialogTitle: noop,
+    },
+    "@/features/hub/stores/inventory-events": { useInventoryVersion: () => 0 },
+    "@/i18n": { useT: () => (key: string) => key },
+    "@/lib/toast": { toast: {} },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
+    "@hugeicons/react": { HugeiconsIcon: noop },
+    "../api/caches": {
+      bulkPurgeKeys: () => [],
+      loadCacheInventory: async () => null,
+      purgeCaches: async () => null,
+    },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./storage-overview": { SettingsCardRow: noop },
+  });
+}
+
+const SAFETY = "settings.resources.storage.caches.safety";
+
+test("cache rows show largest occupancy first with deterministic ties and no input mutation", () => {
+  const { presentCaches } = loadRows();
+  const entries = Object.freeze([
+    Object.freeze({ key: "uv", sizeBytes: 20, present: true }),
+    Object.freeze({ key: "triton", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "hf_hub", sizeBytes: 500, present: true }),
+    Object.freeze({ key: "pip", sizeBytes: 900, present: false }),
+  ]);
+  const result = presentCaches({ caches: entries });
+  assert.deepEqual(
+    result.map((row) => row.key),
+    ["hf_hub", "triton", "uv"],
+  );
+  assert.deepEqual(
+    entries.map((row) => row.key),
+    ["uv", "triton", "hf_hub", "pip"],
+  );
+  assert.deepEqual(
+    presentCaches({ caches: [...entries].reverse() }).map((row) => row.key),
+    result.map((row) => row.key),
+  );
+  assert.deepEqual(presentCaches(null), []);
+});
+
+test("the model cache clear does not promise that models are untouched", () => {
+  assert.ok(
+    en.settings.resources.storage.caches.safety.includes("Downloaded models"),
+  );
+  const { singleClearDescriptionKeys } = loadRows();
+
+  assert.deepEqual(singleClearDescriptionKeys("hf_hub"), [
+    "settings.resources.storage.caches.hubCost",
+  ]);
+  assert.deepEqual(singleClearDescriptionKeys("hf_datasets"), [
+    "settings.resources.storage.caches.datasetsCost",
+    SAFETY,
+  ]);
+  assert.deepEqual(singleClearDescriptionKeys("unsloth_compiled"), [SAFETY]);
+});
+
+test("the bulk clear keeps the assurance, because it excludes the model cache", () => {
+  const source = readFileSync(ROWS_URL, "utf8");
+  const bulk = source.slice(source.indexOf("confirmDescription"));
+  assert.match(bulk, /caches\.safety/);
+});
+
+test("the cache rows follow the model folder when it moves", () => {
+  const source = readFileSync(ROWS_URL, "utf8");
+  assert.match(source, /useInventoryVersion\(\)/);
+  assert.match(source, /\}, \[refresh, inventoryVersion\]\);/);
+  // The backend memoises sizes for a minute, so a move must force a refresh.
+  assert.match(source, /refresh\(moved \? \{ refresh: true \} : \{\}\)/);
+
+  const api = readFileSync(
+    new URL(
+      "../src/features/settings/api/hugging-face-cache.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(api, /bumpInventoryVersion\(\)/);
+});
+
+function driveRows(options: {
+  load: (options: { refresh?: boolean }) => Promise<unknown>;
+  purge?: (keys: readonly string[]) => Promise<unknown>;
+  version: () => number;
+}) {
+  const states: unknown[] = [];
+  const refs: { current: unknown }[] = [];
+  const callbacks: unknown[] = [];
+  let stateCursor = 0;
+  let refCursor = 0;
+  let callbackCursor = 0;
+  let previousDeps: unknown[] | null = null;
+  let pending: (() => void) | null = null;
+
+  const react = {
+    useState: (initial: unknown) => {
+      const index = stateCursor++;
+      if (states.length <= index) states[index] = initial;
+      return [
+        states[index],
+        (next: unknown) => {
+          states[index] =
+            typeof next === "function"
+              ? (next as (value: unknown) => unknown)(states[index])
+              : next;
+        },
+      ];
+    },
+    useRef: (initial: unknown) => (refs[refCursor++] ??= { current: initial }),
+    useCallback: (fn: unknown) => (callbacks[callbackCursor++] ??= fn),
+    useEffect: (effect: () => void, deps: unknown[]) => {
+      if (
+        previousDeps === null ||
+        deps.some((d, i) => d !== previousDeps?.[i])
+      ) {
+        previousDeps = deps;
+        pending = effect;
+      }
+    },
+  };
+
+  const rows = loadWithStubs<{
+    CacheStorageRows: (props: { cache: unknown }) => unknown;
+    useCacheStorage: () => unknown;
+  }>(ROWS_URL, {
+    react,
+    "react/jsx-runtime": stubJsxRuntime(),
+    "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/dialog": {
+      Dialog: "Dialog",
+      DialogContent: "DialogContent",
+      DialogDescription: "DialogDescription",
+      DialogFooter: "DialogFooter",
+      DialogHeader: "DialogHeader",
+      DialogTitle: "DialogTitle",
+    },
+    "@/features/hub/stores/inventory-events": {
+      useInventoryVersion: options.version,
+      bumpInventoryVersion: () => undefined,
+      getInventoryVersion: options.version,
+    },
+    "@/i18n": { useT: () => (key: string) => key },
+    "@/lib/toast": {
+      toast: {
+        success: () => undefined,
+        warning: () => undefined,
+        error: () => undefined,
+      },
+    },
+    "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": { TrashIcon: {} },
+    "@/lib/folder-icons": {},
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+    "../api/caches": {
+      bulkPurgeKeys: () => ["uv"],
+      loadCacheInventory: options.load,
+      purgeCaches: options.purge ?? (async () => ({})),
+    },
+    "./hf-cache-model-clear": { HfCacheModelClear: "HfCacheModelClear" },
+    "./storage-overview": { SettingsCardRow: "SettingsCardRow" },
+  });
+
+  let cleanup: (() => void) | undefined;
+  const render = () => {
+    stateCursor = 0;
+    refCursor = 0;
+    callbackCursor = 0;
+    const tree = rows.CacheStorageRows({ cache: rows.useCacheStorage() });
+    const effect = pending as (() => (() => void) | undefined) | null;
+    pending = null;
+    if (effect) {
+      cleanup?.();
+      cleanup = effect() ?? undefined;
+    }
+    return tree;
+  };
+  return Object.assign(render, { unmount: () => cleanup?.() });
+}
+
+type Element = { type: unknown; props?: Record<string, unknown> };
+
+function* walk(node: unknown): Generator<Element> {
+  if (Array.isArray(node)) {
+    for (const child of node) yield* walk(child);
+    return;
+  }
+  if (!node || typeof node !== "object") return;
+  const element = node as Element;
+  yield element;
+  yield* walk(element.props?.children);
+}
+
+const buttons = (tree: unknown, label: string): Element[] =>
+  [...walk(tree)].filter(
+    (element) => element.type === "Button" && element.props?.children === label,
+  );
+
+const click = (element: Element | undefined) =>
+  (element?.props?.onClick as (() => void) | undefined)?.();
+
+const CLEAR_ONE = "settings.resources.storage.caches.clearOneAction";
+const DETAILS = "settings.resources.storage.caches.detailsAction";
+
+const inventory = (path: string) => ({
+  caches: [
+    {
+      key: "hf_hub",
+      group: "models",
+      optIn: true,
+      paths: [path],
+      sizeBytes: 0,
+      entryCount: 3,
+      present: true,
+      purgeable: true,
+      blockedReason: null,
+    },
+  ],
+  totalBytes: 1000,
+  reclaimableBytes: 0,
+  freeBytes: 1,
+  totalDiskBytes: 2,
+});
+
+const settle = async () => {
+  for (let i = 0; i < 8; i++) await Promise.resolve();
+};
+
+test("the newest measurement wins, whatever order the walks finish in", async () => {
+  const pending: ((value: unknown) => void)[] = [];
+  let version = 0;
+  const render = driveRows({
+    load: () => new Promise((resolve) => pending.push(resolve)),
+    version: () => version,
+  });
+
+  render();
+  version = 1;
+  render();
+  assert.equal(pending.length, 2);
+
+  pending[1](inventory("/new/hub"));
+  await settle();
+  render();
+  pending[0](inventory("/old/hub"));
+  await settle();
+
+  const tree = render();
+  click(buttons(tree, DETAILS)[0]);
+  const paths = [...walk(render())]
+    .map((element) => element.props?.title)
+    .filter((title) => typeof title === "string");
+  assert.deepEqual(paths, ["/new/hub"]);
+});
+
+test("a clear waits for the measurement that is replacing the rows", async () => {
+  const pending: ((value: unknown) => void)[] = [];
+  let version = 0;
+  const render = driveRows({
+    load: () => new Promise((resolve) => pending.push(resolve)),
+    version: () => version,
+  });
+
+  render();
+  pending[0](inventory("/old/hub"));
+  await settle();
+  click(buttons(render(), DETAILS)[0]);
+
+  const settled = render();
+  assert.equal(buttons(settled, CLEAR_ONE).length, 1);
+  assert.equal(buttons(settled, CLEAR_ONE)[0].props?.disabled, false);
+
+  version = 1;
+  render(); // the version change is seen here; the effect runs after the tree
+  const reloading = render();
+  assert.equal(buttons(reloading, CLEAR_ONE)[0].props?.disabled, true);
+  const confirm = [...walk(reloading)].filter(
+    (element) =>
+      element.type === "Button" &&
+      // The dialog's confirm: the row triggers are size="sm".
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
+  );
+  assert.equal(confirm.length, 1);
+  assert.equal(confirm[0].props?.disabled, true);
+});
+
+test("a measurement that failed leaves the clears disabled", async () => {
+  const pending: {
+    resolve: (value: unknown) => void;
+    reject: (reason: unknown) => void;
+  }[] = [];
+  let version = 0;
+  const render = driveRows({
+    load: () =>
+      new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    version: () => version,
+  });
+
+  render();
+  pending[0].resolve(inventory("/old/hub"));
+  await settle();
+  click(buttons(render(), DETAILS)[0]);
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+
+  version = 1;
+  render();
+  pending[1].reject(new Error("measure failed"));
+  await settle();
+
+  const failed = render();
+  assert.equal(buttons(failed, CLEAR_ONE)[0].props?.disabled, true);
+  const destructive = [...walk(failed)].filter(
+    (element) =>
+      element.type === "Button" &&
+      element.props?.variant === "destructive" &&
+      element.props?.size === undefined,
+  );
+  assert.equal(destructive[0].props?.disabled, true);
+});
+
+test("a size still being re-walked is asked for again until it is current", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const asked: { refresh?: boolean }[] = [];
+  const render = driveRows({
+    load: (options) => {
+      asked.push(options);
+      return new Promise((resolve) => pending.push(resolve));
+    },
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  const shown = render();
+  // The old size stays on screen, without the measuring state, while the walk runs.
+  assert.equal(buttons(shown, CLEAR_ONE).length, 0);
+  click(buttons(shown, DETAILS)[0]);
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  assert.equal(pending.length, 1);
+
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  assert.deepEqual(asked[1], {});
+  assert.equal(buttons(render(), CLEAR_ONE)[0].props?.disabled, false);
+  pending[1]({ ...inventory("/new/hub"), refreshing: false });
+  await settle();
+
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2, "a current answer is not asked for again");
+  const paths = [...walk(render())]
+    .map((element) => element.props?.title)
+    .filter((title) => typeof title === "string");
+  assert.deepEqual(paths, ["/new/hub"]);
+});
+
+test("leaving the page stops a follow-up read still in flight", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending: ((value: unknown) => void)[] = [];
+  const render = driveRows({
+    load: () => new Promise((resolve) => pending.push(resolve)),
+    version: () => 0,
+  });
+
+  render();
+  pending[0]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(2000);
+  await settle();
+  assert.equal(pending.length, 2);
+  render.unmount();
+  pending[1]({ ...inventory("/old/hub"), refreshing: true });
+  await settle();
+  t.mock.timers.tick(10_000);
+  await settle();
+  assert.equal(pending.length, 2);
+});

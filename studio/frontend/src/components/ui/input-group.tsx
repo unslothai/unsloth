@@ -15,7 +15,7 @@ function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
       data-slot="input-group"
       role="group"
       className={cn(
-        "border-border bg-background dark:border-transparent dark:bg-white/[0.06] has-[[data-slot=input-group-control]:focus-visible]:border-ring dark:has-[[data-slot=input-group-control]:focus-visible]:border-transparent dark:has-[[data-slot=input-group-control]:focus-visible]:bg-white/[0.12] has-[[data-slot][aria-invalid=true]]:ring-destructive/20 has-[[data-slot][aria-invalid=true]]:border-destructive dark:has-[[data-slot][aria-invalid=true]]:ring-destructive/40 h-9 rounded-full border transition-colors has-data-[align=block-end]:rounded-2xl has-data-[align=block-start]:rounded-2xl has-[[data-slot][aria-invalid=true]]:ring-[3px] has-[textarea]:rounded-xl has-[>[data-align=block-end]]:h-auto has-[>[data-align=block-end]]:flex-col has-[>[data-align=block-start]]:h-auto has-[>[data-align=block-start]]:flex-col has-[>[data-align=block-end]]:[&>input]:pt-3 has-[>[data-align=block-start]]:[&>input]:pb-3 has-[>[data-align=inline-end]]:[&>input]:pr-1.5 has-[>[data-align=inline-start]]:[&>input]:pl-1.5 [[data-slot=combobox-content]_&]:focus-within:border-inherit [[data-slot=combobox-content]_&]:focus-within:ring-0 group/input-group relative flex w-full min-w-0 items-center outline-none has-[>textarea]:h-auto",
+        "border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] has-[[data-slot=input-group-control]:focus-visible]:border-ring dark:has-[[data-slot=input-group-control]:focus-visible]:border-transparent dark:has-[[data-slot=input-group-control]:focus-visible]:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] has-[[data-slot][aria-invalid=true]]:ring-destructive/20 has-[[data-slot][aria-invalid=true]]:border-destructive dark:has-[[data-slot][aria-invalid=true]]:ring-destructive/40 h-9 rounded-full border transition-colors has-data-[align=block-end]:rounded-xl has-data-[align=block-start]:rounded-xl has-[[data-slot][aria-invalid=true]]:ring-[3px] has-[textarea]:rounded-xl has-[>[data-align=block-end]]:h-auto has-[>[data-align=block-end]]:flex-col has-[>[data-align=block-start]]:h-auto has-[>[data-align=block-start]]:flex-col has-[>[data-align=block-end]]:[&>input]:pt-3 has-[>[data-align=block-start]]:[&>input]:pb-3 has-[>[data-align=inline-end]]:[&>input]:pr-1.5 has-[>[data-align=inline-start]]:[&>input]:pl-1.5 [[data-slot=combobox-content]_&]:focus-within:border-inherit [[data-slot=combobox-content]_&]:focus-within:ring-0 group/input-group relative flex w-full min-w-0 items-center outline-none has-[>textarea]:h-auto",
         className,
       )}
       {...props}
@@ -24,14 +24,14 @@ function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 const inputGroupAddonVariants = cva(
-  "text-muted-foreground **:data-[slot=kbd]:bg-muted-foreground/10 h-auto gap-2 py-2 text-sm font-medium group-data-[disabled=true]/input-group:opacity-50 **:data-[slot=kbd]:rounded-4xl **:data-[slot=kbd]:px-1.5 [&>svg:not([class*='size-'])]:size-4 flex cursor-text items-center justify-center select-none",
+  "text-muted-foreground **:data-[slot=kbd]:bg-muted-foreground/10 h-auto gap-2 py-2 text-sm font-medium group-data-[disabled=true]/input-group:opacity-50 **:data-[slot=kbd]:rounded-full **:data-[slot=kbd]:px-1.5 [&>svg:not([class*='size-'])]:size-4 flex cursor-text items-center justify-center select-none",
   {
     variants: {
       align: {
         "inline-start":
-          "pl-3 has-[>button]:ml-[-0.25rem] has-[>kbd]:ml-[-0.15rem] order-first",
+          "pl-3 has-[>button]:ml-[calc(-0.25rem*var(--ui-space-scale,1))] has-[>kbd]:ml-[calc(-0.15rem*var(--ui-space-scale,1))] order-first",
         "inline-end":
-          "pr-3 has-[>button]:mr-[-0.25rem] has-[>kbd]:mr-[-0.15rem] order-last",
+          "pr-3 has-[>button]:mr-[calc(-0.25rem*var(--ui-space-scale,1))] has-[>kbd]:mr-[calc(-0.15rem*var(--ui-space-scale,1))] order-last",
         "block-start":
           "px-3 pt-3 group-has-[>input]/input-group:pt-3 [.border-b]:pb-3 order-first w-full justify-start",
         "block-end":
@@ -67,7 +67,7 @@ function InputGroupAddon({
 }
 
 const inputGroupButtonVariants = cva(
-  "gap-2 rounded-4xl text-sm shadow-none flex items-center",
+  "gap-2 rounded-full text-sm shadow-none flex items-center",
   {
     variants: {
       size: {

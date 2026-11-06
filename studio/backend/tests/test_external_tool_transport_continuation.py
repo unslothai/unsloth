@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``continue_final_message`` must describe the turn actually being sent.
-
-vLLM and llama.cpp forward the flag to the HF chat template, which appends a
-sentinel to whatever the last message is and truncates the rendered prompt
-there. With a trailing tool result that removes the assistant generation prompt
-and asks the model to continue the tool output, so the flag has to drop as soon
-as the loop stops ending its conversation on an assistant turn.
-"""
+"""continue_final_message must drop once the conversation no longer ends on an assistant turn."""
 
 import asyncio
 import json
@@ -88,3 +81,44 @@ def test_continuation_flags_track_the_trailing_role(monkeypatch, messages, expec
     _drive(run())
     assert captured["body"].get("continue_final_message", False) is expected
     assert ("add_generation_prompt" in captured["body"]) is expected
+
+
+def test_every_round_is_fitted_again(monkeypatch):
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+    client = ExternalProviderClient(
+        provider_type = "vllm", base_url = "http://self-hosted.example/v1", api_key = ""
+    )
+
+    async def fitter(messages):
+        return messages[1:], 7, None
+
+    transport = OAICompatTransport(
+        client, model = "local-model", max_tokens = 64, message_fitter = fitter
+    )
+
+    async def run():
+        for messages in (_ASSISTANT_TAIL, _TOOL_TAIL):
+            async for _ in transport.stream(
+                messages = messages, tools = None, tool_choice = "auto", cancel_event = threading.Event()
+            ):
+                pass
+        await client.close()
+
+    _drive(run())
+    assert [len(body["messages"]) for body in bodies] == [
+        len(_ASSISTANT_TAIL) - 1,
+        len(_TOOL_TAIL) - 1,
+    ]
+    assert [body["max_tokens"] for body in bodies] == [7, 7]

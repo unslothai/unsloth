@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogFooter } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import type { ReactElement } from "react";
 import { getBlockDefinitionForConfig } from "../blocks/definitions";
@@ -10,6 +10,7 @@ import { renderBlockDialog } from "../blocks/registry";
 import type { NodeConfig, SamplerConfig } from "../types";
 import { DialogShell } from "./shared/dialog-shell";
 import { ValidationBanner } from "./shared/validation-banner";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 
 type ConfigDialogProps = {
   open: boolean;
@@ -51,13 +52,7 @@ export function ConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-y-auto overflow-x-hidden sm:max-w-2xl shadow-border"
-      >
+      <RecipeDialogContent container={container}>
         <DialogShell
           title={blockDefinition ? blockDefinition.title : undefined}
           description={
@@ -83,7 +78,7 @@ export function ConfigDialog({
               className={readOnly ? "pointer-events-none min-w-0 opacity-75" : "min-w-0"}
             >
               {showDropToggle && (
-                <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
+                <div className="mb-2 flex items-start corner-squircle justify-between gap-3 rounded-xl border border-border/60 px-3 pt-2 pb-4">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold">Keep out of final dataset</p>
                     <p className="break-words text-xs text-muted-foreground">
@@ -91,6 +86,7 @@ export function ConfigDialog({
                     </p>
                   </div>
                   <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
                     checked={config.drop ?? false}
                     disabled={readOnly}
                     onCheckedChange={(value) => onUpdate(config.id, { drop: value })}
@@ -120,7 +116,7 @@ export function ConfigDialog({
             Done
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }

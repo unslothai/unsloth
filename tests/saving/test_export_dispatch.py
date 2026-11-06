@@ -1,15 +1,10 @@
-"""CPU-only behavioral routing tests for the export API.
-
-With the heavy save helpers monkeypatched, confirm each `save_method` / `quantization_method`
-reaches the correct export path with the correct arguments. A bare object stands in for the
-model, so these run on CPU-only CI with no GPU and no real weights, yet they catch routing
-regressions that pure AST checks cannot (e.g. wrong scheme/suffix/outtype passed through).
-"""
+"""With save helpers stubbed, each save_method must reach its export path with the right arguments."""
 
 from __future__ import annotations
 
 import inspect
 import os
+import shutil
 
 import pytest
 
@@ -32,9 +27,6 @@ class _FakeTokenizer:
 
     def save_pretrained(self, path):
         self.saved_to.append(path)
-
-
-# -- merged_*  ->  compressed-tensors dispatch ---------------------------------------------
 
 
 def test_merged_fp8_routes_to_compressed(monkeypatch, tmp_path):
@@ -87,9 +79,6 @@ def test_merged_16bit_does_not_route_compressed(monkeypatch, tmp_path):
     )
     assert calls["compressed"] == 0, "merged_16bit must not hit the compressed export"
     assert calls["generic"] == 1, "merged_16bit must go through the normal merge path"
-
-
-# -- save_method='lora'  ->  LoRA GGUF dispatch --------------------------------------------
 
 
 def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
@@ -190,7 +179,7 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     def _save_to_gguf(**kwargs):
         seen.update(kwargs)
         output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
-        output.parent.mkdir()
+        output.parent.mkdir(exist_ok = True)
         output.write_bytes(b"GGUF")
         return [str(output)], True, False
 
@@ -204,14 +193,87 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
         quantization_method = "q8_0",
     )
 
-    assert seen["model_directory"] == str(checkpoint)
+    staged = seen["model_directory"]
+    assert os.path.dirname(staged) == f"{requested}_gguf"
     assert seen["gguf_directory"] == f"{requested}_gguf"
     assert result["gguf_directory"] == f"{requested}_gguf"
-    assert tokenizer.saved_to == [str(checkpoint)]
+    assert tokenizer.saved_to == [staged]
+    assert not os.path.exists(staged)
 
 
-# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever
-# exercised here.
+@pytest.mark.parametrize(
+    "full_finetuning, state_dict",
+    [
+        (True, None),
+        (True, {"lm_head.weight": "consolidated"}),
+        (False, {"lm_head.weight": "consolidated"}),
+    ],
+)
+def test_gguf_converts_trained_or_supplied_weights_not_source_checkpoint(
+    monkeypatch, tmp_path, full_finetuning, state_dict
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    requested = tmp_path / "export" / "model"
+    requested.parent.mkdir()
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+    model._unsloth_full_finetuning = full_finetuning
+    model.saved_to = []
+    model.save_pretrained = lambda path, **kwargs: model.saved_to.append(
+        (path, kwargs.get("state_dict"))
+    )
+    tokenizer = _FakeTokenizer()
+    seen = {}
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+    preflight = []
+    monkeypatch.setattr(
+        save_mod,
+        "_preflight_gguf_disk",
+        lambda **kwargs: preflight.append((kwargs["needs_merge"], kwargs["state_dict"]))
+        or (kwargs["save_directory"], True),
+    )
+
+    def _save_to_gguf(**kwargs):
+        seen.update(kwargs)
+        output = tmp_path / "export" / "model_gguf" / "model.F16.gguf"
+        output.parent.mkdir()
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    save_mod.unsloth_save_pretrained_gguf(
+        model,
+        str(requested),
+        tokenizer = tokenizer,
+        quantization_method = "f16",
+        state_dict = state_dict,
+    )
+
+    assert seen["model_directory"] == str(requested)
+    assert model.saved_to == [(str(requested), state_dict)]
+    assert tokenizer.saved_to == [str(requested)]
+    assert os.listdir(checkpoint) == []
+    assert preflight == [(True, state_dict)]
+    assert save_mod._gguf_model_input_directory(model, str(requested), state_dict) == str(requested)
+
+
+# The rejection above points users here, and this path is only exercised in this test.
 
 
 def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
@@ -284,9 +346,6 @@ def test_push_to_hub_gguf_preserves_positional_max_shard_size():
     assert "is_main_process" not in bound.arguments
 
 
-# -- torchao PTQ / QAT dispatch ------------------------------------------------------------
-
-
 def test_torchao_ptq_routes_to_given_config(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(
@@ -317,7 +376,7 @@ def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
         lambda **kw: seen.update(attached = True),
     )
     model = _FakeModel()
-    model._torchao_config = object()  # simulates a model trained with qat_scheme
+    model._torchao_config = object()
     save_mod.unsloth_save_pretrained_torchao(
         model,
         str(tmp_path),
@@ -328,7 +387,6 @@ def test_torchao_qat_routes_to_attached_config(monkeypatch, tmp_path):
 
 
 def test_torchao_requires_config_or_qat(tmp_path):
-    # No torchao_config and no attached QAT config is a user error, surfaced eagerly.
     with pytest.raises(AssertionError):
         save_mod.unsloth_save_pretrained_torchao(
             _FakeModel(),
@@ -387,7 +445,7 @@ def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):
     for key in save_mod._HF_TOKEN_ENV_KEYS:
         assert key not in env, f"{key} survived into a forced-anonymous converter"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1", "the cached token is still implicit"
-    # Scrubbing the env still leaves the operator's token FILE readable by get_token().
+    # Scrubbing env still leaves the operator's token FILE readable by get_token().
     assert env["HF_TOKEN_PATH"] == os.devnull
 
 
@@ -405,8 +463,7 @@ def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_
 
 
 def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, tmp_path):
-    # get_token() ignores the flag, so a caller who passed nothing holds the token the operator
-    # switched off; only a token they supplied earns clearing it.
+    # get_token() ignores the flag, so only a caller-supplied token may be cleared.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
     assert env["HUGGINGFACEHUB_API_TOKEN"] == "host-legacy-alias"
@@ -424,8 +481,7 @@ def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, 
     ],
 )
 def test_clean_save_token(token, expected):
-    # Blank reaches HfApi as a literal "Bearer " header, which 1.x rejects. False must survive:
-    # collapsing it to None is the ambient token, not anonymity.
+    # Blank becomes a literal "Bearer " header, which hub 1.x rejects; False must not collapse to None.
     result = save_mod._clean_save_token(token)
     assert result is expected if expected in (None, False, True) else result == expected
 
@@ -439,8 +495,7 @@ def test_lora_gguf_converter_reads_a_blank_token_as_absent(monkeypatch, tmp_path
 
 
 def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
-    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrubbing the aliases
-    # alone still lets a denied child mint one.
+    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrub them too.
     monkeypatch.setenv("HF_OIDC_RESOURCE", "https://huggingface.co")
     monkeypatch.setenv("HF_OIDC_ID_TOKEN", "operator-oidc-assertion")
     env = _run_lora_gguf(monkeypatch, tmp_path, token = False)
@@ -449,8 +504,7 @@ def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
 
 
 def test_lora_gguf_converter_honours_token_true(monkeypatch, tmp_path):
-    # True means "use the cached token" and outranks the flag; falling through every branch made
-    # it plain inheritance, which an ambient =1 voided.
+    # True means "use the cached token" and outranks an ambient flag.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = True)
     assert env["HF_TOKEN"] == "host-ambient-token"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
@@ -487,21 +541,17 @@ def test_apply_token_to_child_env(token, explicit, expected):
     else:
         assert env["HF_TOKEN"] == expected["granted"]
         assert env["HUGGING_FACE_HUB_TOKEN"] == expected["granted"]
-    # None means "leave the inherited flag exactly as the operator set it".
+    # None leaves the inherited flag exactly as the operator set it.
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == (expected["implicit"] or "1")
 
 
 def test_every_converter_child_env_goes_through_the_token_boundary():
-    """No child env in save.py may be built without applying the caller boundary to it.
-
-    Structural rather than textual: a third subprocess added next to these two would otherwise
-    repeat the leak silently, which is how _unsloth_save_compressed_tensors came to have it.
-    """
+    """Each converter child env in save.py must use the token boundary, else a new subprocess leaks."""
     import ast
     import pathlib
 
     def _is_environ_copy(node):
-        # os.environ.copy() exactly -- not os.environ.get(...) next to some other .copy().
+        # Exactly os.environ.copy(), not os.environ.get(...) next to some other .copy().
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -527,3 +577,220 @@ def test_every_converter_child_env_goes_through_the_token_boundary():
     assert not offenders, (
         "these build a child env without applying the token boundary: " + ", ".join(offenders)
     )
+
+
+def test_non_peft_gguf_leaves_the_users_checkpoint_as_it_was(monkeypatch, tmp_path):
+    """The BOS-stripped template and the sentencepiece fix are for the converter only: written into
+    the loaded checkpoint, they changed how that folder prompts in transformers afterwards."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "tokenizer_config.json").write_text('{"chat_template": "{{ bos_token }}x"}')
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    before = {p.name: p.read_bytes() for p in checkpoint.iterdir()}
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+
+    class StrippingTokenizer(_FakeTokenizer):
+        def save_pretrained(self, path):
+            super().save_pretrained(path)
+            with open(os.path.join(path, "tokenizer_config.json"), "w") as f:
+                f.write('{"chat_template": "x"}')
+
+    converter_saw = {}
+
+    def _save_to_gguf(**kwargs):
+        folder = kwargs["model_directory"]
+        converter_saw.update(
+            {name: open(os.path.join(folder, name), "rb").read() for name in os.listdir(folder)}
+        )
+        output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
+        output.parent.mkdir(exist_ok = True)
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    (tmp_path / "export").mkdir()
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (True, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    save_mod.unsloth_save_pretrained_gguf(
+        model,
+        str(tmp_path / "export" / "model"),
+        tokenizer = StrippingTokenizer(),
+        quantization_method = "q8_0",
+    )
+
+    assert converter_saw["tokenizer_config.json"] == b'{"chat_template": "x"}'
+    assert converter_saw["model.safetensors"] == b"WEIGHTS"
+    assert {p.name: p.read_bytes() for p in checkpoint.iterdir()} == before
+
+
+@pytest.mark.parametrize("fails_at", ["tokenizer_save", "quantization_method"])
+def test_non_peft_gguf_removes_the_staged_copy_when_export_fails_before_converting(
+    monkeypatch, tmp_path, fails_at
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+
+    class BrokenTokenizer(_FakeTokenizer):
+        def save_pretrained(self, path):
+            raise OSError("tokenizer save failed")
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "save_to_gguf", lambda **kw: pytest.fail("converter reached"))
+
+    requested = tmp_path / "export" / "model"
+    (tmp_path / "export").mkdir()
+    with pytest.raises((OSError, TypeError)):
+        save_mod.unsloth_save_pretrained_gguf(
+            model,
+            str(requested),
+            tokenizer = BrokenTokenizer() if fails_at == "tokenizer_save" else _FakeTokenizer(),
+            quantization_method = "q8_0" if fails_at == "tokenizer_save" else 8,
+        )
+
+    gguf_directory = f"{requested}_gguf"
+    leftovers = os.listdir(gguf_directory) if os.path.isdir(gguf_directory) else []
+    assert not [name for name in leftovers if name.startswith(".unsloth_gguf_source_")]
+    assert os.listdir(checkpoint) == ["model.safetensors"]
+
+
+def test_staged_checkpoint_links_weights_and_big_files_but_copies_the_tokenizer(
+    monkeypatch, tmp_path
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    (checkpoint / "tf_model.h5").write_bytes(b"x" * 64)
+    (checkpoint / "tokenizer_config.json").write_text("{}")
+    (checkpoint / "tokenizer.bin").write_bytes(b"VOCAB")
+    monkeypatch.setattr(save_mod, "_GGUF_LINK_MIN_BYTES", 32)
+
+    staged = save_mod._stage_reused_checkpoint(str(checkpoint), str(tmp_path / "out_gguf"))
+    try:
+        for name in ("model.safetensors", "tf_model.h5"):
+            assert os.path.samefile(os.path.join(staged, name), checkpoint / name)
+        for name in ("tokenizer_config.json", "tokenizer.bin"):
+            assert not os.path.samefile(os.path.join(staged, name), checkpoint / name)
+        shutil.copyfile(checkpoint / "tokenizer.bin", os.path.join(staged, "tokenizer.bin"))
+        with open(os.path.join(staged, "tokenizer_config.json"), "w") as f:
+            f.write("rewritten")
+        assert (checkpoint / "tokenizer_config.json").read_text() == "{}"
+    finally:
+        save_mod._drop_staged_checkpoint(staged)
+    assert not os.path.exists(staged)
+
+
+def test_staged_checkpoint_copies_tokenizer_subfolders_and_resolves_a_relative_source(
+    monkeypatch, tmp_path
+):
+    checkpoint = tmp_path / "checkpoint"
+    (checkpoint / "additional_chat_templates").mkdir(parents = True)
+    (checkpoint / "additional_chat_templates" / "tool_use.jinja").write_text("{{ bos_token }}")
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    monkeypatch.chdir(tmp_path)
+
+    def _cross_device(*_args):
+        raise OSError("EXDEV")
+
+    # The symlink fallback, as for a GGUF folder on another filesystem.
+    monkeypatch.setattr(save_mod.os, "link", _cross_device)
+    staged = save_mod._stage_reused_checkpoint("checkpoint", str(tmp_path / "out_gguf"))
+    try:
+        assert open(os.path.join(staged, "model.safetensors"), "rb").read() == b"WEIGHTS"
+        with open(os.path.join(staged, "additional_chat_templates", "tool_use.jinja"), "w") as f:
+            f.write("stripped")
+        template = checkpoint / "additional_chat_templates" / "tool_use.jinja"
+        assert template.read_text() == "{{ bos_token }}"
+    finally:
+        save_mod._drop_staged_checkpoint(staged)
+
+
+@pytest.mark.parametrize("links", ["hard", "symbolic", "none"])
+def test_preflight_prices_a_staged_copy_only_when_nothing_can_link(monkeypatch, tmp_path, links):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"W" * 100)
+    (checkpoint / "tokenizer.json").write_text("{}")
+    model = _FakeModel()
+    model.config = type("cfg", (), {"_name_or_path": str(checkpoint)})()
+    monkeypatch.setattr(save_mod, "_gguf_reuses_loaded_checkpoint", lambda *_args: True)
+
+    def _refused(*_args, **_kwargs):
+        raise OSError("not supported here")
+
+    if links != "hard":
+        monkeypatch.setattr(save_mod.os, "link", _refused)
+    if links == "none":
+        monkeypatch.setattr(save_mod.os, "symlink", _refused)
+    copied = save_mod._staged_checkpoint_copy_bytes(model, str(tmp_path / "out" / "model"))
+    assert copied == (100 if links == "none" else 0)
+    assert not list(tmp_path.rglob(".unsloth_gguf_link_probe_*"))
+
+
+def test_a_failed_staging_restores_the_callers_chat_template(monkeypatch, tmp_path):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+    tokenizer = _FakeTokenizer()
+    tokenizer.chat_template = "{{ bos_token }}x"
+
+    def _strip(tok):
+        tok.chat_template = "x"
+        return True, None
+
+    def _no_room(*_args):
+        raise OSError("cannot create the GGUF folder")
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", _strip)
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "_stage_reused_checkpoint", _no_room)
+    monkeypatch.setattr(save_mod, "save_to_gguf", lambda **kw: pytest.fail("converter reached"))
+    (tmp_path / "export").mkdir()
+    with pytest.raises(OSError):
+        save_mod.unsloth_save_pretrained_gguf(
+            model,
+            str(tmp_path / "export" / "model"),
+            tokenizer = tokenizer,
+            quantization_method = "q8_0",
+        )
+    assert tokenizer.chat_template == "{{ bos_token }}x"

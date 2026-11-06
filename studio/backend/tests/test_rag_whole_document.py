@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whole-document context mode: a thread-attached file small enough to fit is
-injected in full (every chunk, in order) instead of top-K retrieval. Covers the
-new store query, the tool-level renderer, and the auto-inject wiring + fallback.
-No embedder is needed - the whole-doc path does no query embedding."""
+"""whole-document mode injects fitting thread files in full and in order without query embedding."""
 
 import json
+import re
+import sqlite3
 
-from core.rag import store, tool
+import pytest
+
+from core.rag import chunking, parsers, store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
+from storage import rag_db
 
 
 def _shared_setup_1(fake_search, monkeypatch):
@@ -38,8 +40,7 @@ def _shared_setup_2(monkeypatch):
     )
 
 
-# A vector per chunk just to satisfy add_chunks (the whole-doc path never reads
-# vectors); dimension is arbitrary but must be consistent within a connection.
+# The whole-doc path never reads vectors; dimension must only be consistent per connection.
 _VEC = [0.1, 0.2, 0.3, 0.4]
 
 
@@ -47,16 +48,21 @@ def _chunk(
     text,
     index = 0,
     page = None,
+    source_page = 0,
     tokens = None,
+    start = 0,
+    end = None,
+    whole_tokens = None,
 ):
     return Chunk(
         text = text,
         token_count = tokens if tokens is not None else len(text.split()),
         page_number = page,
-        source_page_index = 0,
+        source_page_index = source_page,
         chunk_index = index,
-        page_char_start = 0,
-        page_char_end = len(text),
+        page_char_start = start,
+        page_char_end = len(text) if end is None else end,
+        whole_document_token_count = whole_tokens,
     )
 
 
@@ -72,15 +78,26 @@ def _add_doc(
     tokens = None,
     pages = None,
 ):
-    chunks = [
-        _chunk(
-            t,
-            i,
-            page = (pages[i] if pages else None),
-            tokens = (tokens[i] if tokens else None),
+    page_indices = {}
+    cursors = {}
+    chunks = []
+    for i, text in enumerate(texts):
+        page = pages[i] if pages else None
+        source_page = page_indices.setdefault(page, len(page_indices))
+        start = cursors.get(source_page, 0)
+        end = start + len(text)
+        chunks.append(
+            _chunk(
+                text,
+                i,
+                page = page,
+                source_page = source_page,
+                tokens = (tokens[i] if tokens else None),
+                start = start,
+                end = end,
+            )
         )
-        for i, t in enumerate(texts)
-    ]
+        cursors[source_page] = end + 1
     vectors = [list(_VEC) for _ in texts]
     store.create_document(conn, scope = scope, filename = filename, sha256 = sha, document_id = doc_id)
     store.add_chunks(conn, scope, doc_id, chunks, vectors)
@@ -96,6 +113,19 @@ def _injected_text(result) -> str:
 # ── store.all_chunks_for_scope ───────────────────────────────────────
 
 
+def test_schema_upgrade_adds_chunk_offsets():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        "CREATE TABLE chunks(id TEXT PRIMARY KEY, document_id TEXT, scope TEXT, "
+        "chunk_index INTEGER, text TEXT, page_number INTEGER, source_page_index INTEGER, "
+        "token_count INTEGER, kind TEXT, pdf_regions_json TEXT)"
+    )
+    rag_db._ensure_schema(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(chunks)")}
+    conn.close()
+    assert {"page_char_start", "page_char_end", "whole_document_token_count"} <= columns
+
+
 def test_all_chunks_for_scope_orders_by_document_then_index(rag_conn):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "first.pdf", "h1", ["a", "b", "c"])
@@ -105,6 +135,34 @@ def test_all_chunks_for_scope_orders_by_document_then_index(rag_conn):
     assert rows[0]["filename"] == "first.pdf"
     assert rows[-1]["filename"] == "second.pdf"
     assert rows[0]["text"] == "a"
+    assert (rows[0]["page_char_start"], rows[0]["page_char_end"]) == (0, 1)
+
+
+def test_copy_document_index_preserves_chunk_offsets(rag_conn):
+    scope = store.thread_scope("t1")
+    store.create_document(
+        rag_conn, scope = scope, filename = "source.txt", sha256 = "h1", document_id = "src"
+    )
+    store.add_chunks(
+        rag_conn,
+        scope,
+        "src",
+        [_chunk("overlap", start = 4, end = 11, whole_tokens = 5)],
+        [_VEC],
+    )
+    store.create_document(
+        rag_conn, scope = scope, filename = "copy.txt", sha256 = "h2", document_id = "dst"
+    )
+    store.copy_document_index(rag_conn, store.get_document(rag_conn, "src"), "dst", scope)
+    row = rag_conn.execute(
+        "SELECT page_char_start, page_char_end, whole_document_token_count "
+        "FROM chunks WHERE document_id='dst'"
+    ).fetchone()
+    assert (row["page_char_start"], row["page_char_end"], row["whole_document_token_count"]) == (
+        4,
+        11,
+        5,
+    )
 
 
 def test_all_chunks_for_scope_excludes_non_completed(rag_conn):
@@ -126,14 +184,9 @@ def test_all_chunks_for_scope_isolates_scopes(rag_conn):
     assert [r["text"] for r in rows] == ["mine"]
 
 
-# ── store.scope_token_estimate (cheap whole-doc budget pre-check) ─────
-
-
 def test_scope_token_estimate_sums_without_hydrating(rag_conn):
-    # Stored counts sum directly; zero/missing falls back to length/4; non-completed out.
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "a.pdf", "h1", ["alpha", "bravo"], tokens = [10, 20])
-    # token_count 0 -> length/4 fallback: a 40-char chunk estimates to 10 tokens.
     _add_doc(rag_conn, scope, "d2", "b.pdf", "h2", ["x" * 40], tokens = [0])
     _add_doc(rag_conn, scope, "d3", "c.pdf", "h3", ["pending"], status = "pending", tokens = [99])
     assert store.scope_token_estimate(rag_conn, scope) == 10 + 20 + 10
@@ -141,8 +194,6 @@ def test_scope_token_estimate_sums_without_hydrating(rag_conn):
 
 
 def test_scope_token_estimate_matches_row_sum(rag_conn):
-    # Must agree with the exact per-row sum it short-circuits (one stored count, one
-    # length/4 fallback), so the pre-check never disagrees with the full path.
     from core.rag.tool import _row_token_count
 
     scope = store.thread_scope("t1")
@@ -151,9 +202,6 @@ def test_scope_token_estimate_matches_row_sum(rag_conn):
     )
     rows = store.all_chunks_for_scope(rag_conn, scope)
     assert store.scope_token_estimate(rag_conn, scope) == sum(_row_token_count(r) for r in rows)
-
-
-# ── tool.whole_document_context ──────────────────────────────────────
 
 
 def test_whole_document_context_returns_full_text_and_sources(rag_conn):
@@ -170,13 +218,11 @@ def test_whole_document_context_returns_full_text_and_sources(rag_conn):
     result = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
     assert result is not None
     text, sources = result
-    # Every chunk is present, in order, as <chunk> blocks.
     assert "chapter one body" in text
     assert "chapter two body" in text
     assert '<chunk id="1"' in text
     assert '<chunk id="2"' in text
     assert text.index("chapter one") < text.index("chapter two")
-    # Source-map mirrors retrieval's shape, with no score on the whole-doc path.
     assert [s["citationId"] for s in sources] == [1, 2]
     assert all(s["filename"] == "report.pdf" for s in sources)
     assert all(s["score"] is None for s in sources)
@@ -188,7 +234,6 @@ def test_whole_document_context_none_over_budget(rag_conn):
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["huge"], tokens = [50_000])
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
-    # Same doc fits under a larger budget.
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 100_000) is not None
 
 
@@ -197,8 +242,7 @@ def test_whole_document_context_none_when_empty(rag_conn):
 
 
 def test_whole_document_context_non_positive_budget_returns_none(rag_conn):
-    # A non-positive budget disables whole-doc (RAG_WHOLE_DOC_MAX_TOKENS=0 footgun)
-    # rather than injecting the whole corpus unbounded.
+    # A non-positive budget disables whole-doc rather than injecting everything unbounded.
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "a.pdf", "h1", ["tiny body"])
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 0) is None
@@ -206,13 +250,11 @@ def test_whole_document_context_non_positive_budget_returns_none(rag_conn):
 
 
 def test_whole_document_context_none_without_scope(rag_conn):
-    # No thread scope -> None (whole-doc is thread-attachment only).
     assert tool.whole_document_context(max_tokens = 6000) is None
 
 
 def test_whole_document_context_null_token_count_enforces_budget(rag_conn):
-    # A missing token_count must not bypass the budget; fall back to a length estimate.
-    big = "word " * 20_000  # ~20k tokens by length estimate
+    big = "word " * 20_000
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", [big], tokens = [None])
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000) is None
     assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = 1_000_000) is not None
@@ -227,7 +269,130 @@ def test_whole_document_context_spans_multiple_docs(rag_conn):
     assert {s["filename"] for s in sources} == {"a.pdf", "b.pdf"}
 
 
-# ── build_rag_autoinject wiring ──────────────────────────────────────
+def test_whole_document_context_reads_each_overlapping_line_once(rag_conn):
+    lines = [f"R{i:03d} | Travel | Vendor number {i} | ${i}.00" for i in range(1, 71)]
+    pages = parsers.parse_text("\n".join(lines))
+    chunks = chunking.chunk_pages(pages, max_tokens = 200, overlap = 32, count = lambda t: len(t.split()))
+    assert len(chunks) > 1
+    store.create_document(
+        rag_conn, scope = store.thread_scope("t1"), filename = "exp.docx", sha256 = "h1", document_id = "d1"
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert re.findall(r"R\d{3}", text) == [f"R{i:03d}" for i in range(1, 71)]
+    assert [s["chunkId"] for s in sources] == [f"d1:{i}" for i in range(len(chunks))]
+
+
+def test_whole_document_context_keeps_text_repeated_on_the_next_page(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "report.pdf",
+        "h1",
+        ["page one body\nACME Confidential", "ACME Confidential\npage two body"],
+        pages = [1, 2],
+    )
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("ACME Confidential") == 2
+
+
+def test_whole_document_context_keeps_indentation_after_overlap(rag_conn):
+    page = "paragraph\nshared line\n    indented code"
+    overlap = page.index("shared line")
+    chunks = [
+        _chunk(page[: page.index("\n    indented code")], end = page.index("\n    indented code")),
+        _chunk(page[overlap:], 1, start = overlap, end = len(page)),
+    ]
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "code.md",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert sources[1]["text"] == "    indented code"
+
+
+def test_whole_document_context_keeps_matching_text_without_actual_overlap(rag_conn):
+    page = "section\nTOTAL\nTOTAL\nnext"
+    second_start = page.index("TOTAL", page.index("TOTAL") + 1)
+    chunks = [
+        _chunk(page[: second_start - 1], end = second_start - 1),
+        _chunk(page[second_start:], 1, start = second_start, end = len(page)),
+    ]
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "totals.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("TOTAL") == 2
+
+
+def test_whole_document_context_removes_overlap_inside_unbroken_text(rag_conn):
+    page = "0123456789" * 8
+    chunks = chunking.chunk_pages(parsers.parse_text(page), max_tokens = 20, overlap = 5, count = len)
+    assert len(chunks) > 1
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "data.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    _text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert "".join(source["text"] for source in sources) == page
+
+
+def test_whole_document_context_budgets_deoverlapped_content(rag_conn):
+    page = " ".join(f"word{i}" for i in range(30))
+    chunks = chunking.chunk_pages(parsers.parse_text(page), max_tokens = 30, overlap = 10, count = len)
+    previous_end = 0
+    unique_tokens = 0
+    for chunk in chunks:
+        unique_start = max(previous_end, chunk.page_char_start)
+        unique_tokens += len(chunk.text[unique_start - chunk.page_char_start :])
+        previous_end = max(previous_end, chunk.page_char_end)
+    assert sum(chunk.token_count for chunk in chunks) > unique_tokens
+    assert sum(chunk.whole_document_token_count for chunk in chunks) == unique_tokens
+    store.create_document(
+        rag_conn,
+        scope = store.thread_scope("t1"),
+        filename = "near-limit.txt",
+        sha256 = "h1",
+        document_id = "d1",
+    )
+    store.add_chunks(rag_conn, store.thread_scope("t1"), "d1", chunks, [list(_VEC) for _ in chunks])
+    store.set_document_status(rag_conn, "d1", "completed", num_chunks = len(chunks))
+    assert tool.whole_document_context(scope_thread_id = "t1", max_tokens = unique_tokens)
+
+
+def test_whole_document_context_keeps_legacy_chunks_without_offsets(rag_conn):
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "legacy.txt",
+        "h1",
+        ["section\nTOTAL", "TOTAL\nnext"],
+    )
+    rag_conn.execute(
+        "UPDATE chunks SET page_char_start=NULL, page_char_end=NULL WHERE document_id='d1'"
+    )
+    rag_conn.commit()
+    text, _sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
+    assert text.count("TOTAL") == 2
 
 
 def _convo(text = "summarize the whole document"):
@@ -240,16 +405,12 @@ def test_build_rag_autoinject_uses_whole_doc(rag_conn):
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1"})
     assert result is not None
     injected = _injected_text(result)
-    # Both chunks present -> the model receives the entire file, not top-K.
     assert "whole alpha part" in injected
     assert "whole bravo part" in injected
-    # Tool-message content is chunk text only; the citation JSON tail is internal.
     assert inf_tools.RAG_SOURCES_SENTINEL not in injected
 
 
 def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, monkeypatch):
-    # Large-model Auto sets autoinject=False, but whole-doc is a separate thread-doc
-    # context mode and should still inject a fitting attachment.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["entire file body"])
     _shared_setup_2(monkeypatch)
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
@@ -258,7 +419,6 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
 
 
 def test_build_rag_autoinject_explicit_off_disables_whole_doc(rag_conn, monkeypatch):
-    # The UI Off switch sends both autoinject=False and whole_doc=False.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
     _shared_setup_2(monkeypatch)
     assert (
@@ -282,9 +442,7 @@ def test_build_rag_autoinject_falls_back_over_budget(rag_conn, monkeypatch):
 
 
 def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, monkeypatch):
-    # The frontend resolves Auto to autoinject=False for models over 9B. Thread
-    # attachments still request whole-doc context, so an oversized document must
-    # fall back to top-K instead of disappearing from the model request.
+    # Auto resolves to autoinject=False over 9B; oversized attachments fall back to top-K.
     scope = store.thread_scope("t1")
     _add_doc(rag_conn, scope, "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000])
 
@@ -301,6 +459,7 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
 
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
     calls = []
 
     def fake_search(**kw):
@@ -330,9 +489,6 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
 
     injected = _injected_text(result)
     assert "x" * 1600 in injected and "project" in injected
-    # The thread is searched alone and ungated, then the project once: one query
-    # embedding per scope, with the over-budget passages trimmed from the result
-    # rather than re-searched at a smaller top_k.
     assert [(c.get("scope_thread_id"), c.get("scope_project_id")) for c in calls] == [
         ("t1", None),
         (None, "p1"),
@@ -345,8 +501,6 @@ def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, mo
 
 
 def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
-    # With auto-injection ON the fallback is unbudgeted, so a context too small
-    # to leave any whole-doc budget must not silently drop the attachment.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -354,10 +508,8 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
 
     for scope in (
-        # A context smaller than headroom + overhead.
         {"thread_id": "t1", "autoinject": True, "context_length": 1200},
         {"thread_id": "t1", "autoinject": True, "context_length": 512},
-        # Headroom at or above the whole context: same zero budget.
         {"thread_id": "t1", "autoinject": True, "context_length": 8192, "response_headroom": 8192},
         {
             "thread_id": "t1",
@@ -365,7 +517,6 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
             "context_length": 2048,
             "response_headroom": 999_999,
         },
-        # A sidebar top-K of 0 must not be read as "already at the minimum".
         {"thread_id": "t1", "autoinject": True, "context_length": 2048, "default_top_k": 0},
     ):
         result = inf_tools.build_rag_autoinject(_convo(), scope)
@@ -374,10 +525,7 @@ def test_build_rag_autoinject_zero_budget_still_grounds(rag_conn, monkeypatch):
 
 
 def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, monkeypatch):
-    # The block joins the current turn, which the rolling window may not evict, so
-    # admitting a passage that does not fit fails the whole request instead of
-    # degrading the answer. When nothing fits, inject nothing, which is what main
-    # does on this path anyway.
+    # The current turn may not be evicted, so when no passage fits, inject nothing rather than fail.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -393,7 +541,6 @@ def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, m
     scope = {"thread_id": "t1", "autoinject": False, "context_length": 1200}
     assert inf_tools._whole_doc_budget(scope, _convo()) == 0
     assert inf_tools.build_rag_autoinject(_convo(), scope) is None
-    # Auto-injection ON is the pre-existing unbudgeted path and is unaffected.
     assert (
         inf_tools.build_rag_autoinject(
             _convo(), {"thread_id": "t1", "autoinject": True, "context_length": 1200}
@@ -403,9 +550,6 @@ def test_build_rag_autoinject_refuses_when_not_even_one_passage_fits(rag_conn, m
 
 
 def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatch):
-    # With auto-injection ON the fallback is the pre-existing one: a single
-    # combined search, no whole-doc budget clamp. A long thread or a small
-    # context must not shrink or cancel it.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -434,10 +578,189 @@ def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatc
     assert calls[0]["min_dense_score"] == inf_tools._autoinject_floor()
 
 
+def test_build_rag_autoinject_on_still_grounds_over_budget_doc_below_floor(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_lexical_mode_still_grounds_generic_request(
+    rag_conn, monkeypatch, autoinject
+):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {
+            "thread_id": "t1",
+            "autoinject": autoinject,
+            "autoinject_min_score": 0.7,
+            "mode": "lexical",
+        },
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
+def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    pscope = store.project_scope("p1")
+    store.create_document(
+        rag_conn, scope = pscope, filename = "notes.md", sha256 = "h2", document_id = "d2"
+    )
+    store.add_chunks(rag_conn, pscope, "d2", [_chunk("PROJECT_PASSAGE")], [[1.0, 0.0, 0.0, 0.0]])
+    store.set_document_status(rag_conn, "d2", "completed", num_chunks = 1)
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    injected = _injected_text(result)
+    assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
+def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
+
+    def fake_search(**kw):
+        if kw.get("min_dense_score") is None:
+            name, doc = "thread", "d1"
+        else:
+            name, doc = "project", "d2"
+        sources = [
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, kw["top_k"] + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    injected = _injected_text(result)
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
+    assert "thread-1" in injected and "project-1" in injected
+    assert injected.index("thread-1") < injected.index("project-1")
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_skips_thread_fallback_without_attachment(
+    rag_conn, monkeypatch, autoinject
+):
+    calls = []
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: calls.append(kw))
+    result = inf_tools.build_rag_autoinject(
+        _convo("Say hello in three words."), {"thread_id": "t1", "autoinject": autoinject}
+    )
+    assert result is None
+    assert not [c for c in calls if c.get("min_dense_score") is None]
+
+
+def test_build_rag_autoinject_on_skips_thread_search_when_attachment_already_hit(
+    rag_conn, monkeypatch
+):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: {"d1"})
+    calls = []
+
+    def fake_search(**kw):
+        calls.append(kw)
+        sources = [
+            {"citationId": 1, "documentId": "d1", "filename": "big.pdf", "text": "thread hit"}
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    assert "thread hit" in _injected_text(result)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("project_id", ["p1", None])
+def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(
+    rag_conn, monkeypatch, project_id
+):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: {"d1"})
+
+    def fake_search(**kw):
+        if kw.get("min_dense_score") is not None and not kw.get("scope_project_id"):
+            return None
+        name, doc = ("thread", "d1") if kw.get("min_dense_score") is None else ("project", "d2")
+        # Zero is falsy to the search, which then returns its configured default count.
+        sources = [
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, (kw["top_k"] or 10) + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": project_id, "autoinject": True, "default_top_k": 0},
+    )
+    injected = _injected_text(result)
+    assert "thread-1" in injected
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
+
+
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
-    # The fallback exists to rescue the thread attachment. With auto-injection
-    # off and nothing found in the thread, project context is not a substitute:
-    # injecting it would be grounding the user never asked for.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -460,9 +783,6 @@ def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkey
 def test_build_rag_autoinject_keeps_thread_hits_when_project_retrieval_raises(
     rag_conn, monkeypatch
 ):
-    # The project lookup is an optional companion. An unavailable project index
-    # must not discard the thread grounding already in hand, which would put the
-    # attachment right back where this fallback found it.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -482,9 +802,6 @@ def test_build_rag_autoinject_keeps_thread_hits_when_project_retrieval_raises(
 
 
 def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypatch):
-    # Trimming the combination, not the project alone: when thread plus all of the
-    # project overflows, the passages that do fit beside the thread result are kept
-    # instead of every project passage being dropped.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -500,13 +817,11 @@ def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypa
 
     injected = _shared_setup_1(fake_search, monkeypatch)
     assert "T" * 8000 in injected
-    # Some project passages survive beside the thread result, but not all four.
     assert 1 <= injected.count("P" * 2000) < 4
 
 
 def test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens(rag_conn, monkeypatch):
-    # The merged block was admitted on the flat len(text) // 4; a CJK character is
-    # about one token, not four.
+    # A CJK character is about one token, not four.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["THREAD_DOC"])
 
     def fake_search(**kw):
@@ -518,13 +833,10 @@ def test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens(rag_conn, monk
     injected = _shared_setup_1(fake_search, monkeypatch)
 
     assert "THREAD_DOC" in injected
-    # Trimmed to what fits beside the document, not admitted or discarded whole.
     assert 1 <= injected.count("漢" * 2000) < 4
 
 
 def test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document(rag_conn, monkeypatch):
-    # Trimming the merge touches only the project tail: an overlarge combination gives
-    # the document back whole, never a prefix of it.
     body = ["SECTION%02d " % i + "word " * 398 for i in range(8)]
     _add_doc(
         rag_conn,
@@ -543,13 +855,10 @@ def test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document(rag_c
     injected = _shared_setup_1(fake_search, monkeypatch)
 
     assert [i for i in range(len(body)) if "SECTION%02d" % i in injected] == list(range(len(body)))
-    # The companion is what does not fit, so the companion is what goes.
     assert "PROJECT_HIT" not in injected
 
 
 def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monkeypatch):
-    # A CJK character is about one token where ASCII runs four to one, so the same
-    # character count costs several times more and far less of it fits.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "big.pdf", "h1", ["overflow"], tokens = [50_000]
     )
@@ -568,11 +877,9 @@ def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monke
         "response_headroom": 1024,
     }
 
-    # Same character count either way; only the per-character token cost differs.
     def _chunks(body):
         monkeypatch.setattr(tool, "search_for_autoinject", make_search(body))
         result = inf_tools.build_rag_autoinject(_convo(), scope)
-        # None means not even one passage fit, which is zero chunks admitted.
         return _injected_text(result).count('<chunk id="') if result else 0
 
     ascii_chunks = _chunks("a" * 2000)
@@ -582,8 +889,6 @@ def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monke
 
 
 def test_build_rag_autoinject_context_budget_falls_back(rag_conn, monkeypatch):
-    # Runtime context can be smaller than RAG_WHOLE_DOC_MAX_TOKENS; cap whole-doc to
-    # the active context and fall back to retrieval when it would overflow.
     _add_doc(
         rag_conn, store.thread_scope("t1"), "d1", "small.pdf", "h1", ["fits global"], tokens = [900]
     )
@@ -620,8 +925,6 @@ def test_whole_doc_budget_reserves_image_parts(monkeypatch):
 
 
 def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monkeypatch):
-    # RAG_THREAD_WHOLE_DOC=0 stays authoritative; browser requests should not
-    # turn it back on by default.
     from core.rag import config
 
     monkeypatch.setattr(config, "THREAD_WHOLE_DOC", False)
@@ -633,8 +936,7 @@ def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monk
 
 
 def test_whole_document_context_budgets_rendered_wrappers(rag_conn):
-    # Many tiny chunks add wrapper overhead beyond raw chunk token counts; budget
-    # the rendered prompt, not just stored text.
+    # Wrapper overhead counts: budget the rendered prompt, not stored text.
     texts = ["x" for _ in range(120)]
     _add_doc(
         rag_conn,
@@ -655,14 +957,12 @@ def test_build_rag_autoinject_whole_doc_disabled_via_override(rag_conn, monkeypa
     sentinel = ("TOPK_TEXT", [{"citationId": 1, "filename": "doc.pdf", "text": "x"}])
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
 
-    # whole_doc=False forces retrieval even though the doc fits.
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "whole_doc": False})
     assert result is not None
     assert _injected_text(result) == "TOPK_TEXT"
 
 
 def test_build_rag_autoinject_kb_scope_never_whole_doc(rag_conn, monkeypatch):
-    # A KB-only scope (no thread) goes through retrieval, never whole-doc.
     kb_scope = store.kb_scope("K1")
     _add_doc(rag_conn, kb_scope, "d1", "kb.pdf", "h1", ["kb body one", "kb body two"])
 
@@ -675,7 +975,6 @@ def test_build_rag_autoinject_kb_scope_never_whole_doc(rag_conn, monkeypatch):
 
 
 def test_whole_document_context_thread_scope_only(rag_conn):
-    # A project corpus chunk is never whole-doc injected, even with a thread attachment.
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
     _add_doc(rag_conn, store.project_scope("p1"), "pd", "project.txt", "h2", ["project corpus"])
     text, sources = tool.whole_document_context(scope_thread_id = "t1", max_tokens = 6000)
@@ -685,7 +984,6 @@ def test_whole_document_context_thread_scope_only(rag_conn):
 
 
 def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
-    # Project chat: thread attachment whole-doc'd AND project sources retrieved, merged.
     _add_doc(
         rag_conn,
         store.thread_scope("t1"),
@@ -717,15 +1015,12 @@ def test_build_rag_autoinject_appends_project_retrieval(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "project_id": "p1"})
     injected = _injected_text(result)
-    # Whole thread attachment AND the project passage are both injected.
     assert "thread chunk one" in injected
     assert "thread chunk two" in injected
     assert "project passage zeta" in injected
-    # The companion retrieval was scoped to the project only (not thread or KB).
     assert captured.get("scope_project_id") == "p1"
     assert captured.get("scope_thread_id") is None
     assert captured.get("scope_kb_id") is None
-    # Citation ids are sequential across the merged set: thread 1,2 then project 3.
     assert '<chunk id="1"' in injected
     assert '<chunk id="2"' in injected
     assert '<chunk id="3"' in injected
@@ -757,8 +1052,6 @@ def test_build_rag_autoinject_skips_project_companion_over_budget(rag_conn, monk
 
 
 def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, monkeypatch):
-    # A large project corpus must not push a small thread attachment over budget;
-    # whole-doc resolves the thread scope alone (companion retrieval stubbed out).
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: None)
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["small thread file"])
     _add_doc(
@@ -769,7 +1062,6 @@ def test_build_rag_autoinject_thread_whole_doc_ignores_project_size(rag_conn, mo
 
 
 def test_build_rag_autoinject_kb_defers_to_retrieval(rag_conn, monkeypatch):
-    # A KB selection is exclusive: a thread attachment can't preempt it; KB uses retrieval.
     _add_doc(rag_conn, store.thread_scope("t1"), "td", "thread.txt", "h1", ["thread attachment"])
     sentinel = ("KB_RETRIEVAL", [{"citationId": 1, "filename": "kb.pdf", "text": "x"}])
     monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: sentinel)
@@ -789,9 +1081,6 @@ def test_build_rag_autoinject_args_carry_user_query(rag_conn):
     assistant_msg = next(m for m in result["messages"] if m.get("role") == "assistant")
     args = json.loads(assistant_msg["tool_calls"][0]["function"]["arguments"])
     assert args["query"] == "what is in here"
-
-
-# ── end-to-end: real ingestion pipeline -> whole-doc injection ────────
 
 
 def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path):
@@ -822,13 +1111,11 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
 
     doc = store.get_document(rag_conn, document_id)
     assert doc["status"] == "completed"
-    assert doc["num_chunks"] >= 2  # the doc chunked into multiple pieces
+    assert doc["num_chunks"] >= 2
 
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1"})
     assert result is not None
     injected = _injected_text(result)
-    # Opening and ending both present -> the whole file reached the model.
     assert "Revenue rose" in injected
     assert "xyzzy-sentinel" in injected
-    # Every stored chunk is represented as a numbered block.
     assert injected.count("<chunk id=") == doc["num_chunks"]

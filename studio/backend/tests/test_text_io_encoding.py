@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text I/O must name its encoding, or Windows silently uses the ANSI codepage.
-
-``open()``, ``Path.read_text()`` and ``subprocess(text = True)`` fall back to
-``locale.getencoding()`` when no ``encoding`` is passed. On Windows that is
-cp1252 (or cp932, cp1251, ... by system locale), not UTF-8, so a chat template,
-model config or path containing ``ä ö ü → 世`` mojibakes or raises
-``UnicodeDecodeError`` mid-load. Unsloth's files are UTF-8, so say so.
-"""
+"""Text I/O must pass encoding explicitly, since Windows falls back to the ANSI codepage, not UTF-8."""
 
 from __future__ import annotations
 
+import sys
+import subprocess
 import ast
 import importlib.util
 import json
@@ -34,6 +29,9 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 # Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
+# Vendored packages are byte-identical to their wheel and get UTF-8 open via their loader.
+_UTF8_BY_LOADER = {"vendor/laya": "core/systemone/laya_runtime.py"}
+
 # Path.open()'s signature is what tells it apart from other libraries' open(),
 # e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
 _FILE_MODE_CHARS = set("rwxabt+")
@@ -53,6 +51,10 @@ def _studio_sources() -> list[Path]:
         path
         for path in sorted(BACKEND_ROOT.rglob("*.py"))
         if not any(part in _SKIPPED_DIRS for part in path.relative_to(BACKEND_ROOT).parts)
+        and not any(
+            path.relative_to(BACKEND_ROOT).as_posix().startswith(prefix + "/")
+            for prefix in _UTF8_BY_LOADER
+        )
     ]
 
 
@@ -129,12 +131,7 @@ def _subprocess_names(tree: ast.AST) -> set[str]:
 
 
 def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
-    """Plain names bound to a subprocess callable, called without the module.
-
-    ``install_wheel(run = subprocess.run)`` calls its injected ``run`` as a bare
-    name, so matching only the attribute form leaves those installer calls
-    unguarded. Imports, assignments and parameter defaults all bind one.
-    """
+    """Bare names bound to subprocess callables count too, e.g. install_wheel(run = subprocess.run)."""
 
     def _is_bound(value: ast.expr | None) -> bool:
         return (
@@ -156,8 +153,6 @@ def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             args = node.args
             positional = args.posonlyargs + args.args
-            # Defaults cover the tail of the positional parameters; kw_defaults
-            # is aligned with kwonlyargs already, holding None where absent.
             padded = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
             pairs = list(zip(positional, padded)) + list(zip(args.kwonlyargs, args.kw_defaults))
             aliases.update(arg.arg for arg, default in pairs if _is_bound(default))
@@ -223,16 +218,8 @@ def _encoding_assigned_later(tree: ast.AST, name: str) -> bool:
 
 
 def _splatted_kwargs_offenders(tree: ast.AST) -> list[ast.Dict]:
-    """Text-mode kwargs built in a dict and splatted into a call.
-
-    Kwargs are collected in a dict and splatted (``run(cmd, **run_kwargs)``)
-    where a branch has to add a timeout or an env, and the call is often through
-    a helper, so neither the callee nor the keywords are visible at the call
-    site. Only dicts that reach a call this way are judged: an unrelated payload
-    that happens to carry ``"text": True`` is not subprocess configuration.
-    """
+    """Only kwargs dicts splatted into a call are judged; a payload that merely holds text: True is not."""
     found = []
-    # ``run(cmd, **{...})``: the literal is at the call already.
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -260,11 +247,58 @@ def _splatted_kwargs_offenders(tree: ast.AST) -> list[ast.Dict]:
     return found
 
 
+def _is_locale_default(value: ast.expr) -> bool:
+    """None and "locale" are the locale default spelled out, not a chosen encoding."""
+    return isinstance(value, ast.Constant) and value.value in (None, "locale")
+
+
+_PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+
+
+def _path_class_names(tree: ast.AST) -> set[str]:
+    """The pathlib classes and every name they are imported under in this module.
+
+    `from pathlib import Path as P` still puts the path in front of an unbound `P.read_text(p)`,
+    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for. Names bound by
+    assignment, defaults or subclassing are not followed: those need the binding visible at each
+    call site, and a module-wide guess flags valid calls on an instance that happens to share the
+    name in another scope."""
+    names = set(_PATH_CLASSES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            for alias in node.names:
+                if alias.name in _PATH_CLASSES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str]) -> bool:
+    """Path.read_text(encoding, errors) / Path.write_text(data, encoding, ...) name an encoding
+    by keyword or positionally. The unbound form, Path.read_text(p), has the path in front, so the
+    position shifts by one."""
+    for kw in node.keywords:
+        if kw.arg == "encoding":
+            return not _is_locale_default(kw.value)
+    receiver = node.func.value
+    unbound = (isinstance(receiver, ast.Name) and receiver.id in path_classes) or (
+        isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
+    )
+    position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
+    # A starred argument at or before the slot makes the runtime position unknowable statically,
+    # so only a keyword encoding counts there: conservative, and nothing in the tree spells it so.
+    if any(isinstance(arg, ast.Starred) for arg in node.args[: position + 1]):
+        return False
+    if len(node.args) <= position:
+        return False
+    return not _is_locale_default(node.args[position])
+
+
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     subprocess_aliases = _subprocess_aliases(tree, subprocess_names)
+    path_classes = _path_class_names(tree)
     found: list[str] = []
     for node in _splatted_kwargs_offenders(tree):
         found.append(
@@ -286,8 +320,7 @@ def _offenders(path: Path) -> list[str]:
             found.append(f"{path.name}:{node.lineno}: open() without encoding")
             continue
 
-        # os.fdopen(fd, "w") is open() on a descriptor, so text mode takes the
-        # same locale default. Its mode defaults to "r", i.e. text, like open's.
+        # os.fdopen is open() on a descriptor; mode defaults to text.
         if name == "fdopen":
             if _mode_is_binary(node) or _open_has_encoding(node):
                 continue
@@ -303,7 +336,7 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
-            if _has_keyword(node, "encoding"):
+            if _path_text_names_encoding(node, name, path_classes):
                 continue
             # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
@@ -361,14 +394,12 @@ def test_resuming_a_legacy_jsonl_keeps_one_encoding(
 
     writer = _load_state_store(codepage).JsonlWriter(path)
     try:
-        # Seen keys survive the resume, so a repeat is refused, not appended.
         assert writer.has("id:1") and writer.has("id:2")
         assert writer.write(records[0]) is False
         assert writer.write({"id": 3, "author": name}) is True
     finally:
         writer.close()
 
-    # Never converted, so it still reads in its own codepage; the append is ASCII.
     blob = path.read_bytes()
     assert blob.startswith(before)
     assert blob[len(before) :].isascii()
@@ -393,7 +424,6 @@ def test_a_coincidentally_utf8_legacy_line_is_left_alone(tmp_path: Path) -> None
 
     _load_state_store("cp1251").JsonlWriter(path).close()
 
-    # Untouched, so the ambiguity never had to be resolved.
     assert path.read_bytes() == before
     rows = [json.loads(x) for x in path.read_text(encoding = "cp1251").splitlines() if x.strip()]
     assert [row["author"] for row in rows] == authors
@@ -419,14 +449,14 @@ def test_a_moved_shard_is_not_rewritten_by_guesswork(
     # A UTF-8 host: latin-1 would read cp1251 `Привет` back as `Ïðèâåò`.
     writer = _load_state_store("utf-8").JsonlWriter(path)
     try:
-        assert writer.has("id:1")  # ASCII keys still recover
+        assert writer.has("id:1")
         assert writer.write({"id": 2, "author": "Grüße"}) is True
     finally:
         writer.close()
 
     blob = path.read_bytes()
-    assert blob.startswith(before)  # never rewritten
-    assert blob[len(before) :].isascii()  # appended as \uXXXX, so no second encoding
+    assert blob.startswith(before)
+    assert blob[len(before) :].isascii()
     rows = [json.loads(x) for x in blob.decode(codepage).splitlines() if x.strip()]
     assert [row["author"] for row in rows] == [word, word, "Grüße"]
 
@@ -451,7 +481,6 @@ def test_an_all_ambiguous_shard_still_gets_ascii_appends(tmp_path: Path) -> None
 
     blob = path.read_bytes()
     assert blob.startswith(before)
-    # ASCII, so the appended record survives whichever reading is chosen.
     assert blob[len(before) :].isascii()
     for codec in ("cp1251", "utf-8"):
         rows = [json.loads(x) for x in blob.decode(codec).splitlines() if x.strip()]
@@ -511,7 +540,6 @@ def test_one_damaged_byte_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
 
     _load_state_store("cp1252").JsonlWriter(path).close()
 
-    # Untouched, so the healthy records were never re-read as cp1252.
     assert path.read_bytes() == before
     rows = []
     for line in path.read_bytes().splitlines():
@@ -540,11 +568,10 @@ def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
     writer = _load_state_store("cp1252").JsonlWriter(path)
     try:
         assert writer.has("id:1") and writer.has("id:3")
-        assert not writer.has("id:2")  # torn line yields no key
+        assert not writer.has("id:2")
     finally:
         writer.close()
 
-    # Untouched: no rewrite, so no record was re-encoded into mojibake.
     after = path.read_bytes()
     assert after.startswith(before)
     assert "Jürgen".encode() in after
@@ -552,27 +579,19 @@ def test_a_torn_line_does_not_relabel_a_utf8_shard(tmp_path: Path) -> None:
 
 
 def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> None:
-    """Pinning the decode turns an undecodable marker into UnicodeDecodeError,
-    which is a ValueError and so is not an OSError. Before the pin those bytes
-    simply read as an unknown value and the caller safely purged and restarted
-    the partial download; letting the error escape aborts the transfer instead.
-    """
+    """An undecodable marker must read as unknown; a raised UnicodeDecodeError would abort the transfer."""
     _shared_setup_1(__file__)
     from hub.utils import download_registry as registry
 
     marker = tmp_path / ".transport"
     marker.write_bytes(b"\x80\xffnative\n")
     assert registry._read_marker_value(marker) is None
-    # A readable but unknown value takes the same path (the behaviour restored).
     marker.write_text("something-else\n", encoding = "utf-8")
     assert registry._read_marker_value(marker) is None
 
 
 def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> None:
-    """hf_cache_snapshot_dir answers "is this model already on disk", and the
-    offline embedding checks turn a raise into a 500. A refs/main holding a byte
-    the codepage used to decode into a nonsense commit simply missed the snapshot
-    dir before the pin; it has to keep missing it."""
+    """A refs/main with undecodable bytes must read as not cached, since a raise would turn into a 500."""
     _shared_setup_1(__file__)
     from utils import utils as backend_utils
 
@@ -586,7 +605,6 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root])
     assert backend_utils.hf_cache_snapshot_dir("Org/Model") is None
-    # The torn root is skipped, not fatal: a healthy second root still answers.
     monkeypatch.setattr(backend_utils, "_hf_cache_roots", lambda: [torn_root, good_root])
     found = backend_utils.hf_cache_snapshot_dir("Org/Model")
     assert found is not None and found.name == "abc123"
@@ -601,12 +619,9 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
     pid_file = tmp_path / "studio.pid"
     pid_file.write_bytes(b"\x80\xff")
     monkeypatch.setattr(studio_run, "_PID_FILE", pid_file)
-    # _legacy_heir scans the real Unsloth root, so without this the last assertion asks whether
-    # a server happens to be running on the machine: with one, the record is handed over rather
-    # than unlinked. The handoff has its own test below.
+    # _legacy_heir scans the real Unsloth root; a running server would change the outcome.
     monkeypatch.setattr(studio_run, "_legacy_heir", lambda: None)
     studio_run._remove_pid_file()
-    # Not this process's PID, so the file stays; the point is that it returned.
     assert pid_file.exists()
 
     pid_file.write_text(str(os.getpid()), encoding = "utf-8")
@@ -700,6 +715,59 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
     assert flagged == {"text.py", "default_mode.py"}, flagged
 
 
+def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None:
+    """Path.read_text(encoding, errors) and Path.write_text(data, encoding, ...) take the
+    encoding positionally too. #13565's read_text("utf-8") is not a locale-default read."""
+    cases = {
+        "read_none.py": "p.read_text()\n",
+        "read_kw.py": 'p.read_text(encoding = "utf-8")\n',
+        "read_pos.py": 'p.read_text("utf-8")\n',
+        "write_none.py": 'p.write_text("x")\n',
+        "write_kw.py": 'p.write_text("x", encoding = "utf-8")\n',
+        "write_pos.py": 'p.write_text("x", "utf-8")\n',
+        # The locale default spelled out is still the locale default.
+        "read_none_pos.py": "p.read_text(None)\n",
+        "read_locale_pos.py": 'p.read_text("locale")\n',
+        "read_locale_kw.py": 'p.read_text(encoding = "locale")\n',
+        "write_none_pos.py": 'p.write_text("x", None)\n',
+        # Unbound calls carry the path first, so the encoding sits one slot later.
+        "unbound_read.py": "Path.read_text(p)\n",
+        "unbound_read_pos.py": 'Path.read_text(p, "utf-8")\n',
+        "unbound_write.py": 'pathlib.Path.write_text(p, "x")\n',
+        "unbound_write_pos.py": 'pathlib.Path.write_text(p, "x", "utf-8")\n',
+        # Under an alias, or a concrete pathlib class.
+        "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
+        "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
+        "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
+        # A same-named instance elsewhere is not an alias: no module-wide assignment guessing.
+        "instance_named_p.py": 'def a():\n    P = Path\n\ndef b(P):\n    P.read_text("utf-8")\n',
+        # A starred argument hides the runtime position: only a keyword encoding counts.
+        "starred_empty.py": "p.read_text(*())\n",
+        "unbound_starred.py": "Path.read_text(p, *())\n",
+        "starred_kw.py": 'p.read_text(*args, encoding = "utf-8")\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if _offenders(path):
+            flagged.add(name)
+    assert flagged == {
+        "read_none.py",
+        "write_none.py",
+        "read_none_pos.py",
+        "read_locale_pos.py",
+        "read_locale_kw.py",
+        "write_none_pos.py",
+        "unbound_read.py",
+        "unbound_write.py",
+        "unbound_alias.py",
+        "unbound_posix.py",
+        "starred_empty.py",
+        "unbound_starred.py",
+    }, flagged
+
+
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -714,17 +782,12 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", pw_file)
     assert storage._load_bootstrap_password() is None
 
-    # A readable one still loads, so this is a narrowing of failure, not of function.
     pw_file.write_text("correct horse battery staple\n", encoding = "utf-8")
     assert storage._load_bootstrap_password() == "correct horse battery staple"
 
 
 def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(tmp_path: Path) -> None:
-    """A checkpoint holds only base64 cursors and booleans, so a codepage reading
-    can only ever add non-ASCII, never recover any. Resuming on a mojibaked cursor
-    sends GitHub one it answers with INVALID_CURSOR_ARGUMENTS, and the empty page
-    that comes back marks the stream done and skips the rest of it for good.
-    Dropping the checkpoint only replays pages the writers already dedup."""
+    """A mojibaked cursor makes GitHub report the stream done; reset the checkpoint, don't resume it."""
     module = _load_state_store("cp1252")
     cursor = "Y3Vyc29yOnYyOpK0MjAxMi0wMi0xNlQwNjo1Mzo0MVrOADGL_A=="
     healthy = json.dumps({"issues_cursor": cursor, "issues_done": False}, indent = 2)
@@ -733,13 +796,11 @@ def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(tmp_
     path.write_text(healthy, encoding = "utf-8")
     assert module.StateStore(path).get("issues_cursor") == cursor
 
-    # Written by a pre-UTF-8 release in the operator's codepage. Nothing is lost
-    # by reading UTF-8 only, because an all-ASCII document is the same bytes.
+    # Written in the operator's codepage by a pre-UTF-8 release.
     path.write_bytes(healthy.encode("cp1252"))
     assert module.StateStore(path).get("issues_cursor") == cursor
 
-    # One damaged byte inside the cursor: still a whole JSON document under a
-    # single-byte codepage, so only refusing that reading resets the checkpoint.
+    # Valid JSON under a single-byte codepage, so only refusing that reading resets it.
     raw = healthy.encode()
     at = raw.index(b"MjAxMi0wMi0xNlQ") + 3
     path.write_bytes(raw[:at] + b"\x96" + raw[at + 1 :])
@@ -768,7 +829,6 @@ def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
         assert reading.as_utf8 == {"id": 1, "author": "Jürgen"}
         assert calls == ["utf-8"], calls
 
-        # A line UTF-8 cannot read still falls through to the codepage, the whole point.
         calls.clear()
         legacy = json.dumps({"id": 2, "author": "Jürgen"}, ensure_ascii = False).encode("cp1252")
         reading = module._read_line(legacy, "cp1252")
@@ -780,13 +840,7 @@ def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
 
 
 def _too_deeply_nested_json() -> str:
-    """A JSON document nested past what this interpreter will descend into.
-
-    Probed rather than hardcoded: the depth json.loads gives up at is bounded by
-    sys.getrecursionlimit() up to 3.11 and by the C recursion limit from 3.12,
-    which sys.setrecursionlimit no longer moves and which varies by micro
-    version. That is ~995 on 3.9 and ~9999 on 3.13.
-    """
+    """Probed: json.loads' nesting limit is the C recursion limit from 3.12, not setrecursionlimit."""
     depth = 1
     while depth <= 1 << 17:
         document = "[" * depth + "]" * depth
@@ -799,17 +853,13 @@ def _too_deeply_nested_json() -> str:
 
 
 def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) -> None:
-    """json.loads answers nesting it cannot descend with RecursionError, which is
-    a RuntimeError and so is neither a ValueError nor a UnicodeDecodeError.
-    _parse is called outside any other handler in both StateStore.__init__ and
-    JsonlWriter._scan_existing, so letting it escape aborts the scraper at
-    startup on a file the catch-all it replaced simply discarded."""
+    """RecursionError is neither ValueError nor UnicodeDecodeError, so catch it or startup aborts."""
     module = _load_state_store("cp1252")
     nested = _too_deeply_nested_json()
 
     checkpoint = tmp_path / "octocat__Hello-World.json"
     checkpoint.write_text(nested, encoding = "utf-8")
-    assert module.StateStore(checkpoint).all() == {}  # reset, not raised
+    assert module.StateStore(checkpoint).all() == {}
 
     shard = tmp_path / "out.jsonl"
     shard.write_text(
@@ -818,8 +868,36 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
     )
     writer = module.JsonlWriter(shard)
     try:
-        # Skipped like any other unreadable line, so its neighbours still yield the dedup
-        # keys that keep the resume from re-fetching them.
         assert writer.has("id:1") and writer.has("id:2")
     finally:
         writer.close()
+
+
+def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
+    """Under a non-UTF-8 locale bare open() misdecodes, so vendored laya must read its config as UTF-8."""
+    config = tmp_path / "tokenizer" / "tokenizer_config.json"
+    config.parent.mkdir()
+    config.write_text(
+        json.dumps(
+            {"tokenizer_class": None, "extra_special_tokens": ["ä", "世"]}, ensure_ascii = False
+        ),
+        encoding = "utf-8",
+    )
+    # C locale without coercion decodes bare open() as ASCII (Linux/macOS) or ANSI (Windows).
+    script = (
+        "import codecs, locale, sys\n"
+        "if codecs.lookup(locale.getencoding()).name == 'utf-8': sys.exit(3)\n"
+        f"sys.path.insert(0, {str(BACKEND_ROOT)!r})\n"
+        "from core.systemone import laya_runtime\n"
+        f"laya_runtime._laya().agent._fix_tokenizer_config({str(tmp_path)!r})\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+    run = subprocess.run(
+        [sys.executable, "-c", script], env = env, capture_output = True, text = True, encoding = "utf-8"
+    )
+    if run.returncode == 3:
+        pytest.skip("this platform's locale is UTF-8 even under LC_ALL=C")
+    assert run.returncode == 0, run.stderr[-3000:]
+    repaired = json.loads(config.read_text(encoding = "utf-8"))
+    assert repaired["tokenizer_class"] == "PreTrainedTokenizerFast"
+    assert repaired["extra_special_tokens"] == {"extra_0": "ä", "extra_1": "世"}

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import * as messageOrder from "../src/features/chat/utils/message-order.ts";
+import * as contextUsageReasoning from "../src/features/chat/utils/context-usage-reasoning.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type RefreshModule = {
@@ -31,6 +32,7 @@ test("a prompt setting change clears local usage even during a run", async () =>
     {
       "../api/chat-adapter": {},
       "../api/chat-api": {},
+      "../api/mcp-server-mutation-tracker": {},
       "../external-providers": {
         isExternalModelId: () => false,
       },
@@ -38,6 +40,8 @@ test("a prompt setting change clears local usage even during a run", async () =>
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./branch-head": { savedBranchHead: () => undefined },
+      "./context-usage-reasoning": contextUsageReasoning,
       "./chat-history-storage": {},
     },
   );
@@ -67,6 +71,7 @@ test("a prompt setting change leaves external usage intact", async () => {
     {
       "../api/chat-adapter": {},
       "../api/chat-api": {},
+      "../api/mcp-server-mutation-tracker": {},
       "../external-providers": {
         isExternalModelId: () => true,
       },
@@ -74,6 +79,8 @@ test("a prompt setting change leaves external usage intact", async () => {
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./branch-head": { savedBranchHead: () => undefined },
+      "./context-usage-reasoning": contextUsageReasoning,
       "./chat-history-storage": {},
     },
   );

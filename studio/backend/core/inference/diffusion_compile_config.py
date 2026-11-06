@@ -1,0 +1,191 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""torch 2.12+ stores dynamo/inductor config in a ContextVar; apply() re-sets knobs per thread."""
+
+from __future__ import annotations
+
+import os
+import threading
+from contextvars import ContextVar
+from typing import Any
+from .rocm_bf16 import is_rocm_torch
+
+# dynamic_scale_rblock benchmarks per process, so renders differed across servers on one seed.
+DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
+
+
+def reduction_blocks_pinned() -> bool:
+    """True unless UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK asks for inductor's per-process R0_BLOCK benchmark."""
+    raw = (os.environ.get(DYNAMIC_SCALE_RBLOCK_ENV) or "").strip().lower()
+    return raw not in ("1", "on", "true", "yes")
+
+
+def reduction_config_filter_available() -> bool:
+    """torch has the reduction-config filter (2.10+) and the kill switch is unset."""
+    if not reduction_blocks_pinned():
+        return False
+    try:
+        import torch
+        return hasattr(torch._inductor.config.test_configs, "force_filter_reduction_configs")
+    except Exception:  # noqa: BLE001 - no torch / inductor: nothing pinned
+        return False
+
+
+def family_filters_reductions(family: Any) -> bool:
+    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
+    if family is None:
+        return False
+    if bool(getattr(family, "filter_reduction_configs", False)):
+        return True
+    archs = getattr(family, "filter_reduction_configs_archs", None) or ()
+    if not archs:
+        return False
+    cap = _device_capability()
+    return cap is not None and cap in {tuple(int(v) for v in a) for a in archs}
+
+
+def _device_capability() -> Any:
+    try:
+        import torch
+        if not torch.cuda.is_available() or is_rocm_torch(torch):
+            return None
+        return tuple(int(v) for v in torch.cuda.get_device_capability())
+    except Exception:  # noqa: BLE001 - no CUDA: nothing pinned
+        return None
+
+
+_LOCK = threading.Lock()
+_KNOBS: dict[tuple[str, str], Any] = {}
+_generation = 0
+# ContextVar, not thread-local: a copy_context() run on an already-applied thread must re-apply.
+_applied: ContextVar[int] = ContextVar("unsloth_compile_config_applied", default = -1)
+
+
+def _module(name: str) -> Any:
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - no torch -> nothing to configure
+        return None
+    obj: Any = torch
+    for part in name.split(".")[1:]:
+        obj = getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
+
+
+def _write(cfg: Any, attr: str, value: Any) -> None:
+    # Write only on change: every write dirties the config and forces a rehash.
+    try:
+        if getattr(cfg, attr) != value:
+            setattr(cfg, attr, value)
+    except Exception:  # noqa: BLE001 - a missing or read-only knob on this torch build is skipped
+        pass
+
+
+def set_knob(module_name: str, attr: str, value: Any) -> bool:
+    global _generation
+    cfg = _module(module_name)
+    if cfg is None or not hasattr(cfg, attr):
+        return False
+    with _LOCK:
+        _KNOBS.pop((module_name, attr), None)
+        _KNOBS[(module_name, attr)] = value
+        _generation += 1
+    _write(cfg, attr, value)
+    return True
+
+
+def get_knob(
+    module_name: str,
+    attr: str,
+    default: Any = None,
+) -> Any:
+    with _LOCK:
+        if (module_name, attr) in _KNOBS:
+            return _KNOBS[(module_name, attr)]
+    cfg = _module(module_name)
+    return getattr(cfg, attr, default) if cfg is not None else default
+
+
+def apply() -> None:
+    generation = _generation
+    if _applied.get() == generation:
+        return
+    with _LOCK:
+        generation = _generation
+        knobs = list(_KNOBS.items())
+    for (module_name, attr), value in knobs:
+        cfg = _module(module_name)
+        if cfg is not None:
+            if (module_name, attr) == ("torch.compiler.config", "cache_key_tag"):
+                current = getattr(cfg, attr, "")
+                value = ";".join(
+                    [
+                        p
+                        for p in _cache_tag_parts(current)
+                        if p and not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                    + [
+                        p
+                        for p in _cache_tag_parts(value)
+                        if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                )
+            _write(cfg, attr, value)
+    _applied.set(generation)
+
+
+def is_recorded(module_name: str, attr: str) -> bool:
+    with _LOCK:
+        return (module_name, attr) in _KNOBS
+
+
+def recorded() -> dict[tuple[str, str], Any]:
+    with _LOCK:
+        return dict(_KNOBS)
+
+
+def _reset_for_tests() -> None:
+    global _generation
+    with _LOCK:
+        _KNOBS.clear()
+        _generation += 1
+
+
+_STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
+
+
+def _cache_tag_parts(tag: str) -> list[str]:
+    # Unsloth/Zoo append comma-delimited kernel and correctness tags.
+    return tag.replace(",", ";").split(";")
+
+
+def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
+    """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
+    parts = [p for p in _cache_tag_parts(current) if p and not p.startswith(prefix)]
+    if tag:
+        parts.append(prefix + tag)
+    foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
+    return ";".join(foreign + owned)
+
+
+def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
+    cfg = _module("torch.compiler.config")
+    if cfg is None:
+        return
+    current = getattr(cfg, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    # Studio's patches outlive the load context. Keep their recorded tokens while
+    # preserving foreign tokens from the caller's context.
+    recorded_tag = get_knob("torch.compiler.config", "cache_key_tag", current)
+    current = ";".join(
+        [p for p in _cache_tag_parts(current) if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+        + [p for p in _cache_tag_parts(recorded_tag) if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    )
+    set_knob(
+        "torch.compiler.config", "cache_key_tag", canonical_compile_cache_tag(current, prefix, tag)
+    )

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``documents.embedding_model`` names the embedder, not just the model.
-
-llama-server ignores the configured model name and embeds through its GGUF companion
-with its own pooling, so the same name can mean two vector spaces on one machine. An
-index written by one backend must not silently answer the other's queries.
-"""
+"""documents.embedding_model names the embedder, since the same model name can mean two vector spaces."""
 
 import math
 
@@ -132,8 +127,6 @@ def test_re_resolved_backend_reindexes_before_the_stale_backend_is_rebuilt(
     scope = store.kb_scope("K4-resolved")
     first = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
-    # The same model now has a GGUF plan, but the first encode has not yet had a
-    # chance to replace the resident ST wrapper.
     choice["backend"] = "llama-server"
     second = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
 
@@ -182,7 +175,7 @@ def test_legacy_rows_keep_answering_and_are_reported(
     document_id = _ingest(tmp_path, scope, "doc.txt", "alpha bravo charlie")
     conn = rag_db.get_connection()
     try:
-        store.set_document_embedding_model(conn, document_id, MODEL)  # pre-tag spelling
+        store.set_document_embedding_model(conn, document_id, MODEL)
         assert store.count_untagged_documents(conn) == 1
         assert retrieval.retrieve_dense(conn, scope, "alpha bravo", k = 5, model_name = MODEL)
         monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
@@ -220,6 +213,7 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
 
 def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+    monkeypatch.setattr(embeddings, "_llama_pooling", lambda *_a, **_k: None)
     monkeypatch.setattr(
         config,
         "effective_gguf_repo_for_embedding_model",
@@ -233,13 +227,7 @@ def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
 
 
 def test_identity_for_a_pinned_model_ignores_the_live_setting(monkeypatch):
-    """A job pins its model once and embeds every file under it.
-
-    The backend half of the identity used to be resolved from whatever
-    ``effective_embedding_model()`` returned at the moment each file was tagged, so
-    changing the model in Settings part way through a linked-folder reconcile split
-    one folder across two identities. The pinned name is the only input.
-    """
+    """A job pins its model once and derives the embedding identity from that pin, not the live setting."""
     embeddings._reset_backend()
     reads = []
 
@@ -313,7 +301,6 @@ def test_a_local_model_path_survives_the_identity_round_trip():
     assert st != llama
     assert config.embedding_identity_model(st) == WINDOWS_MODEL
     assert config.embedding_identity_model(llama) == WINDOWS_MODEL
-    # The pre-tag spelling of such a row is the bare path, and it still has to match.
     assert config.embedding_identity_matches(WINDOWS_MODEL, st) is True
     assert config.embedding_identity_matches(r"C:\models\other", st) is False
 
@@ -430,18 +417,10 @@ def test_widening_survives_a_scope_larger_than_one_parameter_batch(rag_conn):
 
 
 def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
-    """A project-and-thread search, which is the shape retrieval actually asks for.
-
-    vec0 constrains its partition key by equality, so each scope is its own KNN list
-    with its own stale prefix. A thread scope that hands over k compatible but weak
-    hits must not stop the project scope widening past the other embedder's vectors
-    burying a stronger chunk, or the merge ranks a top-k it never fetched."""
+    """A full thread scope must not stop the project scope widening past stale-embedder vectors."""
     stale = config.embedding_identity("llama-server", MODEL, gguf_repo = "r")
     current = config.embedding_identity("sentence-transformers", MODEL)
-    # The thread scope answers on the first fetch, with the weakest hits in the corpus.
     _put(rag_conn, "thread_t", "weak", ["alpha bravo charlie delta"] * 5, current)
-    # The project scope's whole first fetch is another embedder's, and the compatible
-    # chunk that outranks every thread hit sits just behind it.
     _put(rag_conn, "kb_p", "old", ["alpha"] * 20, stale)
     _put(rag_conn, "kb_p", "new", ["alpha bravo"], current)
     hits = store.search_dense(
@@ -451,17 +430,14 @@ def test_a_saturated_scope_keeps_widening_after_another_scope_is_full(rag_conn):
 
 
 def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home, monkeypatch):
-    """A concurrent ST failure swaps the process embedder for the rest of its life.
-
-    A page sentence-transformers had already encoded must not be stored as
-    llama-server: the hybrid query right below it then searches those mislabeled
-    vectors instead of filtering them out."""
+    """Label a page with the backend that encoded it, since a concurrent ST failure swaps the embedder."""
     from core.rag import web_rank
 
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: False)
     monkeypatch.setattr(
         embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
     )
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
 
     class _SwapsMidEncode:
         def encode(
@@ -499,12 +475,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
 def test_resolving_the_embedder_does_not_hold_the_write_lock(
     rag_home, stub_embeddings, monkeypatch, tmp_path
 ):
-    """Naming the embedder can take seconds on a fresh process: it searches for the
-    llama-server binary, runs nvidia-smi with a ten second timeout, and on a host
-    without it imports torch. Inside the admission transaction that is a RESERVED
-    lock held for all of it, and rag.db opens every connection with a five second
-    busy_timeout, so an unrelated ingest or a job heartbeat fails outright with
-    "database is locked" rather than waiting."""
+    """Resolve the embedder outside the write lock; it can take seconds and rag.db busy_timeout is 5s."""
     import sqlite3
 
     from utils.paths import rag_db_path

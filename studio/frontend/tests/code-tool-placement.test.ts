@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Where the Code pill runs code.
+// Where the Tools pill runs code.
 //
 // Before Unsloth's tool loop reached the general external providers, only
 // openai_codex carried studio_tools, so `codeToolsEnabled` on an OpenAI,
@@ -23,12 +23,17 @@ import {
   codeToolCanRun,
   selectCodeToolNames,
 } from "../src/features/chat/api/code-tool-placement.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
-import { readSrc } from "./helpers/kit.ts";
+registerBundlerResolver();
+const {
+  providerHostsCodeExecution,
+  providerSupportsBuiltinCodeExecution,
+} = await import("../src/features/chat/provider-capabilities.ts");
 
 const SOURCE = readSrc("features/chat/api/chat-adapter.ts");
-
-// ── the rule itself ────────────────────────────────────────────────
+const COMPOSER_SOURCE = readSrc("features/chat/shared-composer.tsx");
+const CHAT_PAGE_SOURCE = readSrc("features/chat/chat-page.tsx");
 
 test("a provider with its own sandbox keeps running the code there", () => {
   assert.deepEqual(
@@ -42,9 +47,6 @@ test("a provider with its own sandbox keeps running the code there", () => {
 });
 
 test("a provider with a sandbox its MODEL cannot use runs nothing, not local code", () => {
-  // e.g. an OpenAI connection on a model outside the code-execution family.
-  // Pre-loop this sent no code tool at all; falling back to python/terminal
-  // would relocate execution rather than preserve it.
   assert.deepEqual(
     selectCodeToolNames({
       codeToolsEnabled: true,
@@ -55,23 +57,32 @@ test("a provider with a sandbox its MODEL cannot use runs nothing, not local cod
   );
 });
 
+test("unsupported models on managed custom Responses never fall back to local code", () => {
+  const baseUrl = "https://api.openai.com/v1";
+  const hosted = providerSupportsBuiltinCodeExecution("custom", "gpt-4.1", baseUrl, "responses");
+  const providerHosted = providerHostsCodeExecution("custom", baseUrl, "responses");
+  assert.equal(codeToolCanRun({ hostedCodeExecutionForThisTurn: hosted,
+    providerHostsCodeExecution: providerHosted, supportsStudioTools: true }), false);
+  assert.deepEqual(selectCodeToolNames({ codeToolsEnabled: true,
+    hostedCodeExecutionForThisTurn: hosted, providerHostsCodeExecution: providerHosted }),
+  { local: [], hosted: [] });
+  assert.match(COMPOSER_SOURCE, /providerHostsCodeExecution\(\s*selectedExternalProvider\?\.providerType,\s*selectedExternalProvider\?\.baseUrl,\s*selectedExternalProvider\?\.apiType,/);
+  assert.match(CHAT_PAGE_SOURCE, /providerHostsCodeExecution\(\s*provider\?\.providerType,\s*provider\?\.baseUrl,\s*provider\?\.apiType,/);
+});
+
 test("a provider with no sandbox uses Unsloth's own tools", () => {
-  // llama.cpp / vLLM / Ollama / custom, and the cloud providers that ship no
-  // code sandbox. Local execution is the only meaning the pill can have there,
-  // it is what openai_codex has always done, and it paints tool cards under the
-  // permission gate rather than happening invisibly.
   assert.deepEqual(
     selectCodeToolNames({
       codeToolsEnabled: true,
       hostedCodeExecutionForThisTurn: false,
       providerHostsCodeExecution: false,
     }),
-    { local: ["python", "terminal", "edit_file"], hosted: [] },
+    { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
   );
 });
 
 test("edit_file is local-only, never a stand-in for a hosted sandbox", () => {
-  // It must not creep into the hosted branch just because the Code pill is
+  // It must not creep into the hosted branch just because the Tools pill is
   // what turns it on.
   for (const hosted of [true, false]) {
     const names = selectCodeToolNames({
@@ -97,11 +108,6 @@ test("the pill being off asks for nothing on either side", () => {
   }
 });
 
-// ── the adapter has to actually use it ─────────────────────────────
-
-// Same technique as hosted-image-tool-with-studio-tools.test.ts: the body is
-// built inside a run closure that needs a live runtime, provider store and
-// encryption key, so the structural property is read out of the source.
 function studioToolsBranch(): string {
   const start = SOURCE.indexOf("...(ragEnabled || projectRagEnabled\n");
   assert.ok(start > 0, "the Unsloth-tools enabled_tools list moved");
@@ -116,19 +122,14 @@ test("the Unsloth branch never hardcodes local code tools", () => {
   assert.doesNotMatch(
     branch,
     /codeToolsEnabled \? \["python", "terminal"\]/,
-    "the Code pill must not send local execution regardless of provider",
+    "the Tools pill must not send local execution regardless of provider",
   );
-  // Both sides come from the one helper above, so the local and hosted names
-  // cannot drift apart or both be sent for a single pill.
   assert.match(branch, /\.\.\.studioLocalCodeTools/);
   assert.match(branch, /\.\.\.hostedCodeToolsForThisTurn/);
 });
 
 test("the branch is only taken when a tool Unsloth itself can run is on", () => {
-  // Code alone on a hosted-sandbox provider is a hosted request: it must reach
-  // the hosted branch, which sends no permission_mode. Sending the Unsloth body
-  // for it would ask the backend to confirm tool calls on a passthrough request,
-  // which routes/inference.py answers with a 400.
+  // Hosted requests must not send permission_mode; routes/inference.py 400s on it.
   const gate = SOURCE.slice(
     SOURCE.indexOf("...(supportsStudioToolsForThisTurn &&"),
     SOURCE.indexOf("enable_tools: true", SOURCE.indexOf("...(supportsStudioToolsForThisTurn &&")),
@@ -143,10 +144,20 @@ test("the branch is only taken when a tool Unsloth itself can run is on", () => 
   assert.match(gate, /studioLocalCodeTools\.length > 0/);
 });
 
+test("response details record Code from the placement, local or hosted", () => {
+  const start = SOURCE.indexOf("const buildResponseDetails = (");
+  const tools = SOURCE.slice(start, SOURCE.indexOf("images:", start));
+  assert.match(tools, /code:\s*hostedCodeToolsForThisTurn\.length > 0 \|\|/);
+  assert.match(
+    tools,
+    /\(supportsStudioToolsForThisTurn &&\s*studioLocalCodeTools\.length > 0\)/,
+  );
+});
+
 // ── Whether the pill is offered at all ─────────────────────────────
 
 // Until Unsloth's loop reached the general external providers, the composer
-// keyed the Code pill on the hosted flag alone, so a model without the hosted
+// keyed the Tools pill on the hosted flag alone, so a model without the hosted
 // sandbox simply did not offer it. Keying it on the Unsloth-tools flag instead
 // offered it everywhere, including where the rule above deliberately runs
 // nothing, and the user got a lit toggle that sent enable_tools: false.

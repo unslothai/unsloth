@@ -21,6 +21,11 @@ _settings_lock = threading.RLock()
 _path_revision = 0
 
 
+def expanded_user_path(value: Path | str) -> Path:
+    """Uses os.path.expanduser: Path.expanduser raises on an unknown ~user, and the desktop matches that."""
+    return Path(os.path.expanduser(str(value)))
+
+
 def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
     """Mark Unsloth's inherited install path without hiding a real env override."""
     configured = os.environ.get("UNSLOTH_LLAMA_CPP_PATH", "").strip()
@@ -28,8 +33,8 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
         os.environ.pop(MANAGED_LLAMA_CPP_PATH_MARKER, None)
         return False
     try:
-        managed = Path(directory).expanduser().resolve(strict = False)
-        inherited = Path(configured).expanduser().resolve(strict = False)
+        managed = expanded_user_path(directory).resolve(strict = False)
+        inherited = expanded_user_path(configured).resolve(strict = False)
         is_managed = inherited == managed
     except (OSError, RuntimeError, ValueError):
         is_managed = False
@@ -42,10 +47,7 @@ def mark_managed_llama_cpp_path(directory: Path | str) -> bool:
 
 @contextmanager
 def llama_cpp_path_selection_guard() -> Iterator[None]:
-    """Serialize a runtime path snapshot with a settings write.
-
-    Model loads and UI saves share this lock so reload status sees one snapshot.
-    """
+    """Model loads and settings saves share this lock, so reload status sees one consistent snapshot."""
     with _settings_lock:
         yield
 
@@ -100,8 +102,7 @@ _WINDOWS_VENDOR_DLLS = {
     "intel": ("ze_intel_gpu64.dll", "igdrcl64.dll"),
 }
 _DRM_ROOT = "/sys/class/drm"
-# WSL2 reaches the GPU through /dev/dxg (no DRM card, no /dev/kfd or /dev/nvidiactl): the
-# vendor is the runtime that drives it, librocdxg for AMD and the WSL libcuda for NVIDIA.
+# WSL2 uses /dev/dxg; the vendor is the runtime: librocdxg (AMD) or WSL libcuda (NVIDIA).
 _WSL_ROCM_LIB_DIRS = ("/opt/rocm/lib", "/opt/rocm/lib64")
 _WSL_CUDA_LIB_DIR = "/usr/lib/wsl/lib"
 _HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
@@ -142,10 +143,7 @@ def _amd_mask_hides_all() -> bool:
 
 
 def host_gpu_vendors() -> Optional[set[str]]:
-    """GPU vendors this process can reach: DRM sysfs vendors whose device node is present and
-    whose visibility mask is not empty on Linux, the vendors' driver DLLs on Windows. None when
-    nothing was detected at all (an unknown host filters nothing); an empty set when GPUs were
-    detected but none is reachable, so only vendor-agnostic backends fit."""
+    """None means unknown and filters nothing; an empty set means GPUs exist but none is reachable."""
     vendors: set[str] = set()
     if sys.platform == "darwin":
         return {"apple"}
@@ -173,8 +171,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
         wsl_nvidia = wsl and any(Path(_WSL_CUDA_LIB_DIR).glob("libcuda.so*"))
         vendors |= {v for v, on in (("amd", wsl_amd), ("nvidia", wsl_nvidia)) if on}
         detected = set(vendors)
-        # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
-        # must not make its backend look runnable on a hybrid box.
+        # Hidden device nodes or a masking env var must not make a backend look runnable.
         if "nvidia" in vendors and (
             not (os.path.exists("/dev/nvidiactl") or wsl_nvidia)
             or _mask_hides_all("CUDA_VISIBLE_DEVICES")
@@ -199,10 +196,7 @@ def prefer_gpu_capable(
     usable: Callable[[Path], bool],
     vendors: Any = _HOST,
 ) -> list[Path]:
-    """Search order, except that a first hit proven CPU-only, or proven built for a GPU vendor
-    this host lacks, yields to a later usable build shipping a GPU backend this host's vendor
-    runs (#5941: a CPU build/ beside build-cuda/; a stale build-cuda/ must not shadow
-    build-hip/ on an AMD box, whether or not a build/ precedes it). Unknown layouts stay put."""
+    """A first hit proven CPU-only or for an absent vendor yields to a later GPU build (stale build-cuda must not shadow build-hip); unknown layouts stay put."""
     ordered = list(candidates)
     first = next((c for c in ordered if usable(c)), None)
     if first is None:
@@ -246,7 +240,7 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
     value = value.strip()
     if not value or len(value) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         return None
-    return Path(value).expanduser()
+    return expanded_user_path(value)
 
 
 def _environment_override() -> tuple[Optional[str], Optional[str], bool]:
@@ -277,7 +271,7 @@ def _canonical_directory(value: str) -> Path:
     if len(raw) > MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH:
         raise ValueError("The llama.cpp folder path is too long.")
     try:
-        directory = Path(raw).expanduser().resolve(strict = True)
+        directory = expanded_user_path(raw).resolve(strict = True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError("The llama.cpp folder does not exist or cannot be accessed.") from exc
     if not directory.is_dir():
@@ -321,7 +315,7 @@ def custom_llama_cpp_path_status() -> dict:
 
     if env_path is not None:
         source = "environment"
-        path = Path(env_path).expanduser()
+        path = expanded_user_path(env_path)
         if direct_binary:
             binary = path if _usable_binary(path) else None
         else:

@@ -1,25 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Guards that the sharded `Repo tests (CPU)` job still runs every test it used to.
+"""Each tests/ directory is claimed by exactly one Repo tests (CPU) shard, the third a catch-all."""
 
-`Repo tests (CPU)` was one job discovering all of `tests/`. It is now three shards on three
-runners, and the whole risk of that is a test file landing in no shard: the job goes green
-faster having checked less, and nothing says so.
-
-So the split is not three allowlists. Two shards name their roots and the third is
-"everything under tests/ except those roots", which makes exactly-one-shard a property of
-the shape rather than of anyone remembering to edit the workflow. These tests hold that
-shape: every directory under tests/ is claimed once, the catch-all really is a catch-all,
-and the directories no shard runs are the ones that were already excluded, each still
-excluded for the reason another job covers it.
-
-The per-test-id partition was checked directly when the split landed, by running each shard
-and the old selection and diffing their JUnit reports: 8263 + 3559 + 7234 = 19056 ids, no
-overlap, no gap, and every id in the same state in both. That is a measurement of one tree;
-these tests are what keeps it true of the next one.
-"""
-
+import fnmatch
 from pathlib import Path
 
 import pytest
@@ -31,8 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_CI = REPO_ROOT / ".github" / "workflows" / "studio-backend-ci.yml"
 _TESTS_DIR = REPO_ROOT / "tests"
 
-# Directories under tests/ that no shard runs, and what runs them instead. A shard losing a
-# directory would otherwise look exactly like one of these.
+# Directories under tests/ that no shard runs, and what runs them instead.
 _NOT_IN_ANY_SHARD = {
     "tests/qlora": "GPU-bound: needs real weights",
     "tests/saving": "GPU-bound: needs real weights",
@@ -57,7 +40,7 @@ def _shards() -> dict:
         index = 0
         while index < len(tokens):
             token = tokens[index]
-            if token.startswith("--ignore="):
+            if token.startswith(("--ignore=", "--ignore-glob=")):
                 ignores.append(token.split("=", 1)[1].rstrip("/"))
             elif token == "--deselect":
                 index += 1  # a test id, not a path
@@ -71,6 +54,8 @@ def _shards() -> dict:
 
 
 def _covers(prefix: str, path: str) -> bool:
+    if "*" in prefix:  # a shell-expanded root or an --ignore-glob, matched like pytest does
+        return fnmatch.fnmatch(path, prefix)
     prefix = prefix.rstrip("/")
     return path == prefix or path.startswith(prefix + "/")
 
@@ -87,13 +72,7 @@ def _claiming_shards(path: str, shards: dict) -> list:
 
 
 def _isolated_paths() -> list:
-    """Paths the job runs in their own pytest invocation instead of inside a shard.
-
-    The spoof files mutate hardware.py module globals and tests/studio/load_freeze asserts
-    wall-clock bounds, so both are ignored by their shard's discovery and named by a step of
-    their own. Read out of those steps rather than listed here, so moving one between the
-    two places cannot make it look dropped.
-    """
+    """Spoof files and load_freeze run in a separate step: they mutate module globals or assert timing."""
     paths = []
     for step in _backend_ci()["jobs"]["repo-cpu-tests"]["steps"]:
         run = str(step.get("run", ""))
@@ -116,7 +95,7 @@ class TestEveryTestFileLandsInExactlyOneShard:
             if any(_covers(excluded, path) for excluded in _NOT_IN_ANY_SHARD):
                 continue
             if any(_covers(named, path) for named in isolated):
-                continue  # run by its own step, for a state or timing reason
+                continue
             claiming = _claiming_shards(path, shards)
             if not claiming:
                 dropped.append(path)
@@ -147,18 +126,41 @@ class TestEveryTestFileLandsInExactlyOneShard:
         )
 
 
+class TestEveryGlobRootMatchesAFile:
+    def test_no_shard_hands_pytest_an_unexpanded_pattern(self):
+        """bash passes a glob that matches nothing through as the literal pattern, and pytest
+        then fails the whole shard on a path that does not exist. A split that moved the last
+        file out of one of its globs would break that shard rather than drop the file."""
+        files = _test_files()
+        empty = [
+            (name, root)
+            for name, (roots, _) in _shards().items()
+            for root in roots
+            if "*" in root and not any(fnmatch.fnmatch(path, root) for path in files)
+        ]
+        assert not empty, f"these shard globs match no test file: {empty}"
+
+    def test_an_empty_glob_is_reported(self):
+        assert not any(
+            fnmatch.fnmatch(path, "tests/test_no_such_prefix_*.py") for path in _test_files()
+        )
+
+
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_the_deselected_hub_tests_stay_deselected(self):
-        """Both hit huggingface_hub for live model existence checks. They live in a shard-3
-        file, so shard 3 is where the deselect has to be."""
-        selection = _selection_text()
+        """Both hit huggingface_hub for live model existence checks. The deselect only acts in
+        the shard that collects their file, so it is checked there, not anywhere in the matrix."""
+        owners = _claiming_shards("tests/test_model_registry.py", _shards())
+        assert len(owners) == 1, f"tests/test_model_registry.py is collected by {owners}"
+        selection = _selection_text(owners[0])
         for test_id in (
             "tests/test_model_registry.py::test_model_registration",
             "tests/test_model_registry.py::test_all_model_registration",
         ):
-            assert (
-                f"--deselect {test_id}" in selection
-            ), f"{test_id} reaches the network and must stay deselected"
+            assert f"--deselect {test_id}" in selection, (
+                f"{test_id} reaches the network and must stay deselected in {owners[0]}, the "
+                "shard that runs its file"
+            )
 
     def test_every_shard_keeps_the_marker_filter(self):
         """`server` needs a studio venv and `e2e` needs the network. The filter is on the
@@ -184,10 +186,11 @@ class TestTheGuardIsNotVacuous:
         assert _claiming_shards("tests/studio/test_two_owners.py", broken) == ["one", "two"]
 
 
-def _selection_text() -> str:
+def _selection_text(shard: str | None = None) -> str:
     return " ".join(
         " ".join(entry["selection"].split())
         for entry in _backend_ci()["jobs"]["repo-cpu-tests"]["strategy"]["matrix"]["include"]
+        if shard is None or entry["shard"] == shard
     )
 
 

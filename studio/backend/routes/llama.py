@@ -1,20 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp prebuilt update endpoints -- the single main update item.
-
-GET  /api/llama/update-status  -> is a newer prebuilt available + job state
-GET  /api/llama/update-changelog -> new carried changes since the installed build
-POST /api/llama/update         -> download + atomically swap to the latest
-
-Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
-utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
-
-whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
-llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
-with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
-keep working unchanged.
-"""
+"""llama.cpp prebuilt update routes: GET /api/llama/update-status, GET /api/llama/update-changelog,
+POST /api/llama/update; fail open; old top-level fields keep shape so older clients work; whisper
+and audio.cpp chain as phases."""
 
 from __future__ import annotations
 
@@ -79,6 +68,10 @@ class WhisperSubStatus(BaseModel):
     )
 
 
+class AudioCppSubStatus(WhisperSubStatus):
+    """The audio.cpp phase inside the llama update item; latest_tag is the release this Studio pins."""
+
+
 class LlamaUpdateStatusResponse(BaseModel):
     supported: bool = Field(
         False,
@@ -88,13 +81,13 @@ class LlamaUpdateStatusResponse(BaseModel):
         False,
         description = (
             "True when an update would do something: llama.cpp is behind OR the "
-            "whisper piggyback is behind."
+            "whisper piggyback is behind OR audio.cpp is not the pinned release."
         ),
     )
     llama_update_available: bool = Field(
         False, description = "True when the latest llama.cpp release is newer than the install."
     )
-    update_component: Optional[Literal["llama", "whisper"]] = Field(
+    update_component: Optional[Literal["llama", "whisper", "audio"]] = Field(
         None,
         description = "Component whose versions the combined update banner should display.",
     )
@@ -128,6 +121,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     )
     whisper: Optional[WhisperSubStatus] = Field(
         None, description = "Whisper piggyback sub-status; None when the probe is unavailable."
+    )
+    audio: Optional[AudioCppSubStatus] = Field(
+        None, description = "audio.cpp phase sub-status; None when the probe is unavailable."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 

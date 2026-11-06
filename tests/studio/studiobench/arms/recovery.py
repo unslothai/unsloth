@@ -1,36 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The recovery test: does deleting the thread give the performance back?
-
-Ninety seconds, never run before, and it separates three fix classes that every other measurement
-in this tool conflates.
-
-    seed 512 turns  ->  measure  ->  delete back to zero  ->  measure again
-
-The user report is "it gets worse the longer you use it". That sentence has two completely
-different causes and they need different fixes:
-
-  OCCUPANCY   the cost is proportional to what is currently on the page. Delete the turns and the
-              cost goes away. The fix is to stop keeping them present: virtualise, contain, or
-              unmount. This is the comfortable case and it is what everyone assumes.
-  RETAINED    the cost does not come back down. Something survives the delete: a detached DOM
-              tree still referenced by a closure, an observer never disconnected, a growing map
-              in a store, a Shiki cache keyed per block. The fix is to release it, and no amount
-              of virtualisation will help, because the structure is not on screen in the first
-              place.
-  HYSTERETIC  partial recovery. Both mechanisms are present, and fixing only the visible one
-              leaves a slow drift that reappears in a support ticket six weeks later.
-
-The test is worth its ninety seconds because those three imply different work, and nothing else
-in this tool can tell them apart: every other measurement is taken at a fixed thread size, where
-occupancy and retention are perfectly correlated.
-
-A FOURTH OUTCOME MATTERS AND IS EASY TO MISREAD. If the loaded measurement is not meaningfully
-worse than the baseline, there is nothing to recover, and the recovery fraction is undefined
-rather than 100%. Printing "fully recovered" for a load that never cost anything would be the
-same defect as printing zero for an instrument that never ran.
-"""
+"""Deleting turns separates occupancy from retained cost; recovery is undefined if load never hurt."""
 
 from __future__ import annotations
 
@@ -39,8 +10,7 @@ from typing import Any
 
 from ..scoring.schema import Measure
 
-#: Seeded turns for the loaded phase. 512 is chosen to be well past the point where the reported
-#: symptom appears while still seeding in under a minute through the messages API.
+# Past where the symptom appears while still seeding in under a minute.
 RECOVERY_TURNS = 512
 
 FULL_RECOVERY = 0.90

@@ -26,8 +26,7 @@ _MLX_SKIP_REASON = "MLX public trainer API is only active on the MLX backend"
 
 def _import_mlx_unsloth():
     """Import unsloth and skip when the current platform is not using MLX."""
-    # Skip before importing unsloth so non-MLX hosts missing optional GPU deps (e.g. bitsandbytes) skip cleanly
-    # instead of erroring at collection.
+    # Skip before importing unsloth so non-MLX hosts without GPU deps skip cleanly.
     if not (
         platform.system() == "Darwin"
         and platform.machine() == "arm64"
@@ -82,9 +81,7 @@ def test_non_mlx_exports_public_trainer_api_when_available():
     try:
         unsloth = importlib.import_module("unsloth")
     except ImportError as exc:
-        # Non-MLX import pulls the optional GPU stack (numpy/torch/unsloth-zoo, bitsandbytes/triton, and _gpu_init can
-        # re-raise missing deps as ImportError). Skip when any of it is unavailable rather than failing collection on
-        # CPU/ROCm/XPU review hosts.
+        # Non-MLX import pulls the optional GPU stack; skip rather than fail collection.
         pytest.skip(f"non-MLX import dependency unavailable: {exc}")
     if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
         pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
@@ -168,6 +165,16 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     assert dict_args._unsloth_mlx_max_seq_length_explicit is True
 
 
+def test_mlx_training_arguments_accept_the_cuda_loraplus_name():
+    """loraplus_lr_ratio (the CUDA name) should drive MLX's lora_plus_ratio."""
+    unsloth = _import_mlx_unsloth()
+
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = 16.0).lora_plus_ratio == 16.0
+    assert unsloth.UnslothTrainingArguments(loraplus_lr_ratio = None).lora_plus_ratio == 0.0
+    both = unsloth.UnslothTrainingArguments(lora_plus_ratio = 8.0, loraplus_lr_ratio = 16.0)
+    assert both.lora_plus_ratio == 8.0
+
+
 def test_mlx_training_arguments_preserve_explicit_positive_warmup_steps():
     """Explicit warmup_steps should take precedence over warmup_ratio."""
     unsloth = _import_mlx_unsloth()
@@ -234,7 +241,6 @@ def test_mlx_clear_gpu_memory_drains_gpu_work_before_clearing(monkeypatch, shape
     if shape == "core":
         monkeypatch.setattr(mx, "clear_cache", clear)
     else:
-        # Older MLX releases expose cache clearing under mx.metal.clear_cache.
         monkeypatch.delattr(mx, "clear_cache", raising = False)
         metal = getattr(mx, "metal", None) or type("Metal", (), {})()
         monkeypatch.setattr(mx, "metal", metal, raising = False)
@@ -383,13 +389,14 @@ def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
     """Unsupported TrainingArguments knobs should not be silently ignored."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match = "push_to_hub.*save_strategy"):
+    with pytest.warns(RuntimeWarning, match = "push_to_hub") as caught:
         args = unsloth.UnslothTrainingArguments(
             save_strategy = "steps",
             push_to_hub = True,
             padding_free = False,
         )
 
+    assert "save_strategy" not in str(caught[0].message), "MLXTrainer honors save_strategy"
     assert args.save_strategy == "steps"
     assert args.push_to_hub is True
     assert args.padding_free is False
@@ -399,14 +406,15 @@ def test_mlx_training_arguments_reject_unknown_kwargs():
     """Unknown SFTConfig flags should fail instead of becoming inert attributes."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
-        unsloth.UnslothTrainingArguments(assistant_only_loss = True)
+    with pytest.raises(NotImplementedError, match = "no_such_flag"):
+        unsloth.UnslothTrainingArguments(no_such_flag = True)
 
+    assert unsloth.UnslothTrainingArguments(assistant_only_loss = True).assistant_only_loss is True
     completion_args = unsloth.UnslothTrainingArguments(completion_only_loss = True)
     assert completion_args.completion_only_loss is True
 
 
-def test_mlx_training_arguments_reject_unsupported_object_flags():
+def test_mlx_training_arguments_keep_object_flags():
     """Object-style SFTConfig flags should not be silently dropped."""
     unsloth = _import_mlx_unsloth()
 
@@ -414,8 +422,7 @@ def test_mlx_training_arguments_reject_unsupported_object_flags():
         max_steps = 1
         assistant_only_loss = True
 
-    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
-        unsloth._coerce_mlx_training_args(ArgsObject())
+    assert unsloth._coerce_mlx_training_args(ArgsObject()).assistant_only_loss is True
 
     class CompletionArgsObject:
         max_steps = 1
@@ -454,10 +461,9 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
         warmup_ratio = 0.1
         warmup_steps = 0
 
-    with pytest.warns(RuntimeWarning, match = "save_strategy"):
-        args = unsloth._coerce_mlx_training_args(ArgsObject())
+    args = unsloth._coerce_mlx_training_args(ArgsObject())
 
-    assert args.optim == "adamw"
+    assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321
@@ -474,7 +480,7 @@ def test_mlx_training_arguments_accept_supported_notebook_kwargs():
 
     with pytest.warns(
         RuntimeWarning,
-        match = "bf16.*dataset_kwargs.*gradient_checkpointing_kwargs.*save_strategy",
+        match = "bf16.*dataset_kwargs.*gradient_checkpointing_kwargs",
     ):
         args = unsloth.UnslothTrainingArguments(
             bf16 = True,
@@ -534,11 +540,10 @@ def test_mlx_training_arguments_honor_direct_no_save_strategy():
     """Direct kwargs should map save_strategy=no to save_steps=0."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match = "save_strategy"):
-        args = unsloth.UnslothTrainingArguments(
-            save_strategy = "no",
-            save_steps = 500,
-        )
+    args = unsloth.UnslothTrainingArguments(
+        save_strategy = "no",
+        save_steps = 500,
+    )
 
     assert args.save_steps == 0
 
@@ -936,20 +941,20 @@ def test_mlx_trainer_rejects_custom_data_collator():
         )
 
 
-def test_mlx_trainer_rejects_text_completion_only_loss():
-    """Text MLX training should not silently ignore completion_only_loss=True."""
+def test_mlx_trainer_allows_text_completion_only_loss():
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match = "completion_only_loss=True"):
-        unsloth.UnslothTrainer(
-            model = _DummyModel(),
-            tokenizer = None,
-            train_dataset = [],
-            args = unsloth.UnslothTrainingArguments(
-                max_steps = 1,
-                completion_only_loss = True,
-            ),
-        )
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            completion_only_loss = True,
+        ),
+    )
+
+    assert trainer.args.completion_only_loss is True
 
 
 def test_mlx_trainer_allows_vlm_completion_only_loss():
@@ -1078,8 +1083,7 @@ def test_mlx_compatibility_shims_are_installed():
     assert issubclass(trl.SFTConfig, unsloth.UnslothTrainingArguments)
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
-    # chat_templates now wraps the zoo function (issue #2693), so the re-export is no longer the same object;
-    # functools.wraps records the original.
+    # chat_templates wraps the zoo function, so compare via functools.wraps' __wrapped__.
     assert (
         getattr(
             chat_templates.train_on_responses_only,
@@ -1151,9 +1155,6 @@ def test_mlx_trl_star_import_exports_public_shims():
 
 
 def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
-    """GRPO/DPO/ORPO trainers have no MLX path, so the shim retargets the ones trl
-    exposes to a clear NotImplementedError instead of a confusing CUDA crash, and
-    never invents trainers trl does not have."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
@@ -1162,33 +1163,28 @@ def test_mlx_rl_trainers_stub_with_clear_error(monkeypatch):
         def __init__(self, *args, **kwargs):
             raise AssertionError("the real torch/CUDA trainer must not run on MLX")
 
-    trl.GRPOTrainer = _RealTrainer
-    trl.DPOTrainer = _RealTrainer
+    trl.PPOTrainer = _RealTrainer
     monkeypatch.setitem(sys.modules, "trl", trl)
 
     unsloth._install_mlx_trl_sft_shim()
 
-    for name in ("GRPOTrainer", "DPOTrainer"):
+    for name in ("PPOTrainer",):
         assert getattr(trl, name) is not _RealTrainer
         with pytest.raises(NotImplementedError) as exc:
             getattr(trl, name)(model = None, args = None)
         assert "MLX" in str(exc.value) and name in str(exc.value)
-    # trainers trl never exposed must not be invented
-    assert not hasattr(trl, "PPOTrainer")
-    stub = trl.GRPOTrainer
+    assert not hasattr(trl, "RewardTrainer")
+    stub = trl.PPOTrainer
     unsloth._install_mlx_trl_sft_shim()
-    assert trl.GRPOTrainer is stub
+    assert trl.PPOTrainer is stub
 
 
 def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
-    """Stubbing unsupported trl trainers must not resolve them: trl lazy-imports
-    pull torch, so on a torch-free MLX install a getattr probe would crash
-    `import unsloth`. The shim reads __all__/vars metadata and never triggers
-    trl's __getattr__ for a trainer it is about to replace."""
+    """Unsupported trl trainers must be stubbed without getattr, since trl's lazy import pulls in torch."""
     unsloth = _import_mlx_unsloth()
     trl = types.ModuleType("trl")
     trl.__path__ = ["real-trainer-package"]
-    trl.__all__ = ["SFTTrainer", "SFTConfig", "GRPOTrainer", "DPOTrainer"]
+    trl.__all__ = ["SFTTrainer", "SFTConfig", "RLOOTrainer", "GKDTrainer"]
     resolved = []
 
     def _lazy_getattr(name):
@@ -1198,11 +1194,10 @@ def test_mlx_rl_trainer_stub_is_lazy_import_safe(monkeypatch):
     trl.__getattr__ = _lazy_getattr
     monkeypatch.setitem(sys.modules, "trl", trl)
 
-    unsloth._install_mlx_trl_sft_shim()  # must not raise despite the lazy trl
+    unsloth._install_mlx_trl_sft_shim()
 
-    # trainers declared in __all__ are stubbed WITHOUT ever resolving the real one
     assert resolved == []
-    for name in ("GRPOTrainer", "DPOTrainer"):
+    for name in ("RLOOTrainer", "GKDTrainer"):
         with pytest.raises(NotImplementedError):
             getattr(trl, name)(model = None)
 
@@ -1247,11 +1242,9 @@ def test_mlx_sftconfig_alias_keeps_trl_epoch_default(monkeypatch):
 
     unsloth._install_mlx_trl_sft_shim()
 
-    # no explicit length -> TRL epoch default (3 epochs, step cap disabled)
     cfg = trl.SFTConfig(output_dir = "mlx-out")
     assert cfg.num_train_epochs == 3
     assert cfg.max_steps == -1
-    # explicit step / epoch counts stay exactly as written
     assert trl.SFTConfig(output_dir = "mlx-out", max_steps = 17).max_steps == 17
     assert trl.SFTConfig(output_dir = "mlx-out", num_train_epochs = 2).num_train_epochs == 2
 
@@ -1382,8 +1375,6 @@ def test_mlx_torch_cuda_compatibility_shim():
     assert torch.cuda.get_device_name(0) == stats.name
     assert torch.cuda.max_memory_reserved() == int(used * 1024 * 1024 * 1024)
     assert torch.cuda.max_memory_allocated() == torch.cuda.max_memory_reserved()
-    # current (non-max) APIs report live active memory, not the peak high-water
-    # mark, and never exceed it.
     assert 0 <= torch.cuda.memory_reserved() <= torch.cuda.max_memory_reserved()
     assert torch.cuda.memory_allocated() == torch.cuda.memory_reserved()
     assert torch.cuda.device_count() == 1

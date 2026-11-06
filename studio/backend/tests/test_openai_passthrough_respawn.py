@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Restart survival for the OpenAI /v1/chat/completions passthrough.
-
-A crashed llama-server relaunches on a NEW ephemeral port. /v1/messages already
-respawns and retries; this surface did not, so a harness on the OpenAI API kept
-posting to the dead port and stayed broken until the user reloaded the model by
-hand, while an Anthropic-API client on the same backend recovered itself.
-
-Twin of test_anthropic_passthrough_respawn.py, same stubs and same cases.
-"""
+"""The OpenAI passthrough must respawn and retry after llama-server relaunches on a new port."""
 
 from __future__ import annotations
 
@@ -33,7 +25,6 @@ from routes.inference import (
     _is_lost_upstream_connection,
     _openai_passthrough_non_streaming_upstream,
     _openai_passthrough_stream_admitted,
-    _passthrough_retry_url,
 )
 
 _DEAD = "http://127.0.0.1:57953"
@@ -56,7 +47,6 @@ class _Backend:
         self.mtp_calls = 0
         self._respawn_ok = respawn_ok
         self._mtp_handled = mtp_handled
-        # Models a relaunch that reports success but is not actually serving.
         self._stays_dead = stays_dead
 
     def count_chat_tokens(self, *_args, **_kwargs):
@@ -180,20 +170,6 @@ async def _run_stream(backend, lease = None):
     return "".join(chunks)
 
 
-# ── Helper ────────────────────────────────────────────────────
-
-
-def test_the_retry_url_is_shared_with_the_anthropic_surface():
-    """Both passthroughs post to the same upstream route, so one helper serves both.
-    A rename that leaves this surface behind is the bug being fixed."""
-    backend = _Backend()
-
-    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
-
-    assert url == f"{_FRESH}/v1/chat/completions"
-    assert backend.respawn_calls == 1
-
-
 # ── Non-streaming ─────────────────────────────────────────────
 
 
@@ -218,7 +194,7 @@ def test_non_streaming_still_502s_when_the_server_stays_dead(monkeypatch):
         asyncio.run(_run_non_streaming(backend))
 
     assert exc.value.status_code == 502
-    assert client.urls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
@@ -248,9 +224,6 @@ def test_non_streaming_respawns_at_most_once(monkeypatch):
     assert client.urls == [f"{_DEAD}/v1/chat/completions"] * 2
 
 
-# ── Streaming ─────────────────────────────────────────────────
-
-
 def test_streaming_retries_against_the_new_port(monkeypatch):
     calls = []
     _install_stream_transport(monkeypatch, calls)
@@ -260,7 +233,6 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
 
     assert backend.respawn_calls == 1
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
-    # The retried stream really produced the turn, not just a clean-looking stop.
     assert "hi" in blob
     assert "[DONE]" in blob
 
@@ -275,7 +247,7 @@ def test_streaming_still_502s_when_the_server_stays_dead(monkeypatch):
         asyncio.run(_run_stream(backend, lease))
 
     assert exc.value.status_code == 502
-    assert calls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert calls == [f"{_DEAD}/v1/chat/completions"]
     assert lease.released, "the failed dispatch kept its admission slot"
 
 
@@ -322,9 +294,6 @@ def test_a_backend_without_respawn_hooks_is_untouched(monkeypatch):
     assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
-# ── Only a lost connection may be replayed ────────────────────
-
-
 @pytest.mark.parametrize(
     "exc, retryable",
     [
@@ -340,14 +309,7 @@ def test_a_backend_without_respawn_hooks_is_untouched(monkeypatch):
     ],
 )
 def test_only_lost_connections_are_replayable(exc, retryable):
-    """A timeout means the server is slow, not gone.
-
-    ``httpx.RequestError`` also covers ``TimeoutException``, and a 20-minute
-    generation on a live llama-server raises ``ReadTimeout``: replaying it
-    resubmits a prompt the server is still decoding. Same split as
-    ``_open_chat_stream_with_respawn_retry``. ``RemoteProtocolError`` is a
-    sibling of ``NetworkError``, not a subclass, so it is named explicitly.
-    """
+    """A ReadTimeout means a slow server still decoding, so only lost connections may be replayed."""
     assert _is_lost_upstream_connection(exc) is retryable
 
 
@@ -368,8 +330,7 @@ class _TimingOutClient:
 def test_non_streaming_does_not_replay_a_slow_generation(monkeypatch):
     client = _TimingOutClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
-    # A live server: _respawn_if_dead reports _healthy, so a retry would go back
-    # to the SAME port with the same prompt while the first copy is still decoding.
+    # A live server reports healthy, so a retry would duplicate the in-flight prompt.
     backend = _Backend(stays_dead = True)
 
     with pytest.raises(HTTPException) as exc:
@@ -378,9 +339,6 @@ def test_non_streaming_does_not_replay_a_slow_generation(monkeypatch):
     assert exc.value.status_code == 502
     assert backend.respawn_calls == 0, "a timeout respawned a healthy llama-server"
     assert client.urls == [f"{_DEAD}/v1/chat/completions"], "the slow generation was replayed"
-
-
-# ── The retry must follow the respawned server's new api key ──
 
 
 class _RotatingKeyBackend(_Backend):
@@ -466,17 +424,8 @@ def test_streaming_retry_uses_the_respawned_api_key(monkeypatch):
     assert seen[-1][1] == "Bearer key-after-the-respawn"
 
 
-# ── A crash after the pre-header status window ────────────────
-
-
 class _SlowDeadTransport(httpx.AsyncBaseTransport):
-    """The dead port takes longer than the 100 ms pre-header window to fail.
-
-    That is the ordinary shape of a llama-server that dies while the request is
-    queued or prefilling: dispatch is still pending when the status window
-    closes, so the failure surfaces inside _stream, not in the pre-header
-    handler.
-    """
+    """A dead port can fail after the 100 ms pre-header window, so the failure surfaces inside _stream."""
 
     def __init__(
         self,
@@ -516,7 +465,6 @@ def test_streaming_retries_a_crash_that_lands_after_the_status_window(monkeypatc
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
     assert backend.respawn_calls == 1
     assert "hi" in blob and "[DONE]" in blob
-    # No SSE error chunk leaked to the client before the recovery.
     assert "Lost connection" not in blob
 
 
@@ -546,12 +494,7 @@ def test_streaming_does_not_replay_a_slow_generation_after_the_status_window(mon
 
 
 class _SlowRespawnBackend(_Backend):
-    """A relaunch that takes real time, the way reloading a large GGUF does.
-
-    Blocks until the consumer reports a keep-alive that arrived AFTER the reload
-    began, so the stub records whether the downstream connection was still being
-    fed while the model loaded.
-    """
+    """The fake reload blocks until the consumer sees a keep-alive sent after the reload began."""
 
     def __init__(self):
         super().__init__()
@@ -567,14 +510,12 @@ class _SlowRespawnBackend(_Backend):
         return True
 
 
-def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch):
-    """The reload is a full model load, minutes for a large GGUF. The response is
-    already committed and this loop keeps it alive every five seconds, so going
-    silent for the reload lets a proxy or client drop the stream before the
-    recovered request is ever submitted."""
+@pytest.mark.parametrize("failure_delay", [0, 0.3])
+def test_streaming_keeps_the_stream_alive_while_the_server_respawns(monkeypatch, failure_delay):
+    """Keepalives must continue during a respawn, or a proxy drops the stream before the retry."""
     monkeypatch.setattr(inf_mod, "_OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S", 0.05)
     calls = []
-    transport = _SlowDeadTransport(calls)
+    transport = _SlowDeadTransport(calls, delay = failure_delay)
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         inf_mod.httpx,

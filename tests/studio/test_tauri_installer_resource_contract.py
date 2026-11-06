@@ -40,24 +40,18 @@ def test_tauri_never_overlays_install_python_stack() -> None:
 
 
 def test_each_bundle_ships_only_the_installer_it_runs() -> None:
-    # resolve_install_script picks install.sh on unix and install.ps1 elsewhere, so the other was dead weight in every
-    # bundle, and the largest script body a classifier walking the AppImage finds, which is where
-    # Trojan:Script/Wacatac.B!ml landed.
+    # Each bundle ships only its platform's installer; the unused script tripped antivirus heuristics.
     assert _bundled_resources("windows") == {"../../install.ps1": "install.ps1"}
     assert _bundled_resources("linux") == {"../../install.sh": "install.sh"}
     assert _bundled_resources("macos") == {"../../install.sh": "install.sh"}
 
 
 def test_no_installer_resource_leaks_through_the_shared_config() -> None:
-    # A resource in the shared config lands in every bundle, which is how the split regresses.
     assert _resources("tauri.conf.json") == {}
 
 
 def test_windows_upgrade_removes_the_installer_it_no_longer_ships() -> None:
-    # NSIS writes the current resource manifest and deletes nothing, and the uninstaller deletes only what is in that
-    # manifest.
-    # An in-place upgrade from a release that bundled both installers would therefore keep install.sh on a Windows
-    # machine forever, and the non-recursive RMDir "$INSTDIR" would fail at uninstall.
+    # NSIS deletes only manifest entries, so an upgrade would keep install.sh and break RMDir.
     hooks = (REPO / "studio/src-tauri/windows/hooks.nsh").read_text(encoding = "utf-8")
     for macro in ("NSIS_HOOK_PREINSTALL", "NSIS_HOOK_PREUNINSTALL"):
         assert f"!macro {macro}" in hooks, f"hooks.nsh must define {macro}"

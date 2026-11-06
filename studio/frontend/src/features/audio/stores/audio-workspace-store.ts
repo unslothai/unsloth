@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { AudioFailure } from "../audio-failure-actions";
+import type { AudioWorkflowId } from "../workflows";
+
+export const AUDIO_WORKSPACE_STORAGE_KEY = "unsloth_audio_workspace";
+
+/** Only the page commits `workflow`; others set `requestedWorkflow` for it to take. */
+interface AudioWorkspaceState {
+  workflow: AudioWorkflowId;
+  workflowChosen: boolean;
+  requestedWorkflow: AudioWorkflowId | null;
+  navExpanded: boolean;
+  lastModelByWorkflow: Partial<Record<AudioWorkflowId, string>>;
+  /** The structured failure behind the last generation error; never persisted. */
+  failure: { message: string; failure: AudioFailure } | null;
+  setFailure: (failure: AudioWorkspaceState["failure"]) => void;
+  commitWorkflow: (workflow: AudioWorkflowId) => void;
+  adoptWorkflow: (workflow: AudioWorkflowId) => void;
+  requestWorkflow: (workflow: AudioWorkflowId) => void;
+  clearRequestedWorkflow: () => void;
+  setNavExpanded: (expanded: boolean) => void;
+  rememberModel: (workflow: AudioWorkflowId, id: string) => void;
+  forgetModel: (id: string) => void;
+}
+
+export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
+  persist(
+    (set) => ({
+      workflow: "speak",
+      workflowChosen: false,
+      requestedWorkflow: null,
+      navExpanded: false,
+      lastModelByWorkflow: {},
+      failure: null,
+      setFailure: (failure) => set({ failure }),
+      // Any committed switch settles a pending request, so a stale one never fires later.
+      commitWorkflow: (workflow) =>
+        set({ workflow, workflowChosen: true, requestedWorkflow: null }),
+      adoptWorkflow: (workflow) =>
+        set((state) => (state.workflowChosen ? state : { workflow })),
+      requestWorkflow: (requestedWorkflow) => set({ requestedWorkflow }),
+      clearRequestedWorkflow: () => set({ requestedWorkflow: null }),
+      setNavExpanded: (navExpanded) => set({ navExpanded }),
+      rememberModel: (workflow, id) =>
+        set((state) =>
+          state.lastModelByWorkflow[workflow] === id
+            ? state
+            : {
+                lastModelByWorkflow: {
+                  ...state.lastModelByWorkflow,
+                  [workflow]: id,
+                },
+              },
+        ),
+      forgetModel: (id) =>
+        set((state) => {
+          const key = id.toLowerCase();
+          const kept = Object.fromEntries(
+            Object.entries(state.lastModelByWorkflow).filter(
+              ([, model]) => model?.toLowerCase() !== key,
+            ),
+          );
+          return Object.keys(kept).length ===
+            Object.keys(state.lastModelByWorkflow).length
+            ? state
+            : { lastModelByWorkflow: kept };
+        }),
+    }),
+    {
+      name: AUDIO_WORKSPACE_STORAGE_KEY,
+      version: 1,
+      partialize: (state) => ({
+        lastModelByWorkflow: state.lastModelByWorkflow,
+      }),
+    },
+  ),
+);

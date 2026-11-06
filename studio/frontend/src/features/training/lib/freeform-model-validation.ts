@@ -8,18 +8,9 @@ import type {
 import { classifyUnslothSupport, isGgufLike } from "@/features/hub";
 import type { TranslationKey } from "@/i18n";
 
+// A single adapter file is not loadable on its own; its folder is.
 const ADAPTER_ARTIFACT_PATTERN =
   /(?:^|[/\\])adapter_(?:config\.json|model\.(?:safetensors|bin))$/i;
-
-function hasPeftMetadata({
-  tags,
-  libraryName,
-}: Pick<TrainingModelValidationCandidate, "tags" | "libraryName">): boolean {
-  if (libraryName?.trim().toLowerCase() === "peft") {
-    return true;
-  }
-  return tags?.some((tag) => tag.trim().toLowerCase() === "peft") ?? false;
-}
 
 export type TrainingModelValidationCandidate = {
   id: string;
@@ -46,14 +37,17 @@ export function validateTrainingModelCandidate(
   if (candidate.modelFormat === "gguf" || isGgufLike(id)) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonGguf" };
   }
-  if (
-    candidate.modelFormat === "adapter" ||
-    ADAPTER_ARTIFACT_PATTERN.test(id) ||
-    hasPeftMetadata(candidate)
-  ) {
+  if (ADAPTER_ARTIFACT_PATTERN.test(id)) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonAdapter" };
   }
-  if (candidate.capabilities && !candidate.capabilities.canTrain) {
+  // Adapter / PEFT dirs are allowed here: LoRA and CPT can continue from a saved
+  // adapter (#13140). Full finetune is refused later in validateTrainingConfig.
+  // The inventory marks adapters canTrain=false (not a base), so skip that check for them.
+  if (
+    candidate.modelFormat !== "adapter" &&
+    candidate.capabilities &&
+    !candidate.capabilities.canTrain
+  ) {
     return { ok: false, reasonKey: "studio.modelPicker.reasonNotTrainable" };
   }
   const support = classifyUnslothSupport({

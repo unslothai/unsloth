@@ -1,7 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AUDIO_CPP_REPO } from "@/features/audio/audio-cpp-catalog";
+import { audioWorkflowForPick } from "@/features/audio/route-search";
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
+import {
+  audioPickIsRoutable,
+  curatedAudioInventoryTask,
+  speechGgufIsUndecodable,
+} from "@/features/model-picker/components/model-selector/audio-picker-policy";
+import {
+  AUDIO_CATALOG,
+  artifactForRepoId,
+} from "@/features/model-picker/components/model-selector/model-catalog";
 import type { SelectedModelView } from "../types";
 import { EMBEDDING_TAGS } from "./hf-model-meta.ts";
 import { routableToMediaPage } from "./local-path.ts";
@@ -10,6 +21,9 @@ export interface HubModelRunSelection {
   ggufVariant?: string;
   ggufFilename?: string;
   expectedBytes?: number;
+  /** ggufVariant is an MLX precision folder, fetched by the load itself. */
+  precisionFolder?: boolean;
+  downloaded?: boolean;
 }
 
 function isPresent(value: string | null | undefined): value is string {
@@ -38,7 +52,7 @@ const GENERATIVE_CAPABILITIES = new Set([
   "diffusion",
 ]);
 
-function isEmbeddingOnly(model: SelectedModelView): boolean {
+export function isEmbeddingOnly(model: SelectedModelView): boolean {
   if (
     model.isGguf ||
     !model.capabilities.some((capability) => capability.key === "embedding")
@@ -107,6 +121,128 @@ function createHandoffMeta(
   return meta;
 }
 
+function createPrecisionFolderHandoff(
+  requestId: string,
+  model: SelectedModelView,
+  selection: HubModelRunSelection,
+): ModelConfigHandoffRequest | null {
+  const id = model.hubRepoId ?? model.id;
+  if (
+    !isPresent(id) ||
+    !isPresent(selection.ggufVariant) ||
+    isEmbeddingOnly(model)
+  ) {
+    return null;
+  }
+  const meta: ModelConfigHandoffRequest["meta"] = {
+    source: "hub",
+    isLora: false,
+    isDownloaded: selection.downloaded === true,
+    isGguf: false,
+    ggufVariant: selection.ggufVariant,
+    pipelineTag: model.task ?? model.pipelineTag ?? null,
+  };
+  if (isPresent(selection.ggufFilename)) {
+    meta.ggufFilename = selection.ggufFilename;
+  }
+  if (
+    selection.expectedBytes != null &&
+    Number.isFinite(selection.expectedBytes) &&
+    selection.expectedBytes > 0
+  ) {
+    meta.expectedBytes = selection.expectedBytes;
+  }
+  return { requestId, id, displayName: model.title, meta };
+}
+
+/** The task the Audio handoff runs on: offline, a cached curated audio GGUF carries only the
+ *  backend's generic text-generation task, which the picker maps back from the catalog too. */
+export function hubAudioTask(
+  model: SelectedModelView,
+  task: string | null,
+): string | null {
+  const artifact = model.hubRepoId
+    ? artifactForRepoId(model.hubRepoId, AUDIO_CATALOG)
+    : null;
+  return curatedAudioInventoryTask({
+    inventoryTask: task,
+    isExactCatalogArtifact: artifact !== null,
+    catalogScope: artifact?.group.scope,
+    catalogTask: artifact?.group.task,
+  });
+}
+
+/** Whether Run opens this model on the Audio page rather than in chat, which refuses audio models.
+ *  Judged on the gate the chat picker routes by, so both surfaces send the same models there. */
+export function hubModelRunsOnAudioPage(
+  model: SelectedModelView,
+  task: string | null,
+): boolean {
+  // A filesystem row has no Hub id for the Audio handoff, so it keeps its chat Run.
+  const id = model.hubRepoId;
+  if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
+  // The shared GGUF audio repo holds many models; the Audio page lists them one by one.
+  if (id.toLowerCase() === AUDIO_CPP_REPO.toLowerCase()) return false;
+  task = hubAudioTask(model, task);
+  const audioType = model.audioType ?? null;
+  if (audioWorkflowForPick({ id, task, audioType }) === null) return false;
+  return audioPickIsRoutable({
+    id,
+    task,
+    isGguf: model.isGguf,
+    isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+    // An on-device GGUF is tagged text-to-audio only by the audio runtime's header classifier.
+    taskFromGgufArch: model.isGguf && model.task === "text-to-audio",
+    baseModel: model.baseModel,
+    tags: model.tags,
+    libraryName: model.libraryName,
+    audioType,
+  });
+}
+
+// Speech, music and separation tasks. ASR is left out: chat keeps its Run for transcription
+// models (MLX Whisper on Mac reaches Audio only from the picker).
+const CHAT_UNLOADABLE_AUDIO_TASKS: ReadonlySet<string> = new Set([
+  "text-to-speech",
+  "text-to-audio",
+  "audio-to-audio",
+]);
+
+// A speech GGUF from these stacks loads in llama.cpp, and chat reads an Orpheus-style codec
+// vocabulary at load, so a fine-tune named for no family still speaks there. Other libraries (nemo) do not load.
+const LLAMA_CPP_GGUF_LIBRARIES: ReadonlySet<string> = new Set([
+  "transformers",
+  "gguf",
+  "llama.cpp",
+]);
+
+/** Whether Run must refuse an audio model the Audio page cannot run, instead of handing it to
+ *  chat, which cannot load it either and would unload the chat model first. The chat picker
+ *  refuses the same picks. */
+export function hubAudioRunRefused(
+  model: SelectedModelView,
+  task: string | null,
+): boolean {
+  const id = model.hubRepoId;
+  if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
+  const audioTask = hubAudioTask(model, task);
+  if (!audioTask || !CHAT_UNLOADABLE_AUDIO_TASKS.has(audioTask)) return false;
+  const library = model.libraryName?.toLowerCase();
+  if (
+    audioTask === "text-to-speech" &&
+    model.isGguf &&
+    (!library || LLAMA_CPP_GGUF_LIBRARIES.has(library)) &&
+    !speechGgufIsUndecodable({
+      isGguf: true,
+      id,
+      baseModel: model.baseModel,
+      tags: model.tags,
+    })
+  )
+    return false;
+  return !hubModelRunsOnAudioPage(model, task);
+}
+
 export function isHubModelRunEligible({
   model,
   isDataset,
@@ -148,6 +284,9 @@ export function createHubModelConfigHandoff({
 }): ModelConfigHandoffRequest | null {
   if (!isPresent(requestId)) {
     return null;
+  }
+  if (selection.precisionFolder) {
+    return createPrecisionFolderHandoff(requestId, model, selection);
   }
   if (!hasRunnableChatModel(model)) {
     return null;

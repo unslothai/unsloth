@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`overhead_growth_with_length`: the gate that disqualifies an instrument level.
-
-An instrument that costs a constant 3 ms per window is an annoyance. An instrument whose cost
-GROWS WITH THREAD LENGTH is a catastrophe, because the entire question this tool exists to answer
-is whether cost grows with thread length. Such an instrument manufactures the symptom, and it
-manufactures it in exactly the shape everyone is looking for, which is the worst possible way to
-be wrong: the result confirms the hypothesis, the hypothesis is plausible, and nobody re-runs it.
-
-So overhead is not just recorded, it is REGRESSED AGAINST THE TREATMENT. Every instrument at
-level 1 or above declares `overhead_ms` per cell. If that number climbs across the rung ladder by
-more than the tolerance, the LEVEL is disqualified: the numbers gathered at it may still be read
-for structure (which function ran how many times), but no growth claim may rest on them.
-
-Headline numbers come from level 0 for exactly this reason, and this gate is what keeps that from
-being a promise rather than a check.
-"""
+"""Overhead is regressed against rung size; a level whose overhead grows with length is disqualified."""
 
 from __future__ import annotations
 
@@ -26,13 +11,9 @@ from typing import Any, Mapping
 
 from ..scoring.schema import Measure
 
-#: Overhead may vary this much across the ladder before the level is disqualified. Generous: some
-#: growth is unavoidable (more DOM means a longer snapshot), and a tight bound would disqualify
-#: every level on every machine.
+# Allowed overhead growth across the ladder; some growth is unavoidable as the DOM grows.
 MAX_OVERHEAD_GROWTH_RATIO = 1.5
 
-#: Growth below this many milliseconds is not worth acting on however large the ratio looks: a level
-#: whose overhead goes from 0.01 ms to 0.05 ms has a ratio of 5 and does not matter.
 MIN_ABSOLUTE_GROWTH_MS = 1.0
 
 
@@ -82,13 +63,7 @@ def overhead_growth_gate(
     max_ratio: float = MAX_OVERHEAD_GROWTH_RATIO,
     min_absolute_growth_ms: float = MIN_ABSOLUTE_GROWTH_MS,
 ) -> OverheadVerdict:
-    """Judge one instrument at one level across the rung ladder.
-
-    Disqualification needs BOTH a ratio above `max_ratio` and an absolute growth above
-    `min_absolute_growth_ms`. Either alone is a false positive generator: a ratio on a tiny number
-    is noise, and an absolute growth on a huge constant overhead is not correlation with the
-    treatment, it is a big instrument.
-    """
+    """Needs both the ratio and the absolute growth over threshold; either alone is a false positive."""
 
     readings = {int(rung): m for rung, m in by_rung.items() if m.has_reading}
     verdict = OverheadVerdict(
@@ -174,11 +149,7 @@ def render_overhead_section(verdicts: list[OverheadVerdict]) -> str:
 
 
 def log_growth_slope(by_rung: Mapping[int, Measure]) -> float | None:
-    """Least-squares slope of overhead against log(tokens), for the payload.
-
-    Reported alongside the ratio because the ratio only looks at the two ends. An instrument that
-    is flat at both ends and spikes in the middle has a ratio of 1.0 and a visible problem.
-    """
+    """Log-token slope catches mid-ladder spikes that a two-ended growth ratio cannot see."""
 
     points = [
         (math.log(float(rung)), float(m.value))

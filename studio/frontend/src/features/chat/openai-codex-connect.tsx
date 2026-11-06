@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { openLink } from "@/lib/open-link";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openExternalLink } from "@/lib/open-link";
 import { useEffect, useRef, useState } from "react";
 import {
   cancelCodexOAuthFlow,
@@ -45,6 +47,7 @@ export function OpenAICodexConnect({
   initialFlow = null,
 }: Props) {
   const [flow, setFlow] = useState<CodexOAuthFlow | null>(initialFlow);
+  useTimeFormat();
   const [callbackUrl, setCallbackUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -103,7 +106,8 @@ export function OpenAICodexConnect({
       const url = next.authorization_url || next.verification_url;
       if (url) {
         if (!isTrustedCodexAuthUrl(url)) throw new Error("The authorization URL was not trusted.");
-        openLink(url);
+        // Sign-in needs provider cookies, which the browser panel does not keep.
+        openExternalLink(url);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Authorization failed.");
@@ -168,7 +172,7 @@ export function OpenAICodexConnect({
 
   const visibleError = error || (flow?.status === "error" ? flow.message || "Authorization failed." : "");
   return (
-    <section className="space-y-3 rounded-[8px] border border-border/70 bg-background/45 p-4">
+    <section className="space-y-3 rounded-xl border border-border/70 bg-background/45 p-4">
       <div>
         <p className="text-sm font-medium">ChatGPT subscription</p>
         <p className="text-xs text-muted-foreground">
@@ -182,20 +186,20 @@ export function OpenAICodexConnect({
       {flow?.method === "device" && flow.status === "pending" ? (
         <div data-reload-snapshot-sensitive className="space-y-2 text-sm">
           <p>Enter this code in ChatGPT:</p>
-          <code className="block w-fit rounded bg-muted px-3 py-2 font-mono text-base">{flow.user_code}</code>
+          <code className="block w-fit rounded-full bg-muted px-3 py-2 font-mono text-base">{flow.user_code}</code>
           <p className="text-xs text-muted-foreground">Device login may need to be enabled in ChatGPT security or workspace settings.</p>
 
           <Button
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void navigator.clipboard.writeText(flow.user_code || "")}
+            onClick={() => void copyToClipboard(flow.user_code || "")}
           >
             Copy code
           </Button>
 
           <p className="text-xs text-muted-foreground">
-            Expires {new Date(flow.expires_at * 1000).toLocaleTimeString()}.
+            Expires {new Date(flow.expires_at * 1000).toLocaleTimeString(undefined, withTimeFormat())}.
           </p>
         </div>
       ) : null}
@@ -216,7 +220,7 @@ export function OpenAICodexConnect({
       <div className="flex flex-wrap gap-2">
         {!connected ? (
           <>
-            <Button type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
+            <Button variant="dark" type="button" size="sm" disabled={busy} onClick={() => void start("browser")}>
               {authStatus === "reauthorization_required" ? "Reconnect in browser" : "Connect in browser"}
             </Button>
             <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void start("device")}>Use device code</Button>

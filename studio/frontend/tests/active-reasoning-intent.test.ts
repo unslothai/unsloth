@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ActiveModelConfigState } from "../src/features/model-picker/hooks/use-active-model-config.ts";
+import * as gpuTensorSplit from "../src/hooks/gpu-tensor-split.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 function activeConfig(patch: Record<string, unknown> = {}) {
@@ -31,9 +32,13 @@ function activeConfig(patch: Record<string, unknown> = {}) {
           select(state),
       },
       "@/config/env": { usePlatformStore: () => ({ deviceType: "cpu" }) },
+      "@/features/npu": {
+        isNpuModelId: (value: string | null | undefined) =>
+          Boolean(value?.startsWith("lemonade:")),
+      },
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
-        isServedByLlamaCpp: () => true,
+        isServedByLlamaCpp: () => !(state.params as { engine?: string }).engine,
         residentIsServedByMlx: () => false,
       },
     },
@@ -56,6 +61,7 @@ function activeConfig(patch: Record<string, unknown> = {}) {
       "@/features/chat/presets/preset-policy": {},
       "./config-signature": {},
       "./per-model-config": {},
+      "@/hooks/gpu-tensor-split": gpuTensorSplit,
     },
   );
   const snapshot = currentRuntimePerModelConfig();
@@ -92,3 +98,17 @@ test("explicit and legacy reasoning values remain available", () => {
   assert.equal(legacy.reasoningBudget, 32);
   assert.equal(legacy.reasoningBudgetMessage, "Conclude now.");
 });
+
+for (const engine of ["vllm", "sglang"]) {
+  test(`${engine} resident precision survives editor hydration`, () => {
+    const config = activeConfig({
+      params: { checkpoint: "unsloth/Qwen2.5-0.5B-Instruct", maxSeqLength: 2048, engine, enginePrecision: "int4", engineParallelism: "pipeline" },
+      selectedGpuIds: [0, 1],
+      selectedGpuIndexKind: "physical",
+    });
+    assert.equal(config.engine, engine);
+    assert.equal(config.enginePrecision, "int4");
+    assert.equal(config.engineParallelism, "pipeline");
+    assert.deepEqual(config.selectedGpuIds, [0, 1]);
+  });
+}

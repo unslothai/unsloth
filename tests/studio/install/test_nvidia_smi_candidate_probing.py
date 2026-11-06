@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""_has_usable_nvidia_gpu must keep probing after an unusable nvidia-smi.
-
-A stale nvidia-smi exits non-zero listing no GPU; stopping there makes a mixed
-AMD+NVIDIA Windows host look NVIDIA-free and swaps its CUDA stack for ROCm.
-install.ps1 / setup.ps1 gate the fallback on the GPU check failing, not on the
-PATH lookup missing. Stubs are real executables run via real subprocess.
-"""
+"""Keep probing past an unusable nvidia-smi; else mixed AMD+NVIDIA Windows hosts swap CUDA for ROCm."""
 
 import importlib.util
 import os

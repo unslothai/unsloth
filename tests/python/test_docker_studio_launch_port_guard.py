@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""JupyterLab must not be started on Studio's port.
-
-Studio's port is fixed at 8000 (`studio_run.sh`), so with `JUPYTER_PORT=8000`
-JupyterLab wins the bind and Studio falls back to an unpublished 8001. Both report
-RUNNING and the summary still points at 8000, where Jupyter answers 404.
-"""
+"""JupyterLab must not take Studio's port: JUPYTER_PORT=8000 leaves Studio on an unpublished 8001."""
 
 from __future__ import annotations
 
@@ -24,8 +19,7 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs ba
 
 
 def _run(port: str) -> subprocess.CompletedProcess:
-    # check-only: past the settings checks the launcher writes /etc/profile.d,
-    # /root/.jupyter and /workspace, which on a root test host it really would
+    # check-only: past this the launcher writes /etc/profile.d and /workspace on the host.
     env = dict(os.environ, JUPYTER_PORT = port, UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "1")
     return subprocess.run(
         ["bash", str(LAUNCH)], capture_output = True, text = True, env = env, timeout = 120
@@ -76,7 +70,7 @@ def test_the_check_only_exit_comes_after_the_guard():
     """The guard is the point; check-only must not skip it, and nothing before the
     check-only exit may touch the host."""
     body = LAUNCH.read_text(encoding = "utf-8")
-    guard = body.index("jupyter_port_digits == 8000")
+    guard = body.index("jupyter_port_digits == UNSLOTH_STUDIO_PORT")
     check = body.index("UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-")
     assert guard < check
     assert "> /etc/profile.d/unsloth_env.sh" not in body[:check]

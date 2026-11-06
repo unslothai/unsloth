@@ -1,42 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Export a trained model to GGUF, and prove the file exists and is usable.
-
-Shared by the payloads, in the shape the rest of this directory uses: nothing
-here raises, everything returns a record, and a separate pure function turns
-that record into failures. A diagnostic that kills the payload it diagnoses
-leaves the leg reporting nothing at all.
-
-Every constant below is a measurement, not a guess. The two that a natural
-implementation gets WRONG, both learned by getting them wrong:
-
-**1. The GGUF is not in the directory you passed.** On kernel
-unsloth-probe-gguf-q8-peft-920e3e, `save_pretrained_gguf("/tmp/q8p", ...)` put
-the merged `model.safetensors` (1136.9 MB) in `/tmp/q8p` and the actual
-`qwen3-0.6b.Q8_0.gguf` (609.8 MB) in the SIBLING `/tmp/q8p_gguf`. Code that
-globs the directory it passed finds no `.gguf`, raises nothing, and reports a
-successful export. So this searches both and records which one held the file.
-
-**2. `install_llama_cpp()` returns a TUPLE**, `(llama-quantize,
-convert_hf_to_gguf.py)`, not a path to a bin directory. An earlier probe
-treated it as a directory, found nothing in it, and reported "0 binaries" --
-which was the probe being wrong rather than the bundle being empty.
-
-Two more facts worth having here rather than rediscovering:
-
-* llama.cpp installs PREBUILT on Kaggle, about 10-46s, logging "Installing
-  prebuilt llama.cpp ... - skipping compilation". A source build is silent,
-  correct, and costs many minutes on 4 vCPUs, so "it worked" is not the
-  interesting assertion -- "it did not compile" is.
-* The bundle is the `-cpu` one, so GGUF inference runs on CPU. Fine for a 0.6B
-  or a 2B; a reason not to lean on GGUF inference for a 20B.
-
-A model that REFUSES the requested quantization is not a failure. gpt-oss
-answers q8_0 with "GPT-OSS does not support GGUF quantization (requested:
-q8_0). Overriding to MXFP4 format", by design, so the caller says what it will
-accept rather than this module assuming q8_0 is universal.
-"""
+"""save_pretrained_gguf can put the .gguf in a sibling <dir>_gguf, not the directory passed in."""
 
 from __future__ import annotations
 
@@ -44,17 +9,11 @@ import os
 import subprocess
 import time
 
-# Where a GGUF may legitimately appear, relative to the directory passed to
-# save_pretrained_gguf. The empty string is that directory itself; "_gguf" is
-# the sibling unsloth actually writes to. Both are searched because relying on
-# either alone has already produced a wrong answer.
+# unsloth writes to the "_gguf" sibling; search both locations.
 GGUF_SEARCH_SUFFIXES = ("", "_gguf")
 
-# Marks the prebuilt branch in unsloth's own install output.
 PREBUILT_MARKER = "skipping compilation"
 
-# Substrings that mean a source build happened instead. If any appears, the
-# leg took the expensive path and should say so even though it succeeded.
 SOURCE_BUILD_MARKERS = ("cmake", "Building llama.cpp", "make -j")
 
 
@@ -96,11 +55,7 @@ def export_gguf(
         model.save_pretrained_gguf(save_dir, tokenizer, quantization_method = quantization)
         record["ok"] = True
     except BaseException as exc:  # noqa: BLE001
-        # unsloth/save.py:4777 wraps the real cause in
-        # `RuntimeError(f"Failed to save model: {e}")` and interpolates str(e)
-        # from exceptions whose args are empty, producing a message that ends
-        # at the colon with no cause in it. Record the type too, so a report
-        # from that path still names something.
+        # save.py wraps causes with empty messages, so record the exception type too.
         record["ok"] = False
         record["error"] = f"{type(exc).__name__}: {exc}"[:4000]
     record["seconds"] = round(time.time() - started, 1)
@@ -116,15 +71,7 @@ def run_gguf(
     max_tokens: int = 16,
     timeout: int = 240,
 ) -> dict:
-    """Run the exported file, because an existing GGUF is not a working one.
-
-    NOT via `llama-cli`. It hung for its entire budget twice on Kaggle -- 600s
-    on kernel unsloth-probe-gguf-q8-peft-920e3e and 180s on -gguf-infer-50a98a,
-    the second with stdin closed AND `-no-cnv` -- while 16 tokens from a 610 MB
-    Q8_0 on CPU is seconds of work. Whatever it waits for is not stdin, so this
-    uses binaries that cannot be interactive at all: `llama-bench` runs a fixed
-    workload and exits, `llama-completion` is one-shot.
-    """
+    """Uses llama-bench and llama-completion, which cannot block on input; llama-cli hung on Kaggle."""
     record = {"gguf": gguf_path}
     for name, argv in (
         ("bench", ["llama-bench", "-m", gguf_path, "-p", "8", "-n", str(max_tokens), "-r", "1"]),
@@ -167,21 +114,13 @@ def run_gguf(
                 "seconds": round(time.time() - started, 1),
                 "error": f"{type(exc).__name__}: {exc}"[:1000],
             }
-        # One success is enough; the second is only run when the first is
-        # unavailable or failed, so a healthy leg pays for one process.
         if record[name].get("returncode") == 0:
             break
     return record
 
 
 def export_failures(record: dict, *, accept_quantizations = None) -> list:
-    """The pass rule, as a pure function of the record.
-
-    `accept_quantizations` is the set of quantization names the caller will
-    accept in the filename. Callers pass more than one where the model is
-    allowed to override the request -- gpt-oss answers q8_0 with MXFP4 by
-    design, and failing on that would be failing on documented behaviour.
-    """
+    """Callers list every quantization they accept, since gpt-oss overrides q8_0 to MXFP4 by design."""
     if not record:
         return ["GGUF export was never run"]
 
@@ -191,8 +130,7 @@ def export_failures(record: dict, *, accept_quantizations = None) -> list:
 
     ggufs = record.get("ggufs") or []
     if not ggufs:
-        # The trap, stated in the failure itself so the reader does not have to
-        # know it: an export can "succeed" and leave no GGUF anywhere.
+        # An export can "succeed" and leave no GGUF anywhere.
         failures.append(
             f"no .gguf under {record.get('save_dir')!r} or its _gguf sibling, "
             f"even though the export reported ok={record.get('ok')}"
@@ -246,30 +184,14 @@ def run_failures(record: dict) -> list:
 
 
 def llama_cpp_facts(install_output: str, returned) -> dict:
-    """Was the PREBUILT branch taken, and what did the installer hand back?
-
-    `returned` is whatever `install_llama_cpp()` returned -- a TUPLE of
-    (llama-quantize, convert_hf_to_gguf.py) as measured, not a directory. The
-    directory is derived from it rather than assumed, so a release that changes
-    the layout shows up as a missing binary instead of a wrong path.
-    """
+    """install_llama_cpp returns a tuple of binary paths, not a directory, so the directory is derived."""
     paths = list(returned) if isinstance(returned, (tuple, list)) else [returned]
     paths = [str(p) for p in paths]
     return {
         "returned": paths,
         "all_exist": all(os.path.exists(p) for p in paths) if paths else False,
         "dir": os.path.dirname(paths[0]) if paths else None,
-        # TRI-STATE, and the third state is the point. The prebuilt banner is
-        # printed once, by the install that actually downloads the bundle; a
-        # second cycle in the same session finds llama.cpp already there and
-        # prints nothing. Measured on unsloth-probe-visleg-full-b3a317, where
-        # cycle 0 read `prebuilt: true` and cycle 1 read `prebuilt: false` for
-        # the SAME installation -- and `false` reads as "built from source",
-        # which is the one thing this field exists to catch.
-        #
-        # None means "this run did not install it, so it cannot say". The
-        # source-build markers stay a plain list, because those are printed by
-        # the build itself and their absence is meaningful either way.
+        # Tri-state: the prebuilt banner prints only on the install that downloads it, so None means unknown.
         "prebuilt": (
             True
             if PREBUILT_MARKER in (install_output or "")

@@ -7,8 +7,9 @@ import type {
   ModelSelectorChangeMeta,
 } from "../components/model-selector/types";
 import {
+  apiAutoSwitchMayLoad,
+  cachedRepoConfigId,
   ggufVariantsMatch,
-  isOllamaLinkPath,
   isOllamaModelId,
   isStandaloneGgufPath,
   modelDisplayName,
@@ -18,10 +19,17 @@ import { adoptLegacyConfigKey } from "./per-model-config";
 
 export interface ModelConfigHandoffRequest {
   requestId: string;
+  // undefined uses requestId; null opens plain /chat; a string selects that new-chat draft.
+  newChatId?: string | null;
   id: string;
   displayName?: string;
   meta: ModelSelectorChangeMeta;
+  /** Section or field the Run settings page opens on. */
+  focus?: ModelConfigFocus;
+  standalone?: boolean;
 }
+
+export type ModelConfigFocus = "advanced" | "parallelSlots";
 
 interface ModelConfigHandoffState {
   request: ModelConfigHandoffRequest | null;
@@ -68,9 +76,57 @@ export function modelConfigTarget(
     displayName: meta.ggufVariant ? `${name} · ${meta.ggufVariant}` : name,
     ggufVariant: meta.ggufVariant ?? null,
     isGguf,
-    apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),
+    apiLoadable: apiAutoSwitchMayLoad([id, loadId], meta.isLora),
     ...(separateLoadId ? { configId: id } : {}),
     meta,
+  };
+}
+
+const TRAILING_SEPARATORS = /[\\/]+$/;
+
+function leafName(id: string): string {
+  const trimmed = id.replace(TRAILING_SEPARATORS, "");
+  const separator = Math.max(
+    trimmed.lastIndexOf("/"),
+    trimmed.lastIndexOf("\\"),
+  );
+  return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
+}
+
+export function residentModelConfigTarget({
+  modelId,
+  ggufVariant,
+  isGguf,
+  isLora,
+  contextLength,
+}: {
+  modelId: string;
+  ggufVariant: string | null;
+  isGguf: boolean;
+  isLora: boolean;
+  contextLength: number | null;
+}): ModelPickTarget {
+  // /status labels a standalone .gguf with a quant; other entry points key settings by the bare path.
+  const settingsGgufVariant = isStandaloneGgufPath(modelId)
+    ? null
+    : ggufVariant;
+  const leaf = leafName(modelId);
+  const repoId = cachedRepoConfigId(modelId, settingsGgufVariant);
+  return {
+    id: modelId,
+    displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
+    ggufVariant: settingsGgufVariant,
+    isGguf,
+    apiLoadable: apiAutoSwitchMayLoad([modelId], isLora),
+    ...(repoId ? { configId: repoId } : {}),
+    meta: {
+      source: "local",
+      isLora,
+      ggufVariant: settingsGgufVariant ?? undefined,
+      isGguf,
+      isDownloaded: true,
+      contextLength,
+    },
   };
 }
 
@@ -131,7 +187,9 @@ export function modelConfigHandoffForDestination(
     destination.threadId ||
     destination.compareId ||
     destination.projectId ||
-    request.requestId !== destination.newChatId
+    (request.newChatId === undefined
+      ? request.requestId
+      : request.newChatId) !== (destination.newChatId ?? null)
   ) {
     return null;
   }

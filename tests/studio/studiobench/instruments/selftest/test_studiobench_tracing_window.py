@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Losing the optional metrics probe costs the cross-check, and only the cross-check.
-
-`start_cell` says so in as many words -- "Metrics are a cross-check, not the measurement. Losing
-them costs the cross-check and nothing else" -- and the handler in `open()` did something else
-entirely. `Tracing.start` had already succeeded by the time `MetricsWindow.open()` ran, so
-clearing `self.capture` there abandoned a LIVE tracing session:
-
-  `close()` returns early while `self.capture is None`, so `Tracing.end` is never sent.
-  `detach()` is guarded on the same attribute, so it cannot stop it either.
-  Tracing is per-browser (`TraceCapture`: "a second `Tracing.start` fails with 'Tracing has
-  already been started (possibly in another tab)'"), so EVERY later window fails to start and
-  reports `tracing did not start for this window`.
-
-One failed `Performance.getMetrics` therefore cost the tracing instrument for the rest of the run
--- and left a `recordAsMuchAsPossible` capture recording underneath every number taken after it.
-It does not take a broken browser to get there: `start_cell` enables the Performance domain under
-a bare `except`, and `read_metrics` raises rather than returning empty when that domain is off.
-"""
+"""A failed metrics probe must cost only the cross-check, never leave a Tracing session running."""
 
 from __future__ import annotations
 
@@ -51,11 +34,7 @@ TRACE_TEXT = json.dumps(
 
 
 class _Cdp:
-    """The CDP calls this instrument makes, answered the way a browser answers them.
-
-    `tracing_active` is the browser-global state the bug leaks: a session left running here is a
-    session no later window can start over.
-    """
+    """tracing_active is browser-global: a session left running blocks every later window from starting."""
 
     def __init__(self, *, metrics_fail: bool = False) -> None:
         self.metrics_fail = metrics_fail
@@ -111,9 +90,6 @@ def _window(name: str):
     return types.SimpleNamespace(name = name)
 
 
-# ── the trace survives the probe ─────────────────────────────────────────────────────────────
-
-
 def test_a_second_window_is_still_traced_after_the_metrics_probe_fails():
     cdp = _Cdp(metrics_fail = True)
     inst = _instrument(cdp)
@@ -151,9 +127,6 @@ def test_no_tracing_session_is_left_running_in_the_browser():
     inst.detach()
 
     assert cdp.tracing_active is False
-
-
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_a_healthy_window_still_cross_checks_against_the_metrics():

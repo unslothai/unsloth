@@ -1,9 +1,10 @@
 import { revealPathToken } from "../api";
 import { useNativeIntentStore } from "../store";
 import type { NativeIntent } from "../types";
-import { XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "@/lib/toast";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 
 interface NativeModelChipProps {
   intent: NativeIntent;
@@ -67,7 +68,7 @@ export function NativeModelChip({
   }
 
   return (
-    <div className="flex min-w-0 max-w-[34rem] items-center gap-2 rounded-lg border border-border/70 bg-muted/70 px-2.5 py-1.5 text-xs">
+    <div className="flex min-w-0 max-w-[calc(34rem*var(--ui-space-scale,1))] items-center gap-2 rounded-full border border-border/70 bg-muted/70 px-2.5 py-1.5 text-xs">
       <span className="shrink-0 font-medium text-muted-foreground">Local GGUF</span>
       <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
       <button
@@ -75,7 +76,7 @@ export function NativeModelChip({
         onClick={handleReveal}
         disabled={expired}
         title={expired ? "Selection expired, pick or drop the file again" : undefined}
-        className="rounded-md px-2 py-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-full px-2 py-1 text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
       >
         Reveal
       </button>
@@ -90,7 +91,7 @@ export function NativeModelChip({
               ? "Selection expired, pick or drop the file again"
               : undefined
         }
-        className="rounded-md bg-foreground px-2 py-1 text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-full bg-foreground px-2 py-1 text-background transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
       >
         {expired ? "Expired" : loading ? "Loading…" : "Load model"}
       </button>
@@ -100,7 +101,7 @@ export function NativeModelChip({
         className="flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive hover:text-destructive-foreground"
         aria-label="Dismiss local model"
       >
-        <XIcon className="size-3" />
+        <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
       </button>
     </div>
   );

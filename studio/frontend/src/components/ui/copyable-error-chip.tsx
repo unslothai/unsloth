@@ -11,7 +11,7 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -27,7 +27,6 @@ export function CopyableErrorChip({
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending reset on unmount to avoid a setState on an unmounted component.
   useEffect(() => () => {
     if (resetTimer.current) clearTimeout(resetTimer.current);
   }, []);
@@ -46,13 +45,11 @@ export function CopyableErrorChip({
   return (
     <Popover>
       <PopoverTrigger asChild={true}>
-        {/* No aria-label override: the visible message text is the
-            button's accessible name, so screen readers announce the
-            full (untruncated) error. Truncation here is purely visual. */}
+        {/* No aria-label: the visible text names the button, so readers get the untruncated error. */}
         <button
           type="button"
           className={cn(
-            "flex max-w-[28rem] min-w-0 cursor-pointer items-center rounded-md text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "flex max-w-[calc(28rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center rounded-full text-left text-xs text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             className,
           )}
         >
@@ -71,8 +68,8 @@ export function CopyableErrorChip({
             onClick={handleCopy}
             aria-label={copied ? "Copied" : "Copy error message"}
             className={cn(
-              "inline-flex items-center gap-1 rounded-md border border-border/60 px-2 py-1 text-ui-11 text-muted-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-              copied && "border-emerald-500/40 text-emerald-600 dark:text-emerald-500",
+              "btn-fill inline-flex items-center gap-1 rounded-full px-2 py-1 text-ui-11 text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              copied && "text-emerald-600 dark:text-emerald-500",
             )}
           >
             <HugeiconsIcon

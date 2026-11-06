@@ -301,16 +301,13 @@ def test_a_stop_created_by_decode_cleanup_of_settled_text_still_matches():
         wrapped.put(torch.tensor([token]))
     assert wrapped.matched.is_set()
     wrapped.end()
-    # The space was already streamed before "." rewrote it, as with a full decode.
     assert "".join(wrapped) == "Hello world "
 
 
 @pytest.mark.parametrize(
     "pieces, rule, stop",
     [
-        # " n't" completes one character after the apostrophe, " 've" three characters
-        # after the space, so a guard that only watches the character right after the
-        # space catches the first and misses the second.
+        # " n't" completes one char after the apostrophe, " 've" three after the space.
         ({2: "I", 3: " ca", 4: " ", 5: "n", 6: "'t"}, (" n't", "n't"), "can't"),
         ({2: "we", 3: " ", 4: "'", 5: "v", 6: "e"}, (" 've", "'ve"), "we've"),
         ({2: "it", 3: " ", 4: "'", 5: "s"}, (" 's", "'s"), "it's"),
@@ -328,9 +325,7 @@ def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop(pieces, rule
         def decode(self, ids, **kwargs):
             return super().decode(ids, **kwargs).replace(*rule)
 
-    # Split across tokens the rewrite is invisible from a short window: each half decodes
-    # unchanged, so the concatenation keeps the space the full decode drops and the stop
-    # is never found.
+    # Split across tokens, each half decodes unchanged, so a short window misses the rewrite.
     tokenizer = Tokenizer()
     tokenizer.pieces = pieces
     streamer = inf.TextIteratorStreamer(tokenizer, skip_prompt = False)
@@ -403,3 +398,27 @@ def test_stop_matching_decodes_a_bounded_window_per_token():
     assert wrapped.matched.is_set()
     wrapped.end()
     assert "".join(wrapped) == "word " * words
+
+
+@pytest.mark.parametrize("stop", [None, ["never"]])
+def test_harmony_stream_waits_for_split_multibyte_characters(stop):
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+    body = "饺子 🦥"
+    split = [bytes([b]) for b in body.encode()]
+    parts = [b"<|channel|>analysis<|message|>", *split, b"\xf0"]
+    parts += [b"<|end|><|start|>assistant<|channel|>final<|message|>", *split, b"\xf0", b"\x9f"]
+
+    class Tokenizer(_Tokenizer):
+        pieces = dict(enumerate(parts, start = 2))
+
+        def decode(self, ids, **kwargs):
+            return b"".join(self.pieces[int(i)] for i in ids).decode("utf-8", errors = "replace")
+
+    streamer = inf.HarmonyTextStreamer(Tokenizer(), skip_prompt = False)
+    if stop:
+        streamer = inf._StopSequenceStreamer(streamer, stop)
+    for token in Tokenizer.pieces:
+        streamer.put(torch.tensor([token]))
+    streamer.end()
+    assert "".join(streamer) == f"<think>{body}\ufffd</think>{body}\ufffd"

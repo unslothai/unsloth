@@ -16,18 +16,14 @@ say()  { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 
 command -v docker >/dev/null 2>&1 \
-    || fail "docker is not installed. Install Docker Engine first (https://docs.docker.com/engine/install/), then run this again." 2
+    || fail "docker is not installed. Install Docker Engine first, on Linux with
+       curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh
+       (https://docs.docker.com/engine/install/ covers Docker Desktop and the distro packages), then run this again." 2
 
-# Every grep of a command's output below reads a variable, not a pipe. `grep -q` exits on the first
-# match and closes the pipe; `set -o pipefail` above then promotes the producer's SIGPIPE (141) to the
-# status of the whole pipeline, so a match reads as a miss whenever the producer was still writing.
-# Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
-# and the script elevating to install on the one daemon it exists to leave alone.
+# Grep variables, not pipes: under pipefail `grep -q` closing the pipe turns the producer's
+# SIGPIPE into a false miss.
 
-# Mac and Windows shells never need the toolkit (no NVIDIA GPU on a Mac; Docker Desktop's
-# WSL 2 backend brings its own), so answer before the endpoint check, which sent colima and
-# Rancher Desktop users off to configure a socket. Only a remote Linux daemon gets the
-# remote answer; DOCKER_CONTEXT over DOCKER_HOST over the selected context, as below.
+# Mac and Windows never need the toolkit; answer before the endpoint check.
 host_os="$(uname -s)"
 case "$host_os" in
     Darwin|MINGW*|MSYS*|CYGWIN*)
@@ -127,9 +123,33 @@ fi
 # On WSL 2 the Windows driver puts nvidia-smi under /usr/lib/wsl/lib, which sudo's secure_path drops from PATH.
 NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
 [[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
+
+# sudo strips LD_* variables, so restore LD_LIBRARY_PATH for hosts whose NVIDIA libraries
+# are outside ldconfig.
+nvsmi() { LD_LIBRARY_PATH="${NV_LIB_DIR}${NV_LIB_DIR:+${LD_LIBRARY_PATH:+:}}${LD_LIBRARY_PATH:-}" "$NVSMI" "$@"; }
+NV_LIB_DIR=""
 gpu_list=""
-[[ -n "$NVSMI" ]] && gpu_list="$("$NVSMI" -L 2>/dev/null || true)"
+# 2>&1: the loader's complaint separates a missing driver from an unreachable one.
+[[ -n "$NVSMI" ]] && gpu_list="$(nvsmi -L 2>&1 || true)"
+if [[ -n "$NVSMI" ]] && grep -qi 'libnvidia-ml' <<<"$gpu_list"; then
+    for _dir in /usr/lib64-nvidia /usr/local/nvidia/lib64 "$WSL_LIB_DIR"; do
+        [[ -e "${DESTDIR}${_dir}/libnvidia-ml.so.1" ]] || continue
+        NV_LIB_DIR="${DESTDIR}${_dir}"
+        gpu_list="$(nvsmi -L 2>&1 || true)"
+        grep -q '^GPU' <<<"$gpu_list" && break
+        NV_LIB_DIR=""
+    done
+fi
 if [[ -z "$NVSMI" ]] || ! grep -q '^GPU' <<<"$gpu_list"; then
+    # A library complaint means the driver exists but the loader cannot see it.
+    if grep -qi 'libnvidia-ml' <<<"$gpu_list"; then
+        fail "nvidia-smi cannot load libnvidia-ml.so, so this script cannot read the driver:
+       ${gpu_list%%$'\n'*}
+       sudo drops every LD_* variable, so a driver reached through LD_LIBRARY_PATH (Colab
+       puts its libraries in /usr/lib64-nvidia) disappears when this script elevates.
+       Find the directory holding libnvidia-ml.so.1 and name it on the command line:
+       sudo LD_LIBRARY_PATH=/usr/lib64-nvidia bash install_nvidia_toolkit.sh" 2
+    fi
     if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
         fail "no NVIDIA GPU is visible in this WSL 2 distro. Install a current NVIDIA Windows driver
        from nvidia.com (never a Linux driver inside WSL), restart WSL (wsl --shutdown), then run
@@ -141,10 +161,8 @@ if [[ -z "$NVSMI" ]] || ! grep -q '^GPU' <<<"$gpu_list"; then
        Unsloth images need driver 570.26 or newer." 2
 fi
 MIN_DRIVER=570.26
-# `sed -n 1p`, not `head -1`: head closes the pipe after one line, and nvidia-smi prints one per GPU,
-# so on a multi-GPU host the SIGPIPE becomes the substitution's status and `set -e` kills the script
-# here with nothing printed. sed reads to the end. (Measured: exit 141, no output, 8 GPUs.)
-DRIVER="$("$NVSMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | sed -n 1p | tr -d '[:space:]')"
+# `sed -n 1p`, not `head -1`: head's SIGPIPE kills the script under set -e on multi-GPU hosts.
+DRIVER="$(nvsmi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | sed -n 1p | tr -d '[:space:]')"
 driver_ok() {
     [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
 }
@@ -244,4 +262,14 @@ if ! driver_ok; then
        the Unsloth images. Update the driver, reboot, then run: docker run --rm --gpus all --platform ${PLATFORM} ubuntu:24.04 nvidia-smi -L" 3
 fi
 say "Driver ${DRIVER} meets the ${MIN_DRIVER} minimum."
-say "Done. Run: docker run -d --gpus all -p 8000:8000 -p 8888:8888 unsloth/unsloth"
+say "Done. Start Unsloth with:"
+cat <<'EOF'
+docker run -d --name unsloth --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  -p 8000:8000 -p 8888:8888 \
+  -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
+  unsloth/unsloth && docker logs -f unsloth
+EOF

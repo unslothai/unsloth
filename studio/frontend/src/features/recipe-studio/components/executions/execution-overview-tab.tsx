@@ -174,7 +174,7 @@ export function ExecutionOverviewTab({
             </div>
           </div>
           {(llmColumnCount > 0 || modelUsageRows.length > 0) && (
-            <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+            <div className="rounded-lg border border-border/60 bg-card/55 p-3">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs text-muted-foreground">Model usage</p>
                 <HugeiconsIcon icon={Flag02Icon} className="size-4 text-muted-foreground" />
@@ -182,7 +182,7 @@ export function ExecutionOverviewTab({
               {modelUsageRows.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No model usage yet.</p>
               ) : (
-                <div className="overflow-hidden rounded-lg border border-border/60 bg-card/50">
+                <div className="overflow-hidden rounded-md border border-border/60 bg-card/50">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -194,7 +194,7 @@ export function ExecutionOverviewTab({
                     <TableBody>
                       {modelUsageRows.map((usage) => (
                         <TableRow key={usage.model}>
-                          <TableCell className="max-w-[320px] truncate">{usage.model}</TableCell>
+                          <TableCell className="max-w-[calc(320px*var(--ui-space-scale,1))] truncate">{usage.model}</TableCell>
                           <TableCell className="text-right">
                             {formatMetricValue(usage.input)}
                           </TableCell>
@@ -212,7 +212,7 @@ export function ExecutionOverviewTab({
         </div>
       )}
       {sourceProgress?.source === "github" && (
-        <div className="rounded-xl border border-border/60 bg-card/55 p-3">
+        <div className="rounded-lg border border-border/60 bg-card/55 p-3">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">Source data</p>
             <HugeiconsIcon icon={GithubIcon} className="size-4 text-muted-foreground" />

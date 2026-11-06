@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Context compaction, and why one half of the check is worthless alone.
-
-Studio reports the fit on the completion itself, as `context_truncated` with
-`dropped_messages`, so a conversation past the window can be shown to have been
-SHORTENED rather than refused, without a browser.
-
-The rule is a pair, deliberately:
-
-* an over-length conversation returns 200 with `dropped_messages > 0`;
-* a two-message conversation drops nothing.
-
-The first alone passes on a server that reports truncation unconditionally,
-which is indistinguishable from working. The second alone passes on a server
-that never compacts and returns a context-length error instead. Only together
-do they say the field tracks length.
-
-It also has to run where the window is KNOWN. `assert_server_flags` reloads the
-model pinned to `--studio-ctx`; a compaction check before that is aimed at a
-context length nobody set.
-"""
+"""Compaction needs a pair: an overflowing chat must shorten, and a short one must drop nothing."""
 
 from __future__ import annotations
 
@@ -79,22 +60,15 @@ def test_the_short_control_is_present_and_is_the_opposite_claim():
     ]
     assert short, "there is no negative control"
     for node in short:
-        # It must fail when the short chat DID drop, which is the opposite
-        # polarity to the long one.
+        # Opposite polarity to the long chat: it must fail when the short chat dropped.
         assert not (
             isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
         ), "the control must fire when a SHORT conversation reports a drop"
 
 
 def test_a_refusal_is_a_failure_rather_than_a_pass():
-    """A context-length error is not compaction. The distinction is the whole
-    feature: one shortens the prompt and answers, the other gives up.
-
-    Asserted structurally. The first version of this test matched the failure
-    MESSAGE, with an `or` that was true of any body at all -- a guard satisfied
-    by its own surrounding text, which is the exact shape this directory has
-    been caught by five times.
-    """
+    """A context-length error is a failure, not compaction, so it is checked structurally, not by
+    message."""
     func = _func("assert_compaction")
     refusals = [
         n
@@ -127,13 +101,7 @@ def test_the_cpu_fallback_records_the_assertion_rather_than_omitting_it():
 
 
 def test_every_status_read_comes_from_a_real_call():
-    """Found by mutation, not by reasoning: assigning `code = 200` after the
-    request survived every other rule here, because they all read the shape of
-    the branches and none of them asked where the value came from.
-
-    A hardcoded status is unlikely as drift and trivial as a "fix" for a red,
-    which is the same thing.
-    """
+    """Status must come from a real call: a hardcoded code = 200 passed every other rule under mutation."""
     func = _func("assert_compaction")
     for node in ast.walk(func):
         if not isinstance(node, ast.Assign):
@@ -156,16 +124,7 @@ def _tuple_names(node: ast.Assign) -> set:
 
 
 def test_compaction_is_REQUESTED_rather_than_expected_by_default():
-    """Measured on kernel unsloth-probe-studio-full2-815a0c, where this
-    assertion failed a documented default.
-
-    `context_overflow` defaults to "error": an over-length conversation comes
-    back 400 with code=context_length_exceeded, so a client's own trim loop can
-    see it. Compaction is a policy you ASK for. "truncate_oldest" is the one
-    that applies to a plain chat; "truncate_middle" is limited to client-tool
-    and response_format passthrough
-    (studio/backend/models/inference.py:context_overflow).
-    """
+    """context_overflow defaults to error, so compaction must be requested as truncate_oldest."""
     body = _body()
     assert 'context_overflow = "truncate_oldest"' in body
     assert (
@@ -174,11 +133,7 @@ def test_compaction_is_REQUESTED_rather_than_expected_by_default():
 
 
 def test_the_default_policy_control_is_present_and_expects_a_refusal():
-    """The half that stops the request field from being decorative.
-
-    Without it, the check above passes on a server that compacts everything
-    regardless of what was asked for, and naming the policy proves nothing.
-    """
+    """The default-policy control expects a refusal; without it, naming a policy would prove nothing."""
     func = _func("assert_compaction")
     refusals = [
         node
@@ -190,14 +145,7 @@ def test_the_default_policy_control_is_present_and_expects_a_refusal():
 
 
 def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
-    """400 is not the claim. `openai_error_body` always emits the `code` key and
-    leaves it None for an unclassified failure, so a validation error and a
-    code-less generation error are both 400 -- and a status-only check accepts
-    either as proof of overflow semantics the failure text promises.
-
-    `code=context_length_exceeded` is what a client's trim loop detects
-    (routes/inference.py, `_openai_stream_error_chunk`), so it is the assertion.
-    """
+    """400 alone proves nothing: a validation error is also 400, so check code=context_length_exceeded."""
     func = _func("assert_compaction")
     body = ast.unparse(func)
     # `ast.unparse` normalises quoting, so match the value not the literal.
@@ -210,8 +158,7 @@ def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
         if isinstance(node, ast.Compare) and "context_length_exceeded" in ast.unparse(node)
     ]
     assert compares, "context_length_exceeded appears but is never compared against"
-    # And it has to gate the SAME branch as the status, or a run can refuse with
-    # the wrong code and still pass.
+    # Must gate the same branch as the status.
     guards = [
         ast.unparse(node.test)
         for node in ast.walk(func)

@@ -1,0 +1,28 @@
+# A text or vision LLM trained as a decision model (fresh Clef head + LoRA), as scripts/train_decision_from_lm.py.
+
+training:
+  max_seq_length: 4096
+  num_epochs: 1
+  learning_rate: 1e-4
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  warmup_steps: 5
+  max_steps: 0
+  weight_decay: 0.01
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+  optim: "adamw_8bit"
+  lr_scheduler_type: "linear"
+
+lora:
+  lora_r: 64
+  lora_alpha: 64
+  lora_dropout: 0.0
+
+logging:
+  enable_wandb: false
+  wandb_project: "decision-finetuning"
+  enable_tensorboard: false
+  log_frequency: 1

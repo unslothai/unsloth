@@ -6,3 +6,11 @@ export {
   FIND_SCOPE_ATTRIBUTE,
   FIND_SKIP_ATTRIBUTE,
 } from "./lib/find-attributes.ts";
+export {
+  type FindTarget,
+  type FindTargetResult,
+  EMPTY_FIND_RESULT,
+  notifyFindTargets,
+  registerFindTarget,
+  requestFind,
+} from "./lib/find-targets.ts";

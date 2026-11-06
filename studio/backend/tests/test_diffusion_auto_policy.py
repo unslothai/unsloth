@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only unit tests for the diffusion auto-policy decision layer.
-
-Covers the per-family footprint estimator (bf16-resident component sizes x per-scheme
-factors, transient vs steady, base-repo overrides), the dense-quant candidate resolution
-(with the quant selector / prequant probe monkeypatched, no torch), and the resolved
-provenance record. The loader-side ordering fix is exercised through the planner: the
-regression case is a GGUF whose file-size plan forces offload while the candidate's
-estimate fits resident."""
+"""CPU-only auto-policy tests for footprint estimates, quant candidates and provenance records."""
 
 from __future__ import annotations
 
@@ -21,12 +14,11 @@ import core.inference.diffusion_auto_policy as ap
 
 @pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
-    """Policy/planning tests, not a check on whether this host's torchao imports.
-
-    Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
-    below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
+    """Policy tests, not a torchao check: unpatched, a broken torchao keeps dense weights for prequants."""
     import core.inference.diffusion_prequant as _pq
-    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+    monkeypatch.setattr(
+        _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
 
 from core.inference.diffusion_auto_policy import (
@@ -49,7 +41,6 @@ def _fam(name = "z-image"):
     return SimpleNamespace(name = name)
 
 
-# ── the per-family table ──────────────────────────────────────────────────────
 def test_family_table_covers_the_dit_families():
     for name in ("flux.1", "flux.2-klein", "flux.2-dev", "qwen-image", "z-image", "krea-2"):
         comps = family_bf16_components_gb(_fam(name))
@@ -63,27 +54,22 @@ def test_family_table_unknown_family_returns_none():
 
 
 def test_zimage_base_downloads_bf16_while_turbo_downloads_fp32():
-    # The z-image family factor exists because the distilled Turbo publishes fp32 shards. The
-    # undistilled base ships bf16 and downloads exactly what it occupies, so charging it the
-    # family factor makes the free-disk gate demand twice the real size.
+    # Only the Turbo publishes fp32 shards; the undistilled base ships bf16, so no 2x factor.
     assert ap.hub_download_factor(_fam("z-image")) == 2.0
     assert ap.hub_download_factor(_fam("z-image"), "Tongyi-MAI/Z-Image-Turbo") == 2.0
     assert ap.hub_download_factor(_fam("z-image"), "Tongyi-MAI/Z-Image") == 1.0
-    # A family with no factor at all still defaults to 1.0, base repo or not.
     assert ap.hub_download_factor(_fam("flux.2-klein"), "black-forest-labs/FLUX.2-klein-4B") == 1.0
-    # A base repo arrives however the user typed it, so the override cannot be case-sensitive.
     assert ap.hub_download_factor(_fam("z-image"), "  tongyi-mai/Z-IMAGE ") == 1.0
 
     turbo = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
     base = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image")
     assert turbo is not None and base is not None
-    # Same architecture, so the resident footprint is identical and only the download differs.
     assert base.steady_transformer_mib == turbo.steady_transformer_mib
     assert base.download_transformer_mib * 2 == turbo.download_transformer_mib
 
 
 def test_base_repo_override_wins_over_the_family_default():
-    # flux.2-klein's family default is the 4B base; loading the 9B GGUF passes the 9B base repo, whose transformer is over twice the size.
+    # klein's family default is the 4B; the 9B base's transformer is over twice the size.
     default = family_bf16_components_gb(_fam("flux.2-klein"))
     nine_b = family_bf16_components_gb(
         _fam("flux.2-klein"), base_repo = "black-forest-labs/FLUX.2-klein-9B"
@@ -98,9 +84,7 @@ def test_base_repo_override_wins_over_the_family_default():
 
 
 def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
-    # klein-base-9B is the undistilled 9B (18.2 GB transformer + the Qwen3-8B encoder), and it is
-    # the variant upstream points fine-tuning at, so it needs the same override as klein-9B.
-    # Without it the base 9B is planned as a 4B and every size-driven decision under-reserves.
+    # klein-base-9B is the undistilled 9B (18.2 GB transformer), so it needs the 9B override too.
     default = family_bf16_components_gb(_fam("flux.2-klein"))
     nine_b = family_bf16_components_gb(
         _fam("flux.2-klein"), base_repo = "black-forest-labs/FLUX.2-klein-9B"
@@ -110,12 +94,10 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     )
     assert base_9b == nine_b
     assert base_9b is not None and default is not None and base_9b[0] > 2 * default[0]
-    # The unsloth mirror is what Unsloth actually loads, and canonical_base has to route it here too.
     assert (
         family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
         == base_9b
     )
-    # Same case-insensitivity the trust gate applies: a typed-in base must not fall back to the 4B.
     assert (
         family_bf16_components_gb(
             _fam("flux.2-klein"), base_repo = " BLACK-FOREST-LABS/flux.2-klein-base-9b "
@@ -124,13 +106,11 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     )
 
 
-# ── the estimator ─────────────────────────────────────────────────────────────
 def test_estimate_int8_steady_is_roughly_half_bf16():
     est = estimate_dense_quant(_fam("z-image"), "int8")
     assert est is not None
     bf16_mib = 12.3 * ap._MIB_PER_GB
     assert 0.5 * bf16_mib < est.steady_transformer_mib < 0.6 * bf16_mib
-    # On-the-fly quantisation transiently materialises the dense bf16 transformer.
     assert est.transient_transformer_mib == int(bf16_mib)
     assert est.prequant is False
 
@@ -150,12 +130,45 @@ def test_estimate_nvfp4_is_smaller_than_int8():
     assert nvfp4.steady_transformer_mib < int8.steady_transformer_mib
 
 
+def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
+    from core.inference.diffusion_auto_policy import (
+        _MIB_PER_GB,
+        _POLICY_STEADY_FACTOR,
+        _QUANT_STEADY_FACTOR,
+        policy_steady_factor,
+    )
+
+    transformer_gb = ap._FAMILY_BF16_GB["z-image"][0]
+    policy = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert policy is not None
+    assert policy.steady_transformer_mib == int(
+        transformer_gb * _POLICY_STEADY_FACTOR["zimg_rg76_v1"] * _MIB_PER_GB
+    )
+    whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
+    assert policy.steady_transformer_mib > whole_model
+    for base in (None, "some-org/Z-Image-Fork"):
+        plain = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = base)
+        assert plain is not None and plain.steady_transformer_mib == whole_model, base
+    kontext = estimate_dense_quant(
+        _fam("flux.1-kontext"), "nvfp4", base_repo = "black-forest-labs/FLUX.1-Kontext-dev"
+    )
+    assert kontext is not None
+    assert kontext.steady_transformer_mib == int(
+        ap._FAMILY_BF16_GB["flux.1-kontext"][0] * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB
+    )
+    assert policy_steady_factor("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev") is None
+    fp8 = estimate_dense_quant(_fam("z-image"), "fp8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    assert fp8 is not None
+    assert fp8.steady_transformer_mib == int(
+        transformer_gb * _QUANT_STEADY_FACTOR["fp8"] * _MIB_PER_GB
+    )
+
+
 def test_estimate_unknown_family_or_scheme_returns_none():
     assert estimate_dense_quant(_fam("not-a-family"), "int8") is None
     assert estimate_dense_quant(_fam("z-image"), "q4_k") is None
 
 
-# ── candidate resolution (selector + prequant probe stubbed) ─────────────────
 def _patch_selector(
     monkeypatch,
     *,
@@ -167,7 +180,9 @@ def _patch_selector(
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(
-        tq, "select_transformer_quant_scheme", lambda target, req, family = None: scheme
+        tq,
+        "select_transformer_quant_scheme",
+        lambda target, req, family = None, **_kw: scheme,
     )
     import core.inference.diffusion_prequant as pq
 
@@ -176,7 +191,7 @@ def _patch_selector(
         "resolve_prequant_source",
         lambda fam, s, path_override = None, base_repo = None: prequant,
     )
-    # Neutralize the cache-disk gate by default so resolution tests do not depend on runner free space; the disk-gate tests re-patch it.
+    # Neutralize the cache-disk gate so tests do not depend on runner free space.
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: None)
 
 
@@ -205,7 +220,6 @@ def test_candidate_none_when_no_scheme_resolves(monkeypatch):
 
 
 def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
-    # The dense artifact may be a multi-GB download, so a nearly-full model-cache disk drops the candidate and the loader keeps the GGUF build.
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")
@@ -217,13 +231,7 @@ def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
 
 
 def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
-    """A cached checkpoint downloads nothing, so the space gate has no claim on it.
-
-    The gate's own comment said a cached re-download is a no-op, but it ran regardless. That
-    discarded exactly the candidate the auto retry exists to find: the retry only ever proposes a
-    rung whose checkpoint is already cached, so on a low-disk or moved-cache install every retry
-    fell back to the GGUF despite a resident-fit local artifact.
-    """
+    """Cached prequants cost no download, so the disk-space gate must spare them, or auto retries fail."""
     import core.inference.diffusion_auto_policy as ap
     import core.inference.diffusion_prequant as pq
 
@@ -232,14 +240,11 @@ def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
         pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "repo"})()
     )
     monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: True)
-    # Far too little space for the checkpoint, which is precisely the case being excused.
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
     est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
     assert isinstance(est, DenseQuantEstimate)
     assert est.prequant is True
 
-    # Uncached on the same low disk still trips the gate: this excuses a cached artifact, not
-    # every prequant.
     monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
     assert (
         resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
@@ -248,13 +253,7 @@ def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
 
 
 def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
-    """A local path override downloads nothing, so the space gate has no claim on it.
-
-    prequant_checkpoint_cached only answers for hosted repos (_cached_in_root returns None for any
-    other kind), so probing a path source there reports False and re-applies the gate to a file
-    already on disk. The retry treats a local override as costing no bytes; this has to agree, or a
-    low-disk host drops the local rung to GGUF.
-    """
+    """A local path override costs no download; the disk-space gate must skip it, not re-check the cache."""
     import core.inference.diffusion_auto_policy as ap
     import core.inference.diffusion_prequant as pq
 
@@ -262,7 +261,6 @@ def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
     monkeypatch.setattr(
         pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "path"})()
     )
-    # Would say "not cached" for a path source, exactly as the real one does.
     monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
     est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
@@ -270,13 +268,7 @@ def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
 
 
 def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
-    """Unpinned, cached_checkpoint_path reads only huggingface_hub's import-time constant.
-
-    Unsloth's cache folder is a setting, so after it changes the retry proves the checkpoint cached
-    in the LIVE root while an unpinned probe here still calls it uncached and re-applies the gate,
-    defeating the moved-cache retry this excuse exists for. The retry and the loader both pin the
-    active root; so must this.
-    """
+    """Pin the cache probe to the live cache root; huggingface_hub's import-time constant goes stale."""
     import core.inference.diffusion_auto_policy as ap
     import core.inference.diffusion_prequant as pq
     import utils.hf_cache_settings as cache_settings
@@ -299,7 +291,6 @@ def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
 
 
 def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
-    # Disk probing must never sink the candidate: unprobeable (None) passes through.
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")
@@ -309,15 +300,13 @@ def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
 
 
 def test_disk_gate_sizes_fp32_families_by_their_real_download(monkeypatch):
-    # The size table is bf16-RESIDENT but the disk gate is about bytes landing in the HF cache. Z-Image publishes fp32 shards
-    # (23,479 MiB vs 11,730 MiB resident), so gating on the resident figure let the check pass and the download fill the disk.
+    # The disk gate counts HF cache bytes: Z-Image publishes fp32 shards (23,479 vs 11,730 MiB).
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")
     est = ap.estimate_dense_quant(_fam("z-image"), "int8")
-    assert est.transient_transformer_mib == 11_730  # resident: unchanged
-    assert est.download_transformer_mib == 23_460  # download: measured 23,479 MiB
-    # Free space that clears the old (resident-based) bar but not the real download is refused.
+    assert est.transient_transformer_mib == 11_730
+    assert est.download_transformer_mib == 23_460
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 11_730 + 10 * 1024 + 512)
     assert (
         resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
@@ -331,7 +320,7 @@ def test_disk_gate_sizes_fp32_families_by_their_real_download(monkeypatch):
 
 
 def test_disk_gate_does_not_overcharge_a_family_published_below_bf16(monkeypatch):
-    # The correction runs both ways: Ideogram 4 ships fp8 (17,718 MiB measured) and doubles on the way to bf16, so charging the resident 35,477 MiB would refuse a fine candidate.
+    # Ideogram 4 ships fp8 (17,718 MiB) and doubles to bf16, so resident size would over-refuse.
     import core.inference.diffusion_auto_policy as ap
 
     _patch_selector(monkeypatch, scheme = "int8")
@@ -346,7 +335,6 @@ def test_disk_gate_does_not_overcharge_a_family_published_below_bf16(monkeypatch
 
 
 def test_disk_gate_matches_download_for_bf16_published_families(monkeypatch):
-    # Families that publish bf16 download what they occupy (measured 0.99-1.07x), so the two numbers stay equal and need no factor.
     import core.inference.diffusion_auto_policy as ap
     for name in ("flux.1", "flux.2-dev", "qwen-image", "krea-2", "hidream-i1"):
         est = ap.estimate_dense_quant(_fam(name), "int8")
@@ -354,7 +342,6 @@ def test_disk_gate_matches_download_for_bf16_published_families(monkeypatch):
 
 
 def test_candidate_none_for_an_unlisted_family(monkeypatch):
-    # No size entry means no basis to re-plan; the loader keeps today's resident-only gate.
     _patch_selector(monkeypatch)
     assert (
         resolve_dense_quant_candidate(fam = _fam("not-a-family"), target = object(), requested = "auto")
@@ -363,7 +350,6 @@ def test_candidate_none_for_an_unlisted_family(monkeypatch):
 
 
 def test_candidate_uses_prequant_transient_when_available(monkeypatch):
-    # A hosted-repo prequant source is available without a local-path check.
     _patch_selector(monkeypatch, prequant = SimpleNamespace(kind = "repo", location = "org/int8"))
     est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert est is not None and est.prequant is True
@@ -371,20 +357,18 @@ def test_candidate_uses_prequant_transient_when_available(monkeypatch):
 
 
 def test_disk_gate_reserves_the_checkpoint_not_the_dense_shards_for_a_hosted_prequant(monkeypatch):
-    # The gate branch the dense-sizing tests never reach: with a prequant source the loader downloads the small quantised
-    # checkpoint, so free space between the steady and dense sizes must pass with the shortcut and be refused without it.
+    # With a prequant source only the small quantised checkpoint is downloaded.
     _patch_selector(
         monkeypatch,
         scheme = "int8",
         prequant = SimpleNamespace(kind = "repo", location = "org/int8"),
     )
     est = ap.estimate_dense_quant(_fam("z-image"), "int8", prequant_available = True)
-    assert est.steady_transformer_mib == 6_451  # the quantised checkpoint
-    assert est.download_transformer_mib == 23_460  # the fp32 shards it replaces
+    assert est.steady_transformer_mib == 6_451
+    assert est.download_transformer_mib == 23_460
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 6_451 + 10 * 1024 + 512)
     gated = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "int8")
     assert isinstance(gated, DenseQuantEstimate) and gated.prequant is True
-    # force_dense (a LoRA bake) skips the shortcut, so the SAME disk must refuse the candidate.
     assert (
         resolve_dense_quant_candidate(
             fam = _fam("z-image"), target = object(), requested = "int8", force_dense = True
@@ -393,17 +377,14 @@ def test_disk_gate_reserves_the_checkpoint_not_the_dense_shards_for_a_hosted_pre
     )
 
 
-# ── the ordering-fix regression, at the planner level ─────────────────────────
 def _cuda_target():
     return SimpleNamespace(device = "cuda", supports_model_cpu_offload = True)
 
 
 def test_quant_candidate_fits_resident_where_gguf_plan_offloads():
-    # The ordering fix on a 32 GiB consumer card: the user picked a LARGE (BF16) GGUF so the file-size plan forces offload, but
-    # the dense-quant candidate is far smaller and re-planning against it keeps everything resident.
     memory = DeviceMemory("cuda", "cuda", "discrete_vram", 30000, 32768)
-    z_bf16_gguf_mib = int(12.3 * ap._MIB_PER_GB * 1.05)  # BF16 GGUF resident estimate
-    companions_mib = 2600  # fp8-quantised text encoders + VAE
+    z_bf16_gguf_mib = int(12.3 * ap._MIB_PER_GB * 1.05)
+    companions_mib = 2600
     gguf_plan = plan_diffusion_memory(
         target = _cuda_target(),
         device_memory = memory,
@@ -426,7 +407,6 @@ def test_quant_candidate_fits_resident_where_gguf_plan_offloads():
     assert quant_plan.offload_policy == OFFLOAD_NONE
 
 
-# ── the resolved provenance record ────────────────────────────────────────────
 def test_resolved_record_marks_auto_and_explicit():
     record = build_resolved_record(
         {
@@ -438,17 +418,15 @@ def test_resolved_record_marks_auto_and_explicit():
         }
     )
     assert record["speed_mode"]["source"] == "auto"
-    assert record["transformer_quant"]["source"] == "auto"  # "auto" delegates to backend
+    assert record["transformer_quant"]["source"] == "auto"
     assert record["attention_backend"]["source"] == "explicit"
-    assert record["memory_mode"]["source"] == "auto"  # blank string delegates
+    assert record["memory_mode"]["source"] == "auto"
     assert record["cpu_offload"]["source"] == "explicit"
     assert record["transformer_quant"]["value"] == "fp8"
     assert all("reason" in v for v in record.values())
 
 
 def test_resolved_record_keeps_the_request_beside_the_engaged_value():
-    # P1-2: a declined explicit precision must not collapse into a bare source="explicit" that
-    # renders no badge while the dropdown still advertises the ask.
     record = build_resolved_record(
         {
             "transformer_quant": ("fp8", "off", "the dense build did not fit", "fell_back"),
@@ -459,15 +437,12 @@ def test_resolved_record_keeps_the_request_beside_the_engaged_value():
     assert record["transformer_quant"]["requested"] == "fp8"
     assert record["transformer_quant"]["value"] == "off"
     assert record["transformer_quant"]["status"] == "fell_back"
-    # Derived without the call site classifying it: request and engaged value disagree.
     assert record["text_encoder_quant"]["status"] == "fell_back"
-    # ...but only where the two share a vocabulary. memory_mode requests a MODE and engages an
-    # offload POLICY, so an honored request must not be reported as a fallback.
+    # memory_mode requests a MODE but engages an offload POLICY, so honored is not a fallback.
     assert record["memory_mode"]["status"] == "applied"
 
 
 def test_resolved_record_treats_an_honored_off_request_as_applied():
-    # "none"/"off"/"" all ask for no quant, which an "off" engagement satisfies.
     record = build_resolved_record(
         {
             "transformer_quant": ("none", "off", "GGUF loaded"),
@@ -481,7 +456,6 @@ def test_resolved_record_treats_an_honored_off_request_as_applied():
 
 
 def test_resolved_record_auto_never_reports_a_fallback():
-    # An auto request delegates the choice, so a decline is the ladder working: no ask to betray.
     record = build_resolved_record({"transformer_quant": (None, "off", "no CUDA")})
     assert record["transformer_quant"]["source"] == "auto"
     assert record["transformer_quant"]["requested"] is None
@@ -498,7 +472,6 @@ def test_precision_fallback_escape_hatch(monkeypatch):
 
 
 def test_the_refusal_only_offers_auto_where_auto_exists():
-    # transformer_quant has an "auto" mode, so pointing the user at it is the right advice.
     msg = precision_refusal_message(
         "transformer_quant",
         "nvfp4",
@@ -507,9 +480,7 @@ def test_the_refusal_only_offers_auto_where_auto_exists():
     )
     assert "Choose Auto" in msg and msg.endswith("or Off to run the checkpoint as-is.")
 
-    # text_encoder_quant does not: both request models restrict it to fp8 / fp8_dynamic / int8 /
-    # nvfp4, so a user who followed "Choose Auto" here got a 422 from request validation. The
-    # remedy has to name the thing that actually works.
+    # text_encoder_quant has no auto mode (fp8/fp8_dynamic/int8/nvfp4), so "Choose Auto" would 422.
     te = precision_refusal_message(
         "text_encoder_quant",
         "int8",
@@ -519,3 +490,85 @@ def test_the_refusal_only_offers_auto_where_auto_exists():
     )
     assert "Auto" not in te
     assert te.endswith("Leave it unset to keep the dense bf16 encoder.")
+
+
+def test_every_family_with_a_hosted_prequant_can_be_sized():
+    """Every family with a hosted prequant needs a size entry, or the loader downloads dense weights."""
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB
+    from core.inference.diffusion_families import _FAMILIES
+
+    unsizable = [
+        f.name
+        for f in _FAMILIES
+        if (getattr(f, "prequant_repos", ()) or ()) and f.name not in _FAMILY_BF16_GB
+    ]
+    assert not unsizable, (
+        f"these families declare hosted pre-quant checkpoints the auto policy cannot size, so "
+        f"the seed is never chosen and the dense transformer is downloaded instead: {unsizable}"
+    )
+
+
+def test_qwen_image_21_sizes_a_dense_quant_candidate():
+    """The concrete case, with the numbers, so a wrong entry is as visible as a missing one."""
+    from core.inference.diffusion_auto_policy import _FAMILY_BF16_GB, estimate_dense_quant
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    transformer, encoders, vae = _FAMILY_BF16_GB[fam.name]
+    # From Qwen/Qwen-Image-2.1's own sibling metadata: 14.23 / 17.53 / 1.35 GB, bf16 on disk.
+    assert 13.5 < transformer < 15.0, transformer
+    assert 17.0 < encoders < 18.0, encoders
+    assert 1.0 < vae < 2.0, vae
+    assert (transformer, encoders, vae) != _FAMILY_BF16_GB["qwen-image"]
+    assert transformer < _FAMILY_BF16_GB["qwen-image"][0]
+    assert encoders > _FAMILY_BF16_GB["qwen-image"][1]
+
+    est = estimate_dense_quant(fam, "fp8", base_repo = fam.base_repo, prequant_available = True)
+    assert est is not None, "no estimate means the pipeline seed is never chosen"
+    assert est.prequant and est.steady_transformer_mib > 0
+
+
+def test_resolved_log_line_shows_engaged_values_and_their_source():
+    record = build_resolved_record(
+        {
+            "transformer_quant": (None, "int8", "per-kind default"),
+            "text_encoder_quant": ("nvfp4", "nvfp4", "applied"),
+            "memory_mode": ("fast", "none", "fits"),
+        }
+    )
+    line = ap.format_resolved_for_log(record)
+    assert "transformer_quant=int8(auto)" in line
+    assert "text_encoder_quant=nvfp4(requested nvfp4)" in line
+    assert "memory_mode=none(requested fast)" in line
+
+
+def test_resolved_log_line_flags_a_declined_request():
+    record = build_resolved_record({"text_encoder_quant": ("nvfp4", "off", "no fp8 dtype")})
+    assert ap.format_resolved_for_log(record) == (
+        f"text_encoder_quant=off(requested nvfp4, {ap.RESOLVED_FELL_BACK})"
+    )
+    assert ap.format_resolved_for_log(None) == ""
+
+
+def test_generation_log_line_reads_the_recipe_fields():
+    result = {
+        "images": [SimpleNamespace(size = (1024, 768)), SimpleNamespace(size = (1024, 768))],
+        "seed": 7,
+        "seeds": [7, 8],
+        "workflow": "inpaint",
+        "active_loras": [["style", 0.8]],
+        "reference_resolution": None,
+        "localized_edit": None,
+    }
+    line = ap.format_generation_for_log(result, engine = "diffusers", steps = 30, strength = 0.6)
+    assert line == (
+        "engine=diffusers workflow=inpaint images=2 size=1024x768 seeds=[7, 8] steps=30 "
+        "strength=0.6 loras=[['style', 0.8]]"
+    )
+    assert "size" not in ap.format_generation_for_log({"images": []}, engine = "sd_cpp")
+
+
+def test_generation_log_line_prefers_the_engine_supplied_loras():
+    result = {"images": [], "seeds": [3], "workflow": "txt2img"}
+    line = ap.format_generation_for_log(result, engine = "sd_cpp", loras = [("style", 0.8)])
+    assert line == "engine=sd_cpp workflow=txt2img images=0 seeds=[3] loras=[('style', 0.8)]"

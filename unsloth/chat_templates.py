@@ -20,6 +20,7 @@ __all__ = [
     "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
+    "check_dataset",
 
     "test_construct_chat_template",
 ]
@@ -32,10 +33,12 @@ try:
 except ImportError:
     LongTensor = FloatTensor = None
 logger = logging.get_logger(__name__)
+import json
 import os
 import shutil
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
+from .tokenizers_v1 import enable_tokenizers_v1
 try:
     from unsloth_zoo.dataset_utils import (
         train_on_responses_only as _zoo_train_on_responses_only,
@@ -82,6 +85,196 @@ else:
         )
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
+
+# TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
+_DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
+_MEDIA_TYPES = ("image", "image_url", "video", "audio", "input_audio")
+
+
+class _MalformedRow(Exception):
+    pass
+
+
+def _is_present(value):
+    if value is None:
+        return False
+    try:
+        return len(value) > 0  # never bool(): numpy / torch payloads raise on truth tests
+    except TypeError:
+        return True
+
+
+def _has_media(row, messages):
+    if any(_is_present(row.get(k)) for k in ("images", "image", "videos", "video", "audios", "audio")):
+        return True
+    contents = (m.get("content", m.get("value")) for m in messages)
+    return any(
+        isinstance(part, dict) and part.get("type") in _MEDIA_TYPES
+        for c in contents
+        if isinstance(c, list)
+        for part in c
+    )
+
+
+def _is_blank(content):
+    if isinstance(content, str):
+        return content.strip() == ""
+    return isinstance(content, list) and all(
+        isinstance(part, dict) and part.get("type") == "text" and not str(part.get("text") or "").strip()
+        for part in content
+    )
+
+
+def _render_dataset_row(row, tokenizer):
+    if not isinstance(row, dict):
+        raise _MalformedRow("row is not a dict")
+    column = next((c for c in _DATASET_CHECK_COLUMNS if c in row), None)
+    if column is not None:
+        value = row[column]
+    elif "prompt" in row and "completion" in row:
+        prompt, completion = row["prompt"], row["completion"]
+        if isinstance(prompt, str) and isinstance(completion, str):
+            text = prompt + completion
+            return text, text.strip() == "", True, _has_media(row, ())
+        if not isinstance(prompt, list) or not isinstance(completion, list):
+            raise _MalformedRow("prompt and completion are not both strings or both message lists")
+        column, value = "prompt/completion", prompt + completion
+    elif "instruction" in row and "output" in row:
+        instruction, extra, output = row["instruction"], row.get("input"), row["output"]
+        extra = "" if extra is None else extra
+        if not all(isinstance(x, str) for x in (instruction, extra, output)):
+            raise _MalformedRow("instruction, input or output is not a string")
+        user = f"{instruction}\n\n{extra}".strip() if extra.strip() else instruction
+        column = "instruction/output"
+        value = [{"role": "user", "content": user}, {"role": "assistant", "content": output}]
+    else:
+        raise _MalformedRow(
+            "no messages, conversations, text, prompt/completion or instruction/output column"
+        )
+    if column == "text":
+        if not isinstance(value, str):
+            raise _MalformedRow("text is not a string")
+        return value, value.strip() == "", True, _has_media(row, ())
+    if not isinstance(value, list) or not value or not all(isinstance(m, dict) for m in value):
+        raise _MalformedRow(f"{column} is not a list of role/content messages")
+    sharegpt = all("from" in m and "value" in m for m in value)
+    if not sharegpt and not all("role" in m and ("content" in m or "tool_calls" in m) for m in value):
+        raise _MalformedRow(f"{column} is not a list of role/content messages")
+    tools = row.get("tools")
+    try:
+        # get_chat_template(mapping = ...) templates read ShareGPT keys themselves.
+        if sharegpt and "'role' not in messages[0]" not in (tokenizer.chat_template or ""):
+            roles = {"human": "user", "gpt": "assistant"}
+            value = [
+                dict(m, role = roles.get(m["from"], m["from"]), content = m["value"]) for m in value
+            ]
+        tools = json.loads(tools) if isinstance(tools, str) else tools
+        text = tokenizer.apply_chat_template(
+            value, tools = tools or None, tokenize = False, add_generation_prompt = False
+        )
+    except Exception as e:
+        raise _MalformedRow(f"chat template failed: {e}") from e
+    contents = (m["value"] if sharegpt else m.get("content") for m in value)
+    empty = all(_is_blank(c) for c in contents)
+    return text, empty, False, _has_media(row, value)
+
+
+def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
+    # mlx-lm's TokenizerWrapper is not callable; Unsloth's attributes live on the HF tokenizer.
+    if tokenizer.__class__.__name__ == "TokenizerWrapper" and hasattr(tokenizer, "_tokenizer"):
+        tokenizer = tokenizer._tokenizer
+    chat_template = getattr(tokenizer, "chat_template", None)
+    if response_part is None:
+        response_part = getattr(tokenizer, "_unsloth_output_part", None)
+    if response_part is None and chat_template is not None:
+        try:
+            from unsloth_zoo.dataset_utils import get_chat_template_parts
+            response_part = get_chat_template_parts(tokenizer)[1]
+        except Exception:
+            pass
+
+    text_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
+    bos = getattr(text_tokenizer, "bos_token", None)
+    bos_in_template = bos is not None and bos in (chat_template or "")
+    rows = malformed = empty = found = media = 0
+    problems = []
+    pending = {True: [], False: []}
+    measured = []
+
+    # Flush as we go: holding every rendered row would not fit a large corpus.
+    def flush(add_special_tokens):
+        items = pending[add_special_tokens]
+        if items:
+            ids = text_tokenizer(
+                [text for _, text in items], add_special_tokens = add_special_tokens
+            ).input_ids
+            measured.extend((order, len(x)) for (order, _), x in zip(items, ids))
+            items.clear()
+
+    for i, row in enumerate(dataset):
+        rows += 1
+        try:
+            text, is_empty, is_plain_text, has_media = _render_dataset_row(row, tokenizer)
+        except _MalformedRow as e:
+            malformed += 1
+            if len(problems) < 5:
+                problems.append(f"  row {i}: {e}")
+            continue
+        if is_empty:
+            empty += 1
+        if response_part is not None and response_part in text:
+            found += 1
+        if has_media:
+            media += 1
+            continue
+        # Same rule as the SFT dataset prep in models/rl_replacements.py: no second BOS.
+        add_special_tokens = is_plain_text and not (
+            bos is not None and (bos_in_template or text.startswith(bos))
+        )
+        pending[add_special_tokens].append((i, text))
+        if len(pending[add_special_tokens]) >= 1024:
+            flush(add_special_tokens)
+    flush(True)
+    flush(False)
+    lengths = [length for _, length in sorted(measured)]
+
+    over = sum(length > max_seq_length for length in lengths)
+    template = getattr(tokenizer, "_unsloth_chat_template_name", None)
+    template = template[0] if template and template[1] == chat_template else None
+    if template is None:
+        if chat_template is None:
+            template = "none"
+        else:
+            template = f"{getattr(tokenizer, 'name_or_path', 'tokenizer')} (tokenizer's own)"
+    marker = f"{found:,} / {rows:,}" if response_part is not None else "none detected"
+
+    print("Unsloth: Dataset check")
+    print(f"Rows: {rows:,}  |  Malformed: {malformed:,}  |  Empty: {empty:,}")
+    for problem in problems:
+        print(problem)
+    if lengths:
+        s = sorted(lengths)
+        median = f"{(s[(len(s) - 1) // 2] + s[len(s) // 2]) / 2:,.1f}".removesuffix(".0")
+        print(
+            f"Token lengths: min {s[0]:,} | median {median} | "
+            f"p95 {s[int(0.95 * (len(s) - 1))]:,} | max {s[-1]:,}"
+        )
+    if media:
+        print(f"Not measured: {media:,} rows with images, video or audio (expanded at training time)")
+    print(f"Over max_seq_length ({max_seq_length:,}): {over:,} ({100 * over / max(rows, 1):.1f}%)")
+    print(f"Template: {template} | Response marker found in: {marker}")
+    return {
+        "rows": rows,
+        "malformed": malformed,
+        "empty": empty,
+        "media": media,
+        "lengths": lengths,
+        "max_seq_length": max_seq_length,
+        "over_max_seq_length": over,
+        "template": template,
+        "response_part": response_part,
+        "response_marker_found": found,
+    }
 
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
@@ -648,6 +841,19 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
+qwen25_coder_ollama = _ollama_template("qwen-25-coder")
+CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen-25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
+
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
 # =========================================== Phi-4
 phi4_template = \
@@ -903,7 +1109,156 @@ DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
 # =========================================== Gemma-4
 gemma4_template = \
-"""{%- macro strip_thinking(text) -%}
+"""{%- macro format_parameters(properties, required, filter_keys=false) -%}
+    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+    {%- set ns = namespace(found_first=false) -%}
+    {%- for key, value in properties | dictsort -%}
+        {%- set add_comma = false -%}
+        {%- if not filter_keys or key not in standard_keys -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {{ key }}:{
+            {%- if value['description'] -%}
+                description:<|"|>{{ value['description'] }}<|"|>
+                {%- set add_comma = true -%}
+            {%- endif -%}
+            {%- if value['type'] | upper == 'STRING' -%}
+                {%- if value['enum'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    enum:{{ format_argument(value['enum']) }}
+                {%- endif -%}
+            {%- elif value['type'] | upper == 'ARRAY' -%}
+                {%- if value['items'] is mapping and value['items'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    items:{
+                    {%- set ns_items = namespace(found_first=false) -%}
+                    {%- for item_key, item_value in value['items'] | dictsort -%}
+                        {%- if item_value is not none -%}
+                            {%- if ns_items.found_first %},{% endif -%}
+                            {%- set ns_items.found_first = true -%}
+                            {%- if item_key == 'properties' -%}
+                                properties:{
+                                {%- if item_value is mapping -%}
+                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
+                                {%- endif -%}
+                                }
+                            {%- elif item_key == 'required' -%}
+                                required:[
+                                {%- for req_item in item_value -%}
+                                    <|"|>{{- req_item -}}<|"|>
+                                    {%- if not loop.last %},{% endif -%}
+                                {%- endfor -%}
+                                ]
+                            {%- elif item_key == 'type' -%}
+                                {%- if item_value is string -%}
+                                    type:{{ format_argument(item_value | upper) }}
+                                {%- else -%}
+                                    type:{{ format_argument(item_value | map('upper') | list) }}
+                                {%- endif -%}
+                            {%- else -%}
+                                {{ item_key }}:{{ format_argument(item_value) }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    }
+                {%- endif -%}
+            {%- endif -%}
+            {%- if value['nullable'] %}
+                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                nullable:true
+            {%- endif -%}
+            {%- if value['type'] | upper == 'OBJECT' -%}
+                {%- if value['properties'] is defined and value['properties'] is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
+                    }
+                {%- elif value is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
+                    }
+                {%- endif -%}
+                {%- if value['required'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    required:[
+                    {%- for item in value['required'] | default([]) -%}
+                        <|"|>{{- item -}}<|"|>
+                        {%- if not loop.last %},{% endif -%}
+                    {%- endfor -%}
+                    ]
+                {%- endif -%}
+            {%- endif -%}
+            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+{%- macro format_function_declaration(tool_data) -%}
+    declaration:{{- tool_data['function']['name'] -}}{description:<|"|>{{- tool_data['function']['description'] -}}<|"|>
+    {%- set params = tool_data['function']['parameters'] -%}
+    {%- if params -%}
+        ,parameters:{
+        {%- if params['properties'] -%}
+            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+        {%- endif -%}
+        {%- if params['required'] -%}
+            required:[
+            {%- for item in params['required'] -%}
+                <|"|>{{- item -}}<|"|>
+                {{- ',' if not loop.last -}}
+            {%- endfor -%}
+            ],
+        {%- endif -%}
+        {%- if params['type'] -%}
+            type:<|"|>{{- params['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    {%- if 'response' in tool_data['function'] -%}
+        {%- set response_declaration = tool_data['function']['response'] -%}
+        ,response:{
+        {%- if response_declaration['description'] -%}
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+        {%- endif -%}
+        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    }
+{%- endmacro -%}
+{%- macro format_argument(argument, escape_keys=True) -%}
+    {%- if argument is none -%}
+        {{- 'null' -}}
+    {%- elif argument is string -%}
+        {{- '<|"|>' + argument + '<|"|>' -}}
+    {%- elif argument is boolean -%}
+        {{- 'true' if argument else 'false' -}}
+    {%- elif argument is mapping -%}
+        {{- '{' -}}
+        {%- set ns = namespace(found_first=false) -%}
+        {%- for key, value in argument | dictsort -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {%- if escape_keys -%}
+                {{- '<|"|>' + key + '<|"|>' -}}
+            {%- else -%}
+                {{- key -}}
+            {%- endif -%}
+            :{{- format_argument(value, escape_keys=escape_keys) -}}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- elif argument is sequence -%}
+        {{- '[' -}}
+        {%- for item in argument -%}
+            {{- format_argument(item, escape_keys=escape_keys) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- ']' -}}
+    {%- else -%}
+        {{- argument -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro strip_thinking(text) -%}
     {%- set ns = namespace(result='') -%}
     {%- for part in text.split('<channel|>') -%}
         {%- if '<|channel>' in part -%}
@@ -914,9 +1269,23 @@ gemma4_template = \
     {%- endfor -%}
     {{- ns.result | trim -}}
 {%- endmacro -%}
+{%- macro format_tool_response_block(tool_name, response) -%}
+    {{- '<|tool_response>' -}}
+    {%- if response is mapping -%}
+        {{- 'response:' + tool_name + '{' -}}
+        {%- for key, value in response | dictsort -%}
+            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- else -%}
+        {{- 'response:' + tool_name + '{value:' + format_argument(response, escape_keys=False) + '}' -}}
+    {%- endif -%}
+    {{- '<tool_response|>' -}}
+{%- endmacro -%}
 {%- set thinking = enable_thinking is defined and enable_thinking -%}
 {%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking or (tools is defined and tools) -%}
     {{ '<|turn>system\n' }}
     {%- if thinking -%}
         {{ '<|think|>\n' }}
@@ -925,10 +1294,20 @@ gemma4_template = \
         {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
+    {%- if tools is defined and tools -%}
+        {%- for tool in tools -%}
+            {{- '<|tool>' + format_function_declaration(tool) | trim + '<tool|>' -}}
+        {%- endfor -%}
+    {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
+{%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
 {%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+    {%- if message['role'] != 'tool' -%}
+    {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
+    {%- if not continues and (message['role'] == 'user') != (ns_tool.turns % 2 == 0) -%}
         {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
     {%- endif -%}
     {%- if (message['role'] == 'assistant') -%}
@@ -936,7 +1315,83 @@ gemma4_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {%- if not continues -%}
+        {%- set ns_tool.turns = ns_tool.turns + 1 -%}
+        {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
+    {%- endif -%}
+    {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
+    {%- if ns_tool.tool_calls -%}
+        {%- for tool_call in ns_tool.tool_calls -%}
+            {%- set function = tool_call['function'] -%}
+            {{- '<|tool_call>call:' + function['name'] + '{' -}}
+            {%- if function['arguments'] is mapping -%}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
+            {%- elif function['arguments'] is string -%}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
+                {%- else -%}
+                    {{- function['arguments'] -}}
+                {%- endif -%}
+            {%- endif -%}
+            {{- '}<tool_call|>' -}}
+        {%- endfor -%}
+        {%- set ns_tool.tool_response = false -%}
+        {%- for tool_response in message.get('tool_responses') or [] -%}
+            {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
+            {%- set ns_tool.tool_response = true -%}
+        {%- endfor -%}
+        {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
+        {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
+            {%- if ns_scan.stopped -%}
+            {%- elif loop_messages[k]['role'] != 'tool' -%}
+                {%- set ns_scan.stopped = true -%}
+                {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
+            {%- elif not message.get('tool_responses') -%}
+                {%- set follow = loop_messages[k] -%}
+                {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
+                {%- for tc in ns_tool.tool_calls -%}
+                    {%- if tc.get('id') == follow.get('tool_call_id') -%}
+                        {%- set ns_tname.name = tc['function']['name'] -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set tool_body = follow.get('content') -%}
+                {%- if tool_body is sequence and tool_body is not string and tool_body is not mapping -%}
+                    {%- set ns_txt = namespace(s='') -%}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') == 'text' -%}
+                            {%- set ns_txt.s = ns_txt.s + (part.get('text') | default('')) -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') in ['image', 'image_url'] -%}
+                            {{- '<|image|>' -}}
+                        {%- elif part.get('type') in ['audio', 'input_audio'] -%}
+                            {{- '<|audio|>' -}}
+                        {%- elif part.get('type') == 'video' -%}
+                            {{- '<|video|>' -}}
+                        {%- endif -%}
+                    {%- endfor -%}
+                {%- else -%}
+                    {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                {%- endif -%}
+                {%- set ns_tool.tool_response = true -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set captured_content -%}
     {%- if message['content'] is string -%}
         {%- if role == "model" -%}
             {{ strip_thinking(message['content']) }}
@@ -959,13 +1414,27 @@ gemma4_template = \
                 {%- endif -%}
             {%- endif -%}
         {%- endfor -%}
-    {%- else -%}
+    {%- elif not ns_tool.tool_calls -%}
         {{ raise_exception("Invalid content type") }}
     {%- endif -%}
-    {{ '<turn|>\n' }}
+    {%- endset -%}
+    {{- captured_content -}}
+    {%- if not ns_tool.tool_calls -%}
+        {{ '<turn|>\n' }}
+    {%- elif not ns_tool.tool_response -%}
+        {{- '<|tool_response>' -}}
+    {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
+        {{- '<turn|>\n' -}}
+        {%- set ns_tool.tool_calls = false -%}
+    {%- endif -%}
+    {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
+    {%- if not ns_tool.tool_calls -%}
     {{'<|turn>model\n'}}
+    {%- elif ns_tool.tool_response and thinking -%}
+        {{- '<|channel>thought\n' -}}
+    {%- endif -%}
 {%- endif -%}
 """
 
@@ -982,7 +1451,156 @@ DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
 
 # Gemma-4 thinking template
 gemma4_thinking_template = \
-"""{%- macro strip_thinking(text) -%}
+"""{%- macro format_parameters(properties, required, filter_keys=false) -%}
+    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+    {%- set ns = namespace(found_first=false) -%}
+    {%- for key, value in properties | dictsort -%}
+        {%- set add_comma = false -%}
+        {%- if not filter_keys or key not in standard_keys -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {{ key }}:{
+            {%- if value['description'] -%}
+                description:<|"|>{{ value['description'] }}<|"|>
+                {%- set add_comma = true -%}
+            {%- endif -%}
+            {%- if value['type'] | upper == 'STRING' -%}
+                {%- if value['enum'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    enum:{{ format_argument(value['enum']) }}
+                {%- endif -%}
+            {%- elif value['type'] | upper == 'ARRAY' -%}
+                {%- if value['items'] is mapping and value['items'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    items:{
+                    {%- set ns_items = namespace(found_first=false) -%}
+                    {%- for item_key, item_value in value['items'] | dictsort -%}
+                        {%- if item_value is not none -%}
+                            {%- if ns_items.found_first %},{% endif -%}
+                            {%- set ns_items.found_first = true -%}
+                            {%- if item_key == 'properties' -%}
+                                properties:{
+                                {%- if item_value is mapping -%}
+                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
+                                {%- endif -%}
+                                }
+                            {%- elif item_key == 'required' -%}
+                                required:[
+                                {%- for req_item in item_value -%}
+                                    <|"|>{{- req_item -}}<|"|>
+                                    {%- if not loop.last %},{% endif -%}
+                                {%- endfor -%}
+                                ]
+                            {%- elif item_key == 'type' -%}
+                                {%- if item_value is string -%}
+                                    type:{{ format_argument(item_value | upper) }}
+                                {%- else -%}
+                                    type:{{ format_argument(item_value | map('upper') | list) }}
+                                {%- endif -%}
+                            {%- else -%}
+                                {{ item_key }}:{{ format_argument(item_value) }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    }
+                {%- endif -%}
+            {%- endif -%}
+            {%- if value['nullable'] %}
+                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                nullable:true
+            {%- endif -%}
+            {%- if value['type'] | upper == 'OBJECT' -%}
+                {%- if value['properties'] is defined and value['properties'] is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
+                    }
+                {%- elif value is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
+                    }
+                {%- endif -%}
+                {%- if value['required'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    required:[
+                    {%- for item in value['required'] | default([]) -%}
+                        <|"|>{{- item -}}<|"|>
+                        {%- if not loop.last %},{% endif -%}
+                    {%- endfor -%}
+                    ]
+                {%- endif -%}
+            {%- endif -%}
+            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+{%- macro format_function_declaration(tool_data) -%}
+    declaration:{{- tool_data['function']['name'] -}}{description:<|"|>{{- tool_data['function']['description'] -}}<|"|>
+    {%- set params = tool_data['function']['parameters'] -%}
+    {%- if params -%}
+        ,parameters:{
+        {%- if params['properties'] -%}
+            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+        {%- endif -%}
+        {%- if params['required'] -%}
+            required:[
+            {%- for item in params['required'] -%}
+                <|"|>{{- item -}}<|"|>
+                {{- ',' if not loop.last -}}
+            {%- endfor -%}
+            ],
+        {%- endif -%}
+        {%- if params['type'] -%}
+            type:<|"|>{{- params['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    {%- if 'response' in tool_data['function'] -%}
+        {%- set response_declaration = tool_data['function']['response'] -%}
+        ,response:{
+        {%- if response_declaration['description'] -%}
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+        {%- endif -%}
+        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    }
+{%- endmacro -%}
+{%- macro format_argument(argument, escape_keys=True) -%}
+    {%- if argument is none -%}
+        {{- 'null' -}}
+    {%- elif argument is string -%}
+        {{- '<|"|>' + argument + '<|"|>' -}}
+    {%- elif argument is boolean -%}
+        {{- 'true' if argument else 'false' -}}
+    {%- elif argument is mapping -%}
+        {{- '{' -}}
+        {%- set ns = namespace(found_first=false) -%}
+        {%- for key, value in argument | dictsort -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {%- if escape_keys -%}
+                {{- '<|"|>' + key + '<|"|>' -}}
+            {%- else -%}
+                {{- key -}}
+            {%- endif -%}
+            :{{- format_argument(value, escape_keys=escape_keys) -}}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- elif argument is sequence -%}
+        {{- '[' -}}
+        {%- for item in argument -%}
+            {{- format_argument(item, escape_keys=escape_keys) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- ']' -}}
+    {%- else -%}
+        {{- argument -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro strip_thinking(text) -%}
     {%- set ns = namespace(result='') -%}
     {%- for part in text.split('<channel|>') -%}
         {%- if '<|channel>' in part -%}
@@ -993,9 +1611,23 @@ gemma4_thinking_template = \
     {%- endfor -%}
     {{- ns.result | trim -}}
 {%- endmacro -%}
+{%- macro format_tool_response_block(tool_name, response) -%}
+    {{- '<|tool_response>' -}}
+    {%- if response is mapping -%}
+        {{- 'response:' + tool_name + '{' -}}
+        {%- for key, value in response | dictsort -%}
+            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- else -%}
+        {{- 'response:' + tool_name + '{value:' + format_argument(response, escape_keys=False) + '}' -}}
+    {%- endif -%}
+    {{- '<tool_response|>' -}}
+{%- endmacro -%}
 {%- set thinking = enable_thinking is defined and enable_thinking -%}
 {%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking or (tools is defined and tools) -%}
     {{ '<|turn>system\n' }}
     {%- if thinking -%}
         {{ '<|think|>\n' }}
@@ -1004,10 +1636,20 @@ gemma4_thinking_template = \
         {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
+    {%- if tools is defined and tools -%}
+        {%- for tool in tools -%}
+            {{- '<|tool>' + format_function_declaration(tool) | trim + '<tool|>' -}}
+        {%- endfor -%}
+    {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
 {%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+    {%- if message['role'] != 'tool' -%}
+    {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
+    {%- if not continues and (message['role'] == 'user') != (ns_tool.turns % 2 == 0) -%}
         {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
     {%- endif -%}
     {%- if (message['role'] == 'assistant') -%}
@@ -1015,7 +1657,83 @@ gemma4_thinking_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {%- if not continues -%}
+        {%- set ns_tool.turns = ns_tool.turns + 1 -%}
+        {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
+    {%- endif -%}
+    {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
+    {%- if ns_tool.tool_calls -%}
+        {%- for tool_call in ns_tool.tool_calls -%}
+            {%- set function = tool_call['function'] -%}
+            {{- '<|tool_call>call:' + function['name'] + '{' -}}
+            {%- if function['arguments'] is mapping -%}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
+            {%- elif function['arguments'] is string -%}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
+                {%- else -%}
+                    {{- function['arguments'] -}}
+                {%- endif -%}
+            {%- endif -%}
+            {{- '}<tool_call|>' -}}
+        {%- endfor -%}
+        {%- set ns_tool.tool_response = false -%}
+        {%- for tool_response in message.get('tool_responses') or [] -%}
+            {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
+            {%- set ns_tool.tool_response = true -%}
+        {%- endfor -%}
+        {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
+        {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
+            {%- if ns_scan.stopped -%}
+            {%- elif loop_messages[k]['role'] != 'tool' -%}
+                {%- set ns_scan.stopped = true -%}
+                {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
+            {%- elif not message.get('tool_responses') -%}
+                {%- set follow = loop_messages[k] -%}
+                {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
+                {%- for tc in ns_tool.tool_calls -%}
+                    {%- if tc.get('id') == follow.get('tool_call_id') -%}
+                        {%- set ns_tname.name = tc['function']['name'] -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set tool_body = follow.get('content') -%}
+                {%- if tool_body is sequence and tool_body is not string and tool_body is not mapping -%}
+                    {%- set ns_txt = namespace(s='') -%}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') == 'text' -%}
+                            {%- set ns_txt.s = ns_txt.s + (part.get('text') | default('')) -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') in ['image', 'image_url'] -%}
+                            {{- '<|image|>' -}}
+                        {%- elif part.get('type') in ['audio', 'input_audio'] -%}
+                            {{- '<|audio|>' -}}
+                        {%- elif part.get('type') == 'video' -%}
+                            {{- '<|video|>' -}}
+                        {%- endif -%}
+                    {%- endfor -%}
+                {%- else -%}
+                    {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                {%- endif -%}
+                {%- set ns_tool.tool_response = true -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set captured_content -%}
     {%- if message['content'] is string -%}
         {%- if role == "model" -%}
             {{ strip_thinking(message['content']) }}
@@ -1038,15 +1756,29 @@ gemma4_thinking_template = \
                 {%- endif -%}
             {%- endif -%}
         {%- endfor -%}
-    {%- else -%}
+    {%- elif not ns_tool.tool_calls -%}
         {{ raise_exception("Invalid content type") }}
     {%- endif -%}
-    {{ '<turn|>\n' }}
+    {%- endset -%}
+    {{- captured_content -}}
+    {%- if not ns_tool.tool_calls -%}
+        {{ '<turn|>\n' }}
+    {%- elif not ns_tool.tool_response -%}
+        {{- '<|tool_response>' -}}
+    {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
+        {{- '<turn|>\n' -}}
+        {%- set ns_tool.tool_calls = false -%}
+    {%- endif -%}
+    {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
+    {%- if not ns_tool.tool_calls -%}
     {{'<|turn>model\n'}}
     {%- if not thinking -%}
         {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
+    {%- elif ns_tool.tool_response and thinking -%}
+        {{- '<|channel>thought\n' -}}
     {%- endif -%}
 {%- endif -%}
 """
@@ -1056,6 +1788,49 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
+
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; with thinking off, model turns without reasoning get it.
+gemma4_empty_thought_template = gemma4_thinking_template.replace(
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n",
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n"
+    "        {%- elif not thinking and not continues -%}\n"
+    "            {{ '<|channel>thought\n<channel|>' }}\n",
+    1,
+)
+assert gemma4_empty_thought_template != gemma4_thinking_template
+# Ollama re-renders history each request, so every assistant turn gets the channel too.
+gemma4_empty_thought_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "assistant" }}<|turn>model
+<|channel>thought
+<channel|>{{ .Content }}{{ if not $last }}<turn|>
+{{ end }}
+{{- else }}<|turn>{{ .Role }}
+{{ .Content }}<turn|>
+{{ if $last }}<|turn>model
+<|channel>thought
+<channel|>{{ end }}
+{{- end }}
+{{- end }}"""
+'''
+GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+# Unsloth's gemma-4-thinking primes it in the generation prompt for every size, in every release
+_gemma4_thinking_prompt_empty_thought = "    {%- if not thinking -%}\n        {{ '<|channel>thought\n<channel|>' }}\n    {%- endif -%}\n"
+assert _gemma4_thinking_prompt_empty_thought in gemma4_thinking_template
+
+
+def _gemma4_wants_empty_thought(*holders):
+    # Content based: the model's own template primes the empty channel (E2B / E4B do not).
+    for holder in holders:
+        template = getattr(holder, "chat_template", None)
+        if isinstance(template, dict): template = template.get("default")
+        if not isinstance(template, str): continue
+        template = template.replace(_gemma4_thinking_prompt_empty_thought, "")
+        if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
+            return True
+    return False
 
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 # =========================================== GPT-OSS
@@ -1327,12 +2102,12 @@ gptoss_template = \
     {#- At this point only assistant/user/tool messages should remain #}
     {%- if message.role == 'assistant' -%}
         {#- Checks to ensure the messages are being passed in the format we expect #}
-        {%- if "content" in message %}
+        {%- if message.content is string %}
             {%- if "<|channel|>analysis<|message|>" in message.content or "<|channel|>final<|message|>" in message.content %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the content field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
         {%- endif %}
-        {%- if "thinking" in message %}
+        {%- if message.thinking is string %}
             {%- if "<|channel|>analysis<|message|>" in message.thinking or "<|channel|>final<|message|>" in message.thinking %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
@@ -1373,16 +2148,16 @@ gptoss_template = \
         {%- elif loop.last and not add_generation_prompt %}
             {#- Only render the CoT if the final turn is an assistant turn and add_generation_prompt is false #}
             {#- This is a situation that should only occur in training, never in inference. #}
-            {%- if "thinking" in message %}
+            {%- if message.thinking is string %}
                 {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- endif %}
             {#- <|return|> indicates the end of generation, but <|end|> does not #}
             {#- <|return|> should never be an input to the model, but we include it as the final token #}
             {#- when training, so the model learns to emit it. #}
-            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|end|>" }}
-        {%- elif "thinking" in message %}
-            {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
+            {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|return|>" }}
+        {%- elif message.thinking is string and message.content is not string %}
+            {#- A previous turn with only CoT and no final answer: keep the analysis message #}
+            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- set last_tool_call.name = none %}
         {%- else %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
@@ -1792,8 +2567,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 # =========================================== Liquid-LFM2
 liquid_lfm2_template = \
-'''
-{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+'''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}'''
@@ -1811,10 +2585,10 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
-    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
+    {{- 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{ 'GPT4 Correct Assistant:' }}
+    {{- 'GPT4 Correct Assistant:' }}
 {%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
@@ -1829,12 +2603,10 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 # =========================================== Yi-chat
 
 yi_chat_template = \
-"""
-{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+"""{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-"""
+' }}{% endif %}"""
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = _ollama_template("yi-chat")
@@ -1890,9 +2662,12 @@ def get_chat_template(
 ):
     assert(type(map_eos_token) is bool)
     import sys
-    is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
+    _backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None)
+    is_mlx_backend = _backend == "mlx"
+    # The CPU backend, like MLX, never loads the GPU model stack that models._utils / save pull in.
+    is_light_backend = _backend in ("mlx", "cpu")
     if use_zoo_tokenizer_patch is None:
-        use_zoo_tokenizer_patch = is_mlx_backend
+        use_zoo_tokenizer_patch = is_light_backend
 
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust backend the vocab-edit
     # paths below need; unwrap here, re-wrap before return.
@@ -1930,6 +2705,7 @@ def get_chat_template(
 
     same_padding_token = False
     type_chat_template = None
+    template_name = None
 
     if type(chat_template) in (list, tuple,):
         # For changing system message later Since it's not supported yet, we will raise an error first!
@@ -1942,8 +2718,18 @@ def get_chat_template(
     elif type(chat_template) is str:
         # For changing system message later
         type_chat_template = chat_template.lower()
+        template_name = chat_template
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
+
+        if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
+            _gemma4_wants_empty_thought(_processor, old_tokenizer):
+            logger.warning_once(
+                "Unsloth: This Gemma-4 model expects an empty thought channel on non-thinking turns. "\
+                "Adding <|channel>thought\\n<channel|> to assistant turns without thinking content."
+            )
+            chat_template = gemma4_empty_thought_template
+            ollama_modelfile = gemma4_empty_thought_ollama
 
         # The template can veto the eos mapping, but it must not force it back on: map_eos_token = False is
         # an explicit choice by the caller.
@@ -2084,13 +2870,6 @@ def get_chat_template(
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
-    # The spliced ShareGPT values land inside Jinja literals, so escape them.
-    new_chat_template = chat_template\
-        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
-        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
-        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
-        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
-
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper: that import path pulls Torch/GPU-specific
         # modules in before MLX training.
@@ -2102,14 +2881,23 @@ def get_chat_template(
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        role, content, user, assistant = (
+            "'" + _escape_jinja_literal(mapping[key]) + "'"
+            for key in ("role", "content", "user", "assistant")
+        )
         chat_template = \
-            "{% if 'role' in messages[0] %}" + \
-            chat_template + \
-            "{% else %}" + \
-            new_chat_template + \
-            "{% endif %}"
-    else:
-        chat_template = new_chat_template
+            "{%- if " + role + " in messages[0] -%}" + \
+            "{%- set sharegpt = namespace(messages = []) -%}" + \
+            "{%- for message in messages -%}" + \
+            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "]) -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + " + \
+            "[dict(message, role = role, content = message[" + content + "]) if " + content + " in message " + \
+            "else dict(message, role = role)] -%}" + \
+            "{%- endfor -%}" + \
+            "{%- set messages = sharegpt.messages -%}" + \
+            "{%- endif %}" + \
+            chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
@@ -2133,6 +2921,8 @@ def get_chat_template(
     # tokenizer and remapped eos. The loader mirrors these onto the processor
     # (models/vision.py), so refresh them here or that copy goes stale.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
+        tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
@@ -2141,12 +2931,15 @@ def get_chat_template(
                 setattr(_processor, _token + "_id", getattr(tokenizer, _token + "_id"))
         tokenizer = _processor
 
-    if patch_saving and not is_mlx_backend:
+    if patch_saving and not is_light_backend:
         from .save import patch_saving_functions
         tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
+    tokenizer._unsloth_chat_template_name = (
+        (template_name, chat_template) if template_name is not None else None
+    )
 
     # Re-wrap so the trainer gets the same TokenizerWrapper type back.
     if _mlx_tokenizer_wrapper is not None:
@@ -2159,7 +2952,7 @@ def get_chat_template(
             getattr(tokenizer, "chat_template", None) is not None
         )
         tokenizer = _mlx_tokenizer_wrapper
-    return tokenizer
+    return enable_tokenizers_v1(tokenizer)
 
 
 def remove_special_tokens(tokenizer, prompt):
@@ -2170,8 +2963,17 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
+def _column_names_in(text):
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2214,14 +3016,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
@@ -2340,7 +3142,8 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Kept caller columns live on copy 0; repeating them makes axis=1 concat fail.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2359,7 +3162,7 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 
@@ -2883,16 +3686,17 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
                 self.length = self.stop_token.shape[0]
             self.single_match = self.length == 1
 
-        def __call__(self, input_ids: LongTensor, scores: FloatTensor) -> bool:
-            input_ids = input_ids.ravel()
+        def __call__(self, input_ids: LongTensor, scores: FloatTensor):
+            single_sequence = input_ids.ndim == 1
+            if single_sequence:
+                input_ids = input_ids.unsqueeze(0)
             if self.stop_token.device != input_ids.device:
                 self.stop_token = self.stop_token.to(input_ids.device)
-            last_token = input_ids[-1]
-            if self.single_match and (last_token == self.stop_token): return True
-
-            if input_ids.shape[0] >= self.length and \
-                (input_ids[-self.length:] == self.stop_token).all(): return True
-            return False
+            if input_ids.shape[-1] < self.length:
+                matches = torch.zeros(input_ids.shape[0], dtype = torch.bool, device = input_ids.device)
+            else:
+                matches = (input_ids[:, -self.length:] == self.stop_token).all(dim = -1)
+            return matches.item() if single_sequence else matches
     stopping_criteria = StoppingCriteriaList([StoppingCriteriaSub(stops = stop_word)])
     return stopping_criteria
 

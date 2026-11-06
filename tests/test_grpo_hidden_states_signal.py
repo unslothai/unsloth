@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A width comparison cannot answer `vocab_size == hidden_size`.
-
-`_get_per_token_logps_and_entropies` sets UNSLOTH_RETURN_HIDDEN_STATES=1 and
-then has to decide, per call site, whether `.logits` came back as hidden states
-(apply the lm_head) or as real logits (do not). Comparing the last dim against
-`lm_head.shape[1]` answers that for every model whose vocab is wider than its
-hidden size, which is nearly all of them -- but a model with
-`vocab_size == hidden_size` returns real logits that are exactly as wide as its
-hidden states. Those logits pass the width test, go through
-`chunked_hidden_states_selective_log_softmax`, and get the lm_head applied a
-second time. Nothing raises: the matmul is square, so the run keeps going with
-silently wrong GRPO log probabilities. In the packed path the per-row verifier
-misreads the width the same way, agrees with the corrupted packed result, and
-marks the shape trusted.
-
-`_unsloth_grpo_returns_hidden_states` therefore prefers an explicit signal that
-the forward honoured the flag, and only falls back to the width comparison when
-there is no signal to read. The signal is not invented here: it is the
-`__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__` marker `unsloth_zoo.compiler` writes
-onto a generated class, and the
-`_unsloth_grpo_hidden_states_forward_wrapped` / `..._warning_issued` pair that
-`_install_grpo_hidden_states_forward_wrapper` in `unsloth/models/rl.py` keeps on
-models the compiler did not rewrite.
-
-Both halves are covered below: the signal decides the ambiguous case, and an
-absent signal leaves today's behaviour untouched. CPU-only, tiny shapes, never
-skips beyond torch.
-"""
+"""Width comparison fails when vocab_size == hidden_size, so the explicit signal is checked first."""
 
 from __future__ import annotations
 
@@ -58,16 +31,8 @@ WRAPPED = "_unsloth_grpo_hidden_states_forward_wrapped"
 DEGRADED = "_unsloth_grpo_hidden_states_warning_issued"
 
 
-# ── The signal itself ────────────────────────────────────────────────────────
-
-
 class _Plain:
-    """A model Unsloth never touched: no marker, no wrapper.
-
-    `forward` is here because the signal only descends into children that have
-    one, which is how it avoids walking into configs and buffers; every real
-    nn.Module qualifies.
-    """
+    """Untouched model. It defines forward because the signal only descends into children that have one."""
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError
@@ -112,10 +77,7 @@ def test_the_trainer_wrapper_is_a_positive_signal():
 
 
 def test_a_degraded_trainer_wrapper_is_a_negative_signal():
-    """The wrapper records that it could not get hidden states, before returning.
-
-    That is the case the width comparison silently gets wrong.
-    """
+    """A degraded wrapper is a negative signal, the case the width comparison silently gets wrong."""
     assert hidden_states_signal(_wrapped(degraded = True)) is False
 
 
@@ -141,9 +103,6 @@ def test_a_self_referencing_wrapper_chain_terminates():
     model = SimpleNamespace(forward = lambda: None)
     model.model = model
     assert hidden_states_signal(model) is None
-
-
-# ── The dispatch decision ────────────────────────────────────────────────────
 
 
 def _lm_head(vocab, hidden):
@@ -196,16 +155,11 @@ def test_a_square_lm_head_with_a_negative_signal_takes_the_raw_logits_path():
 
 
 def test_a_negative_signal_cannot_overrule_a_decisive_width_test():
-    """vocab_size != hidden_size and the tensor is hidden-wide: it is hidden states.
-
-    Trusting the signal here would send hidden states into the plain
-    log-softmax, whose gather indexes with token ids far past the hidden dim.
-    """
+    """A decisive width test must overrule a negative signal, or hidden states hit the log-softmax
+    gather."""
     head = _lm_head(17, 8)
     assert returns_hidden_states(_wrapped(degraded = True), _tensor(8), head) is True
 
-
-# ── End to end through the shipped padded loop ───────────────────────────────
 
 SQUARE = 12  # vocab_size == hidden_size: the width comparison cannot decide
 BATCH, SEQ = 2, 7
@@ -282,8 +236,7 @@ class _SquareModel:
         self.lm_head = lm_head
         self.returns_hidden_states = returns_hidden_states
         if signal == "compiled":
-            # The compiler writes the marker onto the class it generated, so give this instance its own class rather
-            # than marking every _SquareModel.
+            # The compiler marks the class it generated, so give this instance its own class.
             self.__class__ = type("_CompiledSquareModel", (_SquareModel,), {MARKER: True})
         elif signal in ("wrapped", "degraded"):
             setattr(self, WRAPPED, True)
@@ -298,7 +251,7 @@ class _SquareModel:
     ):
         hidden = self.embedding[input_ids]
         out = hidden if self.returns_hidden_states else hidden @ self.lm_head.t()
-        assert out.shape[-1] == SQUARE  # the whole point: indistinguishable by width
+        assert out.shape[-1] == SQUARE
         return SimpleNamespace(logits = out)
 
 
@@ -316,6 +269,8 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "chunked_hidden_states_selective_log_softmax": _ZOO_HIDDEN,
         "chunked_selective_log_softmax": _ZOO_RAW,
         "device_synchronize": lambda *a, **k: None,
+        # The generated trainer gets this from rl.py's preamble, so the block resolves it here too.
+        "DEVICE_TYPE_TORCH": "cuda",
         "_get_inference_mode_context_manager": lambda _model: contextlib.nullcontext(),
         "model": model,
         "unwrapped_model": model,
@@ -323,8 +278,7 @@ def _run_padded_loop(*, returns_hidden_states, signal):
         "pixel_values": None,
         "lm_head": lm_head,
         "zipped_inputs": [
-            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype = torch.long)) + (None,) * 6
-            for i in range(BATCH)
+            (input_ids[i : i + 1], torch.ones(1, SEQ, dtype = torch.long), {}) for i in range(BATCH)
         ],
         "logits_to_keep": KEEP,
         "max_left_pad": MAX_LEFT_PAD,
@@ -350,11 +304,7 @@ def _reference(embedding, lm_head, input_ids):
 
 
 def test_square_lm_head_raw_logits_are_not_run_through_the_lm_head_twice():
-    """The regression. Without the signal this returns log_softmax(logits @ W.T).
-
-    Nothing raises, because a square lm_head makes the second matmul legal; the
-    run just carries on with wrong log probabilities.
-    """
+    """Square lm_head: raw logits must not be projected again, which silently gives wrong logprobs."""
     logprobs, embedding, lm_head, input_ids = _run_padded_loop(
         returns_hidden_states = False, signal = "degraded"
     )

@@ -32,6 +32,29 @@ def _install_fake_datasets(monkeypatch, load_dataset):
     monkeypatch.setattr("loggers.config.quiet_third_party_progress_bars", lambda: None)
 
 
+_UNSET = object()
+
+
+@pytest.fixture(autouse = True)
+def _restore_process_symlink_state():
+    """Restore HF_HUB_DISABLE_SYMLINKS and Hub's live flag, or later tests cache regular files."""
+    from huggingface_hub import constants, file_download
+
+    env = os.environ.get("HF_HUB_DISABLE_SYMLINKS", _UNSET)
+    flag = vars(constants).get("HF_HUB_DISABLE_SYMLINKS", _UNSET)
+    support = file_download._are_symlinks_supported_in_dir
+    yield
+    if env is _UNSET:
+        os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
+    else:
+        os.environ["HF_HUB_DISABLE_SYMLINKS"] = env
+    if flag is _UNSET:
+        vars(constants).pop("HF_HUB_DISABLE_SYMLINKS", None)
+    else:
+        constants.HF_HUB_DISABLE_SYMLINKS = flag
+    file_download._are_symlinks_supported_in_dir = support
+
+
 def _isolate_hub_symlink_state(monkeypatch):
     """Keep _disable_hf_symlinks_for_process from leaking into other tests."""
     from huggingface_hub import constants, file_download
@@ -101,8 +124,6 @@ def test_pre_1_x_hub_retries_by_updating_symlink_capability_cache(monkeypatch):
 
 
 def test_pre_1_9_hub_stops_re_probing_unknown_cache_dirs(monkeypatch, tmp_path):
-    # Before Hub 1.9 an unknown dir is probed again, losing the same race twice.
-    # Assert the mapping itself, since how each Hub reads it varies.
     from huggingface_hub import file_download
 
     monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})

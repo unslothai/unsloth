@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Scoring: pure functions over a payload, with no dependency on the harness.
-
-Everything in this package takes plain data and returns plain data. It never touches Playwright,
-a browser, a socket or the clock. That is deliberate: the arithmetic that turns milliseconds into
-a verdict is the part most likely to be wrong in a way nobody notices, so it is the part that
-must be unit-testable against synthetic payloads including adversarial ones (a crashed rung that
-must not outscore a slow one, a regression that must surface despite a positive headline).
-"""
+"""Pure functions over plain data: nothing here touches Playwright, a browser, a socket or the clock."""
 
 from .anchors import (  # noqa: F401
     DEFAULT_NOISE_FLOOR_PCT,

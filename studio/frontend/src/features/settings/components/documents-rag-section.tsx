@@ -2,10 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
+import { toastEmbeddingModelSaved } from "@/features/rag";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -15,30 +26,31 @@ import {
 } from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import {
   EmbeddingModelBlockedError,
+  type EmbeddingDevice,
   type EmbeddingModelResolution,
   EmbeddingModelVerificationError,
   resolveEmbeddingModel,
   unloadEmbeddingModel,
+  updateEmbeddingDevice,
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
+import { useEmbeddingPinsStore } from "../stores/embedding-pins-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { EmbeddingModelPicker } from "./embedding-model-picker";
+import { ReembedDocumentsRow } from "./reembed-documents-row";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** One slot per repo for the embedder's GGUF, so re-picking adopts the running transfer and a full-repo Hub download keeps its own. */
+/** One slot per repo so re-picking adopts the running transfer. */
 const EMBEDDING_DOWNLOAD_SCOPE = "rag-embedding";
 
-/**
- * Which model indexes uploaded documents, rendered in both General and Data off one shared store.
- * A model not on disk is marked pending and offered as a download, and its loader stays cache-only,
- * so closing or cancelling cannot turn into a first-index transfer.
- */
 const RESIDENCY_POLL_MS = 5000;
 
+/** A missing model is offered as a download and its loader stays cache-only. */
 export function DocumentsRagSection(): ReactElement {
   const t = useT();
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
@@ -47,7 +59,7 @@ export function DocumentsRagSection(): ReactElement {
   const beginSave = useEmbeddingModelStore((s) => s.beginSave);
   const isSaveCurrent = useEmbeddingModelStore((s) => s.isSaveCurrent);
   const save = useEmbeddingModelStore((s) => s.save);
-  // Unloading leaves the selection alone, so it must not take a place in save order and retire an in-flight selection's reservation.
+  // Unloading must not take a save-order slot and retire an in-flight selection's reservation.
   const applyResidency = useEmbeddingModelStore((s) => s.applyResidency);
   const [saveError, setSaveError] = useState<string | null>(null);
   const loadFailure =
@@ -56,7 +68,7 @@ export function DocumentsRagSection(): ReactElement {
       : loadError || t("settings.general.rag.loadError");
   const embeddingModelError = saveError ?? loadFailure;
   const [forceCandidate, setForceCandidate] = useState<string | null>(null);
-  /** Bumped when a save leaves the model string unchanged, which the effect below keys on. */
+  /** Bumped when a save leaves the model string unchanged, which the effect keys on. */
   const [resolveNonce, setResolveNonce] = useState(0);
   const [isSavingEmbeddingModel, setIsSavingEmbeddingModel] = useState(false);
   const [resolution, setResolution] = useState<EmbeddingModelResolution | null>(
@@ -65,12 +77,27 @@ export function DocumentsRagSection(): ReactElement {
   const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const pinnedModels = useEmbeddingPinsStore((s) => s.pinned);
+  const togglePin = useEmbeddingPinsStore((s) => s.togglePin);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  // "Change model" in the RAG menu lands here.
+  useEffect(() => {
+    if (scrollTarget !== "general-rag-embedding") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-rag-embedding");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
   }, []);
 
-  // Residency changes with no settings mutation and there is no lifecycle event to subscribe to, so re-read while visible; a hidden tab catches up when it returns.
+  // Residency changes with no event to subscribe to, so re-read while visible.
   useEffect(() => {
     const refresh = () => {
       if (document.hidden) return;
@@ -144,9 +171,11 @@ export function DocumentsRagSection(): ReactElement {
       );
       if (!stood) return false;
       setForceCandidate(null);
-      toast.success(t("settings.general.rag.saved"), {
-        description: t("settings.general.rag.reindexWarning"),
-      });
+      // Unresolved or still to download: Re-embed would fail until the files are on disk.
+      void toastEmbeddingModelSaved(
+        t("settings.general.rag.saved"),
+        Boolean(plan && (plan.cached || !plan.downloadRepo)),
+      );
       return true;
     } catch (error) {
       // A hard security block cannot be forced; keep "Save anyway" hidden.
@@ -164,7 +193,7 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
-  /** Resolve first, so a model that needs fetching is offered as a download rather than saved and quietly fetched at the first index. */
+  /** Resolve first so a model needing a fetch is offered as a download, not fetched silently. */
   const applyEmbeddingModel = async (model: string, force: boolean) => {
     setForceCandidate(null);
     const trimmed = model.trim();
@@ -172,14 +201,14 @@ export function DocumentsRagSection(): ReactElement {
       setSaveError(t("settings.general.rag.emptyError"));
       return;
     }
-    // Claim cross-surface ordering before the resolver await, else a slower older selection saves last and overwrites a newer pick.
+    // Reserve ordering before the await, or a slower older selection saves last.
     const reservation = beginSave();
     setIsSavingEmbeddingModel(true);
     setSaveError(null);
     setResolution(null);
     try {
       if (force) {
-        // A force save can leave the model string unchanged, so the savedModel effect does not re-run and nothing restores the plan this call cleared.
+        // A force save can leave the model string unchanged, so the savedModel effect won't re-run.
         if (await persist(trimmed, null, true, reservation)) {
           setResolveNonce((n) => n + 1);
         }
@@ -202,7 +231,7 @@ export function DocumentsRagSection(): ReactElement {
         setSaveError(resolution.error);
         return;
       }
-      // Retain the plan only after the server accepted the matching setting: a rejected save must not expose Download for an unsaved repo.
+      // Only after the server accepted it: a rejected save must not expose Download.
       if (await persist(trimmed, resolution, false, reservation)) {
         setResolution(resolution);
       }
@@ -214,7 +243,7 @@ export function DocumentsRagSection(): ReactElement {
   const startDownload = async (resolution: EmbeddingModelResolution) => {
     const repoId = resolution.downloadRepo;
     if (!repoId) return;
-    // Scoped when the backend named a file: the companion repo carries every quant, and the embedder opens one.
+    // The companion repo carries every quant and the embedder opens one.
     const scoped = resolution.files !== null && resolution.files.length > 0;
     try {
       const outcome = await downloadManager.requestStart({
@@ -234,12 +263,12 @@ export function DocumentsRagSection(): ReactElement {
           { description: t("settings.general.rag.downloadingDescription") },
         );
       } else if (outcome === "conflict") {
-        // Not a failure: an earlier partial used a different transport and the Hub's own card is where it resumes.
+        // Not a failure: an earlier partial used another transport and resumes from the Hub card.
         toast.info(t("settings.general.rag.downloadConflict"));
       } else if (outcome === "busy") {
         toast.info(t("settings.general.rag.downloadBusy"));
       } else {
-        // requestStart turns refused starts into outcomes rather than throws, so every remaining non-start needs feedback here.
+        // requestStart returns refusals as outcomes, so every non-start needs feedback here.
         toast.error(t("settings.general.rag.downloadFailed"));
       }
     } catch (error) {
@@ -331,10 +360,22 @@ export function DocumentsRagSection(): ReactElement {
             : t("settings.general.rag.onDevice")
           : "";
 
+  // On disk but not in memory: said under the picker, since Eject only shows once it loads.
+  const notLoaded = onDevice && !embeddingModel?.loaded && !downloading;
+  const statusHint =
+    onDevice && !downloading && !canDownload
+      ? t(
+          embeddingModel?.loaded
+            ? "settings.general.rag.loadedHint"
+            : "settings.general.rag.onDeviceHint",
+        )
+      : "";
+
   const unload = async () => {
     setIsSavingEmbeddingModel(true);
     try {
       await applyResidency(unloadEmbeddingModel);
+      toast.success(t("settings.general.rag.ejected"));
     } catch (error) {
       toast.error(t("settings.general.rag.unloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -344,87 +385,166 @@ export function DocumentsRagSection(): ReactElement {
     }
   };
 
+  const changeDevice = async (device: EmbeddingDevice) => {
+    if (device === embeddingModel?.embeddingDevice) return;
+    setIsSavingEmbeddingModel(true);
+    try {
+      // Residency, not selection: the model stays, only where it loads next changes.
+      await applyResidency(() => updateEmbeddingDevice(device));
+    } catch (error) {
+      toast.error(t("settings.general.rag.deviceSaveError"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsSavingEmbeddingModel(false);
+    }
+  };
+
   return (
-    <SettingsSection title={t("settings.general.rag.sectionTitle")}>
+    <SettingsSection ref={sectionRef} title={t("settings.general.rag.sectionTitle")}>
       <SettingsRow
         label={t("settings.general.rag.embeddingModel")}
-        description={t("settings.general.rag.embeddingModelDescription", {
+        // Long explanation behind the info icon; the row shows the model's status.
+        hint={`${t("settings.general.rag.embeddingModelDescription", {
           defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
-        })}
-        className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
-      >
-        <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-          <EmbeddingModelPicker
-            value={embeddingModel?.embeddingModel ?? ""}
-            onSelect={(model) => void applyEmbeddingModel(model, false)}
-            defaultModel={embeddingModel?.defaultEmbeddingModel}
-            cachedModels={cachedRepos}
-            accessToken={hfToken || undefined}
-            disabled={!embeddingModel}
-            busy={isSavingEmbeddingModel}
-            className="w-[260px] max-[360px]:w-full"
-          />
-          {embeddingModelError ? (
-            <span className="max-w-[300px] text-right text-xs text-destructive">
+        })} ${t("settings.general.rag.reindexWarning")}`}
+        description={
+          <span className="flex flex-col gap-1">
+            <span>{t("settings.general.rag.embeddingModelShort")}</span>
+            {statusText ? (
+              <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {statusTone ? (
+                    <span
+                      className={cn(
+                        "size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full",
+                        statusTone === "pending"
+                          ? "animate-pulse bg-muted-foreground"
+                          : statusTone === "ready"
+                            ? "bg-status-success"
+                            : "bg-destructive",
+                      )}
+                    />
+                  ) : null}
+                  <span className="truncate">{statusText}</span>
+                  {statusHint ? <StatusHint text={statusHint} /> : null}
+                </span>
+              </span>
+            ) : null}
+          </span>
+        }
+        // Bottom-aligned while Not loaded shows, so it sits level with the On device line.
+        className={cn(
+          "max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3",
+          notLoaded && "items-end",
+        )}
+        below={
+          embeddingModelError ? (
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
               {embeddingModelError}
             </span>
+          ) : undefined
+        }
+      >
+        {/* Wraps the Download button above the picker when the panel is too narrow for both. */}
+        <div className="flex max-w-full flex-wrap items-start justify-end gap-2 max-[360px]:w-full">
+          {forceCandidate ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={isSavingEmbeddingModel}
+              onClick={() => void applyEmbeddingModel(forceCandidate, true)}
+            >
+              {t("settings.general.rag.saveAnyway")}
+            </Button>
+          ) : canDownload ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={downloading || isSavingEmbeddingModel}
+              onClick={() => resolution && void startDownload(resolution)}
+            >
+              {downloading ? <Spinner /> : null}
+              {t("settings.general.rag.download")}
+            </Button>
           ) : null}
-          <div className="flex min-h-7 w-full items-center justify-between gap-3">
-            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              {statusTone ? (
-                <span
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    statusTone === "pending"
-                      ? "animate-pulse bg-current"
-                      : statusTone === "ready"
-                        ? "bg-emerald-500"
-                        : "bg-destructive",
-                  )}
-                />
-              ) : null}
-              <span className="truncate">{statusText}</span>
-            </span>
-            {forceCandidate ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void applyEmbeddingModel(forceCandidate, true)}
-              >
-                {t("settings.general.rag.saveAnyway")}
-              </Button>
-            ) : canDownload ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={downloading || isSavingEmbeddingModel}
-                onClick={() => resolution && void startDownload(resolution)}
-              >
-                {downloading ? <Spinner className="mr-1.5" /> : null}
-                {t("settings.general.rag.download")}
-              </Button>
-            ) : null}
-            {/* Outside the chain above: saving a new model does not release the old one, so while Download shows the previous model can still be resident. */}
-            {embeddingModel?.backendLoaded ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 px-2.5 text-xs"
-                disabled={isSavingEmbeddingModel}
-                onClick={() => void unload()}
-              >
-                {t("settings.general.rag.unload")}
-              </Button>
+          {/* Status sits in the picker's column, so it lines up under the model name. */}
+          <div className="flex max-w-full flex-col gap-1 max-[360px]:w-full">
+            <EmbeddingModelPicker
+              value={embeddingModel?.embeddingModel ?? ""}
+              onSelect={(model) => void applyEmbeddingModel(model, false)}
+              defaultModel={embeddingModel?.defaultEmbeddingModel}
+              cachedModels={cachedRepos}
+              pinnedModels={pinnedModels}
+              onTogglePin={togglePin}
+              accessToken={hfToken || undefined}
+              disabled={!embeddingModel}
+              busy={isSavingEmbeddingModel}
+              loaded={embeddingModel?.loaded}
+              // Any resident embedder, not just this one: switching does not release the old one.
+              onEject={embeddingModel?.backendLoaded ? () => void unload() : undefined}
+              className="w-[calc(260px*var(--ui-space-scale,1))] max-w-full max-[360px]:w-full"
+            />
+            {notLoaded ? (
+              <span className="flex items-center gap-1.5 px-3.5 text-xs leading-snug text-muted-foreground">
+                <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
+                {t("settings.general.rag.notLoaded")}
+                <StatusHint text={t("settings.general.rag.notLoadedHint")} />
+              </span>
             ) : null}
           </div>
-          <span className="max-w-[300px] text-right text-xs text-muted-foreground">
-            {t("settings.general.rag.reindexWarning")}
-          </span>
         </div>
       </SettingsRow>
+      <ReembedDocumentsRow />
+      <SettingsRow
+        label={t("settings.general.rag.device")}
+        description={
+          embeddingModel?.embeddingDeviceLocked
+            ? t("settings.general.rag.deviceLocked", { name: "RAG_EMBED_DEVICE" })
+            : t("settings.general.rag.deviceDescription")
+        }
+      >
+        <Select
+          value={embeddingModel?.embeddingDevice ?? "auto"}
+          disabled={
+            !embeddingModel ||
+            embeddingModel.embeddingDeviceLocked ||
+            isSavingEmbeddingModel
+          }
+          onValueChange={(device) => void changeDevice(device as EmbeddingDevice)}
+        >
+          <SelectTrigger className="w-36" aria-label={t("settings.general.rag.device")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">{t("settings.general.rag.deviceAuto")}</SelectItem>
+            <SelectItem value="cpu">{t("settings.general.rag.deviceCpu")}</SelectItem>
+            <SelectItem value="gpu">{t("settings.general.rag.deviceGpu")}</SelectItem>
+          </SelectContent>
+        </Select>
+      </SettingsRow>
     </SettingsSection>
+  );
+}
+
+/** Small info icon after a status, explaining what it means. */
+function StatusHint({ text }: { text: string }): ReactElement {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={text}
+          className="flex shrink-0 items-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon icon={InformationCircleIcon} className="size-[calc(10px*var(--ui-space-scale,1))]" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+        {text}
+      </TooltipContent>
+    </Tooltip>
   );
 }

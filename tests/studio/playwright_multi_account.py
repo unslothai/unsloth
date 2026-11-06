@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-account browser flow against a disposable Studio: the owner creates an account,
-its setup code is private, and switching accounts in one browser clears account data.
-
-    STUDIO_E2E_URL=http://127.0.0.1:8000 STUDIO_E2E_OWNER_PASSWORD=... \
-        python tests/studio/playwright_multi_account.py
-
-Skips (exit 0) without the owner password. The account it creates is deleted at the end.
-"""
+"""Multi-account flow on a disposable Studio; skips (exit 0) unless STUDIO_E2E_OWNER_PASSWORD is set."""
 
 from __future__ import annotations
 
@@ -20,13 +13,17 @@ import time
 from datetime import datetime, timezone
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = os.environ.get("STUDIO_E2E_URL", "http://127.0.0.1:8000").rstrip("/")
 OWNER_PASSWORD = os.environ.get("STUDIO_E2E_OWNER_PASSWORD")
 ENGINE = os.environ.get("PW_ENGINE", "chromium")
 STEP_TIMEOUT_MS = 30_000
+ART_DIR = os.environ.get("PW_ART_DIR")
 
 
 def api(
@@ -52,9 +49,66 @@ def api(
             return error.code, {}
 
 
+def open_login(page: Page) -> None:
+    """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
+    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. When that redirect has
+    already loaded /login, use it instead of navigating again; otherwise retry the abort once.
+
+    On CI this navigation has also timed out once in a while after the server answered /login: one of
+    the page's requests never finished, so "load" never fired. Record which requests were still open,
+    then retry once. Aborts and timeouts each get one retry, so an abort cannot use up the timeout's."""
+    url = f"{BASE_URL}/login"
+    aborts = timeouts = 0
+    while True:
+        pending: dict = {}
+        on_request = lambda request: pending.__setitem__(request, request.url)
+        on_done = lambda request: pending.pop(request, None)
+        page.on("request", on_request)
+        page.on("requestfinished", on_done)
+        page.on("requestfailed", on_done)
+        try:
+            page.goto(url)
+            return
+        except PlaywrightTimeoutError:
+            timeouts += 1
+            if timeouts == 2:
+                raise
+            record_stalled_login(page, sorted(pending.values()))
+        except PlaywrightError as error:
+            aborts += 1
+            if "ERR_ABORTED" not in str(error) or aborts == 2:
+                raise
+            page.wait_for_load_state()
+            if urlsplit(page.url).path == "/login":
+                return
+        finally:
+            page.remove_listener("request", on_request)
+            page.remove_listener("requestfinished", on_done)
+            page.remove_listener("requestfailed", on_done)
+
+
+def record_stalled_login(page: Page, unfinished: list[str]) -> None:
+    try:
+        ready_state = page.evaluate("() => document.readyState")
+    except PlaywrightError as error:
+        ready_state = f"unreadable: {error}"
+    state = {"url": page.url, "ready_state": ready_state, "unfinished_requests": unfinished}
+    print(
+        f"WARN: /login did not fire load in {STEP_TIMEOUT_MS} ms, retrying once: {json.dumps(state)}"
+    )
+    if not ART_DIR:
+        return
+    os.makedirs(ART_DIR, exist_ok = True)
+    with open(os.path.join(ART_DIR, "login-load-timeout.json"), "w", encoding = "utf-8") as handle:
+        json.dump(state, handle, indent = 2)
+    try:
+        page.screenshot(path = os.path.join(ART_DIR, "login-load-timeout.png"), timeout = 10_000)
+    except PlaywrightError:
+        pass
+
+
 def login(page: Page, username: str, password: str) -> None:
-    page.goto(f"{BASE_URL}/login")
-    # Wait for the layout the server's login_mode implies rather than sampling before the page settles.
+    open_login(page)
     _, status = api("GET", "/api/auth/status")
     username_field = page.get_by_role("textbox", name = "Username", exact = True)
     if status.get("login_mode") == "multi":
@@ -123,7 +177,7 @@ def run(page: Page, context) -> None:
         assert after.get("login_mode") == "multi", after
 
         log_out(page)
-        page.goto(f"{BASE_URL}/login")
+        open_login(page)
         second_tab = context.new_page()
         second_tab.goto(f"{BASE_URL}/login")
         expect(second_tab.locator("#username")).to_be_visible(timeout = STEP_TIMEOUT_MS)
@@ -134,13 +188,15 @@ def run(page: Page, context) -> None:
         expect(page).to_have_url(re.compile(r"/change-password"), timeout = STEP_TIMEOUT_MS)
         assert local(page, "unsloth_e2e_private") is None
         assert local(page, "chat-draft:e2e") is None
-        # Appearance survives the switch; its value may have been replaced by the personalization sync.
         assert local(page, "theme") is not None, "the account switch cleared the theme"
         assert local(page, "unsloth_chat_permission_mode") != "full"
-        deadline = time.monotonic() + STEP_TIMEOUT_MS / 1000
-        while second_tab.evaluate("() => window.oldAccountDocument") is not None:
-            assert time.monotonic() < deadline, "the other tab never reloaded on the account switch"
-            time.sleep(0.2)
+        # evaluate() raises when the reload destroys the context; wait_for_function re-runs in the new one.
+        try:
+            second_tab.wait_for_function(
+                "() => window.oldAccountDocument === undefined", timeout = STEP_TIMEOUT_MS
+            )
+        except PlaywrightTimeoutError:
+            raise AssertionError("the other tab never reloaded on the account switch") from None
 
         page.locator("#current-password").fill(setup_code)
         page.locator("#new-password").fill(managed_password)

@@ -1,5 +1,4 @@
-# Regression tests for denied setup.ps1 install trees.
-# Run the real probes against chmod on POSIX and icacls deny on Windows.
+# Regression tests for denied setup.ps1 install trees: chmod on POSIX, icacls deny on Windows.
 $ErrorActionPreference = "Stop"
 $script:failures = 0
 function Check($name, $cond) {
@@ -19,20 +18,16 @@ foreach ($fn in @("Test-AccessDeniedError", "Get-PathState", "Test-PathQuiet",
     if ($src) { . ([scriptblock]::Create($src)) }
 }
 
-# ── Source contract: the crash site must probe state, not bare Test-Path ──
 $setupText = Get-Content -Raw -LiteralPath $setupPath
 Check "prebuilt metadata probe no longer uses a bare Test-Path" (
     $setupText -notmatch '\n\s*if \(Test-Path \$existingMetaPath\)')
 Check "prebuilt metadata probe goes through a non-throwing helper" (
     $setupText -match 'Test-PathQuiet -Path \$existingMetaPath -PathType Leaf')
-# Get-LlamaCppInstallReadState decides denial before this marker probe.
 Check "a denied llama.cpp install fails with an actionable message" (
     $setupText -match '\$llamaDirState -eq "Denied"' -and
     $setupText -match 'return "Access denied reading the existing \$Label')
-# Shared reporting returns a reason instead of exiting directly.
 Check "Exit-PathAccessDenied delegates the wording to Write-PathAccessDenied" (
     $setupText -match 'Exit-SetupFailure \(Write-PathAccessDenied -Path \$Path -Label \$Label')
-# Every denial route must report instead of proceeding.
 Check "the prebuilt phase stops on a denied llama.cpp dir" (
     $setupText -match '\$llamaDirState = Get-LlamaCppInstallReadState -Path \$LlamaCppDir' -and
     $setupText -match '\$llamaDirState -eq "Denied"')
@@ -52,7 +47,12 @@ Check "the source-build .git probe stops on a denied checkout" (
     $setupText -match '\$llamaGitState -eq "Denied"')
 Check "the ownership guard stops on a denied root instead of returning" (
     $setupText -match '\$pathState = Get-PathState -Path \$Path -PathType Container' -and
-    $setupText -match '\$StudioHomeIsCustom -and \$pathState -eq "Denied"')
+    $setupText -match '\$isCustomRoot -and \$pathState -eq "Denied"')
+# The guard takes the flag as a parameter (master-root runtime children are owned even with
+# a legacy home); the default must still be the script-level flag.
+Check "the guard's flag defaults to the script-level one" (
+    $setupText -match '\$isCustomRoot = \$StudioHomeIsCustom' -and
+    $setupText -match 'if \(\$null -ne \$IsCustom\) \{ \$isCustomRoot = \[bool\]\$IsCustom \}')
 Check "guidance says an app reinstall does not reset the folder" (
     $setupText -match 'reinstalling Unsloth Studio, to any drive, reuses it' -and
     $setupText -match 'Reinstalling the app does not reset it\.')
@@ -61,7 +61,6 @@ Check "guidance names the concrete recovery commands" (
 Check "whisper marker probe cannot terminate the non-fatal whisper phase" (
     $setupText -match 'if \(Test-PathQuiet \$llamaMarker "Leaf"\)')
 
-# ── Behaviour against a real unreadable directory ──
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_acl_" + [guid]::NewGuid().ToString("N"))
 $locked = Join-Path $root "llama.cpp"
 New-Item -ItemType Directory -Force -Path $locked | Out-Null
@@ -117,7 +116,6 @@ try {
         Check "Test-StudioOwnedAdoptable does not terminate on a denied tree" (-not $threw)
         Check "Test-StudioOwnedAdoptable cannot adopt an unreadable tree" ($adoptable -eq $false)
 
-        # This is the state the early installer preflight must recognize.
         $treeState = $null
         $threw = $false
         try { $treeState = Get-LlamaCppInstallReadState -Path $locked } catch { $threw = $true }
@@ -129,9 +127,8 @@ try {
     Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue
 }
 
-# ── A denied tree with NO metadata inside it ──
-# A missing child of a denied Windows dir looks absent, so the listing must catch
-# it. POSIX mode 111 is the same shape.
+# A missing child of a denied Windows dir looks absent, so the listing must catch it.
+# POSIX mode 111 is the same shape.
 $bareRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_bare_" + [guid]::NewGuid().ToString("N"))
 $bareLocked = Join-Path $bareRoot "llama.cpp"
 New-Item -ItemType Directory -Force -Path (Join-Path $bareLocked "build") | Out-Null
@@ -140,7 +137,6 @@ foreach ($mode in $bareModes) {
     if ($mode -eq "acl") { icacls $bareLocked /deny "$env:USERDOMAIN\${env:USERNAME}:(OI)(CI)(RX)" *>$null }
     else { chmod $mode $bareLocked }
     try {
-        # Ensure the listing, not the absent marker, decides this case.
         $metaProbe = Get-PathState -Path (Join-Path $bareLocked "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf
         $state = $null
         $threw = $false
@@ -159,9 +155,8 @@ foreach ($mode in $bareModes) {
 }
 Remove-Item -Recurse -Force -LiteralPath $bareRoot -ErrorAction SilentlyContinue
 
-# ── A readable marker inside a tree that cannot be listed ──
-# What a marker-only probe would call Readable. Windows denies ReadData; POSIX
-# mode 111 keeps the named child stat-able.
+# A marker-only probe would call this Readable. Windows denies ReadData; POSIX mode 111
+# keeps the named child stat-able.
 $listRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_list_" + [guid]::NewGuid().ToString("N"))
 $listLocked = Join-Path $listRoot "llama.cpp"
 New-Item -ItemType Directory -Force -Path $listLocked | Out-Null
@@ -184,8 +179,7 @@ try {
     Remove-Item -Recurse -Force -LiteralPath $listRoot -ErrorAction SilentlyContinue
 }
 
-# ── Test-Path parity: the regression-safety invariant ──
-# Preserve every non-throwing Test-Path result; only thrown probes may be denied.
+# Test-Path parity: preserve every non-throwing result; only thrown probes may be denied.
 $parityRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_par_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path (Join-Path $parityRoot "tree/sub") | Out-Null
 Set-Content -LiteralPath (Join-Path $parityRoot "tree/UNSLOTH_PREBUILT_INFO.json") -Value "{}"
@@ -209,9 +203,7 @@ Remove-Item -Recurse -Force -LiteralPath $parityRoot -ErrorAction SilentlyContin
 Check "Get-PathState matches bare Test-Path on every non-throwing probe ($probed)" ($mismatch -eq 0)
 Check "Denied never appears where the old probe did not throw" ($deniedWithoutThrow -eq 0)
 
-# ── A denied marker FILE under a readable directory ──
-# Windows only (POSIX keeps mode-000 files stat-able): a denied marker must not be
-# mistaken for an unrelated directory.
+# Windows only (POSIX keeps mode-000 files stat-able): a denied marker must not look like a dir.
 $adoptRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_adopt_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $adoptRoot | Out-Null
 $adoptMarker = Join-Path $adoptRoot "UNSLOTH_PREBUILT_INFO.json"
@@ -236,16 +228,13 @@ if ($onWindows) {
 Remove-Item -Recurse -Force -LiteralPath $adoptRoot -ErrorAction SilentlyContinue
 Check "a missing marker reports No" ((Get-StudioAdoptableState -Path ([System.IO.Path]::GetTempPath())) -eq "No")
 
-# ── The reporting path must not itself fail ──
-# Reporting must tolerate an empty path without masking the original failure.
 foreach ($edge in @($null, "", "   ")) {
     $edgeOk = $true
     try { $null = Get-PathDenialDetail -Path $edge } catch { $edgeOk = $false }
     Check "Get-PathDenialDetail tolerates an empty/null path" $edgeOk
 }
 
-# ── The desktop app must receive the reason, not just "exit code 1" ──
-# Exercise the real Tauri failure path, which prefers [TAURI:ERROR] details.
+# The Tauri failure path prefers [TAURI:ERROR] details over "exit code 1".
 $exitDeniedSrc = Get-FunctionSource -Path $setupPath -Name Exit-PathAccessDenied
 $writeDeniedSrc = Get-FunctionSource -Path $setupPath -Name Write-PathAccessDenied
 $exitSetupSrc = Get-FunctionSource -Path $setupPath -Name Exit-SetupFailure
@@ -258,6 +247,7 @@ function step { param([string]`$Label, [string]`$Value, [string]`$Color = "Green
 function substep { param([string]`$Message, [string]`$Color = "DarkGray") Write-Host "    `$Message" }
 function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 function Get-PathDenialDetail { param([string]`$Path) return "" }
+function Get-SecuritySoftwareNote { return "" }
 $exitSetupSrc
 $writeDeniedSrc
 $exitDeniedSrc
@@ -293,8 +283,7 @@ Write-Host "REACHED_UNREACHABLE"
         @($out -split "`r?`n" | Where-Object { $_ -match 'icacls .* /reset /T' }).Count -eq 1)
 }
 
-# ── The reporter must return one string, not a pipeline ──
-# The shared reporter must return one value even when Tauri stdout mirroring runs.
+# The reporter must return one value even when Tauri stdout mirroring runs.
 $mirrorFns = @("Get-StudioAnsi", "Write-StudioStdoutMirror", "step", "substep", "Write-PathAccessDenied")
 $mirrorSrc = @()
 foreach ($fn in $mirrorFns) {
@@ -306,6 +295,7 @@ if ($mirrorSrc.Count -eq $mirrorFns.Count) {
     $mirrorHarness = @"
 `$ErrorActionPreference = "Stop"
 function Get-PathDenialDetail { param([string]`$Path) return "" }
+function Get-SecuritySoftwareNote { return "" }
 $($mirrorSrc -join "`n")
 `$script:StudioVtOk = `$false
 Add-Content -LiteralPath `$args[0] -Value "REDIRECTED=`$([Console]::IsOutputRedirected)"
@@ -322,7 +312,6 @@ foreach (`$mode in @(@{}, @{OwnershipUnverified=`$true}, @{UserSupplied=`$true})
     $mirrorResFile = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_res_" + [guid]::NewGuid().ToString("N") + ".txt")
     $lines = @()
     try {
-        # Redirect stdout to activate the mirror; return verdicts in another file.
         & $pwshExe3 -NoProfile -File $mirrorFile $mirrorResFile *> $mirrorOutFile
         if (Test-Path -LiteralPath $mirrorResFile) { $lines = @(Get-Content -LiteralPath $mirrorResFile) }
     } finally {
@@ -338,7 +327,6 @@ foreach (`$mode in @(@{}, @{OwnershipUnverified=`$true}, @{UserSupplied=`$true})
         $emitted.Count -eq 3 -and @($emitted | Where-Object { $_ -ne "EMITTED=1/String" }).Count -eq 0)
 }
 
-# ── Denial classification ──
 Check "UnauthorizedAccessException classifies as access denied" (
     Test-AccessDeniedError ([System.UnauthorizedAccessException]::new("denied")))
 Check "a wrapped UnauthorizedAccessException classifies as access denied" (
@@ -346,7 +334,6 @@ Check "a wrapped UnauthorizedAccessException classifies as access denied" (
 Check "an unrelated exception does not classify as access denied" (
     -not (Test-AccessDeniedError ([System.IO.FileNotFoundException]::new("missing"))))
 
-# -- Assert-StudioOwnedOrAbsent -NonFatal, run for real --
 # Whisper denial remains nonfatal while other ownership failures remain fatal.
 $assertSrc = Get-FunctionSource -Path $setupPath -Name Assert-StudioOwnedOrAbsent
 $markSrc = Get-FunctionSource -Path $setupPath -Name Mark-StudioOwned
@@ -354,14 +341,11 @@ Check "setup.ps1 defines Assert-StudioOwnedOrAbsent" ($null -ne $assertSrc)
 if ($assertSrc -and $markSrc) {
     . ([scriptblock]::Create($assertSrc))
     . ([scriptblock]::Create($markSrc))
-    # Reaching either of these is the failure the -NonFatal mode exists to avoid.
     function Exit-PathAccessDenied { param($Path, $Label, [switch]$UserSupplied, [switch]$OwnershipUnverified) throw "EXIT-DENIED" }
     function Exit-SetupFailure { param($Message, $Code) throw "EXIT-SETUP" }
     function step { param($a, $b, $c) }
     function substep { param($a, $b) }
-    # The unowned-tree branch reports through setup.ps1's UTF-8 stdout sink before it
-    # exits. Unstubbed it is a command-not-found terminating error, which the catch
-    # below would score as the intended failure while never reaching Exit-SetupFailure.
+    # Unstubbed, this sink is a command-not-found error the catch would score as the failure.
     function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
     $StudioOwnedMarker = ".unsloth-studio-owned"
     $StudioHomeIsCustom = $true
@@ -371,7 +355,6 @@ if ($assertSrc -and $markSrc) {
     $nfUnowned = Join-Path $nfRoot "unowned"
     $nfInner = Join-Path $nfDenied "inner"
     $nfMarker = Join-Path $nfDenied $StudioOwnedMarker
-    # Populate first so the denial negative control probes an existing child.
     New-Item -ItemType Directory -Force -Path $nfInner | Out-Null
     Set-Content -LiteralPath $nfMarker -Value ""
     New-Item -ItemType Directory -Force -Path $nfUnowned | Out-Null
@@ -387,7 +370,6 @@ if ($assertSrc -and $markSrc) {
     }
     try {
         Set-NfDenied $true
-        # Same environment gate as above: no real denial means no real test.
         $nfReal = $false
         try { $null = Test-Path $nfMarker } catch { $nfReal = $true }
         Check "the host can actually deny a read (negative control)" $nfReal
@@ -397,7 +379,7 @@ if ($assertSrc -and $markSrc) {
             try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" -NonFatal) }
             catch { $threw = $true }
             Check "-NonFatal hands a denied tree back instead of exiting" (-not $threw)
-            # One bare string, not an array: a stray emit would break the caller's -eq.
+            # One bare string: a stray emit would break the caller's -eq.
             Check "-NonFatal returns exactly one value" ($out.Count -eq 1)
             Check "-NonFatal returns Denied" ($out.Count -eq 1 -and $out[0] -eq "Denied")
 
@@ -405,7 +387,6 @@ if ($assertSrc -and $markSrc) {
             try { $null = Assert-StudioOwnedOrAbsent -Path $nfDenied -Label "whisper.cpp install" } catch { $threw = $true }
             Check "without -NonFatal a denied tree still stops setup" $threw
 
-            # Lock the parent to cover a denied directory probe too.
             $out = $null
             $threw = $false
             try { $out = @(Assert-StudioOwnedOrAbsent -Path $nfInner -Label "whisper.cpp install" -NonFatal) }
@@ -413,8 +394,7 @@ if ($assertSrc -and $markSrc) {
             Check "-NonFatal hands back a tree whose parent is unreadable" (
                 -not $threw -and $out.Count -eq 1 -and $out[0] -eq "Denied")
 
-            # A fresh custom home with no marker. Mode 111 allows child stat but
-            # denies listing, matching Windows here.
+            # Mode 111 allows child stat but denies listing, matching Windows here.
             $bareWho = "$env:USERDOMAIN\$env:USERNAME"
             $bareModes = if ($onWindows) { @("acl") } else { @("000", "111") }
             foreach ($mode in $bareModes) {
@@ -435,27 +415,43 @@ if ($assertSrc -and $markSrc) {
                 }
             }
         }
-        # -NonFatal rescues the denial only: someone else's folder must still stop.
-        # Pin the stop to Exit-SetupFailure rather than to "something threw": any
-        # missing helper in the guard would also throw, and would pass a bare check.
+        # Pin the stop to Exit-SetupFailure: a missing helper would also throw.
         $threw = $false
         $thrownBy = $null
         try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal }
         catch { $threw = $true; $thrownBy = $_.Exception.Message }
         Check "-NonFatal does not excuse an unowned tree" ($threw -and $thrownBy -eq "EXIT-SETUP")
+
+        # activate_install_tree moves aside whatever Path.exists() finds, so a file counts too.
+        $nfFile = Join-Path $nfRoot "llama.cpp"
+        Set-Content -LiteralPath $nfFile -Value "mine"
+        $nfLink = Join-Path $nfRoot "node"
+        New-Item -ItemType SymbolicLink -Path $nfLink -Target (Join-Path $nfRoot "gone") -ErrorAction SilentlyContinue | Out-Null
+        foreach ($shape in @(@("a regular file", $nfFile), @("a dangling link", $nfLink))) {
+            if (-not (Get-Item -LiteralPath $shape[1] -Force -ErrorAction SilentlyContinue)) { continue }
+            $threw = $false
+            $thrownBy = $null
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -NonFatal }
+            catch { $threw = $true; $thrownBy = $_.Exception.Message }
+            Check "$($shape[0]) at a custom runtime path stops setup" ($threw -and $thrownBy -eq "EXIT-SETUP")
+            # Only a chosen root is the user's directory, as in setup.sh.
+            $threw = $false
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -IsCustom $false }
+            catch { $threw = $true }
+            Check "$($shape[0]) at a default runtime path is left to the caller" (-not $threw)
+        }
     } finally {
         Set-NfDenied $false
         Remove-Item -Recurse -Force -LiteralPath $nfRoot -ErrorAction SilentlyContinue
     }
 }
 
-# ── install.ps1's preflight, run for real ──
-# Its copied helpers run in a child so they do not shadow setup.ps1's, and must
-# return actionable guidance for a real denied tree.
+# Helpers run in a child so they do not shadow setup.ps1's.
 $installPath = [System.IO.Path]::Combine($repoRoot, "install.ps1")
 $preflightFns = @("Test-AccessDeniedError", "Get-PathState", "Get-LlamaCppInstallReadState",
-                  "Get-PathDenialDetail", "Write-PathAccessDenied", "Get-CanonicalDir",
-                  "Test-StudioHomeIsCustom", "Get-ManagedLlamaCppDir",
+                  "Get-PathDenialDetail", "Get-SecuritySoftwareNote",
+                  "Write-PathAccessDenied", "Get-CanonicalDir",
+                  "Test-StudioHomeIsCustom", "Get-MasterRootOverride", "Get-ManagedLlamaCppDir",
                   "Invoke-ManagedLlamaCppPreflight")
 $preflightSrc = @()
 foreach ($fn in $preflightFns) {
@@ -463,6 +459,25 @@ foreach ($fn in $preflightFns) {
     Check "install.ps1 defines $fn" ($null -ne $src)
     if ($src) { $preflightSrc += $src }
 }
+# A missing lifted helper kills the child silently. Check "install.ps1 defines it", not
+# "resolvable here": Get-SecuritySoftwareNote needs Windows-only cmdlets.
+$harnessStubs = @("step", "substep", "Write-StudioLine")
+$preflightCalls = @()
+foreach ($src in $preflightSrc) {
+    $tokens = [System.Management.Automation.PSParser]::Tokenize($src, [ref]$null)
+    foreach ($t in $tokens) {
+        if ($t.Type -eq "Command" -and $t.Content -match "^(Get|Test|Invoke|Write|Set|New)-[A-Za-z]+$") {
+            $preflightCalls += $t.Content
+        }
+    }
+}
+$unlifted = @($preflightCalls | Sort-Object -Unique | Where-Object {
+    $_ -notin $preflightFns -and $_ -notin $harnessStubs -and
+    $null -ne (Get-FunctionSource -Path $installPath -Name $_)
+})
+Check ("the preflight lifts every install.ps1 helper it calls" +
+       $(if ($unlifted.Count) { " (not lifted: " + ($unlifted -join ", ") + ")" } else { "" })) `
+      ($unlifted.Count -eq 0)
 if ($preflightSrc.Count -eq $preflightFns.Count) {
     $preflightHarness = @"
 `$ErrorActionPreference = "Stop"
@@ -488,24 +503,61 @@ Write-Host "CAN_DENY: `$oldFormTerminated"
 # Both override forms must switch to user-supplied wording.
 if (`$args[2] -eq "supplied") { `$WithLlamaCppDir = `$dir }
 if (`$args[2] -eq "env") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = `$dir }
+# A build supplied from inside the managed tree goes with it when the tree is
+# moved or deleted, so the tree is not ours to touch either.
+if (`$args[2] -eq "nested") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = Join-Path `$dir "custom" }
+# On POSIX, renaming needs write and execute on the PARENT, so taking write off the
+# parent is the denial the move cannot recover. On Windows the read deny applied to
+# every mode already refuses the rename, and denying DELETE alone does not (measured),
+# so this mode is the same as the one above there -- which is why the checks that read
+# it are written per platform.
+if (`$args[2] -eq "unmovable") {
+    if (`$onWindows) { icacls `$dir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(DE)" *>`$null }
+    else { chmod 500 (Split-Path -Parent `$dir) }
+}
+# A link is the user's own arrangement, so it must be reported rather than moved.
+`$linkMade = `$false
+if (`$args[2] -eq "link") {
+    `$realDir = Join-Path `$env:USERPROFILE ".unsloth\real-llama.cpp"
+    New-Item -ItemType Directory -Force -Path `$realDir | Out-Null
+    if (`$onWindows) { icacls `$dir /remove:d "`$env:USERDOMAIN\`$env:USERNAME" *>`$null } else { chmod 755 `$dir }
+    Remove-Item -Recurse -Force -LiteralPath `$dir -ErrorAction SilentlyContinue
+    try {
+        New-Item -ItemType SymbolicLink -Path `$dir -Target `$realDir -ErrorAction Stop | Out-Null
+        `$linkMade = `$true
+    } catch { `$linkMade = `$false }
+    if (`$linkMade) {
+        if (`$onWindows) { icacls `$realDir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(OI)(CI)(RX)" *>`$null }
+        else { chmod 000 `$realDir }
+    }
+}
+Write-Host "LINK_MADE: `$linkMade"
 `$denied = Invoke-ManagedLlamaCppPreflight
 Write-Host "DENIED_VERDICT: `$(if (`$null -eq `$denied) { "continue" } else { "stop" })"
 Write-Host "DENIED_REASON: `$denied"
+# Whether the cache was moved out of the way, and whether anything was left at
+# the original path for the next run to trip over again.
+`$aside = @(Get-ChildItem -LiteralPath (Split-Path -Parent `$dir) -Force -ErrorAction SilentlyContinue |
+    Where-Object { `$_.Name -like "llama.cpp.denied-*" })
+Write-Host "ASIDE_COUNT: `$(`$aside.Count)"
+Write-Host "ORIGINAL_EXISTS: `$(Test-Path -LiteralPath `$dir)"
+if (-not `$onWindows) { chmod 755 (Split-Path -Parent `$dir) }
 if (`$onWindows) { icacls `$dir /remove:d "`$env:USERDOMAIN\`$env:USERNAME" *>`$null }
-else { chmod 755 `$dir }
+else { chmod 755 `$dir 2>`$null }
 "@
     $preflightFile = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_pre_" + [guid]::NewGuid().ToString("N") + ".ps1")
     Set-Content -LiteralPath $preflightFile -Value $preflightHarness -Encoding utf8
     $pwshExe2 = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
     if (-not $pwshExe2) { $pwshExe2 = (Get-Command powershell).Source }
-    # Use one child per mode so command-line counts remain unambiguous.
     $preflightRuns = @{}
     $preflightHome = ""
+    $preflightHomes = @{}
     try {
-        foreach ($mode in @("managed", "supplied", "env")) {
+        foreach ($mode in @("managed", "supplied", "env", "nested", "unmovable", "link")) {
             $runHome = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_home_" + [guid]::NewGuid().ToString("N"))
             New-Item -ItemType Directory -Force -Path $runHome | Out-Null
             if ($mode -eq "managed") { $preflightHome = $runHome }
+            $preflightHomes[$mode] = $runHome
             try {
                 $preflightRuns[$mode] = & $pwshExe2 -NoProfile -File $preflightFile $runHome $(if ($onWindows) { "win" } else { "posix" }) $mode 2>&1 | Out-String
             } finally {
@@ -516,7 +568,6 @@ else { chmod 755 `$dir }
         Remove-Item -LiteralPath $preflightFile -ErrorAction SilentlyContinue
     }
     $out = $preflightRuns["managed"]
-    # The path it decides about, not a path the test computed for it.
     $expectedDir = Join-Path $preflightHome ".unsloth\llama.cpp"
     Check "the preflight resolves the managed llama.cpp dir under the profile" (
         $out -match ("RESOLVED_DIR: " + [regex]::Escape($expectedDir)))
@@ -524,7 +575,25 @@ else { chmod 755 `$dir }
     if ($out -notmatch "CAN_DENY: True") {
         Write-Host "  SKIP  cannot deny access on this host (running as root/admin?) -- preflight denial checks skipped" -ForegroundColor Yellow
     } else {
-        Check "an unreadable llama.cpp cache stops the install" ($out -match "DENIED_VERDICT: stop")
+        # On Windows any read deny refuses the rename (it needs SYNCHRONIZE), so recovery cannot
+        # fire here; on POSIX it only needs write+execute on the parent.
+        if ($onWindows) {
+            Check "a denied cache that cannot be renamed is reported, not moved aside" (
+                $out -match "DENIED_VERDICT: stop")
+            Check "the refused rename leaves nothing behind beside the original" (
+                $out -match "ASIDE_COUNT: 0" -and $out -match "ORIGINAL_EXISTS: True")
+        } else {
+            Check "a denied cache that can be renamed is moved aside, not reported" (
+                $out -match "DENIED_VERDICT: continue")
+            Check "the moved cache leaves the original path free for the reinstall" (
+                $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        }
+
+        $out = $preflightRuns["unmovable"]
+        $expectedDir = Join-Path $preflightHomes["unmovable"] ".unsloth\llama.cpp"
+        Check "an unreadable llama.cpp cache that cannot be moved stops the install" (
+            $out -match "DENIED_VERDICT: stop")
+        Check "the unmovable cache is not left half-renamed" ($out -match "ASIDE_COUNT: 0")
         Check "the preflight reason names the folder" (
             $out -match ("DENIED_REASON: .*" + [regex]::Escape($expectedDir)))
         Check "the preflight reason says a reinstall will not help" (
@@ -536,28 +605,40 @@ else { chmod 755 `$dir }
             @($out -split "`r?`n" | Where-Object { $_ -match 'icacls .* /reset /T' }).Count -eq 1)
         Check "the preflight says the download has not happened yet" (
             $out -match "nothing has been downloaded or installed")
+
+        # A link is the user's own arrangement: moving it would swap trees under them.
+        $linked = $preflightRuns["link"]
+        if ($linked -notmatch "LINK_MADE: True") {
+            Write-Host "  SKIP  cannot create a symlink on this host -- link checks skipped" -ForegroundColor Yellow
+        } else {
+            Check "a denied cache that is a link is never moved aside" (
+                $linked -match "ASIDE_COUNT: 0" -and $linked -match "ORIGINAL_EXISTS: True")
+            Check "a denied cache that is a link stops the install" (
+                $linked -match "DENIED_VERDICT: stop")
+            Check "a denied cache that is a link is described as one" ($linked -match "it is a link")
+        }
         # Guidance may print ACL repair commands but must never run them.
         Check "the preflight does not run takeown or icacls itself" (
             $out -notmatch "SUCCESS: The file \(or folder\)" -and
             $out -notmatch "processed file:")
 
-        # Overrides may name the managed location itself; never call it disposable.
-        foreach ($mode in @("supplied", "env")) {
+        # Overrides may name the managed location or a build inside it; never move it.
+        foreach ($mode in @("supplied", "env", "nested")) {
             $supplied = $preflightRuns[$mode]
             Check "a tree the user named ($mode) still stops the install" (
                 $supplied -match "DENIED_VERDICT: stop")
             Check "a tree the user named ($mode) is not called a cache we own" (
                 $supplied -match "DENIED_REASON: .*point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build" -and
                 $supplied -notmatch "DENIED_REASON: .*Delete or rename")
+            Check "a tree the user named ($mode) is left where it is" (
+                $supplied -match "ASIDE_COUNT: 0" -and $supplied -match "ORIGINAL_EXISTS: True")
         }
         Check "the managed cache is still called one" (
             $out -match "DENIED_REASON: .*Delete or rename that folder")
     }
 }
 
-# ── Complete install/setup/update entrypoints ──
-# Run every public entrypoint with network and expensive work trapped. Windows CI
-# uses real ACLs; POSIX chmod is the local equivalent.
+# Every public entrypoint, with network and expensive work trapped.
 $entrypointHarness = @'
 $ErrorActionPreference = "Stop"
 $repoRoot = $args[0]
@@ -636,6 +717,9 @@ try {
         $entryWho = "$env:USERDOMAIN\$env:USERNAME"
         if ($onWindows) { icacls $entryLocked /deny "${entryWho}:(OI)(CI)(RX)" *>$null }
         else { chmod 000 $entryLocked }
+        # Block the rename too so these exercise the guidance path, not the recovery.
+        if ($onWindows) { icacls $entryLocked /deny "${entryWho}:(DE)" *>$null }
+        else { chmod 500 (Split-Path -Parent $entryLocked) }
         $canDenyEntrypoint = $false
         try {
             try { $null = Test-Path (Join-Path $entryLocked "UNSLOTH_PREBUILT_INFO.json") }

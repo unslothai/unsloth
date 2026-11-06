@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Colab-style arrow navigation must not swallow wrapped-line movement.
-
-`getCursorPosition().line` and `lineCount` are both LOGICAL, while JupyterLab wraps
-markdown and raw editors by default, so a one-line markdown header is
-line 0 == lineCount - 1 from every visual row and the wrapped rows are unreachable.
-
-CodeMirror's own answer is `EditorView.moveVertically(range, forward)`, which returns
-an unchanged head only at offset 0 / doc.length.
-
-A static source guard: the labextension is only built inside Dockerfile.studio.
-"""
+"""Arrow navigation must use CodeMirror moveVertically: logical line numbers hide wrapped rows."""
 
 from __future__ import annotations
 

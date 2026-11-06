@@ -1,9 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Argument and pipe-safety tests for scripts/uninstall.sh. Behavioral cases use
-# an instrumented copy that aborts before uninstalling.
+# Argument and pipe-safety tests for scripts/uninstall.sh, using a copy aborting before removal.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +12,6 @@ BODY_MARKER="__UNSLOTH_TEST_BODY_REACHED__"
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# Abort the test copy immediately before the first uninstall action.
 _body_entries=$(grep -c '^[[:space:]]*echo "Stopping any running Unsloth Studio servers\.\.\."$' "$SOURCE_UNINSTALL_SH" || true)
 [ "$_body_entries" = "1" ] || {
     echo "FATAL: expected one uninstall body entry, found $_body_entries" >&2
@@ -24,7 +21,6 @@ UNINSTALL_SH="$_TMP_ROOT/uninstall.sh"
 sed 's/^[[:space:]]*echo "Stopping any running Unsloth Studio servers\.\.\."$/    echo "__UNSLOTH_TEST_BODY_REACHED__"; return 99/' \
     "$SOURCE_UNINSTALL_SH" > "$UNINSTALL_SH"
 
-# Isolate every environment-controlled removal path.
 unset UNSLOTH_STUDIO_HOME STUDIO_HOME UNSLOTH_UNINSTALL_ROCM
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
@@ -52,7 +48,6 @@ assert_not_says() {
 
 FIXTURE_PATHS=".unsloth/studio .unsloth/studio/auth/.desktop_secret .local/bin/unsloth .local/share/unsloth"
 
-# assert_fixture <label> <home> present|gone
 assert_fixture() {
     _missing=""
     for _rel in $FIXTURE_PATHS; do
@@ -68,8 +63,7 @@ assert_fixture() {
 # A global, not command substitution: $() would swallow setup failures under -e.
 FIXTURE_HOME=""
 make_home() {
-    # Explicit template: BSD mktemp with no template implies -t and picks its
-    # own directory, so TMPDIR= lands outside _TMP_ROOT on macOS.
+    # Explicit template: BSD mktemp without one implies -t and lands outside _TMP_ROOT.
     FIXTURE_HOME=$(mktemp -d "$_TMP_ROOT/home.XXXXXX") || FIXTURE_HOME=""
     case "$FIXTURE_HOME" in
         "$_TMP_ROOT"/*) ;;
@@ -80,8 +74,7 @@ make_home() {
              "$FIXTURE_HOME/.local/share/unsloth" \
              "$FIXTURE_HOME/.local/bin"
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
-    # What install.sh leaves behind, because the uninstaller's ownership gate reads it before it
-    # deletes the root: the marker at install.sh:3190, and the venv the marker sits in.
+    # What install.sh leaves for the uninstaller's ownership gate: the marker and its venv.
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/pyvenv.cfg"
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/python"
@@ -104,7 +97,6 @@ run_uninstall() {
 
 echo "=== structure: the wrapper that makes an early exit pipe-safe ==="
 
-# Portable structural checks complement the Linux-only pipe test.
 if grep -q '^_unsloth_uninstall_main() {' "$SOURCE_UNINSTALL_SH"; then
     ok "_unsloth_uninstall_main is defined at top level"
 else
@@ -123,16 +115,12 @@ for _flag in --help -h; do
     run_uninstall "$FIXTURE_HOME" "$_flag"
     check "$_flag exits 0" "0" "$RC"
     assert_says "$_flag prints usage" "Unsloth Studio uninstaller" "$OUT"
-    # Inside the loop: make_home mints a fresh fixture per iteration, so a check
-    # placed after the loop only ever sees the last flag's home and --help could
-    # wipe an install unnoticed.
+    # Inside the loop: each flag gets a fresh fixture, so check per iteration.
     assert_fixture "$_flag keeps the install" "$FIXTURE_HOME" present
 done
 
-# The piped help form has to be spelled out, because the obvious one never
-# works: where -h is accepted it is the shell's own hashall option, so
-# `... | sh -h` uninstalls with no arguments; where it is not, the shell exits.
-# Its own run, not the loop's leftover $OUT, so a failure names the right check.
+# `... | sh -h` sets the shell's hashall option and uninstalls with no arguments,
+# so the piped help form is spelled out.
 make_home
 run_uninstall "$FIXTURE_HOME" --help
 assert_says "usage documents the piped help form" "sh -s -- --help" "$OUT"
@@ -154,8 +142,7 @@ assert_fixture "a rejected positional argument keeps the install" "$FIXTURE_HOME
 make_home
 run_uninstall "$FIXTURE_HOME" --dry-run --help
 check "'--dry-run --help' exits 2" "2" "$RC"
-# An exit code alone would pass even if the guard rejected the argument only
-# after the removal had already started.
+# An exit code alone would pass even if removal started before the rejection.
 assert_fixture "'--dry-run --help' keeps the install" "$FIXTURE_HOME" present
 
 make_home
@@ -183,10 +170,7 @@ fi
 
 echo "=== behaviour: the documented piped help form reaches the guard ==="
 
-# Portable counterpart to the Linux-only pipe-buffer case below: `sh -s --` is
-# the only piped spelling that gets arguments to the script rather than to the
-# shell, so it is the one the usage text points at and the one that has to work
-# everywhere.
+# `sh -s --` is the only piped spelling that passes arguments to the script.
 make_home
 OUT=$(HOME="$FIXTURE_HOME" sh -s -- --help < "$UNINSTALL_SH" 2>&1) || true
 assert_says     "'sh -s -- --help' prints usage"               "Unsloth Studio uninstaller" "$OUT"
@@ -242,8 +226,7 @@ fi
 
 echo "=== behaviour: the vulnerable final-call prefix is inert ==="
 
-# Drop the closing brace and truncate the call immediately after its function
-# name. Without the compound block this is a valid no-argument uninstall.
+# Truncated right after the function name: without the block this is a no-argument uninstall.
 _tail_prefix="$_TMP_ROOT/tail-after-function-name.sh"
 sed '$d' "$UNINSTALL_SH" | sed '$s/ "\$@"$//' > "$_tail_prefix"
 make_home
@@ -253,7 +236,6 @@ assert_fixture "tail truncation keeps the install" "$FIXTURE_HOME" present
 
 echo "=== behaviour: a truncated download must remove nothing ==="
 
-# One generic near-complete truncation complements the exact final-call boundary.
 make_home
 _bytes=$(wc -c < "$UNINSTALL_SH")
 OUT=$(head -c "$((_bytes * 99 / 100))" "$UNINSTALL_SH" \

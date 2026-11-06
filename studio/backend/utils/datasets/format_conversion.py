@@ -3,10 +3,17 @@
 
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
+import contextvars
 import os
 
 from .cells import cell_text
 from .iterable import is_streaming_dataset
+from .remote_images import (
+    fetch_opted_in_image_bytes,
+    fetch_untrusted_image_bytes,
+    is_network_share,
+    private_sources_allowed,
+)
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +26,28 @@ def _quiet_bar_kwargs() -> dict:
         return quiet_bar_kwargs()
     except Exception:  # noqa: BLE001 - a bar is never worth failing a conversion for
         return {}
+
+
+def _own_image_path(path, account):
+    """A local image a managed account names must be one it may read (a no-op for the owner). ``account`` is
+    captured when the conversion starts: URL datasets convert in a thread pool, which does not carry it."""
+    from utils.account_context import run_as
+    from utils.security.dataset_media import require_readable_media
+
+    if isinstance(path, str) and is_network_share(path) and not private_sources_allowed():
+        raise OSError(
+            f"Refusing an image path on a network share: {path}. "
+            "Set UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1 to load images from shares you trust."
+        )
+    run_as(account, require_readable_media, path)
+    return path
+
+
+def _normalize_role_alias(role) -> str:
+    """Stripped and lowercased, as `standardize_data_formats` and the preview do it."""
+    if role is None:
+        return ""
+    return str(role).strip().lower()
 
 
 def standardize_chat_format(
@@ -107,13 +136,14 @@ def standardize_chat_format(
     else:
         raise ValueError(f"Could not infer role/content keys for chat column '{chat_column}'")
 
+    # Keyed on the normalised alias: "Human" / " user " would reach the template raw.
     aliases_mapping = {}
     for x in aliases_for_system:
-        aliases_mapping[x] = "system"
+        aliases_mapping[_normalize_role_alias(x)] = "system"
     for x in aliases_for_user:
-        aliases_mapping[x] = "user"
+        aliases_mapping[_normalize_role_alias(x)] = "user"
     for x in aliases_for_assistant:
-        aliases_mapping[x] = "assistant"
+        aliases_mapping[_normalize_role_alias(x)] = "assistant"
 
     def _standardize_dataset(examples):
         convos = examples[chat_column]
@@ -131,17 +161,33 @@ def standardize_chat_format(
                 # Use the inferred keys first, falling back per-message so mixed ShareGPT/ChatML rows keep valid turns.
                 original_role = message.get(role_key)
                 original_content = message.get(content_key)
-                if original_role is None:
+                # Blank role counts as absent, as in the preview; an is None check trained a blank-role gpt turn as a user turn. Blank content is legitimate.
+                if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
-                    original_content = message.get("content") or message.get("value") or ""
+                    original_content = message.get("content")
+                if original_content is None:
+                    original_content = message.get("value")
+                if original_content is None and not message.get("tool_calls"):
+                    original_content = ""
 
-                standard_role = aliases_mapping.get(original_role, original_role)
+                # Unknown alias left as written; blank is "user", as most templates reject one.
+                normalized_role = _normalize_role_alias(original_role)
+                standard_role = (
+                    aliases_mapping.get(normalized_role, original_role)
+                    if normalized_role
+                    else "user"
+                )
 
-                if is_vlm:
+                if is_vlm and original_content is not None:
                     original_content = [{"type": "text", "text": original_content}]
 
-                new_message = {"role": standard_role, "content": original_content}
+                new_message = {
+                    key: value
+                    for key, value in message.items()
+                    if key not in (role_key, content_key, "from", "value")
+                }
+                new_message.update(role = standard_role, content = original_content)
                 new_convo.append(new_message)
 
             all_convos.append(new_convo)
@@ -154,12 +200,9 @@ def standardize_chat_format(
     }
 
     if not is_streaming_dataset(dataset):
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
@@ -178,6 +221,61 @@ def standardize_chat_format(
     return result
 
 
+_CHATML_ROLES = {"system", "user", "assistant", "tool"}
+
+
+def normalize_chatml_roles(
+    dataset,
+    chat_column,
+    batch_size = 1000,
+):
+    def _fold_message(message):
+        if not isinstance(message, dict):
+            return message
+        role = _normalize_role_alias(message.get("role"))
+        if role in _CHATML_ROLES and message.get("role") != role:
+            return {**message, "role": role}
+        return message
+
+    try:
+        import pyarrow.compute as pc
+        roles = pc.unique(
+            pc.struct_field(pc.list_flatten(dataset.data.column(chat_column)), "role")
+        )
+        if not any(
+            _normalize_role_alias(r) in _CHATML_ROLES and _normalize_role_alias(r) != r
+            for r in roles.to_pylist()
+        ):
+            return dataset
+    except Exception:
+        pass
+
+    def _fold(examples):
+        return {
+            chat_column: [
+                [_fold_message(message) for message in convo] if isinstance(convo, list) else convo
+                for convo in examples[chat_column]
+            ]
+        }
+
+    return dataset.map(
+        _fold,
+        batched = True,
+        batch_size = batch_size,
+        features = getattr(dataset, "features", None),
+    )
+
+
+def _content_text(content):
+    if isinstance(content, list):
+        return "\n".join(
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        )
+    return cell_text(content)
+
+
 def convert_chatml_to_alpaca(
     dataset,
     batch_size = 1000,
@@ -186,6 +284,15 @@ def convert_chatml_to_alpaca(
 ):
     """Convert ChatML to Alpaca format. Accepts a "messages" or "conversations" column with either standard "role"/"content" or ShareGPT "from"/"value" keys."""
     is_iterable = is_streaming_dataset(dataset)
+    roles = {
+        "system": "system",
+        "user": "user",
+        "human": "user",
+        "input": "user",
+        "assistant": "assistant",
+        "gpt": "assistant",
+        "output": "assistant",
+    }
 
     def _convert(examples):
         chatml_data = examples.get(chat_column) if chat_column else None
@@ -200,39 +307,56 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo in chatml_data:
-            instruction = ""
-            output = ""
+        for convo, column_system in zip(chatml_data, column_systems):
+            turns = []
+            for msg in convo or []:
+                role = roles.get(_normalize_role_alias(msg.get("role") or msg.get("from")))
+                content = _content_text(msg.get("content") or msg.get("value"))
+                if role is None or not content:
+                    continue
+                if turns and turns[-1][0] == role:
+                    turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
+                else:
+                    turns.append([role, content])
+            # A separate system column fills in only when the conversation has no leading system turn.
+            if (
+                isinstance(column_system, str)
+                and column_system.strip()
+                and not (turns and turns[0][0] == "system")
+            ):
+                turns.insert(0, ["system", column_system])
 
-            for msg in convo:
-                role = msg.get("role") or msg.get("from")
-                content = msg.get("content") or msg.get("value")
-
-                if role in ["user", "human", "input"] and not instruction:
+            system = ""
+            context = []
+            instruction = None
+            for role, content in turns:
+                if role == "system":
+                    system = f"{system}\n\n{content}" if system else content
+                elif role == "user":
                     instruction = content
-                elif role in ["assistant", "gpt", "output"] and not output:
-                    output = content
-                    break
-
-            instructions.append(instruction)
-            inputs.append("")
-            outputs.append(output)
+                elif instruction is not None:
+                    instructions.append(instruction)
+                    inputs.append(
+                        "\n\n".join(part for part in (system, "\n".join(context)) if part)
+                    )
+                    outputs.append(content)
+                    context += [f"User: {instruction}", f"Assistant: {content}"]
+                    instruction = None
 
         return {"instruction": instructions, "input": inputs, "output": outputs}
 
     dataset_map_kwargs = {
         "batched": True,
         "batch_size": batch_size,
+        "remove_columns": dataset.column_names or list(next(iter(dataset), {})),
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
@@ -289,12 +413,9 @@ def convert_alpaca_to_chatml(
     }
 
     if not is_iterable:
-        from utils.hardware import dataset_map_num_proc
+        from utils.hardware import light_map_num_proc
 
-        if num_proc is None or type(num_proc) is not int:
-            num_proc = dataset_map_num_proc()
-        else:
-            num_proc = dataset_map_num_proc(num_proc)
+        num_proc = light_map_num_proc(dataset, num_proc)
 
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
@@ -326,6 +447,40 @@ def _format_eta(seconds):
         return f"{h}h {m}m"
 
 
+# huggingface_hub snapshot_download's default; caps parallel requests to one image host or the Hub.
+_MAX_ROW_FETCH_WORKERS = 8
+
+
+def _fetch_row_image(url):
+    from io import BytesIO
+
+    from PIL import Image
+
+    fetch = fetch_opted_in_image_bytes if private_sources_allowed() else fetch_untrusted_image_bytes
+    return Image.open(BytesIO(fetch(url))).convert("RGB")
+
+
+def _non_null_rows(dataset, column):
+    """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
+    try:
+        # numpy / pandas / torch / custom formats turn nulls into values (NaN, pd.NA) the walk keeps.
+        if dataset.format["type"] not in (None, "python"):
+            raise TypeError("formatted dataset")
+        values = dataset.with_format("arrow")[column]
+        if values.null_count == 0:
+            return range(len(values))
+        import numpy as np
+        import pyarrow as pa
+        import pyarrow.compute as pc
+
+        valid = pc.is_valid(values)
+        if isinstance(valid, pa.ChunkedArray):
+            valid = valid.combine_chunks()
+        return np.flatnonzero(valid.to_numpy(zero_copy_only = False)).tolist()
+    except Exception:
+        return [i for i, value in enumerate(dataset[column]) if value is not None]
+
+
 def convert_to_vlm_format(
     dataset,
     instruction = None,
@@ -334,12 +489,12 @@ def convert_to_vlm_format(
     dataset_name = None,
     progress_callback = None,
 ):
-    """Convert simple {image, text} format to VLM messages format.
-
-    Returns a LIST of dicts with a 'messages' field, not a HuggingFace Dataset, to preserve PIL Images. For URL-based datasets, runs a 200-sample parallel probe first to estimate speed and failure rate via progress_callback, an optional callable(status_message=str).
-    """
+    """Returns a list, not a Dataset, so PIL Images are preserved; URL datasets are probed first."""
     from PIL import Image
+    from utils.account_context import current_account
     from .vlm_processing import generate_smart_vlm_instruction
+
+    account = current_account()
 
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
@@ -368,17 +523,13 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
-    def _convert_single_sample(sample):
-        """Convert a single sample to VLM format."""
-        # Image may be a PIL Image, local path, URL, or bare filename
+    def _convert_single_sample(sample, fetched = None):
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    image_data = Image.open(BytesIO(f.read())).convert("RGB")
+                image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
@@ -392,7 +543,9 @@ def convert_to_vlm_format(
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
-                image_data = Image.open(image_data).convert("RGB")
+                image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
+        elif image_data is None:
+            raise ValueError("Row has no image")
 
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
@@ -401,6 +554,8 @@ def convert_to_vlm_format(
 
         if uses_dynamic and instruction_column:
             current_instruction = sample[instruction_column]
+            if not isinstance(current_instruction, str) or not current_instruction.strip():
+                current_instruction = "Describe this image in detail."
         else:
             current_instruction = instruction
 
@@ -418,15 +573,31 @@ def convert_to_vlm_format(
         return {"messages": messages}
 
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = next(
+        (row[image_column] for row in dataset if row[image_column] is not None), None
+    )
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
-    # Bare-filename detection: build a basename to repo_path lookup so filename-only images resolve via hf_hub_download during conversion.
+    if has_urls:
+        with_image = _non_null_rows(dataset, image_column)
+        if len(with_image) < total:
+            logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
+            dataset = dataset.select(with_image)
+            total = len(with_image)
+
+    # A null caption would render as the word "None" in the assistant turn, so leave those rows out like rows without an image.
+    with_text = _non_null_rows(dataset, text_column)
+    if len(with_text) < total:
+        logger.info(f"Skipping {total - len(with_text)}/{total} rows without text")
+        dataset = dataset.select(with_text)
+        total = len(with_text)
+
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (
         not has_urls
         and isinstance(first_image, str)
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -443,6 +614,10 @@ def convert_to_vlm_format(
                 for f in repo_files
                 if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS)
             }
+            # Also key by the full relative path, e.g. "images/0001.jpg", as the ShareGPT converter does.
+            for f in repo_files:
+                if any(f.lower().endswith(ext) for ext in _IMAGE_EXTS):
+                    _image_lookup[f] = f
             if first_image in _image_lookup:
                 logger.info(
                     f"✅ Matched {len(_image_lookup)} image files in repo (e.g. '{first_image}' → '{_image_lookup[first_image]}')"
@@ -460,6 +635,9 @@ def convert_to_vlm_format(
     PROBE_SIZE = 200
     MAX_FAIL_RATE = 0.3
 
+    # Successful probe downloads by row, reused by the conversion.
+    probe_images = {}
+
     if has_urls and total > PROBE_SIZE:
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -474,8 +652,15 @@ def convert_to_vlm_format(
         probe_fail = 0
         probe_start = time.time()
 
+        def _probe_sample(index, sample):
+            url = sample[image_column]
+            if isinstance(url, str) and url.startswith(("http://", "https://")):
+                # A failed download is not kept, so the conversion retries it.
+                probe_images[index] = _fetch_row_image(url)
+            return _convert_single_sample(sample, probe_images.get(index))
+
         with ThreadPoolExecutor(max_workers = num_workers) as executor:
-            futures = {executor.submit(_convert_single_sample, s): s for s in probe_samples}
+            futures = {executor.submit(_probe_sample, i, s): s for i, s in enumerate(probe_samples)}
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -552,7 +737,9 @@ def convert_to_vlm_format(
 
             with ThreadPoolExecutor(max_workers = num_workers) as executor:
                 futures = {
-                    executor.submit(_convert_single_sample, s): i
+                    executor.submit(
+                        _convert_single_sample, s, probe_images.pop(batch_start + i, None)
+                    ): i
                     for i, s in enumerate(batch_samples)
                 }
                 batch_results = [None] * len(batch_samples)
@@ -663,10 +850,12 @@ def convert_sharegpt_with_images_to_vlm_format(
     dataset_name = None,
     progress_callback = None,
 ):
-    """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
+    """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Image lists match placeholders in conversation order. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
     from tqdm import tqdm
+    from utils.account_context import current_account
 
+    account = current_account()
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
         "human": "user",
@@ -682,12 +871,20 @@ def convert_sharegpt_with_images_to_vlm_format(
 
     # Resolve image loading, the same 3 tiers as convert_to_vlm_format.
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = None
+    for sample in dataset:
+        image_data = sample.get(image_column)
+        if isinstance(image_data, list):
+            image_data = next((image for image in image_data if image is not None), None)
+        if image_data is not None:
+            first_image = image_data
+            break
 
     _image_lookup = None
     if (
         isinstance(first_image, str)
         and not first_image.startswith(("http://", "https://"))
+        and not is_network_share(first_image)
         and not os.path.exists(first_image)
         and dataset_name
     ):
@@ -714,9 +911,8 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
             else:
                 logger.info(
-                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found — falling back to local open"
+                    f"⚠️ Built lookup with {len(_image_lookup)} images but '{first_image}' not found; unmatched filenames use local paths"
                 )
-                _image_lookup = None
         except Exception as e:
             logger.info(f"⚠️ Failed to build HF repo image lookup: {e}")
             _image_lookup = None
@@ -727,10 +923,7 @@ def convert_sharegpt_with_images_to_vlm_format(
             return image_data
         if isinstance(image_data, str):
             if image_data.startswith(("http://", "https://")):
-                import fsspec
-                from io import BytesIO
-                with fsspec.open(image_data, "rb", expand = True) as f:
-                    return Image.open(BytesIO(f.read())).convert("RGB")
+                return _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
                 from utils.hf_cache_settings import active_hf_hub_cache
@@ -743,21 +936,36 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
                 return Image.open(local_path).convert("RGB")
             else:
-                return Image.open(image_data).convert("RGB")
+                return Image.open(_own_image_path(image_data, account)).convert("RGB")
         if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
             if image_data.get("path"):
-                return Image.open(image_data["path"]).convert("RGB")
+                return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")
 
     def _convert_single_sample(sample):
         """Convert one ShareGPT+image sample to standard VLM format."""
-        pil_image = _resolve_image(sample[image_column])
+        image_data = sample[image_column]
         conversation = sample[messages_column]
+        is_image_list = isinstance(image_data, list)
+        if is_image_list:
+            marker_count = sum(
+                (msg.get("value") or msg.get("content") or "").count("<image>")
+                for msg in conversation
+            )
+            if not image_data or len(image_data) != marker_count:
+                raise ValueError(
+                    f"Image list has {len(image_data)} images but conversation has "
+                    f"{marker_count} <image> placeholders"
+                )
+            pil_images = [_resolve_image(image) for image in image_data]
+        else:
+            pil_images = [_resolve_image(image_data)]
 
         new_messages = []
+        image_index = 0
         for msg in conversation:
             role_raw = msg.get("from") or msg.get("role", "user")
             role = _ROLE_MAP.get(role_raw.lower(), role_raw.lower())
@@ -771,9 +979,15 @@ def convert_sharegpt_with_images_to_vlm_format(
                     if part:
                         content.append({"type": "text", "text": part})
                     if i < len(parts) - 1:
-                        content.append({"type": "image", "image": pil_image})
+                        content.append(
+                            {
+                                "type": "image",
+                                "image": pil_images[image_index if is_image_list else 0],
+                            }
+                        )
+                        image_index += 1
                 if not content:
-                    content.append({"type": "image", "image": pil_image})
+                    content.append({"type": "image", "image": pil_images[0]})
             else:
                 content = [{"type": "text", "text": text}]
 
@@ -785,6 +999,28 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
+    def _record(future_or_sample):
+        nonlocal failed_count
+        try:
+            if isinstance(future_or_sample, Future):
+                converted_list.append(future_or_sample.result())
+            else:
+                converted_list.append(_convert_single_sample(future_or_sample))
+        except Exception as e:
+            failed_count += 1
+            if failed_count == 1:
+                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
+        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
+
+    from concurrent.futures import Future
+
+    num_workers = 1
+    if _image_lookup is not None or (
+        isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
+    ):
+        from utils.hardware import safe_thread_num_proc
+        num_workers = min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS)
+
     pbar = tqdm(
         dataset,
         total = total,
@@ -792,15 +1028,34 @@ def convert_sharegpt_with_images_to_vlm_format(
         unit = "sample",
         **_quiet_bar_kwargs(),
     )
-    for sample in pbar:
-        try:
-            converted_list.append(_convert_single_sample(sample))
-        except Exception as e:
-            failed_count += 1
-            if failed_count == 1:
-                logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
-        pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-    pbar.close()
+    try:
+        if num_workers <= 1:
+            for sample in pbar:
+                _record(sample)
+        else:
+            from collections import deque
+            from concurrent.futures import ThreadPoolExecutor
+
+            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
+            pending = deque()
+            with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                try:
+                    for sample in pbar:
+                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
+                        pending.append(
+                            executor.submit(
+                                contextvars.copy_context().run, _convert_single_sample, sample
+                            )
+                        )
+                        if len(pending) > 2 * num_workers:
+                            _record(pending.popleft())
+                    while pending:
+                        _record(pending.popleft())
+                except BaseException:
+                    executor.shutdown(wait = False, cancel_futures = True)
+                    raise
+    finally:
+        pbar.close()
 
     if failed_count > 0:
         logger.info(f"⚠️ Skipped {failed_count}/{total} ({failed_count*100//total}%) samples")
@@ -819,40 +1074,75 @@ def convert_sharegpt_with_images_to_vlm_format(
 def convert_llava_to_vlm_format(dataset):
     """Convert Llava format to standard VLM format: Llava carries messages whose content blocks name an image by {'type': 'image', 'index': 0} plus a parallel images list, while the standard form inlines the PIL object as {'type': 'image', 'image': PIL_Image}."""
     from PIL import Image
+    from utils.account_context import current_account
 
-    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    account = current_account()
+
+    is_iterable = is_streaming_dataset(dataset)
+    if is_iterable:
+        logger.info("🔄 Converting streaming samples from Llava format to standard VLM format...")
+    else:
+        logger.info(
+            f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format..."
+        )
 
     def _convert_single_sample(sample):
         """Convert one llava sample to standard VLM format."""
         messages = sample["messages"]
         images = sample.get("images", [])
+        unindexed_image_index = 0
+        explicit_image_indices = set()
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image":
+                    continue
+                image_index = item.get("index")
+                if isinstance(image_index, int) and not isinstance(image_index, bool):
+                    explicit_image_indices.add(image_index)
 
         new_messages = []
         for msg in messages:
             new_content = []
+            message_content = msg["content"]
 
-            for item in msg["content"]:
+            if isinstance(message_content, str):
+                new_messages.append(
+                    {
+                        "role": msg["role"],
+                        "content": [{"type": "text", "text": message_content}],
+                    }
+                )
+                continue
+
+            for item in message_content:
                 if item["type"] == "image":
-                    if "index" in item and item["index"] is not None:
-                        img_idx = item["index"]
-                        if img_idx < len(images):
-                            pil_image = images[img_idx]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
+                    img_idx = item.get("index")
+                    if img_idx is None:
+                        while unindexed_image_index in explicit_image_indices:
+                            unindexed_image_index += 1
+                        img_idx = unindexed_image_index
+                        unindexed_image_index += 1
+                    if not isinstance(img_idx, int) or isinstance(img_idx, bool):
+                        raise ValueError(f"Invalid Llava image index: {img_idx!r}")
+                    if not 0 <= img_idx < len(images):
+                        raise ValueError(
+                            f"Llava image index {img_idx} is missing from a row with "
+                            f"{len(images)} images"
+                        )
 
-                            new_content.append(
-                                {
-                                    "type": "image",
-                                    "image": pil_image,  # Actual PIL object
-                                }
-                            )
-                    else:
-                        if len(images) > 0:
-                            pil_image = images[0]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
+                    pil_image = images[img_idx]
+                    if isinstance(pil_image, str):
+                        pil_image = Image.open(_own_image_path(pil_image, account)).convert("RGB")
+                    elif not isinstance(pil_image, Image.Image):
+                        raise ValueError(
+                            f"Unsupported Llava image value at index {img_idx}: "
+                            f"{type(pil_image).__name__}"
+                        )
 
-                            new_content.append({"type": "image", "image": pil_image})
+                    new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
                     new_content.append({"type": "text", "text": item.get("text", "")})
@@ -861,7 +1151,19 @@ def convert_llava_to_vlm_format(dataset):
 
         return {"messages": new_messages}
 
-    converted_list = [_convert_single_sample(sample) for sample in dataset]
+    if is_iterable:
+        remove_columns = dataset.column_names or list(next(iter(dataset), {}))
+        converted_dataset = dataset.map(
+            _convert_single_sample,
+            remove_columns = remove_columns,
+        )
+        try:
+            next(iter(converted_dataset), None)
+        except Exception as exc:
+            raise ValueError(f"Streaming Llava conversion failed on the first row: {exc}") from exc
+        logger.info("✅ Configured streaming Llava conversion")
+        return converted_dataset
 
+    converted_list = [_convert_single_sample(sample) for sample in dataset]
     logger.info(f"✅ Converted {len(converted_list)} samples")
     return converted_list

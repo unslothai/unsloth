@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The kwarg-spacing pass must leave a file's mode alone.
-
-It rewrites through a temp file and os.replace, and mkstemp creates that temp
-file 0600. scripts/run_ruff_format.py is the pre-commit hook's own entry point
-and is processed by the hook it runs, so once it carried kwarg spacing every
-run stripped its executable bit, pre-commit.ci committed the flip, and the next
-run failed before doing anything with "not executable".
-"""
+"""The kwarg-spacing pass must keep the file mode; a 0600 temp file would strip the exec bit."""
 
 from __future__ import annotations
 

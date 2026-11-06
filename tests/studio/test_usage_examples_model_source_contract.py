@@ -15,7 +15,7 @@ API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
 KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
 KEYLESS_ELIGIBILITY_TS = SETTINGS / "components/keyless-example-eligibility.ts"
 
-# Ends the hook slice on the declaration below it, not a comment: prose can move alone.
+# Ends the slice on the declaration below, not a comment: prose can move alone.
 AFTER_HOOK = "function canUseLocalAgentDetection(base: string): boolean {"
 
 
@@ -29,7 +29,6 @@ def test_examples_name_a_model_the_server_can_serve():
     # Precedence: live checkpoint, then a loaded entry, then any entry if switching is on.
     assert "catalog?.find((m) => m.loaded) ??" in hook
     assert "(!keylessOnly && autoSwitch ? catalog?.[0] : undefined)" in hook
-    # The snippet pins the quant so the request names the file on disk.
     assert "`${pick.id}:${pick.quant}`" in hook
 
     api = OPENAI_MODELS_TS.read_text(encoding = "utf-8")
@@ -37,33 +36,36 @@ def test_examples_name_a_model_the_server_can_serve():
 
 
 def test_examples_never_print_a_hardcoded_model_id():
-    # The bug this exists for: a `[]` catalog printed a snippet before /v1/models answered.
-    # It is tri-state now, and the panel asks for a model instead.
+    # The catalog is tri-state: a `[]` printed a snippet before /v1/models answered.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     assert "MODEL_FALLBACK" not in src
-    # No repo-shaped literal anywhere: a snippet may only name what /v1 returns.
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
-    # Nothing servable means nothing is built, so there is nothing to copy.
-    assert "(model ? buildSnippets(base, key, toolsKey, model, os) : null)" in src
-    assert "if (!snippets) return;" in src
-    assert "{snippets ? (" in src
-    assert 't("settings.apiKeys.usageNoModel")' in src
+    # No servable model: the snippet names an obvious placeholder (#14914) instead of a repo id,
+    # and the note under the pickers says why, so a copied curl cannot silently 404.
+    assert 'const MODEL_PLACEHOLDER = "YOUR_MODEL";' in src
+    assert "buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os)" in src
+    assert len(re.findall(r"\bbuildSnippets\(", src)) == 2, "one definition, one call site"
+    note = src.find('t("settings.apiKeys.usageNoModel")')
+    assert note != -1
+    gate = src.rfind("{model ? null : (", 0, note)
+    assert (
+        gate != -1 and note - gate < 200
+    ), "the no-model note must render exactly when the example shows the placeholder"
 
     en = EN_TS.read_text(encoding = "utf-8")
     assert "usageNoModel:" in en
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # A dep list missing these never re-ran, so a finished load left the first fetch's name. Nor may it be gated on
-    # having no checkpoint: the store keeps one across an idle unload, which changes nothing React can see.
+    # Without these deps a finished load kept the first fetch's name; the store keeps a
+    # checkpoint across idle unloads, so it cannot gate on having none.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "}, [checkpoint, ggufVariant]);" in hook
     assert "needsCatalog" not in hook
-    # A finishing download moves no store state, so the fetch retries on a timer too, and residency only slows that
-    # timer rather than stopping it.
+    # A finishing download moves no store state, so the fetch also retries on a timer.
     assert "CATALOG_RETRY_MS" in hook and "CATALOG_IDLE_MS" in hook
     assert "window.clearTimeout(timeoutId)" in hook
     assert "const CATALOG_RETRY_MS = 15000;" in src
@@ -71,13 +73,10 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # The store keeps a checkpoint across an idle unload and across a deletion, so
-    # preferring it on the switch setting alone named a model /v1/models had proved
-    # absent, and the snippets 404d instead of falling back.
+    # The store keeps a checkpoint across idle unloads and deletions, so it must be in the catalog.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
-    # resident, or downloaded with switching able to load this exact catalog entry.
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 
@@ -91,23 +90,20 @@ def test_idle_unload_does_not_guess_the_stashed_checkpoint():
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
-    # Catching into [] and false made a transient error authoritative: the panel dropped a still-servable model and
-    # printed "No model". The catalog is deliberately tri-state, and a failure must stay the unknown state.
+    # A failure must stay the unknown state, not [] or false, or a transient error drops the model.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "listOpenAIModels().catch(() => null)" in hook
     assert ".catch(() => null)," in hook
     assert "if (models !== null) setCatalog(models);" in hook
     assert "if (settings !== null) {" in hook
-    # The old negatives must be gone entirely.
     assert "catch(() => [] as OpenAIModel[])" not in hook
     assert "catch(() => [false, false] as const)" not in hook
     assert "catch(() => false)" not in hook
 
 
 def test_the_pinned_quant_comes_from_the_catalog():
-    # Catalog membership proves the repo, not the saved quant: the stored one can name a file deleted while another
-    # quant remains, so pinning it 404d on a missing quant with a runnable one listed.
+    # Catalog membership proves the repo, not the saved quant, which may have been deleted.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
@@ -115,9 +111,7 @@ def test_the_pinned_quant_comes_from_the_catalog():
 
 
 def test_usage_examples_has_no_duplicate_auto_switch_control():
-    # ModelAutoSwitchSection renders this setting just below and shares no state with it.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
-    # Reading the setting is fine; writing it here is what would be a second control.
     assert "updateOpenAIAutoSwitchSettings" not in src
     assert "SWITCH_NOTE" not in src
     assert "Switch model by request" not in src
@@ -129,20 +123,20 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-# The monitor moved onto its own page; Settings keeps configuration and links across.
 API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
-# Their own module: the overlay mounts from __root.tsx, so importing from the page pulled it into the eager bundle.
+# Own module: the overlay mounts from __root.tsx, so importing the page made it eager.
 API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+API_MODEL_LOAD_CONTROLS_TSX = (
+    REPO / "studio/frontend/src/features/api-monitor/components/api-model-load-controls.tsx"
+)
 MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
 def test_api_monitor_history_does_not_reorder_under_the_reader():
-    # The backend moves an entry to the front as it finishes, so the page pauses the poll to hold the whole list still
-    # while a payload is read.
+    # The backend reorders entries as they finish, so the page pauses polling while reading.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
     assert "paused" in src
     assert "setPaused" in src
-    # Filters and search are what keep 50 rows usable without paging.
     assert "filterEntries(" in src
     assert "STATUS_FILTERS" in src
 
@@ -154,16 +148,23 @@ def test_api_monitor_renders_lifecycle_rows():
     assert 'entry.kind === "lifecycle"' in labels
     for label in ("Loading model", "Model loaded", "Model unloaded"):
         assert label in labels
-    # A lifecycle row has no prompt or reply, so it is not selectable for detail.
     assert "if (isLifecycleEntry(entry)) {" in src
     assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_usage_examples():
+def test_auto_switch_section_sits_below_the_monitor_link():
+    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that), and
+    # #15467 put them behind ApiExamplesPanel's tab row; the auto-switch section still follows the
+    # monitor link, whatever props the link takes.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    # Configuration still comes ahead of the examples that depend on it.
-    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
+
+    def at(pattern):
+        match = re.search(pattern, tab)
+        assert match, f"{pattern} not found in {API_KEYS_TAB_TSX.name}"
+        return match.start()
+
+    assert at(r"<(?:UsageExamples|ApiExamplesPanel)\b") < at(r"<MonitorLink\b")
+    assert at(r"<MonitorLink\b") < at(r"<ModelAutoSwitchSection\b")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -179,17 +180,24 @@ def test_api_monitor_renders_download_rows():
 
 def test_monitor_can_unload_the_loaded_model():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "unloadActiveModel" in src
-    # Always rendered so the manual release stays discoverable; disabled, not hidden.
-    assert "disabled={unloading || !data?.active_model}" in src
-    assert "{data?.active_model ? (" not in src
+    controls = API_MODEL_LOAD_CONTROLS_TSX.read_text(encoding = "utf-8")
+    # The redesigned page (#14455) unloads through the model picker's eject, wired to the page's
+    # unloadActiveModel; the standalone always-visible button went with it.
+    assert "const unloadActiveModel = async" in src
+    assert "onUnloadActive={unloadActiveModel}" in src
+    assert "onUnloadActive();" in controls
+    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
+    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    busy = re.search(r"const busy = ([^;]+);", controls)
+    assert busy, "the load controls no longer compute busy"
+    assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
+    assert "onEject={busy ? undefined : handleEject}" in controls
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
 
 
 def test_settings_still_reaches_the_monitor():
-    # The console is gone, so Settings must still have a way through to it.
     link = MONITOR_LINK_TSX.read_text(encoding = "utf-8")
     assert 'to: "/api-monitor"' in link
 
@@ -229,9 +237,10 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "if (isLoopbackHost(host)) return true;" in eligibility
     assert 'return scope === "inference";' in eligibility
     assert "!(useTunnel && cloudflareUrl)" in src
-    assert "useExampleModelName(keylessBase && !apiKey)" in src
+    assert 'keylessBase && !apiKey && keylessScope === "inference"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
-    assert "[cloudflareUrl, onSettingsChange]" in section
+    assert "[cloudflareUrl, notify]" in section
+    assert "[onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
     assert "disabled on localhost" in section
     assert "read the files and settings in Unsloth" not in section

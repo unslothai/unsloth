@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useHubName } from "@/lib/hf-endpoint";
 import { toast } from "@/lib/toast";
-import { clearRemoteBackoff, type HubFailure } from "@/features/hub/lib/network";
+import type { ModelSearchFilters } from "../lib/model-search-filters";
+import {
+  clearRemoteBackoff,
+  hubAuthFailure,
+  type HubFailure,
+} from "../lib/network";
 import { useHubAvailability } from "./use-online-status";
 import {
   type HfModelResult,
   type HfModelSearchChannel,
   type HfSortDirection,
   type HfSortKey,
+  type HfTaskFilter,
+  hubListingSort,
   useHubModelSearch,
 } from "./use-hub-model-search";
 import {
@@ -26,7 +34,6 @@ export interface DiscoverSearch {
   hasMore: boolean;
   fetchMore: () => boolean;
   searchError: string | null;
-  /** Classified cause of the last failure, for a diagnosable error panel. */
   searchFailure: HubFailure | null;
   handleRetrySearch: () => void;
 }
@@ -75,16 +82,16 @@ function classifyDiscoverError(
   return "unknown";
 }
 
-function discoverErrorTitle(kind: DiscoverErrorKind): string {
+function discoverErrorTitle(kind: DiscoverErrorKind, hub: string): string {
   switch (kind) {
     case "offline":
-      return "Can't reach Hugging Face";
+      return `Can't reach ${hub}`;
     case "auth":
-      return "Hugging Face auth failed";
+      return `${hub} auth failed`;
     case "rate-limited":
-      return "Hugging Face rate limit";
+      return `${hub} rate limit`;
     default:
-      return "Couldn't reach Hugging Face";
+      return `Couldn't reach ${hub}`;
   }
 }
 
@@ -97,6 +104,9 @@ export function useDiscoverSearch({
   direction,
   channel,
   ownerScope,
+  filters,
+  keepResult,
+  task,
 }: {
   debouncedQuery: string;
   accessToken: string | undefined;
@@ -106,19 +116,18 @@ export function useDiscoverSearch({
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
+  filters?: ModelSearchFilters;
+  keepResult?: (result: HfModelResult) => boolean;
+  task?: HfTaskFilter;
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
-  // "probing" counts: a lapsed backoff is exactly when the next request should
-  // be allowed to test the network. Only a live backoff ("unavailable") holds it.
+  const hub = useHubName();
+  // "probing" counts: a lapsed backoff is when the next request should test the network.
   const canProbe = phase !== "unavailable";
-  // Only a success promotes to "available". A lapsed backoff is "probing", so a
-  // stale window can no longer announce "Back online" without a working request.
+  // Only a success promotes to "available", never a lapsed backoff.
   const online = phase === "available";
 
-  // Gated on the live backoff only, never on "probing". Gating on availability is what discarded
-  // the error and made every cause render the same, and that is now safe because the disabled path
-  // preserves it; but leaving it ungated let a user typing through an outage issue a request per
-  // debounce tick, each one re-arming the window it was meant to be waiting out.
+  // Gated on the live backoff only, or typing through an outage re-arms the window each tick.
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,
@@ -127,15 +136,17 @@ export function useDiscoverSearch({
     ownerScope,
     enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
+    keepResult,
     channel,
+    filters,
+    task,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,
-    // Not folded into `enabled`: that one also means "this tab is showing",
-    // and returns [] when false, so a backoff blanked every rendered row.
+    // Not folded into `enabled`, which returns [] when false and would blank rendered rows.
     enabled: isDiscoverTab && isDatasetMode,
     paused: !canProbe,
-    sortBy,
+    sortBy: hubListingSort(sortBy),
     sortDirection: direction,
   });
 
@@ -151,19 +162,23 @@ export function useDiscoverSearch({
   const rawFetchMore = isDatasetMode
     ? datasetSearch.fetchMore
     : modelSearch.fetchMore;
-  // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
   const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
   const needsRestart = isDatasetMode
     ? datasetSearch.needsRestart
     : modelSearch.needsRestart;
-  // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
-  const searchFailure = isDiscoverTab ? failure : null;
+  // A 401 is not a network failure. Memoised: the toast effect depends on it.
+  const searchFailure = useMemo(
+    () =>
+      isDiscoverTab
+        ? (failure ?? hubAuthFailure({ message: rawSearchError }))
+        : null,
+    [isDiscoverTab, failure, rawSearchError],
+  );
   const fetchMore = useCallback(() => {
     if (!canProbe || !hasMore) return false;
-    // A page that failed took the iterator with it, so resuming would resolve
-    // done and quietly end pagination, leaving Load more inert on screen.
+    // A failed page took the iterator with it; resuming would silently end pagination.
     if (needsRestart()) {
       retrySearch();
       return true;
@@ -172,8 +187,7 @@ export function useDiscoverSearch({
   }, [canProbe, hasMore, needsRestart, rawFetchMore, retrySearch]);
 
   const handleRetrySearch = useCallback(() => {
-    // Always re-probe: refusing during the backoff left users unable to test a
-    // firewall, DNS or certificate change without waiting out the timer.
+    // Always re-probe so users can test a network fix without waiting out the timer.
     clearRemoteBackoff();
     retrySearch();
     toast.message("Retrying…", {
@@ -194,21 +208,16 @@ export function useDiscoverSearch({
     const errorKind = classifyDiscoverError(searchError, online);
     if (lastErrorRef.current === errorKind) return;
     lastErrorRef.current = errorKind;
-    toast.error(discoverErrorTitle(errorKind), {
-      // The classified failure names the cause; the raw message covers HTTP
-      // errors that never reach the network layer.
+    toast.error(discoverErrorTitle(errorKind, hub), {
       description: searchFailure?.message ?? searchError,
       action: { label: "Retry", onClick: handleRetrySearch },
     });
-  }, [isDiscoverTab, searchError, searchFailure, online, handleRetrySearch]);
+  }, [isDiscoverTab, searchError, searchFailure, online, handleRetrySearch, hub]);
 
-  // Driven by a successful request, never a lapsed timer. Announcing recovery
-  // on TTL expiry produced a permanent offline/back-online loop.
+  // Driven by a successful request, never a lapsed timer (that caused an offline/online loop).
   const wasUnavailableRef = useRef(phase !== "available");
   const lastReconnectAtRef = useRef(0);
-  // Whether this feed is the one probing. Latched while it has a request in
-  // flight and cleared once it is idle and unavailable, so the reconnect effect
-  // can tell its own recovery from another surface's.
+  // Latched while this feed has a request in flight so the reconnect effect knows whose recovery it is.
   const selfProbedRef = useRef(false);
   useEffect(() => {
     if (isLoading || isLoadingMore) {
@@ -227,9 +236,7 @@ export function useDiscoverSearch({
         toast.success("Back online", {
           description: "Refreshing the discovery feed.",
         });
-        // Only when something else proved the Hub reachable. Our own successful
-        // request is what usually clears the window, and its results are already
-        // rendered, so retrying would discard them and re-issue the same call.
+        // Only when another surface proved reachability; our own success already rendered results.
         if (!selfProbed) retrySearch();
       }
     }

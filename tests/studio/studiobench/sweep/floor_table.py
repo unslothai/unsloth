@@ -1,28 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Per-metric detection floor, and the three gates a result has to clear to be quotable.
-
-    python -m tests.studio.studiobench.sweep.floor_table --floor OUT_NULL OUT_MINE
-
-WHY PER METRIC. The A/B renderer prints ONE floor, which is the right default for a headline and
-the wrong tool for deciding a pull request: a floor of 16.5% driven entirely by `jank_index` says
-nothing about whether `message_menu.open_close_ms` can resolve a 5% change. Every numeric timing on
-every action is harvested here and given its own floor, so a change is quoted against the floor of
-the metric it was written to move rather than against the worst metric in the run.
-
-WHY PAIRED BY REPETITION. The two arms of a repetition run adjacent in time, so pairing removes the
-session drift that pooling leaves in. The element census climbs monotonically through a session,
-and a pooled comparison charges that climb to whichever arm ran later.
-
-WHAT THE FLOOR IS. Run the SAME build against itself, base versus base, and whatever spread that
-produces is how far apart two identical builds land on this machine under this load. A difference
-smaller than it is not a small effect. It is an effect that cannot be distinguished from zero, and
-it prints as VOID rather than as a number.
-
-The floor must be measured in band, concurrently with the comparison it judges. Session-to-session
-drift on this metric set is about 8%, which is larger than most real effects, so a floor from a
-different session is not a floor.
-"""
+"""Per-metric detection floor and three gates; the floor is the same build run against itself."""
 
 from __future__ import annotations
 
@@ -35,8 +13,7 @@ import sys
 from pathlib import Path
 
 if __package__ in (None, ""):  # pragma: no cover
-    # Running the file directly rather than as a module, because the first thing a new contributor
-    # does with a script is run it by path.
+    # Allows running the file directly by path.
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 from tests.studio.studiobench.runtime.ab import failed_invalidating_gates  # noqa: E402
@@ -55,37 +32,13 @@ from tests.studio.studiobench.scoring import payload_rules  # noqa: E402
 
 METRICS = tuple(ACTION_SOURCES) + FRAME_METRICS + STREAM_METRICS
 
-# The metrics compared by DIFFERENCE rather than ratio, because zero is their CLEAN reading:
-# `stream_time_in_jank_pct` is exactly 0.0 on 765 of 1,438 scored cells. Paired as a ratio
-# `t / 0.0` is undefined, so `paired` dropped exactly the comparisons where the base was
-# clean, the ones a treatment that introduces jank shows up in. Pooled as `treatment - base`
-# for EVERY pair rather than only the zero ones, since mixing the two in one mean would be a
-# second unstable pool; the null control's floor is computed the same way and the table marks
-# these rows. Scoped to the two streaming metrics: `time_in_jank_pct` has the same shape but
-# is already published against ratio-based floors.
-# And 349 of 668 pairs have a zero base arm.
-# Across 117 payload files.
+# Compared by difference, not ratio: 0.0 is the clean reading (about half of scored cells), so `t / 0.0`
+# would drop exactly the pairs where a treatment introduces jank.
 DIFFERENCE_METRICS: frozenset[str] = frozenset({"stream_time_in_jank_pct", "stream_jank_index"})
 
 
 def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
-    """Every numeric timing on every action that RAN, as `action.timing`.
-
-    Only three action timings are wired into the scoring anchors, and those three do not cover what
-    most performance changes actually move: a menus change moves `message_menu`, a model-picker
-    change moves `model_change`, a re-open change moves `thread_reopen`, and neither of the latter
-    two is scored. Harvesting all of them is what lets each change be judged on its own metric.
-
-    `ran` is checked first. An action that did not happen has no timing worth pairing, and folding
-    its absence in as a fast number is the single most common way this harness has produced a
-    confident wrong answer.
-
-    AN ACTION WHOSE OWN ASSERTION FAILED IS TREATED THE SAME WAY. `report/payload.py` already
-    records `ran = True` with `expect_ok = False` as a note saying its timings "exist and must not
-    be quoted", and this is where they would be quoted. `keystroke` is the case: if half the
-    characters never reach the controlled component the action still ran, its p95 reads lower for
-    exactly that reason, and pairing it would print the failure as `faster`.
-    """
+    """Skip actions that did not run or whose own assertion failed; their timings read falsely fast."""
     out: dict[str, float] = {}
     for name, row in _actions_for(records, cid).items():
         if not row.get("ran") or row.get("expect_ok") is False:
@@ -93,11 +46,7 @@ def _action_timings(records: list[dict], cid: str) -> dict[str, float]:
         for key, value in (row.get("timings") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[f"{name}.{key}"] = float(value)
-        # Correctness invariants, harvested alongside the timings and named apart from them: same
-        # paired arithmetic, opposite meaning, because a count falling is a regression no timing can
-        # reveal. `select_all_copy.count.selected_chars` is the case this exists for: the selection is
-        # taken over the viewport's DOM, so anything that stops mounting the whole thread truncates
-        # the clipboard while every timing improves and the action still reports `expect_ok`.
+        # Counts are correctness invariants: a falling count (e.g. truncated clipboard) is a regression.
         for key, value in (row.get("counts") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 out[f"{name}.count.{key}"] = float(value)
@@ -114,37 +63,17 @@ def sessions_in(records: list[dict]) -> set[str]:
 
 
 def refuse_collisions(records: list[dict]) -> None:
-    """Refuse a payload in which one cell completed under more than one session.
-
-    CALLED FROM EVERY ENTRY POINT THAT POOLS, which is the whole point. The refusal used to live
-    inside `cell_metrics` behind `session is None`, and the only production caller -- `paired` --
-    always passes a session, so nothing in the shipped path ever reached it. On the real payload
-    from two concurrent launchers it went straight through: `paired` returned four pairs from two
-    cells, and `summarise` reported keystroke `p50_ms` up 93.4% on n=4. Neither session measured
-    93.4%; they measured +37.0% and +149.8%. The pooled figure is the mean of two runs contending
-    with each other, presented as four independent repetitions.
-
-    A guard reachable only from a function nobody calls is the same defect as a guard that was
-    never wired up at all, which this branch has now hit three times.
-    """
+    """Refuse payloads where one cell completed under two sessions; pooling them averages contending
+    runs."""
     collided = collided_cells(records)
     if not collided:
         return
-    # A SEQUENTIAL RE-RUN IS NOT A COLLISION, and refusing it rejected every resumed A/B.
-    # `ab.skippable_cells` re-runs EVERY pair of an unfinished A/B in one new session, so a
-    # resumed comparison legitimately writes a SECOND completed row under the same `cell_id` for
-    # `latest_attempt_rows` to supersede. What is asked is whether the two sessions were running
-    # AT ONCE, which is recorded: each `run_meta` carries `started_at` and every row a `ts_ms` (on
-    # the real two-launcher payload of defect 9 the sessions overlap by sixteen minutes). Silence
-    # is not a licence: a payload carrying no such evidence is refused exactly as before.
+    # Sequential re-runs are not collisions; refuse overlapping sessions and any with no timing evidence.
     guilty: set[str] = set()
     for sessions in collided.values():
         guilty |= sessions
     verdict, both = concurrent_sessions(records, only = guilty)
     if verdict == "sequential":
-        # The caller supersedes through `latest_attempt_rows`, which keeps the LAST attempt that wrote
-        # anything, so a resume that was itself hard-killed drops out rather than resurrecting the
-        # older completed reading.
         return
     if verdict == "overlap":
         why = (
@@ -175,19 +104,7 @@ def refuse_collisions(records: list[dict]) -> None:
 
 
 def collided_cells(records: list[dict]) -> dict[str, set[str]]:
-    """{cell_id: sessions} for every cell id COMPLETED under more than one session id.
-
-    THIS, AND NOT THE SESSION COUNT, IS WHAT SEPARATES THE TWO CASES. More than one session in a
-    payload is ordinary and legitimate: `--resume` re-runs the arm that died under a new session id
-    into the same shard directory, and sharding appends several sessions on purpose. What is never
-    legitimate is the SAME cell completing twice, because a cell id is unique within a session, so
-    two completed copies mean two runs measured the same thing and only one of them can be
-    reported.
-
-    The resumed case is distinguishable precisely because the attempt that died is not marked
-    completed: only the retry is, so the id does not collide. The concurrent case is the one where
-    every id is present twice with `completed: true` on both.
-    """
+    """Refuse a cell id completed under two sessions; several sessions alone, as in a resume, are fine"""
     seen: dict[str, set[str]] = {}
     for r in records:
         if r.get("row_type") == "cell" and r.get("completed") and r.get("cell_id"):
@@ -211,13 +128,7 @@ def session_spans(records: list[dict]) -> dict[str, tuple[int, int]]:
 
 
 def session_clocks(records: list[dict]) -> dict[str, tuple[float, float]]:
-    """{session: (start, end)} in seconds since the epoch, for sessions that can say.
-
-    A session's `run_meta` records `started_at` in wall clock and every row it writes carries
-    `ts_ms` from that session's own monotonic clock, so its occupancy is `started_at` to
-    `started_at + max(ts_ms)`. A session missing either is absent from this map rather than
-    given a guessed one: the caller treats absence as unknown and refuses.
-    """
+    """Session wall-clock spans; a session missing started_at or ts_ms is omitted, never guessed."""
     import datetime
 
     starts: dict[str, float] = {}
@@ -241,23 +152,7 @@ def session_clocks(records: list[dict]) -> dict[str, tuple[float, float]]:
 def concurrent_sessions(
     records: list[dict], only: set[str] | None = None
 ) -> tuple[str, tuple[str, str] | None]:
-    """Were these sessions running at once? `("sequential"|"overlap"|"interleaved"|"unknown", pair)`.
-
-    TWO INDEPENDENT WITNESSES, because either alone can be fooled. The clocks answer the question
-    actually being asked -- contention is a property of time, not of file layout -- but they rest
-    on a `started_at` a machine with a stepped clock can misreport. File order answers a narrower
-    question that cannot be misreported: a payload is append-only with one writer per process, so
-    a session's rows are one contiguous stretch unless somebody else was writing into the gaps. A
-    run that stalls long enough for a whole second run to start and finish inside its own gap is
-    caught too, since the nested stretch overlaps the enclosing one.
-
-    Sorted by first row, so comparing each session with the next is enough: if any two stretches
-    overlap then some ADJACENT pair does, because the later one's start is at or before the
-    earlier one's end.
-
-    UNKNOWN IS NOT SEQUENTIAL. A payload that cannot show when its sessions ran gets the refusal
-    it got before this distinction existed.
-    """
+    """Overlap check from clock spans and file order; unknown is not sequential, so it is refused."""
     spans = {k: v for k, v in session_spans(records).items() if only is None or k in only}
     order = sorted(spans.items(), key = lambda kv: kv[1][0])
     for (first, a), (second, b) in zip(order, order[1:]):
@@ -274,60 +169,16 @@ def concurrent_sessions(
 
 
 def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, dict[str, float]]:
-    """{cell_id: {metric: value}} for every COMPLETED cell in ONE session of the payload.
-
-    REFUSES rather than letting the last writer win, when and only when a cell id COMPLETED under
-    more than one session. `cell_id` is unique within a session and NOT across sessions, so keying
-    on it alone silently collapses two measurements of the same cell into whichever was appended
-    last. Several sessions in one payload is not itself the fault -- `--resume` and sharding both
-    produce that legitimately, and refusing them would delete good readings. See `collided_cells`.
-
-    That is not hypothetical. A launcher started twice ran two full sessions concurrently against
-    one `--out`, and both appended: three `run_meta` rows, every `cell_id` present twice, both
-    marked completed, and the two copies carrying materially different timings because the runs
-    were contending with each other -- `r1M.treatment.rep1` keystroke `p50_ms` read 73.4 ms in one
-    session and 144.5 ms in the other. Scored last-wins it reported a 149.8% regression; scored
-    per session it read +149.8% in one and +42.8% in the other.
-
-    Pass `session` to select one, or use `paired`, which keys on the session and pairs within it.
-
-    SCOPED TO THE CELL'S OWN SESSION, not to its cell id. The payload is append-only and a cell id
-    is REUSED: `--resume` re-runs a cell that died, and a second run into the same output directory
-    repeats every id. Selecting on the id alone pools the dead attempt's windows with the retry's
-    and reports the average as the completed cell, which is a number nothing ever measured.
-
-    IDLE WINDOWS ARE EXCLUDED, exactly as `scoring/from_payload` excludes them. Every cell records a
-    1.5 s `idle:calibrate` window with the frame recorder running, and pooling that quiet into the
-    frame metrics dilutes `time_in_jank_pct` and `jank_index` away from the film that was measured.
-    A metric here has to be the same quantity the rest of the tool calls by that name.
-    """
+    """Completed-cell metrics for one session; without one named, refuses cells completed in two
+    sessions."""
     if session is None:
         refuse_collisions(records)
-        # SUPERSEDED ATTEMPTS ARE DROPPED, because a resumed A/B re-runs a completed repetition and
-        # both copies are in the file. Keyed on the LAST attempt that wrote anything rather than the
-        # last that FINISHED: a resume killed inside a cell has flushed its action rows and never
-        # reaches the cell row, and treating the older completed attempt as current would hand a stale
-        # reading to a floor. ONLY WHEN NO SESSION WAS NAMED: `session=` is the escape hatch this
-        # module's refusal points a reader at, and superseding inside it would empty the older of two
-        # concurrent sessions.
+        # Drop superseded attempts (last attempt that wrote anything wins), except when `session=` is
+        # named, which is the escape hatch for concurrent sessions.
         records = list(latest_attempt_rows(records))
-    # A CELL THAT FAILED AN INVALIDATING GATE IS NOT A READING, HERE EITHER. Both gates are
-    # advisory where they are emitted, so such a cell arrives `completed=True` with timings
-    # CHEAPER than a correct cell's, and `paired` divides treatment by base per pair, so a
-    # one-sided failure lands in `delta_pct` and `spread_pct` directly. Worse on the result side,
-    # where a gate-failed treatment cell pairs against a clean base and prints as `faster`. Not
-    # hypothetical: the virtualization negative result in CONTRIBUTING-perf.md has the treatment's
-    # census going from 12 mounted messages to 0 alongside a 28.2% faster headline. Scoped by
-    # hand, because a `gate` row is not a row type `latest_attempt_rows` covers.
+    # A cell that failed an invalidating gate is not a reading: those gates are advisory upstream,
+    # so such cells arrive completed with misleadingly cheap timings.
     gate_failures = failed_invalidating_gates(records)
-
-    # A SUPERSEDED ATTEMPT'S COMPLETION IS NOT THIS CELL'S READING, and session scoping cannot say
-    # so. Left raw, the older completed row is admitted while `failed_invalidating_gates` names
-    # its winner from the LAST cell row, so a crashed retry supersedes the dead attempt's FAILED
-    # gate while this loop keeps that attempt's numbers: the 28.2% failure above, arriving through
-    # the resume. The reduction that fixes it sits at the top of the function and is CONDITIONAL,
-    # skipped when the caller named a `session`, so it cannot empty the escape hatch. Left open on
-    # purpose: with `session=` named, `failed_invalidating_gates` still resolves across the file.
 
     out: dict[str, dict[str, float]] = {}
     if session is not None:
@@ -340,15 +191,11 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
         if str(row.get("cell_id")) in gate_failures:
             continue
         cid = row["cell_id"]
-        # Scoped to this cell's OWN attempt: `--resume` re-runs a died cell under a new session_id into
-        # the same file, and pooling both attempts mixes two measurements.
+        # Scoped to this cell's own attempt: `--resume` re-runs a died cell into the same file.
         sid = row.get("session_id")
         own = [r for r in records if r.get("cell_id") == cid and r.get("session_id") == sid]
         vals: dict[str, float] = _action_timings(own, cid)
-        # `UNSCORED_WINDOW_KINDS` is idle plus setup, dropped here as in `measures_from_records`: the
-        # setup window is the composer click, mostly Playwright's injected actionability script
-        # blocking the main thread, so pooled in an 11 s driver stall would set this table's
-        # `max_frame_ms` floor.
+        # Setup is dropped: Playwright's actionability script would set the `max_frame_ms` floor.
         windows = [
             w
             for w in own
@@ -358,9 +205,6 @@ def cell_metrics(records: list[dict], session: str | None = None) -> dict[str, d
         for key, m in _frame_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
-        # The streaming phase on its own, per streamed character. Kept separate from the pooled frame
-        # metrics rather than replacing them: those answer "was this film janky", these answer "what
-        # did streaming one character cost".
         for key, m in _stream_measures(windows).items():
             if m.value is not None:
                 vals[key] = float(m.value)
@@ -377,16 +221,7 @@ def rep_of(cell_id: str) -> str:
 
 
 def cell_sessions(records: list[dict]) -> dict[str, str]:
-    """{cell_id: session_id} for every COMPLETED cell, resolved the way `cell_metrics` resolves it.
-
-    Same last-writer-wins rule as `cell_metrics`, so the session reported here is the session whose
-    numbers that function returned. Anything else would pair a reading against a session it did not
-    come from, which is the thing the caller is trying to stop.
-
-    THROUGH `latest_attempt_rows`, because `cell_metrics` is. A superseded attempt it no longer
-    returns must not still be able to name a session here, or this answers about one attempt while
-    the numbers came from another -- the same lens split this pair of functions exists to close.
-    """
+    """Session id of each completed cell, resolved through latest_attempt_rows like cell_metrics."""
     out: dict[str, str] = {}
     for row in latest_attempt_rows(records):
         if row.get("row_type") == "cell" and row.get("completed"):
@@ -395,31 +230,10 @@ def cell_sessions(records: list[dict]) -> dict[str, str]:
 
 
 def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, float]]]:
-    """{metric: [(base, treatment), ...]} matched on (shard, rung, repetition, session).
-
-    The shard is part of the key because sharding restarts the repetition counter: two independent
-    sessions both produce `rep0`, and pairing on the repetition alone would silently overwrite one
-    session's base with the other's. Pairing WITHIN a shard is also the correct thing to do, since
-    a pair only means anything when both arms come from the same session.
-
-    THE SESSION IS PART OF THE KEY FOR THE SAME REASON, and one shard is not one session. `--resume`
-    is the case: when one arm completed and its partner died, the resumed run skips the completed
-    arm and re-runs the dead one under a NEW session id, into the same shard directory. Keyed on the
-    repetition alone those two arms pair, and the ~8% session-to-session drift this file's header
-    measures is then charged in full to whichever arm was re-run. `scoring/ab.py` already refuses
-    that comparison outright; this is the same refusal in the place the sweep does its pairing.
-
-    A payload recorded before session ids existed has `""` on both arms and pairs exactly as before.
-    """
-    # THE SESSION IS PART OF THE KEY, for the same reason the shard is: two sessions in one payload
-    # both produce `rep0`, and pairing on the repetition alone matches one session's base against
-    # the other's treatment. Looped per session because several sessions in one payload is
-    # ORDINARY; what is never ordinary is one cell completing twice, so that is refused first,
-    # here rather than only inside `cell_metrics`, where the shipped path made it unreachable.
+    """Pairs base with treatment per shard, rung, repetition and session, so resumed arms never pair."""
+    # Session is part of the key: two sessions both produce `rep0`.
     refuse_collisions(records)
-    # The same superseding `cell_metrics` applies, done once here so the session list below is the
-    # set of sessions that still own a completed cell. Without it a finished ladder re-run pairs
-    # ONCE PER SESSION and one repetition is pooled twice.
+    # Supersede once here, or a re-run ladder pairs once per session and pools a rep twice.
     records = list(latest_attempt_rows(records))
     by_key: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = collections.defaultdict(
         dict
@@ -434,9 +248,7 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
             continue
         for metric in set(sides["base"]) & set(sides["treatment"]):
             b, t = sides["base"][metric], sides["treatment"][metric]
-            # `if b` is a ratio's precondition, not a validity test: a zero base is a real reading for the
-            # jank metrics and only an undefined DENOMINATOR, and those are compared by difference (see
-            # DIFFERENCE_METRICS).
+            # Zero base is a real reading for jank metrics; those are compared by difference.
             if metric in DIFFERENCE_METRICS:
                 if math.isfinite(b) and math.isfinite(t):
                     out[metric].append((b, t))
@@ -446,12 +258,7 @@ def paired(records: list[dict], shard: str = "") -> dict[str, list[tuple[float, 
 
 
 def tiers_of(records: list[dict]) -> set[str]:
-    """EVERY tier in one file, not the first.
-
-    One payload can hold more than one run: the recorder appends, so a second invocation into the
-    same output directory writes a second `run_meta` behind the first. Reading only the first is
-    what let a fast-tier film and a standard-tier film sit in one file and pass the refusal below.
-    """
+    """Every tier named by any run_meta row, since the recorder appends a second header per run."""
     return {str(r.get("tier") or "?") for r in records if r.get("row_type") == "run_meta"} or {"?"}
 
 
@@ -463,15 +270,7 @@ def tier_of(records: list[dict]) -> str:
 
 
 def corpora_of(records: list[dict]) -> set[str]:
-    """EVERY corpus hash the payload carries, not just the first one.
-
-    The recorder appends, so one payload file can hold more than one `run_meta`: `--resume` (and
-    any re-run into the same `--out`) writes a second header next to the first run's completed
-    cells. `paired` matches base against treatment on (shard, rung, repetition) and does not care
-    which run wrote either side, so a first-header-wins reading would pair a base recorded on the
-    old corpus with a treatment recorded on the new one and print the corpus change as a
-    performance change -- the exact thing the refusal below exists to prevent.
-    """
+    """Every corpus_hash across all run_meta rows, not the first, since the recorder appends headers."""
     found = {str(r.get("corpus_hash") or "?") for r in records if r.get("row_type") == "run_meta"}
     return found or {"?"}
 
@@ -496,22 +295,13 @@ def read_rows(path: Path) -> list[dict]:
 
 
 def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[str]]:
-    """Pool paired ratios across every shard of one logical result, plus the tiers seen.
-
-    The tiers come back with the data because they gate whether pooling was legitimate at all: the
-    fast tier runs a 57 s film where the standard runs 243 s, so the same action is measured with
-    different amounts of thread settled around it. Two such payloads are two different measurements
-    of one quantity, not two samples of it.
-    """
+    """Pools paired ratios across shards; tiers come back too, since mixed tiers are not one measurement."""
     pooled: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
     tiers: set[str] = set()
     corpora: set[str] = set()
     for path in paths:
         records = read_rows(path)
-        # REFUSED HERE, not warned about: the tier and corpus checks below say "these are different
-        # films", and this one says "this film was shot with the camera in the shot". No flag
-        # overrides it, because the only correct response is to re-run without the probe. The check
-        # lives in the scoring layer so the A/B table and `--report` refuse on the same evidence.
+        # Refused, not warned: a probed run measured the probe. No flag overrides it.
         refuse_if_probed(records, str(path))
         tiers |= tiers_of(records)
         corpora.add(corpus_of(records))
@@ -523,9 +313,7 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
             f"fast-tier film and a standard-tier film are different measurements of "
             f"the same action, not repetitions of one."
         )
-    # Same rule one level down: the tier fixes how long the film runs, the corpus hash fixes what
-    # is IN it, covering the generator's parameters and every unit's bytes. Corpus v2 added math,
-    # so pooling a v1 and a v2 payload would read the corpus change as a performance change.
+    # Corpus hash covers generator params and unit bytes; pooling v1 with v2 is invalid.
     if len(corpora) > 1:
         raise SystemExit(
             f"refusing to pool payloads built on different corpora: "
@@ -537,36 +325,11 @@ def load(paths: list[Path]) -> tuple[dict[str, list[tuple[float, float]]], set[s
 
 
 def partial_censoring(paths: list[Path]) -> dict[str, str]:
-    """{metric: why it must not be pooled across this ladder}, over every shard.
-
-    THE GUARD WAS WRITTEN AND THEN NEVER CALLED. `payload_rules.refuse_partial_censoring` returned
-    the right refusal from the moment it landed and nothing in the scoring or sweep path asked it
-    anything, so the only code that ever saw the answer was its own selftest. That is the same
-    shape as the row type that was registered nowhere: a guard that cannot fire is not a guard, and
-    it is worse than an absent one because the reader believes the case is covered.
-
-    What it catches is defect 2. `reasoning_toggle.open_ms` is censored on every cell above the
-    100K rung, so `paired()` pools only the cells that could answer and `render()` prints the mean
-    of those under a bare metric name. On a 100K/500K/1M ladder that row is a 100K-only number
-    wearing a ladder label, and the only hint is a smaller `n` sitting beside the other rows --
-    indistinguishable from a metric that simply had fewer repetitions.
-
-    JUDGED OVER EVERY SHARD AT ONCE, because that is the set `summarise` pools. Asked per file,
-    a ladder split across shards escapes: the shard holding the measured 100K cells sees no
-    censoring at all, the shard holding the censored 500K cells sees censoring at every rung it
-    contains, and neither returns a refusal -- while `load()` pools them together and prints the
-    100K number under a ladder label. The same rows concatenated into one file are caught. Identical
-    data, opposite treatment, decided by which file they happened to be written to.
-    """
+    """Metrics censored on some rungs only, judged over every shard together, since pooling biases them."""
     everything: list[dict] = []
     for path in paths:
-        # SUPERSEDED ATTEMPTS DROPPED, exactly as `paired` drops them, because this decides whether
-        # `paired`'s number may be quoted: a resume that died mid-cell leaves an action row whose
-        # `expect_ok` is False, which `censored_metrics` counts as a censored cell. NAMESPACED BY
-        # SHARD, for the same reason `paired` keys on it: sharding restarts the repetition counter, so
-        # merged on the bare id one shard's failed cell and another's successful one become a single
-        # id that is both censored and completed. SUFFIXED rather than prefixed, so
-        # `refuse_partial_censoring` still reads the rung off `cell_id.split(".", 1)[0]`.
+        # Drop superseded attempts as `paired` does, and suffix the shard because sharding restarts
+        # the rep counter; suffix keeps `cell_id.split(".", 1)[0]` as the rung.
         shard = str(path.parent.name)
         for row in latest_attempt_rows(read_rows(path)):
             row = dict(row)
@@ -592,18 +355,10 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
     censoring = partial_censoring(paths)
     for metric, rows in pooled.items():
         if metric in DIFFERENCE_METRICS:
-            # Same three quantities and gates, measured in the metric's own unit because a ratio from a
-            # clean zero base does not exist; `delta_pct` and `spread_pct` are then percentage POINTS,
-            # which is why `render` marks the row.
+            # Same gates in the metric's own unit, so delta and spread are percentage points.
             diffs = [t - b for b, t in rows]
-            # A TIE IS NOT A DISAGREEMENT, AND HERE THE TIE IS THE MODAL READING. The ratio branch below
-            # asks `all(r > 1) or all(r < 1)`, which is sound for a continuous timing but not for
-            # differences, where the tie value 0.0 is what a CLEAN reading is. A group of `[0.0, 12.0]`
-            # then failed both halves and was reported VOID though nothing moved the other way: over the
-            # recorded payloads that voided 34 of 250 pooled groups, every one from a tie rather than a
-            # real disagreement, and intermittent jank is exactly the shape that produces ties. Direction
-            # is therefore "no pair went the other way", with at least one that moved, so an all-zero
-            # group stays inconsistent.
+            # A zero difference is a tie, not a disagreement: direction means no pair went the other way
+            # and at least one moved.
             nonzero = [d for d in diffs if d != 0.0]
             out[metric] = {
                 "n": len(rows),
@@ -622,19 +377,13 @@ def summarise(paths: list[Path]) -> dict[str, dict[str, float]]:
             "base": statistics.fmean(b for b, _ in rows),
             "treat": statistics.fmean(t for _, t in rows),
             "delta_pct": (statistics.fmean(ratios) - 1.0) * 100.0,
-            # GATE 2: do the pairs even agree on the SIGN? A metric whose four paired ratios straddle 1.0
-            # has no direction however far its mean lands from the floor, which is what separates "the
-            # change moved it" from "the metric is thrashing".
+            # Gate 2: do the pairs agree on the sign?
             "consistent": all(r > 1.0 for r in ratios) or all(r < 1.0 for r in ratios),
-            # The spread of the paired ratios: from a null control it is the detection floor, from a real
-            # comparison the effect's own scatter, which is GATE 3.
+            # Spread of paired ratios: the detection floor on a null control, gate 3 on a result.
             "spread_pct": (max(ratios) - min(ratios)) * 100.0,
             "difference": False,
         }
-        # LABELLED, NOT DROPPED AND NOT RAISED. Raising would be the defect-10 mistake, since `open_ms`
-        # is censored above 100K on EVERY standard run, so a refusal would abort the whole table on
-        # the normal case; dropping silently would delete a reading somebody may still want. The row
-        # survives, carries the rungs it covers, and is denied a verdict below.
+        # Labelled, not dropped or raised: `open_ms` is censored above 100K on every standard run.
         if metric in censoring:
             out[metric]["poolable"] = False
             out[metric]["censoring"] = censoring[metric]
@@ -646,19 +395,7 @@ def verdict_for(
     floor: dict | None,
     is_count: bool = False,
 ) -> tuple[float | None, str]:
-    """The three gates, in the order that makes a failure most informative.
-
-    Gate 1, the per-metric floor, is `max(|null delta|, null spread)` rather than the spread alone.
-    In a null control several metrics show a systematic offset between the two arm LABELS with
-    identical builds behind them: `stop_generation.stop_ms` reads 6.6% faster on the treatment side,
-    tightly, across every repetition. Whatever causes it, arm B's page being created second inside
-    each repetition being the likely candidate, it is charged to the treatment arm in a real A/B
-    too. So the bar is the larger of the null control's own bias and its scatter.
-
-    Gate 3 is applied last because it is the one that most often surprises: an effect can clear the
-    floor on its mean while its own spread is an order of magnitude larger than the effect it
-    claims. Twelve rows in a 40-comparison audit passed gates 1 and 2 and were junk.
-    """
+    """Gate 1 floor is max(|null delta|, null spread), since null arms carry a systematic label offset."""
     if floor is None:
         return None, "no floor measured"
     f = max(abs(floor["delta_pct"]), floor["spread_pct"])
@@ -669,8 +406,7 @@ def verdict_for(
     if stat["n"] > 1 and stat["spread_pct"] > abs(stat["delta_pct"]):
         return f, "VOID (effect under its own scatter)"
     if is_count:
-        # A count is an invariant, so the sign means the opposite of what it means for a timing: less
-        # of the conversation copied is not an improvement.
+        # For a count invariant, falling is a loss, not an improvement.
         return f, ("LOST (invariant fell)" if stat["delta_pct"] < 0 else "gained")
     return f, ("faster" if stat["delta_pct"] < 0 else "SLOWER")
 
@@ -681,13 +417,7 @@ def is_count_metric(metric: str) -> bool:
 
 
 def merged_meta(paths: list[Path]) -> tuple[dict | None, list[str]]:
-    """One `run_meta` describing every shard of one logical run, plus what forbids one.
-
-    EVERY SHARD AND EVERY HEADER, for the same reason `tiers_of` and `corpora_of` read every
-    header rather than the first: the recorder appends, so `--resume` writes a second header
-    behind the first, and a sharded run spreads its headers across files. A first-header-wins
-    reading describes the run that started the file rather than the cells now in it.
-    """
+    """Merged run_meta over every shard and header, since a resumed run appends a second header."""
     rows: list[dict] = []
     for path in paths:
         rows += read_rows(path)
@@ -718,13 +448,7 @@ def render(
             f"built on {floor_corpus[:16]}: a floor is the scatter of THIS film, and a "
             f"different corpus is a different film. Re-run the null control."
         )
-    # THE REST OF THE COMPARABILITY IDENTITY, which tier and corpus are only two axes of.
-    # `--compare` refuses two payloads whose `comparability_key`s differ, while this path, the one
-    # that certifies a number, checked two of the eleven fields, so an 0.1.0 floor could score an
-    # 0.2.0 payload: this commit redefines `reasoning_toggle.open_ms` to terminate on a settled
-    # DOM, so the older floor measures a different quantity under the same name. Checked through
-    # `explain_incomparable` rather than a second list of fields, so a field added to
-    # `comparability_fields` is enforced without being added here too.
+    # Check the full comparability identity via `explain_incomparable`, not just tier and corpus.
     if floor_meta is not None:
         meta, conflicts = merged_meta(paths)
         if meta is None:
@@ -762,31 +486,15 @@ def render(
     marked = False
     for metric in sorted(stats, key = lambda m: (m in METRICS, m)):
         s = stats[metric]
-        # TWO INDEPENDENT CAVEATS, BOTH CARRIED IN THE NAME COLUMN, neither allowed to hide the other:
-        # `(abs)` says what the delta MEANS, `[*]` says which rungs it covers, and a metric can need
-        # both. A metric censored at some rungs and measured at others is marked so the caveat cannot
-        # be separated from the number when somebody copies one row into prose.
+        # `(abs)` and `[*]` are independent caveats and both stay in the name column.
         partial = s.get("poolable") is False
-        # A difference row is named as one: its delta is in the metric's own unit, so printing it under
-        # a "delta %" heading would be the same class of mistake this file exists to stop. Applied
-        # first so it survives either censoring mark.
         label = metric
         if s.get("difference"):
             label, marked = f"{metric} (abs)", True
-        # THE FLOOR IS A MEASUREMENT TOO, and it is censored by the same rule on its own cells.
-        # `summarise` marks the null control's entry `poolable = False` when the metric answered on
-        # some cells and was censored on others, and this loop read only the RESULT's flag, so a
-        # result measured in full was scored against a floor built from whichever repetitions of the
-        # null survived. Censoring removes the slow ones and `spread_pct` is `max - min` over the
-        # survivors, so it can only narrow: on a real null at 100K plus 500K,
-        # `reasoning_toggle.close_ms` gave an applied floor of 17.1% from four surviving pairs while
-        # the censored repetitions of that same null ran 1429-2149 ms against those survivors'
-        # 498-681 ms and paired as far apart as 1.50 on identical builds. A real result of -24.8%
-        # printed `faster` against that 17.1%.
+        # The floor is censored by the same rule: a survivor-only null spread can only narrow.
         floor_stat = None if floors is None else floors.get(metric)
         floor_partial = floor_stat is not None and floor_stat.get("poolable") is False
-        # MARKED APART FROM `[*]`, because the two say different things: `[*]` means this row's own
-        # number is not a ladder number, `[f]` means the number is fine and the null cannot judge it.
+        # `[*]`: this row's number is not a ladder number; `[f]`: the null cannot judge it.
         shown = f"{label} [*]" if partial else (f"{label} [f]" if floor_partial else label)
         line = (
             f"  {shown:<28}{s['n']:>3}{s['base']:>11.1f}{s['treat']:>11.1f}"
@@ -794,12 +502,8 @@ def render(
         )
         if floors is not None:
             if partial:
-                # DENIED A VERDICT: passing three gates on the rungs that could answer is not passing them on
-                # the ladder the row is labelled with.
                 line += f"{'--':>13}  not pooled"
             elif floor_partial:
-                # DENIED A VERDICT ON THE OTHER SIDE: the three gates are all measured against this floor, so a
-                # floor that is itself a survivor sample cannot certify anything.
                 line += f"{'--':>13}  no poolable floor"
             else:
                 f, verdict = verdict_for(s, floor_stat, is_count_metric(metric))
@@ -865,8 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         floor_rows = read_rows(floor_paths[0])
         floor_tier = tier_of(floor_rows)
         floor_corpus = corpus_of(floor_rows)
-        # The floor's own comparability identity, read across every shard and header: a null whose
-        # shards disagree with each other is not one null control.
+        # A null whose shards disagree on identity is not one null control.
         floor_meta, floor_conflicts = merged_meta(floor_paths)
         if floor_conflicts:
             print(

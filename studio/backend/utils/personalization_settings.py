@@ -14,6 +14,15 @@ def get_personalization() -> dict:
     return stored if isinstance(stored, dict) else {}
 
 
+def drop_unknown_palette(stored: dict, palettes: frozenset[str]) -> dict:
+    """A palette from a newer build would fail validation and break the whole personalization response."""
+    appearance = stored.get("appearance")
+    if not isinstance(appearance, dict) or appearance.get("palette", "standard") in palettes:
+        return stored
+    appearance = {k: v for k, v in appearance.items() if k != "palette"}
+    return {**stored, "appearance": appearance}
+
+
 def set_personalization(data: dict) -> dict:
     from storage.studio_db import upsert_app_settings
     upsert_app_settings({PERSONALIZATION_SETTING_KEY: data})

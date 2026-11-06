@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The opt-in device map, over the whole product of host and accelerator.
-
-test_unsloth_device_map_optin.py checks each decline path once. This file checks that the
-three properties that make the change safe hold across every combination of them at once,
-because the risk is not one path being wrong, it is one *combination* being wrong on a
-machine none of us has:
-
-  1. Nothing that is not the sentinel is touched. Every device_map an existing caller can
-     pass comes back identical, whatever the host and whatever the accelerator.
-  2. The sentinel never escapes. `resolve_unsloth_device_map` never returns "unsloth" --
-     transformers turns an unknown device_map string into `torch.device("unsloth")` and
-     raises, so a leak is a hard load failure rather than a bad placement.
-  3. The planner is called only where a plan can apply, and never otherwise.
-
-The host axis is Linux / Windows / WSL / macOS and the accelerator axis is NVIDIA (cuda),
-AMD (cuda, since torch's ROCm build reports itself as cuda), Intel (xpu), Apple (mps) and
-CPU. `resolve_unsloth_device_map` does not read the platform itself, which is the point:
-these spoofs exist to prove no platform-specific branch grew in underneath it.
-
-Extracted with ast so nothing has to import torch's CUDA stack.
-"""
+"""Across hosts and accelerators, the sentinel never escapes and other device maps are untouched."""
 
 import ast
 import itertools
@@ -35,7 +15,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 
-# (label, sys.platform, os.name, an /proc/version marker for the WSL case)
+# (label, sys.platform, os.name, /proc/version marker for WSL)
 HOSTS = [
     ("linux", "linux", "posix", "Linux version 6.8.0-generic"),
     ("windows", "win32", "nt", None),
@@ -43,8 +23,7 @@ HOSTS = [
     ("macos", "darwin", "posix", None),
 ]
 
-# (label, DEVICE_TYPE_TORCH). A ROCm torch build reports "cuda", so AMD is not a separate
-# branch in the resolver -- it is here so a future one cannot be added unnoticed.
+# (label, DEVICE_TYPE_TORCH). ROCm torch reports "cuda"; listed so a new branch is noticed.
 ACCELERATORS = [
     ("nvidia", "cuda"),
     ("amd", "cuda"),
@@ -55,8 +34,7 @@ ACCELERATORS = [
 
 DEVICE_COUNTS = [0, 1, 2, 8]
 
-# Everything a caller can hand the loader today.
-# None is included because `FastDiffusionModel.from_pretrained` lets the caller clear it.
+# None included: FastDiffusionModel.from_pretrained lets the caller clear it.
 UNTOUCHED_DEVICE_MAPS = [
     "sequential",
     "auto",
@@ -219,12 +197,7 @@ def test_the_sentinel_never_reaches_transformers(
     planner_available,
     monkeypatch,
 ):
-    """Property 2, the one that decides whether this can break a load anywhere.
-
-    Whatever the host, the accelerator, the GPU count, the launcher, the vLLM/full-finetune
-    flags, and whether unsloth_zoo is new enough to have a planner at all, the resolved
-    value is either a placement transformers understands or a plan dict. Never "unsloth".
-    """
+    """Whatever the host or accelerator, the resolved value is never the unsloth sentinel."""
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
     planner = _Recorder(plan = _Plan())
     ns = _build(
@@ -291,21 +264,15 @@ def test_the_env_var_opts_in_on_1_and_nothing_else(
 
 @pytest.mark.parametrize("host", HOSTS, ids = _HOST_IDS, indirect = True)
 def test_an_old_unsloth_zoo_without_a_planner_still_loads(host, monkeypatch):
-    """An install that predates unsloth_zoo's planner must degrade, not fail: the whole
-    point of the fallback is that a model which loads the old way beats one that will not
-    load. Two shapes of old: the module is missing, and the module exists without the
-    entry point."""
+    """An unsloth_zoo without the planner must fall back to the old placement rather than fail the load."""
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
 
-    # Shape one: the module is there but predates the entry point.
     ns = _build(
         device_type = "cuda", devices = 4, distributed = False, planner = None, planner_available = False
     )
     assert ns["resolve_unsloth_device_map"]("unsloth", "unsloth/Qwen3-0.6B") == "sequential"
 
-    # Shape two: no such module.
-    # Block the import rather than deleting it from sys.modules, which on a machine that has the real planner installed
-    # just imports it again.
+    # Block the import; deleting from sys.modules would just reimport a real planner.
     class _Blocked:
         def find_module(
             self,
@@ -381,11 +348,7 @@ def test_the_deliberate_refusal_is_not_swallowed(host, monkeypatch):
     ids = ["ecc", "exclusive-process", "driver"],
 )
 def test_a_card_that_refuses_to_report_memory_does_not_fail_the_load(host, error, monkeypatch):
-    """Reading free memory is itself a CUDA call on every visible device, and it is the
-    first thing this function does that can touch a broken one: an ECC-fenced card, a MIG
-    parent handle, or a GPU another process holds in Exclusive_Process mode. That must
-    degrade to the placement the caller would have had anyway, for the same reason a
-    planner exception does. Nothing here is the deliberate refusal, which still raises."""
+    """A card that cannot report free memory degrades to the caller's usual placement, not a failed load."""
     monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
     planner = _Recorder(plan = _Plan())
     ns = _build(
@@ -428,13 +391,10 @@ def _planner_quantization_kwargs():
 @pytest.mark.parametrize("host", HOSTS, ids = _HOST_IDS, indirect = True)
 @pytest.mark.parametrize("four_bit,eight_bit", [(True, False), (False, True)], ids = ["4bit", "8bit"])
 def test_a_zoo_without_the_shared_skip_list_still_loads_in_4bit(host, four_bit, eight_bit):
-    """The leaf loaders evaluate these arguments on every quantized load, whether or not
-    anything is going to be planned. So the one import in here is on the hot path of every
-    4bit load in the library, and an unsloth_zoo below our pin has to degrade to "no skip
-    list" rather than take the load down with an ImportError."""
+    """An unsloth_zoo lacking the shared skip list must degrade to no skip list, not fail a 4bit load."""
     build = _planner_quantization_kwargs()
 
-    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")  # no SKIP_QUANTIZATION_MODULES
+    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     saved = sys.modules.get("unsloth_zoo.peft_utils")
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
     try:

@@ -15,6 +15,7 @@ export type RecipeRecord = {
 
 export type SaveRecipeInput = {
   id?: string | null;
+  baseUpdatedAt?: number;
   name: string;
   payload: RecipePayload;
   learningRecipeId?: string;

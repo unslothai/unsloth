@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_explain_empty_gpu_probe: why _get_gpu_memory came back empty.
-
-A user's log recorded `GPUs free: []` and none of the reason. Six unrelated causes
-share that empty list and need different fixes, so these pin that each names itself,
-that the explainer never creates the HIP context the amd-smi branch avoids, and that
-neither it nor the load site claims an outcome (placement is llama.cpp's, not ours).
-"""
+"""Six causes share an empty GPU list, each must name itself; the explainer creates no HIP context."""
 
 import sys
 import types
@@ -56,12 +50,7 @@ def _clear_masks(monkeypatch):
 
 
 def _load_site_guard() -> str:
-    """The `if` statement guarding the empty-probe warning, by indentation.
-
-    Structural rather than a fixed window of characters: the guard carries a long
-    comment, and a window wide enough today silently stops covering the condition the
-    moment that comment grows.
-    """
+    """Finds the guard by indentation, not a fixed window, so a longer comment cannot break it."""
     import inspect
     import textwrap
 
@@ -74,7 +63,7 @@ def _load_site_guard() -> str:
     while start >= 0 and not lines[start].lstrip().startswith("if "):
         start -= 1
     assert start >= 0, "no enclosing if statement"
-    # To the END of the block: stopping at the marker hid a mutant in the continuation.
+    # scan to the END of the block: stopping at the marker hid a mutant in the continuation
     base = len(lines[start]) - len(lines[start].lstrip())
     end = hit
     while end + 1 < len(lines):
@@ -256,7 +245,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
     below, so an empty probe cannot tell you where the model ends up."""
 
     def test_the_message_reports_the_probe_not_the_placement(self):
-        # Comments stripped: the guard's own note names the claim it forbids.
+        # comments stripped: the guard's own note names the claim it forbids
         body = "\n".join(
             line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
         )
@@ -276,7 +265,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
 
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
         warn = src.find("could not enumerate any GPU")
-        restore = src.find("gpu_indices = sorted(gpu_ids)")
+        restore = src.find("self._picker_ordered_gpu_indices(")
         assert warn != -1 and restore != -1
         assert warn < restore, "if the pin moved above the warning, re-derive this guard"
 

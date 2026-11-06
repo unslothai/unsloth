@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""End-to-end routing proof for #7897, run on Linux.
-
-save.py's module-global ``os`` is swapped for a shim whose pure path functions come
-from ``ntpath``, so ``save_to_gguf`` does the exact join arithmetic a Windows host
-would. The assertion is on the ``output_gguf`` reaching ``quantize_gguf``, which is
-where the GGUF escaped the export directory.
-"""
+"""Runs save_to_gguf with ntpath standing in for os, so the Windows join arithmetic runs on Linux."""
 
 from __future__ import annotations
 
@@ -17,8 +11,7 @@ import posixpath
 
 import pytest
 
-# test_gguf_model_basename.py covers the pure basename contract with no deps;
-# this file drives the real save_to_gguf, so it needs the ML stack.
+# Drives the real save_to_gguf, so it needs the ML stack; see test_gguf_model_basename.py.
 save_mod = pytest.importorskip("unsloth.save", reason = "needs torch + unsloth_zoo")
 
 
@@ -79,6 +72,12 @@ class _Harness:
         monkeypatch.setattr(save_mod, "convert_to_gguf", self._convert)
         monkeypatch.setattr(save_mod, "quantize_gguf", self._quantize)
         monkeypatch.setattr(save_mod, "os", _OsShim(flavour))
+        # The real staging folder comes from tempfile, which joins with the host os.path; keep it virtual.
+        monkeypatch.setattr(
+            save_mod,
+            "_gguf_conversion_staging",
+            lambda directory: (flavour.join(directory, ".unsloth_gguf_convert_t"), False),
+        )
 
     def _scratch(self, virtual_path: str):
         """Materialise a virtual (possibly Windows) path as one real POSIX file."""
@@ -94,12 +93,13 @@ class _Harness:
         qtype = kwargs["quantization_type"]
         if qtype == "None":
             qtype = kwargs.get("model_dtype", "bf16")
-        # unsloth_zoo/llama_cpp.py:2465 -- the name zoo would build.
+        # Mirrors the name unsloth_zoo/llama_cpp.py would build.
         final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
-        # save.py:2037 requires the returned paths to exist.
-        # The escape under test is at the *quantize* join (model_name + gguf_directory), not this path.
-        return [str(self._scratch(final))], False
+        # save.py requires the returned paths to exist; the escape under test is at the quantize join.
+        real = self._scratch(final)
+        # Under the posixpath shim on a Windows host, a backslash path has no posix basename; "C:/..." still opens.
+        return [real.as_posix() if self.flavour is posixpath else str(real)], False
 
     def _quantize(self, input_gguf, output_gguf, quant_type, **kw):
         self.quantize_calls.append(
@@ -123,8 +123,7 @@ def _run(
 ):
     harness = _Harness(monkeypatch, tmp_path, flavour)
     monkeypatch.setattr(save_mod, "shutil", _NoMove(), raising = False)
-    # gguf_directory is a Windows-style string here;
-    # os.makedirs is the *real* one, so chdir into tmp so a literal "C:\..." directory cannot land in the repo.
+    # os.makedirs is real, so chdir into tmp so a literal "C:\..." directory cannot land in the repo.
     monkeypatch.chdir(tmp_path)
     save_mod.save_to_gguf(
         model_name = model_name,
@@ -166,11 +165,13 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
     for call in harness.quantize_calls:
         assert ntpath.dirname(call["output"]) == expected_dir, call["output"]
         assert not call["output"].startswith("D:"), call["output"]
+    # The intermediate is written on the destination volume, not the process CWD.
+    assert ntpath.dirname(ntpath.dirname(harness.initial_names[0])) == expected_dir
 
 
 def test_legacy_stem_escaped_to_the_base_model_drive(monkeypatch, tmp_path):
     """Pin the #7897 failure mode: the pre-fix stem relocated the output to D:."""
-    legacy_stem = _WINDOWS_BASE.split("/")[-1]  # the old derivation
+    legacy_stem = _WINDOWS_BASE.split("/")[-1]
     harness = _run(monkeypatch, tmp_path, legacy_stem, _EXPORT_DIR)
 
     assert harness.quantize_calls
@@ -183,7 +184,7 @@ def test_trailing_separator_no_longer_yields_a_hidden_gguf(monkeypatch, tmp_path
     """OS-agnostic half of the bug: a trailing sep gave an empty stem."""
     assert "".join(_WINDOWS_BASE.rsplit("\\", 1)[1:]) == "MyModel"
     legacy_stem = "/home/u/models/MyModel/".split("/")[-1]
-    assert legacy_stem == ""  # the old behaviour
+    assert legacy_stem == ""
 
     stem = save_mod._model_basename("/home/u/models/MyModel/")
     export_dir = str(tmp_path / "exports" / "run")

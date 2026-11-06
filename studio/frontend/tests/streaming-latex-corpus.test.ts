@@ -1,23 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The property the streaming render path actually rests on, asserted over a
-// corpus instead of over hand-picked strings.
-//
-// `preprocessLaTeX` is NOT prefix-stable. Closing a `\(`, closing a `\[`, a
-// currency `$` turning out not to open math, and a fence closing over its own
-// body all rewrite text an earlier frame already emitted; measured over this
-// corpus, about one frame in twenty hands `IncrementalMarkdownCache` a string
-// that is not an extension of the last one. That is by design and this file does
-// not ask for it to change. What it asks is that the cache absorb it without
-// ever showing a different document: at EVERY prefix, the block list the cache
-// hands Streamdown must equal the block list a whole-document parse produces.
-//
-// Hand-picked examples do not find the counterexamples here. The one that
-// reached main during review needed a `\[...\]` whose body spans blank lines, so
-// that the newline the rewrite inserts lands against the blank line in front of
-// the opener and Marked merges the two into one separator block. Nobody writes
-// that fixture by hand; a corpus swept at every prefix does.
+// preprocessLaTeX is not prefix-stable, so at every prefix the cache's block list must
+// equal a whole-document parse. Hand-picked cases miss the counterexamples; sweep a corpus.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,21 +10,21 @@ import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
-// One named case per construct, so a failure names the construct rather than an
-// anonymous blob. Every one of these has been a rendering bug somewhere.
 const NAMED_CASES: Array<[string, string]> = [
   ["inline-paren", "The value \\(x^2\\) is positive.\n\n"],
   ["inline-dollar", "The value $x^2$ is positive.\n\n"],
   ["display-bracket", "Show \\[E = mc^2\\] which is famous.\n\n"],
   ["display-dollar", "Show\n\n$$\nE = mc^2\n$$\n\nwhich is famous.\n\n"],
-  // The shape that broke the retained prefix: a display body spanning blank
-  // lines, so the `\n$$\n` the rewrite emits meets the blank line in front of it.
+  // A display body spanning blank lines: the `\n$$\n` rewrite meets the preceding blank line.
   ["display-multi-paragraph", "L0\n\n\\[s0\n\ns1\n\ns2\n\ns3\n\n\\]\n\n"],
   [
     "display-multi-paragraph-long",
@@ -55,6 +40,10 @@ const NAMED_CASES: Array<[string, string]> = [
   ["escaped-dollar", "A literal \\$5 stays literal.\n\n"],
   ["escaped-backslash", "A path C:\\\\temp and \\\\(not math\\\\) here.\n\n"],
   ["currency-suffix", "Around $5K then $5Ki then $3.5M.\n\n"],
+  [
+    "shell-variables",
+    "Add $PATH, then check $HOME/.bashrc\nand run `echo $CUDA_HOME` with $x$.\n\n",
+  ],
   ["cjk", "\u4fa1\u683c\u306f $5 \u3067\u3059\u3002\u6570\u5f0f \\(x^2\\) \u3082\u3042\u308a\u307e\u3059\u3002\n\n"],
   ["rtl-arabic", "\u0627\u0644\u0633\u0639\u0631 $5 \u0648\u0627\u0644\u0645\u0639\u0627\u062f\u0644\u0629 \\(x^2\\) \u0647\u0646\u0627.\n\n"],
   ["rtl-hebrew", "\u05d4\u05de\u05d7\u05d9\u05e8 $10 \u05d5\u05d4\u05e0\u05d5\u05e1\u05d7\u05d4 \\(y\\).\n\n"],
@@ -87,9 +76,6 @@ const NAMED_CASES: Array<[string, string]> = [
   ["one-char", "$"],
 ];
 
-// Fragments the generator draws from, so the sweep sees combinations no one
-// wrote down: an opener whose closer is several blocks away, a fence that never
-// closes, currency next to math, non-Latin scripts.
 const FRAGMENTS: string[] = [
   "Plain prose sentence.\n\n",
   "Inline \\(x^2 + y\\) math.\n\n",
@@ -117,8 +103,6 @@ const FRAGMENTS: string[] = [
   "span\\) close.\n\n",
 ];
 
-// Fixed seed: the corpus has to be the same document on every machine, or a
-// failure cannot be reproduced from the message alone.
 function makeRandom(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
@@ -136,9 +120,6 @@ function generateDocument(random: () => number, maxFragments: number): string {
   return out;
 }
 
-// Collapsing blank lines is the harder half of the corpus: the retained prefix
-// is kept only when an untouched blank line and a rollback window separate it
-// from the rewrite, so a corpus of well-separated blocks is the easy case.
 function tighten(document: string, random: () => number, tightness: number): string {
   let out = "";
   for (let index = 0; index < document.length; index += 1) {
@@ -173,15 +154,10 @@ function assertMatchesFullSplit(
     );
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(input)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
       `block mismatch at prefix ${length} of ${name}: ${JSON.stringify(source.slice(0, 200))}`,
     );
   }
-  // Without this the sweep can be green while never once exercising the thing
-  // it is named for. It is how the first version of this file went wrong: a
-  // construct on its own is shorter than the rollback window, so `candidateCount`
-  // is zero, nothing is ever committed, and the assertion above degenerates into
-  // "repairTail agrees with remend on a fresh context".
   if (requireRetention) {
     assert.ok(
       everRetained > 0,
@@ -191,9 +167,6 @@ function assertMatchesFullSplit(
   }
 }
 
-// The rollback window is eight blocks, so a construct on its own never reaches
-// the first commit. Sweeping it a second time behind enough lead-in is what puts
-// a retained prefix in front of it, which is the state this file is about.
 const LEAD = Array.from(
   { length: 6 },
   (_, index) => `Lead paragraph ${index}.\n\n`,
@@ -220,13 +193,6 @@ test("the same holds for generated replies, loose and tight", () => {
 });
 
 test("rebuilds of the retained prefix do not grow with the reply", () => {
-  // The cost half of the same story. A rebuild produces the block list it just
-  // discarded, so nothing the cache returns records that it happened; the
-  // counter does. The invariant is not "never": the first rewrites in a reply
-  // can arrive before a rollback window's worth of blocks exists behind them,
-  // and those legitimately fall back. What must not happen is the count growing
-  // with the reply, because each rebuild costs the whole reply so far, which is
-  // what made a long answer quadratic.
   const units = [
     "The residual \\(r_i = y_i - \\hat{y}_i\\) shrinks as the fit improves.\n\n",
     "Rewriting gives\n\n\\[ L(\\theta) = \\sum_i (y_i - \\theta x_i)^2 \\]\n\nwhich is convex.\n\n",
@@ -259,9 +225,7 @@ test("rebuilds of the retained prefix do not grow with the reply", () => {
 
   const short = stream(buildReply(80));
   const long = stream(buildReply(320));
-  // Both sides of the comparison below read the same private field, so renaming
-  // it would make this `undefined === undefined` and the test would pass while
-  // measuring nothing. Fail on the rename instead.
+  // Both sides read a private field; fail on a rename instead of comparing undefined.
   assert.equal(
     typeof short.rebuilds,
     "number",
@@ -274,8 +238,6 @@ test("rebuilds of the retained prefix do not grow with the reply", () => {
     `rebuilds grew with the reply: ${short.rebuilds} at ${short.length} ` +
       `characters, ${long.rebuilds} at ${long.length}`,
   );
-  // Never rebuilding is also what never retaining looks like, and that would be
-  // the whole reply repaired and lexed on every frame. Pin the retention too.
   for (const run of [short, long]) {
     assert.ok(
       run.retained > run.length * 0.8,
@@ -285,9 +247,6 @@ test("rebuilds of the retained prefix do not grow with the reply", () => {
 });
 
 test("preprocessLaTeX is not prefix-stable, which is why the above is not free", () => {
-  // Documented, not deplored. If this ever starts passing as "monotone", the
-  // rewind path above has stopped being exercised and the corpus sweeps are
-  // measuring less than they look like they measure.
   const cases: Array<[string, string]> = [
     ["closing an inline span", "The value \\(x^2\\)"],
     ["a currency dollar", "Cost is $1"],

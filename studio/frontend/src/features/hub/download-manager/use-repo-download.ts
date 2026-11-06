@@ -11,6 +11,7 @@ import {
   type DownloadRequest,
   type JobListeners,
   downloadManager,
+  findActiveScopedJobForRepo,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,
@@ -23,16 +24,16 @@ export interface DownloadJobProgress {
   expectedBytes: number;
   downloadedBytes: number;
   fraction: number;
+  /** False when the last poll held `downloadedBytes` over from the previous reading (`resolveProgressUpdate`). */
+  measuredTransfer?: boolean;
 }
 
 export interface DownloadJob {
   progress: DownloadJobProgress | null;
   bytesPerSec: number;
   etaSeconds: number;
-  /** Transport the running job resolved to, when it started on this frontend. */
   transport: ResolvedTransport | null;
-  /** Its cancel marker, when a Xet run fell back to HTTP: stopping it is still
-   * a restart, so this and not `transport` decides the stop control. */
+  /** Set when a Xet run fell back to HTTP; decides the stop control instead of `transport`. */
   cancelTransport: ResolvedTransport | null;
   cancelling: boolean;
   repoPeerActive: boolean;
@@ -56,15 +57,13 @@ export interface RepoDownloadConfig {
   onComplete?: JobListeners["onComplete"];
   onCancelled?: JobListeners["onCancelled"];
   onError?: JobListeners["onError"];
-  // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
+  // Attach to a running no-variant backend download (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
+  /** Non-GGUF scoped jobs only: GGUF file jobs belong to the GGUF card. */
+  includeScopedJobs?: boolean;
 }
 
-/**
- * Binds a single download surface (one repo, optionally per GGUF variant) to the
- * global download manager. Job state and polling live in the store, so a
- * download keeps running and stays visible after the card unmounts.
- */
+/** Job state lives in the store, so a download keeps running after the card unmounts. */
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const {
     kind,
@@ -74,6 +73,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     onCancelled,
     onError,
     autoAdopt,
+    includeScopedJobs = false,
   } = config;
 
   const handlersRef = useLatestRef<JobListeners>({
@@ -105,7 +105,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
           repoPeerActive: false,
         };
       }
-      const active = selectActiveJob(state, kind, repoId, activeVariant);
+      const active =
+        selectActiveJob(state, kind, repoId, activeVariant) ??
+        (includeScopedJobs && activeVariant === null
+          ? findActiveScopedJobForRepo(state.jobs, kind, repoId, "model")
+          : null);
       const repoActive = selectActiveJob(state, kind, repoId);
       return {
         active,
@@ -137,9 +141,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const visibleConflictKey = visibleConflict.key;
   const transportConflict = visibleConflict.info;
 
-  // Chat and Video staging park this hook on an idle repo id when the queue
-  // clears. Keep that conflict for Hub, but remember its key so a later real
-  // repo replacement clears the superseded request.
+  // Chat/Video park this hook on an idle repo id; remember the key so a later real repo clears it.
   const repoIdRef = useRef(repoId);
   const preservedConflictKeyRef = useRef<string | null>(null);
   repoIdRef.current = repoId;
@@ -168,8 +170,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
       expectedBytes: number,
       presentation?: DownloadRequest["presentation"],
     ) => {
-      // This surface renders the conflict resolver (transportConflict), so the
-      // start outcome is handled by the card UI; the awaited result is ignored.
+      // This surface renders the conflict resolver, so the awaited result is ignored.
       await downloadManager.requestStart({
         kind,
         repoId,
@@ -219,6 +220,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
             expectedBytes: active.expectedBytes,
             downloadedBytes: active.downloadedBytes,
             fraction: active.fraction,
+            measuredTransfer: active.measuredTransfer !== false,
           }
         : null,
     [active],

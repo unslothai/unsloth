@@ -9,7 +9,6 @@ export type LiveGgufVariantState = {
   state: ManagedDownload["state"];
   expectedBytes: number;
   transferredBytes: number;
-  /** Whether `transferredBytes` came from a poll that measured it. */
   measuredTransfer: boolean;
   startedAt: number;
 };
@@ -52,13 +51,9 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
         {
           state: job.state,
           expectedBytes: job.expectedBytes,
-          // The in-flight counter alone, never max(downloaded, completed): a max
-          // could only fire on a HELD completed figure, which is priced against
-          // the previous baseline. After an XET-to-HTTP reclaim that subtracted
-          // 3 GB from a 0.5 GB remainder and the row read "0 B left".
+          // Use the in-flight counter only; a held completed figure is priced against the old baseline.
           transferredBytes: job.downloadedBytes,
-          // Undefined is a job that has not polled yet, which has no held
-          // figure to forward; only an explicit false is a held reading.
+          // Only an explicit false is a held reading.
           measuredTransfer: job.measuredTransfer !== false,
           startedAt: job.startedAt,
         },
@@ -70,6 +65,42 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
     cache = { signature, states: new Map(entries) };
     return cache.states;
   };
+}
+
+function scopedFileKey(path: string): string {
+  return path.trim().replaceAll("\\", "/").replace(/^\.\//, "").toLowerCase();
+}
+
+export function createScopedLiveGgufFilesSelector(repoId: string): (state: {
+  jobs: Record<string, ManagedDownload>;
+}) => ReadonlySet<string> {
+  const repoKey = repoId.trim().toLowerCase();
+  let cache: { signature: string; files: ReadonlySet<string> } = {
+    signature: "",
+    files: new Set(),
+  };
+  return (state) => {
+    const files: string[] = [];
+    for (const job of Object.values(state.jobs)) {
+      if (job.kind !== "model" || !job.variant?.startsWith("@")) continue;
+      if (job.repoId.trim().toLowerCase() !== repoKey) continue;
+      if (!activeDownloadState(job.state)) continue;
+      for (const file of job.scopedFiles ?? []) files.push(scopedFileKey(file));
+    }
+    files.sort();
+    const signature = files.join("\u0000");
+    if (signature === cache.signature) return cache.files;
+    cache = { signature, files: new Set(files) };
+    return cache.files;
+  };
+}
+
+export function isScopedLiveVariant(
+  variant: Pick<GgufVariantDetail, "filename"> | null | undefined,
+  scopedLiveFiles: ReadonlySet<string>,
+): boolean {
+  if (!variant?.filename || scopedLiveFiles.size === 0) return false;
+  return scopedLiveFiles.has(scopedFileKey(variant.filename));
 }
 
 export function applyLiveGgufVariantStates(
@@ -87,19 +118,8 @@ export function applyLiveGgufVariantStates(
       variant.download_size_bytes ?? 0,
       variant.size_bytes,
     );
-    // The row says "N left", so N has to follow the transfer of a running job, and the backend's
-    // measured remainder covers every other case. Both terms come from the job and only from the
-    // job. snapshot_progress nets completed_baseline_bytes -- files a previous quant already
-    // fetched, an mmproj most often -- out of expected_bytes AND downloaded_bytes alike, so the
-    // pair is self-consistent while the catalog totals above are not. Subtracting the transfer from
-    // `expectedBytes`, the larger of the two scopes, adds that baseline back: 1 GB reused and 1 GB
-    // fetched of a 5 GB plan would read 4 GB left rather than 3 GB. Only while running:
-    // `transferredBytes` is progress, not bytes a resume can reuse. From huggingface_hub 1.18 the
-    // partial is process-unique and unlinked in a finally, so an interrupted transfer is refetched
-    // whole, which is how `existing_blob_bytes` already prices it. Subtracting a dead job's
-    // progress read "1.0 GB left" for a cancelled 18 GB download with all 18 GB to fetch. And only
-    // off a MEASURED reading: a held one is priced against the previous, larger total, so mixing it
-    // with the current one read "0 B left".
+    // Remaining = job's own expected minus transferred, both net of reused baseline bytes. Only
+    // while running and only off a measured reading; interrupted partials are refetched whole.
     const liveRemaining =
       activeDownloadState(live.state) &&
       live.measuredTransfer &&

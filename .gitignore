@@ -207,6 +207,8 @@ resources/
 tmp/
 **/node_modules/
 auth.db
+# The README's dev install keeps the Studio home in the checkout: accounts, chats, keys and a venv.
+/.studio/
 
 # Tauri local build/generated output
 studio/src-tauri/target/
@@ -254,6 +256,10 @@ Speech_12dB_s16.flac
 # storage_roots.studio_root at it. It is a mutable SQLite runtime database, not a fixture,
 # so a test run or an Unsloth start rewrites it and dirties the checkout.
 .studio-test-root/
+
+# _filter_requirements() in studio/install_python_stack.py writes its skip-filtered copy beside
+# the source file so relative -r/-c includes still resolve. A killed install leaves them behind.
+studio/backend/requirements/.*-filtered-*.txt
 
 # launch.py --outdir scratch from a local run
 /out/

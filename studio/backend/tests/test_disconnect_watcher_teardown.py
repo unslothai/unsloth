@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A disconnect watcher that never settles must not block a stream's teardown.
-
-Starlette's Request.is_disconnected() awaits receive() inside an anyio CancelScope it has
-already cancelled, and under uvicorn's h11 protocol that receive() genuinely parks. A cancel()
-arriving in that window counts as a second cancellation, so the scope's __exit__ uncancel()s
-and swallows the CancelledError as its own: the watcher survives cancel() and keeps polling.
-
-Teardown that awaited such a watcher outright therefore blocked until the client itself
-disconnected, holding the ASGI response open and stranding the llama-server admission lease
-released behind it. #7617.
-
-These tests wait on a task rather than asyncio.wait_for: a stub that ignores cancel() cannot
-be unblocked by cancelling it, so a wait_for here would hang instead of failing.
-"""
+"""Disconnect watchers can survive cancel() in is_disconnected(), so bound teardown's wait."""
 
 import ast
 import asyncio
@@ -51,11 +38,7 @@ def _bounded_stop(monkeypatch, collected):
 
 
 def _swallowing_watcher(release, created):
-    """Stands in for a watcher suspended inside is_disconnected()'s cancelled scope.
-
-    Records its own task so cleanup has a handle even when the teardown never hands it
-    to the bounded stop.
-    """
+    """Fake watcher that swallows cancellation and records its own task so cleanup can still reach it."""
 
     async def _poll(*_args, **_kwargs):
         created.append(asyncio.current_task())
@@ -171,15 +154,7 @@ def test_send_stream_preheader_finally_is_not_blocked_by_a_wedged_watcher(monkey
 
 
 def test_real_disconnect_watcher_can_survive_cancel_inside_is_disconnected():
-    """Pins the upstream behaviour the bounded teardown exists for.
-
-    A real watcher on a real starlette Request, cancelled while suspended inside
-    is_disconnected()'s already-cancelled anyio scope, keeps running. The window is a
-    single loop iteration, so sweep the ticks around the poll rather than assume one.
-
-    If this stops reproducing, the unbounded awaits are still wrong to restore: the point
-    is that cancel() is not guaranteed to land here.
-    """
+    """Real starlette watcher survives cancel() inside is_disconnected(); keep teardown bounded."""
 
     async def _survives_cancel_at(offset):
         parked = asyncio.Queue()
@@ -225,6 +200,71 @@ def test_real_disconnect_watcher_can_survive_cancel_inside_is_disconnected():
         pytest.skip("is_disconnected() delivered cancel() at every tick on this runtime")
 
 
+@pytest.mark.parametrize(
+    "make_watcher",
+    [
+        lambda request: inference_route._wait_preheader_cancel(None, request),
+        lambda request: inference_route._await_cancel_or_disconnect_then_close_client(
+            cancel_event = threading.Event(), request = request, client = _Closeable()
+        ),
+    ],
+    ids = ["preheader_send", "non_streaming_post"],
+)
+def test_bounded_stop_ends_a_watcher_whose_first_cancel_was_swallowed(make_watcher):
+    """Real Starlette watchers must stop promptly even after swallowing cancel() (#11809)."""
+
+    async def _stop_at(offset, stop):
+        parked = asyncio.Queue()
+        release = asyncio.Event()
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [],
+            "query_string": b"",
+            "client": ("127.0.0.1", 12345),
+        }
+
+        async def receive():
+            parked.put_nowait(None)
+            await release.wait()
+            return {"type": "http.disconnect"}
+
+        watcher = asyncio.create_task(make_watcher(Request(scope, receive)))
+        try:
+            await parked.get()
+            for _ in range(offset):
+                await asyncio.sleep(0)
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await stop(watcher)
+            return watcher.done(), loop.time() - started
+        finally:
+            await _release(release, [watcher])
+
+    async def _single_cancel(watcher):
+        watcher.cancel()
+        await asyncio.wait({watcher}, timeout = 0.5)
+
+    async def _real_stop(watcher):
+        await inference_route._stop_local_disconnect_cancel_watcher(watcher, timeout_s = 2.0)
+
+    async def _run():
+        swallowed = 0
+        for offset in range(8):
+            ended, _elapsed = await _stop_at(offset, _single_cancel)
+            if ended:
+                continue
+            swallowed += 1
+            ended, elapsed = await _stop_at(offset, _real_stop)
+            assert ended, "the bounded stop left a watcher running after a swallowed cancel"
+            assert elapsed < 0.5, f"stopping the watcher took {elapsed:.3f}s"
+        return swallowed
+
+    if not asyncio.run(_run()):
+        pytest.skip("is_disconnected() delivered cancel() at every tick on this runtime")
+
+
 def _blocks(tree):
     """Every statement list in the tree, so ordering is checked within one scope."""
     for node in ast.walk(tree):
@@ -235,11 +275,7 @@ def _blocks(tree):
 
 
 def _called_name(stmt):
-    """The name a bare `foo(...)` / `await foo(...)` statement calls, else None.
-
-    Structural rather than textual so an enclosing try/finally does not match on the calls
-    nested inside it.
-    """
+    """Structural match, so an enclosing try/finally does not match calls nested inside it."""
     if not isinstance(stmt, ast.Expr):
         return None
     value = stmt.value
@@ -262,16 +298,10 @@ def _first_index(block, names):
     ["_openai_passthrough_stream_admitted", "_anthropic_passthrough_stream"],
 )
 def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
-    """The slot must be handed back only once the upstream response is closed.
-
-    On disconnect llama-server keeps decoding until resp is closed, so releasing first
-    admits another request past --parallel. The release must still always run, from the
-    finally of the same try, which is bounded only because every teardown await is.
-    """
+    """Release the slot only after the upstream closes, or llama-server exceeds --parallel."""
     func = getattr(inference_route, func_name)
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
-    # a release must never sit ahead of a close in the same block
     for block in _blocks(tree):
         release_at = _first_index(block, ("_release_admission",))
         teardown_at = _first_index(block, _TEARDOWN_CALLS)
@@ -283,10 +313,7 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
 
-    # and every close must sit under a try whose finally releases, so a stalled close cannot
-    # drop the lease. By ancestry, not direct membership: the nesting that stops a cancel in
-    # _aclose_send_task's wait from skipping the later closes puts the first teardown one
-    # level up, which membership would reject even though it is strictly safer.
+    # every close must sit under a finally that releases; checked by ancestry, not direct membership
     parents = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

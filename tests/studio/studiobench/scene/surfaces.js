@@ -24,8 +24,7 @@
   window.__sb = window.__sb || {};
 
   const q = (sel) => {
-    // Selector strings come from a registry, and one bad selector must cost that surface a reason
-    // rather than cost the whole sweep an exception.
+    // One bad selector must cost only its surface, not the whole sweep.
     try {
       return document.querySelector(sel);
     } catch (err) {
@@ -41,8 +40,6 @@
     }
   };
 
-  // Rendered, not merely mounted: `hidden`, `display:none` and a zero box all mean the user cannot
-  // see it, and the keep-alive route containers are exactly the first case.
   const isVisible = (el) => {
     if (!el) return false;
     if (el.hasAttribute && el.hasAttribute("hidden")) return false;
@@ -52,12 +49,8 @@
     return style.display !== "none" && style.visibility !== "hidden";
   };
 
-  // The ACTIVE route's container, found by the property the root layout actually sets. The layout
-  // renders the keep-alive pages and the routed page as siblings and marks every non-current page
-  // `inert` (plus `class="hidden"`), so the active container is the one visible sibling of an inert
-  // one. Keyed on `inert` rather than the class string because `hidden` is a Tailwind utility a
-  // restyle can change, while `inert` is what makes the off-route pages unreachable. When nothing
-  // is inert, no page has been kept alive yet and the inset itself is the container.
+  // The active route container is the visible sibling of an `inert` one; keyed on `inert`, not the
+  // Tailwind `hidden` class. With nothing inert the inset is the container.
   const routeContainer = () => {
     const inset = q('[data-slot="sidebar-inset"]');
     if (!inset) return null;
@@ -65,8 +58,7 @@
     if (!inertNode || !inertNode.parentElement) return inset;
     const siblings = Array.from(inertNode.parentElement.children);
     const active = siblings.filter((el) => !el.hasAttribute("inert") && isVisible(el));
-    // Exactly one, or the assumption is wrong and the inset is the honest answer. Silently picking
-    // the first of several would scope the digest to an arbitrary part of the page.
+    // Exactly one, or fall back to the inset rather than pick an arbitrary one.
     return active.length === 1 ? active[0] : inset;
   };
 
@@ -79,8 +71,7 @@
   const resolve = (sel) => (SPECIAL[sel] ? SPECIAL[sel]() : q(sel));
 
   const S = {
-    // `candidates` is ordered: the first present AND visible wins. The auth-flow routes render no
-    // sidebar wrapper at all, so every list ends at a fallback that exists.
+    // First present and visible wins; auth routes have no sidebar, so lists end with a fallback.
     resolveRoot(candidates) {
       for (const sel of candidates || []) {
         const el = resolve(sel);
@@ -88,8 +79,6 @@
       }
       for (const sel of candidates || []) {
         const el = resolve(sel);
-        // Present but not visible is still reported, with the selector, so a surface that rendered into a
-        // hidden container is a readable finding rather than a fallback to body.
         if (el) return { el, sel, visible: false };
       }
       return { el: document.body, sel: "body", fallback: true };
@@ -122,9 +111,7 @@
       return out;
     },
 
-    // Does parity.capture() actually honour a moved root? Pointed at a detached element with one
-    // short text node, an honouring capture returns a few dozen characters and a non-honouring one
-    // the whole page; the threshold is two orders of magnitude clear of both.
+    // An honouring capture of a detached one-text-node root returns a few dozen chars, else the page.
     probeScoping() {
       const dom = (window.__sb || {}).dom;
       const parity = (window.__sb || {}).parity;
@@ -153,8 +140,6 @@
                  reason: "parity.capture() returned no `chars`, so scoping cannot be verified" };
       }
       if (chars > 500) {
-        // The digest is the whole page, not the probe: every surface digest would then be the same
-        // page-wide reading and the sweep would report forty identical passes.
         return { scoped: false, scoping_attempted: true, probe_chars: chars,
                  reason: "parity.capture() ignored the moved root (" + chars + " chars from a " +
                          "detached probe element), so surface digests would not be scoped" };
@@ -162,8 +147,6 @@
       return { scoped: true, scoping_attempted: true, probe_chars: chars };
     },
 
-    // Evaluated by the sweep in a poll loop. Each returns a plain boolean plus the observation it was
-    // made from, so a surface that never settled records WHAT it was waiting for.
     settled(spec) {
       if (!spec) return { ok: true, detail: "no settle condition" };
       if (spec.visible) {
@@ -196,8 +179,6 @@
       return { ok: true, detail: "unrecognised settle spec, treated as satisfied" };
     },
 
-    // What the sweep records alongside every surface so a digest can be read against the state it was
-    // taken in. A surface whose root holds three elements did not render.
     facts(candidates) {
       const found = S.resolveRoot(candidates);
       return {
@@ -214,8 +195,6 @@
       };
     },
 
-    // The known state the sweep returns to between surfaces. Reported rather than asserted: the sweep
-    // decides what to do about a dirty state and needs the observation to decide.
     isClean() {
       return {
         clean_attempted: true,

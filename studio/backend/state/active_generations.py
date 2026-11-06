@@ -1,32 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Registry of in-flight chat generations, keyed by conversation.
-
-New Chat leaves the previous conversation streaming, so /load and /unload need
-to know which chats a reload would interrupt: they refuse with 409 unless the
-caller opts in to cancelling them, and GET /inference/active-generations lets
-the UI name them. A frontend guard alone would miss a second tab or a REST call.
-
-Entries hold the same threading.Event as the per-run cancel registry in
-routes/inference.py, so cancel_all() closes each generation's own upstream
-stream and never signals llama-server itself.
-
-A plain dict plus a threading.Lock: no signals, no process groups, no event loop
-affinity, so it behaves identically on Linux, macOS, Windows and WSL.
-"""
+"""In-flight chats: /load and /unload 409 unless opted in to cancel; GET /inference/active-
+generations lists them; cancel_all spares llama-server"""
 
 from __future__ import annotations
 
 import threading
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any, Collection, Optional
 
 from utils.account_context import current_account_id
 
-# Keyed by handle, not thread_id: a tool continuation can register before the previous leg
-# unregisters, and one key would drop the other.
+# Keyed by handle: a tool continuation can register before the previous leg unregisters.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
 # Disabled or retired accounts: a generation registering late for one starts cancelled.
@@ -34,10 +21,7 @@ _FENCED: set[str] = set()
 
 
 class ActiveGeneration:
-    """Registers one in-flight generation for the duration of the block.
-
-    Each __enter__ mints its own handle, so overlapping uses never clobber.
-    """
+    """uses a unique handle so overlapping registrations cannot clobber each other."""
 
     __slots__ = (
         "thread_id",
@@ -46,6 +30,7 @@ class ActiveGeneration:
         "model",
         "kind",
         "account_id",
+        "external",
         "_handle",
         "_borrowed",
     )
@@ -59,8 +44,10 @@ class ActiveGeneration:
         model: Optional[str] = None,
         kind: str = "chat",
         account_id: Optional[str] = None,
+        external: bool = False,
     ):
         self.account_id = account_id or current_account_id()
+        self.external = external
         self.thread_id = thread_id or None
         self.run_id = run_id or None
         self.cancel_event = cancel_event
@@ -71,8 +58,7 @@ class ActiveGeneration:
 
     def __enter__(self) -> "ActiveGeneration":
         with _LOCK:
-            # A durable supervisor registers before model loading starts and the route later enters its normal
-            # tracker with that same event and run, so borrow the outer registration.
+            # borrow the supervisor's pre-load registration when the route reuses its event and run.
             if self.run_id:
                 for entry in _ACTIVE.values():
                     if (
@@ -97,6 +83,7 @@ class ActiveGeneration:
                 "model": self.model,
                 "kind": self.kind,
                 "account_id": self.account_id,
+                "external": self.external,
                 "started_at": time.time(),
                 "event": self.cancel_event,
             }
@@ -115,12 +102,33 @@ class ActiveGeneration:
         return False
 
 
-def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only."""
+def _matching(
+    account_id: Optional[str],
+    exclude: Collection[threading.Event],
+    only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
+) -> list[dict[str, Any]]:
+    return [
+        e
+        for e in _ACTIVE.values()
+        if (account_id is None or e["account_id"] == account_id)
+        and e["event"] not in exclude
+        and (only is None or e["event"] in only)
+        and (include_external or not e["external"])
+    ]
+
+
+def snapshot(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
+) -> list[dict[str, Any]]:
+    """in-flight generations, newest last; ``account_id=None`` is for shutdown or the arbiter."""
     with _LOCK:
-        entries = [
-            e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
-        ]
+        entries = _matching(account_id, exclude, only, include_external = include_external)
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -136,41 +144,52 @@ def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
     ]
 
 
-def active_thread_ids(account_id: Optional[str] = None) -> list[str]:
-    """Distinct conversation ids with a generation in flight, in start order.
-
-    A first turn that races persistence has no thread id yet: count() sees it,
-    this cannot name it.
-    """
+def active_thread_ids(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    only: Optional[Collection[threading.Event]] = None,
+    *,
+    include_external: bool = True,
+) -> list[str]:
+    """distinct conversation ids in start order; an unpersisted first turn cannot be named."""
     seen: list[str] = []
-    for e in snapshot(account_id):
+    for e in snapshot(account_id, exclude, only, include_external = include_external):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
-def count(account_id: Optional[str] = None) -> int:
+def count(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    *,
+    include_external: bool = True,
+) -> int:
     with _LOCK:
-        if account_id is None:
+        if account_id is None and not exclude and include_external:
             return len(_ACTIVE)
-        return sum(1 for e in _ACTIVE.values() if e["account_id"] == account_id)
+        return len(_matching(account_id, exclude, include_external = include_external))
 
 
 def foreign_count(account_id: str) -> int:
-    """Generations in flight for OTHER accounts, which a load or unload must not interrupt."""
+    """generations for other accounts that load and unload must not interrupt."""
     with _LOCK:
-        return sum(1 for e in _ACTIVE.values() if e["account_id"] != account_id)
+        return sum(
+            1 for e in _ACTIVE.values() if e["account_id"] != account_id and not e["external"]
+        )
 
 
-def cancel_all(account_id: Optional[str] = None) -> int:
-    """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
-    ``account_id``; None means everyone and is for shutdown only."""
+def cancel_all(
+    account_id: Optional[str] = None,
+    exclude: Collection[threading.Event] = (),
+    *,
+    include_external: bool = True,
+) -> int:
+    """request callers must pass ``account_id``; None cancels every account during shutdown."""
     with _LOCK:
         events = [
-            e["event"]
-            for e in _ACTIVE.values()
-            if account_id is None or e["account_id"] == account_id
+            e["event"] for e in _matching(account_id, exclude, include_external = include_external)
         ]
     for ev in events:
         try:
@@ -181,7 +200,7 @@ def cancel_all(account_id: Optional[str] = None) -> int:
 
 
 def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
-    """Signal ``thread_id``'s generations; thread ids are client-chosen, so scope by account."""
+    """thread ids are client-chosen, so cancellation is scoped by account."""
     if not thread_id:
         return 0
     scope = account_id or current_account_id()

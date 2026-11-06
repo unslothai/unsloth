@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { cn } from "@/lib/utils";
 import {
   type MouseEvent as ReactMouseEvent,
@@ -11,10 +14,6 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-} from "lucide-react";
 
 export const CARD_GAP_PX = 16;
 const CAROUSEL_TOP_PADDING_PX = 8;
@@ -47,9 +46,9 @@ export function CarouselArrow({
       )}
     >
       {side === "left" ? (
-        <ChevronLeftIcon strokeWidth={2} className="size-4" />
+        <HugeiconsIcon icon={ChevronLeftStandardIcon} strokeWidth={2} className="size-4" />
       ) : (
-        <ChevronRightIcon strokeWidth={2} className="size-4" />
+        <HugeiconsIcon icon={ChevronRightStandardIcon} strokeWidth={2} className="size-4" />
       )}
     </button>
   );
@@ -73,8 +72,11 @@ export function CardCarousel<T>({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
-  const stepPx = itemWidth + CARD_GAP_PX;
-  const arrowCenterPx = CAROUSEL_TOP_PADDING_PX + itemHeight / 2;
+  const scale = useUiSpaceScale();
+  const gapPx = CARD_GAP_PX * scale;
+  const topPaddingPx = CAROUSEL_TOP_PADDING_PX * scale;
+  const stepPx = itemWidth + gapPx;
+  const arrowCenterPx = topPaddingPx + itemHeight / 2;
 
   const updateArrows = useCallback(() => {
     const el = scrollerRef.current;
@@ -93,8 +95,9 @@ export function CardCarousel<T>({
   }, [updateArrows]);
 
   useEffect(() => {
+    // Scaling moves scrollWidth, which the box observer does not see, so recompute here.
     updateArrows();
-  }, [updateArrows, items]);
+  }, [updateArrows, items, itemWidth, itemHeight, gapPx]);
 
   const scrollByCards = useCallback(
     (direction: 1 | -1) => {
@@ -106,7 +109,7 @@ export function CardCarousel<T>({
     [stepPx],
   );
 
-  // Click-and-drag panning (mouse only; touch/pen keep native scrolling).
+  // Mouse only; touch and pen keep native scrolling.
   const drag = useRef<{ id: number; x: number; left: number; moved: boolean } | null>(
     null,
   );
@@ -123,15 +126,13 @@ export function CardCarousel<T>({
     const d = drag.current;
     const el = scrollerRef.current;
     if (!d || !el || e.pointerId !== d.id) return;
-    // Primary button no longer held: the press ended off the scroller, so no
-    // pointerup reached us. Drop the stale drag instead of scrolling on hover.
+    // Button released off the scroller with no pointerup: drop the stale drag.
     if ((e.buttons & 1) === 0) {
       if (d.moved) el.style.scrollSnapType = "";
       drag.current = null;
       return;
     }
     const dx = e.clientX - d.x;
-    // Ignore tiny moves so plain clicks still register.
     if (!d.moved && Math.abs(dx) < 5) return;
     if (!d.moved) {
       d.moved = true;
@@ -146,10 +147,8 @@ export function CardCarousel<T>({
     const d = drag.current;
     if (!d || e.pointerId !== d.id) return;
     if (d.moved) {
-      // A drag just happened: swallow the click it would fire on a card.
       suppressClick.current = true;
       const el = scrollerRef.current;
-      // Restore snap so the row settles on a card after the drag.
       if (el) el.style.scrollSnapType = "";
       el?.releasePointerCapture?.(d.id);
     }
@@ -173,11 +172,9 @@ export function CardCarousel<T>({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onClickCapture={onClickCapture}
-        // Stop the avatar image from starting a native drag during a pan.
         onDragStart={(e) => e.preventDefault()}
         aria-label={ariaLabel}
-        // px-2 + -mx-2 give card shadows room so the edge cards aren't clipped;
-        // scroll-px-2 keeps snap-start aligned with the heading.
+        // Padding gives card shadows room; scroll-px-2 keeps snap aligned with the heading.
         className="hub-carousel -mx-2 flex cursor-grab snap-x scroll-px-2 gap-4 overflow-x-auto px-2 pb-4 pt-2 select-none active:cursor-grabbing"
       >
         {items.map((item) => (
@@ -194,13 +191,13 @@ export function CardCarousel<T>({
         aria-hidden="true"
         data-visible={canLeft || undefined}
         className="hub-carousel-fade hub-carousel-fade-left"
-        style={{ top: CAROUSEL_TOP_PADDING_PX, height: itemHeight }}
+        style={{ top: topPaddingPx, height: itemHeight }}
       />
       <div
         aria-hidden="true"
         data-visible={canRight || undefined}
         className="hub-carousel-fade hub-carousel-fade-right"
-        style={{ top: CAROUSEL_TOP_PADDING_PX, height: itemHeight }}
+        style={{ top: topPaddingPx, height: itemHeight }}
       />
       <CarouselArrow
         side="left"

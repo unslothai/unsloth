@@ -1,9 +1,4 @@
-"""Run the install.sh UV_OVERRIDE space-safety shell test (issue #6503) under
-pytest, so the auto-discovered CPU test job executes it. The dedicated
-`Shell installer tests` CI job runs a fixed script list that this is not part
-of, so without this wrapper the regression would only be covered locally via
-tests/run_all.sh.
-"""
+"""Runs the install.sh UV_OVERRIDE space-safety test under pytest; the shell CI job's list omits it."""
 
 from __future__ import annotations
 

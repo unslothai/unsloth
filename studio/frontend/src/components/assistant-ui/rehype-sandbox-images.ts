@@ -5,7 +5,11 @@ import type { Root, RootContent } from "hast";
 import type { Plugin } from "unified";
 
 import { safeMarkdownUrl } from "../../lib/safe-markdown-url.ts";
-import { decodeSegment, markdownSandboxImageSrc } from "./sandbox-files.ts";
+import {
+	decodeSegment,
+	markdownSandboxImageSrc,
+	markdownSandboxLinkHref,
+} from "./sandbox-files.ts";
 
 type SandboxScope = Parameters<typeof markdownSandboxImageSrc>[1];
 
@@ -40,6 +44,14 @@ export const rehypeSandboxImages: Plugin<[SandboxScope], Root> =
 							safe && !unsafeImagePath(safe)
 								? (markdownSandboxImageSrc(safe, scope) ?? safe)
 								: undefined;
+					}
+				}
+				// File links too, which harden would block as relative paths; the link's menu opens them.
+				if (node.type === "element" && node.tagName === "a") {
+					const href = node.properties.href;
+					if (typeof href === "string") {
+						const resolved = markdownSandboxLinkHref(href, scope);
+						if (resolved) node.properties.href = resolved;
 					}
 				}
 				if ("children" in node) node.children.forEach(walk);

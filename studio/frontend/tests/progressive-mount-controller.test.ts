@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The widen-only mount window, tested where it is pure. The React glue is a .tsx and node's type
-// stripping cannot import one, so its invariants are pinned by source assertion in
-// progressive-mount-glue.test.ts instead.
-//
-// The property all of these protect: the window only ever grows, and it always reaches null. A
-// window that shrank would unmount a message, the failure mode this change exists to avoid.
+// The window only grows and always reaches null; shrinking would unmount a message.
+// The .tsx glue is pinned in progressive-mount-glue.test.ts.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,11 +15,73 @@ import {
   type MountWindow,
   admits,
   anchorCorrection,
+  alignAnchorCorrection,
   initialWindow,
   isCovered,
+  FAR_MOUNT_CHUNK,
+  nextMountChunk,
   stepsToCover,
+  watchProgressiveScroll,
   widen,
 } from "../src/components/assistant-ui/progressive-mount-controller.ts";
+
+test("mounting waits for wheel momentum and thumb release, without pausing on its own corrections", () => {
+  const viewport = new EventTarget();
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  const send = (type: string) => viewport.dispatchEvent(new Event(type));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  send("wheel");
+  assert.equal(activity.blocked(false), true);
+  time += 250;
+  send("scroll");
+  time += 250;
+  assert.equal(activity.blocked(false), true);
+  time += 51;
+  assert.equal(activity.blocked(false), false);
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  assert.equal(activity.blocked(true), true);
+  time += 1000;
+  assert.equal(activity.blocked(true), true);
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  assert.equal(activity.blocked(false), false);
+  activity.dispose();
+  send("wheel");
+  assert.equal(activity.blocked(false), false);
+});
+
+test("scroll keys, touch momentum, and composer input outside the viewport pause mounting", () => {
+  const document = new EventTarget();
+  const viewport = Object.assign(new EventTarget(), { ownerDocument: document });
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  time += 301;
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "a" }));
+  assert.equal(activity.blocked(false), false);
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "PageUp" }));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  viewport.dispatchEvent(new Event("touchmove"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("compositionupdate"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("pointerdown"));
+  assert.equal(activity.blocked(false), true);
+  activity.dispose();
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), false);
+});
 
 test("a thread under the floor is never windowed", () => {
   for (const count of [0, 1, 20, MIN_PROGRESSIVE_MESSAGES - 1]) {
@@ -42,8 +100,7 @@ test("a thread at the floor is windowed", () => {
 });
 
 test("the first commit mounts the tail, not the head", () => {
-  // The thread is bottom-anchored, so a head-anchored window would mount 16 messages nobody can
-  // see and still paint an empty viewport.
+  // The thread is bottom-anchored, so a head-anchored window paints an empty viewport.
   const w = initialWindow(220, false);
   assert.equal(w?.start, 220 - INITIAL_MESSAGES);
   assert.equal(admits(w, 219), true);
@@ -77,6 +134,17 @@ test("widening only ever moves start down", () => {
   }
 });
 
+test("smaller renderer batches still converge without skipping messages", () => {
+  let current = initialWindow(600, false);
+  let previous = current!.start;
+  while (current !== null) {
+    current = widen(current, 600, 2);
+    const start = current?.start ?? 0;
+    assert.ok(start < previous && previous - start <= 2);
+    previous = start;
+  }
+});
+
 test("widening reaches null from every thread length", () => {
   for (const count of [40, 41, 80, 220, 501, 5000]) {
     assert.ok(stepsToCover(count) >= 1, `${count} never widened`);
@@ -84,8 +152,7 @@ test("widening reaches null from every thread length", () => {
 });
 
 test("the number of widening frames is bounded and small", () => {
-  // One frame per chunk after the first commit. 220 messages is #9016's largest fixture, and at
-  // 60Hz seven frames is under 120ms, the budget this whole change rests on.
+  // At 60Hz seven frames is under 120ms, the budget this change rests on.
   assert.equal(
     stepsToCover(220),
     Math.ceil((220 - INITIAL_MESSAGES) / CHUNK_MESSAGES),
@@ -98,8 +165,7 @@ test("the number of widening frames is bounded and small", () => {
 });
 
 test("widen returns null in the same commit that mounts the last chunk", () => {
-  // Not a frame later: {start: 0} renders the same as null, so leaving one spends an extra frame
-  // re-rendering the whole thread into a byte-identical tree.
+  // {start: 0} renders the same as null, so leaving it wastes a full re-render frame.
   const nearlyDone: MountWindow = { start: CHUNK_MESSAGES };
   assert.equal(widen(nearlyDone, 220), null);
   const exactlyOneChunkLeft: MountWindow = { start: CHUNK_MESSAGES - 1 };
@@ -107,8 +173,7 @@ test("widen returns null in the same commit that mounts the last chunk", () => {
 });
 
 test("widen never returns a start above the message count", () => {
-  // A thread that SHRANK under a live window (a delete or a branch switch) must not leave it
-  // pointing past the end, which would admit nothing and paint an empty thread.
+  // A thread that shrank must not leave the window past the end.
   const stale: MountWindow = { start: 200 };
   const next = widen(stale, 10);
   assert.equal(
@@ -128,8 +193,7 @@ test("isCovered is true exactly when nothing is being withheld", () => {
 });
 
 test("the constants stay inside the range they were measured over", () => {
-  // Bounds, not equalities, so a future edit cannot quietly turn the first commit into one row or
-  // the floor into every thread and stay green.
+  // Bounds, not equalities, so the first commit cannot quietly become one row or everything.
   assert.ok(
     INITIAL_MESSAGES >= 8 && INITIAL_MESSAGES <= 64,
     `INITIAL_MESSAGES ${INITIAL_MESSAGES} is outside the measured range`,
@@ -144,9 +208,6 @@ test("the constants stay inside the range they were measured over", () => {
   );
 });
 
-// anchorCorrection, extracted. It used to live inside the .tsx where nothing could test it, and its
-// one bug so far was found by a browser probe rather than a test.
-
 const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_000) => ({
   viewportOffset,
   scrollTop,
@@ -154,15 +215,12 @@ const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_
 });
 
 test("the correction is the height inserted above, in document space", () => {
-  // scrollTop did not move, so the anchor moved down by everything inserted above it.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(11500, 20000)), 12000);
 });
 
 test("the reader's own scroll is subtracted, not skipped", () => {
-  // 12000px inserted above in the frame the reader scrolled down 3000px; document space nets those
-  // to the 12000px to apply. The version that skipped such frames left the reader 19,259px out.
+  // Document space nets reader scroll against insertion above.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(8500, 23000)), 12000);
-  // A frame holding only the reader's own scroll is a no-op, with no gesture bookkeeping needed.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(-3500, 23000)), null);
 });
 
@@ -181,19 +239,14 @@ test("sub-pixel movement is never acted on", () => {
 });
 
 test("a window past the end of a shrunken thread is dropped, never narrowed", () => {
-  // The failure this rules out: {start: 204} against a thread that shrank to 100. Clamping to count
-  // then subtracting a chunk gives {start: 68}, and the caller already rendered all 100 rows, so
-  // rows 0 to 67 would be unmounted.
+  // Clamping then subtracting a chunk would unmount rows the caller already rendered.
   assert.equal(widen({ start: 204 }, 100), null);
   assert.equal(widen({ start: 204 }, 0), null);
   assert.equal(widen({ start: 100 }, 100), null);
-  // One below the end still widens normally.
   assert.deepEqual(widen({ start: 99 }, 100), { start: 99 - CHUNK_MESSAGES });
 });
 
 test("widening is monotone in start for every reachable window and count", () => {
-  // The general property behind the case above: the next window never withholds more than this
-  // one does.
   for (let count = 0; count <= 300; count += 7) {
     for (let start = 0; start <= 300; start += 5) {
       const next = widen({ start }, count);
@@ -207,37 +260,23 @@ test("widening is monotone in start for every reachable window and count", () =>
 });
 
 test("a shrink the browser already clamped is not corrected twice", () => {
-  // With anchoring off the browser moves scrollTop for exactly one reason: content shrinks above a
-  // reader near the bottom, their offset stops existing, and it clamps to the new maximum. The
-  // document-space delta reports the whole shrink anyway, so applying it on top of the clamp would
-  // move the viewport twice by the clamped part.
-  //
-  // 500px removed above a reader at scrollTop 9000, maximum dropping to 8600: the browser absorbed
-  // 400, so 100 is left to apply.
+  // With anchoring off the browser clamps scrollTop on shrink; apply only the unabsorbed part.
   assert.equal(
     anchorCorrection(sample(200, 9000, 9100), sample(100, 8600, 8600)),
     -100,
   );
-  // The same shrink with room to spare is corrected in full: nothing was clamped.
   assert.equal(
     anchorCorrection(sample(200, 9000, 50_000), sample(-300, 9000, 49_500)),
     -500,
   );
 });
 
-// A row that does not render is not a row. `threadMessageKind` returns "none" for any role the
-// thread supplies no component for, and `ThreadMessage` renders null for it, so the message
-// occupies no height. Sizing the tail by message COUNT therefore lets a thread open on sixteen
-// invisible rows and paint no conversation at all, which is the stall this window exists to
-// remove rather than cause. Imports keep the roles that do this: chat-import.ts and
-// openwebui-import.ts both preserve "system".
+// Roles with no component render null and have no height, so size the tail by renderable rows.
 
-/** Renderable everywhere except a tail of `systemTail` messages. */
 function tailIsUnrenderable(count: number, systemTail: number) {
   return (index: number) => index < count - systemTail;
 }
 
-/** How many rows the first commit would actually paint. */
 function visibleRows(
   window: MountWindow,
   count: number,
@@ -258,9 +297,7 @@ test("the initial tail is sized on rows that render, not on message count", () =
   const count = 220;
   const renders = tailIsUnrenderable(count, INITIAL_MESSAGES);
   const w = initialWindow(count, false, renders);
-  // The whole point: the first commit paints a full tail of CONVERSATION, not sixteen blanks.
   assert.equal(visibleRows(w, count, renders), INITIAL_MESSAGES);
-  // And it got there by reaching further back, never by mounting less.
   assert.ok(w != null && w.start < count - INITIAL_MESSAGES);
 });
 
@@ -268,11 +305,8 @@ test("a tail of unrenderable rows still only ever widens", () => {
   const count = 220;
   const renders = tailIsUnrenderable(count, 40);
   const w = initialWindow(count, false, renders);
-  // Reaching back for renderable rows must not push `start` past the end or below zero, or widen
-  // would unmount what this just mounted.
   assert.ok(w != null && w.start >= 0 && w.start < count);
   assert.equal(visibleRows(w, count, renders), INITIAL_MESSAGES);
-  // Still converges.
   let current: MountWindow = w;
   let steps = 0;
   while (current != null) {
@@ -288,8 +322,6 @@ test("a tail of unrenderable rows still only ever widens", () => {
 });
 
 test("a short thread with too few renderable rows is not windowed at all", () => {
-  // Short enough to sit inside the cap, so there is no bound to enforce and nothing to withhold:
-  // withholding here would hide part of the little there is to see.
   const count = MAX_INITIAL_SPAN;
   assert.equal(
     initialWindow(count, false, () => false),
@@ -306,8 +338,6 @@ test("a short thread with too few renderable rows is not windowed at all", () =>
 });
 
 test("a long thread with too few renderable rows is bounded, not mounted whole", () => {
-  // Past the cap the bound is what matters. There is nothing to see either way, so mounting the
-  // whole thread in order to show nothing is the one option with no argument for it.
   const count = 220;
   const shapes = [
     () => false,
@@ -321,7 +351,6 @@ test("a long thread with too few renderable rows is bounded, not mounted whole",
 });
 
 test("omitting the predicate keeps the count-based window", () => {
-  // Callers that cannot say what renders (the tests above, stepsToCover) must behave as before.
   assert.deepEqual(initialWindow(220, false), {
     start: 220 - INITIAL_MESSAGES,
   });
@@ -333,11 +362,7 @@ test("omitting the predicate keeps the count-based window", () => {
   );
 });
 
-// Sizing the tail on renderable rows has to stay BOUNDED. Walking back for sixteen rows that
-// render will cross every non-rendering message in between, and an imported thread of sixteen
-// visible messages followed by two hundred system entries walked all the way to zero: the first
-// commit then rebuilt every provider in the thread, which is the bound this window exists to
-// create. Both ends matter, so both are asserted here.
+// The renderable-row walk must stay bounded, or a long non-rendering tail mounts everything.
 
 test("the first commit's raw span is bounded even when the tail does not render", () => {
   const count = 220;
@@ -351,8 +376,6 @@ test("the first commit's raw span is bounded even when the tail does not render"
 });
 
 test("the cap does not cost visible rows when they are reachable inside it", () => {
-  // The realistic shape: a system entry every few messages. The walk crosses them and still
-  // returns a full tail of conversation, well inside the cap.
   const count = 220;
   const renders = (index: number) => index % 3 !== 0;
   const w = initialWindow(count, false, renders);
@@ -363,7 +386,6 @@ test("the cap does not cost visible rows when they are reachable inside it", () 
 });
 
 test("an all-renderable thread is unchanged by the cap", () => {
-  // The common case must not move: the cap is a bound, not a policy.
   assert.deepEqual(initialWindow(220, false, () => true), {
     start: 220 - INITIAL_MESSAGES,
   });
@@ -382,4 +404,67 @@ test("a capped window still only widens, and still converges", () => {
     steps += 1;
     assert.ok(steps <= count + 2, "widen made no progress");
   }
+});
+
+test("fractional prepends and reflows keep the visible anchor stationary with integer scrolling", () => {
+  let inset = 0;
+  let contentTop = 0;
+  let scrollTop = 0;
+  for (let index = 0; index < 600; index++) {
+    const delta = [4408.625, 4210.4375, -0.375, 0.1875, -12.5625][index % 5];
+    contentTop += delta;
+    const aligned = alignAnchorCorrection(delta, inset);
+    assert.equal(Number.isInteger(aligned.scroll), true);
+    assert.ok(aligned.inset >= 0 && aligned.inset < 1);
+    inset = aligned.inset;
+    scrollTop += aligned.scroll;
+    assert.equal(contentTop + inset - scrollTop, 0);
+  }
+});
+
+test("subpixel reflows can be absorbed without issuing fractional scroll writes", () => {
+  const before = sample(30, 12000);
+  const after = sample(30.375, 12000);
+  assert.equal(anchorCorrection(before, after), null);
+  assert.equal(anchorCorrection(before, after, 1 / 64), 0.375);
+  assert.equal(anchorCorrection(before, before, 1 / 64), null);
+  assert.deepEqual(alignAnchorCorrection(-0.375, 0), { scroll: 0, inset: 0.375 });
+});
+
+test("WebKitGTK steps stay small near the reader and ramp to FAR_MOUNT_CHUNK past the window reach", () => {
+  const near = 2;
+  const reach = 2000;
+  // Unknown geometry or a frontier within reach (or below the viewport top) keeps the small step.
+  assert.equal(nextMountChunk(near, null, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 0, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, -500, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, reach, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, Number.NaN, near, reach), near);
+  // Past it the first step of a window (previous 0) stays small, so the tail paints first; then it
+  // grows to the cap and holds.
+  const steps: number[] = [];
+  let chunk = 0;
+  for (let i = 0; i < 6; i += 1) {
+    chunk = nextMountChunk(chunk, reach + 1, near, reach);
+    steps.push(chunk);
+  }
+  assert.deepEqual(steps, [near, 8, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK]);
+  assert.ok(FAR_MOUNT_CHUNK <= 16, "larger far steps made ~1.4 s frames on CPU-painted WebKit");
+  // A step after near ones ramps from the near size.
+  assert.equal(nextMountChunk(near, reach + 1, near, reach), 8);
+  // Coming back within reach (the reader scrolled up to the frontier) drops straight to the small step.
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 100, near, reach), near);
+  // The near step already being the cap (other engines) never changes it.
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 10_000, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, null, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
+  // A 300-message thread past the reach covers in about 20 commits instead of about 142.
+  let current: MountWindow = initialWindow(300, false);
+  let commits = 0;
+  chunk = 0;
+  while (current != null) {
+    chunk = nextMountChunk(chunk, reach + 1, near, reach);
+    current = widen(current, 300, chunk);
+    commits += 1;
+  }
+  assert.ok(commits <= 24, `took ${commits} commits`);
 });

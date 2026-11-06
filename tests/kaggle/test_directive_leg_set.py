@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The leg set the rebuild is specified against, encoded so it cannot drift.
-
-Four legs, each covering a distinct surface, plus GRPO which is deliberately
-not per-PR. These are properties of the SPEC rather than of the code, and they
-are written down here because the alternative is that they live only in a
-conversation: a leg quietly losing its export flag, or being pointed at a
-different model, is invisible in a diff that touches one line of a tuple.
-
-The one that matters most is the export rule. "Export to GGUF / llama.cpp Q8_0
-and run inference on the result" applies to EVERY leg, and Latest_compile was
-missing it for the whole rebuild without anything noticing.
-"""
+"""Pins the leg set as spec properties, so a leg quietly losing its export flag fails a test."""
 
 from __future__ import annotations
 
@@ -24,7 +13,6 @@ sys.path.insert(0, str(ROOT / ".github" / "scripts" / "kaggle_t4_ci"))
 
 import legs  # noqa: E402
 
-# leg name -> the model it is specified to exercise.
 DIRECTIVE = {
     "default": "unsloth/Qwen3-0.6B",
     "latest_compile": "unsloth/gemma-4-E2B-it",
@@ -49,21 +37,8 @@ def test_every_directive_leg_is_pointed_at_the_model_it_was_specified_for():
         ), f"{name} trains {args[args.index('--model') + 1]!r}, not {model!r}"
 
 
-# Which legs carry the export, and why it is these two rather than all four.
-# The claim is that the PREBUILT llama.cpp binaries convert a trained adapter
-# and that the result runs -- `run_failures` in gguf_export.py rules on the
-# second half. Two legs make it, on the two cheapest checkpoints:
-#
-#   default             609.8 MB Q8_0            40.6s
-#   vision_fla_compile  1980.5 MB Q8_0 + mmproj  99.3s
-#
-# The two that no longer carry it were measured and dropped on cost:
-#
-#   latest_compile      4725.1 MB Q8_0          310.8s
-#   gptoss             13153.7 MB MXFP4         348.1s   (never a Q8_0 at all)
-#
-# 659s for a third and fourth conversion that re-run llama.cpp rather than ask
-# a new question.
+# Only the two cheapest checkpoints carry the export; latest_compile and gptoss were dropped
+# on cost (~660s) since they re-run llama.cpp without asking anything new.
 EXPORTING = ("default", "vision_fla_compile")
 NOT_EXPORTING = ("latest_compile", "gptoss")
 
@@ -77,12 +52,7 @@ def test_the_cheap_legs_export_a_gguf_and_run_it():
 
 
 def test_the_expensive_exports_stay_off():
-    """A removal made for wall-clock reasons has to be visible, or it comes
-    back by accident on the next edit and nobody notices 659 seconds.
-
-    Stated as a rule rather than a comment because the cost is invisible in a
-    green run: an export that reappears makes the suite slower and no redder.
-    """
+    """Wall-clock removals stay off: a re-added export slows the suite without making it go red."""
     back = [n for n in NOT_EXPORTING if "--export-gguf" in legs.LEGS[n].args]
     assert back == [], (
         f"these legs export again: {back}. They were dropped at 310.8s and "
@@ -117,10 +87,7 @@ def test_the_grpo_leg_keeps_the_settings_it_was_measured_with():
 
 
 def test_the_grpo_leg_cannot_share_a_card():
-    """Measured at 13.39-13.40 GB of 14.56 across nine sessions. The directive
-    says the GRPO run must be standalone on one GPU, and the way that is
-    expressed here is a vram_gb the admission scheduler cannot fit a co-tenant
-    beside."""
+    """GRPO measured at 13.39-13.40 GB of 14.56, so its vram_gb must block any co-tenant."""
     assert legs.LEGS["grpo"].vram_gb >= 13.0
 
 
@@ -132,15 +99,9 @@ def test_no_directive_leg_is_scheduled_beside_a_co_tenant_it_cannot_fit():
         vram = legs.LEGS[name].vram_gb
         assert vram > 0, f"{name} declares no VRAM at all"
         assert vram <= 14.5, f"{name} declares {vram}, which is more than a T4 has"
-        # The rule only bites above half the budget, and that is a real limit
-        # worth stating: Vision_FLA_compile sat at a round 4.0 placeholder
-        # under this threshold and nothing here objected. The measured figure
-        # is 2.84; what stops a placeholder shipping is the UNWIRED note plus
-        # the rule below, not this one.
+        # This rule only applies above half the budget; the UNWIRED note guards placeholders below it.
         if vram > budget / 2:
-            # Not a failure, but it must be a MEASURED number rather than a
-            # round placeholder: every placeholder in this file's history was
-            # a round number and every measured one was not.
+            # Round numbers have always been placeholders, never measurements.
             assert vram != round(vram), (
                 f"{name} declares {vram}, a round number over half the budget, "
                 f"which is what every placeholder in this file's history looked "
@@ -149,14 +110,7 @@ def test_no_directive_leg_is_scheduled_beside_a_co_tenant_it_cannot_fit():
 
 
 def test_a_wired_leg_never_carries_a_round_placeholder_over_a_gigabyte():
-    """Every placeholder in this file's history was a round number and every
-    measured figure was not: 6.0 against a measured 12.73, 4.0 against 2.84.
-    A leg small enough to co-tenant freely (0.7) is not the risk; a leg that
-    claims whole gigabytes on a 14.56 GB card is.
-
-    UNWIRED legs are exempt by construction -- they are not scheduled, and the
-    note is where the missing measurement is recorded.
-    """
+    """Wired legs with a round VRAM figure of 1 GB or more are flagged; measured figures are not round."""
     offenders = []
     for name in legs.KERNELS[0]:
         vram = legs.LEGS[name].vram_gb

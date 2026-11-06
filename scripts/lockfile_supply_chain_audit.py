@@ -2,14 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Lockfile supply-chain audit for the Unsloth frontend and Tauri shell.
-
-Runs BEFORE `npm ci` / `cargo fetch` in CI and refuses to proceed when a lockfile carries patterns indicating supply-chain injection (npm Shai-Hulud waves, cargo crates.io brand-squats). package-lock.json (lockfileVersion 2/3): `resolved` must be the npm registry (direct git/github/file refs are the injection vector), `integrity` SHA must be present, known IOC substrings grepped from the body. Cargo.lock: `source` must be the crates.io registry index, plus known cargo IOC substrings.
-
-Exit codes: 0 clean (or skip env var set to a justification >=5 chars, not '1'/'true'), 1 findings, 2 internal error.
-
-Only PARSES the lockfiles, never executes or networks, and fires before any third-party install script runs on the runner. Complements rather than replaces `npm audit` / OSV-Scanner / the advisory-DB pipeline.
-"""
+"""Audits lockfiles before npm ci/cargo fetch; only parses them and rejects non-registry sources."""
 
 from __future__ import annotations
 
@@ -23,7 +16,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# Known IOC strings (case-sensitive substring match).
 NPM_IOC_STRINGS: tuple[str, ...] = (
     # Shai-Hulud TanStack wave -- May 11, 2026 (GHSA-g7cv-rxg3-hmpx).
     "router_init.js",
@@ -34,7 +26,7 @@ NPM_IOC_STRINGS: tuple[str, ...] = (
     # Exfiltration endpoints observed across both Shai-Hulud waves.
     "filev2.getsession.org",
     "getsession.org/file/",
-    # Campaign markers; the worm tarballs print this to stdout on run.
+    # Campaign marker the worm tarballs print to stdout on run.
     "A Mini Shai-Hulud has Appeared",
     # Mini Shai-Hulud May-12 2026 wave.
     "git-tanstack.com",
@@ -187,12 +179,11 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@uipath/functions-tool": {"1.0.1"},
     "@uipath/access-policy-sdk": {"0.3.1"},
     "@uipath/platform-tool": {"1.0.1"},
-    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm) — separate from PyPI mistralai
-    # (https://www.aikido.dev/blog/mini-shai-hulud-is-back-tanstack-compromised).
+    # Mini Shai-Hulud May-12 wave: @mistralai/* (npm, not PyPI mistralai).
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
-    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages) (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @tallyui/*.
     "@tallyui/components": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-medusa": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-shopify": {"1.0.1", "1.0.2", "1.0.3"},
@@ -224,7 +215,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
         "0.1.18",
         "0.1.19",
     },
-    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/* (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @draftlab/*, @draftauth/*.
     "@draftauth/client": {"0.2.1", "0.2.2"},
     "@draftauth/core": {"0.13.1", "0.13.2"},
     "@draftlab/auth": {"0.24.1", "0.24.2"},
@@ -243,7 +234,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@ml-toolkit-ts/xgboost": {"1.0.3", "1.0.4"},
     "@supersurkhet/cli": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
     "@supersurkhet/sdk": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
-    # Mini Shai-Hulud May-12 wave: unscoped packages (10 entries) (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: unscoped packages.
     "safe-action": {"0.8.3", "0.8.4"},
     "ts-dna": {"3.0.1", "3.0.2", "3.0.3", "3.0.4"},
     "cross-stitch": {"1.1.3", "1.1.4", "1.1.5", "1.1.6"},
@@ -254,8 +245,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "git-git-git": {"1.0.8", "1.0.9", "1.0.10", "1.0.11", "1.0.12"},
     "nextmove-mcp": {"0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7"},
     "ml-toolkit-ts": {"1.0.4", "1.0.5"},
-    # Cross-ecosystem Mini Shai-Hulud (Apr-30 wave): npm counterpart of PyPI lightning 2.6.2/2.6.3.
-    # Safe version: 7.0.3 and earlier.
+    # Mini Shai-Hulud Apr-30 wave (npm side of PyPI lightning 2.6.2/2.6.3); 7.0.3 is safe.
     "intercom-client": {"7.0.4"},
 }
 
@@ -270,14 +260,8 @@ NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-# Cargo non-registry source allowlist of `(crate_name, exact_source_string)`, both matched verbatim so bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env` from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
-CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
-    (
-        "fix-path-env",
-        "git+https://github.com/tauri-apps/fix-path-env-rs#"
-        "c4c45d503ea115a839aae718d02f79e7c7f0f673",
-    ),
-)
+# Cargo non-registry source allowlist of `(crate_name, exact_source_string)`, both matched verbatim so bumping a pinned SHA forces a re-review. Empty since the Tauri shell dropped its only git dependency, `fix-path-env` (unsloth#12678).
+CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = ()
 
 
 class Finding:
@@ -322,7 +306,6 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
     try:
         raw = path.read_text(encoding = "utf-8")
     except OSError as exc:
-        # Surface as a finding instead of crashing CI with a traceback.
         findings.append(
             Finding(
                 path = str(path),
@@ -358,22 +341,19 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
 
     packages = lock.get("packages") or {}
     for key, entry in packages.items():
-        # Empty key "" is the project root (no `resolved`); skip it.
         if key == "":
             continue
         if entry.get("link"):
-            # Workspace symlink; no tarball to resolve.
             continue
 
         resolved = entry.get("resolved")
-        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity; treat as transparent.
+        # Nested entries are bundled fold-ins covered by the parent's integrity.
         nested = key.count("/node_modules/") >= 1
 
         if resolved is None:
             if nested or entry.get("bundled"):
                 pass
             elif entry.get("version"):
-                # Top-level entry without a resolved URL is suspicious.
                 findings.append(
                     Finding(
                         path = str(path),
@@ -428,7 +408,7 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
             )
 
-    # Known IOC strings: scan the raw body to catch fields the structural pass does not enumerate (scripts, optional deps, and so on).
+    # Scan the raw body to catch fields the structural pass does not enumerate.
     for ioc in NPM_IOC_STRINGS:
         if ioc in raw:
             line_no = _first_line_containing(raw, ioc)
@@ -455,14 +435,12 @@ def _first_line_containing(text: str, needle: str) -> int | None:
     return None
 
 
-# Cargo.lock is TOML; parsed with stdlib tomllib (Python 3.11+).
 _PACKAGE_HEADER = re.compile(r"^\[\[package\]\]\s*$")
 
 
 def audit_cargo_lockfile(path: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not path.exists():
-        # See audit_npm_lockfile: missing lockfile is a finding.
         findings.append(
             Finding(
                 path = str(path),
@@ -491,7 +469,6 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
     try:
         import tomllib  # type: ignore[import-not-found]
     except ImportError:
-        # Python <3.11; fall back to a tomli shim if importable.
         try:
             import tomli as tomllib  # type: ignore[no-redef]
         except ImportError:
@@ -526,12 +503,10 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
         name = entry.get("name") or "<unnamed>"
         version = entry.get("version") or "<unversioned>"
         source = entry.get("source")
-        # Workspace-local crates have no `source` field; skip them.
         if source is None:
             continue
         if source != CARGO_REGISTRY_SOURCE:
             if (name, source) in CARGO_SOURCE_ALLOWLIST:
-                # Pre-approved non-registry source pinned by SHA.
                 pass
             else:
                 findings.append(
@@ -579,22 +554,19 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
     return findings
 
 
-# Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
-        # A non-registry URL or an unverifiable tarball is the exact pre-install fetch this gate exists to stop.
         "non-registry-resolved-url",
         "missing-integrity-hash",
         "non-registry-cargo-source",
         "missing-cargo-checksum",
-        # A structurally broken lockfile might hide a real attack.
         "malformed-lockfile",
         "missing-lockfile",
         "unreadable-lockfile",
         "missing-toml-parser",
-        # An unsupported lockfileVersion means the audit could not walk the dependency tree at all (the structural rules below only apply to npm v2/v3). Advisory would let a v1 downgrade, a known supply-chain attack shape, pass CI silently, so keep it blocking.
+        # Unsupported lockfileVersion means nothing was walked; a v1 downgrade is a known attack shape.
         "unsupported-lockfile-version",
     }
 )
@@ -649,12 +621,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Require a real justification (>=5 chars, not a boolean-shaped token) for the skip env var.
     _skip_raw = os.environ.get("UNSLOTH_LOCKFILE_AUDIT_SKIP")
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
-        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command, and the raw value can contain ``%``, CR, LF or even another ``::error::`` line (workflow-command injection); _gha_escape collapses each message onto a single annotation line per the GH workflow-commands spec.
+        # _gha_escape stops workflow-command injection via the user-supplied env var.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
                 "::warning::"
@@ -675,7 +646,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     root = Path(args.root).resolve()
-    # Explicit flags scope the scan; defaults apply only to no-args CI.
     _user_explicit = args.npm_lockfile is not None or args.cargo_lockfile is not None
     if _user_explicit:
         npm_paths = [root / p for p in (args.npm_lockfile or ())]
@@ -700,7 +670,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Split into blocking (known-malicious / IOC / structurally broken) and advisory (everything else).
     blocking = [f for f in all_findings if f.kind in BLOCKING_KINDS]
     advisory = [f for f in all_findings if f.kind not in BLOCKING_KINDS]
 
@@ -715,7 +684,6 @@ def main(argv: list[str] | None = None) -> int:
             file = sys.stderr,
         )
         for f in advisory:
-            # GH Actions warning annotation; _gha_escape collapses the multi-line Finding onto one line so it renders fully in the UI.
             print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
             print(file = sys.stderr)
 
@@ -732,7 +700,6 @@ def main(argv: list[str] | None = None) -> int:
         file = sys.stderr,
     )
     for f in blocking:
-        # Same %-encoding rationale as the advisory branch above.
         print(f"::error::{_gha_escape(str(f))}", file = sys.stderr)
         print(file = sys.stderr)
     print(

@@ -272,6 +272,25 @@ def test_selected_file_progress_covers_partial_final_and_windows_snapshot(tmp_pa
     assert stt_sidecar._downloaded_file_bytes(**kwargs) == 100
 
 
+def test_selected_file_progress_counts_the_process_unique_partial(tmp_path):
+    # huggingface_hub >= 1.18 names the partial `<etag>.<8 hex>.incomplete`.
+    repo = "Org/Repo"
+    blob_key = "c" * 64
+    blobs = _repo_dir(tmp_path, repo) / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / f"{blob_key}.ca4ea4fe.incomplete").write_bytes(b"x" * 30)
+    (blobs / f"{'d' * 64}.0badf00d.incomplete").write_bytes(b"x" * 90)
+    kwargs = {
+        "hub_cache": tmp_path,
+        "repo": repo,
+        "filename": "model.gguf",
+        "size": 100,
+        "blob_key": blob_key,
+        "revision": None,
+    }
+    assert stt_sidecar._downloaded_file_bytes(**kwargs) == 30
+
+
 def test_mtmd_progress_counts_only_its_two_exact_files(tmp_path):
     model_id = "qwen3-asr-0.6b"
     spec = stt_mtmd_sidecar.MTMD_STT_MODELS[model_id]

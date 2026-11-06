@@ -1,24 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio's copy of ``unsloth/import_fixes.py::fix_torchao_safe_int_mm_repr_probe``, not an import
-of it: the diffusion process must not execute ``unsloth/__init__``. The two copies are mutually inert.
-
-torchao's int8 GEMM asks whether it is being traced by formatting its input's repr, which on a real
-CUDA tensor calls ``.item()``: a device sync per eager int8 linear, and an outright
-``cudaErrorStreamCaptureUnsupported`` inside ``torch.cuda.graph``. Installed from a meta path finder
-at import time, not at quantise time, because the int8 prequant path only ``torch.load``s torchao
-subclasses and never calls ``quantize_``.
-"""
+"""torchao int8 GEMM repr calls .item() (breaks CUDA graphs); Studio's own copy, not an import:
+diffusion must not execute unsloth/__init__; installed at import time via meta path finder"""
 
 from __future__ import annotations
 
 import functools
+import importlib
 import importlib.abc
 import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 
 logger = logging.getLogger(__name__)
@@ -89,9 +84,7 @@ def _make_safe_int_mm(mod, original):
 
         if not mat2.is_contiguous():  # silently gives incorrect result without this
             mat2 = mat2.contiguous()
-        if (not input.is_contiguous()) and (
-            input.shape[0] % 8 != 0
-        ):  # gives cryptic error without this
+        if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
             input = input.contiguous()
         try:
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
@@ -206,9 +199,11 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
 
 
 def install_torchao_int_mm_patch():
-    """Install the capture-safe ``safe_int_mm`` if torchao is present; idempotent, so several modules may each
-    ask for it. ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
-    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
+    """Every diffusion, video and diffusion-training entry point calls this, so it also carries the peft LoRA guard (independent of the switch)."""
+    try:
+        install_peft_torchao_dispatch_guard()
+    except Exception:
+        pass
     if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
         return None
     try:
@@ -231,4 +226,243 @@ def install_torchao_int_mm_patch():
         if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
             return patched_now
     sys.meta_path.insert(0, _TorchaoIntmmPatchFinder())
+    return True
+
+
+# Copy of unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass: diffusion never
+# runs unsloth/__init__. Both mark ``__unsloth_patched__``; only torchao-removal errors match.
+_PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
+    r"|no module named '?torchao\.dtypes'?(?![.\w])",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+# The two imports `dispatch_torchao` performs, in upstream's order.
+_PEFT_TORCHAO_TENSOR_SUBCLASSES = (
+    ("torchao.dtypes", "AffineQuantizedTensor"),
+    ("torchao.quantization", "LinearActivationQuantizedTensor"),
+)
+
+
+def _peft_torchao_tensor_subclasses():
+    """``(classes, missing)`` for the two subclasses `dispatch_torchao` checks: a tuple usable as
+    the second argument of ``isinstance``, plus the names that are gone. Only a failure naming one
+    of those two counts as gone; anything else is a broken install and is re-raised."""
+    classes = []
+    missing = []
+    for module_name, class_name in _PEFT_TORCHAO_TENSOR_SUBCLASSES:
+        try:
+            classes.append(getattr(importlib.import_module(module_name), class_name))
+        except (ImportError, AttributeError) as exc:
+            if _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS.search(str(exc)) is None:
+                raise
+            missing.append(class_name)
+    return tuple(classes), tuple(missing)
+
+
+def _guard_peft_torchao_dispatcher(original):
+    """Calls upstream; only a failure naming a removed class redoes dispatch with the classes left."""
+    warned = [False]
+    # Defining module's globals, incl. an is_torchao_available patched by the sibling fix.
+    namespace = getattr(original, "__globals__", None)
+    if not isinstance(namespace, dict):
+        namespace = {}
+
+    def _upstream(name, module_name):
+        value = namespace.get(name, None)
+        if value is not None:
+            return value
+        return getattr(importlib.import_module(module_name), name, None)
+
+    def _redo_dispatch(classes, args, kwargs):
+        """Upstream's body, with `classes` standing in for the two-class isinstance tuple.
+
+        Arguments are read by POSITION because peft 0.19 renamed the third parameter from
+        `lora_config` to `config`, and forwarded as `target, adapter_name, **kwargs`, which is
+        exactly how peft <= 0.18 builds TorchaoLoraLinear.
+        """
+        try:
+            signature = inspect.signature(original)
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = dict(bound.arguments)
+        except (TypeError, ValueError):
+            return None
+        positional = [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        layer_kwargs = {}
+        for name, parameter in signature.parameters.items():
+            if parameter.kind is parameter.VAR_KEYWORD:
+                layer_kwargs = dict(arguments.get(name, None) or {})
+        if len(positional) < 2:
+            return None
+        target = arguments.get(positional[0], None)
+        adapter_name = arguments.get(positional[1], None)
+        if target is None or adapter_name is None:
+            return None
+
+        base_tuner_layer = _upstream("BaseTunerLayer", "peft.tuners.tuners_utils")
+        if base_tuner_layer is not None and isinstance(target, base_tuner_layer):
+            target_base_layer = target.get_base_layer()
+        else:
+            target_base_layer = target
+        if not hasattr(target_base_layer, "weight"):
+            return None
+        is_torchao_available = _upstream("is_torchao_available", "peft.import_utils")
+        if is_torchao_available is not None and not is_torchao_available():
+            return None
+        if not classes or not isinstance(target_base_layer.weight, classes):
+            return None  # upstream's answer for an unrecognised weight: the loop moves on
+        torchao_lora_linear = _upstream("TorchaoLoraLinear", "peft.tuners.lora.torchao")
+        if torchao_lora_linear is None:
+            return None
+        return torchao_lora_linear(target, adapter_name, **layer_kwargs)
+
+    @functools.wraps(original)
+    def dispatch_torchao(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except ImportError as exc:
+            message = str(exc)
+            if _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS.search(message) is None:
+                raise
+            classes, missing = _peft_torchao_tensor_subclasses()
+            if not missing:
+                # Both classes exist, so this is a real failure; redoing the dispatch would hide it.
+                raise
+        if not warned[0]:
+            warned[0] = True
+            kept = ", ".join(cls.__name__ for cls in classes) or "none of them"
+            logger.warning(
+                f"Unsloth Studio: This torchao no longer ships "
+                f"{' and '.join(missing) or 'a tensor subclass'}, which peft's "
+                f"torchao LoRA dispatcher imports to run one isinstance check "
+                f"({message}), so that dispatcher raised for every LoRA layer. "
+                f"Unsloth now runs the same check against the subclasses this "
+                f"torchao does ship ({kept}), so weights of those types still get "
+                f"peft's torchao LoRA layer and everything else gets an ordinary "
+                f"one. Only weights of the removed subclass cannot be matched; "
+                f"install `torchao<0.18` if you need those."
+            )
+        return _redo_dispatch(classes, args, kwargs)
+
+    dispatch_torchao.__unsloth_patched__ = True
+    return dispatch_torchao
+
+
+_PEFT_LORA_DISPATCH_MODULE = "peft.tuners.lora.model"
+_PEFT_TORCHAO_GUARD_SENTINEL = "__unsloth_studio_peft_torchao_guard__"
+
+
+def _patch_peft_torchao_dispatchers():
+    """Wrap every loaded copy of ``dispatch_torchao``: ``peft.tuners.lora.model`` binds it by value,
+    so patching the defining module alone leaves the dispatch list raising. True when anything changed."""
+    wrapped = []
+    patched = False
+    for mod_name, mod in tuple(sys.modules.items()):
+        if not mod_name.startswith("peft") or mod is None:
+            continue
+        original = getattr(mod, "dispatch_torchao", None)
+        if original is None or not callable(original):
+            continue
+        if getattr(original, "__unsloth_patched__", False):
+            continue
+        replacement = None
+        for seen, wrapper in wrapped:
+            if seen is original:
+                replacement = wrapper
+                break
+        if replacement is None:
+            try:
+                replacement = _guard_peft_torchao_dispatcher(original)
+            except Exception:
+                continue
+            wrapped.append((original, replacement))
+        try:
+            setattr(mod, "dispatch_torchao", replacement)
+            patched = True
+        except Exception:
+            pass
+    return patched
+
+
+class _PeftLoraDispatchLoader(importlib.abc.Loader):
+    """The real loader, plus the guard once ``peft.tuners.lora.model`` (and so ``.torchao``) has run."""
+
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        if create is None:
+            return None
+        return create(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_peft_torchao_dispatchers()
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _PeftTorchaoGuardFinder(importlib.abc.MetaPathFinder):
+    """Front of sys.meta_path, like the int_mm finder, so importing peft stays lazy."""
+
+    __slots__ = (_PEFT_TORCHAO_GUARD_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _PEFT_TORCHAO_GUARD_SENTINEL, True)
+        self._finding = False
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _PEFT_LORA_DISPATCH_MODULE or self._finding:
+            return None
+        self._finding = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding = False
+        if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+            return None
+        try:
+            spec.loader = _PeftLoraDispatchLoader(spec.loader)
+        except Exception:
+            return None
+        return spec
+
+
+def install_peft_torchao_dispatch_guard():
+    """Guard peft's ``dispatch_torchao`` now if peft's LoRA module is loaded, else when it is. Idempotent.
+    True when patched or the finder was installed, False when there is nothing to do, None without peft."""
+    try:
+        if importlib.util.find_spec("peft") is None:
+            return None
+    except Exception:
+        return None
+    if _PEFT_LORA_DISPATCH_MODULE in sys.modules:
+        try:
+            return _patch_peft_torchao_dispatchers()
+        except Exception:
+            return False
+    for finder in sys.meta_path:
+        if getattr(finder, _PEFT_TORCHAO_GUARD_SENTINEL, False):
+            return False
+    sys.meta_path.insert(0, _PeftTorchaoGuardFinder())
     return True

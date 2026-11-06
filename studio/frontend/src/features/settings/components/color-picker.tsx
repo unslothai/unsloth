@@ -11,7 +11,6 @@ import { cn } from "@/lib/utils";
 import { ColorPickerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
-
 /* ------------------------- HSV ↔ hex conversions ------------------------- */
 
 type Hsv = { h: number; s: number; v: number };
@@ -62,18 +61,12 @@ function isLightColor(hex: string): boolean {
 }
 
 /* ------------------------------- Component ------------------------------- */
-
 type EyeDropperResult = { sRGBHex: string };
 type EyeDropperConstructor = new () => {
   open: () => Promise<EyeDropperResult>;
 };
 
-/**
- * In-app color picker in a Popover: saturation/value area, hue slider, hex
- * field, and (where supported) a screen eyedropper. Replaces the native
- * <input type="color"> so no OS-level color panel is left dangling when the
- * user clicks away; the popover dismisses like any other popup.
- */
+/** Replaces <input type="color"> so no OS color panel is left dangling on click-away. */
 export function ColorPickerSwatch({
   value,
   onChange,
@@ -89,8 +82,7 @@ export function ColorPickerSwatch({
   const [hexDraft, setHexDraft] = useState(value);
   const areaRef = useRef<HTMLDivElement>(null);
 
-  // Re-seed the picker from the outside value each time it opens (the value
-  // may have changed via reset, palette switch, or remote sync).
+  // Re-seed on open; the value may have changed via reset, palette switch or sync.
   useEffect(() => {
     if (open) {
       setHsv(hexToHsv(value));
@@ -158,21 +150,23 @@ export function ColorPickerSwatch({
           className={cn(
             "flex h-8 min-w-24 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 font-mono text-xs uppercase transition-colors",
             light
-              ? "border-black/10 text-black/80"
-              : "border-white/15 text-white",
+              ? "border-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] text-black/80"
+              : "border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))] text-white",
           )}
           style={{ backgroundColor: value }}
         >
           <span
             className={cn(
               "size-3.5 shrink-0 rounded-full border",
-              light ? "border-black/20" : "border-white/40",
+              light
+                ? "border-[rgb(0_0_0_/_calc(0.2*var(--contrast-edge-gain,1)))]"
+                : "border-[rgb(255_255_255_/_calc(0.4*var(--contrast-edge-gain,1)))]",
             )}
           />
           {value.toUpperCase()}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-60 rounded-lg p-3">
+      <PopoverContent align="end" className="w-60 rounded-xl p-3">
         <div className="flex flex-col gap-3">
           <div
             ref={areaRef}
@@ -181,7 +175,7 @@ export function ColorPickerSwatch({
             aria-valuetext={hexDraft}
             aria-valuenow={Math.round(hsv.v * 100)}
             tabIndex={0}
-            className="relative h-36 w-full cursor-crosshair touch-none rounded-lg"
+            className="relative h-36 w-full cursor-crosshair touch-none rounded-md"
             style={{
               background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${hueColor})`,
             }}
@@ -193,8 +187,6 @@ export function ColorPickerSwatch({
               if (e.buttons === 1) moveFromPointer(e);
             }}
             onKeyDown={(e) => {
-              // Arrow keys move the saturation (x) / value (y) selection so the
-              // area is operable without a pointer; Shift takes coarser steps.
               const step = e.shiftKey ? 0.1 : 0.01;
               let next: Hsv | null = null;
               if (e.key === "ArrowLeft")
@@ -247,7 +239,7 @@ export function ColorPickerSwatch({
               }}
               aria-label={t("settings.appearance.custom.colorPicker.hex")}
               spellCheck={false}
-              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
             />
             {eyeDropperCtor && (
               <button
@@ -257,7 +249,7 @@ export function ColorPickerSwatch({
                   "settings.appearance.custom.colorPicker.eyedropper",
                 )}
                 title={t("settings.appearance.custom.colorPicker.eyedropper")}
-                className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-muted-foreground transition-colors hover:text-foreground"
+                className="btn-fill flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
               >
                 <HugeiconsIcon icon={ColorPickerIcon} className="size-4" />
               </button>

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
+import { SegmentedPill } from "@/components/segmented-control";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -10,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import {
   useChatPreferencesStore,
   composerShortcutLabels,
@@ -20,12 +23,27 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-export function ComposerSettings() {
+export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   const t = useT();
+  const pillId = useId();
   const prefs = useChatPreferencesStore();
   const ref = useRef<HTMLDivElement>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const labels = composerShortcutLabels(prefs.sendShortcut, isMacPlatform());
+  const multiline = composerShortcutLabels(prefs.sendShortcut, isMacPlatform(), "\n");
+  const oppositeShortcut =
+    labels.opposite === multiline.opposite
+      ? labels.opposite
+      : t("composerSettings.followUpMultilineShortcut", {
+          shortcut: labels.opposite,
+          multiline: multiline.opposite,
+        });
+  const mod = isMacPlatform() ? "\u2318" : "Ctrl";
+  const sendDescriptionKey = {
+    enter: "composerSettings.sendEnterDescription",
+    "mod-enter-multiline": "composerSettings.sendMultilineDescription",
+    "mod-enter": "composerSettings.sendAlwaysDescription",
+  } as const;
   useEffect(() => {
     if (scrollTarget !== "chat-composer") return;
     const frame = requestAnimationFrame(() => {
@@ -37,8 +55,85 @@ export function ComposerSettings() {
 
   return (
     <div ref={ref}>
-      <SettingsSection title={t("composerSettings.title")}>
-        <div className="mt-2 divide-y divide-border/60 rounded-2xl border border-border/60 bg-muted/20 px-4">
+      <SettingsSection
+        title={t("composerSettings.title")}
+        hideHeading={embedded}
+      >
+        <div
+          className={
+            embedded
+              ? ""
+              : "mt-2 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-4"
+          }
+        >
+          <SettingsRow
+            label={t("composerSettings.sendShortcut")}
+            description={t(sendDescriptionKey[prefs.sendShortcut], { mod })}
+          >
+            <Select
+              value={prefs.sendShortcut}
+              onValueChange={(value) =>
+                prefs.setSendShortcut(
+                  value === "mod-enter" || value === "mod-enter-multiline"
+                    ? value
+                    : "enter",
+                )
+              }
+            >
+              <SelectTrigger
+                className="w-auto max-w-72"
+                aria-label={t("composerSettings.sendShortcut")}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="enter">Enter</SelectItem>
+                <SelectItem value="mod-enter-multiline">
+                  {t("composerSettings.sendMultiline", { mod })}
+                </SelectItem>
+                <SelectItem value="mod-enter">
+                  {t("composerSettings.sendAlways", { mod })}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.followUp")}
+            description={t("composerSettings.followUpDescription", {
+              shortcut: oppositeShortcut,
+            })}
+            hint={t("composerSettings.steerDescription")}
+          >
+            <div
+              className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+              role="group"
+              aria-label={t("composerSettings.followUp")}
+            >
+              {(["queue", "steer"] as const).map((behavior) => (
+                <button
+                  key={behavior}
+                  type="button"
+                  aria-pressed={prefs.followUpBehavior === behavior}
+                  onClick={() => prefs.setFollowUpBehavior(behavior)}
+                  className={cn(
+                    "relative inline-flex h-8 cursor-pointer items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    prefs.followUpBehavior === behavior
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {prefs.followUpBehavior === behavior && (
+                    <SegmentedPill group={`${pillId}-follow-up`} />
+                  )}
+                  {t(
+                    behavior === "queue"
+                      ? "composerSettings.queue"
+                      : "composerSettings.steer",
+                  )}
+                </button>
+              ))}
+            </div>
+          </SettingsRow>
           <SettingsRow
             label={t("composerSettings.plainText")}
             description={t("composerSettings.plainTextDescription")}
@@ -49,67 +144,25 @@ export function ComposerSettings() {
               onCheckedChange={prefs.setPlainTextComposer}
             />
           </SettingsRow>
+          <SettingsRow
+            label={t("composerSettings.richPaste")}
+            badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
+            description={t("composerSettings.richPasteDescription", {
+              shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
+            })}
+          >
+            <Switch
+              aria-label={t("composerSettings.richPaste")}
+              checked={prefs.richTextPaste}
+              onCheckedChange={prefs.setRichTextPaste}
+            />
+          </SettingsRow>
           <SettingsRow label={t("composerSettings.showContext")}>
             <Switch
               aria-label={t("composerSettings.showContext")}
               checked={prefs.showContextWindowUsage}
               onCheckedChange={prefs.setShowContextWindowUsage}
             />
-          </SettingsRow>
-          <SettingsRow
-            label={t("composerSettings.sendShortcut")}
-            description={t("composerSettings.sendDescription")}
-          >
-            <Select
-              value={prefs.sendShortcut}
-              onValueChange={(value) =>
-                prefs.setSendShortcut(
-                  value === "mod-enter" ? "mod-enter" : "enter",
-                )
-              }
-            >
-              <SelectTrigger
-                className="w-36"
-                aria-label={t("composerSettings.sendShortcut")}
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="enter">Enter</SelectItem>
-                <SelectItem value="mod-enter">
-                  {composerShortcutLabels("mod-enter", isMacPlatform()).send}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </SettingsRow>
-          <SettingsRow
-            label={t("composerSettings.followUp")}
-            description={t("composerSettings.followUpDescription", {
-              shortcut: labels.opposite,
-            })}
-            hint={t("composerSettings.steerDescription")}
-          >
-            <div
-              className="inline-flex gap-1 rounded-full bg-muted p-1"
-              role="group"
-              aria-label={t("composerSettings.followUp")}
-            >
-              {(["queue", "steer"] as const).map((behavior) => (
-                <button
-                  key={behavior}
-                  type="button"
-                  aria-pressed={prefs.followUpBehavior === behavior}
-                  onClick={() => prefs.setFollowUpBehavior(behavior)}
-                  className="cursor-pointer rounded-full px-3 py-1.5 text-sm text-muted-foreground transition-colors aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-sm"
-                >
-                  {t(
-                    behavior === "queue"
-                      ? "composerSettings.queue"
-                      : "composerSettings.steer",
-                  )}
-                </button>
-              ))}
-            </div>
           </SettingsRow>
         </div>
       </SettingsSection>

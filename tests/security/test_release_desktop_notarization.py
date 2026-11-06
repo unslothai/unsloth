@@ -80,8 +80,6 @@ def _run_notarization_step(
     fake_bin.mkdir(exist_ok = True)
     log = tmp_path / "commands.log"
     log.write_text("", encoding = "utf-8")
-    # Record the full argv so the assertions below read the flags the step actually passed, not the text of the YAML
-    # that produced them.
     _write_fake_command(
         fake_bin / "xcrun",
         """

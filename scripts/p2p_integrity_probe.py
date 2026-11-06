@@ -58,7 +58,6 @@ def _print_topology() -> None:
         print("topology read returned non-zero; skipping.\n")
         return
     print("=== nvidia-smi topo -m ===")
-    # The legend after the matrix is not what the reader needs.
     for line in out.stdout.splitlines():
         if line.strip().startswith("Legend"):
             break
@@ -77,7 +76,7 @@ def _print_nvml_agreement() -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "studio" / "backend"))
         from core.inference.llama_cpp import LlamaCppBackend as backend
     except Exception as e:  # noqa: BLE001 -- diagnostic, never fatal
-        print(f"could not import the Studio backend to cross-check NVML: {e}\n")
+        print(f"could not import the Unsloth backend to cross-check NVML: {e}\n")
         return
     try:
         nvml = backend._probe_nvml_nvlink_topology()
@@ -87,7 +86,7 @@ def _print_nvml_agreement() -> None:
         return
     print("=== NVML vs nvidia-smi topo -m ===")
     if nvml is None:
-        print("NVML gave no verdict here; Studio would use `nvidia-smi topo -m`.\n")
+        print("NVML gave no verdict here; Unsloth would use `nvidia-smi topo -m`.\n")
         return
     if topo is None:
         print("`nvidia-smi topo -m` gave no verdict; nothing to compare against.\n")
@@ -109,7 +108,7 @@ def _print_nvml_agreement() -> None:
         print(
             f"{sorted(topo_yes - nvml_yes)} are NVLink to topo -m but not to NVML.\n"
             "This is the conservative direction: by default NVML answers first, so "
-            "Studio\nwould not enable P2P for them. Setting "
+            "Unsloth\nwould not enable P2P for them. Setting "
             "UNSLOTH_P2P_TOPO_CROSSCHECK=1 makes topo -m\nwin any disagreement, which "
             "would enable them instead."
         )
@@ -133,8 +132,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # A probe that tests nothing must not print PASS: its whole job is to license
-    # setting GGML_CUDA_P2P, so an empty run is the worst answer it could give.
+    # An empty run must not print PASS: the probe licenses setting GGML_CUDA_P2P.
     if args.repeats <= 0:
         parser.error("--repeats must be positive")
     if any(size <= 0 for size in args.sizes_mib):
@@ -149,15 +147,12 @@ def main() -> int:
         print("torch is not installed; cannot probe peer copies.")
         return 2
 
-    # AMD SDK wheels leave version.hip unset and only encode "rocm" in
-    # __version__, which is why the backend's _torch_is_rocm checks both.
+    # AMD SDK wheels leave version.hip unset and only encode rocm in __version__.
     if (
         getattr(torch.version, "hip", None) is not None
         or "rocm" in getattr(torch, "__version__", "").lower()
     ):
-        # ROCm reuses the torch.cuda namespace, so every test below would run and
-        # PASS on AMD, then recommend GGML_CUDA_P2P, which only the CUDA backend
-        # reads. A pass ending in a no-op instruction is worse than no answer.
+        # ROCm reuses torch.cuda, but GGML_CUDA_P2P is read only by the CUDA backend.
         print(
             "This is a ROCm/HIP build of torch. GGML_CUDA_P2P is read only by\n"
             "llama.cpp's CUDA backend, so this probe has no advice to give for AMD\n"
@@ -206,18 +201,13 @@ def main() -> int:
                                 device = f"cuda:{dst}",
                             )
                         except Exception as alloc_exc:  # noqa: BLE001
-                            # No transfer was attempted (usually a resident model
-                            # holds the memory), so this is inconclusive, NOT
-                            # evidence that peer copies drop data.
+                            # No transfer was attempted, so this is inconclusive, not evidence of dropped data.
                             setup_error = alloc_exc
                             break
                         d.copy_(s)
                         torch.cuda.synchronize(src)
                         torch.cuda.synchronize(dst)
-                        # Compare against the source, not just the sentinel: a
-                        # scrambled transfer overwrites it and would score as a
-                        # pass. The sentinel count stays because "never written"
-                        # is a different diagnosis, a dropped DMA.
+                        # Compare against the source too: a scrambled transfer overwrites the sentinel.
                         host_dst = d.cpu()
                         wrong = int((host_dst != s.cpu()).sum())
                         dropped = int((host_dst == SENTINEL).sum())
@@ -233,9 +223,7 @@ def main() -> int:
                 checked += 1
                 pair = f"{src}->{dst}"
                 access = "yes" if can else "no"
-                # Corruption seen on an earlier repeat outranks a later allocation
-                # failure: repeats exist to catch INTERMITTENT drops, so downgrading
-                # a real mismatch to SKIPPED would hide what they are for.
+                # Earlier corruption outranks a later allocation failure.
                 if setup_error is not None and not worst_wrong:
                     inconclusive += 1
                     print(
@@ -279,8 +267,7 @@ def main() -> int:
         return 1
 
     if inconclusive:
-        # Exit 1 is for copies that were tested and lost data. Nothing was tested
-        # here, so "unsafe" would push someone off a working optimisation.
+        # Exit 1 only when tested copies lost data; nothing was tested here.
         print(
             f"INCONCLUSIVE: {inconclusive} of {checked} tests could not allocate "
             "their buffers,\n"

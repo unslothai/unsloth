@@ -18,9 +18,10 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  CloudUploadIcon,
   FileAttachmentIcon,
   InformationCircleIcon,
+  PlusSignIcon,
+  Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
@@ -36,7 +37,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
     <div className="flex flex-col gap-2">
-      <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         {t("studio.wizard.uploadLocalLabel")}
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -64,12 +65,12 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         onDragOver={uploads.handleDatasetDragOver}
         onDragLeave={() => uploads.setIsDatasetDragOver(false)}
         className={cn(
-          "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-[12px] border border-dashed px-3 text-center transition-colors",
-          "border-foreground/15 dark:border-white/15",
-          "hover:border-foreground/30 hover:bg-foreground/[0.02] dark:hover:border-white/30 dark:hover:bg-white/[0.025]",
+          "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-full border border-dashed px-3 text-center transition-colors",
+          "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]",
+          "hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(2%*var(--contrast-wash-gain,1)),transparent)] dark:hover:border-[rgb(255_255_255_/_calc(0.3*var(--contrast-edge-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.025*var(--contrast-wash-gain,1)))]",
           PICKER_FOCUS_VISIBLE_CLASS,
           uploads.isDatasetDragOver &&
-            "border-foreground/45 bg-foreground/[0.04] dark:border-white/40 dark:bg-white/[0.05]",
+            "border-[color-mix(in_oklab,var(--foreground)_calc(45%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:border-[rgb(255_255_255_/_calc(0.4*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           uploads.isUploading && "cursor-progress opacity-80",
         )}
       >
@@ -77,7 +78,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         ) : (
           <HugeiconsIcon
-            icon={CloudUploadIcon}
+            icon={PlusSignIcon}
             strokeWidth={1.5}
             className="size-3.5 text-muted-foreground"
           />
@@ -172,7 +173,7 @@ export function EvaluationDatasetUpload({
             {uploads.isUploading ? (
               <Spinner className="size-3.5" />
             ) : (
-              <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+              <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
             )}
             {uploads.isUploading
               ? t("studio.dataset.uploading")

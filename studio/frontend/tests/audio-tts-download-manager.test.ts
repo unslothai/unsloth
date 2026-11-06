@@ -4,11 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 
-test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
+test("uncached remote TTS GGUFs stage the picked quant through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
   assert.match(
     source,
@@ -16,7 +16,7 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
   );
   assert.match(
     source,
-    /stageTtsDownload\(\[\s*\{[\s\S]*repoId,[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
+    /stageTtsDownload\(\[\s*meta\.ggufVariant\s*\?\s*\{[\s\S]*repoId,[\s\S]*ggufVariant: meta\.ggufVariant,[\s\S]*\}\s*:\s*\{[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
   );
   assert.match(
     source,
@@ -26,7 +26,7 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
 
 test("remote code approval precedes native model staging and survives completion", () => {
   const start = source.indexOf("const loadOrStageTtsModel");
-  const end = source.indexOf("const ensureSttLoaded", start);
+  const end = source.indexOf("// A hidden page may let the shared download continue", start);
   const stagedFlow = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.ok(
@@ -47,8 +47,7 @@ test("remote code approval precedes native model staging and survives completion
 test("cached and local TTS picks keep the direct load path and supersede stale staging", () => {
   assert.match(
     source,
-    // meta.loadId is the load target for a row cached in a non-active HF cache; sending
-    // the display repo id instead failed offline or re-downloaded into the active cache.
+    // meta.loadId targets a row cached in a non-active HF cache; the display id would re-download.
     /pendingStagedTtsLoad\.current = null;[\s\S]*stageTtsDownload\(\[\]\);[\s\S]*loadTtsModelRef\.current\([\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*meta\.loadId,[\s\S]*meta\.audioType/,
   );
   assert.match(source, /if \(busyRef\.current !== null\) return;/);
@@ -56,18 +55,13 @@ test("cached and local TTS picks keep the direct load path and supersede stale s
     source,
     /\/\*\* Start a pick that lost the race[\s\S]*?const replayQueuedTtsPick = useCallback/,
   );
-  // Still single-flight, but the loser is queued rather than dropped: a pick arriving
-  // while a cancelled load settles used to vanish, and the route effect had already
-  // cleared ?model=, so nothing retried it.
   assert.match(
     source,
     /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{[\s\S]*repoId,[\s\S]*ggufFilename,[\s\S]*loadId,[\s\S]*audioType,[\s\S]*remoteCodeApproval,[\s\S]*\};\s*return;\s*\}/,
   );
   assert.match(
     source,
-    // Replayed only while Audio is visible, and again when it becomes visible. Replaying
-    // unconditionally started a load with activeRef already false, which the deactivation
-    // effect had already stopped watching, so a hidden page could replace Chat's model.
+    // Replay only while visible: a hidden page's load could replace Chat's model.
     /if \(activeRef\.current\) replayQueuedTtsPick\(\);/,
   );
 });
@@ -141,5 +135,12 @@ test("Mac sibling inspection reserves the lifecycle slot before awaiting invento
   assert.match(
     source,
     /ttsInspectionGeneration\.current = selectionGeneration;[\s\S]*busyRef\.current = "loading";[\s\S]*setBusy\("loading"\);[\s\S]*await listGgufVariants/,
+  );
+});
+
+test("a cancelled, failed or session-reset staged TTS download clears the pending load", () => {
+  assert.match(
+    source,
+    /useStagedDownload\(\{\s*scopeId: "audio",[\s\S]*?onCancelled: invalidatePendingStagedTts,\s*onReset: invalidatePendingStagedTts,\s*\}\);/,
   );
 });

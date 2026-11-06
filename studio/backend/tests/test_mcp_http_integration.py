@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""End-to-end MCP session behaviour against a real server over Streamable HTTP.
-
-Everything else in the MCP suite runs against a fake client that takes a url and
-discards the headers, so nothing there observes a real HTTP request. These start
-a real MCP server on 127.0.0.1 and ask it what it saw.
-
-Oracle: fastmcp negotiates sessionless Streamable HTTP here, so there is no
-Mcp-Session-Id to follow and Context.session_id is a fresh UUID per request
-(checked with a held-open client). The server therefore keys its state on the
-client's TCP connection, which is what a stateful server's per-connection state
-behaves like: a held-open client sees its own notes, separate clients do not.
-"""
+"""fastmcp here is sessionless, so the server keys its state on each held-open TCP connection."""
 
 from __future__ import annotations
 
@@ -37,7 +26,7 @@ pytest.importorskip("uvicorn")
 from core.inference import mcp_client
 from core.inference.mcp_client import call_tool_sync, close_mcp_sessions
 
-# Matches the scope tools.py builds: "s={session_id}:t={thread_id}".
+# Matches the scope tools.py builds: s={session_id}:t={thread_id}.
 SCOPE = "s=sess1:t=threadA"
 SCOPE_B = "s=sess1:t=threadB"
 
@@ -186,30 +175,33 @@ def reset_stats() -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        Observe(mcp.http_app()), host=sys.argv[2], port=int(sys.argv[1]), log_level="warning"
-    )
+    import socket
+    # Bind port 0 here and keep the socket: a port picked by the parent and bound later can be
+    # taken by another xdist worker in between.
+    host = sys.argv[1]
+    sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    sock.bind((host, 0))
+    print(f"PORT {sock.getsockname()[1]}", flush=True)
+    config = uvicorn.Config(Observe(mcp.http_app()), log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
 '''
-
-
-def _free_port(host: str) -> int:
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(family) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
 
 
 def _start(tmp_path: Path, host: str):
     script = tmp_path / "mcp_notes_server.py"
     script.write_text(textwrap.dedent(_SERVER))
-    port = _free_port(host)
     proc = subprocess.Popen(
-        [sys.executable, str(script), str(port), host],
+        [sys.executable, str(script), host],
         env = dict(os.environ, PYTHONUNBUFFERED = "1"),
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
     )
+    first = proc.stdout.readline()
+    if not first.startswith("PORT "):
+        proc.wait(15)
+        raise RuntimeError(f"server died:\n{first}{proc.stdout.read()}")
+    port = int(first.split()[1])
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
@@ -273,6 +265,35 @@ def _conn(text: str) -> str:
     return text.split("connection=")[1].split(" ")[0]
 
 
+def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_path, monkeypatch):
+    # Under xdist another worker can steal a chosen port; the server must bind and report its own.
+    held = socket.socket(socket.AF_INET)
+    held.bind(("127.0.0.1", 0))
+    held.listen()
+    taken = held.getsockname()[1]
+
+    class Racing(socket.socket):
+        def getsockname(self):
+            name = super().getsockname()
+            return (name[0], taken) if self.family == socket.AF_INET else name
+
+    monkeypatch.setattr(socket, "socket", Racing)
+    try:
+        proc, url = _start(tmp_path, "127.0.0.1")
+    finally:
+        monkeypatch.undo()
+        held.close()
+    try:
+        assert f":{taken}/" not in url
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def test_a_note_survives_to_the_next_tool_call_in_one_chat(server):
     """The behaviour the shared session exists for. Reconnecting per call loses
     whatever the server kept."""
@@ -308,12 +329,7 @@ def test_an_oauth_server_is_never_cached(server):
 
 
 def test_state_survives_a_long_run_of_calls_in_one_chat(server):
-    """The property the shared session actually buys, held over many calls.
-
-    Deliberately not asserted as a socket count: how many TCP connections a
-    fastmcp client keeps open is a pooling detail that differs by version (3.0.2
-    opens far more than 4.0.0 for the same work), and the MCP spec makes every
-    JSON-RPC message its own POST regardless. Server-side state is the invariant."""
+    """Asserts server-side state, not socket counts, since pooling differs by fastmcp version."""
     _call(server, "save_note", {"text": "note-0"}, scope = SCOPE)
     for i in range(1, 10):
         _call(server, "save_note", {"text": f"note-{i}"}, scope = SCOPE)
@@ -355,9 +371,7 @@ def test_an_expired_session_is_replaced_before_the_users_call_fails(monkeypatch,
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     _call(server, "list_notes", scope = SCOPE)
     _call(server, "expire_me", scope = SCOPE)
-    # The next request on that session gets 404, which is what the spec requires
-    # of a server that terminated it. The recheck must absorb that and reconnect
-    # rather than letting the user's tool call be the thing that discovers it.
+    # A terminated session answers 404 per spec; the recheck must reconnect, not fail the call.
     second = _call(server, "list_notes", scope = SCOPE)
     assert not second.startswith("Error:"), second
 

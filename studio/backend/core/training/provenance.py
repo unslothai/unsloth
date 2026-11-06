@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 from pathlib import Path, PureWindowsPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlsplit
 
 from hub.utils.paths import is_valid_repo_id
@@ -19,10 +20,16 @@ RESOURCE_PROVENANCE_KEY = "resource_provenance"
 _ATTESTED = "attested"
 _INCOMPLETE = "incomplete"
 _MODEL_LOAD_UNQUANTIZED = "unquantized"
+# `prequantized_{sorted unique widths joined by _}bit`; the {4} case keeps v1 markers valid.
 _MODEL_LOAD_PREQUANTIZED_4BIT = "prequantized_4bit"
 _MODEL_LOAD_RUNTIME_4BIT = "runtime_4bit"
+_PREQUANTIZED_MODE_RE = re.compile(r"prequantized_(?:1[0-6]|[1-9])(?:_(?:1[0-6]|[1-9])){0,7}bit")
 _REASON_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+# unsloth/Qwen3.5-* shards are named ``model.safetensors-00001-of-00001.safetensors`` (#15405).
 _MODEL_WEIGHT_RE = re.compile(
+    r"(?:"
+    r"model\.safetensors-\d+-of-\d+(?:\.safetensors)?|"
     r"(?:"
     r"model(?:-\d+-of-\d+)?|"
     r"pytorch_model(?:-\d+-of-\d+)?|"
@@ -30,7 +37,8 @@ _MODEL_WEIGHT_RE = re.compile(
     r"consolidated(?:[._-]\d+)?|"
     r"mlx_model(?:-\d+-of-\d+)?|"
     r"weights"
-    r")\.(?:safetensors|bin|pt|pth|ckpt|npz)$",
+    r")\.(?:safetensors|bin|pt|pth|ckpt|npz)"
+    r")$",
     re.IGNORECASE,
 )
 _DATASET_DATA_SUFFIXES = (
@@ -87,6 +95,14 @@ class ExactResumeResourcesUnavailable(ValueError):
     pass
 
 
+def resume_requires_original_load_mode(config: dict[str, Any]) -> bool:
+    return bool(
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_model_resource")
+        or config.get("resume_expected_model")
+    )
+
+
 def effective_training_load_in_4bit(
     config: dict[str, Any], model_load_target: str, hf_token: Optional[str]
 ) -> bool:
@@ -95,9 +111,7 @@ def effective_training_load_in_4bit(
     from utils.transformers_version import latest_tier_active_for
 
     latest_tier_active = latest_tier_active_for(model_load_target, hf_token)
-    if latest_tier_active and (
-        config.get("require_exact_resume_resources") or config.get("require_exact_model_resource")
-    ):
+    if latest_tier_active and resume_requires_original_load_mode(config):
         raise ExactResumeResourcesUnavailable(
             "This checkpoint requires its original 4-bit model load mode, "
             "which is unavailable with the active Transformers runtime."
@@ -106,23 +120,7 @@ def effective_training_load_in_4bit(
 
 
 def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
-    """Would activating the latest-transformers sidecar strand this stored run?
-
-    ``effective_training_load_in_4bit`` raises ``ExactResumeResourcesUnavailable`` for a
-    4-bit run with exact-resource provenance the moment ``latest_tier_active_for`` turns
-    true, and that sidecar is a persistent overlay: once installed the checkpoint never
-    resumes in the load mode it was attested with. Callers offering the install ahead of
-    a resume ask this first, rather than trade a working resume for an upgrade the run
-    does not need.
-
-    Takes the run's STORED config (``config_json``), so it recomputes the requirement
-    from the provenance marker: ``require_exact_resume_resources`` and
-    ``require_exact_model_resource`` are stripped before persistence and exist only on
-    the live worker config ``/train/start`` assembles.
-
-    Never raises. A provenance already refusing a resume returns False: nothing the
-    install does makes that checkpoint any less resumable.
-    """
+    """Would activating the latest-transformers sidecar strand this stored run? Never raises; a provenance already refusing resume returns False."""
     if not bool(config.get("load_in_4bit")):
         return False
     try:
@@ -131,10 +129,12 @@ def exact_resume_requires_current_4bit(config: dict[str, Any]) -> bool:
         return False
     except Exception:
         return False
-    # The same disjunction effective_training_load_in_4bit tests: routes/training.py fills
-    # require_exact_model_resource from exact_resume_resource_requirements and
-    # require_exact_resume_resources from resource_provenance_is_complete.
-    return bool(requires_exact_model or resource_provenance_is_complete(config))
+    # The stored-run form of resume_requires_original_load_mode.
+    return bool(
+        requires_exact_model
+        or resource_provenance_is_complete(config)
+        or local_model_resume_expectation(config) is not None
+    )
 
 
 def _normalized_repo_id(value: Any) -> Optional[str]:
@@ -161,37 +161,53 @@ def _normalized_commit(value: Any) -> Optional[str]:
     return value
 
 
-def _snapshot_declares_quantization(snapshot: Path) -> bool:
+def _prequantized_mode(widths: frozenset[int]) -> str:
+    return "prequantized_" + "_".join(str(width) for width in sorted(widths)) + "bit"
+
+
+def _prequantized_mode_widths(mode: Any) -> Optional[frozenset[int]]:
+    if not isinstance(mode, str) or _PREQUANTIZED_MODE_RE.fullmatch(mode) is None:
+        return None
+    widths = [
+        int(part) for part in mode.removeprefix("prequantized_").removesuffix("bit").split("_")
+    ]
+    # Only the canonical (strictly increasing) spelling `_prequantized_mode` writes attests.
+    if any(widths[index] >= widths[index + 1] for index in range(len(widths) - 1)):
+        return None
+    return frozenset(widths)
+
+
+def _snapshot_quantization_widths(snapshot: Path) -> Optional[frozenset[int]]:
     try:
         parsed = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
-        return False
+        return frozenset()
     if not isinstance(parsed, dict):
-        return False
+        return frozenset()
     queue = [parsed.get("quantization_config"), parsed.get("quantization")]
-    found_4bit = False
-    conflicting_width = False
+    widths: set[int] = set()
     while queue:
         current = queue.pop()
         if isinstance(current, dict):
             if current.get("load_in_4bit") is True:
-                found_4bit = True
+                widths.add(4)
             if current.get("load_in_8bit") is True:
-                conflicting_width = True
+                widths.add(8)
             for key in ("bits", "nbits", "q_bits"):
                 width = current.get(key)
                 if isinstance(width, str) and width.strip().isdigit():
                     width = int(width.strip())
                 if isinstance(width, bool) or not isinstance(width, int):
                     continue
-                if width == 4:
-                    found_4bit = True
-                else:
-                    conflicting_width = True
+                widths.add(width)
             queue.extend(current.values())
         elif isinstance(current, (list, tuple)):
             queue.extend(current)
-    return found_4bit and not conflicting_width
+    if not widths:
+        return frozenset()
+    if len(widths) > 8 or any(width < 1 or width > 16 for width in widths):
+        return None
+    return frozenset(widths)
 
 
 def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
@@ -207,7 +223,9 @@ def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
     except (OSError, RuntimeError, ValueError):
         return None
     if not resolved.is_file() or not (
-        resolved.is_relative_to(snapshot) or resolved.is_relative_to(repo_dir / "blobs")
+        resolved.is_relative_to(snapshot)
+        or resolved.is_relative_to(repo_dir / "blobs")
+        or resolved.is_relative_to(repo_dir.parent / "blobs")
     ):
         return None
     try:
@@ -270,12 +288,7 @@ def _snapshot_has_dataset_data(snapshot: Path) -> bool:
     return found_data
 
 
-def exact_model_snapshot_path(
-    path_value: Any,
-    repo_id: Any,
-    *,
-    require_quantized: bool = False,
-) -> Optional[str]:
+def exact_model_snapshot_path(path_value: Any, repo_id: Any) -> Optional[str]:
     repo_id = _normalized_repo_id(repo_id)
     if repo_id is None or not isinstance(path_value, str) or not path_value.strip():
         return None
@@ -304,17 +317,10 @@ def exact_model_snapshot_path(
         return None
     if not same_existing_path(resolved, requested) or not _snapshot_has_model_weights(resolved):
         return None
-    if require_quantized and not _snapshot_declares_quantization(resolved):
-        return None
     return str(resolved)
 
 
-def exact_model_snapshot_for_commit(
-    repo_id: Any,
-    commit: Any,
-    *,
-    require_quantized: bool = False,
-) -> Optional[str]:
+def exact_model_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str]:
     repo_id = _normalized_repo_id(repo_id)
     commit = _normalized_commit(commit)
     if repo_id is None or commit is None:
@@ -327,7 +333,6 @@ def exact_model_snapshot_for_commit(
         resolved = exact_model_snapshot_path(
             str(candidate),
             repo_id,
-            require_quantized = require_quantized,
         )
         if resolved is not None:
             return resolved
@@ -376,7 +381,9 @@ def exact_dataset_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str
     return None
 
 
-def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tuple[str, str]]:
+def _local_dataset_source_snapshot(
+    path_value: str, repo_id: str, snapshot_for_path: Callable[[str, str], Optional[str]]
+) -> Optional[tuple[str, str]]:
     if len(path_value) > 4096 or "\x00" in path_value:
         return None
     path = Path(path_value).expanduser()
@@ -387,7 +394,7 @@ def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tu
     for parent in path.parents:
         if parent.parent.name != "snapshots":
             continue
-        snapshot = exact_dataset_snapshot_path(str(parent), repo_id)
+        snapshot = snapshot_for_path(str(parent), repo_id)
         try:
             source_path = path.relative_to(parent).as_posix()
         except ValueError:
@@ -416,8 +423,7 @@ def _hf_dataset_source_ref(path_value: str) -> Optional[tuple[str, str, str]]:
 
     try:
         parsed = urlsplit(path_value)
-        # The shared helper, not a third private parse: a blank or scheme-less
-        # value yielded an empty netloc here and matched no URL at all.
+        # Use the shared helper, not a third parse: a blank or scheme-less value gave an empty netloc.
         from utils.hf_endpoint import get_hf_endpoint
         endpoint = urlsplit(get_hf_endpoint())
     except ValueError:
@@ -476,6 +482,9 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
 
     snapshots: set[str] = set()
     found_dataset = False
+    # Per call only: whole-snapshot validation once per snapshot, not per data file (K^2 file checks).
+    snapshot_for_path = functools.lru_cache(maxsize = None)(exact_dataset_snapshot_path)
+    snapshot_for_commit = functools.lru_cache(maxsize = None)(exact_dataset_snapshot_for_commit)
     for value in datasets:
         for dataset in _loaded_dataset_objects(value):
             found_dataset = True
@@ -493,17 +502,14 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
                     or expected_size < 0
                 ):
                     return None, "dataset_revision_unattested"
-                local_source = _local_dataset_source_snapshot(source, repo_id)
+                local_source = _local_dataset_source_snapshot(source, repo_id, snapshot_for_path)
                 if local_source is not None:
                     snapshot, source_path = local_source
                 else:
                     source_ref = _hf_dataset_source_ref(source)
                     if source_ref is None or source_ref[0].casefold() != repo_id.casefold():
                         return None, "dataset_source_unattested"
-                    snapshot = exact_dataset_snapshot_for_commit(
-                        repo_id,
-                        source_ref[1],
-                    )
+                    snapshot = snapshot_for_commit(repo_id, source_ref[1])
                     source_path = source_ref[2]
                 resolved_source = (
                     _dataset_snapshot_file(snapshot, source_path) if snapshot is not None else None
@@ -526,14 +532,7 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
 
 
 def _object_value(value: Any, key: str) -> Any:
-    """Read ``key`` off a loaded model object, whatever shape it is.
-
-    Attribute access has to come first: ``mlx.nn.Module`` subclasses ``dict``, so a
-    mapping-first lookup answers ``None`` for every attribute an MLX model carries and
-    the whole MLX attestation path below goes blind. The mapping lookup stays as the
-    fallback for the plain dicts that also flow through here (``quantization_config``,
-    ``_unsloth_quantization_policy``), whose keys are never attributes.
-    """
+    """Attributes first: mlx.nn.Module subclasses dict, so a mapping-first lookup would return None."""
     try:
         found = getattr(value, key, None)
     except Exception:
@@ -610,10 +609,13 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
 
 
 def _attested_model_load_mode(snapshot: str, model: Any, load_in_4bit: bool) -> Optional[str]:
+    widths = _snapshot_quantization_widths(Path(snapshot))
+    if widths is None:
+        return None
+    if widths:
+        return _prequantized_mode(widths)
     if not load_in_4bit:
         return _MODEL_LOAD_UNQUANTIZED
-    if _snapshot_declares_quantization(Path(snapshot)):
-        return _MODEL_LOAD_PREQUANTIZED_4BIT
     if _loaded_model_is_4bit(model):
         return _MODEL_LOAD_RUNTIME_4BIT
     return None
@@ -654,6 +656,16 @@ def attest_loaded_model(
     return None, None, None, reason
 
 
+def streamed_dataset_revision(config: dict[str, Any]) -> Optional[str]:
+    """The Hub commit a streaming run is pinned to, or None when it streams a moving branch."""
+    if not config.get("dataset_streaming"):
+        return None
+    revision = config.get("dataset_revision")
+    if isinstance(revision, str) and _COMMIT_SHA_RE.fullmatch(revision):
+        return revision
+    return None
+
+
 def _dataset_reason(config: dict[str, Any]) -> str:
     if config.get("dataset_streaming"):
         return "dataset_streaming_unattested"
@@ -683,12 +695,14 @@ def build_worker_provenance_event(
 
     dataset_snapshot = None
     dataset_reason = None
+    # A stream has no cache snapshot; the commit both loaders streamed from attests it.
+    dataset_revision = streamed_dataset_revision(config)
     if dataset_loaded_from_exact_snapshot:
         dataset_snapshot = exact_dataset_snapshot_path(
             config.get("dataset_snapshot_path"),
             config.get("hf_dataset"),
         )
-    if dataset_snapshot is None:
+    if dataset_snapshot is None and dataset_revision is None:
         dataset_reason = _dataset_reason(config)
 
     reasons = [reason for reason in (model_reason, dataset_reason) if reason]
@@ -702,8 +716,9 @@ def build_worker_provenance_event(
             "load_mode": model_load_mode,
         },
         "dataset": {
-            "status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
+            "status": _ATTESTED if dataset_snapshot or dataset_revision else _INCOMPLETE,
             "snapshot_path": dataset_snapshot,
+            "revision": dataset_revision,
         },
         "reasons": reasons,
     }
@@ -755,17 +770,24 @@ def normalize_worker_provenance_event(
         )
         if model_snapshot is not None:
             event_load_mode = model_event.get("load_mode")
-            snapshot_is_quantized = _snapshot_declares_quantization(Path(model_snapshot))
-            if bool(config.get("load_in_4bit")):
-                if (
-                    event_load_mode in (None, _MODEL_LOAD_PREQUANTIZED_4BIT)
-                    and snapshot_is_quantized
-                ):
-                    model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
-                elif event_load_mode == _MODEL_LOAD_RUNTIME_4BIT and not snapshot_is_quantized:
-                    model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
-            elif event_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
-                model_load_mode = _MODEL_LOAD_UNQUANTIZED
+            snapshot_widths = _snapshot_quantization_widths(Path(model_snapshot))
+            load_in_4bit = bool(config.get("load_in_4bit"))
+            event_widths = _prequantized_mode_widths(event_load_mode)
+            if snapshot_widths is not None:
+                if event_widths is not None:
+                    if event_widths == snapshot_widths:
+                        model_load_mode = _prequantized_mode(event_widths)
+                elif event_load_mode is None:
+                    if load_in_4bit and snapshot_widths == frozenset({4}):
+                        model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
+                    elif not load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_UNQUANTIZED
+                elif event_load_mode == _MODEL_LOAD_RUNTIME_4BIT:
+                    if load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
+                elif event_load_mode == _MODEL_LOAD_UNQUANTIZED:
+                    if not load_in_4bit and not snapshot_widths:
+                        model_load_mode = _MODEL_LOAD_UNQUANTIZED
             if model_load_mode is None:
                 model_snapshot = None
     if model_snapshot is None:
@@ -774,6 +796,7 @@ def normalize_worker_provenance_event(
             reasons.append("model_event_invalid")
 
     dataset_snapshot = None
+    dataset_attested = False
     if (
         event.get("version") == RESOURCE_PROVENANCE_VERSION
         and dataset_event.get("status") == _ATTESTED
@@ -782,10 +805,15 @@ def normalize_worker_provenance_event(
             dataset_event.get("snapshot_path"),
             config.get("hf_dataset"),
         )
-    if dataset_snapshot is None and "dataset_event_invalid" not in reasons:
+        # A stream attests only the commit this process pinned, never one the worker names.
+        pinned = streamed_dataset_revision(config)
+        dataset_attested = dataset_snapshot is not None or (
+            pinned is not None and dataset_event.get("revision") == pinned
+        )
+    if not dataset_attested and "dataset_event_invalid" not in reasons:
         reasons.append("dataset_event_invalid")
 
-    complete = model_snapshot is not None and dataset_snapshot is not None
+    complete = model_snapshot is not None and dataset_attested
     return {
         "actual_model_repo_id": model_repo_id,
         "model_snapshot_path": model_snapshot,
@@ -795,7 +823,7 @@ def normalize_worker_provenance_event(
             "status": "complete" if complete else "incomplete",
             "model_status": _ATTESTED if model_snapshot else _INCOMPLETE,
             "model_load_mode": model_load_mode,
-            "dataset_status": _ATTESTED if dataset_snapshot else _INCOMPLETE,
+            "dataset_status": _ATTESTED if dataset_attested else _INCOMPLETE,
             "reasons": reasons,
         },
     }
@@ -816,14 +844,16 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     if stored_load_mode is None and isinstance(marker, dict):
         stored_load_mode = marker.get("model_load_mode")
     load_in_4bit = bool(config.get("load_in_4bit"))
-    if load_in_4bit:
+    expected_widths = _prequantized_mode_widths(stored_load_mode)
+    if expected_widths is not None:
+        model_load_mode = _prequantized_mode(expected_widths)
+    elif load_in_4bit:
         if stored_load_mode is None:
             model_load_mode = _MODEL_LOAD_PREQUANTIZED_4BIT
-        elif stored_load_mode in {
-            _MODEL_LOAD_PREQUANTIZED_4BIT,
-            _MODEL_LOAD_RUNTIME_4BIT,
-        }:
-            model_load_mode = stored_load_mode
+            expected_widths = frozenset({4})
+        elif stored_load_mode == _MODEL_LOAD_RUNTIME_4BIT:
+            model_load_mode = _MODEL_LOAD_RUNTIME_4BIT
+            expected_widths = frozenset()
         else:
             model_load_mode = None
     elif stored_load_mode in (None, _MODEL_LOAD_UNQUANTIZED):
@@ -842,12 +872,12 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     model_snapshot = exact_model_snapshot_path(
         config.get("model_snapshot_path"),
         model_repo_id,
-        require_quantized = model_load_mode == _MODEL_LOAD_PREQUANTIZED_4BIT,
     )
+    # Legacy `unquantized` markers never checked widths; keep them resumable.
     if (
         model_snapshot is not None
-        and model_load_mode == _MODEL_LOAD_RUNTIME_4BIT
-        and _snapshot_declares_quantization(Path(model_snapshot))
+        and model_load_mode != _MODEL_LOAD_UNQUANTIZED
+        and _snapshot_quantization_widths(Path(model_snapshot)) != expected_widths
     ):
         model_snapshot = None
     if model_snapshot is None:
@@ -857,7 +887,14 @@ def validate_exact_model_pin(config: dict[str, Any]) -> str:
     return model_snapshot
 
 
-def validate_exact_dataset_pin(config: dict[str, Any]) -> str:
+def validate_exact_dataset_pin(config: dict[str, Any]) -> Optional[str]:
+    """The dataset snapshot to pin, or None for a stream, which is pinned by its commit instead."""
+    if config.get("dataset_streaming"):
+        if streamed_dataset_revision(config) is None:
+            raise ExactResumeResourcesUnavailable(
+                "The dataset revision used by this run was not attested."
+            )
+        return None
     dataset_snapshot = exact_dataset_snapshot_path(
         config.get("dataset_snapshot_path"),
         config.get("hf_dataset"),
@@ -869,19 +906,14 @@ def validate_exact_dataset_pin(config: dict[str, Any]) -> str:
     return dataset_snapshot
 
 
-def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, str]:
+def validate_exact_resource_pins(config: dict[str, Any]) -> tuple[str, Optional[str]]:
     model_snapshot = validate_exact_model_pin(config)
     dataset_snapshot = validate_exact_dataset_pin(config)
     return model_snapshot, dataset_snapshot
 
 
 def _provenance_awaiting_attestation(marker: dict[str, Any], config: dict[str, Any]) -> bool:
-    """Training stopped before the worker attested loaded hub resources.
-
-    Stop-and-save can finish while provenance is still the initial ``pending`` marker
-    written at run start. Those runs have a valid checkpoint but no attested revision
-    pins yet; resume should behave like a legacy run without exact resource requirements.
-    """
+    """A pending marker means no revisions are attested yet, so resume treats the run like a legacy one."""
     if marker.get("status") != "pending":
         return False
     if marker.get("model_status") is not None or marker.get("dataset_status") is not None:
@@ -932,18 +964,58 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
     return require_model, require_dataset
 
 
+def local_model_resume_expectation(config: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The attested base of a stored run whose model is a local folder (a continued adapter).
+    Resume loads that folder as the run did, so its base is checked once loaded instead of
+    pinned as the load target, which would load the bare base."""
+    from utils.paths import is_local_path
+
+    if not is_local_path(str(config.get("model_name") or "")):
+        return None
+    repo_id = _normalized_repo_id(config.get("actual_model_repo_id"))
+    snapshot = config.get("model_snapshot_path")
+    if repo_id is None or not isinstance(snapshot, str) or not snapshot:
+        # A resume that stopped before attesting hands on the expectation it was checked against.
+        carried = config.get("resume_expected_model")
+        if isinstance(carried, dict) and carried.get("repo_id") and carried.get("snapshot_path"):
+            return carried
+        return None
+    marker = config.get(RESOURCE_PROVENANCE_KEY)
+    return {
+        "repo_id": repo_id,
+        "snapshot_path": snapshot,
+        "load_mode": marker.get("model_load_mode") if isinstance(marker, dict) else None,
+    }
+
+
+def resumed_model_mismatch(expected: dict[str, Any], event: dict[str, Any]) -> Optional[str]:
+    """Why the model a resumed run loaded is not the one its checkpoint was trained on, or None."""
+    model = event.get("model") if isinstance(event.get("model"), dict) else {}
+    loaded = model.get("snapshot_path")
+    if (
+        model.get("status") != _ATTESTED
+        or _normalized_repo_id(model.get("repo_id")) != expected.get("repo_id")
+        or not isinstance(loaded, str)
+        or os.path.realpath(loaded) != os.path.realpath(expected.get("snapshot_path") or "")
+    ):
+        return (
+            f"The base model {expected.get('repo_id')} no longer resolves to the revision this "
+            "checkpoint was trained on, so it cannot be resumed exactly."
+        )
+    if expected.get("load_mode") and model.get("load_mode") != expected["load_mode"]:
+        return (
+            f"The base model loaded as {model.get('load_mode')!r}, but this checkpoint was "
+            f"trained on a {expected['load_mode']!r} load, so it cannot be resumed exactly."
+        )
+    return None
+
+
 def resource_provenance_allows_resume(config: dict[str, Any]) -> bool:
     return resource_provenance_resume_blocker(config) is None
 
 
 def resource_provenance_resume_blocker(config: dict[str, Any]) -> Optional[str]:
-    """Why this provenance refuses a resume, or None when it allows one.
-
-    ``exact_resume_resource_requirements`` already raises with a precise, user-facing
-    explanation ("the exact model snapshot for this run is no longer available", and so
-    on). Discarding it left the start route reporting a generic checkpoint complaint for
-    a run whose checkpoint is perfectly intact, which points at the wrong thing entirely.
-    """
+    """Surfaces the precise refusal, not a generic checkpoint error, since the checkpoint is intact."""
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
         return None

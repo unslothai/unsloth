@@ -4,6 +4,8 @@
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
 export type LanKeylessScope = "off" | "inference" | "full";
+export type LanAccessAddress = { address: string; public: boolean };
+export type LanAccessAddressChoice = LanAccessAddress & { detected: boolean };
 
 export type LanAccessStatus = {
   state: LanAccessState;
@@ -15,6 +17,11 @@ export type LanAccessStatus = {
   portConfigurationSupported: boolean;
   configuredPort: number | null;
   activePort: number | null;
+  addressConfigurationSupported: boolean;
+  // null is Automatic: every detected address, public ones included
+  configuredAddresses: string[] | null;
+  availableAddresses: LanAccessAddress[];
+  configuredPublicAddresses: string[];
   managedBy: LanAccessOwner;
   canStart: boolean;
   canStop: boolean;
@@ -41,6 +48,12 @@ export type ApiLanAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   active_port?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  configured_addresses?: string[] | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  available_addresses?: LanAccessAddress[] | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  configured_public_addresses?: string[] | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: LanAccessOwner;
   // biome-ignore lint/style/useNamingConvention: API schema
   can_start: boolean;
@@ -61,6 +74,17 @@ export type ApiLanAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   keyless_tools?: boolean | null;
 };
+
+function normalizeAddresses(value: unknown): LanAccessAddress[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((entry) =>
+    entry && typeof entry.address === "string"
+      ? [{ address: entry.address, public: entry.public === true }]
+      : [],
+  );
+}
 
 function normalizeKeylessScope(value: unknown): LanKeylessScope {
   return value === "inference" || value === "full" ? value : "off";
@@ -84,18 +108,58 @@ export function normalizeLanAccessStatus(
         : null,
     activePort:
       typeof status.active_port === "number" ? status.active_port : null,
+    addressConfigurationSupported: Object.hasOwn(
+      status,
+      "configured_addresses",
+    ),
+    configuredAddresses: Array.isArray(status.configured_addresses)
+      ? status.configured_addresses.filter(
+          (address) => typeof address === "string",
+        )
+      : null,
+    availableAddresses: normalizeAddresses(status.available_addresses),
+    configuredPublicAddresses: Array.isArray(status.configured_public_addresses)
+      ? status.configured_public_addresses.filter(
+          (address) => typeof address === "string",
+        )
+      : [],
     managedBy: status.managed_by ?? null,
     canStart: status.can_start,
     canStop: status.can_stop,
     blockReason: status.block_reason ?? null,
     bindHost: status.bind_host ?? null,
     wildcardBind: status.wildcard_bind === true,
-    // absent on a backend that predates the field, where the web UI is served
+    // older backends omit this field but still serve the web UI
     servesWebUi: status.serves_web_ui !== false,
     keylessLanEligible: status.keyless_lan_eligible === true,
     keylessScope,
     keylessTools: keylessScope !== "off" && status.keyless_tools === true,
   };
+}
+
+// launch binds (-H 0.0.0.0, Docker) often use forwarded localhost ports
+export function lanApiUrls(status: LanAccessStatus): string[] {
+  return status.managedBy === "settings" ? status.urls : [];
+}
+
+// A listener keeps the address it bound after Wi-Fi changes or DHCP renews, while detection is fresh.
+export function staleLanUrls(status: LanAccessStatus): string[] {
+  if (
+    status.managedBy !== "settings" ||
+    status.availableAddresses.length === 0
+  ) {
+    return [];
+  }
+  const present = new Set(
+    status.availableAddresses.map((entry) => entry.address),
+  );
+  return status.urls.filter((url) => {
+    try {
+      return !present.has(new URL(url).hostname.replace(/^\[|\]$/g, ""));
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function keylessLanAccessDescription(
@@ -122,7 +186,6 @@ export function keylessLanAccessDescription(
   return `Inference is keyless on localhost; LAN callers require an active private listener.${tools}`;
 }
 
-// start and stop are synchronous socket work, so there is no transition to chase
 export const LAN_ACCESS_POLL_MS = 5000;
 
 export function lanAccessAutoStartReadOnly(
@@ -138,6 +201,60 @@ export function lanAccessPortReadOnly(status: LanAccessStatus | null): boolean {
     status.state === "online" ||
     status.blockReason === "colab"
   );
+}
+
+export function lanAccessAddressesReadOnly(
+  status: LanAccessStatus | null,
+): boolean {
+  return (
+    status === null ||
+    !status.addressConfigurationSupported ||
+    status.state === "online" ||
+    status.blockReason === "colab"
+  );
+}
+
+export function lanAccessAddressChoices(
+  status: LanAccessStatus | null,
+  selected: string[],
+): LanAccessAddressChoice[] {
+  const detected = status?.availableAddresses ?? [];
+  // a -H launch skips detection, so an address missing from the list is unknown, not down
+  const detectionSkipped = status?.managedBy === "launch";
+  const choices: LanAccessAddressChoice[] = detected.map((entry) => ({
+    ...entry,
+    detected: true,
+  }));
+  for (const address of [...(status?.configuredAddresses ?? []), ...selected]) {
+    if (!choices.some((choice) => choice.address === address)) {
+      choices.push({
+        address,
+        public: status?.configuredPublicAddresses.includes(address) ?? false,
+        detected: detectionSkipped,
+      });
+    }
+  }
+  return choices;
+}
+
+export function defaultLanAccessAddressSelection(
+  status: LanAccessStatus | null,
+): string[] {
+  return (status?.availableAddresses ?? [])
+    .filter((entry) => !entry.public)
+    .map((entry) => entry.address);
+}
+
+export function sameLanAccessAddresses(
+  left: string[] | null,
+  right: string[] | null,
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  const a = new Set(left);
+  const b = new Set(right);
+  return a.size === b.size && [...a].every((address) => b.has(address));
 }
 
 export function validLanAccessPort(value: string): boolean {
@@ -164,7 +281,6 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
-// the backend owns wildcard classification so the message follows its flag
 function launchManagedMessage(status: LanAccessStatus): string {
   if (status.wildcardBind) {
     const option = status.bindHost ? ` (--host ${status.bindHost})` : "";
@@ -209,6 +325,8 @@ export function lanAccessErrorMessage(
       return configuredPort === null
         ? "Could not open any automatic LAN port from 8888 to 8908."
         : `Port ${configuredPort} is unavailable. Stop the app using it or choose another custom port.`;
+    case "selected_address_unavailable":
+      return "None of the chosen addresses is on this machine right now. Connect that network, or choose another address.";
     case "listener_start_failed":
       return "The network listener did not start. Check the logs for details.";
     case "stop_timed_out":

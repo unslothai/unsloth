@@ -3,8 +3,7 @@
 
 import type { ComponentPropsWithoutRef } from "react";
 
-// Shared lightbulb glyph used by the composer thinking toggle and the reasoning "Thinking..."
-// indicator so both stay in sync. Defaults are overridable via props.
+// Shared by the thinking toggle and the reasoning indicator.
 export const BulbIcon = ({
   className,
   ...props

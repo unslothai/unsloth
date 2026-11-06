@@ -6,10 +6,7 @@ os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import transformers
 
-# Same accessor unsloth.tokenizer_utils uses.
-# The legacy `transformers.utils.sentencepiece_model_pb2` is generated against protobuf 3.x and raises on protobuf >= 4
-# ("Descriptors cannot be created directly"), or collides with sentencepiece's own copy ("duplicate file name
-# sentencepiece_model.proto") once that one is loaded first.
+# Same accessor as unsloth.tokenizer_utils: the legacy sentencepiece_model_pb2 breaks on protobuf >= 4.
 from transformers.convert_slow_tokenizer import import_protobuf
 
 sentencepiece_model_pb2 = import_protobuf()
@@ -38,11 +35,7 @@ def _read_pieces(path):
 
 
 class _FakeTokenizer:
-    """Minimal stand-in for a sentencepiece-backed slow tokenizer.
-
-    ``save_pretrained`` writes a tokenizer.model, which is what the real slow
-    tokenizers do and what fix_sentencepiece_tokenizer reads back.
-    """
+    """Stand-in slow tokenizer; save_pretrained writes tokenizer.model, which the fix reads back."""
 
     def __init__(
         self,
@@ -92,10 +85,7 @@ class _ReloadedTokenizer:
 
 
 def _stub_auto_tokenizer(monkeypatch):
-    """fix_sentencepiece_tokenizer reloads the patched directory through
-    AutoTokenizer at the end; that needs a full tokenizer on disk, which is
-    out of scope here. Record the reload location and hand back a sentinel.
-    """
+    """Stubs AutoTokenizer: the reload needs a full tokenizer on disk, which these tests do not build."""
     loaded = []
 
     class _StubAutoTokenizer:
@@ -109,12 +99,7 @@ def _stub_auto_tokenizer(monkeypatch):
 
 
 def test_old_tokenizer_is_saved_so_its_model_can_be_read(tmp_path, monkeypatch):
-    """The guard must not skip the body on a fresh temporary directory.
-
-    fix_sentencepiece_tokenizer creates its scratch directory itself and then
-    checks for a tokenizer.model inside it, but that file only appears once
-    old_tokenizer.save_pretrained() has run.
-    """
+    """The guard must not skip on a fresh scratch dir: tokenizer.model appears only after save_pretrained"""
     _stub_auto_tokenizer(monkeypatch)
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
@@ -129,7 +114,7 @@ def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypat
     old, new = _tokenizers()
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
-    # Hold the returned tokenizer so its scratch dir survives until we read it.
+    # Hold the tokenizer so its scratch dir survives until we read it.
     tok = fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
 
     assert "<|im_end|>" in _read_pieces(f"{loaded[-1]}/tokenizer.model")
@@ -137,10 +122,7 @@ def test_token_mapping_is_applied_to_the_sentencepiece_model(tmp_path, monkeypat
 
 
 def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path, monkeypatch):
-    """A fast-only tokenizer writes no tokenizer.model, so the guard still
-    short-circuits and the caller gets new_tokenizer back unchanged. Its scratch
-    dir is unreferenced and reclaimed immediately.
-    """
+    """A fast-only tokenizer writes no tokenizer.model, so the guard returns new_tokenizer unchanged."""
     _stub_auto_tokenizer(monkeypatch)
     old = _FakeTokenizer("old", spm_bytes = None)
     new = _FakeTokenizer("new")
@@ -157,10 +139,7 @@ def test_tokenizer_without_a_sentencepiece_model_is_returned_untouched(tmp_path,
 
 
 def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
-    """Each call must work in its own unique subdirectory, so concurrent or
-    repeated calls never share scratch files, stale artifacts never leak into
-    the reload, and nothing the caller left in the scratch location is deleted.
-    """
+    """Each call gets a fresh subdirectory, so calls never share scratch files or delete the caller's."""
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
     os.makedirs(location, exist_ok = True)
@@ -182,7 +161,6 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
     assert work1 != work2, "two calls reused the same directory"
     assert os.path.dirname(work1) == location and os.path.dirname(work2) == location
     assert os.path.isdir(work1) and os.path.isdir(work2)
-    # Nothing the caller left behind is deleted, and it never leaks into a work dir.
     assert os.path.isfile(marker), "a pre-existing scratch file was deleted"
     assert not os.path.isfile(os.path.join(work1, "leftover.json"))
     assert not os.path.isfile(os.path.join(work2, "leftover.json"))
@@ -207,11 +185,8 @@ def test_sentencepiece_scratch_dir_is_reclaimed_once_the_tokenizer_is_gone(tmp_p
 
 
 class _CopyFromSubdirTokenizer:
-    """A slow tokenizer whose sentencepiece source lives elsewhere (like the
-    tokenizers convert_to_fast_tokenizer produces under {location}/{name}).
-    save_pretrained copies that source into the destination, as HF slow
-    tokenizers copy their vocab_file.
-    """
+    """Source vocab may live outside the work dir; save_pretrained copies it in, as HF slow
+    tokenizers do."""
 
     def __init__(self, source_model_path):
         self.eos_token = "</s>"
@@ -240,10 +215,7 @@ class _CopyFromSubdirTokenizer:
 
 
 def test_source_vocab_outside_the_work_directory_is_not_disturbed(tmp_path, monkeypatch):
-    """A tokenizer whose sentencepiece source lives elsewhere (e.g. the subtree
-    convert_to_fast_tokenizer created) is copied into the fresh work directory
-    and patched there; the original source is left untouched.
-    """
+    """A source vocab outside the work dir is copied in and patched there; the original is left alone."""
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
     subdir = os.path.join(location, "some_model")
@@ -288,10 +260,7 @@ def test_swap_mapping_swaps_both_pieces_without_duplicating(tmp_path, monkeypatc
 
 
 def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
-    """When the caller skips a mapping whose target already exists, it must not
-    pass that mapping here, or the skipped source token gets renamed anyway and
-    duplicates the existing target in the model.
-    """
+    """Only mappings actually applied may be passed, or a skipped rename duplicates an existing target."""
     loaded = _stub_auto_tokenizer(monkeypatch)
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
 
@@ -304,9 +273,58 @@ def test_only_applied_mappings_are_patched(tmp_path, monkeypatch):
     old = _FakeTokenizer("old", spm_bytes = _spm_bytes(pieces), vocab = {"aa": 1, "bb": 2})
     new = _FakeTokenizer("new")
 
-    # Caller skipped aa->X (X already exists) and applied bb->Y, so only bb->Y is passed.
+    # The caller skipped aa->X (X exists), so only bb->Y is passed.
     tok = fix_sentencepiece_tokenizer(old, new, {"bb": "Y"}, temporary_location = location)
 
     result = _read_pieces(f"{loaded[-1]}/tokenizer.model")
     assert result.count("X") == 1 and "Y" in result and "aa" in result, result
     assert tok is not None
+
+
+def test_a_scratch_directory_created_by_another_process_is_reused(tmp_path, monkeypatch):
+    """Two processes sharing a working directory both see the scratch dir missing; the
+    second makedirs must not raise. Simulated by reporting the directory absent after
+    another process has already created it."""
+    import unsloth.tokenizer_utils as tokenizer_utils
+
+    _stub_auto_tokenizer(monkeypatch)
+    old, new = _tokenizers()
+    location = str(tmp_path / "_unsloth_sentencepiece_temp")
+    os.makedirs(location)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        tokenizer_utils.os.path,
+        "exists",
+        lambda path: False if os.fspath(path) == location else real_exists(path),
+    )
+
+    fix_sentencepiece_tokenizer(old, new, {"</s>": "<|im_end|>"}, temporary_location = location)
+
+    assert old.saved_to
+
+
+def test_every_scratch_makedirs_tolerates_an_existing_directory():
+    """convert_to_fast_tokenizer shares the pattern but needs a real slow tokenizer to reach
+    it, so pin the call shape for every makedirs in the module instead."""
+    import ast
+    import inspect
+
+    import unsloth.tokenizer_utils as tokenizer_utils
+
+    calls = [
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(tokenizer_utils)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "makedirs"
+    ]
+    assert calls, "no makedirs call found; update this test"
+    racy = [
+        node.lineno
+        for node in calls
+        if not any(
+            kw.arg == "exist_ok" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+            for kw in node.keywords
+        )
+    ]
+    assert not racy, f"makedirs without exist_ok = True at tokenizer_utils.py lines {racy}"

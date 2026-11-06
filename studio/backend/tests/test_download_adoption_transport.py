@@ -20,12 +20,10 @@ def test_a_running_job_reports_the_transport_it_started_on():
     registry = DownloadRegistry()
     assert _claim(registry, "unsloth/Qwen3-4B-GGUF", "xet") == (True, "running")
 
-    # The second client asked for HTTP; the claim is refused and it adopts.
     accepted, state = _claim(registry, "unsloth/Qwen3-4B-GGUF", "http")
     assert accepted is False and state == "running"
     assert registry.adoptable("unsloth/Qwen3-4B-GGUF") is True
-    # What it must be told, rather than the http it asked for: pausing a Xet
-    # run promises a resume that does not exist.
+    # pausing a Xet run promises a resume that does not exist
     assert registry.job_transport("unsloth/Qwen3-4B-GGUF") == "xet"
 
 
@@ -49,7 +47,7 @@ def test_a_fresh_start_reports_the_transport_the_backend_resolved(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.download_registry,
         "download_transport_unavailable_reason",
-        lambda transport: "hf_xet is not installed" if transport == "xet" else None,
+        lambda transport, **_kw: "hf_xet is not installed" if transport == "xet" else None,
     )
     use_xet, _reason = download_lifecycle.resolve_requested_use_xet("xet", True)
     assert use_xet is False, "the downgrade this reports is what the client must be told"
@@ -62,7 +60,7 @@ def test_an_available_xet_request_is_left_alone(monkeypatch):
     monkeypatch.setattr(
         download_lifecycle.download_registry,
         "download_transport_unavailable_reason",
-        lambda transport: None,
+        lambda transport, **_kw: None,
     )
     use_xet, _reason = download_lifecycle.resolve_requested_use_xet("xet", True)
     assert download_lifecycle.resolve_transport(use_xet) == "xet"
@@ -113,7 +111,6 @@ def test_an_adopted_fallback_run_reports_its_marker_to_the_new_client():
         repo_id = key,
         cancel_marker_transport = "xet",
     )
-    # What the rejected second claim then reports.
     assert registry.adoptable(key) is True
     assert registry.job_transport(key) == "http"
     assert registry.job_cancel_transport(key) == "xet"

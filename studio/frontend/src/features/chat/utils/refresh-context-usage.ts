@@ -11,35 +11,33 @@ import {
   messagesContainImage,
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
+import { getMcpServerMutationEpoch } from "../api/mcp-server-mutation-tracker";
 import { isExternalModelId } from "../external-providers";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { localMediaToolsForTurn, useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
+import { savedBranchHead } from "./branch-head";
+import { contextUsageReasoningKey } from "./context-usage-reasoning";
 import { listStoredChatMessages } from "./chat-history-storage";
 import { orderBySelectedBranch } from "./message-order";
 
-// Per thread, not per module: in compare mode a hidden pane's history load would otherwise
-// invalidate the visible thread's count, blanking the bar.
-const refreshGenerations = new Map<string | null, number>();
-
-function nextGeneration(threadKey: string | null): number {
-  const generation = (refreshGenerations.get(threadKey) ?? 0) + 1;
-  refreshGenerations.set(threadKey, generation);
-  return generation;
-}
-
-function superseded(threadKey: string | null, generation: number): boolean {
-  return refreshGenerations.get(threadKey) !== generation;
-}
-
 // Threads with a count on the wire. A model load fires two triggers, and both would otherwise
 // render the template and tokenize.
-const countsInFlight = new Set<string | null>();
+const countsInFlight = new Map<string | null, {
+  afterModelLoad: boolean;
+  loadId: string | null;
+}>();
 
-// A trigger deferred behind an in-flight count, replayed once that count settles WITHOUT
-// publishing. Dropping it loses the bar: a run stopped before it emits usage fires the
-// retry this depends on. Replaying it unconditionally would restore the doubled model-load
-// count, where the first trigger publishes.
+// Replay a deferred trigger only when the in-flight count did not publish.
 const retryAfterInFlight = new Map<string | null, RefreshOptions>();
+let countEpoch = 0;
+
+let completedCount: {
+  key: string;
+  payload: string;
+  usage: NonNullable<
+    ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
+  >;
+} | null = null;
 
 function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   const content =
@@ -56,7 +54,7 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
       attachments: record.attachments
         ? structuredClone(record.attachments)
         : [],
-      metadata: { custom: {} },
+      metadata: { custom: (record.metadata as Record<string, unknown>) ?? {} },
     };
   }
 
@@ -68,7 +66,10 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
     id: record.id,
     createdAt: new Date(record.createdAt),
     role: "assistant",
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     status: { type: "complete", reason: "unknown" },
     metadata: {
       custom,
@@ -81,7 +82,6 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
   };
 }
 
-/** Rolling 32-bit hash. Only has to change when the input does, not resist an adversary. */
 function foldHash(text: string, seed: number): number {
   let hash = seed;
   for (let i = 0; i < text.length; i += 1) {
@@ -95,19 +95,25 @@ function foldPart(part: unknown, seed: number): number {
   try {
     serialized = JSON.stringify(part) ?? "";
   } catch {
-    // Unserializable payload: fall back to the part kind, which both sides derive the same way.
     serialized = String((part as { type?: unknown })?.type);
   }
   return foldHash(serialized, seed);
 }
 
-/** Identity of the branch a count priced. Content is hashed, not measured: a run mutates a
- *  turn in place, so neither a length nor a part tally sees it. Attachments are folded in
- *  because the counter prices them too. */
+/** Hashed, not measured: a run mutates a turn in place. */
 function branchSignature(messages: readonly ThreadMessage[]): string {
   let hash = 0;
   let parts = 0;
   for (const message of messages) {
+    hash = foldPart(
+      [
+        message.id,
+        message.role,
+        message.metadata?.custom?.revision,
+        message.metadata?.custom?.contextTruncation,
+      ],
+      hash,
+    );
     for (const part of message.content as readonly unknown[]) {
       parts += 1;
       hash = foldPart(part, hash);
@@ -122,33 +128,83 @@ function branchSignature(messages: readonly ThreadMessage[]): string {
   return `${messages.length}:${parts}:${messages.at(-1)?.id ?? ""}:${hash}`;
 }
 
-/** The branch the mounted runtime is showing for the thread the store calls active. */
 type ActiveBranchReader = () => readonly ThreadMessage[] | null;
 
 let readActiveBranch: ActiveBranchReader | null = null;
 
-/** Publish the mounted runtime's visible branch so the recount prices it instead of the
- *  persisted records. Only the single-chat pane registers one. */
 export function setActiveBranchReader(reader: ActiveBranchReader | null): void {
   readActiveBranch = reader;
+}
+
+export function currentContextUsageReasoningKey(
+  state = useChatRuntimeStore.getState(),
+): string | undefined {
+  if (
+    !state.params.checkpoint ||
+    isExternalModelId(state.params.checkpoint) ||
+    !(state.supportsReasoning || state.supportsPreserveThinking)
+  ) {
+    return undefined;
+  }
+  return contextUsageReasoningKey(buildLocalTokenCountReasoning(state));
+}
+
+export function currentContextUsageSettingsKey(
+  state: ReturnType<typeof useChatRuntimeStore.getState>,
+  browserTools: string,
+): string {
+  return JSON.stringify([
+    state.params.systemPrompt,
+    state.params.systemVariables,
+    state.params.maxTokens,
+    state.loadedChatTemplateOverride,
+    state.autoCompactEnabled,
+    state.supportsTools,
+    state.toolsEnabled,
+    state.codeToolsEnabled,
+    state.codeToolsDeclinedUnderFullAccess,
+    state.mcpEnabledForChat,
+    state.ragEnabled,
+    state.ragSource,
+    state.ragMode,
+    state.ragTopK,
+    state.ragAutoInject,
+    state.ragAutoInjectMinScore,
+    state.autoHealToolCalls,
+    state.bypassPermissions,
+    state.deepResearchEnabled,
+    state.permissionMode,
+    state.sandboxLevel,
+    state.maxToolCallsPerMessage,
+    browserTools,
+    localMediaToolsForTurn(state),
+  ]);
 }
 
 type RefreshOptions =
   | {
       threadId?: string;
-      /** When true, skip the modelLoading guard (post-load recount). */
       afterModelLoad?: boolean;
       invalidate?: boolean;
     }
   | undefined;
 
-/** Re-count prompt tokens for the active local chat and fill the usage bar. */
 export async function refreshContextUsage(
   options?: RefreshOptions,
 ): Promise<void> {
   const store = useChatRuntimeStore.getState();
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
+
+  const pendingCount = countsInFlight.get(threadId ?? null);
+  if (
+    options?.invalidate ||
+    (options?.afterModelLoad &&
+      (!pendingCount?.afterModelLoad || pendingCount.loadId !== store.activeLoadId))
+  ) {
+    completedCount = null;
+    countEpoch += 1;
+  }
 
   if (
     !checkpoint ||
@@ -159,44 +215,51 @@ export async function refreshContextUsage(
     return;
   }
 
-  // An output-only audio GGUF never sends a chat completion: the adapter routes the turn to
-  // /audio/generate, which returns no usage, so a chat-template total is never corrected.
+  // Output-only audio GGUFs never get chat usage to correct the count.
   const activeModel = store.models?.find(
     (model: { id: string }) => model.id === checkpoint,
   );
   if (activeModel?.isAudio && !activeModel?.hasAudioInput) return;
 
-  if (options?.invalidate) store.setContextUsage(null);
+  if (options?.invalidate) {
+    store.setContextUsage(null);
+  }
+  const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
 
-  // Never count while anything is generating: the endpoint refuses, and the recount effect
-  // depends on this so the last run finishing re-fires it. runningByThreadId, not the
-  // narrower local one: the endpoint refuses during an external-provider run too, and
-  // nothing re-fires this effect when an external run ends unless it is in the deps.
+  // The endpoint refuses during any run, external included, and run end re-fires this effect.
   if (Object.values(store.runningByThreadId ?? {}).some(Boolean)) return;
 
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
+  const capturedReasoning = JSON.stringify(buildLocalTokenCountReasoning());
+  const capturedSettingsEpoch = store.queuedSettingsEpoch;
+  const capturedCountEpoch = countEpoch;
+  const capturedMcpEpoch = getMcpServerMutationEpoch();
 
   if (countsInFlight.has(capturedThreadId)) {
     retryAfterInFlight.set(capturedThreadId, options);
     return;
   }
 
-  // Bump only once this call will do work, so a bail-out cannot cancel an in-flight recount.
-  const generation = nextGeneration(capturedThreadId);
-
-  // The checkpoint can move under any await below, and a later recount for the same thread
-  // supersedes this one; publishing after either puts another model's number on the bar.
+  const promptChanged = (): boolean =>
+    countEpoch !== capturedCountEpoch ||
+    (store.mcpEnabledForChat && getMcpServerMutationEpoch() !== capturedMcpEpoch) ||
+    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint ||
+    JSON.stringify(buildLocalTokenCountReasoning()) !== capturedReasoning;
   const stale = (): boolean =>
-    superseded(capturedThreadId, generation) ||
-    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
+    promptChanged() ||
+    useChatRuntimeStore.getState().queuedSettingsEpoch !==
+      capturedSettingsEpoch;
 
-  countsInFlight.add(capturedThreadId);
+  countsInFlight.set(capturedThreadId, {
+    afterModelLoad: options?.afterModelLoad === true,
+    loadId: store.activeLoadId,
+  });
   let published = false;
+  let replayQueued = true;
+  let inputsChanged = stale;
   try {
-    // Prefer the mounted runtime: it is what the next request reads from. A captured null is
-    // EXCLUDED, not matched: New Chat leaves the outgoing conversation mounted until
-    // switchToNewThread() settles, so null === null would price it into the empty chat.
+    // Exclude a captured null: New Chat keeps the old conversation mounted until the switch settles.
     const readOwnBranch = (): readonly ThreadMessage[] | null =>
       capturedThreadId != null &&
       useChatRuntimeStore.getState().activeThreadId === capturedThreadId
@@ -206,124 +269,157 @@ export async function refreshContextUsage(
     const liveBranch = readOwnBranch();
 
     let runMessages: readonly ThreadMessage[];
-    // Re-read before publishing, so a turn sent while this count was in flight drops it.
+    // re-read before publishing so a turn sent during the count invalidates it.
     let countedBranch: string | null = null;
-    // The stored fallback's witness: storage records and ThreadMessages hash differently, so only
-    // ids survive both, and the last one moves as soon as a turn is sent.
+    // only the last id witnesses the fallback because stored and runtime records hash differently.
     let countedLastId: string | null = null;
-    const fromLiveBranch = Boolean(liveBranch && liveBranch.length > 0);
+    const fromLiveBranch = liveBranch != null;
     if (fromLiveBranch) {
       runMessages = liveBranch as readonly ThreadMessage[];
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
-      runMessages = orderBySelectedBranch(records).map(
-        storedMessageToRunMessage,
-      );
+      runMessages = orderBySelectedBranch(
+        records,
+        threadId ? savedBranchHead(threadId, records) : undefined,
+      ).map(storedMessageToRunMessage);
     }
 
-    // /chat/count_tokens always 503s on images and /apply-template swaps each for a marker.
-    // Declining before the hash keeps the base64 out of it and out of a request body that can
-    // reach megabytes, both synchronous on the UI thread.
+    // /chat/count_tokens rejects images; hashing or sending their base64 can block the UI thread.
     if (messagesContainImage(runMessages)) return;
 
-    // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has no
-    // audio branch, so counting would price a text-only prompt. Decline as images do.
+    // audio is omitted from toOpenAIMessages, so counting would price only its text.
     if (findLatestUserAudioBase64(runMessages)) return;
 
-    // Same for video: the request replays the clip as video_base64 and llama-server expands it
-    // into frames, while toOpenAIMessages has no video branch, so the bar would show room the
-    // window does not have. Declining also keeps up to 85 MB of base64 out of
-    // branchSignature's JSON.stringify, the same main-thread cost as the image bail.
+    // video counting misses server-side frames; declining also avoids hashing up to 85 MB.
     if (findLatestUserVideoBase64(runMessages)) return;
+
+    if (
+      !store.loadedIsGguf &&
+      runMessages.some((message) => message.metadata?.custom?.contextTruncation)
+    ) return;
 
     if (fromLiveBranch) {
       countedBranch = branchSignature(runMessages);
     } else {
       countedLastId = runMessages.at(-1)?.id ?? "";
     }
+    const branchChanged = (): boolean => {
+      const current = readOwnBranch();
+      if (current == null) return false;
+      return countedBranch != null
+        ? branchSignature(current) !== countedBranch
+        : current.length > 0 && (current.at(-1)?.id ?? "") !== countedLastId;
+    };
+    inputsChanged = () => stale() || branchChanged();
 
-    // A completion finishing mid-count writes exact usage for a turn this count predates, so drop
-    // the recount rather than roll the bar backwards.
-    const usageBeforeCount = useChatRuntimeStore.getState().contextUsage;
+    const canPublish = (): boolean => {
+      const currentStore = useChatRuntimeStore.getState();
+      return (
+        !stale() &&
+        // Compared even when null: a count started with no thread must not land on one since opened.
+        currentStore.activeThreadId === capturedThreadId &&
+        currentStore.contextUsage === usageBeforeCount &&
+        !Object.values(currentStore.runningByThreadId ?? {}).some(Boolean)
+      );
+    };
 
-    // undefined, not null: a chat with no persisted thread has no project to resolve from.
     const payloadThreadId = threadId ?? undefined;
     const countHistory = await buildLocalTokenCountHistory(
       runMessages,
       payloadThreadId,
     );
     if (stale()) return;
-    const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
-    if (stale()) return;
+    const countExtras = await buildLocalTokenCountExtras(
+      payloadThreadId,
+      countHistory.messages,
+    );
+    if (!canPublish()) return;
 
-    // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
-    // injects schemas the client cannot see.
+    const payload = {
+      model: capturedCheckpoint,
+      ...countHistory,
+      ...buildLocalTokenCountReasoning(),
+      ...countExtras,
+    };
+    const serializedPayload = JSON.stringify(payload);
+    const countKey = JSON.stringify([
+      capturedThreadId,
+      countedBranch ?? branchSignature(runMessages),
+      store.activeLoadId,
+      store.activeGgufVariant,
+      store.loadedContextLength,
+      store.loadedChatTemplateOverride,
+      countExtras.mcp_enabled ? capturedMcpEpoch : null,
+    ]);
+    if (completedCount?.key === countKey && completedCount.payload === serializedPayload) {
+      if (branchChanged()) return;
+      if (usageBeforeCount == null || usageBeforeCount.estimated) {
+        useChatRuntimeStore.getState().setContextUsage(completedCount.usage);
+      }
+      published = true;
+      return;
+    }
+
     const { input_tokens: inputTokens, model: countedModel } =
-      await countChatInputTokens({
-        model: capturedCheckpoint,
-        ...countHistory,
-        ...buildLocalTokenCountReasoning(),
-        ...countExtras,
-      });
+      await countChatInputTokens(payload, serializedPayload);
 
-    if (stale()) return;
     // The response type is a compile-time assertion only: anything else answering 200 would put
     // undefined on the bar and throw from toLocaleString.
-    if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) return;
+    if (
+      typeof inputTokens !== "number" ||
+      !Number.isFinite(inputTokens) ||
+      inputTokens < 0
+    ) {
+      replayQueued = false;
+      return;
+    }
     // The endpoint counts with whatever is resident, never the model asked for: a load from
     // another tab returns another tokenizer's total, which the checkpoint guards cannot see.
     if (countedModel != null && countedModel !== capturedCheckpoint) {
+      replayQueued = false;
       return;
     }
-    // Compared even when null: a count started with no thread must not land on one since opened.
-    if (useChatRuntimeStore.getState().activeThreadId !== capturedThreadId) {
-      return;
-    }
-    if (useChatRuntimeStore.getState().contextUsage !== usageBeforeCount) {
-      return;
-    }
-    // A run writes its own usage when it lands, so declining while one is live never loses a
-    // number. A first turn has no thread id yet and files under "__default".
-    if (useChatRuntimeStore.getState().runningByThreadId[capturedThreadId ?? "__default"]) {
-      return;
-    }
-    // The usage snapshot only sees a completion that WROTE usage, so a run stopped before
-    // emitting any leaves it equal and the branch is the only witness. An empty current branch
-    // is a mismatch: deleting the sole exchange mid-count would leave the old total.
-    if (countedBranch != null) {
-      const current = readActiveBranch?.();
-      if (current != null && branchSignature(current) !== countedBranch) {
-        return;
-      }
-    } else if (countedLastId != null) {
-      // The count priced storage because the runtime had not mounted this thread yet; if it has
-      // since, the last id is the one witness the two shapes share. readOwnBranch, not
-      // readActiveBranch: an empty New Chat still sees the conversation it is leaving.
-      const current = readOwnBranch();
-      if (
-        current != null &&
-        current.length > 0 &&
-        (current.at(-1)?.id ?? "") !== countedLastId
-      ) {
-        return;
-      }
-    }
-
-    useChatRuntimeStore.getState().setContextUsage({
+    const usage = {
       promptTokens: inputTokens,
       completionTokens: 0,
       totalTokens: inputTokens,
       cachedTokens: 0,
       cacheWriteTokens: 0,
-    });
+      reasoningKey: contextUsageReasoningKey(JSON.parse(capturedReasoning)),
+    };
+    if (promptChanged() || branchChanged()) return;
+    completedCount = { key: countKey, payload: serializedPayload, usage };
+    if (!canPublish()) return;
+
+    useChatRuntimeStore.getState().setContextUsage(usage);
     published = true;
   } catch {
+    replayQueued = false;
     // Background recount should not interrupt chat; saved usage stays visible.
   } finally {
     countsInFlight.delete(capturedThreadId);
     const queued = retryAfterInFlight.get(capturedThreadId);
     const hadQueued = retryAfterInFlight.delete(capturedThreadId);
-    if (hadQueued && !published) void refreshContextUsage(queued);
+    const current = useChatRuntimeStore.getState();
+    const newerExactUsage =
+      current.contextUsage !== usageBeforeCount &&
+      current.contextUsage != null &&
+      !current.contextUsage.estimated;
+    const settingsChanged =
+      current.activeThreadId === capturedThreadId &&
+      current.params.checkpoint === capturedCheckpoint &&
+      (current.queuedSettingsEpoch !== capturedSettingsEpoch ||
+        (store.mcpEnabledForChat && getMcpServerMutationEpoch() !== capturedMcpEpoch));
+    if (
+      !published &&
+      !newerExactUsage &&
+      (settingsChanged ||
+        (hadQueued && (replayQueued || inputsChanged() || queued?.invalidate)))
+    ) {
+      void refreshContextUsage(
+        hadQueued ? queued : { ...options, invalidate: false },
+      );
+    }
   }
 }

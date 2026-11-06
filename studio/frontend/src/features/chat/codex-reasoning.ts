@@ -57,13 +57,14 @@ export function addCodexReasoning(
   };
 }
 
-export function readCodexReasoning(
+function readReasoningLedger(
   metadata: unknown,
+  key: string,
 ): CodexReasoningLedger | undefined {
   if (!metadata || typeof metadata !== "object") return undefined;
   const custom = (metadata as { custom?: unknown }).custom;
   if (!custom || typeof custom !== "object") return undefined;
-  const value = (custom as Record<string, unknown>).openaiCodexReasoning;
+  const value = (custom as Record<string, unknown>)[key];
   if (Array.isArray(value)) {
     return value.length > 0 ? { byToolCall: {}, final: value } : undefined;
   }
@@ -84,6 +85,18 @@ export function readCodexReasoning(
     : undefined;
 }
 
+export function readCodexReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiCodexReasoning");
+}
+
+export function readOpenAIResponsesReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiResponsesReasoning");
+}
+
 export function codexReasoningForToolCalls(
   ledger: CodexReasoningLedger | undefined,
   toolCallIds: string[],
@@ -94,4 +107,38 @@ export function codexReasoningForToolCalls(
     if (items) return items;
   }
   return undefined;
+}
+
+/** Which replay exchange each tool-call part lands in, by the serializer's rule: a changed round
+ *  id starts a new exchange; a local pair with no round id is its own. The MCP image bound groups
+ *  by this so a later round's picture cannot evict an earlier round's. */
+export function localToolExchangeIndexes<TPart>(
+  parts: readonly TPart[],
+  roundIdOf: (part: TPart) => number | null,
+  flushesPair: (part: TPart) => boolean,
+): number[] {
+  const indexes: number[] = [];
+  let exchange = 0;
+  let pending = 0;
+  let pendingRoundId: number | null = null;
+  for (const part of parts) {
+    const roundId = roundIdOf(part);
+    if (pending > 0 && startsNewCodexToolRound(pendingRoundId, roundId)) {
+      exchange += 1;
+      pending = 0;
+    }
+    if (roundId !== null) pendingRoundId = roundId;
+    const flushLocalPair = roundId === null && flushesPair(part);
+    if (flushLocalPair && pending > 0) {
+      exchange += 1;
+      pending = 0;
+    }
+    indexes.push(exchange);
+    pending += 1;
+    if (flushLocalPair) {
+      exchange += 1;
+      pending = 0;
+    }
+  }
+  return indexes;
 }

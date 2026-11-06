@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import weakref
+
 import importlib.util
 import os
 import types
@@ -12,7 +14,6 @@ from pathlib import Path
 import pytest
 
 
-# "*" is a reserved character in a Windows filename, so only POSIX can hold one.
 _STAR_IN_NAME_IS_LEGAL = os.name != "nt"
 
 
@@ -63,6 +64,22 @@ def _hub_doubles(calls, seen):
             calls.append("repo_info")
             return seen.get("repo_info_result")
 
+        def repo_exists(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            calls.append("repo_exists")
+            return seen.get("repo_exists", True)
+
+        def file_exists(
+            self,
+            repo_id,
+            filename,
+            repo_type = None,
+        ):
+            return seen.get("existing_files", {}).get(filename, False)
+
         def upload_file(
             self,
             path_or_fileobj,
@@ -81,9 +98,11 @@ def _hub_doubles(calls, seen):
             repo_type,
             allow_patterns = None,
             ignore_patterns = None,
+            delete_patterns = None,
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
+            seen["upload_repo"] = repo_id
             root = Path(folder_path)
             paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
@@ -93,6 +112,7 @@ def _hub_doubles(calls, seen):
             for pattern in ignore_patterns or ():
                 paths = [p for p in paths if not fnmatchcase(p, pattern)]
             seen["uploaded"] = sorted(paths)
+            seen["delete_patterns"] = delete_patterns
 
     class _ModelCard:
         def __init__(self, content):
@@ -106,6 +126,8 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("model_card")
             seen["card_repo"] = repo_id
+            if seen.get("card_error"):
+                raise seen["card_error"]
 
     return _HfApi, _ModelCard
 
@@ -582,6 +604,7 @@ def test_gguf_hub_export_reports_the_local_path_when_the_upload_fails(tmp_path, 
         repo_type,
         allow_patterns = None,
         ignore_patterns = None,
+        delete_patterns = None,
     ):
         raise RuntimeError("504 Gateway Timeout")
 
@@ -725,7 +748,7 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            # write_bytes, not write_text: text mode turns "\n" into "\r\n" on Windows.
+            # write_bytes: text mode turns "\n" into "\r\n" on Windows
             (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
 
         def push_to_hub_gguf(self, *args, **kwargs):
@@ -770,7 +793,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             quantization_method,
             imatrix_file = None,
             token = None,
-            gguf_shard_size = None,
         ):
             calls.append("save_pretrained_gguf")
 
@@ -782,7 +804,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
             token = None,
             private = None,
             imatrix_file = None,
-            gguf_shard_size = None,
         ):
             calls.append("push_to_hub_gguf")
             seen["push"] = {
@@ -791,7 +812,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
                 "token": token,
                 "private": private,
                 "imatrix_file": imatrix_file,
-                "gguf_shard_size": gguf_shard_size,
             }
 
     hf_api, model_card = _hub_doubles(calls, seen)
@@ -808,7 +828,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
         hf_token = "token",
         private = True,
         imatrix_file = True,
-        gguf_shard_size = "512MB",
     )
 
     assert success is True, message
@@ -822,7 +841,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
         "token": "token",
         "private": True,
         "imatrix_file": True,
-        "gguf_shard_size": "512MB",
     }
 
 
@@ -948,3 +966,98 @@ def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, 
     assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
     assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
     assert list((Path(output_path) / "Modelfile").iterdir()) == []
+
+
+def _real_reap_module(monkeypatch):
+    # The export imports core.export.reap, which this harness's stub package lacks.
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "core.export.reap", module)
+
+
+@pytest.mark.parametrize("pruned", [True, False])
+def test_gguf_hub_export_carries_a_current_reap_report_only(tmp_path, monkeypatch, pruned):
+    _install_export_backend_stubs(monkeypatch)
+    _real_reap_module(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_reap", "core/export/export.py", monkeypatch
+    )
+    calls: list[str] = []
+    seen: dict = {}
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    # A reused folder: an older GGUF from another load, with its own report, stays as it is.
+    (export_dir / "older.Q8_0.gguf").write_bytes(b"GGUF")
+    (export_dir / "older.Q8_0.reap_report.json").write_text('{"kept_experts": {"older": [3]}}')
+    # And a report an earlier pruned export left for the file this export overwrites.
+    (export_dir / "model.Q4_K_M.reap_report.json").write_text('{"kept_experts": {"old": [1]}}')
+
+    class Model:
+        _unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True, exist_ok = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    _patch_hub(monkeypatch, export_module, calls, seen)
+    backend = _export_backend(export_module, Model)
+    backend._reap_key = (0.5, 512, None) if pruned else None
+    backend._reap_model = weakref.ref(backend.current_model)  # pruned this load
+    success, message, output_path = _push_gguf(backend, str(export_dir))
+    assert success is True, message
+    report = Path(output_path, "model.Q4_K_M.reap_report.json")
+    # Synced before the upload: only this export's GGUF and its own current report go up.
+    assert seen["uploaded"] == (
+        ["model.Q4_K_M.gguf", "model.Q4_K_M.reap_report.json"] if pruned else ["model.Q4_K_M.gguf"]
+    )
+    assert report.is_file() is pruned
+    if pruned:
+        data = report.read_text()
+        assert '"old"' not in data and '"files": [\n  "model.Q4_K_M.gguf"\n ]' in data
+    # The other file's report is never touched, and a stale remote one for this file is deleted.
+    assert Path(output_path, "older.Q8_0.reap_report.json").is_file()
+    assert seen["delete_patterns"] == ["model.Q4_K_M.reap_report.json"]
+
+
+def test_a_packaged_eagle3_drafter_gguf_gets_no_reap_report(tmp_path, monkeypatch):
+    # The drafter is converted on its own, not pruned: only the model's GGUFs carry a report.
+    _install_export_backend_stubs(monkeypatch)
+    _real_reap_module(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_reap_drafter", "core/export/export.py", monkeypatch
+    )
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        _unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True, exist_ok = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    _patch_hub(monkeypatch, export_module, calls, seen)
+    backend = _export_backend(export_module, Model)
+    backend._reap_key = (0.5, 512, None)
+    backend._reap_model = weakref.ref(backend.current_model)
+
+    def package(merged_dir, gguf_dir, ggufs):
+        drafter = Path(gguf_dir) / "drafter-eagle3.F16.gguf"
+        drafter.write_bytes(b"GGUF")
+        (Path(gguf_dir) / "drafter.json").write_text("{}")
+        return [str(drafter), str(Path(gguf_dir) / "drafter.json")]
+
+    backend._package_drafter_gguf = package
+    success, message, output_path = _push_gguf(backend, str(tmp_path / "export"))
+    assert success is True, message
+    assert Path(output_path, "model.Q4_K_M.reap_report.json").is_file()
+    assert not Path(output_path, "drafter-eagle3.F16.reap_report.json").exists()
+    assert "drafter-eagle3.F16.gguf" in seen["uploaded"]
+    assert "drafter-eagle3.F16.reap_report.json" not in seen["uploaded"]

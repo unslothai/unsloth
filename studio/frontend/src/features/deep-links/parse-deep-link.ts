@@ -25,6 +25,15 @@ function isValidRepoSegment(segment: string): boolean {
   );
 }
 
+export function isValidRepoId(model: string): boolean {
+  const segments = model.split("/");
+  return (
+    !model.endsWith(".git") &&
+    segments.length === 2 &&
+    segments.every(isValidRepoSegment)
+  );
+}
+
 function isValidGgufFile(file: string): boolean {
   if (
     file.length === 0 ||
@@ -85,12 +94,7 @@ export function parseUnslothDeepLink(
   }
 
   const model = url.searchParams.get("model") ?? "";
-  const segments = model.split("/");
-  if (
-    model.endsWith(".git") ||
-    segments.length !== 2 ||
-    !segments.every(isValidRepoSegment)
-  ) {
+  if (!isValidRepoId(model)) {
     return null;
   }
 

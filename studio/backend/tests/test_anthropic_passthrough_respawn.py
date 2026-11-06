@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Restart survival for the Anthropic /v1/messages passthrough.
-
-A crashed llama-server relaunches on a NEW ephemeral port. Before the retry the
-passthrough kept posting to the dead port, so a Claude Code session stayed broken
-until the next explicit load. These cover the respawn-and-retry on both the
-streaming and non-streaming passthroughs.
-"""
+"""A crashed llama-server relaunches on a new port, so the passthrough must respawn and retry."""
 
 from __future__ import annotations
 
@@ -98,8 +92,7 @@ def _install_stream_transport(monkeypatch, calls):
         if str(request.url).startswith(_DEAD):
             raise httpx.ConnectError("connection refused")
         content = (
-            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\n"
-            "data: [DONE]\n\n"
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\ndata: [DONE]\n\n"
         )
         return httpx.Response(
             200,
@@ -136,7 +129,7 @@ async def _run_stream(backend):
     return "".join(chunks)
 
 
-async def _run_non_streaming(backend):
+async def _run_non_streaming(backend, **kwargs):
     return await _anthropic_passthrough_non_streaming(
         backend,
         [{"role": "user", "content": "hi"}],
@@ -147,10 +140,8 @@ async def _run_non_streaming(backend):
         16,
         "msg_1",
         "test-model",
+        **kwargs,
     )
-
-
-# ── Helper ────────────────────────────────────────────────────
 
 
 def test_retry_url_rebuilds_from_the_respawned_base_url():
@@ -188,9 +179,6 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     assert url is None
 
 
-# ── Non-streaming ─────────────────────────────────────────────
-
-
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
     client = _FakeNonStreamingClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
@@ -211,7 +199,7 @@ def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
     with pytest.raises(httpx.ConnectError):
         asyncio.run(_run_non_streaming(backend))
 
-    assert client.urls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
@@ -225,7 +213,82 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
     assert backend.respawn_calls == 0
 
 
-# ── Streaming ─────────────────────────────────────────────────
+def test_non_streaming_cancel_after_respawn_retry_is_not_a_transport_error(monkeypatch):
+    # Keep the retry-start deadline independent of the settings database lookup.
+    monkeypatch.setattr(
+        inf_mod, "_llama_non_streaming_generation_timeout", lambda: httpx.Timeout(600)
+    )
+
+    class CancelAfterRespawnClient:
+        def __init__(self):
+            self.urls = []
+            self.retry_started = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def post(self, url, **_kwargs):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                raise httpx.ConnectError("connection refused")
+            self.retry_started.set()
+            await self.closed.wait()
+            raise httpx.ReadError("client closed")
+
+        async def aclose(self):
+            self.closed.set()
+
+    async def _run():
+        client = CancelAfterRespawnClient()
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+        backend = _Backend()
+        cancel_event = threading.Event()
+        task = asyncio.create_task(
+            _run_non_streaming(
+                backend,
+                request = _Request(),
+                cancel_event = cancel_event,
+            )
+        )
+        await asyncio.wait_for(client.retry_started.wait(), 0.2)
+        cancel_event.set()
+
+        with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+            await asyncio.wait_for(task, 0.5)
+
+        assert client.urls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
+        assert client.closed.is_set()
+
+    asyncio.run(_run())
+
+
+def test_non_streaming_cancel_wins_response_race(monkeypatch):
+    async def _run():
+        cancel_event = threading.Event()
+
+        class RacingClient(_FakeNonStreamingClient):
+            async def post(self, url, **_kwargs):
+                self.urls.append(url)
+                cancel_event.set()
+                return httpx.Response(
+                    200,
+                    json = {
+                        "choices": [{"message": {"content": "too late"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 2},
+                    },
+                )
+
+        client = RacingClient()
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+            await _run_non_streaming(
+                _Backend(),
+                request = _Request(),
+                cancel_event = cancel_event,
+            )
+
+        assert client.closed
+
+    asyncio.run(_run())
 
 
 def test_streaming_retries_against_the_new_port(monkeypatch):
@@ -237,7 +300,6 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
 
     assert backend.respawn_calls == 1
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
-    # The retried stream really produced the turn, not just a clean-looking stop.
     assert "event: message_start" in blob
     assert "event: message_stop" in blob
     assert "hi" in blob
@@ -250,7 +312,7 @@ def test_streaming_emits_an_error_event_when_the_server_stays_dead(monkeypatch):
 
     blob = asyncio.run(_run_stream(backend))
 
-    assert calls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert calls == [f"{_DEAD}/v1/chat/completions"]
     assert "event: error" in blob
 
 

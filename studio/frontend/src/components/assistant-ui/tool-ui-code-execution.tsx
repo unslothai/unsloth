@@ -3,19 +3,17 @@
 
 "use client";
 
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-
+import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
+import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentType, memo, useMemo } from "react";
 import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
@@ -23,21 +21,13 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
+import { ScrollPane } from "./scroll-pane";
+import { CopyBtn } from "./tool-code-cell";
 
 /**
- * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
- * `code_execution_20250825` tool. The backend collapses Anthropic's two
- * sub-tools into `tool_name: "code_execution"` with `arguments.kind`:
- *
- *   kind=bash:        { command: "<shell command>" }
- *   kind=text_editor: { command: "view"|"create"|"str_replace", path, ... }
- *
- * The `result` payload is preformatted text:
- *   - bash: stdout, then "--- stderr ---" block + return_code if non-zero
- *   - text_editor view:        file contents verbatim
- *   - text_editor create:      "Created <path>" / "Updated <path>"
- *   - text_editor str_replace: unified-diff `lines` joined with "\n"
- *   - error:                   "Error: <error_code>"
+ * Backend collapses Anthropic's code_execution sub-tools into `arguments.kind`: bash
+ * `{ command }` or text_editor `{ command: view|create|str_replace, path, ... }`; `result` is
+ * preformatted text.
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
@@ -48,7 +38,6 @@ interface CodeExecutionArgs {
 
 const MAX_COMMAND_LABEL = 80;
 const MAX_RESULT_DISPLAY = 10_000;
-const COPY_RESET_MS = 2000;
 
 function truncateCommandLabel(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -66,44 +55,6 @@ function truncateResult(text: string): string {
     : `${text.slice(0, MAX_RESULT_DISPLAY)}\n... (truncated)`;
 }
 
-function CopyBtn({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-    };
-  }, []);
-
-  const copy = useCallback(async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-      timer.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
-    }
-  }, [text]);
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
-    >
-      {copied ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
-      ) : (
-        <CopyIcon className="size-3" />
-      )}
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
 export function CodeExecutionResultOutput({ result }: { result: unknown }) {
   const resultText = useMemo(
     () => (result == null ? "" : stringifyToolResult(result)),
@@ -122,9 +73,12 @@ export function CodeExecutionResultOutput({ result }: { result: unknown }) {
       <div className="flex justify-end">
         <CopyBtn text={resultText} />
       </div>
-      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+      <ScrollPane
+        className="mt-1 rounded-lg bg-muted/50 p-2"
+        scrollerClassName="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs"
+      >
         {displayedResult}
-      </pre>
+      </ScrollPane>
     </div>
   );
 }
@@ -147,9 +101,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
 
   let runningLabel: string;
   let completedLabel: string;
-  let Icon = TerminalIcon;
+  let Icon: ComponentType<{ className?: string }> = TerminalIcon;
   if (kind === "text_editor") {
-    Icon = FileTextIcon;
+    Icon = FileGlyph;
     if (command === "view") {
       runningLabel = path ? `Viewing ${path}…` : "Viewing file…";
       completedLabel = path ? `Viewed ${path}` : "Viewed file";
@@ -168,18 +122,11 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     completedLabel = commandLabel ? `Ran \`${commandLabel}\`` : "Ran command";
   }
 
-  // Collapse the card once the model resumes streaming prose after the tool
-  // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
+  // Collapse once prose resumes after the call (like WebSearchToolUI).
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 

@@ -69,9 +69,7 @@ Write-Output $gitNeeded
 def _needs_git(env: dict[str, str]) -> bool:
     merged = {k: v for k, v in os.environ.items() if not k.startswith(("UNSLOTH_", "STUDIO_"))}
     merged.update(env)
-    # run_pwsh, not subprocess.run: every case in this file goes through here, so a pwsh that died at startup would come
-    # back as $gitNeeded computing the wrong answer for one environment.
-    # See tests/_shared/unsloth_pwsh_runner.py.
+    # run_pwsh, not subprocess.run: a pwsh dead at startup would look like a wrong answer.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", _script()],
         check = True,
@@ -89,18 +87,15 @@ pwsh_only = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShel
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
-        # The consumer install: prebuilt wheels and a prebuilt llama.cpp, so no git.
         ({}, False),
         ({"STUDIO_LOCAL_INSTALL": "1"}, True),
         ({"UNSLOTH_LLAMA_FORCE_COMPILE": "1"}, True),
         ({"UNSLOTH_LLAMA_PR": "1234"}, True),
-        # PR_FORCE only forces a build for a positive integer.
         ({"UNSLOTH_LLAMA_PR_FORCE": "0"}, False),
         ({"UNSLOTH_LLAMA_PR_FORCE": "not-a-number"}, False),
         ({"UNSLOTH_LLAMA_PR_FORCE": "1234"}, True),
-        # "master" is a branch with no release, so Phase 4 always builds it from source.
+        # "master" has no release, so it is always built from source.
         ({"UNSLOTH_LLAMA_TAG": "master"}, True),
-        # A release tag resolves to a prebuilt bundle.
         ({"UNSLOTH_LLAMA_TAG": "latest"}, False),
         ({"UNSLOTH_LLAMA_TAG": "b8635"}, False),
     ],
@@ -116,16 +111,13 @@ def test_a_built_local_llama_dir_drops_the_source_build_git_requirement(tmp_path
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         "UNSLOTH_LLAMA_FORCE_COMPILE": "1",
     }
-    # Reusing an existing binary skips both the prebuilt download and the source build.
     assert _needs_git(env) is False
 
 
 @pwsh_only
 @pytest.mark.parametrize("trigger", ["UNSLOTH_LLAMA_FORCE_COMPILE", "UNSLOTH_LLAMA_PR"])
 def test_an_unbuilt_local_llama_dir_still_requires_git(tmp_path, trigger):
-    # Nothing built at the canonical install location falls through to the normal install, so the source build still
-    # runs and still needs git. Suppressing the requirement here let a no-git host silently degrade to a prebuilt
-    # instead.
+    # No binary at the canonical location still runs the source build, so git is still needed.
     env = {
         "UNSLOTH_LOCAL_LLAMA_CPP_DIR": str(tmp_path),
         trigger: "1",

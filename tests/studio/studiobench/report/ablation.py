@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rendering the ablation batch, in an order that cannot be read out of sequence.
-
-CALIBRATION IS PRINTED FIRST AND CAN END THE SECTION. If the batch is not quotable, the only
-thing printed is why. There is no table with a warning above it, because the table is what gets
-screenshotted into a thread and the warning is what gets left behind.
-
-ARMS ARE NEVER QUOTED ALONE. Only adjacent differences on a route appear, which is enforced
-upstream by `LadderRoute.quote_arm` raising; here it shows up as the absence of a per-arm cost
-column. What IS printed per arm is its VERDICT, because a voided arm and an arm that did not fire
-are findings about the experiment that a reader needs even though their numbers are not usable.
-
-THE TWO ROUTES ARE PRINTED SEPARATELY AND THEN COMPARED. Nothing anywhere averages them. Where
-they disagree, the disagreement is the interaction term and gets its own block with its own
-sentence about what it means.
-"""
+"""Calibration prints first and can end the section; arms are never quoted alone, only differences."""
 
 from __future__ import annotations
 
@@ -154,13 +140,7 @@ def render_batch(result: BatchResult, *, include_decision_table: bool = True) ->
 
 
 def render_fix_implications(result: BatchResult, *, top_n: int = 3) -> str:
-    """Which fix the measured steps point at, ranked by the size of the step.
-
-    This is the decision table applied to the numbers rather than printed as a table: the largest
-    adjacent difference names the layer the cost lives in, and the mechanism's declared fix is
-    printed next to it. A step that is only a bound is labelled as such and cannot be ranked
-    above a point estimate of the same size.
-    """
+    """Steps ranked by size; a bound-only step cannot outrank a point estimate of the same size."""
 
     by_mechanism: dict[str, list[tuple[str, float, bool]]] = {}
     for route in result.routes:
@@ -191,8 +171,7 @@ def render_fix_implications(result: BatchResult, *, top_n: int = 3) -> str:
         bound_only = any(bound for _, _, bound in measurements)
         prefix = "<= " if bound_only else ""
         if len(values) > 1 and max(values) - min(values) > 1e-9:
-            # Printing only the largest would let a reader take the most flattering route as the
-            # answer. The spread IS the interaction term and it belongs next to the number.
+            # Print the whole spread, not just the largest: the spread is the interaction term.
             spread = ", ".join(
                 f"{route_id} {value:.3f}" for route_id, value, _ in sorted(measurements)
             )

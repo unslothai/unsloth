@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A reply that never finished is a FAILED cell, not a completed one carrying a note.
-
-`_drain_stream` reports rather than raises -- "wait for the run to end, or say plainly that it did
-not" -- and the value it reported was written to `row["stream"]` and read by nothing. No gate, no
-report column, no `--assert-liveness` check, no exit code. So the state this tool exists to catch,
-the app still generating three times past its own cadence AND 120 s beyond that with the whole
-film already run, came back as `completed: true`, `ok` in the summary and exit 0, with the cell's
-actions and its frame windows scored and paired into the A/B ratio against an arm that DID finish.
-
-That is the crash-beats-limp rule inverted: a build that cannot finish reads as a build that had
-nothing to say. Every other "it would not do what it claimed" in this harness already fails --
-`stop_generation` that never stops sets `expect_ok = False`, an action that did not run is a
-liveness problem -- and this was the one that did not.
-
-Driven through the shipped `CellRunner.run` and `_run_inner`, with the seams that leave this
-process stubbed where they cross it. `_drain_stream` itself is the REAL one, over a real loop on a
-fake clock, so what it returns is observed rather than asserted from a table.
-"""
+"""A reply that never finished streaming must fail the cell, not complete it with a note."""
 
 from __future__ import annotations
 
@@ -65,7 +48,6 @@ class _Page:
         self.stops_running_after_ms = stops_running_after_ms
         self._send = types.SimpleNamespace(click = lambda: None)
 
-    # -- playwright surface -------------------------------------------------
     def goto(self, *a, **k) -> None:
         pass
 
@@ -95,12 +77,7 @@ class _Page:
 
 
 class _Pacer:
-    """A pacer that serves, in full, whatever it was asked to load.
-
-    It synthesises one completed `StreamStats` per `load`, which is what a healthy cell produces:
-    the planned-stream check in `_run_inner` reads those, so a stub that recorded nothing would
-    fail every cell here for a reason this file is not about.
-    """
+    """A stub pacer that completes every load in full; the planned-stream check reads its StreamStats."""
 
     def __init__(self, expected_ms: float) -> None:
         self.expected_ms = expected_ms
@@ -138,9 +115,7 @@ class _Pacer:
         return list(self.streams)
 
 
-#: (action name, timing key, value). The three actions `scoring.from_payload.ACTION_SOURCES` reads,
-#: so a cell that completes carries enough weight to be scored rather than failing the coverage
-#: floor for an unrelated reason.
+# The three actions scoring.from_payload.ACTION_SOURCES reads, so cells pass the coverage floor.
 SCENE_ACTIONS = (
     ("keystroke", "p95_ms", 40.0),
     ("message_menu", "open_ms", 90.0),
@@ -149,11 +124,7 @@ SCENE_ACTIONS = (
 
 
 class _SceneRunner:
-    """The film, reduced to the rows a film writes: three timed actions and one frame window.
-
-    It writes them through the recorder the shipped `SceneRunner` is handed, so the scoring path
-    below is the real one reading real rows rather than a table this test asserts against itself.
-    """
+    """A stub scene runner writing three timed actions and one frame window to the real recorder."""
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
@@ -197,14 +168,7 @@ class _SceneRunner:
 
 
 def _seed(plan):
-    """What `Seeder.seed` hands back. Zero messages, so the thread wait is the empty-page one.
-
-    The two markers are `None` for the same reason `messages` is 0: the readiness gate takes the
-    empty-page path here, and a marker it never asserts on must not be invented. They are PRESENT
-    rather than absent because `SeededThread` declares them and `_wait_for_thread` reads
-    `last_marker` unconditionally; a stub without them fails on the attribute instead of on the
-    behaviour these tests are about.
-    """
+    """Zero messages, and present-but-None markers: _wait_for_thread reads last_marker unconditionally."""
 
     return types.SimpleNamespace(
         thread_id = "t1",
@@ -279,8 +243,7 @@ def cell_runner(monkeypatch, tmp_path):
 
 
 def _cell():
-    # NOT the 10K rung: that one additionally runs the seeded-vs-streamed equivalence check, which is a
-    # different subject.
+    # Not 10K: that rung also runs the seeded-vs-streamed equivalence check.
     return Cell(cell_id = "r1K.A0.rep0", rung = "1K", rung_tokens = 1_000, tier = "quick")
 
 
@@ -304,22 +267,16 @@ def _rows(state):
     return [json.loads(line) for line in text.splitlines() if line]
 
 
-# ── what the real drain returns ──────────────────────────────────────────────────────────────
-
-
 def test_the_drain_reports_rather_than_raises_when_the_reply_never_ends(cell_runner):
     """The premise, taken from the shipped `_drain_stream` rather than asserted about it."""
 
-    cell_runner["stops_running_after_ms"] = None  # never stops
+    cell_runner["stops_running_after_ms"] = None
     runner = cell_runner["build"]()
 
     drained = runner._drain_stream(runner.session.ctx.page, 1000.0)
 
     assert drained["finished"] is False
     assert "three times past its own cadence" in drained["reason"]
-
-
-# ── what the cell does with it ───────────────────────────────────────────────────────────────
 
 
 def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
@@ -331,7 +288,6 @@ def test_a_cell_whose_reply_never_finished_does_not_complete(cell_runner):
     assert row["completed"] is False
     assert row["failure"]["kind"] == "RuntimeError"
     assert "never finished" in row["failure"]["message"]
-    # The evidence ships in the same row as the failure: how long was waited, and how much the pacer actually delivered.
     assert row["stream"]["finished"] is False
     assert row["pacer"]["last"]["chunks"] == 150
     assert row["pacer"]["streams"][0]["tag"] == "r1K.A0.rep0"
@@ -354,13 +310,10 @@ def test_the_rung_scores_incomplete_and_the_run_cannot_exit_zero(cell_runner):
     assert completion_exit_code([row]) == 1
 
 
-# ── the controls ─────────────────────────────────────────────────────────────────────────────
-
-
 def test_a_cell_whose_reply_finished_still_completes(cell_runner):
     """The control that matters: the ordinary cell is untouched, and its readings are scored."""
 
-    cell_runner["stops_running_after_ms"] = 0.0  # already idle when the drain opens
+    cell_runner["stops_running_after_ms"] = 0.0
     runner = cell_runner["build"]()
 
     row = runner.run(_cell(), _plan())
@@ -376,7 +329,7 @@ def test_a_reply_that_ends_late_but_ends_still_completes(cell_runner):
     the cell must KEEP, not a failure. Only a reply that never ends at all is one."""
 
     cell_runner["expected_ms"] = 1000.0
-    cell_runner["stops_running_after_ms"] = 100_000.0  # 100 s, inside 3 x 1 s + 120 s
+    cell_runner["stops_running_after_ms"] = 100_000.0
     runner = cell_runner["build"]()
 
     row = runner.run(_cell(), _plan())

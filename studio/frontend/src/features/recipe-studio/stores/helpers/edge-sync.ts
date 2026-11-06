@@ -11,6 +11,7 @@ import type {
 } from "../../types";
 import { applyRecipeConnection } from "../../utils/graph";
 import { isCategoryConfig, isSubcategoryConfig } from "../../utils";
+import { isTextFormatValidatorTarget, isTextFormatValidator } from "../../utils/graph/relations";
 import { HANDLE_IDS } from "../../utils/handles";
 
 function findNodeIdByName(
@@ -238,6 +239,8 @@ export function syncEdgesForConfigPatch(
     "target_columns",
   );
   if (current.kind === "validator" && hasValidatorTargetsPatch) {
+    const validator = current;
+    const isTextFormat = isTextFormatValidator(validator);
     const nextTargets =
       ((patch as Partial<ValidatorConfig>).target_columns ?? [])
         .map((value) => value.trim())
@@ -248,23 +251,28 @@ export function syncEdgesForConfigPatch(
       }
       const otherId = edge.source === current.id ? edge.target : edge.source;
       const other = configs[otherId];
-      return !(
-        other &&
-        other.kind === "llm" &&
-        other.llm_type === "code"
-      );
+      if (!other) {
+        return true;
+      }
+      if (isTextFormat) {
+        return edge.source === current.id || !isTextFormatValidatorTarget(other);
+      }
+      return !(other.kind === "llm" && other.llm_type === "code");
     });
     const nextTargetName = nextTargets[0];
     if (nextTargetName) {
       const targetId = findNodeIdByName(configs, nextTargetName);
       const target = targetId ? configs[targetId] : null;
-      if (
-        targetId &&
-        target &&
-        target.kind === "llm" &&
-        target.llm_type === "code"
-      ) {
-        nextEdges = addValidatorSemanticEdge(nextEdges, targetId, current.id);
+      if (targetId && target) {
+        if (isTextFormat && isTextFormatValidatorTarget(target)) {
+          nextEdges = addValidatorSemanticEdge(nextEdges, targetId, current.id);
+        } else if (
+          !isTextFormat &&
+          target.kind === "llm" &&
+          target.llm_type === "code"
+        ) {
+          nextEdges = addValidatorSemanticEdge(nextEdges, targetId, current.id);
+        }
       }
     }
   }

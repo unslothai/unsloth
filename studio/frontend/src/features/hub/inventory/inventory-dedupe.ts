@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { DownloadKind } from "../download-manager/constants";
+import { downloadInventoryHintKind } from "../download-manager/download-manager-types";
 import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 
 function repoFormatKey(
@@ -28,10 +30,8 @@ function partialFormatFamily(
 }
 
 /**
- * The family an unclassified PARTIAL row can be PROVEN to belong to, or null. The backend writes a transport
- * only for snapshot partials and hardcodes none for a GGUF (`services/models/common.py`, `cache_inventory.py`).
- * The converse is WRONG: a snapshot partial with neither a cancel marker nor a manifest also reports none
- * (`utils/inventory_scan.py`), so an absent transport must not be read as "GGUF". Null for a complete row.
+ * Family an unclassified partial row can be proven to belong to, or null. An absent transport
+ * does not mean GGUF: snapshot partials without a marker report none too.
  */
 export function provenUnknownPartialFamily(
   row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport">,
@@ -58,7 +58,7 @@ function knownFamiliesMatchUnknownRow(
 ): boolean {
   if (!families?.size) return false;
   if (families.size > 1) return true;
-  // A complete row has no transport, so the test below would always say "gguf" and keep it beside a safetensors row; any known family shadows it instead.
+  // A complete row has no transport, so any known family shadows it.
   if (!row.partial) return true;
   return families.has(row.partialTransport ? "model" : "gguf");
 }
@@ -79,6 +79,62 @@ export function findCompleteHfCacheLocalRow(
         repoFormatKey(row.repoId, row.modelFormat) === key,
     ) ?? null
   );
+}
+
+export function activeDownloadRepoKeys(
+  jobs: readonly {
+    kind?: DownloadKind;
+    repoId: string;
+    variant?: string | null;
+    inventoryKind?: "model" | "gguf";
+    state: string;
+  }[],
+): Set<string> {
+  const keys = new Set<string>();
+  for (const job of jobs) {
+    if (job.state !== "running" && job.state !== "cancelling") continue;
+    const key = repoKey(job.repoId);
+    if (!key) continue;
+    keys.add(key);
+    const hint = job.kind
+      ? downloadInventoryHintKind(job.kind, job.variant ?? null, job.inventoryKind)
+      : null;
+    if (hint === "gguf" || hint === "model") {
+      keys.add(`${key}\0${hint}`);
+    } else {
+      keys.add(`${key}\0gguf`);
+      keys.add(`${key}\0model`);
+    }
+  }
+  return keys;
+}
+
+// Returns `rows` itself when nothing changes, so memoized consumers keep their identity.
+export function markDownloadingRows<
+  T extends {
+    partial?: boolean;
+    downloading?: boolean;
+    modelFormat?: CachedInventoryRow["modelFormat"];
+  },
+>(
+  rows: T[],
+  getRepoId: (row: T) => string | null | undefined,
+  downloadingRepoKeys: ReadonlySet<string>,
+): T[] {
+  let changed = false;
+  const next = rows.map((row) => {
+    const key = repoKey(getRepoId(row));
+    const family = row.modelFormat ? partialFormatFamily(row.modelFormat) : null;
+    const downloading = Boolean(
+      row.partial &&
+        key &&
+        downloadingRepoKeys.has(family ? `${key}\0${family}` : key),
+    );
+    if (Boolean(row.downloading) === downloading) return row;
+    changed = true;
+    return { ...row, downloading };
+  });
+  return changed ? next : rows;
 }
 
 export function partialSetFromRows<T extends { partial?: boolean }>(

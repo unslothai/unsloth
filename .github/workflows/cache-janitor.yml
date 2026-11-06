@@ -48,7 +48,7 @@ name: Cache janitor
 #   2. Superseded generations of families whose keys embed a build identity:
 #        codeql-overlay-base-database-*  keys embed commit SHA + run id; keep 1
 #        codeql-trap-*                   keys embed commit SHA; keep 1
-#        v0-rust-*                       Swatinem/rust-cache
+#        v0-rust-*                       Swatinem/rust-cache; keep 1
 #
 #      CodeQL default setup writes a new overlay-base database (420 MB python
 #      + 330 MB javascript) on EVERY push to main, keyed by commit SHA, and a
@@ -88,14 +88,23 @@ name: Cache janitor
 # can answer nothing -- unreachable refs, generations past keep, and entries on an
 # open PR that nothing has read in open_pr_idle_days.
 #
+# pip-v2-*, uv-* and v0-rust-* keep 1 regardless of `keep`. All three restore with
+# a prefix fallback, so a run whose exact key is gone still starts from the newest
+# generation and pays only for what changed; the second copy answers nothing but
+# an exact revert. It cost the most: on 2026-10-19 the repo sat at 49.1 of 50 GiB,
+# and second generations of those three families held 14.8 GiB of it (pip 8.8,
+# uv 3.1, rust 3.0), mostly because seven pip families key on the same
+# pyproject.toml + studio/backend/requirements/*.txt and every edit to those
+# files mints a new generation in all seven at once. `keep` now only governs
+# fe-dist, the one ranked family without a prefix fallback.
+#
 # Everything else is left alone. The hf-* / *-gguf-* model caches use exact keys,
 # so an entry that looks superseded is the only one its key will ever match and
 # deleting it costs a multi-GB re-download.
 
 on:
   schedule:
-    # Every two hours. The sweep is API-only and finishes in seconds; a daily
-    # cadence let CodeQL's per-push overlay bases pile up 10+ GB between runs.
+    # Every two hours, since a daily cadence let the CodeQL per-push overlay bases pile up 10+ GB.
     - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
@@ -105,7 +114,7 @@ on:
         options: [report, delete]
         default: report
       keep:
-        description: 'Generations kept per prefix. 2 so an in-flight run cannot lose the cache it just resolved, and so a reverted dependency bump still hits.'
+        description: 'Generations kept per fe-dist prefix (pip-v2, uv, rust and CodeQL always keep 1). 2 so a reverted frontend change still hits.'
         type: string
         default: '2'
       open_pr_idle_days:
@@ -113,7 +122,7 @@ on:
         type: string
         default: '3'
 
-# Two sweeps would race on the same ids and spend their DELETEs on 404s.
+# Two sweeps would race on the same ids.
 concurrency:
   group: cache-janitor-${{ github.repository }}
   cancel-in-progress: false
@@ -124,7 +133,13 @@ permissions:
 jobs:
   prune:
     name: Prune superseded caches
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that label's queue is what merge bursts fill, and on 2026-10-13/14 this
+    # sweep waited 0.6 to 3.5 hours for it (one run took 6h15m end to end) while CodeQL kept
+    # writing overlay bases, so the budget it guards ran out between sweeps. The arm label
+    # started jobs in a median 1.3 minutes over the same window. The sweep is API-only (gh,
+    # GNU date/awk/sed/sort), all present on the arm image. The account-wide job cap still
+    # applies; this only stops the sweep waiting behind hundreds of ubuntu-latest jobs.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       actions: write
@@ -134,8 +149,7 @@ jobs:
         continue-on-error: true  # housekeeping must never page anyone
         env:
           GH_TOKEN: ${{ github.token }}
-          # Opt-in string, not a boolean: GitHub coerces an absent input and
-          # `false` alike, so `inputs.mode == false` is true when unset.
+          # Opt-in string, not a boolean: an absent input compares equal to false.
           DELETE: ${{ (github.event_name == 'schedule' || inputs.mode == 'delete') && 'yes' || 'no' }}
           KEEP: ${{ inputs.keep || '2' }}
           OPEN_PR_IDLE_DAYS: ${{ inputs.open_pr_idle_days || '3' }}
@@ -146,14 +160,9 @@ jobs:
           live="$RUNNER_TEMP/live.tsv"
           grouped="$RUNNER_TEMP/grouped.tsv"
 
-          # Whitelist 1..99. Anything `[ n -le KEEP ]` cannot compare exits 2,
-          # and since that test is the left operand of `&&` set -e does not
-          # fire: the `continue` is skipped and every generation gets deleted,
-          # exit 0. All-digit is not enough, since a value past bash's integer
-          # range fails the same way.
+          # Whitelist 1..99: a non-numeric KEEP makes the test below fail silently and delete every generation.
           case "$KEEP" in [1-9]|[1-9][0-9]) ;; *) echo "::warning::invalid keep=$KEEP, using 2"; KEEP=2 ;; esac
-          # Same whitelist, same reason: an unusable value must not silently
-          # become a cutoff of 0, which would treat every cache as idle.
+          # Same whitelist: a bad value must not become a cutoff of 0 that treats every cache as idle.
           case "$OPEN_PR_IDLE_DAYS" in
             [1-9]|[1-9][0-9]) ;;
             *) echo "::warning::invalid open_pr_idle_days=$OPEN_PR_IDLE_DAYS, using 3"; OPEN_PR_IDLE_DAYS=3 ;;
@@ -162,21 +171,8 @@ jobs:
 
           gib() { awk -v b="${1:-0}" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
 
-          # True when the cache has not been read since the cutoff, having
-          # re-read the timestamp immediately before acting on it.
-          #
-          # The inventory is minutes old by the time the loop reaches an entry,
-          # and a run that restored it in between resets the clock. Deciding on
-          # the stale copy would delete a cache that is back in use, and the
-          # whole point of this rule is that a read means a reader. An
-          # unparseable or missing timestamp is always a keep -- same direction
-          # as the PR lookup below, where an error must never free anything.
-          #
-          # The re-check runs in report mode too, even though it deletes
-          # nothing. Report mode exists to predict what delete mode will do, and
-          # the documented way to adopt a change here is to read the report
-          # first; a preview that lists candidates the real sweep would spare
-          # sends someone looking for bytes that were never going to be freed.
+          # Re-reads last_accessed_at right before acting, since a run may have restored it since the
+          # inventory. A missing or unparseable timestamp always keeps the cache. Runs in report mode too.
           idle_since() {
             local id="$1" accessed="$2" ref="$3" key="$4" cutoff="$5" seen
             seen=$(date -u -d "$accessed" +%s 2>/dev/null || true)
@@ -193,9 +189,7 @@ jobs:
             return 0
           }
 
-          # Report a failed inventory. Deleting nothing is the safe direction,
-          # but silence means a broken janitor looks identical to a clean repo
-          # and nothing notices until the ceiling does.
+          # Fail loudly on a broken inventory so the janitor cannot look like a clean repo.
           if ! gh api --paginate "repos/$repo/actions/caches?per_page=100" \
                  -q '.actions_caches[] | [.id, .created_at, .size_in_bytes, .ref, .version, .key, .last_accessed_at] | @tsv' \
                  > "$all"; then
@@ -209,16 +203,12 @@ jobs:
 
           freed=0; deleted=0; stale_pr=0; idle_open_pr=0; dead=0
 
-          # Pass 1: caches belonging to a PR that is no longer open. Unreachable
-          # regardless of generation, so this runs before ranking and removes
-          # them from it -- otherwise a merged PR's entries occupy the keep slots
-          # of their own (ref, version, prefix) group and shield each other.
+          # Pass 1 runs before ranking so a closed PR's entries do not occupy keep slots and shield each other.
           declare -A prstate=()
           : > "$live"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
-            # Pass 0: dead families (see the header). No reader exists on any
-            # ref, so neither PR state nor generation matters.
+            # Pass 0: dead families with no reader on any ref.
             case "$key" in
               buildkit-blob-*|buildkit-index-*|index-*)
                 echo "dead family ($(gib "$size") GiB): $key"
@@ -238,17 +228,12 @@ jobs:
             esac
             if [ -n "$num" ]; then
               case "$num" in
-                ''|*[!0-9]*) num="" ;;  # not a PR number; fall through to ranking
+                ''|*[!0-9]*) num="" ;;
               esac
             fi
             if [ -n "$num" ]; then
               if [ -z "${prstate[$num]:-}" ]; then
-                # An error must not read as "closed". Anything that is not a
-                # state we recognise becomes `unknown`, which neither pass-1 rule
-                # matches, so a rate limit or a transient 5xx keeps the cache
-                # instead of freeing it. Previously this defaulted to `open`,
-                # which was the same outcome when `open` only ever meant keep;
-                # now that an open PR can also be pruned, the two have to differ.
+                # An API error must map to unknown, never closed, so a transient failure keeps the cache.
                 state=$(gh api "repos/$repo/pulls/$num" -q '.state' < /dev/null 2>/dev/null || true)
                 case "$state" in open|closed) ;; *) state=unknown ;; esac
                 prstate[$num]=$state
@@ -264,18 +249,7 @@ jobs:
                 fi
                 continue
               fi
-              # An OPEN PR whose cache nothing has read. PR state is not a
-              # liveness signal: lookup is scoped by ref, so only this PR's own
-              # runs can restore this entry, and if none of them has in
-              # OPEN_PR_IDLE_DAYS then it is holding budget for a reader that
-              # does not exist. Dependabot is the usual shape, since those PRs
-              # sit open for weeks or months in both repos, but the rule is
-              # deliberately by age and not by author: a stale human PR costs
-              # exactly the same, and a bot PR re-run this morning is live.
-              #
-              # This only brings the reclaim forward. GitHub already evicts an
-              # entry unread for 7 days; the budget is what cannot wait, since a
-              # week of overlap times every ref that ran exceeds it.
+              # Open PR caches are only readable by that PR's runs, so an unread one is pruned by age.
               if [ "${prstate[$num]}" = "open" ] \
                  && idle_since "$id" "$accessed" "$ref" "$key" "$open_pr_cutoff"; then
                 echo "idle open PR #$num ($(gib "$size") GiB, last read $accessed): $key"
@@ -292,13 +266,13 @@ jobs:
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$created" "$size" "$ref" "$ver" "$key" "$accessed" >> "$live"
           done < "$all"
 
-          # Pass 2: rank the survivors by generation within each family.
           : > "$grouped"
           while IFS=$'\t' read -r id created size ref ver key accessed; do
             [ -z "${id:-}" ] && continue
             # Per-family keep. `keep` (the input) is for families where an older
-            # generation can still answer an exact-key restore; CodeQL restores
-            # by prefix and takes the newest, so its second copy answers nothing.
+            # generation can still answer a restore nothing newer can. CodeQL,
+            # pip-v2, uv and rust-cache all restore by prefix and take the newest,
+            # so their second copy answers only an exact revert (see the header).
             fkeep="$KEEP"
             case "$key" in
               codeql-overlay-base-database-*)
@@ -306,24 +280,29 @@ jobs:
               codeql-trap-*)
                 pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{40}$//'); fkeep=1 ;;
               v0-rust-*)
-                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//') ;;
+                # rust-cache's restore-key is the key minus the trailing lockfile
+                # hash, i.e. exactly this prefix, so a lockfile bump still starts
+                # from the surviving generation.
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{8,}$//'); fkeep=1 ;;
               pip-v2-*|uv-*|fe-dist-*)
                 # Strip only the trailing dependency hash. Everything before it --
                 # the job name for pip-v2, the OS for uv and fe-dist -- stays in the
                 # prefix on purpose: those are separate keys that never substitute
                 # for one another, and folding them into one group would rank live
-                # caches as generations of each other and delete all but two.
-                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//') ;;
+                # caches as generations of each other and delete all but one.
+                #
+                # A retired prefix (notebooks-colab -> notebooks-colab-cpu, see its
+                # `name` in notebooks-ci.yml) is its own family here, so keep=1
+                # drains it to one entry and the 7-day idle timer takes the last.
+                pre=$(printf '%s' "$key" | sed -E 's/-[0-9a-f]{64}$//')
+                # fe-dist has no restore-keys: an older generation is the only
+                # thing an exact revert of the frontend can hit, so it keeps `keep`.
+                case "$key" in fe-dist-*) ;; *) fkeep=1 ;; esac ;;
               *) continue ;;
             esac
-            # Unshortened means the suffix did not match, which would make
-            # generation 1 look like generation N. Skip rather than guess.
+            # Suffix did not match; skip rather than misrank.
             [ "$pre" = "$key" ] && continue
-            # Group per (ref, version), not per key. Lookup is scoped by all
-            # three: a branch cannot restore a sibling's cache, and a path or
-            # compression change mints a new version that is restored
-            # independently. Ranking them together lets two entries from one
-            # scope evict every usable entry of another.
+            # Group per (ref, version, prefix): cache lookup is scoped by all three.
             printf '%s\t%s\t%s\t%s\t%s\n' "$ref|$ver|$pre" "$created" "$id" "$size" "$fkeep" >> "$grouped"
           done < "$live"
 
@@ -353,7 +332,7 @@ jobs:
             echo "| metric | value |"
             echo "| --- | --- |"
             echo "| mode | $([ "$DELETE" = yes ] && echo delete || echo 'report only') |"
-            echo "| kept per prefix | $KEEP |"
+            echo "| kept per prefix | 1 (fe-dist: $KEEP) |"
             echo "| caches total | $count |"
             echo "| dead-family candidates | $dead |"
             echo "| closed-PR candidates | $stale_pr |"
@@ -365,8 +344,7 @@ jobs:
             echo "| usage after | $(gib "$after") GiB of 50 GiB |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 80% of the 50 GiB ceiling. Above this a single dependency bump can
-          # push the repo over between two scheduled sweeps.
+          # 80% of the 50 GiB ceiling.
           if [ "$after" -gt 42949672960 ]; then
-            echo "::warning::Cache usage is $(gib "$after") GiB of 50 GiB after pruning. Lower keep to 1, or find the family that grew."
+            echo "::warning::Cache usage is $(gib "$after") GiB of 50 GiB after pruning. Find the family that grew."
           fi

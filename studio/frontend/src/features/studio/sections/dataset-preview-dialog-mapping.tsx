@@ -14,11 +14,11 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CheckmarkCircle02Icon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Sparkles } from "lucide-react";
 
 const ROLE_LABELS: Record<string, string> = {
   system: "System",
@@ -49,7 +49,7 @@ export function HeaderRolePicker({
       value={currentRole ?? "_none"}
       onValueChange={(v) => onRoleChange(v === "_none" ? undefined : v)}
     >
-      <SelectTrigger className="h-6 w-[90px] text-ui-10 px-2 py-0 border-dashed cursor-pointer">
+      <SelectTrigger className="h-6 w-[calc(90px*var(--ui-space-scale,1))] max-md:h-8 max-md:w-[calc(104px*var(--ui-space-scale,1))] text-ui-10 px-2 py-0 border-dashed cursor-pointer">
         <SelectValue placeholder="Role..." />
       </SelectTrigger>
       <SelectContent>
@@ -106,7 +106,7 @@ export function DatasetMappingCard({
   return (
     <div
       className={cn(
-        "rounded-xl corner-squircle ring-1 px-5 py-4 mb-4",
+        "rounded-lg corner-squircle ring-1 px-5 py-4 mb-4",
         mappingOk
           ? "ring-emerald-200/70 bg-emerald-50/70 text-emerald-950 dark:ring-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-50"
           : "ring-amber-200/70 bg-amber-50/70 text-amber-950 dark:ring-amber-900/50 dark:bg-amber-950/30 dark:text-amber-50",
@@ -115,12 +115,12 @@ export function DatasetMappingCard({
       <div className="flex items-start gap-3">
         <div
           className={cn(
-            "rounded-xl corner-squircle p-2 shrink-0",
+            "rounded-md corner-squircle p-2 shrink-0",
             mappingOk ? "bg-emerald-500/15" : "bg-amber-500/15",
           )}
         >
           <HugeiconsIcon
-            icon={mappingOk ? CheckmarkCircle02Icon : AlertCircleIcon}
+            icon={mappingOk ? CheckmarkCircle02Icon : Alert02Icon}
             className={cn(
               "size-4",
               mappingOk
@@ -180,7 +180,7 @@ export function DatasetMappingCard({
                 size="sm"
                 onClick={onAiAssist}
                 disabled={isAiLoading}
-                className="cursor-pointer bg-white/60 dark:bg-transparent"
+                className="cursor-pointer"
               >
                 {isAiLoading ? (
                   <>
@@ -189,7 +189,7 @@ export function DatasetMappingCard({
                   </>
                 ) : (
                   <>
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    <HugeiconsIcon icon={SparklesIcon} className="mr-1.5 h-3.5 w-3.5" />
                     AI Assist
                     <Badge
                       variant="outline"
@@ -210,7 +210,7 @@ export function DatasetMappingCard({
           {advisorNotification && (
             <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 space-y-2">
               <div className="flex items-start gap-2">
-                <Sparkles className="size-3.5 shrink-0 mt-0.5" />
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5 shrink-0 mt-0.5" />
                 <span>{advisorNotification}</span>
               </div>
               {advisorSystemPrompt && (

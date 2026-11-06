@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-request I/O never depends on how many accounts exist, and the owner's routing is fixed."""
+"""Per-request I/O must not grow with account count; read warm counters repeatedly and take minimums."""
 
 import os
 import secrets
@@ -24,6 +24,18 @@ def _create(names):
     for name in names:
         storage.create_initial_user(name, "account-password", secrets.token_urlsafe(32))
     policy.invalidate_account_cache()
+
+
+# Three readings: two cannot tell which of a disagreeing pair is steady.
+_REPEATS = 3
+
+
+def _steady(readings: list) -> dict:
+    """Lazy rebuilds only add work, so each counter's minimum across repeats is the steady cost."""
+    keys = set().union(*readings) if readings else set()
+    steady = {key: min(reading.get(key, 0) for reading in readings) for key in keys}
+    # Counter never records zero, so drop zeros or noise becomes a difference.
+    return {key: value for key, value in steady.items() if value}
 
 
 def _vector(client, headers, path) -> dict:
@@ -49,13 +61,17 @@ def _vector(client, headers, path) -> dict:
 
     for _ in range(2):
         assert client.get(path, headers = headers).status_code == 200
-    with (
-        patch.object(sqlite3, "connect", open_connection),
-        patch.object(os, "mkdir", create_directory),
-        patch.object(storage, "account_counts", counted),
-    ):
-        assert client.get(path, headers = headers).status_code == 200
-    return dict(counters)
+    readings = []
+    for _ in range(_REPEATS):
+        counters.clear()
+        with (
+            patch.object(sqlite3, "connect", open_connection),
+            patch.object(os, "mkdir", create_directory),
+            patch.object(storage, "account_counts", counted),
+        ):
+            assert client.get(path, headers = headers).status_code == 200
+        readings.append(dict(counters))
+    return _steady(readings)
 
 
 def _vectors(client, username):
@@ -97,8 +113,34 @@ def test_owner_routing_facts_and_shared_queue(isolated_auth, account_client):
     assert run_as(OWNER, access.account_scope) == "owner"
     assert run_as(managed, access.account_scope) == alice.account_id
     assert run_as(OWNER, access.resident_hidden, "chat") is False
-    # Admission queues are keyed by the resident server, never by the calling account.
     key = "http://127.0.0.1:1"
     assert run_as(OWNER, get_llama_admission_queue, key) is run_as(
         managed, get_llama_admission_queue, key
+    )
+
+
+def test_steady_cost_keeps_a_persistent_increase_and_drops_a_one_off():
+    """The minimum must still expose a persistent increase while dropping a one-off rebuild spike."""
+    baseline = [{"connections": 2, "statements": 8}] * _REPEATS
+
+    one_off = [{"connections": 2, "statements": 8}] * _REPEATS
+    one_off[1] = {"connections": 3, "statements": 86}
+    assert _steady(one_off) == _steady(baseline), (
+        "a rebuild landing in one reading is not the steady-state cost, and taking the "
+        "minimum is what makes that true"
+    )
+
+    persistent = [{"connections": 3, "statements": 9}] * _REPEATS
+    assert _steady(persistent) != _steady(baseline), (
+        "a cost that is higher on every reading is a real increase; if the minimum "
+        "swallowed it this guard would pass a per-account regression"
+    )
+
+    appears_once = [{"connections": 2}, {"connections": 2, "mkdir": 1}, {"connections": 2}]
+    never_appears = [{"connections": 2}] * _REPEATS
+    assert _steady(appears_once) == {"connections": 2}
+    assert _steady(appears_once) == _steady(never_appears), (
+        "a one-off counter has to leave the steady vector, not sit in it at zero: the "
+        "comparisons above are exact, and a key the other side has never heard of "
+        "differs whatever its value"
     )

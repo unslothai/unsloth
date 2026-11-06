@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the ablation layer.
-
-The arms layer is where a wrong answer is most expensive, because its output is a CAUSAL claim.
-Everything here is a test of a refusal: an arm that drifted must not be quoted, an arm that did
-not fire must not read as no effect, a ladder must not quote a rung on its own, a batch without
-calibration must not run at all, and an armpack that does not match must stop its plane of the
-experiment rather than be skipped quietly.
-"""
+"""Tests are refusals: drifted arms, unfired arms and uncalibrated batches must not be quotable."""
 
 from __future__ import annotations
 
@@ -70,12 +63,6 @@ def _arm(
         potency = PotencyCounter(name = "fired", min_delta = 1, direction = "increase"),
         implies_fix = "test",
     )
-
-
-# manifest: invariance and potency
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_an_exact_arm_that_drifts_is_voided_not_quoted():
@@ -199,12 +186,6 @@ def test_an_equivalent_arm_must_declare_its_diff_and_an_exact_one_may_not():
         _arm(invariance = Invariance.EQUIVALENT)
     with pytest.raises(ValueError):
         _arm(declared_diff = DeclaredDiff(normaliser = "n", keys = ("style",)))
-
-
-# ladder
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_step_removing_two_mechanisms_must_admit_it_is_fused():
@@ -349,7 +330,7 @@ def test_the_two_declared_routes_reach_the_same_floor_by_different_orders():
 def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
     scheduler_costs = {
         "shipping": 40.0,
-        "D": 22.0,  # removing the observer first is worth much more on this route
+        "D": 22.0,
         "D+E": 20.0,
         "D+E+F": 15.0,
         "A+D+E+F": 12.0,
@@ -363,7 +344,6 @@ def test_route_disagreement_is_reported_as_an_interaction_not_averaged():
     terms = {t.mechanism: t for t in interaction_terms(visual, scheduler, detection_floor_ms = 0.5)}
     assert terms["autoscroll_forced_layout"].disagreement_ms == pytest.approx(9.0 - 18.0)
     assert "not additive" in terms["autoscroll_forced_layout"].note
-    # nothing anywhere produced a mean of the two
     assert terms["autoscroll_forced_layout"].value_a.value == pytest.approx(9.0)
     assert terms["autoscroll_forced_layout"].value_b.value == pytest.approx(18.0)
 
@@ -385,12 +365,6 @@ def test_required_rungs_covers_both_routes():
     assert "shipping" in keys
     assert "A+B+C+D+E+F" in keys
     assert "D" in keys and "A" in keys
-
-
-# calibration
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_a_batch_without_calibration_arms_is_refused_before_it_runs():
@@ -447,14 +421,7 @@ def test_a_batch_whose_null_arm_drifted_past_the_detection_floor_is_not_quotable
 
 
 def test_a_noisy_batch_stays_quotable_but_only_at_a_coarser_floor():
-    """A noisy machine is not automatically a broken one; it is a machine with a blunt floor.
-
-    The null moves 0.9 ms/update, which swallows the 0.1 and 0.5 spikes entirely. The 2.0 spike
-    still comes back cleanly, so the batch can resolve differences above 2.0 ms/update and
-    nothing below it. Voiding this batch would throw away a usable, coarse measurement; quoting
-    a 0.3 ms difference from it would be inventing one. The detection floor is what keeps the
-    two apart, and every difference is rendered against it.
-    """
+    """A noisy batch stays quotable at a coarser detection floor rather than being voided."""
 
     verdict = evaluate_batch(
         null_deltas = [Measure.read(0.9, "ms/update")],
@@ -486,12 +453,6 @@ def test_a_batch_with_no_null_reading_has_no_noise_floor():
     )
     assert verdict.quotable is False
     assert "no measured noise floor" in verdict.reason
-
-
-# dose-response
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def _dose_points(
@@ -553,12 +514,6 @@ def test_two_points_do_not_make_a_line():
     assert fit.verdict == "NO FIT"
 
 
-# armpack
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def _write_armpack(
     root: Path,
     digest: str,
@@ -617,12 +572,6 @@ def test_a_matching_armpack_resolves(tmp_path: Path):
     assert resolution.require().target_dist_digest == "digest-1"
 
 
-# recovery
-
-
-# ---------------------------------------------------------------------------------------
-
-
 def test_full_recovery_is_occupancy():
     result = classify_recovery(
         baseline = Measure.read(2.0, "ms/update"),
@@ -675,12 +624,6 @@ def test_worse_after_delete_points_at_the_delete_path():
         noise_floor_ms = 0.5,
     )
     assert result.classification == "WORSE AFTER DELETE"
-
-
-# knobs
-
-
-# ---------------------------------------------------------------------------------------
 
 
 def test_only_requested_preboot_arms_are_installed():

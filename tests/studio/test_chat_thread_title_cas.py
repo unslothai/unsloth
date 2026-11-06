@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A title patch can carry guards, so a rename or a deleted opening message
-beats a background rewrite.
-
-studio_db imports its siblings by bare name (utils.paths), so the functional
-checks run in a subprocess with studio/backend on PYTHONPATH rather than
-putting those names on this session's sys.path.
-"""
+"""Title patches carry guards, so a rename or a deleted opening message beats a background rewrite."""
 
 from __future__ import annotations
 

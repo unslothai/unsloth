@@ -83,6 +83,7 @@ test("training formats export only the displayed branch", () => {
   assert.equal(exportFormatIncludesSiblings("jsonl-messages"), false);
   assert.equal(exportFormatIncludesSiblings("sharegpt"), false);
   assert.equal(exportFormatIncludesSiblings("csv"), true);
+  assert.equal(exportFormatIncludesSiblings("markdown"), false);
 });
 
 test("training order excludes abandoned response branches", () => {

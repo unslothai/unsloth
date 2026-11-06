@@ -7,8 +7,7 @@ import { studioDatasetStep } from "./dataset";
 import { studioMethodStep } from "./method";
 import { studioNavStep } from "./nav";
 import { studioParamsStep } from "./params";
-import { studioSaveStep } from "./save";
-import { studioStartStep } from "./start";
+import { studioPreviewStep } from "./preview";
 
 export const studioTourSteps: TourStep[] = [
   studioNavStep,
@@ -16,6 +15,5 @@ export const studioTourSteps: TourStep[] = [
   studioMethodStep,
   studioDatasetStep,
   studioParamsStep,
-  studioStartStep,
-  studioSaveStep,
+  studioPreviewStep,
 ];

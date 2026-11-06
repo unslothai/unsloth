@@ -1,43 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the collapse-tool-activity preference does to a rendered tool card.
-
-The node suite reaches the reducers and the store and asserts the JSX wiring
-against the TypeScript AST. None of that sees a Radix Collapsible: whether
-closed content is in the DOM, what aria-expanded says, or where the page lands
-after a collapse. Those are the questions here, against
-studio/frontend/smoke-tool-activity.html.
-
-  1   baseline         preference off: every card open, as before the setting
-  2   fresh mount      preference on: cards and group closed, answer moves up
-  3   manual expand    survives live status and text updates
-  4   live toggle      a mounted open card AND group both adopt the preference
-  5   persistence      survives a reload and still collapses
-  6   scroll           a preference-driven close moves the page exactly as far
-                       as a clicked one. Both arms are driven with the card in
-                       view: click() scrolls its target into view first, so an
-                       off-screen card hands one arm a free scroll and the two
-                       then differ by how they were driven, not what they ran.
-  7   approval         a parked call still shows what it is asking to run, and
-                       collapses once approval is granted
-  8   strict mode      the render-phase setState survives a double render
-  9   rtl              same collapse behaviour under dir=rtl
-  10  reduced motion   prefers-reduced-motion leaves no card stuck open
-  11  toggle storm     rapid flips converge, no render loop
-  12  storage denied   a throwing localStorage fails safe, to the DECLARED
-                       default rather than a hard-coded one
-  13  malformed        a hand-edited blob must not flip the setting
-
-Engine follows the PW_ENGINE convention in playwright_settings_tabs.py.
-chromium stands in for Chrome, `msedge` is the branded chromium channel, webkit
-for Safari; none is the branded browser. Starts and stops its own vite server;
-SMOKE_BASE_URL to reuse one, SMOKE_PORT to move it.
-
-    PW_ENGINE=firefox python tests/studio/playwright_tool_activity.py --json
-
-Exits non-zero if any scene misses its expectation.
-"""
+"""Collapse-tool-activity preference in a real browser across 13 scenes; exits non-zero on any miss."""
 
 from __future__ import annotations
 
@@ -63,25 +27,17 @@ ENGINE = os.environ.get("PW_ENGINE", "chromium")
 PORT = int(os.environ.get("SMOKE_PORT", "5219"))
 PREFERENCES_KEY = "unsloth_chat_preferences"
 
-# Radix animates for ANIMATION_DURATION = 200ms and the scroll lock holds for the same window, so every reading is taken
-# well clear of both.
+# Radix animates for 200ms and the scroll lock holds as long.
 SETTLE_MS = 600
 
-# The tail of the command the approval card renders. Deliberately past the
-# 60-character slice the trigger shows, so "the user can read it" cannot be
-# satisfied by the trigger label alone.
+# Past the 60-character slice the trigger shows, so the trigger label alone cannot satisfy it.
 APPROVAL_TAIL = "--and-then-something-nobody-can-see"
 
 CARDS = ("controlled", "uncontrolled", "approval")
 
 
 def probe(page) -> dict:
-    """Open-state of every disclosure, straight off the DOM.
-
-    `payload_in_dom` is separate from the wrapper on purpose: Radix keeps the
-    content wrapper mounted while it animates, so a wrapper that exists says
-    nothing about whether the text inside it does.
-    """
+    """payload_in_dom is separate from the wrapper: Radix keeps the wrapper mounted while animating."""
     return page.evaluate(
         """(cards) => {
           const read = (name) => {
@@ -135,7 +91,6 @@ def open_page(
     try:
         page.wait_for_function("() => window.__probeReady", timeout = 30_000)
     except Exception:
-        # A page that never mounts looks exactly like a slow one. Say which.
         raise RuntimeError(
             f"the harness page never published __probeReady ({ENGINE}). Page errors:\n"
             + ("\n".join(errors) or "(none captured)")
@@ -161,8 +116,7 @@ def run(base_url: str, pw) -> dict:
     p = results["problems"]
     s = results["scenes"]
 
-    # `msedge` is a chromium CHANNEL, not an engine: the branded build, which
-    # trails Chromium by weeks, so a Chromium-first regression hides there.
+    # `msedge` is a Chromium channel that trails Chromium by weeks.
     if ENGINE == "msedge":
         browser = pw.chromium.launch(channel = "msedge")
     else:
@@ -233,13 +187,7 @@ def run(base_url: str, pw) -> dict:
 
     # --- 6 scroll ---------------------------------------------------------
     def close_one_card(via: str) -> tuple[int, int]:
-        """Close ONE card, two ways, from an identical start.
-
-        `only=uncontrolled` so both arms collapse the same content, and the CARD is
-        scrolled into view rather than the answer: click() scrolls its target into
-        view first, so centring the answer hands the chevron arm a scroll the
-        preference arm never gets. Driven that way they appear to differ by ~665px.
-        """
+        """Scroll the card, not the answer, into view: click() scrolling first faked a ~665px difference."""
         fresh(page, base_url, False, query = "&only=uncontrolled")
         page.evaluate(
             """() => document.querySelector('[data-probe="uncontrolled-trigger"]')
@@ -268,7 +216,6 @@ def run(base_url: str, pw) -> dict:
         "chevron_answer_median": chevron_answer,
         "preference_answer_median": preference_answer,
     }
-    # A few pixels of slack for sub-pixel rounding; the two paths measure identical.
     if abs(preference_answer - chevron_answer) > 8:
         p.append(
             "6: a preference-driven close moves the page differently from a clicked close "
@@ -345,8 +292,7 @@ def run(base_url: str, pw) -> dict:
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
     # --- 12 storage denied -------------------------------------------------
-    # Safari private browsing and a cookies-blocked profile both surface as
-    # localStorage throwing rather than as an absent API.
+    # Safari private browsing and blocked cookies make localStorage throw.
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {
@@ -368,8 +314,7 @@ def run(base_url: str, pw) -> dict:
         scene["declared_default"] = denied_page.evaluate("() => window.__getDefaultPreference()")
         scene["page_errors"] = denied_errors
         s["12_storage_denied"] = scene
-        # Against the DECLARED default, not a hard-coded one: which default
-        # ships is a product decision, this scene is about failing safe.
+        # Against the declared default: which default ships is a product decision.
         if scene["preference"] is not scene["declared_default"]:
             p.append(
                 "12: a denied localStorage did not land on the declared default "
@@ -405,8 +350,7 @@ def run(base_url: str, pw) -> dict:
             if raw is None
             else '{"state":{"collapseToolActivityByDefault":' + raw + '},"version":0}'
         )
-        # add_init_script takes no arguments, so values are baked in;
-        # json.dumps also makes the corrupt-JSON case survive being a string literal.
+        # add_init_script takes no arguments, so values are baked in via json.dumps.
         seeded.add_init_script(
             f"window.localStorage.setItem({json.dumps(PREFERENCES_KEY)}, {json.dumps(blob)});"
         )
@@ -420,8 +364,7 @@ def run(base_url: str, pw) -> dict:
         seeded.close()
     s["13_malformed_record"] = malformed
 
-    # Reported, not asserted: `??` accepts any non-nullish JSON value, which is true of every boolean in this store and
-    # unreachable from Studio's own UI.
+    # Reported, not asserted: `??` accepts any non-nullish JSON value.
     results["console"] = console
     browser.close()
     return results

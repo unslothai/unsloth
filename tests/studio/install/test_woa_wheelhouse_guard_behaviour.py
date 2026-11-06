@@ -1,0 +1,293 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Runs the PyPI-first wheelhouse guard: skipped names, abi3 compatibility and offline PyPI reach."""
+
+from __future__ import annotations
+
+import os
+import pathlib
+import re
+import shutil
+import sys
+import textwrap
+
+import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "_shared"))
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+INSTALL_PS1 = REPO_ROOT / "install.ps1"
+
+CORP = "https://corp.example/simple"
+PYPI = "https://pypi.org/simple"
+
+requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+
+HELPERS = (
+    "Test-WoaVersionAtLeast",
+    "Test-WoaWheelTags",
+    "Test-WoaWheelTagsUsable",
+    # A missing helper answers True and lets a lookalike index pass.
+    "Test-UvEnvFlag",
+    "Test-NoIndexRequested",
+    "Test-WoaUrlIsPublicPyPI",
+    "Remove-WoaTomlComment",
+    "Split-WoaTomlKey",
+    "Read-WoaUvInlineIndexArray",
+    "Read-WoaUvTomlIndexKeys",
+    "Get-WoaUvConfigIndexPolicy",
+    "Test-WoaResolveReachesPyPI",
+)
+
+
+INSTALL_SRC = INSTALL_PS1.read_text(encoding = "utf-8-sig")
+
+
+def _function(source: str, name: str) -> str:
+    match = re.search(r"(?ms)^    function " + re.escape(name) + r"\b.*?^    \}\r?$", source)
+    assert match, f"install.ps1 no longer defines {name}"
+    # Lifted out of Install-UnslothStudio, so the four-space body indent comes with it.
+    return textwrap.dedent(match.group(0))
+
+
+def _drop_list_block(source: str) -> str:
+    """The real block that builds $WoaWheelNames and emits the override drop lines."""
+    start = re.search(r"(?m)^        \$WoaWheelNames = @\{\}\s*$", source)
+    end = re.search(r"(?m)^        \$WoaOverrideLines \+= 'torch>=2\.4'\s*$", source)
+    assert start and end, "the drop-list block moved"
+    return textwrap.dedent(source[start.start() : end.start()].replace("\r\n", "\n"))
+
+
+# PowerShell does not hoist, so every snippet below carries all of HELPERS in front of it.
+PRELUDE = "\n".join(_function(INSTALL_SRC, name) for name in HELPERS)
+
+
+# Scrub ambient resolver policy (UV_OFFLINE, uv.toml, ...) so each case sets the only one.
+_UV_POLICY_ENV = (
+    "UV_OFFLINE",
+    "UV_NO_INDEX",
+    "UV_DEFAULT_INDEX",
+    "UV_INDEX_URL",
+    "UV_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_CONFIG_FILE",
+    "UV_NO_CONFIG",
+    "PIP_NO_INDEX",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    # Get-WoaUvConfigIndexPolicy reads %APPDATA%\uv\uv.toml and the ProgramData copy.
+    "APPDATA",
+    "ProgramData",
+)
+
+# Case-folded: os.environ upper-cases keys on nt, so 'ProgramData' would survive a literal match.
+_UV_POLICY_ENV_FOLDED = frozenset(name.upper() for name in _UV_POLICY_ENV)
+
+
+def _scrubbed_environ(environ = None) -> dict[str, str]:
+    """`environ` (default: this session's) minus every resolver-policy variable."""
+    items = (os.environ if environ is None else environ).items()
+    return {key: value for key, value in items if key.upper() not in _UV_POLICY_ENV_FOLDED}
+
+
+def _run(script: str, *, cwd: str | pathlib.Path | None = None) -> str:
+    env = _scrubbed_environ()
+    # run_pwsh gives each worker a private pwsh startup cache (~1 in 500 startups die otherwise).
+    proc = run_pwsh(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", PRELUDE + "\n" + script],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 120,
+        env = env,
+        cwd = None if cwd is None else str(cwd),
+    )
+    assert proc.returncode == 0, f"pwsh failed: {proc.stdout}\n{proc.stderr}"
+    return proc.stdout.strip()
+
+
+def _dropped_names(provided: str) -> set[str]:
+    """Which drop candidates ARM64 excludes, given only what PyPI provides; the staging dir is empty."""
+    out = _run(f"""
+$dir = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+$WoaWheelDir = $dir
+$WoaVenvMinor = "3.13"
+$WoaWheelTag = "cp313"; $WoaWheelAbi = "cp313"; $WoaWheelStable = $true; $WoaWheelMinor = 13
+$script:WoaTorchAudio = $false
+$script:WoaPyarrowWheelName = $null
+$script:WoaPyPIProvided = {provided}
+function substep {{ param($a, $b) }}
+{_drop_list_block(INSTALL_SRC)}
+Remove-Item -LiteralPath $dir -Recurse -Force
+($WoaOverrideLines | Where-Object {{ $_ -like "*platform_machine*" }} |
+    ForEach-Object {{ ($_ -split ' ')[0] }} | Sort-Object -Unique) -join ","
+""")
+    return {name for name in out.split(",") if name}
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("wheel", "py_tag", "abi_tag", "usable"),
+    [
+        ("hf_transfer-0.1.9-cp38-abi3-win_arm64.whl", "cp313", "cp313", True),
+        ("sqlite_vec-0.1.9-py3-none-win_arm64.whl", "cp313", "cp313", True),
+        # Bug 2: abi3 does not reach BACKWARDS to an older interpreter.
+        ("hf_transfer-0.2.0-cp314-abi3-win_arm64.whl", "cp313", "cp313", False),
+        ("foo-1.0-py314-none-win_arm64.whl", "cp313", "cp313", False),
+        # Free-threaded CPython has no stable ABI (CPython #111506).
+        ("hf_transfer-0.1.9-cp38-abi3-win_arm64.whl", "cp313", "cp313t", False),
+        ("regex-2026.9.3-cp313-cp313-win_arm64.whl", "cp313", "cp313", True),
+        ("regex-2026.9.3-cp312-cp312-win_arm64.whl", "cp313", "cp313", False),
+    ],
+)
+def test_a_wheel_is_usable_only_where_it_actually_imports(wheel, py_tag, abi_tag, usable):
+    out = _run(f'Test-WoaWheelTagsUsable -Name "{wheel}" -PyTag "{py_tag}" -AbiTag "{abi_tag}"')
+    assert out == str(usable), f"{wheel} on {py_tag}/{abi_tag}: expected {usable}, got {out}"
+
+
+@pytest.fixture
+def no_uv_config_dir(tmp_path):
+    """Fails if any uv.toml sits above the temp dir, since uv walks parent directories for config."""
+    work = tmp_path / "neutral"
+    work.mkdir()
+    for parent in [work, *work.parents]:
+        assert not (parent / "uv.toml").is_file(), f"a uv.toml above the tmp dir: {parent}"
+        pyproject = parent / "pyproject.toml"
+        if pyproject.is_file():
+            text = pyproject.read_text(encoding = "utf-8", errors = "replace")
+            assert not re.search(
+                r"(?m)^\s*\[+tool\.uv(\.|\])", text
+            ), f"a [tool.uv] table above the tmp dir: {pyproject}"
+    return work
+
+
+@pytest.mark.parametrize("spelling", ["ProgramData", "PROGRAMDATA", "programdata"])
+def test_the_scrub_drops_program_data_however_the_platform_spelled_it(spelling):
+    """The ProgramData scrub must accept each Windows spelling, which Linux runs cannot produce."""
+    scrubbed = _scrubbed_environ({spelling: r"C:\ProgramData", "PATH": "/usr/bin"})
+    assert scrubbed == {"PATH": "/usr/bin"}, f"{spelling} survived the scrub: {scrubbed}"
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("env", "reaches"),
+    [
+        ({}, True),
+        # Bug 3: these REPLACE the default index, so PyPI is not consulted at all.
+        ({"UV_DEFAULT_INDEX": CORP}, False),
+        ({"UV_INDEX_URL": CORP}, False),
+        # install.ps1 resolves with uv, which never reads pip's variables.
+        ({"PIP_INDEX_URL": CORP}, True),
+        ({"PIP_NO_INDEX": "1"}, True),
+        ({"UV_INDEX_URL": CORP, "PIP_EXTRA_INDEX_URL": PYPI}, False),
+        ({"UV_DEFAULT_INDEX": PYPI}, True),
+        ({"UV_OFFLINE": "1"}, False),
+        ({"UV_NO_INDEX": "1"}, False),
+        ({"UV_OFFLINE": "0"}, True),
+        ({"UV_NO_INDEX": "false"}, True),
+    ],
+)
+def test_pypi_counts_only_when_the_resolve_would_reach_it(no_uv_config_dir, env, reaches):
+    """What the environment alone says. Every OTHER source of the same answer -- the
+    inherited UV_*/PIP_* policy, %APPDATA%, and any uv.toml or [tool.uv] above the working
+    directory -- is removed by `_run` and `no_uv_config_dir`, so a row that says True is
+    measuring its own env dict and not the session pytest happens to be running in. The
+    config half of the same question is `test_a_uv_config_decides_whether_pypi_is_in_the_resolve`.
+    """
+    sets = "".join(f'$env:{key} = "{value}"; ' for key, value in env.items())
+    assert _run(sets + "Test-WoaResolveReachesPyPI", cwd = no_uv_config_dir) == str(reaches)
+
+
+@requires_pwsh
+def test_a_wheel_taken_from_pypi_is_not_then_excluded_on_arm64():
+    """Bug 1, the one that matters: skipping our copy must not read as "no wheel exists"."""
+    nothing_anywhere = _dropped_names("@{}")
+    assert (
+        {"brotli", "hf-transfer", "hf_transfer"} <= nothing_anywhere
+    ), f"a name with no wheel anywhere must be dropped on ARM64, got {nothing_anywhere}"
+
+    from_pypi = _dropped_names('@{ "brotli" = @("1.3.0"); "hf-transfer" = @("0.2.0") }')
+    assert not (
+        {"brotli", "hf-transfer", "hf_transfer"} & from_pypi
+    ), f"PyPI supplies these, so they must not be excluded on ARM64; dropped {from_pypi}"
+    # What is genuinely unavailable is still dropped, so the fix did not blanket-allow.
+    assert {"xformers", "torchcodec", "brotlicffi"} <= from_pypi
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("version", "still_dropped"),
+    [("0.0.20", True), ("0.0.30", False)],
+)
+def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
+    """xformers carries a floor because the released metadata does, so a PyPI version below
+    it is not a usable answer and the drop has to stay."""
+    dropped = _dropped_names(f'@{{ "xformers" = @("{version}") }}')
+    assert ("xformers" in dropped) is still_dropped
+
+
+# Configs install.ps1's subset parser got wrong; expectations derived with tomllib.
+UV_CONFIG_CASES = [
+    # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
+    ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),
+    ("value_hash_nospace", "uv.toml", f'index-url = "{CORP}"#corp\n', False),
+    # A quoted key is the same key as the bare spelling.
+    ("quoted_key", "uv.toml", f'"index-url" = "{CORP}"\n', False),
+    # A dotted key is the same statement as writing the leaf under [pip].
+    ("dotted_no_index", "uv.toml", "pip.no-index = true\n", False),
+    ("dotted_index_url", "uv.toml", f'pip.index-url = "{CORP}"\n', False),
+    ("pyproject_dotted", "pyproject.toml", "[tool.uv]\npip.no-index = true\n", False),
+    # The other side of the same scan: a `#` INSIDE a string is not a comment.
+    ("fragment_kept", "uv.toml", f'index-url = "{CORP}#frag"\n', False),
+    ("url_only_in_comment", "uv.toml", f'# index-url = "{CORP}"\n', True),
+    # Cases that must keep answering True, so the fix cannot be a blanket "not reachable".
+    ("extra_index_only", "uv.toml", f'extra-index-url = "{CORP}"\n', True),
+    ("index_default_false", "uv.toml", f'[[index]]\nurl = "{CORP}"\ndefault = false\n', True),
+    ("explicit_pypi", "uv.toml", f'index-url = "{PYPI}"\n', True),
+    ("no_index_false", "uv.toml", f'no-index = false\nindex-url = "{PYPI}"\n', True),
+    # [pip] outranks the top level, in both directions.
+    (
+        "pip_pypi_beats_top_corp",
+        "uv.toml",
+        f'index-url = "{CORP}"\n[pip]\nindex-url = "{PYPI}"\n',
+        True,
+    ),
+    (
+        "pip_corp_beats_top_pypi",
+        "uv.toml",
+        f'index-url = "{PYPI}"\n[pip]\nindex-url = "{CORP}"\n',
+        False,
+    ),
+    # A host that merely contains the name is not PyPI.
+    ("lookalike_host", "uv.toml", 'index-url = "https://pypi.org.evil.com/simple"\n', False),
+    # An inline `index = [...]` is not modelled, and unreadable resolves to "not PyPI".
+    ("inline_index_array", "uv.toml", f'index = [{{ url = "{CORP}", default = true }}]\n', False),
+]
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("name", "filename", "text", "reaches"),
+    UV_CONFIG_CASES,
+    ids = [case[0] for case in UV_CONFIG_CASES],
+)
+def test_a_uv_config_decides_whether_pypi_is_in_the_resolve(
+    tmp_path, name, filename, text, reaches
+):
+    work = tmp_path / name
+    work.mkdir()
+    (work / filename).write_text(text, encoding = "utf-8")
+    # APPDATA/ProgramData would let the developer's own uv.toml decide the answer.
+    out = _run(f"""
+Remove-Item Env:UV_OFFLINE,Env:PIP_NO_INDEX,Env:UV_DEFAULT_INDEX,Env:UV_INDEX_URL,\
+    Env:PIP_INDEX_URL,Env:UV_CONFIG_FILE,Env:UV_NO_CONFIG -ErrorAction SilentlyContinue
+$env:APPDATA = ''
+$env:ProgramData = ''
+Set-Location -LiteralPath '{work}'
+[string](Test-WoaResolveReachesPyPI)
+""")
+    assert out == str(reaches), f"{name}: expected reaches={reaches}, got {out}"

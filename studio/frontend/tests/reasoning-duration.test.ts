@@ -126,6 +126,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>First</think>",
       structuredReasoningContinues: true,
+      hasStructuredReasoning: true,
     },
   );
   assert.deepEqual(
@@ -136,6 +137,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "<think>Last thought</think>Answer",
       structuredReasoningContinues: false,
+      hasStructuredReasoning: true,
     },
   );
   assert.deepEqual(
@@ -146,6 +148,7 @@ test("keeps structured reasoning active only when it is the final content", () =
     {
       text: "Preface<think>First thought</think>",
       structuredReasoningContinues: true,
+      hasStructuredReasoning: true,
     },
   );
 });
@@ -154,8 +157,7 @@ test("keeps a coalesced reasoning group growing across atomic blocks", () => {
   let now = 1_770_000_000_000;
   const tracker = createReasoningDurationTracker(() => now);
 
-  // A provider that closes every reasoning block in its own chunk still
-  // belongs to ONE rendered group, so the timer must span all of them.
+  // Per-chunk reasoning blocks are one rendered group, so the timer spans all of them.
   tracker.startGroup();
   tracker.resumeGroup(0, "first block".length);
   tracker.finishGroup();
@@ -164,7 +166,6 @@ test("keeps a coalesced reasoning group growing across atomic blocks", () => {
   tracker.resumeGroup(0, "first blocksecond block".length);
   tracker.finishGroup();
 
-  // The answer that follows adds no reasoning text, so the timer stops here.
   now += 3_000;
   tracker.resumeGroup(0, "first blocksecond block".length);
   tracker.finishGroup();
@@ -179,8 +180,6 @@ test("never persists a hole when one delta reveals several groups", () => {
   let now = 1_770_000_000_000;
   const tracker = createReasoningDurationTracker(() => now);
 
-  // Index 0 was never started explicitly: it became visible and closed inside
-  // the same chunk that revealed index 1.
   tracker.startGroup(1);
   now += 4_000;
   tracker.finishGroup();
@@ -218,9 +217,7 @@ test("lastReasoningGroupTextLength measures only the last reasoning group", () =
     ]),
     3,
   );
-  // The answer that follows is not reasoning, so it does not count -- but the
-  // group itself is still measured, which is what lets resumeGroup see that the
-  // reasoning has stopped growing.
+  // The group is still measured so resumeGroup can see the reasoning stopped growing.
   assert.equal(
     lastReasoningGroupTextLength([
       { type: "reasoning", text: "aaaa" },

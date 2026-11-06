@@ -3,47 +3,54 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { CustomReasoningConfig } from "../src/features/chat/custom-reasoning.ts";
 
 import { installLocalStorageFake, readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
 
-const { clearProviderModelCatalog, setProviderModelCatalog } = await import("../src/features/chat/model-catalog.ts");
 const { getExternalReasoningCapabilities } = await import(
   "../src/features/chat/provider-capabilities.ts"
 );
+const { requestParsesThinkTags } = await import(
+  "../src/features/chat/utils/chat-generation-recovery.ts"
+);
+
+const { customReasoningRequestFields } = await import("../src/features/chat/custom-reasoning.ts");
 
 type Caps = ReturnType<typeof getExternalReasoningCapabilities>;
 
 // Runs the adapter's own external reasoning expressions, so the test follows the shipped code.
-function externalReasoningFields(caps: Caps, reasoningEnabled: boolean): unknown {
+function externalReasoningFields(
+  caps: Caps,
+  reasoningEnabled: boolean,
+  effort = "high",
+  externalProvider?: { providerType: string; reasoningConfig?: CustomReasoningConfig },
+): unknown {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   const enabledAt = adapter.indexOf("const externalReasoningEnabled =");
-  const fieldsAt = adapter.indexOf("...(externalReasoningCaps.supportsReasoning", enabledAt);
+  const fieldsAt = adapter.indexOf("const externalReasoningFields", enabledAt);
   assert.ok(enabledAt > 0 && fieldsAt > enabledAt, "the adapter's external reasoning fields moved");
   const enabled = adapter.slice(adapter.indexOf("=", enabledAt) + 1, adapter.indexOf(";", enabledAt));
-  const fields = adapter.slice(fieldsAt + 3, adapter.indexOf(": {}),", fieldsAt) + ": {})".length);
+  const fields = adapter.slice(adapter.indexOf("=", fieldsAt) + 1, adapter.indexOf(";", fieldsAt)).trim();
   const build = new Function(
     "externalReasoningCaps",
     "reasoningEnabled",
     "selectedExternalEffort",
     "fallbackExternalEffort",
+    "externalProvider",
+    "customReasoningRequestFields",
     `const externalReasoningEnabled = ${enabled};\nreturn ${fields};`,
   );
-  return build(caps, reasoningEnabled, "high", "high");
+  return build(caps, reasoningEnabled, effort, "high", externalProvider, customReasoningRequestFields);
 }
 
 test("an always-on catalog model sends thinking on even when the chat stored it off", () => {
-  setProviderModelCatalog("openrouter", [{ id: "acme/always-thinking", reasoning: { mandatory: true } }], 1);
-  try {
-    const caps = getExternalReasoningCapabilities("openrouter", "acme/always-thinking");
-    assert.equal(caps.reasoningStyle, "enable_thinking");
-    assert.equal(caps.supportsReasoningOff, false);
-    assert.deepEqual(externalReasoningFields(caps, false), { thinking: { type: "enabled" } });
-  } finally {
-    clearProviderModelCatalog("openrouter");
-  }
+  const magistral = getExternalReasoningCapabilities("mistral", "magistral-small");
+  assert.equal(magistral.reasoningStyle, "enable_thinking");
+  assert.equal(magistral.supportsReasoningOff, false);
+  assert.deepEqual(externalReasoningFields(magistral, false), { thinking: { type: "enabled" } });
 });
 
 test("every Thinking control resolves reasoning for the id the adapter sends, not the router's last pick", () => {
@@ -60,14 +67,33 @@ test("every Thinking control resolves reasoning for the id the adapter sends, no
 });
 
 test("a toggleable catalog model still sends the stored choice", () => {
-  setProviderModelCatalog("openrouter", [{ id: "acme/toggle-thinking", reasoning: { mandatory: false } }], 1);
-  try {
-    const caps = getExternalReasoningCapabilities("openrouter", "acme/toggle-thinking");
-    assert.equal(caps.reasoningStyle, "enable_thinking");
-    assert.equal(caps.supportsReasoningOff, true);
-    assert.deepEqual(externalReasoningFields(caps, false), { thinking: { type: "disabled" } });
-    assert.deepEqual(externalReasoningFields(caps, true), { thinking: { type: "enabled" } });
-  } finally {
-    clearProviderModelCatalog("openrouter");
+  const qwen = getExternalReasoningCapabilities("qwen", "qwen3.5-plus");
+  assert.equal(qwen.reasoningStyle, "enable_thinking");
+  assert.equal(qwen.supportsReasoningOff, true);
+  assert.deepEqual(externalReasoningFields(qwen, false), { thinking: { type: "disabled" } });
+  assert.deepEqual(externalReasoningFields(qwen, true), { thinking: { type: "enabled" } });
+});
+
+test("the shipped adapter sends Custom controls only for the selected connection's opt-in", () => {
+  for (const style of ["reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"] as const) {
+    const reasoningConfig = { enabled: true, style };
+    const custom = { providerType: "custom", reasoningConfig };
+    const caps = getExternalReasoningCapabilities("custom", "same-model", { reasoningConfig });
+    const effort = style === "reasoning_effort" || style === "reasoning";
+    assert.deepEqual(externalReasoningFields(caps, true, "low", custom),
+      effort ? { reasoning_effort: "low" } : { thinking: { type: "enabled" } });
+    assert.deepEqual(externalReasoningFields(caps, false, "high", custom),
+      effort ? { reasoning_effort: "none" } : { thinking: { type: "disabled" } });
+    const disabled = { providerType: "custom", reasoningConfig: { ...reasoningConfig, enabled: false } };
+    assert.deepEqual(externalReasoningFields(caps, true, "high", disabled), {});
+    assert.deepEqual(externalReasoningFields(caps, true, "high", { providerType: "custom" }), {});
   }
+});
+
+test("an external effort of none reads as thinking off", () => {
+  const gpt = getExternalReasoningCapabilities("openai", "gpt-5.1");
+  assert.equal(gpt.reasoningStyle, "reasoning_effort");
+  assert.ok(gpt.reasoningEffortLevels.includes("none"));
+  assert.equal(requestParsesThinkTags(externalReasoningFields(gpt, true, "none") as object), false);
+  assert.equal(requestParsesThinkTags(externalReasoningFields(gpt, true, "high") as object), true);
 });

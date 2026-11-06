@@ -20,6 +20,8 @@ if (isTauri) {
 
 const initialApiBase = apiBase
 
+const LOOPBACK_BASE_PORT = /^https?:\/\/127\.0\.0\.1:(\d+)$/
+
 export function resetApiBase() {
   apiBase = initialApiBase
 }
@@ -32,9 +34,31 @@ export function getApiBase(): string {
   return apiBase
 }
 
+/** null when no port is known yet (the placeholder base is port 0). */
+export function getApiPort(): number | null {
+  const match = LOOPBACK_BASE_PORT.exec(apiBase)
+  if (!match) {
+    return null
+  }
+  const port = Number(match[1])
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null
+}
+
 export function apiUrl(path: string): string {
   if (path.startsWith('http')) return path
   return `${apiBase}${path}`
+}
+
+/** True when url is served by this Studio backend, so a request to it may carry the sign-in. */
+export function isStudioUrl(url: string): boolean {
+  const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
+  try {
+    // Resolved, not prefixed: "HTTPS://x" and "//x" are other hosts.
+    const studio = new URL(apiBase || page)
+    return new URL(url, studio).origin === studio.origin
+  } catch {
+    return false
+  }
 }
 
 export { isTauri }

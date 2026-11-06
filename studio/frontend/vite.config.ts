@@ -5,6 +5,12 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { type Plugin, defineConfig } from "vite";
+import { chatPagePreload } from "./vite-plugin-chat-preload";
+import { childSelectorOrder } from "./vite-plugin-child-selectors";
+import { hasAnchorOrder } from "./vite-plugin-has-anchor";
+import { katexWoff2Only } from "./vite-plugin-katex-woff2";
+import { viewportMediaGate } from "./vite-plugin-viewport-media";
+import { previewRuntime } from "./vite-preview-runtime.ts";
 
 function smokeModuleDelay(): Plugin {
   const match = process.env.SMOKE_MODULE_DELAY_MATCH;
@@ -24,11 +30,13 @@ function smokeModuleDelay(): Plugin {
   };
 }
 
-// https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), smokeModuleDelay()],
-  // Keep an unrelated PostCSS config in an ancestor directory from leaking
-  // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
+  // concurrent browser checks use separate dependency optimizer caches.
+  cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
+  // Reasoning's highlighter loads only the grammar it needs in its module worker.
+  worker: { format: "es" },
+  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only()],
+  // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {
       plugins: [],
@@ -46,6 +54,11 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/v1": {
+        target: "http://127.0.0.1:8888",
+        changeOrigin: true,
+      },
+      // MCP setup snippets use the page's origin.
+      "/mcp": {
         target: "http://127.0.0.1:8888",
         changeOrigin: true,
       },
@@ -83,6 +96,16 @@ export default defineConfig({
   build: {
     commonjsOptions: {
       include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
+    },
+    rolldownOptions: {
+      // import() of a statically imported module defers nothing and splits extra startup chunks,
+      // so fail the build rather than warn.
+      onLog(level, log, handler) {
+        if (log.code === "INEFFECTIVE_DYNAMIC_IMPORT") {
+          throw new Error(log.message);
+        }
+        handler(level, log);
+      },
     },
   },
 });

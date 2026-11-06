@@ -1,0 +1,19 @@
+{
+  "files": {
+    "LICENSE.laya": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+    "laya/__init__.py": "43e8c7d02969b37381915850cb4970e62b6ea0a328ac26c1efc9fb3fca0916d7",
+    "laya/agent.py": "128567096446c5d39af8e4a3a7c4dd9e32a134a1b099ce5a5eed383beeff1b89",
+    "laya/common.py": "f231d42fcec84da203222fcaa89c083b22776e00341e66e118183d754e1dcabf",
+    "laya/email.py": "481440b9f4dfc1d8c0c297322581ec2ba567f4286c1988c6e0b5163889f32088",
+    "laya/lang.py": "8e84fca6e3fefeeb5ac625733ba12c4be01bf6bb140ada2dea4a21ca52cd2a26",
+    "laya/presets.py": "2a3370f587cae29696bfa487edcc51caf47a211518733fdb192cf6d4eddbf1ea",
+    "laya/router.py": "1bdb5f3eda41a9dafddc3cd0cde150538b1bd36fbc1dba9f9d06ea00c774efa1",
+    "laya/shortlist.py": "0d5a2a0f59ceb3e7fbf1f087864fcce41bb73eb039cf73357792976c10bfdb76"
+  },
+  "license": "Apache-2.0",
+  "package": "laya",
+  "source": "https://pypi.org/project/laya/0.3.5/",
+  "version": "0.3.5",
+  "wheel": "laya-0.3.5-py3-none-any.whl",
+  "wheel_sha256": "4c57f64cbaf893bb5c7b4affddc2bf21a819f55df51941689f11868583be2903"
+}
