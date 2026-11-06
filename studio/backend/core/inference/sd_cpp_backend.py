@@ -86,6 +86,7 @@ from core.inference.sd_cpp_args import (
     SdCppModelFiles,
     build_img_gen_request,
     device_backend_flags,
+    is_device_oom_text,
     is_ggml_unsupported_op_abort,
     offload_flags,
     sd_cli_output_paths,
@@ -2074,6 +2075,42 @@ def output_shows_vulkan_device_lost(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _VULKAN_DEVICE_LOST_MARKERS)
 
 
+# sd.cpp's model manager / graph-cut executor failing a render for want of device memory. Read only from a FAILED
+# render's output: the capacity warning alone also precedes renders that recover.
+_RENDER_DEVICE_MEMORY_FAILURE_MARKERS: tuple[str, ...] = (
+    "failed during weight preparation",
+    "cannot make enough memory available",
+)
+
+
+def _render_failed_for_device_memory(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    if is_device_oom_text(text):
+        return True
+    lowered = str(text).lower()
+    return any(marker in lowered for marker in _RENDER_DEVICE_MEMORY_FAILURE_MARKERS)
+
+
+_PINNED_DIFFUSION_DEVICE_RE = re.compile(r"(?:^|,)diffusion=([^,]+)")
+
+
+def _with_text_encoder_on_cpu(flags: "tuple[str, ...] | list[str]") -> tuple[str, ...]:
+    """``flags`` with ``--clip-on-cpu`` added. A ``--backend`` device pin is rebuilt so its per-module ``te=`` entry
+    says cpu too: sd.cpp joins repeated ``--backend`` values and an explicit ``te=CUDA0`` would win over the flag."""
+    pinned: Optional[str] = None
+    items = list(flags)
+    for i, flag in enumerate(items[:-1]):
+        if flag == "--backend":
+            match = _PINNED_DIFFUSION_DEVICE_RE.search(items[i + 1])
+            if match:
+                pinned = match.group(1)
+    out = [*without_device_backend_flags(items), "--clip-on-cpu"]
+    if pinned:
+        out += device_backend_flags(pinned, out)
+    return tuple(out)
+
+
 # Appended when a lost Vulkan device repeats and no CPU fallback applies. Must match no failure marker.
 _REPEATED_DEVICE_LOSS_HINT = (
     "The GPU lost its Vulkan device twice in a row (usually a driver reset during the render). Try Low VRAM "
@@ -3161,6 +3198,8 @@ class SdCppDiffusionBackend:
         self._stopping_servers = 0
         # Set once the GPU graph is unrunnable (ggml unsupported-op abort); CPU restarts once per load.
         self._cpu_backend_forced = False
+        # Set once a render that ran short of device memory moved the text encoder to the CPU; once per load.
+        self._text_encoder_moved_to_cpu = False
 
     @property
     def is_loaded(self) -> bool:
@@ -3723,6 +3762,7 @@ class SdCppDiffusionBackend:
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
                 # this graph.
                 self._cpu_backend_forced = False
+                self._text_encoder_moved_to_cpu = False
                 server: Optional[SdCppServer] = None
                 if mode == "server":
                     assert server_binary is not None
@@ -4870,7 +4910,14 @@ class SdCppDiffusionBackend:
                     exc = first_exc
                     while True:
                         moved_to_cpu = False
+                        te_cpu_flags: Optional[tuple[str, ...]] = None
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
+                        if server is None:
+                            moved = self._restart_server_with_text_encoder_on_cpu(
+                                state, str(exc), cancel
+                            )
+                            if moved is not None:
+                                server, te_cpu_flags = moved
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
                             if device_losses >= 2:
@@ -4891,6 +4938,9 @@ class SdCppDiffusionBackend:
                             raise exc
                         old_server = state.server
                         state = replace(state, server = server)
+                        if te_cpu_flags is not None:
+                            # Later respawns and status follow the server: the text encoder now runs on the CPU.
+                            state = replace(state, offload_flags = te_cpu_flags)
                         if moved_to_cpu:
                             # Placement follows the server: the flags the CPU server got, no Vulkan pin.
                             state = replace(
@@ -5053,6 +5103,53 @@ class SdCppDiffusionBackend:
             threads = state.threads,
             env = state.spawn_env(),
         )
+
+    def _restart_server_with_text_encoder_on_cpu(
+        self, state: _SdState, error_text: str, cancel: threading.Event
+    ) -> Optional[tuple[SdCppServer, tuple[str, ...]]]:
+        """Restart this checkpoint's sd-server with its text encoder on the CPU after a render failed for want of
+        device memory, once per load; None if that does not apply. Returns the server and the flags it got.
+
+        sd.cpp's auto-fit plans from the VRAM free when the server starts. When something else takes VRAM after the
+        load (on a desktop card: the display, the browser, another app), a render fails part way with "cannot make
+        enough memory available" / "failed during weight preparation", reported only as "generate_image returned no
+        results", and every later render on that server fails the same way. The text encoder (MOSS-Image's
+        Qwen3.5-9B is 8 GB) then competes with the DiT for what is left: its first segment alone wants 1.5 GB. Off the
+        GPU it needs none, the DiT keeps the card, and the encode runs once per prompt on the CPU."""
+        if self._text_encoder_moved_to_cpu or not _render_failed_for_device_memory(error_text):
+            return None
+        if (
+            self._cpu_backend_forced
+            or state.device == "cpu"
+            or "--clip-on-cpu" in state.offload_flags
+        ):
+            return None
+        if state.server is None or cancel.is_set():
+            return None
+        flags = _with_text_encoder_on_cpu(state.offload_flags)
+        if not self._begin_replacement(state):
+            return None
+        logger.warning(
+            "sd-server ran short of device memory during a render; restarting it with the text encoder on the "
+            "CPU and retrying once (the DiT stays on the GPU). Details: %s",
+            error_text[:600],
+        )
+        self._text_encoder_moved_to_cpu = True
+        state.server.stop()
+        server = SdCppServer(state.server.binary)
+        with self._lock:
+            self._pending_server = server
+        started = self._start_replacement(
+            state,
+            server,
+            cancel,
+            vae_format = state.vae_format,
+            offload = list(flags),
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = state.spawn_env(),
+        )
+        return None if started is None else (started, flags)
 
     def _restart_server_on_cpu_backend(
         self,
