@@ -946,6 +946,11 @@ def exercise_floating_monitor_geometry(page):
     page.set_viewport_size(narrow_viewport)
     wait_for_box("narrow viewport", lambda box: is_inside(box, narrow_viewport))
     page.set_viewport_size(viewport)
+    # The panel is anchored to the right edge here, so the restore moves it from the narrow viewport's spot back to
+    # the right. That spot is inside the restored viewport too, so is_inside alone can pass a frame before the
+    # layout catches up. A drag grabbed then starts at left 0 and ends at left 0, so the horizontal axis keeps its
+    # right-edge anchor, and the resize below snaps the panel back right with only 260 px of room to grow.
+    wait_for_settled(monitor)
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
     resize_start = drag_monitor_to(0, 0)
@@ -961,8 +966,7 @@ def exercise_floating_monitor_geometry(page):
             }"""
         )
 
-    # max-width/height follow the viewport through a ResizeObserver, so wait for them to allow the target before
-    # dragging. Failing runs stopped at 256-260 px wide, the narrow viewport's size, even after three drags.
+    # max-width/height are the room left of the panel's spot, so wait for them to allow the target before dragging.
     deadline = time.time() + 5
     limits = size_limits()
     while (
