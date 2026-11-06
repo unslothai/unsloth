@@ -49,3 +49,18 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
         dict.fromkeys(["owner/adapter", name, expected])
     )
     assert fetches == []
+
+
+def test_unmapped_prequantized_base_still_lists_the_stripped_repo(monkeypatch):
+    pytest.importorskip("unsloth")
+    from unsloth.models import loader, loader_utils
+    from core.inference import worker
+
+    monkeypatch.setattr(loader_utils, "_get_new_mapper", lambda: ({}, {}, {}, {}, {}))
+    monkeypatch.setattr(loader, "ALLOW_PREQUANTIZED_MODELS", False)
+    mc = SimpleNamespace(identifier = "owner/adapter", base_model = "owner/unmapped-bnb-4bit")
+    assert worker._load_download_repos(mc, True, SimpleNamespace(device = "cuda")) == [
+        "owner/adapter",
+        "owner/unmapped-bnb-4bit",
+        "owner/unmapped",
+    ]

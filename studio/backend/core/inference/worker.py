@@ -601,8 +601,9 @@ def _load_download_repos(
                     and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
-                # Unknown names would fetch the remote mapper, which only raises or returns the base itself.
-                name = str(base).lower()
+                # Unknown names resolve to themselves; get_model_name would fetch the remote mapper for nothing.
+                mapped = str(base)
+                name = mapped.lower()
                 tables = (
                     loader_utils.FLOAT_TO_INT_MAPPER,
                     loader_utils.INT_TO_FLOAT_MAPPER,
