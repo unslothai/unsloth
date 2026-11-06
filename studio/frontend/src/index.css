@@ -6382,23 +6382,23 @@ html.dark[data-glass="liquid-3d"] {
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .099), rgb(255 255 255 / .02) 62%, rgb(255 255 255 / .04));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .139), inset 0 -2px 5px rgb(255 255 255 / .03), inset 0 0 0 1px rgb(255 255 255 / .035);
 }
-/* The composer keeps the full sheen. */
-html[data-glass^="liquid"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+/* The composer and files panel keep the full sheen. */
+html[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .066), transparent 58%), linear-gradient(rgb(255 255 255 / .018), transparent 45%, rgb(255 255 255 / .014));
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .48), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
 }
-html.dark[data-glass^="liquid"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html.dark[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .022), transparent 58%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .128), inset 0 0 0 1px rgb(255 255 255 / .04);
 }
-html[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .165), rgb(255 255 255 / .022) 30%, transparent 55%, rgb(255 255 255 / .022) 80%, rgb(255 255 255 / .099));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .385), inset 0 16px 30px -20px rgb(255 255 255 / .44), inset 0 -18px 34px -20px rgb(255 255 255 / .33), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .083), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .061), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .021), transparent 50%);
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .33), rgb(255 255 255 / .077) 62%, rgb(255 255 255 / .154));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .44), inset 0 -2px 5px rgb(255 255 255 / .165), inset 0 0 0 1px rgb(255 255 255 / .11);
 }
-html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .066), rgb(255 255 255 / .011) 30%, transparent 55%, rgb(255 255 255 / .011) 80%, rgb(255 255 255 / .039));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121), inset 0 16px 30px -20px rgb(255 255 255 / .121), inset 0 -18px 34px -20px rgb(255 255 255 / .077);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .024), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .012), transparent 62%);
@@ -6575,7 +6575,7 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* The files panel supplies the backdrop. Keep its header action translucent over it. */
+/* Translucent, so the files panel glass shows through its header action. */
 :is(html[data-glass][data-chat-wallpaper-ready], html[data-glass="macos"]) .unsloth-files-panel-action {
   background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
   background-image: var(--glass-sheen, none);
@@ -6717,7 +6717,7 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover
 }
 
 /* An active pill keeps its own fill on hover; a white Liquid hover would also vanish on the light composer. */
-html[data-glass^="liquid"]:not(.dark) .unsloth-composer-surface {
+html[data-glass^="liquid"]:not(.dark) :is(.unsloth-composer-surface, .unsloth-files-panel) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 /* Menus that pin their fill with a layered !important read --sidebar or --dropdown-lift-surface, so point those at the glass. */

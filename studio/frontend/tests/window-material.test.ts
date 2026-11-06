@@ -247,11 +247,11 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 	}
 });
 
-test("glass sheen runs at 90% except on the composer", () => {
+test("glass sheen runs at 90% except on the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
-	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
+	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
 
 test("grouped glass cards get more blur and a lighter fill than single controls", () => {
@@ -321,7 +321,7 @@ test("light glass draws no grey outlines outside the composer", () => {
 	}
 	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
-	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
+	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });
 
 test("light glass pages drop outlines from boxed panels but keep checkboxes", () => {
