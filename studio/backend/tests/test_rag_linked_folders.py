@@ -3326,6 +3326,7 @@ def test_an_unlink_cancel_only_reaches_its_own_account():
 @requires_sqlite_vec
 def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddings, monkeypatch):
     """A vault of one-chunk notes paid one encode call per file before (#16715)."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
     source, folder = _folder(rag_home)
     for i in range(12):
         (source / f"note-{i:02d}.md").write_text(f"note {i} searchable words", encoding = "utf-8")
@@ -3363,6 +3364,7 @@ def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddin
 @requires_sqlite_vec
 def test_large_files_stay_within_the_parse_workers(rag_home, stub_embeddings, monkeypatch):
     """Only small files queue past the workers; big ones would hold snapshots and chunks."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
     source, folder = _folder(rag_home)
     for i in range(8):
         (source / f"doc-{i}.txt").write_text(f"document {i} words", encoding = "utf-8")

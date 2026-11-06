@@ -1336,6 +1336,12 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
+def batches_across_documents(model_name: str | None = None) -> bool:
+    """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
+    CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
+    return active_backend_is_llama(model_name) or _device() != "cpu"
+
+
 def _llama_pooling(name: str, served = None) -> str | None:
     try:
         from .embed_llama_server import LlamaServerBackend, _gguf_pooling

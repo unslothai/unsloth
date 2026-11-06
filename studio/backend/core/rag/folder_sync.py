@@ -1699,7 +1699,11 @@ def _reconcile_folder(job_id: str) -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     account = current_account()
     workers = _folder_ingest_workers()
-    in_flight_limit = _folder_ingest_in_flight(workers)
+    in_flight_limit = (
+        _folder_ingest_in_flight(workers)
+        if ingestion.embeddings.batches_across_documents(embedding_model)
+        else workers
+    )
     stage_slots = threading.Semaphore(workers)
     in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
 

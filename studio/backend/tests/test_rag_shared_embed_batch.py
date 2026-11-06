@@ -16,12 +16,21 @@ from contextlib import contextmanager
 
 import pytest
 
-from core.rag import embeddings, ingestion, store
+from core.rag import config, embeddings, ingestion, store
 from storage import rag_db
 
 requires_sqlite_vec = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
 )
+
+
+_real_gate = embeddings.batches_across_documents
+
+
+@pytest.fixture(autouse = True)
+def _embedder_on_an_accelerator(monkeypatch):
+    # The stub embedder resolves to sentence-transformers on CPU, which keeps per-document calls.
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
 
 
 def _write(tmp_path, name, text):
@@ -44,11 +53,12 @@ def _wait_finished(job_id, timeout = 60.0):
 def _documents_still_parsing(monkeypatch):
     """Stands in for files a sync is still parsing, so batches wait for them."""
     monkeypatch.setattr(ingestion, "_EMBED_LINGER_SECONDS", 30.0)
-    ingestion._embed_queue.expect()
+    model = config.effective_embedding_model()
+    ingestion._embed_queue.expect(model)
     try:
         yield
     finally:
-        ingestion._embed_queue.unexpect()
+        ingestion._embed_queue.unexpect(model)
 
 
 def _record_batches(monkeypatch):
@@ -325,7 +335,7 @@ def test_the_queue_keeps_nothing_after_a_failed_document(rag_home, stub_embeddin
     assert _wait_finished(good[1])["status"] == "completed"
 
     assert not ingestion._embed_queue._pending
-    assert ingestion._embed_queue._expected == 0
+    assert not ingestion._embed_queue._expected
 
 
 @pytest.mark.parametrize("documents", (2, 9))
@@ -345,6 +355,27 @@ def test_many_small_documents_need_far_fewer_encode_calls(
 
     assert sum(len(batch) for batch in batches) == documents
     assert len(batches) == 1, batches
+
+
+def test_cpu_sentence_transformers_keeps_one_call_per_document(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """CPU encode pads every text to the batch's longest, which costs more than the calls it saves."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", _real_gate)
+    assert not embeddings.batches_across_documents(None)
+    batches = _record_batches(monkeypatch)
+    scope = store.kb_scope("K1")
+    slots = threading.Semaphore(2)
+    with _documents_still_parsing(monkeypatch):
+        jobs = [
+            _start(scope, tmp_path, f"note{i}.txt", f"note {i} searchable words", slots)
+            for i in range(4)
+        ]
+    for _, job_id in jobs:
+        assert _wait_finished(job_id)["status"] == "completed"
+
+    assert sorted(len(batch) for batch in batches) == [1, 1, 1, 1], batches
+    assert not ingestion._embed_queue._pending
 
 
 def test_two_accounts_never_share_a_batch(monkeypatch):
@@ -390,3 +421,33 @@ def test_two_accounts_never_share_a_batch(monkeypatch):
     assert sorted(len(batch) for batch in seen) == [1, 1], seen
     assert sorted(batch[0] for batch in seen) == ["acct-1 text", "acct-2 text"]
     assert set(results) == {"acct-1", "acct-2"}
+
+
+def test_a_large_document_does_not_hold_back_a_small_one(monkeypatch):
+    """The small one's progress callback, and with it the unlink check, must run within a batch."""
+    monkeypatch.setattr(ingestion, "_EMBED_BATCH", 4)
+    queue = ingestion._EmbedQueue()
+    big = ingestion._EmbedRequest([f"big {i}" for i in range(40)], None)
+    small = ingestion._EmbedRequest(["small"], None)
+    queue._pending += [big, small]
+
+    pieces = queue._take(big.key)
+
+    assert (small, 0, 1) in pieces
+    assert sum(end - start for _, start, end in pieces) == 4
+    assert queue._pending == [big]
+
+
+def test_a_parse_under_another_model_does_not_hold_a_batch(monkeypatch):
+    monkeypatch.setattr(ingestion, "_EMBED_LINGER_SECONDS", 30.0)
+    monkeypatch.setattr(
+        embeddings, "encode_with_identity", lambda texts, **kwargs: ([[1.0]] * len(texts), "id")
+    )
+    queue = ingestion._EmbedQueue()
+    queue.expect("other-model")
+    started = time.monotonic()
+    vectors, _, _ = queue.embed(["a note"], None)
+    assert vectors == [[1.0]]
+    assert time.monotonic() - started < 5
+    queue.unexpect("other-model")
+    assert not queue._expected

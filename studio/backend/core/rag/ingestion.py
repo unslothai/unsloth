@@ -171,15 +171,22 @@ class _EmbedQueue:
         self._pending: list[_EmbedRequest] = []
         # Keys with a batch in flight: one at a time per account and model.
         self._encoding: set = set()
-        self._expected = 0
+        # Documents still parsing per key: only those can join that key's batch.
+        self._expected: dict = {}
 
-    def expect(self) -> None:
+    def expect(self, model_name: str | None = None) -> None:
+        key = account_key(model_name or "")
         with self._cond:
-            self._expected += 1
+            self._expected[key] = self._expected.get(key, 0) + 1
 
-    def unexpect(self) -> None:
+    def unexpect(self, model_name: str | None = None) -> None:
+        key = account_key(model_name or "")
         with self._cond:
-            self._expected -= 1
+            left = self._expected.get(key, 0) - 1
+            if left > 0:
+                self._expected[key] = left
+            else:
+                self._expected.pop(key, None)
             self._cond.notify_all()
 
     def _queued(self, key) -> int:
@@ -191,27 +198,31 @@ class _EmbedQueue:
 
     def _linger(self, key) -> None:
         deadline = time.monotonic() + _EMBED_LINGER_SECONDS
-        while self._expected > 0 and self._queued(key) < _EMBED_BATCH:
+        while self._expected.get(key, 0) > 0 and self._queued(key) < _EMBED_BATCH:
             left = deadline - time.monotonic()
             if left <= 0:
                 return
             self._cond.wait(left)
 
     def _take(self, key) -> list[tuple[_EmbedRequest, int, int]]:
+        # Shared out across requests, so a large document cannot hold back the others' progress and
+        # cancel checks (both run in on_progress) for its whole pass.
+        requests = [request for request in self._pending if request.key == key]
         room = max(1, _EMBED_BATCH)
         pieces = []
-        for request in list(self._pending):
-            if room == 0:
-                break
-            if request.key != key:
-                continue
-            start = request.scheduled
-            end = min(len(request.texts), start + room)
-            pieces.append((request, start, end))
-            request.scheduled = end
-            room -= end - start
-            if end == len(request.texts):
-                self._pending.remove(request)
+        while room and requests:
+            share = max(1, room // len(requests))
+            for request in list(requests):
+                if not room:
+                    break
+                start = request.scheduled
+                end = min(len(request.texts), start + min(share, room))
+                pieces.append((request, start, end))
+                request.scheduled = end
+                room -= end - start
+                if end == len(request.texts):
+                    requests.remove(request)
+                    self._pending.remove(request)
         return pieces
 
     @staticmethod
@@ -325,8 +336,22 @@ def _embed_pass(
     embedder swapped part way and the vectors therefore span two spaces."""
     if not texts:
         return [], embeddings.embedding_identity(model_name), False
-    vectors, identity, changed = _embed_queue.embed(texts, model_name, on_progress)
-    return vectors, identity or embeddings.embedding_identity(model_name), changed
+    if embeddings.batches_across_documents(model_name):
+        vectors, identity, changed = _embed_queue.embed(texts, model_name, on_progress)
+        return vectors, identity or embeddings.embedding_identity(model_name), changed
+    vectors: list = []
+    identity: str | None = None
+    changed = False
+    for i in range(0, len(texts), _EMBED_BATCH):
+        out, batch_identity = embeddings.encode_with_identity(
+            texts[i : i + _EMBED_BATCH], model_name = model_name, normalize = True
+        )
+        changed = changed or (identity is not None and batch_identity != identity)
+        identity = batch_identity
+        vectors.extend(out)
+        if on_progress is not None:
+            on_progress(min(i + _EMBED_BATCH, len(texts)), len(texts))
+    return vectors, identity, changed
 
 
 def _embed_all(
@@ -450,14 +475,15 @@ def _retire_orphan_after_failure(
 
 
 class _ExpectedEmbed:
-    def __init__(self) -> None:
-        _embed_queue.expect()
+    def __init__(self, model_name: str | None) -> None:
+        self._model_name = model_name
+        _embed_queue.expect(model_name)
         self._pending = True
 
     def arrive(self) -> None:
         if self._pending:
             self._pending = False
-            _embed_queue.unexpect()
+            _embed_queue.unexpect(self._model_name)
 
 
 class _StageSlot:
@@ -491,7 +517,7 @@ def _run(
 ) -> None:
     conn = None
     slot = _StageSlot(stage_slots)
-    expected = _ExpectedEmbed()
+    expected = _ExpectedEmbed(model_name)
     try:
         slot.acquire()
         conn = rag_db.get_connection()
@@ -594,7 +620,7 @@ def _run(
             _progress(conn, job_id, "embedding", embedded_progress)
 
         # Below a full batch, give the slot up so other documents can parse and join the batch.
-        if len(chunks) < _EMBED_BATCH:
+        if len(chunks) < _EMBED_BATCH and embeddings.batches_across_documents(model_name):
             slot.release()
         expected.arrive()
         vectors, identity = _embed_all([c.text for c in chunks], model_name, report_embeddings)
