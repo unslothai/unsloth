@@ -11,7 +11,8 @@ import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
-import { micSendsAudioToModel } from "../utils/mic-target";
+import { maxAudioFilesFor } from "@/lib/audio-utils";
+import { micClipRoom, micSendsAudioToModel } from "../utils/mic-target";
 import {
   currentDictationEntryMode,
   insecureDictationGuidance,
@@ -38,7 +39,11 @@ export function cancelActiveStudioDictation(): void {
   session?.cancel();
 }
 
-type AudioClipTarget = (file: File) => Promise<unknown> | unknown;
+type AudioClipTarget = {
+  add: (file: File) => Promise<unknown> | unknown;
+  /** Files already in the composer, so a recording stops inside what is left of the audio budget. */
+  attached: () => readonly { name: string; type: string; size: number }[];
+};
 // The chat composer that takes the mic's clip; Compare registers none and keeps transcribing.
 let audioClipTarget: AudioClipTarget | null = null;
 
@@ -120,7 +125,17 @@ export class StudioDictationAdapter implements DictationAdapter {
       if (!StudioModelDictationAdapter.isSupported()) {
         throw new Error("Voice recording is not supported in this browser.");
       }
-      return listenForAudioClip(clipTarget);
+      const { params, models, modelLoading, pendingAudioBase64 } =
+        useChatRuntimeStore.getState();
+      const activeModel = modelLoading
+        ? undefined
+        : models.find((model) => model.id === params.checkpoint);
+      const room = micClipRoom(
+        clipTarget.attached(),
+        maxAudioFilesFor(activeModel),
+        !!pendingAudioBase64,
+      );
+      return listenForAudioClip(clipTarget.add, room);
     }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesRecordedAudio(dictationEngine)) {

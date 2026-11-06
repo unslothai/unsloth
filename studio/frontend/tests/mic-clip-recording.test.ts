@@ -18,8 +18,9 @@ class FakeRecorder {
   constructor() {
     lastRecorder = this;
   }
+  limitBytes = 0;
   secondsWithin(maxBytes: number) {
-    assert.equal(maxBytes, MAX);
+    this.limitBytes = maxBytes;
     return 30;
   }
   addEventListener(type: string, listener: (event: { data: Blob }) => void) {
@@ -43,8 +44,16 @@ class FakeRecorder {
 }
 
 const stream = { getTracks: () => [{ stop() {} }] };
+let micOpens = 0;
 Object.defineProperty(globalThis, "navigator", {
-  value: { mediaDevices: { getUserMedia: async () => stream } },
+  value: {
+    mediaDevices: {
+      getUserMedia: async () => {
+        micOpens += 1;
+        return stream;
+      },
+    },
+  },
   configurable: true,
 });
 
@@ -80,6 +89,7 @@ test("a recording stops itself at the audio attachment limit and keeps the clip"
     const session = listenForAudioClip((file) => clips.push(file));
     await flush();
     assert.equal(session.status.type, "running");
+    assert.equal(lastRecorder?.limitBytes, MAX);
     mock.timers.tick(29_999);
     assert.equal(lastRecorder?.state, "recording");
     mock.timers.tick(1);
@@ -122,4 +132,28 @@ test("cancel discards the recording", async () => {
   assert.equal(lastRecorder?.stopCalls, 0);
   assert.equal(lastRecorder?.discarded, true);
   assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+});
+
+test("a recording stops within the room left by earlier attachments", async () => {
+  const session = listenForAudioClip(() => {}, { maxBytes: 1_000_000 });
+  await flush();
+  assert.equal(lastRecorder?.limitBytes, 1_000_000);
+  session.cancel();
+});
+
+test("no room left refuses before opening the mic", async () => {
+  toasts.length = 0;
+  lastRecorder = null;
+  const opensBefore = micOpens;
+  let ended = false;
+  const session = listenForAudioClip(() => {}, { reason: "No room." });
+  session.onEnd?.(() => {
+    ended = true;
+  });
+  await flush();
+  assert.equal(micOpens, opensBefore);
+  assert.equal(lastRecorder, null);
+  assert.equal(ended, true);
+  assert.deepEqual(session.status, { type: "ended", reason: "error" });
+  assert.deepEqual(toasts, ["No room."]);
 });

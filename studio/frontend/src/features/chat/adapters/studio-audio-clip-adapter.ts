@@ -5,7 +5,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { MAX_AUDIO_SIZE, MAX_AUDIO_SIZE_LABEL } from "@/lib/audio-utils";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
-import { micClipFilename } from "../utils/mic-target";
+import { type MicClipRoom, micClipFilename } from "../utils/mic-target";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
   beginDictationSession,
@@ -22,6 +22,7 @@ import {
  *  WAV because the audio attachment path takes it as is; MediaRecorder's webm reads as video. */
 export function listenForAudioClip(
   onClip: (file: File) => Promise<unknown> | unknown,
+  room: MicClipRoom = { maxBytes: MAX_AUDIO_SIZE },
 ): StudioDictationSession {
   beginDictationSession();
   const speechStartCallbacks = new Set<() => void>();
@@ -116,6 +117,15 @@ export function listenForAudioClip(
     },
   };
 
+  if ("reason" in room) {
+    // Refuse before recording rather than after: the attachment adapter would drop the clip.
+    toast.error(room.reason);
+    markDictationFailed();
+    queueMicrotask(() => finish("error"));
+    return session;
+  }
+  const maxBytes = room.maxBytes;
+
   void (async () => {
     const { micDeviceId } = useVoiceSettingsStore.getState();
     const audio: MediaTrackConstraints = {
@@ -143,11 +153,11 @@ export function listenForAudioClip(
       }
       recorder = new PcmRecorder(stream);
       recorder.start();
-      // The attachment refuses a clip over the audio limit, so stop just under it instead.
+      // The attachment refuses a clip over what is left of the audio limit, so stop just under it.
       limitTimer = setTimeout(() => {
         toast.info(`Recording stopped at the ${MAX_AUDIO_SIZE_LABEL} audio limit.`);
         void session.stop();
-      }, recorder.secondsWithin(MAX_AUDIO_SIZE) * 1000);
+      }, recorder.secondsWithin(maxBytes) * 1000);
       stopLevelMeter = startDictationLevelMeter(stream);
       session.status = { type: "running" };
       for (const callback of speechStartCallbacks) callback();

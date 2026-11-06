@@ -15,8 +15,10 @@ import {
 import { shouldSubmitDictation } from "../src/features/chat/utils/dictation-send.ts";
 import {
   micClipFilename,
+  micClipRoom,
   micSendsAudioToModel,
 } from "../src/features/chat/utils/mic-target.ts";
+import { MAX_AUDIO_SIZE } from "../src/lib/audio-utils.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -86,7 +88,7 @@ test("Compare and the adapter route only through the gate", () => {
   );
   assert.match(
     source,
-    /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\)/,
+    /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\.add, room\)/,
   );
 });
 
@@ -138,4 +140,36 @@ test("every route into the chat store carries has_audio_input", () => {
   assert.match(sync.slice(0, 2000), /hasAudioInput: Boolean\(resp\.has_audio_input\)/);
   const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   assert.match(status, /hasAudioInput: status\.has_audio_input \?\? false/);
+});
+
+test("a recording gets the whole audio limit when nothing else is attached", () => {
+  assert.deepEqual(micClipRoom([], 8, false), { maxBytes: MAX_AUDIO_SIZE });
+  // Images do not count against the audio budget.
+  const image = { name: "a.png", type: "image/png", size: 5_000_000 };
+  assert.deepEqual(micClipRoom([image], 8, false), { maxBytes: MAX_AUDIO_SIZE });
+});
+
+test("a recording is capped by the audio already in the composer", () => {
+  const clip = { name: "a.wav", type: "audio/wav", size: 10_000_000 };
+  const m4a = { name: "b.m4a", type: "", size: 5_000_000 };
+  assert.deepEqual(micClipRoom([clip, m4a], 8, false), {
+    maxBytes: MAX_AUDIO_SIZE - 15_000_000,
+  });
+});
+
+test("no room is refused with the attachment adapter's reason", () => {
+  const clip = { name: "a.wav", type: "audio/wav", size: 1_000 };
+  assert.match(
+    (micClipRoom([clip], 1, false) as { reason: string }).reason,
+    /one audio file per message/,
+  );
+  const full = { name: "a.wav", type: "audio/wav", size: MAX_AUDIO_SIZE };
+  assert.match(
+    (micClipRoom([full], 8, false) as { reason: string }).reason,
+    /per-message limit/,
+  );
+  assert.match(
+    (micClipRoom([], 8, true) as { reason: string }).reason,
+    /staged audio clip/,
+  );
 });
