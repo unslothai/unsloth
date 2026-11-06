@@ -2756,6 +2756,7 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
         llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: platform == "win32"
     )
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+    logged = _override_log(monkeypatch)
 
     cmd = _launch(backend, gguf)["cmd"]
 
@@ -2767,10 +2768,15 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
     windows = platform == "win32"
     assert _modes(cmd, "--fit-target")[-1:] == (["16384"] if windows else []), cmd
     warning = backend.last_load_warning or ""
-    assert "On this integrated GPU llama.cpp loads without memory mapping by default" in warning
-    assert "lookup tables are read from disk as needed" in warning
-    assert ("leaving shared memory free for the weights read from disk" in warning) is windows
+    assert warning.endswith(
+        " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
+        "integrated GPU."
+    ), warning
     assert "was set to load without memory mapping" not in warning
+    # The lazy table and the headroom go to the log, not to the user's notice.
+    override = [line for line in logged if "Overriding the unmapped load mode" in line]
+    assert override and "Lookup tables: --lazy-mode on." in override[0], logged
+    assert ("GPU headroom: --fit-target 16384." in override[0]) is windows, override
     assert backend._memory_state == (False, False)
 
 
@@ -2812,7 +2818,6 @@ def test_a_user_lazy_mode_survives_the_igpu_override(tmp_path, monkeypatch):
 
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["off"], cmd
-    assert "lookup tables are read from disk" not in (backend.last_load_warning or "")
 
 
 def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
@@ -2823,7 +2828,6 @@ def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
 
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--fit-target") == ["4096"], cmd
-    assert "leaving shared memory free" not in (backend.last_load_warning or "")
 
 
 @pytest.mark.parametrize(

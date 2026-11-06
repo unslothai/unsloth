@@ -7791,18 +7791,11 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
-# The same override where nobody chose the mode: llama.cpp's auto is none on an iGPU.
+# The same override where nobody chose the mode: llama.cpp's auto is none on an iGPU. The lazy
+# table and the fit headroom it may add are logged, not shown: the advisory already says it pages.
 _PAGEABLE_AUTO_OVERRIDE_NOTE = (
-    " On this integrated GPU llama.cpp loads without memory mapping by default, which reads "
-    "every byte into memory up front and can run out of memory at this size, so Unsloth "
-    "loaded it with memory mapping instead."
-)
-# Appended when the override also reads the lookup tables lazily.
-_PAGEABLE_LAZY_TABLE_NOTE = " Its lookup tables are read from disk as needed."
-# Appended when the override also leaves GPU headroom for the mapped pages.
-_PAGEABLE_HEADROOM_NOTE = (
-    " Less of the model is placed on the GPU, leaving shared memory free for the weights read "
-    "from disk."
+    " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
+    "integrated GPU."
 )
 # The override is reported, not undone: the running server is already memory-mapped.
 _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
@@ -15837,11 +15830,7 @@ class LlamaCppBackend:
             f" GPU headroom: {' '.join(headroom)}." if headroom else "",
         )
         note = _PAGEABLE_AUTO_OVERRIDE_NOTE if from_auto else _PAGEABLE_OVERRIDE_NOTE
-        return paged, (
-            note
-            + (_PAGEABLE_LAZY_TABLE_NOTE if lazy else "")
-            + (_PAGEABLE_HEADROOM_NOTE if headroom else "")
-        )
+        return paged, note
 
     @property
     def last_load_warning(self) -> Optional[str]:
