@@ -2016,18 +2016,21 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
         for i in range(2):
             history_row(f"job_20261021_101500_member0{i}", "2026-11-04T00:00:00+00:00")
         first = await client.fine_tuning.jobs.list(limit = 1)
+        listed = [j.id async for j in client.fine_tuning.jobs.list(limit = 1)]
         await openai_fine_tuning._drain_once()
         if persisted:
             history_row("job_20261021_101500_ab12cd34", "2026-11-04T01:00:00+00:00")
             live["status"] = _Status()
         after = first.data[0].id
         rest = [j.id async for j in client.fine_tuning.jobs.list(after = after, limit = 1)]
-        return jobs, [j.id for j in first.data] + rest
+        return jobs, listed, [j.id for j in first.data] + rest
 
-    (a, b, c), walked = _run(flow())
+    (a, b, c), listed, walked = _run(flow())
     assert [r.project_name for r in calls["batch"][0][0]] == ["a", "c"]
     assert [r.project_name for r in calls["start"]] == ["b"]
-    assert walked == [c.id, b.id, a.id]
+    assert walked == listed and sorted(walked) == sorted([a.id, b.id, c.id])
+    if step:
+        assert walked == [c.id, b.id, a.id]
 
 
 def test_history_lists_by_creation_time_reading_only_what_a_page_needs(monkeypatch):

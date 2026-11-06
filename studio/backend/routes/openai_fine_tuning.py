@@ -16,7 +16,7 @@ import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from itertools import chain, count
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -520,8 +520,6 @@ _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
 
 _ALIAS_CREATED: dict[str, int] = {}
-_ALIAS_ORDER: dict[str, int] = {}
-_alias_counter = count()
 
 _aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
@@ -843,7 +841,6 @@ def _finish(
     done = [e for e in _ALIASES.values() if e.status in ("failed", "cancelled")]
     for old in done[: max(0, len(done) - _TERMINAL_KEEP)]:
         _ALIASES.pop(old.alias, None)
-        _ALIAS_ORDER.pop(old.alias, None)
 
 
 async def _start_queued(entry: _Queued) -> bool:
@@ -1000,7 +997,6 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
-    _ALIAS_ORDER[entry.alias] = next(_alias_counter)
     _ensure_drainer()
     return entry
 
@@ -1135,11 +1131,11 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Newest created first; same-second ties by queue order then public id, so a job keeps its
-    # place from queue to history. History is newest start first and no job starts before it is
+    # Newest created first, same-second ties by public id: a job keeps its place from queue to
+    # history and across restarts. History is newest start first and no job starts before it is
     # created, so a buffered row created after the current row's start is final.
     def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
-        return (-created_at, -_ALIAS_ORDER.get(public_id, -1), public_id, seq), row, is_run
+        return (-created_at, public_id, seq), row, is_run
 
     heap = [
         item(job["created_at"] or 0, job["id"], seq, job, False)
