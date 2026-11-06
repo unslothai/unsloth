@@ -114,6 +114,8 @@ const SPEECH_ABBREVIATIONS = new Set([
   "nov", "dec",
 ]);
 
+const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr"]);
+
 /** The streamed text stops right after this sentence's period, which may not end it yet:
  *  "about 2." becomes "about 2.5 inches", "Dr." becomes "Dr. Smith". */
 export function sentenceMayContinue(sentence: string, textEndsWithSpace: boolean): boolean {
@@ -158,8 +160,12 @@ export function splitIntoSentences(text: string): string[] {
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
       // "llama.cpp", "config.json": a dot with a letter right after it is part of a name.
       const dotted = /[A-Za-z\d]\.$/.test(tail) && !spaced && /^[A-Za-z]/.test(part);
+      const word = lastWord?.toLowerCase();
+      // "etc. Then I left": these also end sentences, so only a lowercase word or digit continues one.
       const abbrev =
-        lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());
+        word !== undefined &&
+        SPEECH_ABBREVIATIONS.has(word) &&
+        (!SENTENCE_FINAL_ABBREVIATIONS.has(word) || /^[a-z\d]/.test(part));
       // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
       const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
       // ", the docs" after "e.g." can't start a sentence.

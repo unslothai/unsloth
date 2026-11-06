@@ -186,3 +186,15 @@ test("a dot inside a name like llama.cpp or config.json is not a boundary", () =
     "Visit unsloth.ai today.",
   ]);
 });
+
+test("an abbreviation that ends a sentence still ends it", () => {
+  assert.deepEqual(speechText.splitIntoSentences("I brought apples, oranges, etc. Then I went home."), [
+    "I brought apples, oranges, etc.",
+    "Then I went home.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("Fruit, nuts, etc. are fine. Ask Dr. Smith. It is Python vs. Rust."), [
+    "Fruit, nuts, etc. are fine.",
+    "Ask Dr. Smith.",
+    "It is Python vs. Rust.",
+  ]);
+});
