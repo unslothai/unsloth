@@ -221,7 +221,7 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   useEffect(() => {
     document.documentElement.toggleAttribute(
       "data-glass-menus",
-      menus && material !== "solid" && material !== "transparent" && here,
+      menus && material !== "solid" && here,
     );
   }, [menus, material, here]);
   useEffect(() => {

@@ -154,8 +154,8 @@
     );
   }
 
-  :where(html:not([data-glass])) .hub-page .hub-detail-bar[data-scrolled="true"]::after,
-  :where(html:not([data-glass])) .hub-page .hub-scroll-fade[data-scrolled="true"] {
+  :where(html:not([data-glass], .tauri.client-windows[data-glass-clear])) .hub-page .hub-detail-bar[data-scrolled="true"]::after,
+  :where(html:not([data-glass], .tauri.client-windows[data-glass-clear])) .hub-page .hub-scroll-fade[data-scrolled="true"] {
     opacity: 1;
   }
 
