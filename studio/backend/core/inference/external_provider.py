@@ -19,7 +19,7 @@ import uuid
 import weakref
 import wave
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -1157,6 +1157,7 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
 _anthropic_output_caps: dict[tuple[str, str, str], Optional[int]] = {}
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 32000
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -2565,16 +2566,22 @@ class ExternalProviderClient:
         if key not in _anthropic_output_caps:
             try:
                 response = await _client().get(
-                    f"{self.base_url}/models/{model}",
+                    _append_provider_path(self.base_url, f"/models/{quote(model, safe = '')}"),
                     headers = self._auth_headers(),
-                    timeout = self._timeout,
+                    timeout = 10,
                 )
-                response.raise_for_status()
-                cap = response.json().get("max_tokens")
-            except (httpx.HTTPError, ValueError, AttributeError):
+                if response.status_code >= 500:
+                    return None
+                cap = response.json().get("max_tokens") if response.is_success else None
+            except httpx.HTTPError:
                 return None
+            except (ValueError, AttributeError):
+                cap = None
+            # The full cap (up to 128k) plus a long prompt can exceed the context window, which Claude rejects.
             _anthropic_output_caps[key] = (
-                cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else None
+                min(cap, _ANTHROPIC_DEFAULT_MAX_TOKENS)
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
             )
         return _anthropic_output_caps[key]
 

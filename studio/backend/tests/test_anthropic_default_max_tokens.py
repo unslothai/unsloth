@@ -23,7 +23,7 @@ def _sent_max_tokens(
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.startswith("/v1/models/"):
-            model_lookups.append(request.url.path)
+            model_lookups.append(request.url.raw_path.decode())
             return models_response
         sent.append(json.loads(request.content)["max_tokens"])
         return httpx.Response(200, content = _STOP, headers = {"content-type": "text/event-stream"})
@@ -55,10 +55,19 @@ def _sent_max_tokens(
 def test_omitted_max_tokens_uses_the_models_output_limit(monkeypatch):
     sent, lookups = _sent_max_tokens(
         monkeypatch,
-        httpx.Response(200, json = {"id": "claude-haiku-4-5", "max_tokens": 64000}),
+        httpx.Response(200, json = {"id": "claude-haiku-4-5", "max_tokens": 16000}),
     )
-    assert sent == [64000, 64000]
+    assert sent == [16000, 16000]
     assert lookups == ["/v1/models/claude-haiku-4-5"]
+
+
+def test_large_output_limit_is_capped_to_leave_room_for_the_prompt(monkeypatch):
+    sent, _ = _sent_max_tokens(
+        monkeypatch,
+        httpx.Response(200, json = {"id": "claude-opus-4-7", "max_tokens": 128000}),
+        model = "claude-opus-4-7",
+    )
+    assert sent == [32000, 32000]
 
 
 def test_explicit_max_tokens_is_sent_unchanged(monkeypatch):
@@ -71,13 +80,29 @@ def test_explicit_max_tokens_is_sent_unchanged(monkeypatch):
     assert lookups == []
 
 
-def test_unknown_output_limit_keeps_the_old_default(monkeypatch):
-    sent, _ = _sent_max_tokens(monkeypatch, httpx.Response(404, json = {"type": "error"}))
+def test_endpoint_without_model_lookup_is_asked_once(monkeypatch):
+    sent, lookups = _sent_max_tokens(monkeypatch, httpx.Response(404, json = {"type": "error"}))
     assert sent == [1024, 1024]
+    assert len(lookups) == 1
+
+
+def test_server_error_on_lookup_is_retried_next_time(monkeypatch):
+    sent, lookups = _sent_max_tokens(monkeypatch, httpx.Response(503))
+    assert sent == [1024, 1024]
+    assert len(lookups) == 2
+
+
+def test_model_id_is_url_encoded_in_the_lookup(monkeypatch):
+    _, lookups = _sent_max_tokens(
+        monkeypatch,
+        httpx.Response(200, json = {"max_tokens": 8192}),
+        model = "proxy/claude-haiku-4-5",
+    )
+    assert lookups == ["/v1/models/proxy%2Fclaude-haiku-4-5"]
 
 
 def test_output_limit_cache_is_scoped_to_credentials(monkeypatch):
-    caps = {"sk-a": 64000, "sk-b": 8192}
+    caps = {"sk-a": 16000, "sk-b": 8192}
     sent: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -107,4 +132,4 @@ def test_output_limit_cache_is_scoped_to_credentials(monkeypatch):
             await client.close()
 
     asyncio.new_event_loop().run_until_complete(run())
-    assert sent == [("sk-a", 64000), ("sk-b", 8192)]
+    assert sent == [("sk-a", 16000), ("sk-b", 8192)]
