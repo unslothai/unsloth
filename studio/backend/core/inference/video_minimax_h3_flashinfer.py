@@ -745,8 +745,9 @@ def install_h3_flashinfer(
         device = next(first.parameters()).device
     except Exception:  # noqa: BLE001
         device = None
-    reason = flashinfer_unavailable(device)
-    if reason is None and not resident:
+    # the pure-Python gates first: a streamed or int8 / bf16 denoiser never imports flashinfer
+    reason = None
+    if not resident:
         reason = "the denoiser is streamed / offloaded (the operators need it resident)"
     q_lin = getattr(
         getattr(first, "attn", None), "to_q", None
@@ -761,6 +762,8 @@ def install_h3_flashinfer(
     )
     if reason is None and not levers:
         reason = "every lever switched off"
+    if reason is None:
+        reason = flashinfer_unavailable(device)
     if reason is not None:
         result["reason"] = reason
         if logger is not None:
@@ -785,6 +788,9 @@ def install_h3_flashinfer(
     try:
         margin = float(_env(NV_Y_MARGIN_ENV, "4"))
     except ValueError:
+        margin = 4.0
+    # 0 / negative / nan / inf would turn the y scale into garbage
+    if not 0.0 < margin < float("inf"):
         margin = 4.0
     if scheme == "nvfp4" and "pre" in levers and not all(_qkv_shared(b) for b in blocks):
         # the fused QKV GEMM takes ONE global scale: re-scaling Studio's per-projection codes would requantize them

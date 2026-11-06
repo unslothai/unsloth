@@ -48,6 +48,7 @@ def test_refused_without_sm120_keeps_stock(monkeypatch):
         "flashinfer_unavailable",
         lambda device = None: "FlashInfer's MiniMax-H3 operators are sm_120 only",
     )
+    monkeypatch.setattr(fi, "_scheme_of", lambda w: "fp8")
     t = _fake_transformer()
     before = [b.forward for b in t.transformer_blocks]
     out = fi.install_h3_flashinfer(t)
@@ -427,3 +428,26 @@ def test_a_missing_jit_toolchain_keeps_stock_with_a_one_line_reason(monkeypatch,
     assert expect in reason and "\n" not in reason and len(reason) <= 400
     assert "nvcc >= 12.8" in reason and "--generate-dependencies" not in reason
     assert not any(e[0] == "release" for e in events)
+
+
+@pytest.mark.parametrize("resident,swap", [(False, False), (True, True)])
+def test_streamed_or_int8_denoiser_never_probes_flashinfer(monkeypatch, resident, swap):
+    monkeypatch.setenv(fi.MASTER_ENV, "1")
+
+    def probe(device = None):
+        raise AssertionError("flashinfer probed for a denoiser the levers refuse anyway")
+
+    monkeypatch.setattr(fi, "flashinfer_unavailable", probe)
+    if not swap:
+        monkeypatch.setattr(fi, "_scheme_of", lambda w: "fp8")
+    out = fi.install_h3_flashinfer(_fake_transformer(), resident = resident)
+    assert out["blocks"] == 0 and out["reason"]
+
+
+@pytest.mark.parametrize("margin", ["0", "-2", "nan", "inf", "x"])
+def test_a_bad_y_margin_falls_back_to_the_default(monkeypatch, margin):
+    events = []
+    t = _stub_install(monkeypatch, events)
+    monkeypatch.setenv(fi.NV_Y_MARGIN_ENV, margin)
+    fi.install_h3_flashinfer(t)
+    assert fi._CFG["y_margin"] == 4.0
