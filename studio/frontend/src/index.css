@@ -6492,7 +6492,8 @@ html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:n
   mask:
     linear-gradient(black 0 0) left top / var(--sidebar-width) 100% no-repeat,
     linear-gradient(black 0 0) left top / 100% var(--studio-custom-titlebar-height) no-repeat,
-    radial-gradient(circle at right bottom, transparent 3.5px, black 4px) var(--sidebar-width) var(--studio-custom-titlebar-height) / 4px 4px no-repeat;
+    radial-gradient(circle at right bottom, transparent calc(var(--radius-md) - 1px), black var(--radius-md))
+      var(--sidebar-width) var(--studio-custom-titlebar-height) / var(--radius-md) var(--radius-md) no-repeat;
 }
 html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   position: relative;
@@ -7039,7 +7040,7 @@ html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]
 /* Child path to the pinned sidebar's container (Sidebar spreads props there): this page also
    holds the hidden chat, and a descendant :has() would walk it on every mutation. */
 [data-windows-wallpaper-page]:has(> [data-windows-glass-frame], > [data-slot="sidebar"] > [data-windows-glass-frame]) > [data-slot="page-wallpaper-blur"] {
-  border-top-left-radius: 4px;
+  border-top-left-radius: var(--radius-md);
 }
 /* A full-height page may extend under the Windows caption. Start its reading
    tint below the controls, even when the content scrolls. */
@@ -7193,9 +7194,9 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 }
 
 /* Transparent glass: the plain theme, every surface in its own colour at the glass strength's
-   opacity, with no shadow or blur. Tokens are redefined on #root from the copies taken on html
-   (a token cannot mix itself), so portalled menus and dialogs stay solid. Sonner renders its
-   toaster inside #root, so it re-resolves the same tokens at full opacity. */
+   opacity, with no shadow or blur. Re-resolve the palette at each surface root, including
+   Windows desktop portals when glass menus are enabled. Toasts use the opaque palette. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]),
 html[data-glass-clear] #root,
 html[data-glass-clear] #root [data-sonner-toaster] {
   --clear-alpha: var(--glass-fill-alpha, 50%);
@@ -7228,6 +7229,50 @@ html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [
 }
 /* Sticky labels repaint the sidebar colour, which would double it up. */
 html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
+  background-color: transparent;
+}
+/* Selected rows and tabs sit on top of another fill. Use the glass highlight so
+   they stay identifiable over wallpaper, including at minimum glass strength. */
+html.tauri.client-windows[data-glass-clear] #root {
+  --clear-highlight: color-mix(in srgb, var(--foreground) calc(12% * var(--contrast-wash-gain, 1)), transparent);
+  --nav-surface-hover: var(--clear-highlight);
+  --accent: var(--clear-highlight);
+  --color-accent: var(--accent);
+  --color-nav-surface-hover: var(--nav-surface-hover);
+}
+html.tauri.client-windows[data-glass-clear] #root .browser-chrome {
+  --accent: var(--clear-highlight);
+}
+
+/* The docked tab strip and body each paint once, below the Windows caption.
+   Keep the native page and file viewer in charge of their document backgrounds. */
+html.tauri.client-windows[data-glass-clear] .chat-artifact-pop-surface:not(.chat-browser-floating):has(> [data-slot="browser-panel"]) {
+  border-image: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height), var(--border) var(--studio-custom-titlebar-height)) 1;
+}
+html.tauri.client-windows[data-glass-clear] .chat-browser-floating,
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"] {
+  background-color: transparent;
+}
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+  background-color: var(--panel-surface);
+}
+html.tauri.client-windows[data-glass-clear]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body > [data-browser-page],
+html.tauri.client-windows[data-glass-clear] [data-slot="chat-settings-panel"] .bg-panel-surface {
+  background-color: transparent;
+}
+
+/* Portals live outside #root. Keep floating text readable over other controls
+   with the same additional tint and light-mode floor as the other glass menus. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
+  --clear-alpha: min(100%, max(calc(var(--glass-fill-alpha, 50%) + 30%), var(--glass-menu-floor)));
+  --dropdown-lift-surface: var(--popover);
+  --browser-menu-surface: var(--popover);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+html.tauri.client-windows[data-glass-clear][data-glass-menus] [data-settings-dialog] {
+  /* The sidebar and main pane already provide the dialog's fill. */
   background-color: transparent;
 }
 /* In base so this !important outranks layered utilities and unlayered rules alike. */
