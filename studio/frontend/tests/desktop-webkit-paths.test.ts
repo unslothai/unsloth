@@ -99,3 +99,14 @@ test("an offscreen fence update skipped under a held pointer or selection is ret
   );
   assert.match(defer, /const releasePointer = \(\): void => \{\s*if \(pointerHeld === null\) return;\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/);
 });
+
+test("settled WebKitGTK fences only line-window themselves while code wrapping is off", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(
+    defer,
+    /windowing \|\|= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap;/,
+    "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader",
+  );
+  assert.match(defer, /const useCodeWrap = \(\): boolean => useSyncExternalStore\(subscribeCodeWrap, codeWrapOn, \(\) => false\);/);
+  assert.match(defer, /attributeFilter: \["data-code-wrap"\]/);
+});

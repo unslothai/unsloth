@@ -14,6 +14,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { flushSync } from "react-dom";
 
@@ -78,6 +79,29 @@ const WINDOW_SETTLED_FENCES = typeof navigator !== "undefined"
   && isWebKitGTK(navigator.platform, navigator.userAgent);
 
 /* Tokenization is one-way. WebKitGTK can release offscreen highlight spans while keeping the tokens cached. */
+
+// Line windows assume one row per source line; wrapped code breaks that, so settled fences
+// only window themselves while wrapping is off. One shared observer for every fence.
+const wrapListeners = new Set<() => void>();
+let wrapObserver: MutationObserver | null = null;
+const subscribeCodeWrap = (listener: () => void): (() => void) => {
+  wrapListeners.add(listener);
+  if (wrapObserver === null && typeof MutationObserver !== "undefined") {
+    wrapObserver = new MutationObserver(() => {
+      for (const notify of wrapListeners) notify();
+    });
+    wrapObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-code-wrap"] });
+  }
+  return () => {
+    wrapListeners.delete(listener);
+    if (wrapListeners.size === 0) {
+      wrapObserver?.disconnect();
+      wrapObserver = null;
+    }
+  };
+};
+const codeWrapOn = (): boolean => document.documentElement.hasAttribute("data-code-wrap");
+const useCodeWrap = (): boolean => useSyncExternalStore(subscribeCodeWrap, codeWrapOn, () => false);
 
 /* One viewport of lookahead. The percentage resolves against the root's HEIGHT in all engines
  * (spec says width, w3c/IntersectionObserver#391); pf9462_parity.py guards it. */
@@ -1617,7 +1641,8 @@ export const FenceBody = memo(function FenceBody({
   source: string;
   windowing: boolean;
 }) {
-  windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete;
+  const codeWrap = useCodeWrap();
+  windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap;
   const code = useRef<HTMLElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const wrapper = useRef<HTMLDivElement | null>(null);
