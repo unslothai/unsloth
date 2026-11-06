@@ -228,7 +228,7 @@ async function resetAllPrefs() {
       // ignore
     }
   }
-  // The account keeps its own copy: mark the reset defaults as unsent edits so they win after the reload.
+  // Unsent, so the defaults beat the account's saved copy after the reload.
   writePending({
     ...readPending(),
     scale: true,
