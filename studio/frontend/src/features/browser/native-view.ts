@@ -800,9 +800,13 @@ function setShownView(tabId: string | null): void {
   for (const wake of [...shownWaiters]) wake();
 }
 
+export function nativeViewShown(tabId: string): boolean {
+  return shownView === tabId;
+}
+
 /** Resolves true once `tabId`'s view is on screen (a menu over it has closed), false on timeout. */
 export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<boolean> {
-  if (shownView === tabId) return Promise.resolve(true);
+  if (nativeViewShown(tabId)) return Promise.resolve(true);
   return new Promise((resolve) => {
     const finish = (shown: boolean) => {
       shownWaiters.delete(wake);

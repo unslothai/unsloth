@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { setApiBase } from "@/lib/api-base";
 import { useBrowserStore } from "@/features/browser/store";
-import { startNativeViews, hasNativeView, focusPanel } from "@/features/browser/native-view";
+import { startNativeViews, hasNativeView, focusPanel, whenNativeViewShown } from "@/features/browser/native-view";
 import { callNative, grantLocalOrigin, useNativeBrowser } from "@/features/browser/native-support";
 import { captureHiddenPage } from "@/features/browser/capture";
 import { agentChat, patchAgentChat, endBrowserAgentRun, stopBrowserAgent, useBrowserAgentStore } from "@/features/browser/agent/agent-store";
@@ -21,6 +21,7 @@ const facts: Record<string, unknown> = { transport: "real Tauri IPC", model: "no
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const assert = (ok: unknown, detail: string) => { if (!ok) throw new Error(detail); };
 let stopViews: (() => void) | undefined;
+let observeNative: (value: boolean) => void;
 let sequence = 0;
 
 async function checkpoint(name: string, value: unknown) {
@@ -28,9 +29,9 @@ async function checkpoint(name: string, value: unknown) {
   await fetch(`${api}/progress`, { method: "POST", body: JSON.stringify({ name, value }) });
 }
 
-async function until(test: () => boolean, detail: string, timeout = 30_000) {
+async function until(test: () => boolean | Promise<boolean>, detail: string, timeout = 30_000) {
   const end = Date.now() + timeout;
-  while (!test()) {
+  while (!(await test())) {
     assert(Date.now() < end, detail);
     await pause(100);
   }
@@ -112,6 +113,18 @@ async function probe() {
   }
   assert((await action(b, "snapshot")).text.includes(second.token), "Observing A changed B's document");
   await checkpoint("parallel_capture_preserves_b", images.map((image) => image!.size));
+  observeNative(true);
+  await until(async () => !(await whenNativeViewShown(second.id, 50)), "B's native view did not hide for observation");
+  await focusPanel(second.id);
+  foreground.focus();
+  await until(() => document.hasFocus() && document.activeElement === foreground, "Observation did not return focus to Studio");
+  await action(b, "type", { ref: ref(bAfter.text, "textbox", "Draft note"), text: "B while observing A" });
+  const observedAction = await action(b, "click", { ref: ref(bAfter.text, "button", "Apply note") });
+  assert(observedAction.text.includes("Applied: B while observing A"), "B could not act while its own page was hidden");
+  assert(foreground.value === "B unsaved draft" && document.activeElement === foreground && document.hasFocus(), "B's hidden native page stole observer focus");
+  await checkpoint("observer_mode_background_input_isolated", true);
+  observeNative(false);
+  await until(() => whenNativeViewShown(second.id, 50), "B's native view did not return after observation");
   endBrowserAgentRun(`run-${a}`);
   endBrowserAgentRun(`run-${b}`);
   stopViews();
@@ -141,6 +154,8 @@ async function probe() {
 
 function Fixture() {
   const state = useBrowserStore();
+  const [observing, setObserving] = useState(false);
+  observeNative = setObserving;
   useEffect(() => {
     void probe().then(() => ({ passed: true }), (error) => ({ passed: false, error: String(error) }))
       .then(async (result) => {
@@ -148,7 +163,7 @@ function Fixture() {
         await fetch(`${api}/complete`, { method: "POST", body: JSON.stringify({ ...facts, ...result, platform: navigator.userAgent }) });
       });
   }, []);
-  return <main style={{ padding: 24 }}><h1>Native parallel browser verification</h1><label>Foreground chat draft<input id="foreground" /></label><p>Selected chat: {state.chat}</p><section data-browser-area style={{ position: "fixed", left: 600, right: 24, top: 120, bottom: 24 }}><div data-native-page={state.activeTabId ?? ""} style={{ width: "100%", height: "100%" }} /></section></main>;
+  return <main style={{ padding: 24 }}><h1>Native parallel browser verification</h1><label>Foreground chat draft<input id="foreground" /></label><p>Selected chat: {state.chat}</p><section data-browser-area style={{ position: "fixed", left: 600, right: 24, top: 120, bottom: 24 }}>{!observing && <div data-native-page={state.activeTabId ?? ""} style={{ width: "100%", height: "100%" }} />}</section></main>;
 }
 
 window.addEventListener("error", (event) => { void checkpoint("window_error", event.message); });

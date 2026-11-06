@@ -12,7 +12,7 @@ import { isStudioUrl, isTauri } from "@/lib/api-base";
 import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
-import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
+import { hasNativeView, keepInBackground, nativeAction, nativeViewShown, releaseBackground, whenViewOpen } from "../native-view";
 import { isLoopbackUrl } from "../address";
 import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
 import { requestFrameAgent, sendFrameCommand, whenWebPageReady } from "../page-frame";
@@ -499,7 +499,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signa
           callNative<{ installed: boolean; result: unknown }>("browser_view_agent", {
             tabId: tab.id,
             command: {
-              op: { ...op, virtualInput: !useBrowserStore.getState().open || useBrowserStore.getState().activeTabId !== tab.id || useBrowserStore.getState().chat !== tab.chat },
+              op: { ...op, virtualInput: !nativeViewShown(tab.id) },
               ...(code ? { code } : {}),
             },
           }).catch(() => null);

@@ -301,6 +301,7 @@ test("native background input stays virtual while the selected page keeps normal
   store.updateTab(b, { loading: false });
   patchAgentChat(away, { tabId: a, enabled: true, runKey: null });
   patchAgentChat(shown, { tabId: b, enabled: true, runKey: null });
+  globals.__shownNative = b;
   const commands: { tabId: string; command: { op: Record<string, unknown> } }[] = [];
   const previous = globals.__callNative;
   globals.__callNative = async (name: string, args: typeof commands[number]) => {
@@ -317,7 +318,14 @@ test("native background input stays virtual while the selected page keeps normal
     assert.ok(commands.some((call) => call.tabId === b));
     assert.ok(commands.filter((call) => call.tabId === a).every((call) => call.command.op.virtualInput === true));
     assert.ok(commands.filter((call) => call.tabId === b).every((call) => call.command.op.virtualInput !== true));
+    globals.__shownNative = null;
+    commands.length = 0;
+    await runBrowserAction({ id: "virtual-observing", sessionId: shown, op: "snapshot", policy }, { runKey: `virtual-${b}`, chat: shown, fullAccess: true, userText: "Read my page while I inspect another chat" });
+    assert.equal(resultOf("virtual-observing")?.ok, true);
+    assert.ok(commands.length > 0);
+    assert.ok(commands.every((call) => call.tabId === b && call.command.op.virtualInput === true));
   } finally {
+    delete globals.__shownNative;
     globals.__callNative = previous;
     endBrowserAgentRun(`virtual-${a}`);
     endBrowserAgentRun(`virtual-${b}`);

@@ -16,6 +16,7 @@ const STUBS = {
   // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
   "../native-view":
     "export const hasNativeView = () => globalThis.__native === true; export const nativeAction = () => {};" +
+    " export const nativeViewShown = (tabId) => globalThis.__shownNative === tabId;" +
     " export const keepInBackground = (tabId) => globalThis.__keep?.(tabId);" +
     " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);" +
     " export const whenViewOpen = async () => true;",
