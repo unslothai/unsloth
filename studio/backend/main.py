@@ -1845,6 +1845,43 @@ class MaxBodyMiddleware:
             if not msg.get("more_body", False):
                 break
 
+        body = b"".join(chunks)
+        headers = scope.get("headers", [])
+        if dict(headers).get(b"content-encoding", b"").strip().lower() == b"zstd":
+            try:
+                from compression import zstd  # novermin
+            except ImportError:
+                try:
+                    from backports import zstd
+                except ImportError:
+                    await JSONResponse(
+                        {"detail": "zstd request bodies need Python 3.14 or the backports.zstd package."},
+                        status_code = 415,
+                    )(scope, receive, send)
+                    return
+            decompressor = zstd.ZstdDecompressor()
+            try:
+                body = decompressor.decompress(body, max_length = max_bytes + 1)
+            except zstd.ZstdError:
+                body = b""
+            if len(body) > max_bytes:
+                await _send_413(send, len(body), max_bytes)
+                return
+            if not decompressor.eof or decompressor.unused_data:
+                await JSONResponse(
+                    {"detail": "Request body is not valid zstd."}, status_code = 400
+                )(scope, receive, send)
+                return
+            scope = dict(
+                scope,
+                headers = [
+                    (name, value)
+                    for name, value in headers
+                    if name not in (b"content-encoding", b"content-length")
+                ]
+                + [(b"content-length", str(len(body)).encode("ascii"))],
+            )
+
         replayed = {"sent": False}
 
         async def replay_receive():
@@ -1852,7 +1889,7 @@ class MaxBodyMiddleware:
                 replayed["sent"] = True
                 return {
                     "type": "http.request",
-                    "body": b"".join(chunks),
+                    "body": body,
                     "more_body": False,
                 }
             # After replay, fall through so http.disconnect still propagates.

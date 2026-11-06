@@ -103,6 +103,32 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
 
+    def test_zstd_body_is_decoded_and_capped_after_decoding(self, main_module):
+        if sys.version_info >= (3, 14):
+            from compression import zstd
+        else:
+            from backports import zstd
+        c = TestClient(_make_protected_app(4096, main_module))
+        zstd_headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+
+        decoded = c.post(
+            "/v1/chat/completions",
+            content = zstd.compress(json.dumps({"text": "x" * 3000}).encode()),
+            headers = zstd_headers,
+        )
+        bomb = c.post(
+            "/v1/chat/completions",
+            content = zstd.compress(json.dumps({"text": "x" * 100_000}).encode()),
+            headers = zstd_headers,
+        )
+        garbage = c.post("/v1/chat/completions", content = b"not zstd", headers = zstd_headers)
+
+        assert decoded.status_code == 200
+        assert decoded.json()["n"] == 3000
+        assert bomb.status_code == 413
+        assert garbage.status_code == 400
+        assert "zstd" in garbage.json()["detail"]
+
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)
         c = TestClient(app)
