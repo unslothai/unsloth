@@ -172,6 +172,13 @@ def test_every_n_layers_survives_flag_rewrite_through_activation_checkpointing_e
     assert _flags(model) == [True, False, True, False]
 
 
+@pytest.mark.skipif(RENAMED, reason = "before transformers 5.23 the patched method is the public one")
+def test_explicit_every_n_layers_beats_the_dict_on_the_legacy_api(patched):
+    model = _model()
+    model.gradient_checkpointing_enable({"every_n_layers": 2}, every_n_layers = 1)
+    assert _flags(model) == [True, True, True, True]
+
+
 @pytest.mark.skipif(
     not RENAMED,
     reason = "the old name is an alias of activation_checkpointing_enable from transformers 5.23",

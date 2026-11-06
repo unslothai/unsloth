@@ -110,6 +110,8 @@ def patch_gradient_checkpointing_enable_kwargs():
     positional = [p for p in params if p not in ("self", kwargs_name)]
     native_every = "every_n_layers" in params
     native_offload = "offload" in params
+    # transformers >= 5.23 always passes the defaults (1, False) here, so they cannot override the dict.
+    forwards_defaults = name == "_activation_checkpointing_enable"
 
     @functools.wraps(original)
     def gradient_checkpointing_enable(
@@ -126,9 +128,11 @@ def patch_gradient_checkpointing_enable_kwargs():
             gc_kwargs = dict(gradient_checkpointing_kwargs)
             dict_every = gc_kwargs.pop("every_n_layers", None)
             dict_offload = gc_kwargs.pop("offload", None)
-            # transformers >= 5.23 always forwards the defaults (1, False), so they cannot override the dict.
-            every = dict_every if every in (None, 1) and dict_every is not None else every
-            offload = offload or dict_offload
+            if forwards_defaults:
+                every = None if every == 1 else every
+                offload = offload or None
+            every = dict_every if every is None else every
+            offload = dict_offload if offload is None else offload
             if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
                 gradient_checkpointing_kwargs = gc_kwargs or None
         every = 1 if every is None else int(every)
