@@ -485,8 +485,9 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 
     # After the handle closes: Windows refuses to move an open file. Moved aside, not unlinked, so the inode cannot be reused.
     def swap_then_check(path, written):
-        path.rename(tmp_path / "moved-aside")
-        path.write_bytes(b"attacker's model")
+        if calls["http_get"]:
+            path.rename(tmp_path / "moved-aside")
+            path.write_bytes(b"attacker's model")
         return real_check(path, written)
 
     monkeypatch.setattr(rp, "_still_the_written_file", swap_then_check)
