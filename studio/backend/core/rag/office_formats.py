@@ -1385,6 +1385,9 @@ def _xls_string(segments: list[bytes], seg: int, pos: int) -> tuple[str, int, in
         if not parts and n == count:
             take(4 * runs + ext)
             return raw.decode("utf-16-le" if wide else "latin-1", "replace"), seg, pos
+        if wide and len(raw) & 1:
+            # A corrupt record can end mid-character; one U+FFFD keeps the rest aligned.
+            raw = raw[:-1] + b"\xfd\xff"
         parts.append(raw if wide else raw.decode("latin-1").encode("utf-16-le"))
         count -= n
     take(4 * runs + ext)

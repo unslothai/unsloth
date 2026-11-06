@@ -1021,6 +1021,13 @@ def test_xls_string_metadata_can_continue_without_a_width_flag():
     assert (text, following, seg, pos) == ("A", "B", 1, len(second))
 
 
+def test_xls_string_realigns_after_a_record_ends_mid_character():
+    first = struct.pack("<HB", 4, 1) + b"A\0B"
+    second = b"\x01" + "CD".encode("utf-16-le")
+    text, seg, pos = office_formats._xls_string([first, second], 0, 0)
+    assert (text, seg, pos) == ("A\ufffdCD", 1, len(second))
+
+
 @pytest.mark.parametrize("formula", [False, True], ids = ["shared", "formula"])
 def test_continued_xls_uploads_preserve_searchable_names(
     rag_home, stub_embeddings, tmp_path, formula
