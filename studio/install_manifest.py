@@ -1199,6 +1199,22 @@ _STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
 
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
+
+def _restored_launcher(parts: Sequence[str]) -> bool:
+    """Whether a RECORD row is the managed Windows launcher, whose size says nothing.
+
+    The update restores it from whichever staged copy runs, which an older uv may
+    have written with a smaller trampoline than the one RECORD describes (#16897).
+    Its existence still counts; only the size comparison is skipped.
+    """
+    return (
+        len(parts) >= 2
+        and ".." in parts
+        and parts[-2].lower() == "scripts"
+        and parts[-1].lower() == _STAGED_LAUNCHER_NAME
+    )
+
+
 # `npm run build` rehashes every asset, so RECORD names files our setup deleted.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
@@ -1385,6 +1401,7 @@ def _scan_payload_files(
                         and row[2]
                         and row[2].isdigit()
                         and parts[-1] not in _INSTALLER_REWRITTEN_NAMES
+                        and not _restored_launcher(parts)
                         and info.st_size < int(row[2])
                     ):
                         found.append(f"{rel} is {info.st_size} bytes, expected {row[2]}")

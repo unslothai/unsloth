@@ -450,6 +450,9 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 # setup.ps1/setup.sh run `npm install` inside the installed tree, shrinking the lockfile.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
+# The Windows console launcher the update transaction moves aside and may restore from an older copy.
+_MANAGED_LAUNCHER_NAME = "unsloth.exe"
+
 
 def _shared_non_runtime(rel: str) -> bool:
     """A row under a top-level dir several wheels write into.
@@ -475,8 +478,27 @@ def _installer_rewritten(rel: str) -> bool:
 
     Only the size is unreliable. The file disappearing is still damage, so the
     row is kept and only its size dropped.
+
+    The managed Scripts/unsloth.exe counts too. _WindowsLauncherUpdateTransaction
+    moves it aside for every update and, when setup publishes none, puts back the
+    first staged copy that runs: a retained .update-backup, or the bin/ hardlink
+    install.ps1 made. An older uv writes a smaller trampoline (41558 bytes for
+    uv 0.4.30 against 47104 today), while RECORD keeps the size the newest uv
+    wrote, so the update failed with `../../Scripts/unsloth.exe is 40981 bytes,
+    expected 47104` (#16897). Whether that launcher runs is already decided by
+    validate_launcher(), which starts it.
     """
-    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
+    parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
+    if not parts:
+        return False
+    if parts[-1] in _INSTALLER_REWRITTEN_NAMES:
+        return True
+    return (
+        len(parts) >= 2
+        and ".." in parts
+        and parts[-2].lower() == "scripts"
+        and parts[-1].lower() == _MANAGED_LAUNCHER_NAME
+    )
 
 
 def _installed_distribution_groups():
