@@ -186,8 +186,7 @@ def _load_conditioners(cfg, device):
         **auth,
     )
     _assert_component_grid(pipe)
-    # ``load_components`` builds every component on the CPU, so place them explicitly. Only the conditioner here:
-    # the fp32 VAEs move once it is freed (_train_h3), so they are never resident beside the 63 GiB encoder.
+    # Only the conditioner moves here; the VAEs move after it is freed (_train_h3).
     pipe.text_encoder.to(device)
     return pipe
 
@@ -535,7 +534,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         torch.cuda.empty_cache()
     elif device == "xpu":
         torch.xpu.empty_cache()
-    # Phase 2: the VAEs, now that the conditioner is gone.
     for attr in _H3_VAE_COMPONENTS:
         module = getattr(pipe, attr, None)
         if module is not None:
@@ -661,7 +659,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
     transformer.train()
     patch = tuple(transformer.config.patch_size)
-    # Pinned once, so each micro-step's copies are async DMAs instead of blocking pageable copies.
     from core.inference.host_pinning import host_pinning_allowed
 
     if device == "cuda" and host_pinning_allowed():
@@ -674,7 +671,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
         cache = [tuple(_pin_or_keep(t) for t in entry) for entry in cache]
         caption_embeds = {cap: _pin_or_keep(t) for cap, t in caption_embeds.items()}
-    # The packed layout depends only on the caption length (the canvas is fixed): build it once per length.
+    # Packed layout depends only on caption length (fixed canvas).
     layouts: dict[int, tuple[dict, dict]] = {}
     index_sampler = PermutationBatchSampler(len(clip_paths), rng)
     autocast = (
@@ -723,7 +720,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             embeds = caption_embeds[captions[index]].to(device, non_blocking = True).to(weight_dtype)
             num_text_tokens = embeds.shape[1]
             if num_text_tokens not in layouts:
-                # A host copy for the row timesteps, so building them never reads device indices back.
                 host_layout = _build_layout(
                     num_text_tokens,
                     latent_frames,
@@ -773,7 +769,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-        # Read once per optimizer step, not three times per micro-step.
         step_loss = loss_value(step_acc)
         step_video = loss_value(video_acc)
         step_audio = loss_value(audio_acc)

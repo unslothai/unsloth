@@ -29,7 +29,6 @@ def accumulate_loss(acc: Any, loss: Any, accumulation_steps: int) -> Any:
 
 
 def loss_value(acc: Any) -> float:
-    """The accumulated loss as a Python float (one host read); 0.0 when nothing was accumulated."""
     return 0.0 if acc is None else float(acc)
 
 
@@ -88,7 +87,7 @@ class LoRAEMA:
         return min(self.decay, step / (_EMA_WARMUP_OFFSET + step))
 
     def _update_lists(self, model: Any) -> tuple[list, list]:
-        """(shadows, params) for ``model``, built once per model: walking named_parameters every step is the slow part."""
+        """(shadows, params) for ``model``, cached per model."""
         import weakref
 
         cached = getattr(self, "_lists", None)
@@ -115,7 +114,6 @@ class LoRAEMA:
         shadows, params = self._update_lists(model)
         if shadows:
             with torch.no_grad():
-                # The same mul_ then add_(alpha) as a per-tensor loop, batched into multi-tensor kernels.
                 torch._foreach_mul_(shadows, decay)
                 torch._foreach_add_(shadows, params, alpha = 1.0 - decay)
         self.updates += 1

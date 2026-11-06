@@ -787,7 +787,6 @@ def run_diffusion_lora_training(
                 noisy = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 if precompute:
-                    # Copy, then cat on the device: a host cat is pageable and its copy blocks the stream.
                     prompt_embeds = _parts_to_device(
                         [caption_embeds[c][0] for c in captions], device
                     )
@@ -833,7 +832,6 @@ def run_diffusion_lora_training(
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
                 if not math.isfinite(grad_norm):
                     grad_norm = None
-            # One read per optimizer step instead of one per micro-step.
             step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
             scaler.step(optimizer)

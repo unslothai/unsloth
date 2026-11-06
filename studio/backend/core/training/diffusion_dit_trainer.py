@@ -185,7 +185,6 @@ class _FamilySpec:
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     """Gathers by index, so sigma_table must stay aligned with the timesteps the indices were drawn from."""
-    # non_blocking: a blocking host-to-device copy synchronises the stream every micro-step.
     sigma = sigma_table[indices].to(device = device, non_blocking = True).to(dtype = dtype).flatten()
     while sigma.ndim < n_dim:
         sigma = sigma.unsqueeze(-1)
@@ -256,7 +255,7 @@ def _sample_timesteps(scheduler, batch_size, device):
     )
     num_train = scheduler.config.num_train_timesteps
     indices = (u * num_train).long().clamp(0, num_train - 1)
-    # Gather on the host, then one async copy: indexing a device table with host indices copies them blocking.
+    # Gather on host then one async copy; device-table indexing with host indices blocks.
     timesteps = scheduler.timesteps[indices].to(device, non_blocking = True)
     return timesteps, indices
 
@@ -322,8 +321,7 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # fp32 on the host: the shared loop moves it to device once the text encoders are freed, so it is not resident
-    # beside them during caption encoding.
+    # Stays on host until the text encoders are freed (never resident beside them).
     pipe.vae.to(dtype = torch.float32)
     return pipe, pipe.vae
 
@@ -364,8 +362,7 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    # int8 stays on the host: _int8_quantize_base streams each Linear onto the device as it quantizes, so the
-    # dense bf16 base is never whole in VRAM.
+    # int8 stays on host: _int8_quantize_base streams Linears to device so the bf16 base is never whole in VRAM.
     return transformer if base_precision == "int8" else transformer.to(device)
 
 
@@ -1022,7 +1019,7 @@ def _qwen_collate(
     seqs = [e[0].shape[1] for e in entries]
     target = max(pad_to or 0, max(seqs))
     pes, masks = [], []
-    # Pad + cat on the device after an async copy: a host pad/cat yields pageable memory and a blocking copy.
+    # Pad/cat on device: a host pad/cat is pageable and its copy blocks.
     for pe, mask in entries:
         s = pe.shape[1]
         pe = pe.to(device, non_blocking = True)
@@ -2003,7 +2000,7 @@ def _load_pixel_tensor_planned(
     resized = None,
 ):
     """Deterministic pixel-crop variant for the latent cache: crop offsets are unit fractions over the randint range; center_crop matches the uncached path.
-    ``resized`` is a prior ``_open_resized(path, resolution)`` result, so an image's variants decode and resize once."""
+    ``resized`` is a prior ``_open_resized`` result, reused across variants."""
     from PIL import Image
 
     cw, ch = _canvas(resolution)
@@ -2063,7 +2060,6 @@ def _build_latent_cache(
     gated = False
     for i, path in enumerate(image_paths):
         variants = []
-        # Every variant crops the same decoded + resized image (crop / transpose return new images), so open it once.
         resized = None
         for u_left, u_top, flip in plan[i]:
             canvas = cfg.resolution if canvases is None else canvases[i]
@@ -2233,7 +2229,6 @@ _CAPTION_PIN_BUDGET_BYTES = 1024**3
 
 
 def _pin_caption_embeds(caption_embeds: dict, device) -> dict:
-    """Pin the cached caption embeddings once so each micro-step's collate copy is a real async DMA."""
     import torch
 
     from core.inference.host_pinning import host_pinning_allowed
@@ -2615,7 +2610,6 @@ def _train_dit(
             torch.cuda.empty_cache()
         elif device == "xpu":
             torch.xpu.empty_cache()
-        # Every family keeps the VAE on host while text encoders are resident.
         if vae is not None:
             vae.to(device)
 
@@ -3000,7 +2994,6 @@ def _train_dit(
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-        # One read per optimizer step, after the grad-norm read already waited on backward.
         step_loss = loss_value(step_acc)
         optimizer.step()
         lr_sched.step()
