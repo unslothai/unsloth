@@ -42,15 +42,22 @@ def _model(kind):
             tie_word_embeddings = False,
         )
     ).to(torch.bfloat16)
-    if kind == "float8_training":
+    if kind in ("float8_training", "float8_subclass"):
         import dataclasses
 
         from torchao.float8 import Float8LinearConfig
+        from torchao.float8.float8_linear import Float8Linear
 
         from unsloth.models.float8_training import convert_model_to_float8_training
 
         config = dataclasses.replace(Float8LinearConfig.from_recipe_name("rowwise"), emulate = True)
         assert convert_model_to_float8_training(model, config, size_filter = False)
+        if kind == "float8_subclass":
+            # A renamed subclass still runs torchao's fp8 forward.
+            renamed = type("MyFp8Linear", (Float8Linear,), {})
+            for module in model.modules():
+                if type(module) is Float8Linear:
+                    module.__class__ = renamed
         return model
     from peft import LoraConfig, get_peft_model
 
@@ -109,9 +116,12 @@ def _worker(rank, world, port, tmp, kind):
                 for n, (shape, value) in before.items()
                 if n not in after
                 or tuple(after[n].shape) != shape
+                or tpn._is_dtensor(after[n])
                 or not torch.equal(after[n].detach(), value)
             ],
-            "float8_linears": sum(type(m).__name__ == "Float8Linear" for m in model.modules()),
+            "float8_linears": sum(
+                any(c.__name__ == "Float8Linear" for c in type(m).__mro__) for m in model.modules()
+            ),
             "fp8_lora_bases": sum("_unsloth_fp8_lora" in m.__dict__ for m in model.modules()),
             "is_tp": tpn.is_tensor_parallel(model),
         }
@@ -120,7 +130,7 @@ def _worker(rank, world, port, tmp, kind):
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("kind", ["float8_training", "fp8_lora"])
+@pytest.mark.parametrize("kind", ["float8_training", "float8_subclass", "fp8_lora"])
 def test_tp2_low_precision_model_is_refused_before_sharding(kind):
     with tempfile.TemporaryDirectory() as tmp:
         ctx = multiprocessing.get_context("spawn")
