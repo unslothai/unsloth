@@ -7,8 +7,8 @@ import pytest
 
 
 def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
-    pytest.importorskip("unsloth")
-    from unsloth.models import loader_utils
+    # Not importorskip("unsloth"): an earlier file in the worker may have stubbed it as a plain module.
+    loader_utils = pytest.importorskip("unsloth.models.loader_utils")
     from core.inference import worker
 
     fetches = []
@@ -39,7 +39,7 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
 
     name = next(iter(loader_utils.FLOAT_TO_INT_MAPPER))
     mapped = SimpleNamespace(identifier = "owner/adapter", base_model = name)
-    from unsloth.models import loader
+    loader = pytest.importorskip("unsloth.models.loader")
 
     expected = loader_utils.get_model_name(name, load_in_4bit = loader.ALLOW_BITSANDBYTES)
     if not loader.ALLOW_PREQUANTIZED_MODELS:
@@ -51,8 +51,8 @@ def test_unmapped_lora_base_skips_the_remote_mapper(monkeypatch):
 
 
 def test_unmapped_prequantized_base_still_lists_the_stripped_repo(monkeypatch):
-    pytest.importorskip("unsloth")
-    from unsloth.models import loader, loader_utils
+    loader = pytest.importorskip("unsloth.models.loader")
+    loader_utils = pytest.importorskip("unsloth.models.loader_utils")
     from core.inference import worker
 
     monkeypatch.setattr(loader_utils, "_get_new_mapper", lambda: ({}, {}, {}, {}, {}))
