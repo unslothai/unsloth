@@ -239,3 +239,22 @@ def test_no_room_for_the_backups_keeps_the_adapter_layers(monkeypatch):
     _lokr(net, pipe)
     assert not qm.merge(pipe, [net], {"k": 1.0}, "cpu")
     assert isinstance(net.proj["q"], lf.kron_linear_class())
+
+
+def test_max_speed_never_fuses_qkv_over_merged_weights():
+    """A fused to_qkv is a copy of to_q / to_k / to_v: a weight change re-merges those, and the copy would keep the old
+    adapter weight (at weight 0 the adapter would still run)."""
+    from core.inference import diffusion_speed as ds
+
+    net = _Net("int8")
+    calls = []
+
+    class _FusingPipe(_Pipe):
+        def fuse_qkv_projections(self):
+            calls.append("pipe")
+
+    net.fuse_qkv_projections = lambda: calls.append("dit")
+    pipe = _FusingPipe(net)
+    _lokr(net, pipe)
+    assert qm.merge(pipe, [net], {"k": 1.0}, "cpu")
+    assert ds._fuse_qkv(pipe, None) is False and calls == []
