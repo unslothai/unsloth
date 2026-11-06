@@ -125,7 +125,6 @@ def _is_blank(content):
     )
 
 
-# Returns (text, is_empty, is_plain_text, has_media).
 def _render_dataset_row(row, tokenizer):
     if not isinstance(row, dict):
         raise _MalformedRow("row is not a dict")
@@ -202,7 +201,7 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
     pending = {True: [], False: []}
     measured = []
 
-    # Tokenize in batches as we go: holding every rendered row would not fit a large corpus.
+    # Flush as we go: holding every rendered row would not fit a large corpus.
     def flush(add_special_tokens):
         items = pending[add_special_tokens]
         if items:
@@ -226,7 +225,6 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
         if response_part is not None and response_part in text:
             found += 1
         if has_media:
-            # Placeholders expand to many media tokens at training time, so a text-only count lies.
             media += 1
             continue
         # Same rule as the SFT dataset prep in models/rl_replacements.py: no second BOS.
