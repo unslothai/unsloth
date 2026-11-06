@@ -1136,3 +1136,67 @@ def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, 
         assert float(getattr(block["q"], adapter.prefix + "_scale")) == 0.0
     assert resets == []
     assert invalidated
+
+
+def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
+    """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
+    re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
+    and weight 0 is the base weights exactly."""
+    import threading
+
+    import torch
+    from torch._dynamo.testing import CompileCounter
+
+    from core.inference import diffusion as diff
+    from core.inference import diffusion_lora_files as lf
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    resets = []
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: resets.append(handles))
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(16, 8, bias = False)).requires_grad_(False)
+    base = net[0].weight.detach().clone()
+
+    class _Pipe:
+        transformer = net
+        components = {"transformer": net}
+
+        def unload_lora_weights(self):
+            pass
+
+    pipe = _Pipe()
+    w1, w2 = torch.randn(2, 2) * 0.1, torch.randn(4, 8) * 0.1
+    pipe.__dict__[lf.KRON_ATTR] = {"a": [lf.KronAdapter(net, net[0], w1, w2, 1.0)]}
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"a"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
+    assert type(net[0]) is torch.nn.Linear
+
+    x = torch.randn(3, 16)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(net, backend = counter)
+    with torch.no_grad():
+        torch.testing.assert_close(compiled(x), x @ (base + torch.kron(w1, w2)).T)
+    for loras, w in (([("a", 0.4)], 0.4), ([], 0.0), ([("a", 1.0)], 1.0)):
+        b._apply_loras(state, loras, threading.Event())
+        with torch.no_grad():
+            torch.testing.assert_close(compiled(x), x @ (base + w * torch.kron(w1, w2)).T)
+        assert [wt for (_n, _p, wt) in pipe._unsloth_loras] == [w]
+        if not w:
+            assert torch.equal(net[0].weight, base)
+    assert counter.frame_count == 1
+    assert resets == []
+    torch._dynamo.reset()

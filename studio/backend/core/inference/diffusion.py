@@ -395,6 +395,7 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
+from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -10440,11 +10441,24 @@ class DiffusionBackend:
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
-                        logger.info(
-                            "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
-                            "before the compile",
-                            len(baked),
+                        # A resident load merges them into the quantized weights, as ComfyUI patches them: the
+                        # compiled model then runs the base layers alone. An offloaded one keeps the adapter layers.
+                        quant_merged = (
+                            plan.offload_policy == OFFLOAD_NONE
+                            and lora_quant_merge.merge(
+                                pipe,
+                                _lora_fuse_dits(pipe),
+                                {n: w for (n, _p, w) in baked},
+                                getattr(target, "device", "cuda"),
+                                logger,
+                            )
                         )
+                        if not quant_merged:
+                            logger.info(
+                                "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
+                                "before the compile",
+                                len(baked),
+                            )
                     quant_forces_compile = (
                         transformer_quant_engaged is not None or comfy_compile
                     ) and (
@@ -13702,6 +13716,11 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
                 disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
+                # Merged adapters: the original weights are copied back in place, so graphs keep reading them.
+                if lora_quant_merge.set_weights(pipe, {}):
+                    pipe._unsloth_loras = disabled
+                    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                    return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
@@ -13735,6 +13754,10 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
+        if lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated}):
+            pipe._unsloth_loras = updated
+            invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+            return
         if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
             pipe._unsloth_loras = updated
             return
