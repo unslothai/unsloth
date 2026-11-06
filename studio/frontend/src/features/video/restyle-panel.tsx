@@ -75,6 +75,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  // The last job's "Cancelled." belongs to the previous clip, like its result.
+  const [outcomeStale, setOutcomeStale] = useState(false);
   const [inputClip, setInputClip] = useState<Blob | null>(null);
   const [controlClip, setControlClip] = useState<Blob | null>(null);
   const [outputClip, setOutputClip] = useState<Blob | null>(null);
@@ -128,6 +130,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setPreview(null);
     setError(null);
     // The last result belongs to the previous clip; don't show it beside a new one.
+    setOutcomeStale(true);
     setInputClip(null);
     setControlClip(null);
     setOutputClip(null);
@@ -161,6 +164,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const submit = async () => {
     if (submitting) return;
     setSubmitting(true);
+    setOutcomeStale(false);
     setError(null);
     setInputClip(null);
     setControlClip(null);
@@ -354,7 +358,9 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
               {phase === "generate" && step > 0 && (
                 <span>
                   Frame {outputFrames(step, progress?.num_frames)} of {progress?.num_frames ?? "?"}
-                  {progress?.eta_seconds != null && ` · about ${Math.ceil(progress.eta_seconds)} s left`}
+                  {!cancelling &&
+                    progress?.eta_seconds != null &&
+                    ` · about ${Math.ceil(progress.eta_seconds)} s left`}
                 </span>
               )}
             </div>
@@ -364,7 +370,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             />
           </div>
         )}
-        {phase === "cancelled" && !running && (
+        {phase === "cancelled" && !running && !outcomeStale && (
           <p className="text-xs text-muted-foreground">Cancelled.</p>
         )}
         {error && <p className="text-xs text-destructive">{error}</p>}
