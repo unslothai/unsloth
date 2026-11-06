@@ -563,7 +563,11 @@ def get_last_unloaded_intent(identity):
         return _last_unloaded_intent if _last_unloaded_model is identity else None
 
 
-def _set_last_unloaded(value, mlx: bool = False, intent = None) -> None:
+def _set_last_unloaded(
+    value,
+    mlx: bool = False,
+    intent = None,
+) -> None:
     global _last_unloaded_model, _last_unloaded_mlx, _last_unloaded_intent, _kv_resume
     stale = None
     with _lock:
@@ -1014,7 +1018,9 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed, mlx = mlx is not None, intent = intent)  # let an alias request reload it
+                    _set_last_unloaded(
+                        freed, mlx = mlx is not None, intent = intent
+                    )  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved chat KV for restore on reload")
