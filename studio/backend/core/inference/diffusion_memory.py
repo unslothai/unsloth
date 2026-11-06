@@ -1673,9 +1673,14 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
     # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
     "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
+    # Lumina-Image-2.0, worst per column over tiers / A100 / L4; decode = the first compiled-tier decode (cudnn workspace).
+    "lumina-2": ((1_130, 486, 4_497, 4_497, 4_497), (1_130, 486, 4_497, 4_497, 4_497)),
 }
 # U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
+# A plain bf16 denoiser keeps the whole-module tier the flat plan would take over the measured resident-transformer
+# tier: Lumina-2's encoder is as large as its DiT, and streaming it per prompt was 1% slower per render (L4, 16 GiB).
+_CALIBRATED_KEEPS_WHOLE_MODULE = frozenset({"lumina-2"})
 
 
 def _resident_only_hint(family: Optional[str]) -> bool:
@@ -2904,7 +2909,10 @@ def plan_diffusion_memory(
             stream_transformer = stream_transformer,
         )
         if faster is not None:
+            flat_streamed = policy == OFFLOAD_GROUP and stream_transformer
             policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            if flat_streamed and policy == OFFLOAD_GROUP and not stream_transformer:
+                estimates["calibrated_over_streamed_transformer"] = 1
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
@@ -4276,10 +4284,12 @@ def prefer_whole_module_offload(
     *,
     logger: Any = None,
     steps: Optional[int] = None,
+    family: Optional[str] = None,
 ) -> MemoryPlan:
     """``refined``, or whole-module offload in its place where it beats streaming. With ``steps`` the switch is
     priced from this card's measured bandwidth and bf16 throughput (RTX PRO 6000 streams faster at 4 steps, B200 does
     not); unmeasurable or without ``steps`` it is kept. Plain bf16 only: an fp16 T4 run pointed the other way.
+    A ``_CALIBRATED_KEEPS_WHOLE_MODULE`` family's measured plan is priced as the streamed plan it replaced.
     """
     switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
     if switch in ("0", "off", "false", "no", "never"):
@@ -4288,11 +4298,16 @@ def prefer_whole_module_offload(
         if (
             getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
             or refined.offload_policy != OFFLOAD_GROUP
-            or not bool(getattr(refined, "stream_transformer", True))
             or getattr(refined, "secondary_ordinal", None) is not None
         ):
             return refined
         est = refined.estimates
+        calibrated = bool(
+            str(family or "") in _CALIBRATED_KEEPS_WHOLE_MODULE
+            and est.get("calibrated_over_streamed_transformer")
+        )
+        if not calibrated and not bool(getattr(refined, "stream_transformer", True)):
+            return refined
         model_dense, companions = est.get("model_dense_mib"), est.get("companion_dense_mib")
         floors = [
             int(f)
@@ -4312,7 +4327,7 @@ def prefer_whole_module_offload(
         # A refined plan pinning the whole denoiser runs every step resident: kept.
         sizes = _loaded_component_mib(pipe) or {}
         dit = sum(m for m, r in sizes.values() if r == "dit") or transformer
-        if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
+        if not calibrated and int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
             return refined
         reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
         priced: dict = {}
@@ -4347,6 +4362,8 @@ def prefer_whole_module_offload(
                     declined = _WHOLE_MODULE_DECLINED_REASON.format(**fields)
                     if logger is not None:
                         logger.info("diffusion.memory: %s", declined)
+                    if calibrated:
+                        return refined
                     if per_request_whole_enabled():
                         try:
                             setattr(
@@ -4364,6 +4381,10 @@ def prefer_whole_module_offload(
                 reason += _WHOLE_MODULE_COST_REASON.format(**fields)
         if logger is not None:
             logger.info("diffusion.memory: %s", reason)
+        kept = dict(refined.estimates)
+        if calibrated:
+            # the generate guard prices it as main's flat whole-module plan
+            kept.pop("calibrated_headroom_mib", None)
         return replace(
             refined,
             offload_policy = OFFLOAD_MODEL,
@@ -4374,7 +4395,7 @@ def prefer_whole_module_offload(
             resident_transformer_mib = None,
             resident_text_encoder_mib = None,
             reasons = refined.reasons + (reason,),
-            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor, **priced},
+            estimates = {**kept, "whole_module_kept_below_floor_mib": floor, **priced},
         )
     except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
         if logger is not None:

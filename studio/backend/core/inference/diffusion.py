@@ -10937,7 +10937,7 @@ class DiffusionBackend:
                         except Exception:  # noqa: BLE001 - unpriced: the unconditional switch
                             plan_steps = None
                         plan = prefer_whole_module_offload(
-                            pipe, plan, logger = logger, steps = plan_steps
+                            pipe, plan, logger = logger, steps = plan_steps, family = fam.name
                         )
                         streamed_headroom = plan.estimates.get("measured_streamed_headroom_mib")
                         headroom = streamed_headroom or plan.estimates.get(
