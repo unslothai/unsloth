@@ -70,23 +70,48 @@ function resolveTheme(theme: Theme): ResolvedTheme {
   return theme;
 }
 
+export const THEME_SWITCHING_CLASS = "theme-switching";
+
+/**
+ * Reduce motion gives every element a 0.01ms `all` transition, so a flip would start one
+ * transition per element per changed colour (2.5 s on a long sidebar). Commit the new colours
+ * with transitions off, then hand them back.
+ */
+export function withoutTransitions(change: () => void): void {
+  const el = document.documentElement;
+  el.classList.add(THEME_SWITCHING_CLASS);
+  change();
+  void window.getComputedStyle(document.body ?? el).color;
+  window.setTimeout(() => el.classList.remove(THEME_SWITCHING_CLASS), 0);
+}
+
 function applyToDocument(resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
-  el.classList.toggle("dark", resolved === "dark");
-  el.classList.toggle("light", resolved === "light");
-  el.style.colorScheme = resolved;
+  if (
+    el.classList.contains("dark") === (resolved === "dark") &&
+    el.classList.contains("light") === (resolved === "light")
+  ) {
+    el.style.colorScheme = resolved;
+    return;
+  }
+  withoutTransitions(() => {
+    el.classList.toggle("dark", resolved === "dark");
+    el.classList.toggle("light", resolved === "light");
+    el.style.colorScheme = resolved;
+  });
 }
 
 function applyPaletteToDocument(palette: Palette) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
   // Standard is the base :root/.dark palette and uses no attribute.
-  if (palette === "standard") {
-    el.removeAttribute("data-palette");
-  } else {
-    el.setAttribute("data-palette", palette);
-  }
+  const next = palette === "standard" ? null : palette;
+  if (el.getAttribute("data-palette") === next) return;
+  withoutTransitions(() => {
+    if (next === null) el.removeAttribute("data-palette");
+    else el.setAttribute("data-palette", next);
+  });
 }
 
 const listeners = new Set<() => void>();
