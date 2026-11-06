@@ -26314,7 +26314,6 @@ def _vad_http_error(exc: Exception) -> HTTPException:
 @studio_router.get("/audio/vad/status")
 async def vad_status(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-
     return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
 
 
@@ -26345,7 +26344,6 @@ async def vad_load(
 @studio_router.post("/audio/vad/unload")
 async def vad_unload(current_subject: str = Depends(get_current_subject)):
     from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
-
     released = await asyncio.to_thread(get_audio_cpp_vad_sidecar().unload)
     return JSONResponse(content = {"released": released})
 
@@ -26367,7 +26365,9 @@ async def vad_detect(
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
     try:
-        result = await asyncio.to_thread(get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model)
+        result = await asyncio.to_thread(
+            get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model
+        )
     except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
         raise _vad_http_error(exc)
     return JSONResponse(content = result)

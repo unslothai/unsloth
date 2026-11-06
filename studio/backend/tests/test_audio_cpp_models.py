@@ -406,7 +406,9 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     )
     kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
     assert "needs a newer audio runtime" in kugel.unsupported
-    assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection with Silero VAD")
+    assert acm.family_policy("silero_vad").unsupported.startswith(
+        "Voice activity detection with Silero VAD"
+    )
     assert acm.family_policy("pulsevad").task == "vad"
     assert list(acm.family_policy("pulsevad").workflows) == ["detect"]
     assert acm.family_policy("kokoro_tts").task == "tts"
@@ -514,7 +516,13 @@ _CONVERT_TABLE = {
 
 
 def test_every_task_family_binds_its_workflows():
-    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate", "vad": "detect"}
+    workflow_for = {
+        "tts": "speak",
+        "music": "music",
+        "asr": "transcribe",
+        "sep": "separate",
+        "vad": "detect",
+    }
     endpoint_for = {
         "speak": "speech",
         "music": "tasks",

@@ -128,7 +128,9 @@ def _debug_dump(wav_bytes: bytes, payload: dict, result: dict) -> None:
         root.mkdir(parents = True, exist_ok = True)
         stem = root / f"clip-{time.strftime('%H%M%S')}-{int(time.time() * 1000) % 1000:03d}"
         stem.with_suffix(".wav").write_bytes(wav_bytes)
-        stem.with_suffix(".json").write_text(json.dumps({"raw": payload, "result": result}, indent = 1))
+        stem.with_suffix(".json").write_text(
+            json.dumps({"raw": payload, "result": result}, indent = 1)
+        )
     except OSError:
         pass
 
@@ -177,7 +179,11 @@ class AudioCppVadSidecar:
             self._release_locked()
             return had
 
-    def load(self, model: Optional[str], hf_token: Optional[str] = None) -> str:
+    def load(
+        self,
+        model: Optional[str],
+        hf_token: Optional[str] = None,
+    ) -> str:
         entry = resolve_vad_model(model, network = False)
         with self._lock:
             if self._model is not None and self._model.id == entry.id and self._server_alive():
@@ -203,14 +209,22 @@ class AudioCppVadSidecar:
                 self._loading = None
         return entry.id
 
-    def download(self, model: Optional[str], hf_token: Optional[str] = None) -> str:
+    def download(
+        self,
+        model: Optional[str],
+        hf_token: Optional[str] = None,
+    ) -> str:
         from core.inference import audio_cpp_backend
 
         entry = resolve_vad_model(model, network = True)
         audio_cpp_backend.AudioCppBackend._download_missing(entry, hf_token)
         return entry.id
 
-    def detect(self, wav_bytes: bytes, model: Optional[str] = None) -> dict:
+    def detect(
+        self,
+        wav_bytes: bytes,
+        model: Optional[str] = None,
+    ) -> dict:
         if len(wav_bytes) > MAX_CLIP_BYTES:
             raise VadError("Audio clip is too long for a speech check.")
         # Browsers capture at the device rate (48 kHz on a Mac); the detectors take 16 kHz mono only.
