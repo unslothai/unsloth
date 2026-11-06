@@ -93,6 +93,22 @@ test("links keep the summary text and drop when clipped", () => {
   );
 });
 
+test("destinations decode character references and keep their own link", () => {
+  const [entity, hidden] = linkedText(
+    [
+      "- [Guide](https://example.com/?a=1&amp;b=2&#x26;c=3) now",
+      '- <span title="[hidden](https://a.test)">Model</span> [Guide](https://b.test)',
+    ].join("\n"),
+  );
+  assert.deepEqual(entity?.links, [
+    { part: "lead", text: "Guide", href: "https://example.com/?a=1&b=2&c=3" },
+  ]);
+  assert.equal(hidden?.lead, "Model Guide");
+  assert.deepEqual(hidden?.links, [
+    { part: "lead", text: "Guide", href: "https://b.test" },
+  ]);
+});
+
 test("only plain http and https links become clickable", () => {
   const items = linkedText(
     [

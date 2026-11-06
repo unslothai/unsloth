@@ -43,7 +43,8 @@ const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 const SENTINELS = /[\uE000-\uE003]/g;
 const LINK_OPEN = "\uE002";
 const LINK_CLOSE = "\uE003";
-const MARKS = /([\uE002\uE003])/;
+// Each mark carries its href index, so a pair removed by tag stripping cannot shift the rest.
+const MARKS = /(\uE002\d+\uE002|\uE003\d+\uE003)/;
 const EDGE_SPACE = /^(\s*)([\s\S]*?)(\s*)$/;
 const LINE_ENDINGS = /\r\n?/g;
 const TABS = /\t/g;
@@ -219,10 +220,10 @@ function toPlainText(
         if (!href) {
           return label;
         }
-        hrefs?.push(href);
+        const id = hrefs?.push(href.replace(ENTITY, decodeEntity)) ?? 0;
         // Edge spaces stay outside the marks, so emphasis around the link strips as before.
         const [, before, inner, after] = EDGE_SPACE.exec(label) ?? [];
-        return `${before}${LINK_OPEN}${inner}${LINK_CLOSE}${after}`;
+        return `${before}${LINK_OPEN}${id}${LINK_OPEN}${inner}${LINK_CLOSE}${id}${LINK_CLOSE}${after}`;
       })
       .replace(IMAGE_REFERENCE, (match, text, ref) =>
         definedLabel(labels, ref, text) ? "" : match,
@@ -254,24 +255,27 @@ function plainWithLinks(
   }
   const links: Span[] = [];
   let text = "";
-  let label: string | null = null;
-  let opened = 0;
-  for (const piece of marked.split(MARKS)) {
-    if (piece === LINK_OPEN) {
-      label = "";
-      opened += 1;
-    } else if (piece === LINK_CLOSE) {
-      const shown = (label ?? "").replace(WHITESPACE, " ").trim();
-      const end = text.trimEnd().length;
-      const href = hrefs[opened - 1];
-      if (shown && href) {
-        links.push({ start: end - shown.length, end, href });
-      }
-      label = null;
-    } else {
+  let label = "";
+  let open = 0;
+  for (const [index, piece] of marked.split(MARKS).entries()) {
+    if (index % 2 === 0) {
       text = `${text}${piece}`.replace(WHITESPACE, " ").trimStart();
-      label = label === null ? null : label + piece;
+      label += piece;
+      continue;
     }
+    const id = Number(piece.slice(1, -1));
+    if (piece.startsWith(LINK_OPEN)) {
+      open = id;
+      label = "";
+      continue;
+    }
+    const shown = label.replace(WHITESPACE, " ").trim();
+    const end = text.trimEnd().length;
+    const href = hrefs[id - 1];
+    if (open === id && shown && href) {
+      links.push({ start: end - shown.length, end, href });
+    }
+    open = 0;
   }
   const plain = toPlainText(markdown, labels);
   return { text: plain, links: text.trimEnd() === plain ? links : [] };
