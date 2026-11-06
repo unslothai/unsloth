@@ -486,6 +486,25 @@ def test_a_stale_window_delete_drops_replies_it_never_saw(
     assert parents == {"u1": None, "a1": "u1"}
 
 
+def test_a_prune_does_not_walk_the_chain_of_rows_it_deletes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    ids = [f"u{i}" if i % 2 == 0 else f"a{i}" for i in range(40)]
+    turns = [_turn(m, ids[i - 1] if i else None, i) for i, m in enumerate(ids)]
+    studio_db.sync_chat_messages("thread-1", turns)
+    walked = []
+    real = studio_db._surviving_parent_id
+    monkeypatch.setattr(
+        studio_db,
+        "_surviving_parent_id",
+        lambda conn, thread_id, message_id, pruned: walked.append(message_id)
+        or real(conn, thread_id, message_id, pruned),
+    )
+
+    assert studio_db.sync_chat_messages("thread-1", [], prune_missing = True) == []
+    assert walked == []
+
+
 def test_upsert_chat_message_rejects_cross_thread_id_conflict(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))

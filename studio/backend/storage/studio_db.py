@@ -4457,7 +4457,7 @@ def sync_chat_messages(
         ]
         # Repair research parents the prune deletes, walking the stored chain (dangling parent breaks import).
         # Batch-written ids are excluded so an authorized reparent is not overwritten.
-        reseat_candidates = (managed_ids | unseen_ids) - {str(m["id"]) for m in messages}
+        reseat_candidates = (managed_ids | unseen_ids) - pruned - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
