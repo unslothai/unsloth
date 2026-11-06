@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -633,6 +634,38 @@ def test_plain_encoder_needs_no_torchao(plain_checkpoint):
     assert loaded["state_dict"]["encoder.weight"].dtype == torch.float8_e4m3fn
     assert torch.equal(loaded["state_dict"]["encoder.weight"].float(), torch.ones(2, 3))
     assert loaded["metadata"]["scheme"] == "fp8"
+
+
+def _mapped(path):
+    real = os.path.realpath(path)
+    with open("/proc/self/maps", encoding = "utf-8") as fh:
+        return any(line.rstrip().endswith(real) for line in fh)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "reads /proc/self/maps")
+def test_a_buffer_repointed_at_its_pinned_copy_releases_the_file_mapping(plain_checkpoint):
+    """Streaming re-points each host weight at its pinned copy with ``.data =``. A view keeps its base through that,
+    so a buffer loaded straight from the file kept the whole safetensors mapping resident for the model's life
+    (8.7 GiB for Qwen-Image-2.1's int8 encoder)."""
+    import gc
+
+    import torch
+
+    path = plain_checkpoint(
+        tensors = {"encoder.weight": torch.arange(4096 * 64, dtype = torch.float32).reshape(4096, 64)}
+    )
+    module = torch.nn.Module()
+    module.register_buffer(
+        "weight", ps.load_plain_prequant_safetensors(path)["state_dict"]["encoder.weight"]
+    )
+    expected = module.weight.clone()
+    assert _mapped(path)
+    module.weight.data = (
+        module.weight.clone()
+    )  # the pinned copy, as _GroupPinner / the pin arena re-point it
+    gc.collect()
+    assert not _mapped(path)
+    assert torch.equal(module.weight, expected)
 
 
 @pytest.mark.parametrize(
