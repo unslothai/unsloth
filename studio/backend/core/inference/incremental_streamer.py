@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``TextIteratorStreamer`` whose ``put`` stops re-decoding the whole current line per token once
-the line is long (quadratic in line length), decoding only the ids after the last split point
-(``IncrementalDecode``). Emitted chunks are identical to upstream's ``put`` (transformers 4.57 and
-5.x share it); short lines and tokenizers that do not split keep upstream's ``put``."""
+"""``TextIteratorStreamer`` that decodes long lines incrementally instead of re-decoding the whole
+line per token; chunks equal upstream ``put``, which short lines and non-splitting tokenizers keep."""
 
 from __future__ import annotations
 
@@ -26,9 +24,8 @@ def _line_decoder(tokenizer, decode_kwargs):
 
 
 class IncrementalTextIteratorStreamer(TextIteratorStreamer):
-    _decoder = False  # False = not resolved yet; None = tokenizer never splits
-    # The token_cache list _decoder has consumed; upstream rebinds token_cache on every flush.
-    _line_ids = None
+    _decoder = False  # False = unresolved, None = never splits
+    _line_ids = None  # token_cache list _decoder consumed; upstream rebinds it on every flush
 
     def _attach(self) -> bool:
         if len(self.token_cache) < _MIN_LINE_IDS:
