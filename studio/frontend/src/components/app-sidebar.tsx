@@ -5970,7 +5970,13 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className={cn(
+                      "relative top-px -left-px shrink-0 rounded-full object-cover",
+                      // Web Studio only; the desktop header keeps its own sizes.
+                      usesDesktopTitlebar
+                        ? "h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))]"
+                        : "h-[calc(20.5px+0.5rem*var(--ui-font-scale,1))] w-[calc(20.5px+0.5rem*var(--ui-font-scale,1))]",
+                    )}
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5988,10 +5994,17 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className={cn(
+                        "inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        usesDesktopTitlebar && "relative top-px",
+                      )}
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon
+                        icon={Search01Icon}
+                        strokeWidth={1.75}
+                        className={usesDesktopTitlebar ? "size-4" : "size-icon"}
+                      />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -6063,7 +6076,7 @@ export function AppSidebar() {
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
           rowPadding,
-          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(7px*var(--ui-space-scale,1))]",
+          usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(5px*var(--ui-space-scale,1))]",
           scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-px",
         )}
       >
