@@ -66,7 +66,8 @@ RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 # At most this many mode pages are measured again (each loads only its failing areas).
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # Costs main already has (origin/main 3738b40e43, measured on a 36-core host and pinned to 4 CPUs),
-# as `mode:area=ratio`, `mode:*=ratio` or `length:area=ratio`; each ceiling is about 1.3x the highest
+# as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or `count:area=elements` (elements restyled
+# at LONG turns, replacing the length ratio for that area); each ceiling is about 1.2-1.3x the highest
 # reading, so these may not get worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO.
 # Glass: CPU raster of the backdrop-filter on every repaint (Settings scrolling 13-21x, the rest
 # up to 8.7x in single readings). Length: these areas restyle the whole thread when they open (4-7x at 200 vs 40 turns,
@@ -76,18 +77,20 @@ KNOWN_DEFAULT = ",".join(
     [f"{m}:*=10" for m in ("frosted", "blurred", "liquid")]
     + [f"{GLASS}:*=12"]
     + [f"{m}:settings_scroll=28" for m in ("frosted", "blurred", "liquid", GLASS)]
+    # Whole-thread restyles on open, held to an absolute count of elements restyled at LONG turns
+    # (about 1.2x today's): non-subject :has() rules (`X:has(...) Y`), which another change is rewriting.
     + [
-        f"length:{a}={r}"
-        for a, r in (
-            ("model_picker", 6.1),
-            ("chat_options", 4.6),
-            ("browser_pane", 8.6),
-            ("account_menu", 6.0),
-            ("organize_chats", 6.0),
-            ("chat_row_menu", 5.5),
-            ("sidebar_sections", 9.0),
-            ("sidebar_toggle", 6.0),
-            ("run_settings", 6.1),
+        f"count:{a}={n}"
+        for a, n in (
+            ("model_picker", 44000),
+            ("chat_options", 17000),
+            ("browser_pane", 45000),
+            ("account_menu", 30000),
+            ("organize_chats", 30000),
+            ("chat_row_menu", 32000),
+            ("sidebar_sections", 45000),
+            ("sidebar_toggle", 30000),
+            ("run_settings", 45000),
         )
     ]
 )
@@ -1291,9 +1294,27 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
             if lc.get("status") != "OK" or sc.get("status") != "OK":
                 continue
             limit = limits.get(("length", area), LENGTH_RATIO)
+            cap = limits.get(("count", area))
             for metric in ("elements", "layout_objects"):
                 lv, sv = lc.get(metric, 0), sc.get(metric, 0)
                 ratio = lv / max(sv, 1)
+                if metric == "elements" and cap is not None:
+                    out.append(
+                        {
+                            "kind": "length",
+                            "metric": metric,
+                            "turns": turns,
+                            "mode": mode,
+                            "area": area,
+                            "value": lv,
+                            "base_value": sv,
+                            "ratio": ratio,
+                            "limit": limit,
+                            "cap": cap,
+                            "fail": lv > cap,
+                        }
+                    )
+                    continue
                 out.append(
                     {
                         "kind": "length",
@@ -1421,12 +1442,19 @@ def run(
         if v["kind"] == "broken":
             failures.append(f"area {v['area']} ({v['mode']}, {v['turns']} turns): {v['why']}")
         elif v["kind"] == "length":
+            bound = (
+                f"known ceiling {v['cap']:,.0f} elements, LONG_THREAD_AREAS_KNOWN count:{v['area']}=..."
+                if "cap" in v
+                else f"limit {v['limit']:.1f}x; LONG_THREAD_AREAS_LENGTH_RATIO / _KNOWN length:{v['area']}=..."
+            )
             failures.append(
                 f"area {v['area']} ({v['mode']}) costs more as the chat grows: {v['metric'].replace('_', ' ')} "
-                f"{v['base_value']:,} at {SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x "
-                f"(limit {v['limit']:.1f}x; LONG_THREAD_AREAS_LENGTH_RATIO / _KNOWN length:{v['area']}=...). "
-                "Opening it restyles or re-lays out the thread: an attribute or inherited style written on an "
-                "ancestor of the thread (body, html, the sidebar provider), or a :hover/:has() that reaches it"
+                f"{v['base_value']:,} at {SHORT} turns -> {v['value']:,} at {LONG} turns = {v['ratio']:.1f}x ({bound}). "
+                "Opening it restyles or re-lays out the thread. Usual causes: a non-subject :has() rule "
+                "(`X:has(...) Y` or `X:has(...) > Y`, e.g. a Tailwind group-has-* variant or a rule anchored on "
+                "[data-wallpaper-workspace]): Chromium and WebKit re-run it for every message when anything under "
+                "an ancestor of the thread changes (see the :has() lint at the top of this log); or an attribute or "
+                "inherited style written on an ancestor of the thread (body, html, the sidebar provider)"
             )
         else:
             unit = "ms CPU" if v["metric"] == "cpu_ms" else "elements restyled"

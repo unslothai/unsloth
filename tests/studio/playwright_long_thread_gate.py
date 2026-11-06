@@ -50,6 +50,7 @@ from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _area_matrix as areas  # noqa: E402
+import _has_lint as has_lint  # noqa: E402
 from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
@@ -77,6 +78,8 @@ MATCH_FLOOR_MS = 2.0
 AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
 # Skip the long-chat checks and run only the area matrix (local A/A and noise studies).
 ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
+# Static lint of the built CSS for new non-subject :has() rules (tests/studio/_has_lint.py).
+HAS_LINT = os.environ.get("LONG_THREAD_HAS_LINT", "1") != "0"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
@@ -560,6 +563,8 @@ def main() -> int:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(args = chromium_launch_args())
+            if HAS_LINT:
+                lint_has(browser, failures, details)
             if ONLY_AREAS:
                 browser.close()
                 return finish_areas(runs, failures, details, started)
@@ -636,6 +641,48 @@ def main() -> int:
             return finish_areas(runs, failures, details, started)
     finally:
         server.shutdown()
+
+
+def lint_has(browser, failures: list[str], details: list[str]) -> None:
+    """Static: no non-subject :has() rule in the built CSS beyond the allowlisted ones (_has_lint.py)."""
+    scratch = browser.new_context()
+    try:
+        page = scratch.new_page()
+        selectors: list[str] = []
+        for css in sorted((DIST / "assets").glob("*.css")):
+            text = css.read_text(encoding = "utf-8", errors = "replace")
+            if ":has(" in text:
+                selectors += page.evaluate(has_lint.SELECTORS_JS, text)
+    finally:
+        scratch.close()
+    found = has_lint.offenders(selectors)
+    if os.environ.get("LONG_THREAD_HAS_LINT_WRITE") == "1":
+        has_lint.write_allowlist(found)
+        print(f":has() lint: wrote {len(found)} selectors to {has_lint.ALLOWLIST}", flush = True)
+        return
+    new, stale = has_lint.check(found)
+    print(
+        f":has() lint: {len(selectors)} :has() rules in the build, {len(found)} non-subject "
+        f"({len(found) - len(new)} allowlisted, {len(new)} new)"
+        + (
+            f"; {len(stale)} allowlisted rules are gone, prune them with LONG_THREAD_HAS_LINT_WRITE=1"
+            if stale
+            else ""
+        ),
+        flush = True,
+    )
+    if new:
+        failures.append(
+            f"{len(new)} new CSS rule(s) put :has() before a combinator (`X:has(...) Y` / `X:has(...) > Y`). "
+            "Chromium and WebKit then restyle every element matching the right-hand side whenever anything "
+            "changes under an ancestor of the chat, so opening the sidebar, a menu or a pane restyles the "
+            "whole thread. Keep :has() in the last compound (`X:has(...)`), or set a data attribute on the "
+            "anchor from a layout effect and select on that; a Tailwind group-has-* variant compiles to this "
+            "shape too"
+        )
+        for sel in new[:8]:
+            details.append(f"  new non-subject :has(): {short(sel, 200)}")
+            details += suspects_for(sel)
 
 
 def areas_enabled() -> bool:
