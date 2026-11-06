@@ -100,6 +100,7 @@ function realLoadModel(auth: AuthApi): ChatApi {
       new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
       {},
     ),
+    "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
     "@/features/auth": { authFetch: auth.authFetch },
     "./padded-response": paddedResponse,
     "@/lib/format-fastapi-error": {
