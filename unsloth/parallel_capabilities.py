@@ -428,7 +428,8 @@ FEATURES = (
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         uses = ("packed_seq_lengths",),
         produces = ("seq_shard", "shift_labels", "position_ids"),
-        hooks = ("Trainer.__init__", "attention_function"),
+        # decoder_layer.forward: a pre-hook drops the per-layer mask (context_parallel.py).
+        hooks = ("Trainer.__init__", "decoder_layer.forward", "attention_function"),
         exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
@@ -439,7 +440,8 @@ FEATURES = (
         mesh = ("cp",),
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("seq_shard", "shift_labels", "cp_permutation", "position_ids"),
-        hooks = ("Trainer.__init__", "attention_function"),
+        # decoder_layer.forward: a pre-hook drops the per-layer mask (context_parallel.py).
+        hooks = ("Trainer.__init__", "decoder_layer.forward", "attention_function"),
         exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     # Precision.
