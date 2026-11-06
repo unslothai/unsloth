@@ -537,3 +537,12 @@ def test_route_preview_and_status(weights, monkeypatch):
     assert res.status_code == 400 and "MP4" in res.json()["detail"]
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
     assert client.get("/api/inference/video/restyle/status").json()["available"] is False
+
+
+def test_frames_from_video_fits_only_kept_frames(monkeypatch):
+    calls = []
+    real = vr.fit_frame
+    monkeypatch.setattr(vr, "fit_frame", lambda image: calls.append(1) or real(image))
+    frames = vr.frames_from_video(_clip(120, 40))
+    # 40 frames at 120 fps is a third of a second: 10 frames at 30 fps, each fitted once.
+    assert abs(len(frames) - 10) <= 1 and len(calls) == len(frames)

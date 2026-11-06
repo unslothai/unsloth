@@ -74,6 +74,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [preview, setPreview] = useState<VideoRestylePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [inputClip, setInputClip] = useState<Blob | null>(null);
   const [controlClip, setControlClip] = useState<Blob | null>(null);
   const [outputClip, setOutputClip] = useState<Blob | null>(null);
@@ -87,6 +88,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const previewFor = useRef(0);
 
   const running = progress?.active === true;
+  if (!running && cancelling) setCancelling(false);
   const unavailable = status !== null && !status.available;
 
   const refresh = useCallback(async () => {
@@ -125,6 +127,10 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setFrames(next.frames);
     setPreview(null);
     setError(null);
+    // The last result belongs to the previous clip; don't show it beside a new one.
+    setInputClip(null);
+    setControlClip(null);
+    setOutputClip(null);
     if (!next.video && next.frames.length === 0) {
       return;
     }
@@ -314,10 +320,14 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           <Button
             variant="outline"
             className="h-11 text-ui-14"
-            onClick={() => void cancelVideoRestyle()}
+            disabled={cancelling}
+            onClick={() => {
+              setCancelling(true);
+              void cancelVideoRestyle().catch(() => setCancelling(false));
+            }}
           >
             <Spinner className="mr-2 size-4" />
-            Cancel
+            {cancelling ? "Stopping..." : "Cancel"}
           </Button>
         ) : (
           <Button
@@ -335,7 +345,9 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           <div className="grid gap-1.5" data-testid="restyle-progress">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
-                {phase === "generate" && step === 0
+                {cancelling
+                  ? "Stopping"
+                  : phase === "generate" && step === 0
                   ? "Preparing the edges for the model"
                   : (PHASE_LABEL[phase] ?? phase)}
               </span>
@@ -358,7 +370,9 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
 
-      <div className="flex min-h-[60dvh] min-w-0 flex-1 flex-col items-center justify-center gap-4 p-6 @[50rem]:min-h-0">
+      {/* justify-center-safe: three stacked players can be taller than the pane; plain centering would
+          push them up over the form. */}
+      <div className="flex min-h-[60dvh] min-w-0 flex-1 flex-col items-center justify-center-safe gap-4 p-6 @[50rem]:min-h-0 @[50rem]:overflow-y-auto">
         {urls.input && urls.control && urls.output ? (
           <>
             <div className="grid w-full max-w-7xl grid-cols-1 gap-3 @[60rem]:grid-cols-3">

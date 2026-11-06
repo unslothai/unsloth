@@ -119,19 +119,28 @@ def frames_from_video(
             rate = float(stream.average_rate or stream.guessed_rate or fps)
             first: Optional[float] = None
             prev = None
+            fitted = None
+
+            def keep() -> Any:
+                # Fit only frames that are kept (a 120 fps source drops 3 in 4), and as they are kept:
+                # 121 full-size 4K frames would hold about 3 GB.
+                nonlocal fitted
+                if fitted is None:
+                    fitted = fit_frame(prev.to_image())
+                return fitted
+
             for index, frame in enumerate(container.decode(stream)):
                 t = frame.time if frame.time is not None else index / rate
                 if first is None:
                     first = t
                 t -= first
                 while prev is not None and len(out) < limit and t > len(out) / fps + 1e-6:
-                    out.append(prev)
+                    out.append(keep())
                 if len(out) >= limit:
                     break
-                # Fit as decoded: 121 full-size 4K frames would hold about 3 GB.
-                prev = fit_frame(frame.to_image())
+                prev, fitted = frame, None
             if prev is not None and len(out) < limit:
-                out.append(prev)
+                out.append(keep())
     except RestyleError:
         raise
     except Exception as exc:  # noqa: BLE001 -- any decode failure is a bad upload
