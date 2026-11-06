@@ -2459,19 +2459,6 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
     return new_template, message_to_use
 
 
-_OLLAMA_SYSTEM_RE = re.compile(r'^SYSTEM """.*?"""[ \t]*\n?', flags = re.DOTALL | re.MULTILINE)
-
-
-def _set_ollama_system_message(modelfile: str, system_message: str):
-    # Ollama falls back to the Modelfile's SYSTEM line when a request has no system turn, the way the
-    # Jinja template falls back to {system_message}, so both must carry the same text.
-    system_line = f'SYSTEM """{system_message}"""\n' if system_message != "" else ""
-    modelfile, n_found = _OLLAMA_SYSTEM_RE.subn(lambda _: system_line, modelfile, count = 1)
-    if n_found == 0 and system_line:
-        modelfile = modelfile.rstrip("\n") + "\n" + system_line
-    return modelfile
-
-
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -2717,12 +2704,10 @@ def get_chat_template(
             "{%- endif %}" + \
             chat_template
 
-    requested_system_message = system_message
+    # The Modelfile gets the caller's message only if the Jinja template bakes it in. It is applied at
+    # export, after create_ollama_modelfile picks the template, so passing it cannot change that choice.
+    ollama_system_message = system_message if "{system_message}" in chat_template else None
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
-    # Only templates with a default put the caller's message into the Jinja template.
-    if ollama_modelfile and requested_system_message is not None and \
-        DEFAULT_SYSTEM_MESSAGE.get(type_chat_template) is not None:
-        ollama_modelfile = _set_ollama_system_message(ollama_modelfile, system_message)
 
     tokenizer.chat_template = chat_template
 
@@ -2746,6 +2731,7 @@ def get_chat_template(
     if _processor is not None:
         # GGUF export unwraps the processor before it builds the Ollama Modelfile.
         tokenizer._ollama_modelfile = ollama_modelfile
+        tokenizer._ollama_system_message = ollama_system_message
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
@@ -2759,6 +2745,7 @@ def get_chat_template(
         tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 
     tokenizer._ollama_modelfile = ollama_modelfile
+    tokenizer._ollama_system_message = ollama_system_message
     tokenizer._system_message   = system_message
 
     # Re-wrap so the trainer gets the same TokenizerWrapper type back.
@@ -3471,11 +3458,14 @@ extra_eos_tokens = None,
 
     tokenizer.chat_template = jinja_template
     tokenizer._ollama_modelfile = modelfile
+    # This Modelfile already holds default_system_message; drop one left by an earlier get_chat_template.
+    tokenizer._ollama_system_message = None
     tokenizer._unsloth_input_part  = input_part
     tokenizer._unsloth_output_part = output_part
     if hasattr(tokenizer, "tokenizer"):
         tokenizer.tokenizer.chat_template = jinja_template
         tokenizer.tokenizer._ollama_modelfile = modelfile
+        tokenizer.tokenizer._ollama_system_message = None
         tokenizer.tokenizer._unsloth_input_part  = input_part
         tokenizer.tokenizer._unsloth_output_part = output_part
 

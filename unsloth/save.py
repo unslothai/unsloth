@@ -3577,6 +3577,25 @@ def fix_tokenizer_bos_token(tokenizer):
     return fix_bos_token, chat_template
 
 
+_OLLAMA_SYSTEM_RE = re.compile(r'^SYSTEM """.*?"""[ \t]*\n?', flags = re.DOTALL | re.MULTILINE)
+# Ollama ends a """ value at the first line break preceded by """, so such a message would be cut short.
+_OLLAMA_SYSTEM_CUT_RE = re.compile(r'"""\s*\n')
+
+
+def _set_ollama_system_message(modelfile, system_message):
+    # Ollama falls back to the Modelfile's SYSTEM line when a request has no system turn, the way the
+    # Jinja template falls back to {system_message}, so both must carry the same text.
+    if _OLLAMA_SYSTEM_CUT_RE.search(system_message):
+        raise ValueError(
+            'Unsloth: The system message has a line ending in """, which an Ollama Modelfile cannot hold.'
+        )
+    system_line = f'SYSTEM """{system_message}"""\n' if system_message != "" else ""
+    modelfile, n_found = _OLLAMA_SYSTEM_RE.subn(lambda _: system_line, modelfile, count = 1)
+    if n_found == 0 and system_line:
+        modelfile = modelfile.rstrip("\n") + "\n" + system_line
+    return modelfile
+
+
 def create_ollama_modelfile(tokenizer, base_model_name, model_location):
     """
     Creates an Ollama Modelfile.
@@ -3620,9 +3639,14 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
             __FILE_LOCATION__ = model_location,
         )
 
-    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}").rstrip()
+    modelfile = modelfile.replace("⚫@✅#🦥", "{").replace("⚡@🦥#⛵", "}")
 
-    return modelfile
+    # Applied after formatting, so the message is written verbatim.
+    system_message = getattr(tokenizer, "_ollama_system_message", None)
+    if system_message is not None:
+        modelfile = _set_ollama_system_message(modelfile, system_message)
+
+    return modelfile.rstrip()
 
 
 def create_ollama_model(username: str, model_name: str, tag: str, modelfile_path: str):

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import pytest
 from datasets import Dataset
 from tokenizers import Tokenizer, models
 from transformers import CLIPImageProcessor, LlavaProcessor, PreTrainedTokenizerFast
@@ -143,7 +144,12 @@ def test_empty_system_message_drops_the_default_from_the_modelfile():
 def test_default_system_message_leaves_the_stock_modelfile():
     tokenizer = get_chat_template(_tokenizer("some/model"), chat_template = "alpaca")
 
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
     assert tokenizer._ollama_modelfile == OLLAMA_TEMPLATES["alpaca"]
+    assert tokenizer._ollama_system_message is None
+    assert modelfile.endswith('SYSTEM """Below are some instructions that describe some tasks. '
+                              'Write responses that appropriately complete each request."""')
 
 
 def test_system_message_without_a_template_default_leaves_the_modelfile():
@@ -151,5 +157,65 @@ def test_system_message_without_a_template_default_leaves_the_modelfile():
     tokenizer = get_chat_template(
         _tokenizer("some/model"), chat_template = "chatml", system_message = "Be brief."
     )
+    stock = get_chat_template(_tokenizer("some/model"), chat_template = "chatml")
 
-    assert tokenizer._ollama_modelfile == OLLAMA_TEMPLATES["chatml"]
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert modelfile == create_ollama_modelfile(stock, "some/model", "x.gguf")
+
+
+def test_system_message_keeps_the_mapped_template_choice():
+    # qwen-2.5 and qwen-2.5-coder train the same; the mapper picks the coder Modelfile, which adds FIM.
+    name = "unsloth/Qwen2.5-Coder-7B-Instruct"
+    tokenizer = get_chat_template(
+        _tokenizer(name), chat_template = "qwen-2.5", system_message = "Be brief."
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, name, "x.gguf")
+
+    assert "<|fim_prefix|>" in modelfile
+    assert modelfile.endswith('SYSTEM """Be brief."""')
+    assert modelfile.count("SYSTEM ") == 1
+
+
+def test_system_message_reaches_the_modelfile_of_a_processor():
+    processor = LlavaProcessor(
+        image_processor = CLIPImageProcessor(), tokenizer = _tokenizer("some/vlm"), patch_size = 14
+    )
+    processor = get_chat_template(processor, chat_template = "alpaca", system_message = "Be brief.")
+
+    modelfile = create_ollama_modelfile(processor.tokenizer, "some/vlm", "x.gguf")
+
+    assert modelfile.endswith('SYSTEM """Be brief."""')
+
+
+def test_later_get_chat_template_without_system_message_restores_the_default():
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "alpaca", system_message = "Be brief."
+    )
+    tokenizer = get_chat_template(tokenizer, chat_template = "alpaca")
+
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert "Be brief." not in modelfile
+    assert 'SYSTEM """Below are some instructions' in modelfile
+
+
+def test_system_message_is_written_verbatim():
+    message = 'Say "hi" and use {braces}, {__EOS_TOKEN__}, \\1 and """ freely.'
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "alpaca", system_message = message
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert modelfile.endswith(f'SYSTEM """{message}"""')
+
+
+def test_system_message_that_ollama_would_cut_short_is_rejected():
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "alpaca", system_message = 'Use """ \nfor code.'
+    )
+
+    with pytest.raises(ValueError, match = "Ollama Modelfile"):
+        create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
