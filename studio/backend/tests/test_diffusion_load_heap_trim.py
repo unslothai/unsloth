@@ -116,7 +116,9 @@ def test_trim_returns_fragmented_free_heap_to_the_os():
     import ctypes
 
     if not hasattr(ctypes.CDLL(None), "malloc_trim"):
-        pytest.skip("no malloc_trim on this libc (musl)")
+        pytest.skip(
+            reason = "musl and other libcs without malloc_trim: the resolver declines, nothing to trim"
+        )
     script = textwrap.dedent(
         """
         import json, logging
