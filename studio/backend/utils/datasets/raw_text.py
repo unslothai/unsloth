@@ -50,6 +50,16 @@ def resolve_column_names(dataset) -> list[str]:
 
 def _string_columns(dataset: Dataset) -> list[str]:
     feature_map = getattr(dataset, "features", {}) or {}
+    if not feature_map:
+        # Older supported datasets releases leave streamed JSON/CSV schemas unset.
+        # Probe only the same prefix used for column choice; iteration starts afresh for training.
+        rows = list(islice(dataset, 100))
+        return [
+            col
+            for col in resolve_column_names(dataset)
+            if any(isinstance(row.get(col), str) for row in rows)
+            and all(row.get(col) is None or isinstance(row.get(col), str) for row in rows)
+        ]
     string_cols: list[str] = []
     for col in resolve_column_names(dataset):
         feature = feature_map.get(col)
