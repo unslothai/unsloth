@@ -202,6 +202,9 @@ jobs:
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
         run: |
           python3 -m pip install 'playwright>=1.45,<2'
           python3 -m playwright install chromium
@@ -698,6 +701,9 @@ jobs:
       - name: Chromium for the long-chat typing gate
         working-directory: ${{ github.workspace }}
         shell: bash
+        timeout-minutes: 10
+        env:
+          APT_ACQUIRE_RETRIES: '0'
         run: |
           python -m pip install 'playwright>=1.45,<2'
           python -m playwright install chromium

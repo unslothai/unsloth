@@ -20,8 +20,8 @@ untraced pre-check shortens the traced window to 2 keys on a slow page; a second
 when the ratio is close to its limit. A failure prints the measured numbers, how far over budget
 they are, and the selectors responsible with their cost per key; selectors tried on most of the
 DOM are marked as likely victims of a whole-page restyle. It then pins the trigger down by
-switching :has() rules off in fresh pages (a bisection, time-boxed) and names the rule that costs
-the time on its own, with the CSS file and line it probably comes from.
+removing :has() rules from the stylesheet before fresh page loads (a bisection, time-boxed) and
+names the rule whose removal makes typing cheap, with the CSS file and line it probably comes from.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _css_culprit import explain  # noqa: E402
+from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -61,10 +61,12 @@ HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/ke
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
 # Untraced style recalc per key above this on the large chat means a regressed build (healthy:
-# 1-15 ms; #16603: 140-600 ms); its traced window is then 2 keys, not 10, to fail fast.
+# 1-15 ms; #16603: 140-1000 ms); its traced window is then 2 keys, not 10. Above EXTREME the
+# page is hundreds of times a healthy one and fails on the untraced number alone.
 SLOW_STYLE_MS = 60.0
+EXTREME_STYLE_MS = 300.0
 # Rule bisection on a failure: a smaller chat, 3 keys per probe, a time budget.
-PIN_TURNS = 100
+PIN_TURNS = 60
 PIN_KEYS = "abc"
 PIN_BUDGET_S = 240.0
 TOP = 5
@@ -106,7 +108,11 @@ def metrics(cdp) -> dict:
     return {m["name"]: m["value"] for m in cdp.send("Performance.getMetrics")["metrics"]}
 
 
-RULES_JS = """() => {
+# The stylesheet is edited as text before the page loads: rules switched off in a page that has
+# already rendered leave Chromium's :has() flags on its elements, so the cost stays (measured).
+SHEET_RULES_JS = """(text) => {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(text);
   const out = [];
   const walk = (list, path) => {
     for (let i = 0; i < list.length; i++) {
@@ -116,38 +122,53 @@ RULES_JS = """() => {
       if (r.cssRules && r.cssRules.length) walk(r.cssRules, p);
     }
   };
-  [...document.styleSheets].forEach((sheet, i) => { try { walk(sheet.cssRules, [i]); } catch (e) {} });
+  walk(sheet.cssRules, []);
   return out;
 }"""
-DISABLE_JS = """(paths) => {
+SHEET_WITHOUT_JS = """([text, paths]) => {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(text);
   for (const p of paths) {
-    let list = document.styleSheets[p[0]].cssRules, rule = null;
-    for (let k = 1; k < p.length; k++) { rule = list[p[k]]; list = rule.cssRules; }
+    let list = sheet.cssRules, rule = null;
+    for (const i of p) { rule = list[i]; list = rule.cssRules; }
     if (rule) rule.selectorText = '.__long_chat_gate_disabled__';
   }
-  return paths.length;
+  return [...sheet.cssRules].map((r) => r.cssText).join('\\n');
 }"""
+
+
+def main_stylesheet(dist: Path) -> tuple[str, str] | None:
+    """(URL path, text) of the built stylesheet that carries the :has() rules."""
+    best = None
+    for css in (dist / "assets").glob("*.css"):
+        text = css.read_text(errors = "replace")
+        if ":has(" in text and (best is None or len(text) > len(best[1])):
+            best = (f"/assets/{css.name}", text)
+    return best
 
 
 def open_thread(
     browser,
     base: str,
     turns: int,
-    disable: list | None = None,
+    css: tuple[str, str] | None = None,
 ):
     ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
+    if css is not None:
+        path, body = css
+        ctx.route(
+            f"{base}{path}",
+            lambda route: route.fulfill(status = 200, body = body, content_type = "text/css"),
+        )
     page = ctx.new_page()
     page.goto(f"{base}/smoke-thread-weight.html?shell=1", wait_until = "load")
     page.wait_for_function("() => !!window.__threadWeight", timeout = 60_000)
-    if disable:
-        # Before the thread mounts, so no element carries :has() state from the rule.
-        page.evaluate(DISABLE_JS, disable)
     count = turns * 2
     page.evaluate("([n, o]) => window.__threadWeight.seed(n, o)", [count, SEED_OPTIONS])
     page.wait_for_function(
         "(n) => window.__threadWeight.messageCount() >= n", arg = count, timeout = 120_000
     )
-    page.wait_for_timeout(1500 if disable is not None else 2500)
+    page.wait_for_timeout(1500 if css is not None else 2500)
     cdp = ctx.new_cdp_session(page)
     cdp.send("Performance.enable")
     box = page.locator(".aui-composer-input").first
@@ -185,6 +206,24 @@ def measure(browser, base: str, turns: int) -> dict:
     # Untraced pre-check: selector statistics slow a regressed build ~50x, so a slow page gets a
     # short traced window; the verdict still comes from the traced numbers.
     pre = style_per_key(cdp, page, PRECHECK_KEYS)
+    if pre >= EXTREME_STYLE_MS:
+        # Hundreds of times a healthy keystroke: one traced key would take minutes and could not
+        # change the verdict, so skip tracing and let the pin-down find the rule.
+        typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == PRECHECK_KEYS
+        ctx.close()
+        return {
+            "turns": turns,
+            "shape": shape,
+            "typed_ok": typed_ok,
+            "keys": 0,
+            "extreme": True,
+            "precheck_style_ms": round(pre, 1),
+            "typing_s": 0.0,
+            "match_ms": None,
+            "has_ms": None,
+            "style_ms": None,
+            "selectors": {},
+        }
     keys = KEYS if pre < SLOW_STYLE_MS else KEYS[:2]
     events: list = []
     done: list = []
@@ -240,81 +279,111 @@ def pin_down(
     base: str,
     budget_s: float = PIN_BUDGET_S,
 ) -> list[str]:
-    """Find the :has() rules behind a slow keystroke by switching them off in fresh pages.
+    """Find the :has() rules whose removal makes the keystroke cheap, one fresh page per probe.
 
-    Style recalc per key (untraced) with every :has() rule on (E) and off (F); then bisect: a
-    group is guilty when switching on only that group (the rest off) costs well above F. Each
-    rule found is switched off for the next search, up to three. Evidence, not a guess: the
-    numbers say how much each rule costs on its own.
+    Untraced style recalc per key with every :has() rule on (E) and off (F). The cost is often not
+    additive: one rule makes the browser restyle a whole subtree and the other rules then pay for
+    it. So the search removes rules: bisect for a set whose removal brings the page back near F,
+    narrowed to single rules. For each rule found it reports the page without that rule and the
+    rule on its own. Up to three rules, time-boxed. Measurements, not a guess.
     """
     started = time.time()
-    ctx = browser.new_context()
-    page = ctx.new_page()
-    page.goto(f"{base}/smoke-thread-weight.html?shell=1", wait_until = "load")
-    page.wait_for_function("() => !!window.__threadWeight", timeout = 60_000)
-    rules = page.evaluate(RULES_JS)
-    ctx.close()
-    if not rules:
+    sheet = main_stylesheet(DIST)
+    if sheet is None:
         return ["  pin-down: the built stylesheet has no :has() rules to test"]
+    css_path, css_text = sheet
+    scratch = browser.new_context()
+    page = scratch.new_page()
+    rules = page.evaluate(SHEET_RULES_JS, css_text)
     paths = [r["p"] for r in rules]
+    every = list(range(len(paths)))
+    probes = [0]
 
-    def cost(enabled_idx: list[int]) -> float:
-        on = set(enabled_idx)
-        c, pg, cd = open_thread(
-            browser, base, PIN_TURNS, [p for i, p in enumerate(paths) if i not in on]
+    def cost(enabled) -> float:
+        on = set(enabled)
+        probes[0] += 1
+        body = page.evaluate(
+            SHEET_WITHOUT_JS, [css_text, [p for i, p in enumerate(paths) if i not in on]]
         )
+        c, pg, cd = open_thread(browser, base, PIN_TURNS, (css_path, body))
         try:
             return style_per_key(cd, pg, PIN_KEYS)
         finally:
             c.close()
 
-    every = list(range(len(paths)))
-    e_all, f_none = cost(every), cost([])
-    out = [
-        f"  pin-down at {PIN_TURNS} turns, untraced style recalc per keystroke: {e_all:.1f} ms with all "
-        f"{len(paths)} :has() rules, {f_none:.1f} ms with none of them"
-    ]
-    if e_all < max(2 * f_none, f_none + 10):
-        out.append(
-            "    switching every :has() rule off does not remove the cost, so the cause is probably not "
-            "a :has() rule; see the selectors above"
-        )
-        return out
-    guilty = lambda ms: ms > max(2 * f_none, f_none + 0.25 * (e_all - f_none))  # noqa: E731
-    found: list[int] = []
-    remaining = every
-    while len(found) < 3 and time.time() - started < budget_s:
-        cand = list(remaining)
-        while len(cand) > 1 and time.time() - started < budget_s:
-            first, second = cand[: len(cand) // 2], cand[len(cand) // 2 :]
-            if guilty(cost(first)):
-                cand = first
-            elif guilty(cost(second)):
-                cand = second
+    def without(removed) -> float:
+        gone = set(removed)
+        return cost([i for i in every if i not in gone])
+
+    try:
+        e_all, f_none = cost(every), cost([])
+        out = [
+            f"  pin-down at {PIN_TURNS} turns, untraced style recalc per keystroke: {e_all:.1f} ms with all "
+            f"{len(paths)} :has() rules, {f_none:.1f} ms with none of them"
+        ]
+        if e_all < max(2 * f_none, f_none + 10):
+            out.append(
+                "    switching every :has() rule off does not remove the cost, so the cause is probably "
+                "not a :has() rule; see the selectors above"
+            )
+            return out
+        fixed = lambda ms: ms <= max(2 * f_none, f_none + 0.15 * (e_all - f_none))  # noqa: E731
+        found: list[int] = []
+
+        def search(cands: list[int], also_removed: list[int]) -> int | None:
+            """One rule in `cands` whose removal (with `also_removed`) fixes the page."""
+            extra = list(also_removed)
+            while len(cands) > 1:
+                if time.time() - started > budget_s:
+                    return None
+                first, second = cands[: len(cands) // 2], cands[len(cands) // 2 :]
+                if fixed(without(found + extra + first)):
+                    cands = first
+                elif fixed(without(found + extra + second)):
+                    cands = second
+                else:
+                    # needs something from both halves: keep the second out, find the first's part
+                    extra += second
+                    cands = first
+            return cands[0] if cands else None
+
+        # Rules that search all descendants of an element holding the thread go first: when
+        # removing them fixes the page, the bisection only has to look among them.
+        likely = [
+            i
+            for i, r in enumerate(rules)
+            if any(thread_anchor(a) for a, _ in has_descendant(r["s"]))
+        ]
+        while len(found) < 3 and time.time() - started < budget_s:
+            rest = [i for i in every if i not in found]
+            if found and fixed(without(found)):
+                break
+            group = [i for i in likely if i in rest]
+            if group and fixed(without(found + group)):
+                i = search(group, [])
             else:
-                out.append(
-                    f"    {len(cand)} rules are slow together but no half is slow alone; stopping there"
-                )
-                cand = []
-        if len(cand) != 1:
-            break
-        i = cand[0]
-        alone = cost([i])
-        found.append(i)
-        remaining = [j for j in remaining if j != i]
-        rest = cost(remaining)
-        out.append(
-            f"  This rule on its own adds {alone - f_none:+.1f} ms per keystroke ({f_none:.1f} -> "
-            f"{alone:.1f} ms); every other :has() rule together costs {rest:.1f} ms (all on: {e_all:.1f} ms):"
-        )
-        out.append(f"    {short(rules[i]['s'], 240)}")
-        out += suspects_for(rules[i]["s"])
-        if not guilty(rest):
-            break
-    if not found:
-        out.append(f"    no single rule found within the {budget_s:.0f} s budget")
-    out.append(f"  (pin-down took {time.time() - started:.0f} s)")
-    return out
+                i = search(rest, [])
+            if i is None:
+                break
+            found.append(i)
+        for i in found:
+            minus, alone = without([i]), cost([i])
+            out.append(
+                f"  Measured: removing only this rule takes the keystroke from {e_all:.1f} to {minus:.1f} ms "
+                f"(no :has() rules: {f_none:.1f} ms); this rule on its own costs {alone:.1f} ms:"
+            )
+            out.append(f"    {short(rules[i]['s'], 240)}")
+            out += suspects_for(rules[i]["s"])
+        if len(found) > 1:
+            out.append(
+                f"  removing all {len(found)} together: {without(found):.1f} ms per keystroke"
+            )
+        if not found:
+            out.append(f"    no rule found within the {budget_s:.0f} s budget")
+        out.append(f"  (pin-down: {probes[0]} probes, {time.time() - started:.0f} s)")
+        return out
+    finally:
+        scratch.close()
 
 
 def shape_problems(result: dict) -> list[str]:
@@ -404,7 +473,13 @@ def report(
 
     lines = [f"long-chat typing gate ({time.time() - started:.0f} s)"]
     for turns in (SMALL, LARGE):
-        if runs.get(turns):
+        if runs.get(turns) and runs[turns][-1].get("extreme"):
+            r = runs[turns][-1]
+            lines.append(
+                f"  {turns:>3} turns: style recalc {r['precheck_style_ms']:.1f} ms/key untraced, "
+                f"{r['shape']['nodes']:,} DOM nodes (tracing skipped)"
+            )
+        elif runs.get(turns):
             lines.append(
                 f"  {turns:>3} turns: selector matching {med(turns, 'match_ms'):.2f} ms/key, :has() "
                 f"{med(turns, 'has_ms'):.2f} ms/key, style recalc {med(turns, 'style_ms'):.1f} ms/key "
@@ -441,7 +516,21 @@ def main() -> int:
             large = measure(browser, base, LARGE)
             runs[LARGE].append(large)
             failures += shape_problems(large)
-            if large["has_ms"] > MAX_HAS_MS:
+            if large.get("extreme"):
+                pre = large["precheck_style_ms"]
+                failures.append(
+                    f"a keystroke costs {pre:.0f} ms of style recalc at {LARGE} turns (untraced); healthy "
+                    f"builds measure 1-15 ms, so this is at least {pre / 15:.0f}x over. Selector tracing "
+                    "was skipped: one traced key would take minutes"
+                )
+                print(f"FAIL (diagnosis follows): {failures[-1]}", flush = True)
+                details += pin_down(browser, base)
+                details.append("  " + HINT)
+            elif large["has_ms"] > MAX_HAS_MS:
+                print(
+                    f"FAIL (diagnosis follows): :has() matching costs {large['has_ms']:.1f} ms per keystroke",
+                    flush = True,
+                )
                 failures.append(
                     f":has() matching costs {large['has_ms']:.1f} ms per keystroke at {LARGE} turns, "
                     f"budget {MAX_HAS_MS:.1f} ms ({large['has_ms'] / MAX_HAS_MS:.1f}x over); "
