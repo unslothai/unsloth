@@ -759,6 +759,40 @@ class InlineFloatSeeds:
         return {"float_seeds": self.float_seeds, "float_seeds_learned": self.float_seeds_learned}
 
 
+def float_seed_dits(pipe: Any) -> list:
+    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
+    try:
+        from .diffusion_speed import _guarded_dits
+
+        dits = []
+        for dit in _guarded_dits(pipe):
+            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
+            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
+                dits.append(dit)
+        return dits
+    except Exception:  # noqa: BLE001 - no seeds, main's compile
+        return []
+
+
+@contextlib.contextmanager
+def seed_before_first_forward(float_seeds: Any):
+    """Also seed at the first DiT forward, for a loop that opens no progress bar (H3 modular's is its loop wrapper's)."""
+    handles = []
+
+    def _pre(*_args: Any) -> None:
+        float_seeds.seed()
+
+    try:
+        for module in list(getattr(float_seeds, "modules", None) or ()):
+            with contextlib.suppress(Exception):
+                handles.append(module.register_forward_pre_hook(_pre))
+        yield
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
+
+
 def load_time_enabled() -> bool:
     """Opt-in (``=1``): render 1 eager and render 2 compiled would break "same seed twice repeats"."""
     raw = (os.environ.get(_ENV) or "").strip().lower()
