@@ -158,6 +158,17 @@ export function listenForAudioClip(
         return;
       }
       recorder = new PcmRecorder(stream);
+      // The pre-check assumes 16 kHz; a device-rate fallback needs more room for the same second.
+      if (maxBytes < recorder.bytesFor(1)) {
+        recorder.discard();
+        recorder = null;
+        toast.error(
+          `Audio files together exceed the ${MAX_AUDIO_SIZE_LABEL} per-message limit`,
+        );
+        markDictationFailed();
+        finish("error");
+        return;
+      }
       // The timer leaves a second of slack, but on a small room that slack is the whole clip.
       recorder.maxBytes = maxBytes;
       recorder.start();

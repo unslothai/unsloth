@@ -19,7 +19,12 @@ class FakeRecorder {
   constructor() {
     lastRecorder = this;
   }
+  static rate = 16_000;
+  sampleRate = FakeRecorder.rate;
   limitBytes = 0;
+  bytesFor(seconds: number) {
+    return 44 + Math.ceil(seconds * this.sampleRate) * 2;
+  }
   maxBytes = Number.POSITIVE_INFINITY;
   secondsWithin(maxBytes: number) {
     this.limitBytes = maxBytes;
@@ -313,4 +318,31 @@ test("a model load starting mid-recording discards the clip before checkpoint mo
     assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
     assert.deepEqual(toasts, ["Recording discarded because the chat model changed."]);
   }
+});
+
+test("a room sized for 16 kHz is refused when the recorder opens at device rate", async () => {
+  toasts.length = 0;
+  FakeRecorder.rate = 48_000;
+  try {
+    const clips: File[] = [];
+    const session = listenForAudioClip((file) => clips.push(file), {
+      maxBytes: 44 + 16_000 * 2,
+    });
+    await flush();
+    assert.deepEqual(session.status, { type: "ended", reason: "error" });
+    assert.equal(lastRecorder?.discarded, true);
+    assert.equal(lastRecorder?.stopCalls, 0);
+    assert.equal(clips.length, 0);
+    assert.deepEqual(toasts, ["Audio files together exceed the 25MB per-message limit"]);
+    assert.equal(micClipState.micClipRecording(), false);
+  } finally {
+    FakeRecorder.rate = 16_000;
+  }
+});
+
+test("the same room is enough at 16 kHz", async () => {
+  const session = listenForAudioClip(() => {}, { maxBytes: 44 + 16_000 * 2 });
+  await flush();
+  assert.equal(session.status.type, "running");
+  session.cancel();
 });

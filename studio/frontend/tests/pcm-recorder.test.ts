@@ -463,3 +463,14 @@ test("PCM recording is supported without MediaRecorder", () => {
     }
   }
 });
+
+test("bytesFor sizes a WAV at the recorder's actual rate", () => {
+  FakeAudioContext.refuseRequestedRate = true;
+  try {
+    const recorder = newRecorder();
+    assert.equal(recorder.sampleRate, 48_000);
+    assert.equal(recorder.bytesFor(1), 44 + 96_000);
+  } finally {
+    FakeAudioContext.refuseRequestedRate = false;
+  }
+});

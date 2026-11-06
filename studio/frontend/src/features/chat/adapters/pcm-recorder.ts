@@ -159,6 +159,11 @@ export class PcmRecorder implements SegmentRecorder {
     return this.recordingState;
   }
 
+  /** WAV size of `seconds` at this recorder's actual rate. */
+  bytesFor(seconds: number): number {
+    return WAV_HEADER_BYTES + Math.ceil(seconds * this.sampleRate) * BYTES_PER_SAMPLE;
+  }
+
   /** Seconds that fit in `maxBytes`, less a second of slack for the buffer still in flight. */
   secondsWithin(maxBytes: number): number {
     const bytesPerSecond = this.sampleRate * BYTES_PER_SAMPLE;
