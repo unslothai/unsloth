@@ -78,3 +78,20 @@ def test_persistent_5xx_raises_after_all_attempts(tmp_path, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as err:
         sdmod._download("https://example.invalid/a.zip", tmp_path / "a.zip")
     assert err.value.code == 504 and len(calls) == sdmod._DOWNLOAD_ATTEMPTS
+
+
+def test_a_stall_that_used_the_whole_timeout_is_not_retried(tmp_path, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    calls = []
+
+    def urlopen(req, timeout = 300.0):
+        calls.append(req)
+        clock[0] += timeout
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(sdmod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(urllib.error.URLError):
+        sdmod._download("https://example.invalid/a.zip", tmp_path / "a.zip", timeout = 30.0)
+    assert len(calls) == 1
