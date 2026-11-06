@@ -6999,13 +6999,9 @@ exit 0
         }
     }
 
-    # Deleting a committed rollback tree takes 30-40 s on Windows, so a separate process does it.
-    # The tree is first renamed to unsloth_studio.rollback.<stamp>.<that process's PID>: while
-    # it runs, Remove-StaleStudioVenvRollbacks in this or a later run leaves the tree alone; if it
-    # is stopped early, the next run's sweep removes what is left. Started through the shell
-    # (no inherited handles, so a caller reading this installer's output is not held open) and
-    # with no window. Returns $false, having changed nothing, whenever the caller should delete
-    # in the foreground instead.
+    # Hands the 30-40 s delete to a hidden process. The tree is parked as rollback.<stamp>.<deleter PID>,
+    # so the sweep skips it while the deleter lives and removes leftovers once it is gone. Started via
+    # the shell so no inherited handle holds a caller's output pipe. $false = nothing changed, delete here.
     function Start-StudioVenvRollbackBackgroundDelete {
         param([Parameter(Mandatory = $true)][string]$Path)
         if ($env:OS -ne 'Windows_NT') { return $false }
@@ -7022,7 +7018,7 @@ exit 0
         }
         $stamp = Get-Date -Format "yyyyMMddHHmmss"
         $parentLiteral = $parent.Replace("'", "''")
-        # Plain text, single quotes only: the whole command travels as one quoted argument.
+        # Single quotes only: the command travels as one double-quoted argument.
         $deleteCommand = @(
             "`$ErrorActionPreference = 'SilentlyContinue'",
             "`$p = Join-Path '$parentLiteral' ('unsloth_studio.rollback.$stamp.' + `$PID)",
@@ -7042,7 +7038,6 @@ exit 0
         $parked = Join-Path $parent "unsloth_studio.rollback.$stamp.$($deleter.Id)"
         try {
             if (Test-StudioPathPresent -Path $parked) { throw "$parked already exists" }
-            # A same-volume rename: atomic, never a copy.
             [System.IO.Directory]::Move($item.FullName, $parked)
         } catch {
             try { Stop-Process -Id $deleter.Id -Force -ErrorAction SilentlyContinue } catch { }
@@ -7190,7 +7185,7 @@ exit 0
                 return
             }
         }
-        # Restoration is disarmed above, so nothing reads $backup again: delete it off the critical path.
+        # Restoration is disarmed above, so nothing reads $backup again.
         if (Start-StudioVenvRollbackBackgroundDelete -Path $backup) { return }
         Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
