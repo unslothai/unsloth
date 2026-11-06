@@ -53,21 +53,66 @@ def test_kill_switch_disables_the_compiled_linear(monkeypatch, value):
 
 def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
     import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
 
+    # An unreadable gfx arch, whatever card this host has (a real RDNA3 / RDNA4 host would compile).
+    monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: "")
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: False)
     assert nq._fused_w8a8() is None
     assert nq.fused_w8a8_state()["failed"] == "no inductor runtime"
     monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    # No readable gfx arch: unmeasured, so eager.
     assert nq._fused_w8a8() is None
-    assert nq.fused_w8a8_state()["failed"] == "ROCm"
+    assert nq.fused_w8a8_state()["failed"] == "ROCm unknown arch"
     # AMD SDK / Radeon wheels leave torch.version.hip unset and tag __version__ instead.
     monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.0")
     assert nq._fused_w8a8() is None
-    assert nq.fused_w8a8_state()["failed"] == "ROCm"
+    assert nq.fused_w8a8_state()["failed"].startswith("ROCm")
+
+
+@pytest.mark.parametrize("arch", ["gfx1151", "gfx1100", "gfx1103", "gfx1201"])
+def test_rdna3_and_rdna4_rocm_get_the_compiled_linear(monkeypatch, arch):
+    # Measured on gfx1151 (Strix Halo): compiled == eager bit for bit, 1.03-1.36x bf16 per linear at 4096 rows, where
+    # the eager int8 path is 0.93x bf16.
+    import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
+
+    monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
+    monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: arch)
+    assert nq._fused_w8a8() is not None
+    assert nq.fused_w8a8_state()["failed"] is None
+    assert nq._FUSED_STATE["into"] is not None
+
+
+@pytest.mark.parametrize("arch", ["gfx942", "gfx90a", "gfx1030", "gfx906", ""])
+def test_other_rocm_archs_stay_eager(monkeypatch, arch):
+    import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
+
+    monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "7.0", raising = False)
+    monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: arch)
+    assert nq._fused_w8a8() is None
+    assert nq.fused_w8a8_state()["failed"] == f"ROCm {arch or 'unknown arch'}"
+
+
+def test_kill_switch_wins_on_rdna(monkeypatch):
+    import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
+
+    monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
+    monkeypatch.setenv(nq.NATIVE_INT8_FUSED_ENV, "0")
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
+    monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: "gfx1151")
+    assert nq._fused_w8a8() is None
 
 
 def test_cpu_input_never_takes_the_compiled_linear(monkeypatch):

@@ -2143,6 +2143,19 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
+    """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from unsloth_zoo.mlx.loader import _mlx_vlm_only_text_model
+
+        config = _read_raw_config_json(model_name, hf_token) or {}
+        return bool(_mlx_vlm_only_text_model(config, config.get("model_type") or ""))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("unsloth_zoo text-route detection skipped for %s (%s)", model_name, exc)
+        return False
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -6064,8 +6077,13 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         is_lora = getattr(config, "is_lora", False)
-        zoo_multimodal = not is_vision and _zoo_declares_multimodal(
-            getattr(config, "base_model", None) if is_lora else model_name, hf_token
+        # Route by the config the loader reads.
+        route_config = getattr(config, "config_dir", None) or (
+            getattr(config, "base_model", None) if is_lora else model_name
+        )
+        zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
         )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
@@ -6091,7 +6109,7 @@ class MLXInferenceBackend:
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 distributed = is_distributed,
-                # A text architecture's adapter loads only through mlx-lm, and speculation runs on mlx-vlm.
+                # Speculation runs on mlx-vlm and takes an adapter only on a vision or zoo-multimodal load.
                 lora = is_lora and not (is_vision or zoo_multimodal),
             )
             speculates = spec_reason is None
@@ -6110,6 +6128,7 @@ class MLXInferenceBackend:
         use_vlm = (
             is_vision
             or zoo_multimodal
+            or vlm_only_text
             or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
@@ -6232,7 +6251,8 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
         except Exception as exc:
-            if is_vision or not use_vlm or is_metal_queue_dead(exc):
+            # A vlm_only_text model has no mlx-lm route to fall back to.
+            if is_vision or vlm_only_text or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
                 "Load of %s through mlx-vlm for %s failed (%s); serving through mlx-lm",
@@ -6244,8 +6264,8 @@ class MLXInferenceBackend:
         if model is not None and batches_quantized_text and not (is_vision or self._turboquant):
             _eligibility = _kv_quant_eligibility(model, True, _normalize_mlx_kv_bits(kv_bits))
             verdict, reason, _retainable = _eligibility
-            if verdict not in ("full", "partial"):
-                # Unquantized, the load gains nothing from mlx-vlm's batch.
+            if verdict not in ("full", "partial") and not vlm_only_text:
+                # Unquantized, the load gains nothing from mlx-vlm's batch; a vlm_only_text one stays on it.
                 logger.info(
                     "MLX KV quantization not applied to %s (%s); serving through mlx-lm",
                     model_name,

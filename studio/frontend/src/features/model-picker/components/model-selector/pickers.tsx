@@ -91,8 +91,10 @@ import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { pickNativeModelFolder } from "@/features/native-intents";
 import {
+  type NpuCatalog,
   type NpuModel,
   type NpuPickerSource,
+  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -549,6 +551,17 @@ function useRovingModelList({
       "aria-label": label,
     },
   };
+}
+
+function npuFooterHint(
+  catalog: NpuCatalog,
+  searching: boolean,
+  matches: number,
+): string {
+  if (!catalog.ready) return "Set up the AMD NPU";
+  if (searching) return matches === 1 ? "1 match" : `${matches} matches`;
+  const count = catalog.models?.length;
+  return count ? `${count} available` : "";
 }
 
 function ListLabel({
@@ -4632,7 +4645,6 @@ export function HubModelPicker({
     offeredFormatFilters,
   );
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
-  const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // Chat passes no task filter and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
     const tasks: readonly string[] = task
@@ -7773,13 +7785,26 @@ export function HubModelPicker({
     );
   };
 
-  const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
-  const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
+  // GPU models own the list; the NPU group shows only under the NPU filter, reached from the footer.
   const showNpuBrowse =
     npuCatalog !== null &&
-    npuListed &&
+    formatFilter === "npu" &&
     section === "recommended" &&
-    (!showHfSection || npuBrowseRows.length > 0);
+    (!showHfSection || !npuCatalog.ready || npuBrowseRows.length > 0);
+  const showNpuFooter =
+    npuCatalog !== null && formatFilter === "all" && section === "recommended";
+  const ejectButton = onEject ? (
+    <button
+      type="button"
+      data-glass-float=""
+      onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
+      className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+      title={ejectsAll ? "Eject all models" : "Eject model"}
+    >
+      <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+      {ejectsAll ? "Eject all" : "Eject model"}
+    </button>
+  ) : null;
 
   return (
     <PickerScopes
@@ -8538,34 +8563,20 @@ export function HubModelPicker({
 
                 {showNpuBrowse && npuCatalog ? (
                   <>
-                    <ListLabel
-                      collapsed={npuBrowseFolded}
-                      onToggle={
-                        npuBrowseForcedOpen
-                          ? undefined
-                          : () => setNpuBrowseCollapsed((v) => !v)
-                      }
-                    >
-                      NPU
-                    </ListLabel>
-                    {npuBrowseFolded ? null : (
-                      <>
-                        {showHfSection ? null : (
-                          <NpuSetupNotice catalog={npuCatalog} />
-                        )}
-                        {npuBrowseRows.map((model) =>
-                          renderNpuRow(model, false),
-                        )}
-                      </>
+                    <ListLabel>NPU</ListLabel>
+                    {showHfSection && npuCatalog.ready ? null : (
+                      <NpuSetupNotice catalog={npuCatalog} />
                     )}
+                    {npuBrowseRows.map((model) => renderNpuRow(model, false))}
+                    <NpuRuntimeVersions
+                      catalog={npuCatalog}
+                      className="px-2.5 pb-1 pt-1.5"
+                    />
                   </>
                 ) : null}
 
                 {showRecommendedSection && formatFilter !== "npu" ? (
                   <>
-                    {showNpuBrowse ? (
-                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
-                    ) : null}
                     {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
                     {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
@@ -8990,18 +9001,37 @@ export function HubModelPicker({
             )}
           </div>
         </div>
-        {onEject ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
+        {showNpuFooter && npuCatalog ? (
+          <div className="relative">
+            {/* Over the list's bottom as without a footer: 19px less this footer's 8px spacing. */}
+            {ejectButton ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-full flex justify-end pr-3.5 pb-[calc(11px*var(--ui-space-scale,1))]">
+                {ejectButton}
+              </div>
+            ) : null}
             <button
               type="button"
-              data-glass-float=""
-              onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
-              title={ejectsAll ? "Eject all models" : "Eject model"}
+              data-testid="picker-npu-footer"
+              onClick={() => setFormatFilter("npu")}
+              className="flex w-full items-center gap-2 border-t border-border/60 px-3 pt-2 pb-1.5 text-left text-ui-12 text-muted-foreground transition-colors hover:text-foreground"
             >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              {ejectsAll ? "Eject all" : "Eject model"}
+              <span
+                aria-hidden={true}
+                className="size-1.5 shrink-0 rounded-full bg-format-npu"
+              />
+              <span className="font-medium text-foreground">NPU models</span>
+              <span className="min-w-0 truncate">
+                {npuFooterHint(npuCatalog, showHfSection, npuBrowseRows.length)}
+              </span>
+              <HugeiconsIcon
+                icon={ChevronRightStandardIcon}
+                className="ml-auto size-3 shrink-0"
+              />
             </button>
+          </div>
+        ) : ejectButton ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
+            {ejectButton}
           </div>
         ) : null}
       </div>

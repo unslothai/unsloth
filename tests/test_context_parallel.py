@@ -733,6 +733,50 @@ def test_attention_hooks_are_not_stacked_by_a_second_manager():
     assert len(model.self_attn._forward_pre_hooks) == 1
 
 
+def test_decoder_layers_see_no_mask_inside_a_cp_step_only():
+    class Layer(torch.nn.Module):
+        def __init__(self, linear = False):
+            super().__init__()
+            self.self_attn = torch.nn.Identity()
+            if linear:
+                self.linear_attn = torch.nn.Identity()
+            self.seen = []
+
+        def forward(
+            self,
+            hidden_states,
+            attention_mask = None,
+        ):
+            self.seen.append(attention_mask)
+            return hidden_states
+
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([Layer(), Layer(linear = True)])
+    for _ in range(2):
+        _manager().attach_attention_hooks(model)
+    assert len(model.layers[0]._forward_pre_hooks) == 1
+    assert (
+        len(model.layers[1]._forward_pre_hooks) == 0
+    )  # a linear attention scan reads the padding mask
+    x, mask = torch.ones(1, 4, 2), torch.ones(1, 1, 4, 4, dtype = torch.bool)
+
+    def run(masks):
+        for layer in model.layers:
+            layer.seen.clear()
+            for m in masks:
+                layer(x, attention_mask = m)
+        return [layer.seen for layer in model.layers]
+
+    # No CP manager: the exact same object passes through.
+    plain = run([mask, None])
+    assert plain[0][0] is mask and plain[0][1] is None and plain[1][0] is mask
+    with cp._manager_scope(_manager()):
+        inside = run([mask, None])
+    assert inside[0] == [None, None]
+    assert inside[1][0] is mask
+    assert run([mask])[0][0] is mask
+
+
 def test_sdpa_is_restored_when_the_cp_step_raises(monkeypatch):
     import torch.nn.functional as F
 

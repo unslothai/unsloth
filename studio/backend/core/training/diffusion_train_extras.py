@@ -15,6 +15,23 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
+def accumulate_loss(acc: Any, loss: Any, accumulation_steps: int) -> Any:
+    """``acc + float(loss) / accumulation_steps`` without a per-micro-step host sync: an fp64 device sum is the same
+    IEEE arithmetic as the Python float one. Devices without fp64 (MPS, Arc / integrated XPUs) keep the Python float.
+    Read with loss_value."""
+    detached = loss.detach()
+    if detached.device.type not in ("cpu", "cuda"):
+        from core.inference.video_minimax_h3_pdd import device_has_fp64
+        if not device_has_fp64(detached.device):
+            return (acc if acc is not None else 0.0) + float(detached) / accumulation_steps
+    term = detached.double() / accumulation_steps
+    return term if acc is None else acc.add_(term)
+
+
+def loss_value(acc: Any) -> float:
+    return 0.0 if acc is None else float(acc)
+
+
 # Effective decay = min(decay, (1 + n) / (WARMUP_OFFSET + n)).
 
 _EMA_WARMUP_OFFSET = 10.0
@@ -69,17 +86,36 @@ class LoRAEMA:
         step = self.updates + 1
         return min(self.decay, step / (_EMA_WARMUP_OFFSET + step))
 
+    def _update_lists(self, model: Any) -> tuple[list, list]:
+        """(shadows, params) for ``model``, cached per model."""
+        import weakref
+
+        cached = getattr(self, "_lists", None)
+        if cached is not None and cached[0]() is model:
+            return cached[1], cached[2]
+        shadows, params = [], []
+        for name, p in model.named_parameters():
+            shadow = self._shadow.get(name)
+            if shadow is None:
+                continue
+            shadows.append(shadow)
+            params.append(p.detach())
+        try:
+            self._lists = (weakref.ref(model), shadows, params)
+        except TypeError:  # not weak-referenceable: rebuild each call
+            self._lists = None
+        return shadows, params
+
     def update(self, model: Any) -> None:
         """Apply one EMA update from ``model``'s current trainable params."""
         import torch
 
         decay = self.effective_decay()
-        with torch.no_grad():
-            for name, p in model.named_parameters():
-                shadow = self._shadow.get(name)
-                if shadow is None:
-                    continue
-                shadow.mul_(decay).add_(p.detach(), alpha = 1.0 - decay)
+        shadows, params = self._update_lists(model)
+        if shadows:
+            with torch.no_grad():
+                torch._foreach_mul_(shadows, decay)
+                torch._foreach_add_(shadows, params, alpha = 1.0 - decay)
         self.updates += 1
 
     def state_dict(self) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	MATERIALS,
 	LENS_SCALE,
+	lensDrawn,
 	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
@@ -113,6 +114,15 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
 });
 
+test("a glass lens set to off draws no wallpaper copies", () => {
+	for (const material of MATERIALS) assert.equal(lensDrawn(material, "off"), false);
+	for (const lens of ["magnify", "shrink"] as const) {
+		assert.equal(lensDrawn("solid", lens), false);
+		for (const material of MATERIALS.filter((m) => m !== "solid"))
+			assert.equal(lensDrawn(material, lens), true);
+	}
+});
+
 test("glass panes thicken over images that would wash out their text", async () => {
 	const { glassReadability, toneOf } = await import("../src/features/chat-background/model.ts");
 	const light = toneOf(Array.from({ length: 100 }, (_, i) => 0.6 + i * 0.003));
@@ -165,7 +175,8 @@ test("the glass preference survives an account switch, and sign-in waits for the
 
 test("glass over an open conversation dims the image and thickens only that composer", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
+	// Welcome comes from a root flag (welcome.ts), not a :has() walk over the whole thread.
+	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
 	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
