@@ -405,3 +405,22 @@ def test_trace_data_loss_is_retried_once_then_fails():
 def test_trace_buffer_holds_a_long_page():
     # a 200-turn sweep collects ~200k events (~60-100 MB); the buffer must be well above that
     assert am.TRACE_BUFFER_KB >= 200 * 1024
+
+
+def test_settings_ready_marker_is_set_from_inside_the_panel_suspense():
+    # A marker on the pane outside <Suspense> names the selected tab even while the Loading fallback
+    # shows; it must come from a layout effect in the resolved panel subtree instead.
+    import re
+
+    src = (am.SRC / "features" / "settings" / "settings-dialog.tsx").read_text(encoding = "utf-8")
+    suspense = re.search(r"<Suspense\b.*?</Suspense>", src, re.S).group(0)
+    assert re.search(
+        r"<PanelCommitted\b[^>]*>\s*<Tab\b", suspense
+    ), "the panel must render inside PanelCommitted"
+    committed = re.search(r"function PanelCommitted\b.*?\n}\n", src, re.S).group(0)
+    # rendered by the resolved subtree itself, so the Suspense fallback removes it
+    assert re.search(r"<span hidden[^>]*data-settings-panel-ready=\{tab\}", committed)
+    assert (
+        "data-settings-panel=" not in src
+    ), "a pane-level marker would read ready before the panel resolves"
+    assert "data-settings-panel-ready=" in am.TABS and "data-settings-panel-failed" in am.TABS

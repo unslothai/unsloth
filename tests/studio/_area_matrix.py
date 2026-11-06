@@ -667,8 +667,10 @@ SCROLL = """async ([where, frames, step]) => {
 }"""
 # Every tab the Settings dialog renders, in order, then back to the first: a new tab is measured
 # without a list to update. Panels are lazy and behind useDeferredValue + Suspense, so after each
-# click this waits until the dialog's pane says that panel committed (data-settings-panel, set
-# by settings-dialog.tsx) and did not fail; a panel that never gets there is reported.
+# click this waits until the resolved panel itself has committed (a hidden data-settings-panel-ready
+# marker rendered inside the panel's Suspense boundary in settings-dialog.tsx, so a panel still
+# showing its Loading fallback has none) and did not fail; a panel that never gets there within
+# TAB_READY_MS fails the area.
 TABS = """async (timeoutMs) => {
   const dlg = document.querySelector('[role="dialog"]'); if (!dlg) return {count: 0, missing: [], failed: []};
   const tabs = [...dlg.querySelectorAll('button[data-testid^="settings-tab-"]')];
@@ -681,7 +683,7 @@ TABS = """async (timeoutMs) => {
     while (performance.now() < deadline) {
       await window.__gateFrames(1);
       if (dlg.querySelector('[data-settings-panel-failed]')) { failed.push(id); break; }
-      if (dlg.querySelector(`[data-settings-panel="${id}"]`)) { ready = true; break; }
+      if (dlg.querySelector(`[data-settings-panel-ready="${id}"]`)) { ready = true; break; }
     }
     if (!ready && !failed.includes(id)) missing.push(id);
     await window.__gateFrames(2);
