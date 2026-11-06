@@ -3,6 +3,8 @@
 
 "use client";
 
+import { CodeXmlIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
@@ -72,6 +74,7 @@ import {
 } from "@/lib/schedule-idle-task";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import {
+  languageDisplayName,
   MAX_CACHED_CHARACTERS,
   MAX_FENCES,
   normalizeLanguage,
@@ -132,6 +135,17 @@ function PlainFenceText({ source }: { source: string }) {
   ))}</>;
 }
 
+/** The header's language, as a code icon and the language's own name ("Python", "HTML"). */
+function CodeBlockLanguage({ language }: { language: string | null }) {
+  if (!language) return null;
+  return (
+    <span className="ml-1 flex items-center gap-1.5" data-code-block-language="">
+      <HugeiconsIcon icon={CodeXmlIcon} strokeWidth={1.75} className="size-3.5 shrink-0" />
+      {languageDisplayName(language)}
+    </span>
+  );
+}
+
 function FenceShell({
   language,
   source,
@@ -153,7 +167,7 @@ function FenceShell({
         data-language={language ?? undefined}
         data-streamdown="code-block-header"
       >
-        <span className="ml-1 font-mono lowercase">{language}</span>
+        <CodeBlockLanguage language={language} />
       </div>
       <div
         className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm"
@@ -1760,7 +1774,7 @@ export const FenceBody = memo(function FenceBody({
         data-language={language ?? undefined}
         data-streamdown="code-block-header"
       >
-        <span className="ml-1 font-mono lowercase">{language}</span>
+        <CodeBlockLanguage language={language} />
       </div>
       <div
         data-unsloth-fence-paint={

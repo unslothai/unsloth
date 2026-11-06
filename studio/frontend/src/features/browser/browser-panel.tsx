@@ -73,6 +73,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  CodeXmlIcon,
   Refresh01Icon,
   Search01Icon,
   ArrowUpRight01Icon,
@@ -90,7 +91,6 @@ import {
   PictureInPictureOnIcon,
   PlusSignIcon,
   SmartPhone01Icon,
-  SourceCodeIcon,
   StarIcon,
   Tablet01Icon,
   UndoIcon,
@@ -1764,7 +1764,7 @@ function BrowserFileToolbar({
                         )}
                       >
                         <HugeiconsIcon
-                          icon={mode === "preview" ? ViewIcon : SourceCodeIcon}
+                          icon={mode === "preview" ? ViewIcon : CodeXmlIcon}
                           strokeWidth={1.75}
                           className="size-4"
                         />
@@ -2068,7 +2068,7 @@ function FloatingFileToolbar({
                   )}
                 >
                   <HugeiconsIcon
-                    icon={mode === "preview" ? ViewIcon : SourceCodeIcon}
+                    icon={mode === "preview" ? ViewIcon : CodeXmlIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />

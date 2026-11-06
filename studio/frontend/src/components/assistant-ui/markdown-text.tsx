@@ -663,8 +663,10 @@ export function CodeBlockActions({
     const wrapper = actionsRef.current?.parentElement;
     if (!wrappable || !wrapper || typeof ResizeObserver === "undefined") return;
     const check = () => {
-      if (wrapper.hasAttribute("data-code-expanded")) return;
       const body = wrapper.querySelector<HTMLElement>('[data-streamdown="code-block-body"]');
+      // index.css lets a sideways scrollbar take the body's bottom padding instead of adding height under it.
+      wrapper.toggleAttribute("data-scrolls-x", body !== null && body.scrollWidth > body.clientWidth + 1);
+      if (wrapper.hasAttribute("data-code-expanded")) return;
       setOverflowing(body !== null && body.scrollHeight > body.clientHeight + 1);
     };
     // A capped body's code can change without the wrapper resizing (a remount, a wrap toggle): recheck on hover.
@@ -718,6 +720,20 @@ export function CodeBlockActions({
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
+          title="Download file"
+          disabled={disabled}
+          onClick={() => {
+            downloadTextFile(
+              getCodeFilename(language),
+              typeof source === "function" ? source() : source,
+            );
+          }}
+        >
+          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
+        </button>
+        <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
           title="Copy code"
           disabled={disabled}
           onClick={async () => {
@@ -733,20 +749,6 @@ export function CodeBlockActions({
             strokeWidth={1.75}
             className="size-icon"
           />
-        </button>
-        <button
-          type="button"
-          className={ACTION_BUTTON_CLASS}
-          title="Download file"
-          disabled={disabled}
-          onClick={() => {
-            downloadTextFile(
-              getCodeFilename(language),
-              typeof source === "function" ? source() : source,
-            );
-          }}
-        >
-          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
         </button>
       </div>
     </div>
