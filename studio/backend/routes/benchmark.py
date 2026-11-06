@@ -335,6 +335,35 @@ def _gguf_model_loaded() -> bool:
         return False
 
 
+def _requested_model_resident(model: str) -> bool:
+    """lm_eval scores whatever llama-server holds, so the run's label must name that model."""
+    try:
+        from core.inference.openai_auto_download import split_model_ref
+        from routes.inference import _llama_status_checkpoint_id, get_llama_cpp_backend
+
+        llama = get_llama_cpp_backend()
+        want = model.strip()
+        resident = {getattr(llama, "model_identifier", None)}
+        try:
+            resident.add(_llama_status_checkpoint_id(llama))
+        except Exception as e:
+            logger.debug("Could not read the loaded GGUF's public id: %s", e)
+        resident.discard(None)
+        if want in resident:
+            return True
+        base, variant = split_model_ref(want)
+        for held in resident:
+            held_base, held_variant = split_model_ref(held)
+            loaded_variant = held_variant or getattr(llama, "hf_variant", None)
+            if held_base == base and (
+                variant is None or (loaded_variant or "").lower() == variant.lower()
+            ):
+                return True
+    except Exception as e:
+        logger.debug("Could not compare the requested model with the loaded GGUF: %s", e)
+    return False
+
+
 def _run_model_label(model: str) -> str:
     """A Hub repo holds every quant, so name the loaded one: two quants of a repo stay apart."""
     try:
@@ -391,6 +420,11 @@ async def run_benchmark(
             raise HTTPException(
                 status_code = 400,
                 detail = "Evals score GGUF models only. Load a GGUF model and try again.",
+            )
+        if not _requested_model_resident(request.checkpoint_path):
+            raise HTTPException(
+                status_code = 409,
+                detail = "The model picked for this eval is not the one loaded. Load it and try again.",
             )
 
         # Claimed before the first await: checking here and claiming later on

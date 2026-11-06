@@ -464,6 +464,7 @@ def test_concurrent_run_requests_get_one_slot(monkeypatch):
     monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
     monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
     monkeypatch.setattr(benchmark_routes, "_gguf_model_loaded", lambda: True)
+    monkeypatch.setattr(benchmark_routes, "_requested_model_resident", lambda model: True)
     monkeypatch.setattr(
         benchmark_routes,
         "resolve_model_details",
@@ -610,7 +611,18 @@ def test_a_run_without_a_gguf_loaded_is_refused_up_front(monkeypatch):
     assert exc.value.status_code == 400 and "GGUF" in exc.value.detail
     assert not backend.is_active()
     llama.is_loaded = True
-    asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    llama.model_identifier = "unsloth/Qwen3-4B-GGUF"
+    llama.hf_variant = "Q4_K_M"
+    # A GGUF is loaded, but not the one the run names: its scores would go under the wrong label.
+    with pytest.raises(benchmark_routes.HTTPException) as exc:
+        asyncio.run(benchmark_routes.run_benchmark(req, http, current_subject = "u"))
+    assert exc.value.status_code == 409 and not backend.is_active()
+    wrong_quant = req.model_copy(update = {"checkpoint_path": "unsloth/Qwen3-4B-GGUF:Q8_0"})
+    with pytest.raises(benchmark_routes.HTTPException) as exc:
+        asyncio.run(benchmark_routes.run_benchmark(wrong_quant, http, current_subject = "u"))
+    assert exc.value.status_code == 409
+    resident = req.model_copy(update = {"checkpoint_path": "unsloth/Qwen3-4B-GGUF:Q4_K_M"})
+    asyncio.run(benchmark_routes.run_benchmark(resident, http, current_subject = "u"))
 
 
 MC2_RESULTS = {
@@ -690,7 +702,9 @@ def test_an_eval_and_a_sweep_never_share_the_server(monkeypatch):
     monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
     monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
     monkeypatch.setattr(
-        inference_routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True)
+        inference_routes,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, model_identifier = "m.gguf"),
     )
     monkeypatch.setattr(
         benchmark_routes,
@@ -791,7 +805,9 @@ def test_a_stopped_eval_keeps_the_lease_until_its_worker_returns(monkeypatch):
     monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
     monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
     monkeypatch.setattr(
-        inference_routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = True)
+        inference_routes,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, model_identifier = "m.gguf"),
     )
     monkeypatch.setattr(
         benchmark_routes,
