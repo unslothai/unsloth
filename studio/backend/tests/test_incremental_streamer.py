@@ -20,6 +20,7 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+import core.inference.incremental_streamer as incremental_streamer
 from core.inference.incremental_streamer import IncrementalTextIteratorStreamer
 from core.inference.native_tool_tokens import NativeToolTokenDecoder
 from test_mlx_incremental_decode import (  # noqa: E402
@@ -63,7 +64,7 @@ def _drive(cls, source, ids, *, skip_prompt, sizes, generations, **decode_kwargs
             streamer.put(torch.tensor(ids[index : index + size]))
             index += size
         streamer.end()
-    return streamer.chunks
+    return streamer
 
 
 @pytest.fixture(scope = "module", params = sorted(_TOKENIZERS))
@@ -94,8 +95,11 @@ def test_chunks_equal_upstream(tokenizer, mode):
         sizes = [1 if rng.random() < 0.9 else rng.randint(2, 5) for _ in ids]
         for skip_prompt in (True, False):
             options = dict(skip_prompt = skip_prompt, sizes = sizes, generations = 2, **kwargs)
-            expected = _drive(_Upstream, make(), ids, **options)
-            assert _drive(_Incremental, make(), ids, **options) == expected, (name, skip_prompt)
+            expected = _drive(_Upstream, make(), ids, **options).chunks
+            streamer = _drive(_Incremental, make(), ids, **options)
+            assert streamer.chunks == expected, (name, skip_prompt)
+            if name.endswith("-one-line") and len(ids) > 2 * incremental_streamer._MIN_LINE_IDS:
+                assert streamer._decoder, name
 
 
 def test_work_per_token_stays_bounded():
@@ -108,3 +112,31 @@ def test_work_per_token_stays_bounded():
         streamer.put(torch.tensor([token_id]))
     # Upstream re-decodes the whole line every token: about len(ids) ** 2 / 2 ids.
     assert counter.decoded <= len(ids) * 32
+
+
+def test_decoder_resolved_once_and_only_for_long_lines(monkeypatch):
+    tokenizer = _byte_level(cleanup = False)
+    calls = []
+    real = incremental_streamer._line_decoder
+    monkeypatch.setattr(
+        incremental_streamer,
+        "_line_decoder",
+        lambda *args: calls.append(1) or real(*args),
+    )
+    word = tokenizer.encode(" word", add_special_tokens = False)
+    newline = tokenizer.encode("\n", add_special_tokens = False)
+    short_line = word * 8 + newline
+    long_line = word * (2 * incremental_streamer._MIN_LINE_IDS) + newline
+    streamer = _Incremental(tokenizer, skip_prompt = False)
+    for token_id in short_line * 20:
+        streamer.put(torch.tensor([token_id]))
+    assert calls == []
+    for token_id in long_line * 20:
+        streamer.put(torch.tensor([token_id]))
+    streamer.end()
+    assert calls == [1]
+    upstream = _Upstream(tokenizer, skip_prompt = False)
+    for token_id in short_line * 20 + long_line * 20:
+        upstream.put(torch.tensor([token_id]))
+    upstream.end()
+    assert streamer.chunks == upstream.chunks

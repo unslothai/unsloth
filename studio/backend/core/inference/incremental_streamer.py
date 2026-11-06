@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``TextIteratorStreamer`` whose ``put`` decodes only the ids after the last split point
-(``IncrementalDecode``) instead of every id since the last newline on each token, which is
-quadratic in line length. Emitted chunks are identical to upstream's ``put`` (transformers 4.57
-and 5.x share it); tokenizers that do not split keep upstream's ``put`` unchanged."""
+"""``TextIteratorStreamer`` whose ``put`` stops re-decoding the whole current line per token once
+the line is long (quadratic in line length), decoding only the ids after the last split point
+(``IncrementalDecode``). Emitted chunks are identical to upstream's ``put`` (transformers 4.57 and
+5.x share it); short lines and tokenizers that do not split keep upstream's ``put``."""
 
 from __future__ import annotations
 
@@ -15,28 +15,36 @@ from core.inference.native_tool_tokens import NativeToolTokenDecoder
 
 __all__ = ["IncrementalTextIteratorStreamer"]
 
+# Below this many ids upstream's whole-line decode is cheaper than feeding a decoder.
+_MIN_LINE_IDS = 64
 
-def _line_decoder_factory(tokenizer, decode_kwargs):
-    """A callable returning a fresh decoder with ``feed(id)`` and ``text`` equal to
-    ``tokenizer.decode(ids, **decode_kwargs)``, or None when decoding never splits."""
+
+def _line_decoder(tokenizer, decode_kwargs):
     if isinstance(tokenizer, NativeToolTokenDecoder):
-        if split_profile(tokenizer._tokenizer) is None:
-            return None
-        return tokenizer.incremental
-    if split_profile(tokenizer) is None:
-        return None
-    return lambda: IncrementalDecode(tokenizer, decode_kwargs)
+        return tokenizer.incremental() if split_profile(tokenizer._tokenizer) else None
+    return IncrementalDecode(tokenizer, decode_kwargs) if split_profile(tokenizer) else None
 
 
 class IncrementalTextIteratorStreamer(TextIteratorStreamer):
-    _line_factory = False  # False = not resolved yet; None = upstream put
-    _line = None
+    _decoder = False  # False = not resolved yet; None = tokenizer never splits
+    # The token_cache list _decoder has consumed; upstream rebinds token_cache on every flush.
+    _line_ids = None
+
+    def _attach(self) -> bool:
+        if len(self.token_cache) < _MIN_LINE_IDS:
+            return False
+        if self._decoder is False:
+            self._decoder = _line_decoder(self.tokenizer, self.decode_kwargs)
+        if self._decoder is None:
+            return False
+        self._decoder.reset()
+        for token_id in self.token_cache:
+            self._decoder.feed(token_id)
+        self._line_ids = self.token_cache
+        return True
 
     def put(self, value):
-        factory = self._line_factory
-        if factory is False:
-            factory = self._line_factory = _line_decoder_factory(self.tokenizer, self.decode_kwargs)
-        if factory is None:
+        if self._line_ids is not self.token_cache and not self._attach():
             return super().put(value)
 
         if len(value.shape) > 1 and value.shape[0] > 1:
@@ -49,22 +57,15 @@ class IncrementalTextIteratorStreamer(TextIteratorStreamer):
             return
 
         new_ids = value.tolist()
-        line = self._line
-        if line is None or not self.token_cache:
-            # Upstream starts a fresh token_cache after a newline and in end().
-            line = self._line = factory()
-            for token_id in self.token_cache:
-                line.feed(token_id)
         self.token_cache.extend(new_ids)
         for token_id in new_ids:
-            line.feed(token_id)
-        text = line.text
+            self._decoder.feed(token_id)
+        text = self._decoder.text
 
         if text.endswith("\n"):
             printable_text = text[self.print_len :]
             self.token_cache = []
             self.print_len = 0
-            self._line = None
         elif len(text) > 0 and self._is_chinese_char(ord(text[-1])):
             printable_text = text[self.print_len :]
             self.print_len += len(printable_text)
