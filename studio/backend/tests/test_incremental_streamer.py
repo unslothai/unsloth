@@ -78,7 +78,6 @@ def test_chunks_equal_upstream(tokenizer, mode):
     newline_ids = {i for i in range(len(tokenizer)) if "\n" in tokenizer.decode([i])}
     streams = dict(_streams(tokenizer, seed = 2))
     for name, ids in list(streams.items()):
-        # One long line, the case the incremental decode exists for.
         streams[f"{name}-one-line"] = [i for i in ids if i not in newline_ids]
     for name, ids in streams.items():
         if mode == "plain":

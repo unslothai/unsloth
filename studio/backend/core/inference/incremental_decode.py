@@ -141,7 +141,7 @@ def split_profile(tokenizer):
     if inner is None:
         return None
     try:
-        # Not len(inner): tokenizers < 0.23 rebuilds the whole vocab for it (~30-120 ms per call).
+        # Not len(inner): tokenizers < 0.23 rebuilds the whole vocab for it.
         backend = inner.backend_tokenizer
         size = (
             backend.get_vocab_size(with_added_tokens = False),
