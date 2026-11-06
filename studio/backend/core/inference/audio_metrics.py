@@ -248,9 +248,7 @@ def _oversampler(factor: int = 4, taps_per_phase: int = 12) -> np.ndarray:
     return taps.reshape(taps_per_phase, factor).T
 
 
-# A float32 screen (12 multiply-adds per output) checks each chunk for the outputs that can hold its peak; only those
-# are then computed by np.convolve. Past this many separate spans per phase the whole chunk is
-# convolved instead.
+# Past this many candidate spans per phase the whole chunk is convolved instead.
 _PEAK_SPANS_MAX = 128
 
 
@@ -275,8 +273,7 @@ def _phase_peak(
     firsts = idx[np.concatenate(([0], breaks))].tolist()
     lasts = idx[np.concatenate((breaks - 1, [idx.size - 1]))].tolist()
     for first, last in zip(firsts, lasts):
-        # A view of the same window, so every output is the same dot product of the same memory
-        # as the whole-chunk np.convolve.
+        # Same memory, same dot product per output as the whole-chunk np.convolve.
         part = np.convolve(window[first : last + length], taps, mode = "valid")
         peak = max(peak, float(np.max(np.abs(part))))
     return peak
@@ -301,20 +298,19 @@ def true_peak(data: np.ndarray) -> float:
             window = _padded(x, start - before, stop + after)
             scale = float(np.max(np.abs(window)))
             screens, err = [None] * len(phases), 0.0
-            # Silence, NaN, inf and extreme float samples skip the screen.
+            # Silence, NaN, inf and extreme samples skip the screen.
             if 2.0**-60 <= scale <= 2.0**60:
-                # Every output of the screen and of np.convolve lies within about 14 * 2**-24 *
-                # reach * scale of the exact sum (float32 rounding of samples and taps, then 12-term
-                # sums in any order); 2**-19 leaves a 2x margin.
+                # Screen and np.convolve each lie within ~14 * 2**-24 * reach * scale of the exact
+                # sum in any summation order; 2**-19 leaves 2x margin.
                 err = reach * scale * 2.0**-19
-                samples = window.astype(np.float32)
+                samples = window.astype(np.float32, copy = False)
                 cols = len(window) - length + 1
-                # Plain float32 ufuncs, not a BLAS product: no BLAS thread pool to wake, and no
-                # dependence on how many threads the caller lets BLAS use.
+                # Plain ufuncs, not BLAS: independent of the caller's BLAS thread setting.
                 screens = flipped[:, :1] * samples[:cols]
+                term = np.empty_like(screens)
                 for k in range(1, length):
-                    screens += flipped[:, k : k + 1] * samples[k : k + cols]
-                screens = np.abs(screens)
+                    screens += np.multiply(flipped[:, k : k + 1], samples[k : k + cols], out = term)
+                np.abs(screens, out = screens)
             for taps, screen in zip(phases, screens):
                 peak = _phase_peak(window, taps, peak, screen, err)
     return peak
