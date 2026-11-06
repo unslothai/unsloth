@@ -6324,9 +6324,9 @@ html[data-glass="macos"] [data-slot="sidebar-inner"]:has([data-slot="sidebar-foo
 [dir="rtl"] .sidebar-scroll-fade {
   --sidebar-rail-side: to right;
 }
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass] .wallpaper-preview-composer,
-html[data-glass="macos"] .unsloth-composer-surface {
+html[data-glass="macos"] :is(.unsloth-composer-surface, .unsloth-files-panel) {
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + var(--glass-composer-boost, 0%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6350,14 +6350,14 @@ html:not(.dark)[data-glass] [data-wallpaper-workspace][data-wallpaper-route="pag
 html:not(.dark)[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
   --glass-page-wash: color-mix(in srgb, var(--glass-page-bg) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) - 12%) * var(--glass-opacity, 1))), transparent);
 }
-html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) .unsloth-composer-surface,
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-preview-composer {
   --glass-composer-boost: 9%;
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1) + 5px + var(--glass-repaint, 0) * .01px);
 }
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame]::before,
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
-html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass="frosted"] .wallpaper-preview-composer {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
@@ -6385,23 +6385,23 @@ html.dark[data-glass="liquid-3d"] {
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .099), rgb(255 255 255 / .02) 62%, rgb(255 255 255 / .04));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .139), inset 0 -2px 5px rgb(255 255 255 / .03), inset 0 0 0 1px rgb(255 255 255 / .035);
 }
-/* The composer keeps the full sheen. */
-html[data-glass^="liquid"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+/* The composer and files panel keep the full sheen. */
+html[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .066), transparent 58%), linear-gradient(rgb(255 255 255 / .018), transparent 45%, rgb(255 255 255 / .014));
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .48), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
 }
-html.dark[data-glass^="liquid"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html.dark[data-glass^="liquid"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .022), transparent 58%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .128), inset 0 0 0 1px rgb(255 255 255 / .04);
 }
-html[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .165), rgb(255 255 255 / .022) 30%, transparent 55%, rgb(255 255 255 / .022) 80%, rgb(255 255 255 / .099));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .385), inset 0 16px 30px -20px rgb(255 255 255 / .44), inset 0 -18px 34px -20px rgb(255 255 255 / .33), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .083), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .061), transparent 62%), linear-gradient(172deg, rgb(255 255 255 / .021), transparent 50%);
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .33), rgb(255 255 255 / .077) 62%, rgb(255 255 255 / .154));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .44), inset 0 -2px 5px rgb(255 255 255 / .165), inset 0 0 0 1px rgb(255 255 255 / .11);
 }
-html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
+html.dark[data-glass="liquid-3d"] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
   --glass-edge: linear-gradient(135deg, rgb(255 255 255 / .066), rgb(255 255 255 / .011) 30%, transparent 55%, rgb(255 255 255 / .011) 80%, rgb(255 255 255 / .039));
   --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121), inset 0 16px 30px -20px rgb(255 255 255 / .121), inset 0 -18px 34px -20px rgb(255 255 255 / .077);
   --glass-sheen: radial-gradient(70% 130% at 12% -15%, rgb(255 255 255 / .024), transparent 60%), radial-gradient(55% 120% at 92% 118%, rgb(255 255 255 / .012), transparent 62%);
@@ -6439,14 +6439,14 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [d
   backdrop-filter: none;
   box-shadow: none;
 }
-html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
+html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass^="liquid"] .wallpaper-preview-composer {
   position: relative;
   background-image: var(--glass-sheen);
   --composer-shadow: var(--glass-rim);
 }
 /* The bevel: a gradient ring, since a gradient border-box layer would show through the clear fill. */
-html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface::before,
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel)::before,
 html[data-glass="liquid-3d"] .wallpaper-preview-composer::before {
   content: "";
   position: absolute;
@@ -6474,15 +6474,15 @@ html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-
   box-shadow: inset 0 1px 0 rgb(255 255 255 / .3);
 }
 
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer {
   --composer-shadow: none;
 }
-html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface,
+html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass^="liquid"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer {
   --composer-shadow: none;
 }
-html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .unsloth-composer-surface::before,
+html[data-glass="liquid-3d"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) :is(.unsloth-composer-surface, .unsloth-files-panel)::before,
 html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outline="false"]) .wallpaper-preview-composer::before {
   content: none;
 }
@@ -6562,8 +6562,8 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"]),
 html[data-glass][data-chat-wallpaper-ready] [data-wallpaper-chrome-controls],
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
-html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"], [data-wallpaper-chrome-controls], .unsloth-composer-surface) {
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel),
+html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-settings-panel"], [data-wallpaper-chrome-controls], .unsloth-composer-surface, .unsloth-files-panel) {
   --accent: var(--glass-hover);
   --sidebar-accent: var(--glass-hover);
   --nav-surface-hover: var(--glass-hover);
@@ -6577,6 +6577,14 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-panel-surface-hover: var(--glass-hover);
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
+}
+/* Translucent, so the files panel glass shows through its header action. */
+:is(html[data-glass][data-chat-wallpaper-ready], html[data-glass="macos"]) .unsloth-files-panel-action {
+  background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+  background-image: var(--glass-sheen, none);
+}
+:is(html[data-glass][data-chat-wallpaper-ready], html[data-glass="macos"]) .unsloth-files-panel-action:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--foreground) calc(14% * var(--contrast-wash-gain, 1)), transparent);
 }
 /* On the buttons, not the row, so the glass is the hover's box. */
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
@@ -6712,7 +6720,7 @@ html[data-glass="macos"] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover
 }
 
 /* An active pill keeps its own fill on hover; a white Liquid hover would also vanish on the light composer. */
-html[data-glass^="liquid"]:not(.dark) .unsloth-composer-surface {
+html[data-glass^="liquid"]:not(.dark) :is(.unsloth-composer-surface, .unsloth-files-panel) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
 }
 /* Menus that pin their fill with a layered !important read --sidebar or --dropdown-lift-surface, so point those at the glass. */
