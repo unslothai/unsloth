@@ -47,7 +47,11 @@ def h3_phase_need_gb(
     activations = H3_ACTIVATION_GB_PER_MPIXEL_FRAME * width * height * num_frames / 1_000_000
     slack = H3_FRAGMENTATION_FRACTION if fragmentation else 0.0
     denoise = H3_STREAM_WINDOW_GB + top_gb + activations * (1.0 + slack)
-    return max(te_streamed_gb, denoise, H3_VAE_DECODE_GB) + H3_PHASE_OVERHEAD_GB
+    from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
+    # 0.0 unless UNSLOTH_H3_SOL_VAE=1: Sol's weights + one whole-clip decode peak
+    decode = max(H3_VAE_DECODE_GB, sol_decode_need_gb(width, height, num_frames))
+    return max(te_streamed_gb, denoise, decode) + H3_PHASE_OVERHEAD_GB
 
 
 def _tensor_bytes(tensor: Any) -> int:

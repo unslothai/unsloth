@@ -647,7 +647,8 @@ def test_every_cell_carries_three_kinds_of_evidence_that_exist():
 @pytest.mark.parametrize(
     "extra, missing",
     [
-        (dict(memory = "unsloth_offload"), "memory='unsloth_offload'"),
+        # unsloth_offload (Unsloth's checkpoint) is measured in the cp x tp cells; the legacy shim is not.
+        (dict(memory = "unsloth_gc"), "memory='unsloth_gc'"),
         (dict(mode = "qlora"), "mode='qlora'"),
         (dict(kernels = True), "kernels=True"),
         (dict(family = "qwen3"), "family='qwen3'"),
@@ -719,17 +720,23 @@ def test_query_reads_compile_memory_and_attention_from_the_model():
     Layer.forward._unsloth_block_compiled = True
     original = checkpoint.checkpoint
 
-    def unsloth_offloaded_gradient_checkpoint(*a, **k):
+    def unsloth_checkpoint(*a, **k):
         return original(*a, **k)
 
-    checkpoint.checkpoint = unsloth_offloaded_gradient_checkpoint
-    try:
-        q = caps.query_from(
-            None, None, model, types.SimpleNamespace(gradient_checkpointing = True, packing = True)
-        )
-    finally:
-        checkpoint.checkpoint = original
-    assert (q.compile, q.memory, q.packing) == ("block", "unsloth_offload", True)
+    def unsloth_offloaded_gradient_checkpoint(*a, **k):  # the legacy zoo shim
+        return original(*a, **k)
+
+    seen = []
+    for fn in (unsloth_checkpoint, unsloth_offloaded_gradient_checkpoint):
+        checkpoint.checkpoint = fn
+        try:
+            q = caps.query_from(
+                None, None, model, types.SimpleNamespace(gradient_checkpointing = True, packing = True)
+            )
+        finally:
+            checkpoint.checkpoint = original
+        seen.append((q.compile, q.memory, q.packing))
+    assert seen == [("block", "unsloth_offload", True), ("block", "unsloth_offload_legacy", True)]
 
 
 def test_compile_counters_count_breaks_and_recompiles():

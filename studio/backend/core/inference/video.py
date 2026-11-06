@@ -103,6 +103,7 @@ from .diffusion_step_skip import (
     uninstall_static_step_skip,
 )
 from .diffusion_device import (
+    apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
@@ -667,8 +668,10 @@ def _ltx23_prequant_pick(
 
 def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
     """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
-    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px)."""
-    if device != "cuda" or offload_policy not in (
+    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px).
+    On a CPU host "fits" is usable host RAM: the stock tiles recompute their overlaps (Wan2.2 at 896x512: 15 tiles
+    covering 1.6x the frame's pixels), and the decode is the slowest stage there."""
+    if device not in ("cuda", "cpu") or offload_policy not in (
         OFFLOAD_NONE,
         OFFLOAD_MODEL,
         OFFLOAD_GROUP,
@@ -11718,6 +11721,21 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
+        # its fallback; the audio VAE is untouched.
+        try:
+            from .video_minimax_h3_sol_vae import h3_sol_vae_requested, install_h3_sol_vae
+            if h3_sol_vae_requested() and install_h3_sol_vae(
+                getattr(pipe, "vae", None),
+                device = device,
+                dtype = dtype,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                logger = logger,
+            ):
+                speed_optims = speed_optims + ("h3_sol_vae",)
+        except Exception as exc:  # noqa: BLE001 -- optional decoder, never fail a load
+            logger.warning("video.h3_sol_vae: not engaged, keeping the stock decoder: %s", exc)
         # the H3 VAE speedups rewrap vae.decode: the OOM retry's scope (when installed) goes back on top
         try:
             from .diffusion_vae_oom import ensure_outermost
@@ -12472,6 +12490,7 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
                 begin_attention_run(state)
+            apply_cpu_render_threads(state.device)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
