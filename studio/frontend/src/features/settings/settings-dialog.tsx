@@ -111,8 +111,7 @@ const TAB_LOADERS = {
     import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
 } satisfies Record<SettingsTab, () => Promise<{ default: FC<SettingsPanelProps> }>>;
 
-// Components whose module has arrived, so a later first render need not suspend on it, and the
-// requests in flight, shared by the prefetch and the panel's own load.
+// Arrived panel modules (render without suspending) and requests in flight.
 const loadedTabs: Partial<Record<SettingsTab, FC<SettingsPanelProps>>> = {};
 const tabRequests: Partial<
   Record<SettingsTab, Promise<{ default: FC<SettingsPanelProps> }>>
@@ -155,13 +154,11 @@ function lazyTabs(): Record<SettingsTab, ComponentType<SettingsPanelProps>> {
 }
 
 const LAZY_TABS = lazyTabs();
-// Panels that have committed in this page. A panel's first view is its costly one (first mount,
-// cold code), so an open that would show it paints the dialog first and renders it right after.
+// Panels already shown once; a first view paints the dialog first and the panel right after.
 const shownTabs = new Set<SettingsTab>();
 // Past the first paint and the chat's history load.
 const STARTUP_PREFETCH_DELAY_MS = 3000;
-// The rest of the panels load once per page, one per idle slot after an open, so no single task
-// right after the open fetches and evaluates all of them.
+// The other panels load once per page, one per idle slot after an open.
 const tabsLeftToPrefetch: SettingsTab[] = Object.keys(TAB_LOADERS) as SettingsTab[];
 
 /** Marks the panel that has committed, from inside Suspense: while a panel is still loading its
@@ -362,11 +359,7 @@ interface SettingsPanelPaneProps {
   scrollRef: RefObject<HTMLDivElement | null>;
 }
 
-/**
- * The active tab's panel. Mounted with the dialog's content, so an open renders the requested
- * tab directly: the deferred value only lags behind tab switches made while the dialog is open.
- * Memoised, so the dialog's own re-renders on open (ref-driven state, measured layout) skip it.
- */
+/** The active tab's panel, mounted with the dialog content and memoised against its re-renders. */
 const SettingsPanelPane = memo(function SettingsPanelPane({
   activeTab,
   isOwner,
@@ -376,8 +369,7 @@ const SettingsPanelPane = memo(function SettingsPanelPane({
 }: SettingsPanelPaneProps) {
   const t = useT();
   const requestedTab = resolveSettingsTab(activeTab, isOwner);
-  // Deferred so the nav highlight updates before a heavy panel mounts. On mount it is the
-  // requested tab, never the one shown last; null (no panel yet) only for a tab's first view.
+  // Deferred so the nav highlight updates first; null only for a tab's first view.
   const deferredTab = useDeferredValue<SettingsTab | null>(
     requestedTab,
     shownTabs.has(requestedTab) ? undefined : null,
@@ -494,8 +486,7 @@ export function SettingsDialog() {
       if (!node) {
         return;
       }
-      // Only from the observer, which also fires once on observe: there layout is already done,
-      // where a read here, mid-commit, forces it. Unset reads as 0px, the CSS fallback.
+      // Observer only (it fires once on observe): a read mid-commit forces layout.
       const sync = () => {
         const width = `${node.offsetWidth - node.clientWidth}px`;
         if ((node.style.getPropertyValue("--rail-scrollbar") || "0px") !== width) {
@@ -522,8 +513,7 @@ export function SettingsDialog() {
   const reduced = useReducedMotion();
   const [query, setQuery] = useState("");
 
-  // After startup, on idle: the tab Settings opens on and the shortcuts list (Mod+/), so a first
-  // open renders its panel in the same pass rather than behind a chunk fetch.
+  // On idle after startup: prefetch the opening tab and the shortcuts list.
   useEffect(() => {
     let cancelIdle: (() => void) | undefined;
     const timer = window.setTimeout(() => {
@@ -665,8 +655,7 @@ export function SettingsDialog() {
         <DialogContent
           data-settings-dialog
           showCloseButton={false}
-          // Straight to the active tab: Radix's default focuses the search box first, and each
-          // focus move restyles the page in WebKit (one move instead of two on every open).
+          // One focus move: each one restyles the page in WebKit.
           onOpenAutoFocus={(e) => {
             if (focusTabButton(activeTab)) {
               e.preventDefault();
