@@ -1007,6 +1007,77 @@ def test_rows_hide_on_a_diffusers_without_edges_native_flow_schedule(
     assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
 
 
+def _imported_diffusers(monkeypatch, version, *classes):
+    module = types.ModuleType("diffusers")
+    module.__version__ = version
+    for name in classes:
+        setattr(module, name, type(name, (), {"__module__": "diffusers.pipelines.fake"}))
+    monkeypatch.setitem(sys.modules, "diffusers", module)
+    return module
+
+
+# diffusers 0.39.0 and 0.40.0 both export Cosmos3OmniPipeline, so the class being there is not enough.
+@pytest.mark.parametrize(
+    "installed, available",
+    [
+        ("0.39.0", False),
+        ("0.40.0", False),
+        ("0.41.0", True),
+        ("0.41.0.dev0", True),
+        ("0.42.1", True),
+    ],
+)
+def test_an_imported_diffusers_below_the_floor_hides_cosmos3_even_though_it_exports_the_class(
+    monkeypatch, installed, available
+):
+    from core.inference import diffusion_families as df
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    assert {df.family_pipeline_available(_fam(n)) for n in vf.COSMOS3_FAMILIES} == {available}
+
+
+@pytest.mark.parametrize("installed", ["0.39.0", "0.40.0"])
+def test_the_load_gate_refuses_cosmos3_on_a_diffusers_that_exports_it_below_the_floor(
+    monkeypatch, installed
+):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    with pytest.raises(ValueError, match = r"needs diffusers >= 0\.41\.0 \(Cosmos3OmniPipeline\)"):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    with pytest.raises(ValueError, match = rf"has diffusers {installed}\."):
+        df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.dev0", "0.42.1", "0.42.1+local"])
+def test_the_load_gate_accepts_cosmos3_at_or_above_the_floor(monkeypatch, installed):
+    from core.inference import diffusion_families as df
+
+    _imported_diffusers(monkeypatch, installed, "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge", strict = True)
+
+
+def test_the_floor_leaves_main_builds_judged_by_presence(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    # A main build reporting an older release still carries a probe-file class, and an unreleased floor is served by one.
+    _imported_diffusers(monkeypatch, "0.41.0.dev0", "Flux3ModularPipeline", "Cosmos3OmniPipeline")
+    df.assert_pipeline_class_available("Flux3ModularPipeline", "flux3")
+    monkeypatch.setattr(df, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.43.0"}))
+    monkeypatch.setitem(df._PIPELINE_MIN_DIFFUSERS, "Cosmos3OmniPipeline", "0.43.0")
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
+def test_an_unreadable_version_keeps_the_present_class_available(monkeypatch):
+    from core.inference import diffusion_families as df
+
+    module = _imported_diffusers(monkeypatch, "0.40.0", "Cosmos3OmniPipeline")
+    del module.__version__
+    df.assert_pipeline_class_available("Cosmos3OmniPipeline", "cosmos3-edge")
+    assert df.family_pipeline_available(_fam("cosmos3-edge"))
+
+
 _PIPELINE = ("model_index.json", "transformer/diffusion_pytorch_model.safetensors")
 _SHARDS = ("config.json", "model.safetensors.index.json", "model-00001-of-00002.safetensors")
 

@@ -2369,7 +2369,8 @@ _DIFFUSERS_DROPPED_PY39 = "0.37.0"
 _DIFFUSERS_DROPPED_PY310 = "0.42.0"
 _MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
-# First diffusers release exporting each class; every probed class must be listed, since an unlisted one reads as available.
+# First diffusers release exporting each class, or a later one where the earlier export is broken for the family; it
+# applies even when the class is present. Every probed class must be listed, since an unlisted one reads as available.
 _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     # MiniMax-H3 is judged by its transformer, first available in diffusers 0.40.0.
     "MiniMaxH3Transformer3DModel": "0.40.0",
@@ -2915,13 +2916,10 @@ def assert_pipeline_class_available(
             f"missing and install it."
         )
 
-    if present:
+    installed = getattr(diffusers, "__version__", None)
+    if present and not _present_class_below_floor(pipeline_class, installed):
         return
-    raise ValueError(
-        _too_old_message(
-            pipeline_class, family_name, str(getattr(diffusers, "__version__", "unknown"))
-        )
-    )
+    raise ValueError(_too_old_message(pipeline_class, family_name, str(installed or "unknown")))
 
 
 def _module_namespace_is_unreadable(module: Any) -> bool:
@@ -2960,6 +2958,22 @@ def _installed_at_least(installed: str, minimum: str) -> bool:
         return True
 
 
+def _present_class_below_floor(pipeline_class: str, installed: Any) -> bool:
+    """A release can export a class before the one its floor names (Cosmos3OmniPipeline is in 0.39.0 and 0.40.0, both
+    broken for it), so presence alone does not clear the floor. Probe-file classes and unreleased floors stay judged
+    by presence: a main build carries them under a version that reads as an older release."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if (
+        minimum is None
+        or minimum in _UNRELEASED_MIN_DIFFUSERS
+        or pipeline_class in _PIPELINE_PROBE_FILES
+        or not isinstance(installed, str)
+        or not installed.strip()
+    ):
+        return False
+    return not _installed_at_least(installed.strip(), minimum)
+
+
 def family_probe_class(fam: Any) -> str:
     """ModularPipeline is generic and predates families, so probe the transformer class; listing and both training gates must share it."""
     name = str(getattr(fam, "pipeline_class", "") or "")
@@ -2993,9 +3007,12 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
             return True
         if not _module_namespace_is_unreadable(module):
             try:
-                return hasattr(module, name)
+                if not hasattr(module, name):
+                    return False
+                installed = getattr(module, "__version__", None)
             except Exception:  # noqa: BLE001 -- a probe failure must not hide a model
                 return True
+            return not _present_class_below_floor(name, installed)
     minimum, _needs_py310 = pipeline_class_requirement(name)
     if minimum is None:
         return True
