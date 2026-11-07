@@ -479,14 +479,9 @@ def _installer_rewritten(rel: str) -> bool:
     Only the size is unreliable. The file disappearing is still damage, so the
     row is kept and only its size dropped.
 
-    The managed Scripts/unsloth.exe counts too. _WindowsLauncherUpdateTransaction
-    moves it aside for every update and, when setup publishes none, puts back the
-    first staged copy that runs: a retained .update-backup, or the bin/ hardlink
-    install.ps1 made. An older uv writes a smaller trampoline (41558 bytes for
-    uv 0.4.30 against 47104 today), while RECORD keeps the size the newest uv
-    wrote, so the update failed with `../../Scripts/unsloth.exe is 40981 bytes,
-    expected 47104` (#16897). Whether that launcher runs is already decided by
-    validate_launcher(), which starts it.
+    So does the managed Scripts/unsloth.exe: when setup publishes none, the update
+    restores a staged copy an older uv may have written with a smaller trampoline
+    than RECORD records (#16897). validate_launcher() already runs it.
     """
     parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
     if not parts:

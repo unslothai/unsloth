@@ -1201,12 +1201,7 @@ _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 
 def _restored_launcher(parts: Sequence[str]) -> bool:
-    """Whether a RECORD row is the managed Windows launcher, whose size says nothing.
-
-    The update restores it from whichever staged copy runs, which an older uv may
-    have written with a smaller trampoline than the one RECORD describes (#16897).
-    Its existence still counts; only the size comparison is skipped.
-    """
+    """The managed Windows launcher: an update may restore an older, smaller uv trampoline (#16897)."""
     return (
         len(parts) >= 2
         and ".." in parts
