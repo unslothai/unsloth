@@ -52,15 +52,51 @@ def wheel_platform_tag() -> str | None:
     return None
 
 
+def _loaded_torch_wheel_env() -> dict[str, str] | None:
+    """The probe child's fields, read from the torch this process already imported (same interpreter and build), or None."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        import re
+        import sysconfig
+
+        parts = torch.__version__.split("+", 1)[0].split(".")[:2]
+        minor = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else "0"
+        cuda = torch.version.cuda
+        hip = getattr(torch.version, "hip", None)
+        py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        return {
+            "python_tag": py_tag,
+            "abi_tag": py_tag + ("t" if sysconfig.get_config_var("Py_GIL_DISABLED") else ""),
+            "torch_mm": parts[0] + "." + minor,
+            "torch_version": str(torch.__version__),
+            "cuda_version": str(cuda) if cuda else "",
+            "cuda_major": str(int(str(cuda).split(".", 1)[0])) if cuda else "",
+            "hip_version": str(hip) if hip else "",
+            "cxx11abi": str(torch._C._GLIBCXX_USE_CXX11_ABI).upper(),
+        }
+    except Exception:
+        return None
+
+
 def probe_torch_wheel_env(
-    *, timeout: int | None = None, include_windows: bool = False
+    *,
+    timeout: int | None = None,
+    include_windows: bool = False,
+    reuse_loaded_torch: bool = False,
 ) -> dict[str, str] | None:
-    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset."""
+    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset. ``reuse_loaded_torch`` reads an already imported torch instead of importing it again in a child (1-3 s)."""
     platform_tag = wheel_platform_tag()
     if platform_tag is None:
         return None
     if platform_tag.startswith("win_") and not include_windows:
         return None
+    if reuse_loaded_torch:
+        env = _loaded_torch_wheel_env()
+        if env is not None:
+            env["platform_tag"] = platform_tag
+            return env
 
     try:
         probe = subprocess.run(
