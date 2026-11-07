@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Expandable allocator segments for the span of one image VAE decode (Linux CUDA, native allocator only).
+"""Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator only).
 
-An untiled VAE decode allocates activations and cuDNN workspaces that grow stage by stage (SDXL at 1024^2: 134 MiB
-up to 1 GiB). Each larger request misses the smaller blocks cached before it, so the caching allocator maps a new
-fixed segment per stage and keeps them all: SDXL holds 11.3 GiB after its first render for a 9.0 GiB live peak (T4
-fp16 and L4 bf16 alike). Inside one expandable segment the decode reuses and grows the same mapping instead (SDXL:
-10.1 GiB). The setting is switched on for the decode and back off after it; kernels, tiling and pixels do not change.
-Off when the process configured the allocator itself (any other allocator option, or expandable segments already on),
-on ROCm, Windows, WSL and Tegra, and during compile or graph capture. UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it
-off."""
+The decode's growing activations and cuDNN workspaces each miss the smaller cached blocks, so fixed segments pile up
+(SDXL 1024^2: 11.3 GiB reserved for a 9.0 GiB live peak; 10.1 GiB with this). Pixels do not change.
+UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off."""
 
 from __future__ import annotations
 
@@ -26,7 +21,7 @@ _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 
 _lock = threading.Lock()
 _depth = 0
-# None = not decided yet for this process; False = never engages; True = may engage.
+# None = undecided for this process.
 _usable: Optional[bool] = None
 STATS = {"engaged": 0, "skipped": 0}
 
@@ -54,8 +49,8 @@ def _conf_keys(value: str) -> dict:
 
 
 def _allocator_configured() -> bool:
-    """The process set allocator options this module would reset or override. A bare ``expandable_segments:True``
-    is not one: unsloth_zoo exports it after CUDA initialised here, and the live segments decide that case."""
+    """Allocator options a runtime setting would reset. A bare ``expandable_segments:True`` does not count: unsloth_zoo
+    exports it after CUDA init, so the live segments decide."""
     for name in _ALLOC_CONF_VARS:
         keys = _conf_keys(os.environ.get(name) or "")
         if any(k != "expandable_segments" for k in keys):
@@ -96,16 +91,15 @@ def _decide(torch: Any) -> bool:
     try:
         if torch.cuda.memory.get_allocator_backend() != "native":
             return False
-        # Expandable segments already on process-wide: nothing to add, and switching them off after would be wrong.
+        # Already on process-wide: switching it off after the decode would be wrong.
         if any(seg.get("is_expandable") for seg in torch.cuda.memory_snapshot()):
             return False
-    except Exception:  # noqa: BLE001 - unreadable allocator state: leave it alone
+    except Exception:  # noqa: BLE001
         return False
     return True
 
 
 def _torch() -> Any:
-    # Never imports torch: a decode on a CUDA tensor has it loaded already.
     return sys.modules.get("torch")
 
 
@@ -126,7 +120,7 @@ def _busy(torch: Any) -> bool:
 
 @contextlib.contextmanager
 def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
-    """Run the enclosed decode with expandable segments on, when ``vae`` opted in and this process allows it."""
+    """Expandable segments on for the enclosed decode, when ``vae`` opted in and the process allows it."""
     global _depth, _usable
     if not vae.__dict__.get(ENABLED_ATTR, False) or _env_off() or not _cuda_tensor(z):
         yield
@@ -145,7 +139,7 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
                     _setter(torch)("expandable_segments:True")
                 _depth += 1
                 engaged = True
-            except Exception:  # noqa: BLE001 - this torch refuses the setting: never try again
+            except Exception:  # noqa: BLE001 - refused: never retry
                 _usable = False
         if engaged:
             STATS["engaged"] += 1
@@ -165,7 +159,7 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
 
 
 def enable(vae: Any) -> bool:
-    """Opt an image VAE in; its outermost decode scope (diffusion_vae_oom) applies it."""
+    """Opt an image VAE in; the diffusion_vae_oom decode scope applies it."""
     if vae is None or _env_off():
         return False
     try:

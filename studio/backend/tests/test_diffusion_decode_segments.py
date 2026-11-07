@@ -15,8 +15,6 @@ from core.inference import diffusion_vae_oom as O  # noqa: E402
 
 
 class _FakeTorch:
-    """Just the attributes the module reads; ``calls`` records every allocator setting it applied."""
-
     def __init__(self, *, segments = (), backend = "native", hip = None, compiling = False, capturing = False,
                  setter = True, legacy = False, fail = False):  # fmt: skip
         self.calls = []
@@ -146,7 +144,6 @@ def test_user_allocator_config_wins(fresh, monkeypatch, conf):
 
 
 def test_bare_expandable_true_export_after_init_still_engages(fresh, monkeypatch):
-    # unsloth_zoo exports this after CUDA initialised here; the live segments (none expandable) decide.
     monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:True")
     fake = fresh(_FakeTorch(segments = [{"is_expandable": False}]))
     _decode(_vae(), fake)
@@ -203,8 +200,6 @@ def test_conf_keys_keeps_bracketed_lists():
 
 
 class _ScopeVae(torch.nn.Module):
-    """Minimal diffusers-shaped VAE for the OOM scope: ``decode`` calls ``_decode``."""
-
     def __init__(self, fake):
         super().__init__()
         self.use_tiling = False
