@@ -3369,6 +3369,10 @@ const Composer: FC<{
         throw new Error("The chat changed before this file was attached.");
       }
       await aui.composer().addAttachment(file);
+      // The draft-scoped adapter resolves a cancelled add; throwing keeps the file held.
+      if (wasAttachmentAddCancelled(file)) {
+        throw new Error("The chat changed before this file was attached.");
+      }
     };
     const drain = async () => {
       const held = await attachLibraryChatFiles(targetKey, add);

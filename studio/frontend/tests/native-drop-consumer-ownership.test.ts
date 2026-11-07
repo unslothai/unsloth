@@ -367,3 +367,42 @@ for (const kind of ["Image", "OpenDocument", "Audio", "Video"] as const) {
     }
   });
 }
+
+test("a Library handoff add the draft-scoped adapter cancels is refused, so the file stays held", async () => {
+  const effect = findNode(
+    (node) =>
+      ts.isCallExpression(node) &&
+      node.expression.getText(source) === "useEffect" &&
+      node.arguments[0]?.getText(source).includes("attachLibraryChatFiles("),
+  );
+  let addDeclaration: ts.Node | undefined;
+  ts.forEachChild(effect, function visit(node) {
+    if (
+      !addDeclaration &&
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(source) === "add"
+    ) {
+      addDeclaration = node;
+    }
+    if (!addDeclaration) ts.forEachChild(node, visit);
+  });
+  assert.ok(addDeclaration);
+  const cancelled = new WeakSet<File>();
+  const add = evaluate<(file: File) => Promise<void>>(
+    `const ${addDeclaration.getText(source)}; return add;`,
+    {
+      disposed: false,
+      targetKey: "single:library",
+      nativeAttachmentTargetKeyRef: { current: "single:library" },
+      aui: {
+        composer: () => ({
+          addAttachment: async (file: File) => {
+            cancelled.add(file);
+          },
+        }),
+      },
+      wasAttachmentAddCancelled: (file: File) => cancelled.has(file),
+    },
+  );
+  await assert.rejects(add(new File(["fixture"], "notes.pdf")));
+});
