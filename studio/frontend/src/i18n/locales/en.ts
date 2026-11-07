@@ -2134,6 +2134,12 @@ export const en = {
           "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
         autoCurrently: "Auto is using {transport} on this machine.",
         xetMissing: "Xet is unavailable because hf_xet is not installed.",
+        speedLimit: "Download speed limit",
+        speedLimitDescription:
+          "No limit unless a figure is set. A limited download uses HTTPS.",
+        speedLimitNoLimit: "No limit",
+        speedLimitInvalid: "Enter a number of Mbit/s, or leave the field empty.",
+        speedLimitUsesHttps: "Downloads use HTTPS while a speed limit is set. Files over 50 GB still use Xet, without the limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2511,6 +2517,10 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
+        },
+        elementOutline: {
+          label: "Element outline",
+          description: "Border strength for buttons, fields, cards and menus.",
         },
         reduceMotion: {
           label: "Reduce motion",
@@ -5527,7 +5537,7 @@ export const en = {
     skippedVersion: "Skipped {component} {version} for now",
     skippedUpdate: "Skipped the {component} update for now",
     skippedUpdates: "Skipped the {components} updates for now",
-    vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
+    vulkanFaster: "Over 10% faster",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
     // {change}: "<from backend> → <to backend>".
@@ -5537,8 +5547,8 @@ export const en = {
     installingPhase: "Installing {component} ({current} of {total})...",
     installingCount: "Installing {count} updates...",
     bundleTitle: "{count} runtime updates",
-    newBackend: "New {component} backend",
-    newUpdate: "New {component} update",
+    newBackend: "New runtime backend",
+    newUpdate: "New runtime update",
     hideUpdate: "Hide the {component} update until Unsloth is reopened",
     hideUpdates: "Hide the {components} updates until Unsloth is reopened",
     whatsNew: "What's new",

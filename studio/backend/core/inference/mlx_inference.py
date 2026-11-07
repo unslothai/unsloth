@@ -2143,6 +2143,19 @@ def _zoo_declares_multimodal(model_name, hf_token = None) -> bool:
         return False
 
 
+def _zoo_builds_text_on_mlx_vlm(model_name, hf_token = None) -> bool:
+    """A text family only mlx-vlm ships (Raon-1 Mini): unsloth_zoo builds it there, so it is served there."""
+    try:
+        from utils.models.model_config import _read_raw_config_json
+        from unsloth_zoo.mlx.loader import _mlx_vlm_only_text_model
+
+        config = _read_raw_config_json(model_name, hf_token) or {}
+        return bool(_mlx_vlm_only_text_model(config, config.get("model_type") or ""))
+    except Exception as exc:  # noqa: BLE001 -- detection must never fail a load
+        logger.debug("unsloth_zoo text-route detection skipped for %s (%s)", model_name, exc)
+        return False
+
+
 def _classify_mlx_audio_type(
     model,
     processor,
@@ -4808,6 +4821,8 @@ class _TextBatchSession:
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
                 plan.max_tokens = backend._unset_generation_budget(plan.prompt, all_tokens)
+            else:
+                backend._prompt_within_window(plan.prompt, all_tokens)
         row = _TextBatchRow(
             handle = handle,
             plan = plan,
@@ -5703,6 +5718,20 @@ class MLXInferenceBackend:
         videos = None,
     ):
         """Free context for an unset limit, or the default if the prompt cannot be counted."""
+        prompt_n = self._prompt_within_window(prompt, prompt_tokens, images, audio, videos)
+        if prompt_n is None:
+            return UNSET_GENERATION_BUDGET
+        return generation_budget_for_window(self._served_context, prompt_n, None)
+
+    def _prompt_within_window(
+        self,
+        prompt,
+        prompt_tokens = None,
+        images = None,
+        audio = None,
+        videos = None,
+    ):
+        """The prompt's length, refused when it leaves no room in the served context; None if uncountable."""
         try:
             prompt_n = (
                 len(prompt_tokens)
@@ -5710,9 +5739,13 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
-            logger.debug("MLX prompt count for an unset budget failed: %s", exc)
-            return UNSET_GENERATION_BUDGET
-        return generation_budget_for_window(self._served_context, prompt_n, None)
+            logger.debug("MLX prompt count failed: %s", exc)
+            return None
+        window = self._served_context
+        # Admitted, a bounded cache would rotate the prompt's start away during prefill.
+        if window and prompt_n >= int(window):
+            raise context_refusal.ContextBudgetExceeded(prompt_n + 1, int(window))
+        return prompt_n
 
     def _generation_limit(
         self,
@@ -5733,6 +5766,8 @@ class MLXInferenceBackend:
                 max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
                 if cap is not None:
                     max_new_tokens = min(max_new_tokens, cap)
+            else:
+                self._prompt_within_window(prompt, prompt_tokens)
             return max_new_tokens
         # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
         if max_new_tokens is not None and int(max_new_tokens) == int(budget):
@@ -6064,8 +6099,13 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         is_lora = getattr(config, "is_lora", False)
-        zoo_multimodal = not is_vision and _zoo_declares_multimodal(
-            getattr(config, "base_model", None) if is_lora else model_name, hf_token
+        # Route by the config the loader reads.
+        route_config = getattr(config, "config_dir", None) or (
+            getattr(config, "base_model", None) if is_lora else model_name
+        )
+        zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
         )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
@@ -6091,7 +6131,7 @@ class MLXInferenceBackend:
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 distributed = is_distributed,
-                # A text architecture's adapter loads only through mlx-lm, and speculation runs on mlx-vlm.
+                # Speculation runs on mlx-vlm and takes an adapter only on a vision or zoo-multimodal load.
                 lora = is_lora and not (is_vision or zoo_multimodal),
             )
             speculates = spec_reason is None
@@ -6110,6 +6150,7 @@ class MLXInferenceBackend:
         use_vlm = (
             is_vision
             or zoo_multimodal
+            or vlm_only_text
             or speculates
             or (self._turboquant and not self._turboquant_refusal)
             or batches_quantized_text
@@ -6232,7 +6273,8 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
         except Exception as exc:
-            if is_vision or not use_vlm or is_metal_queue_dead(exc):
+            # A vlm_only_text model has no mlx-lm route to fall back to.
+            if is_vision or vlm_only_text or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
                 "Load of %s through mlx-vlm for %s failed (%s); serving through mlx-lm",
@@ -6244,8 +6286,8 @@ class MLXInferenceBackend:
         if model is not None and batches_quantized_text and not (is_vision or self._turboquant):
             _eligibility = _kv_quant_eligibility(model, True, _normalize_mlx_kv_bits(kv_bits))
             verdict, reason, _retainable = _eligibility
-            if verdict not in ("full", "partial"):
-                # Unquantized, the load gains nothing from mlx-vlm's batch.
+            if verdict not in ("full", "partial") and not vlm_only_text:
+                # Unquantized, the load gains nothing from mlx-vlm's batch; a vlm_only_text one stays on it.
                 logger.info(
                     "MLX KV quantization not applied to %s (%s); serving through mlx-lm",
                     model_name,
@@ -7664,6 +7706,11 @@ class MLXInferenceBackend:
                     ),
                 ),
             )
+        if max_new_tokens is None:
+            max_tokens = self._unset_generation_budget(prompt, prompt_ids)
+        else:
+            self._prompt_within_window(prompt, prompt_ids)
+            max_tokens = max_new_tokens
         row = _RowStream(
             prefix = think_prefix,
             sequences = _mlx_stop_sequences(stop),
@@ -7677,11 +7724,7 @@ class MLXInferenceBackend:
             streamed = streamed,
             sampler = sampler,
             processors = logits_processors,
-            max_tokens = (
-                self._unset_generation_budget(prompt, prompt_ids)
-                if max_new_tokens is None
-                else max_new_tokens
-            ),
+            max_tokens = max_tokens,
         )
 
     def _render_vlm_prompt(

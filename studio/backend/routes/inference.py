@@ -25500,6 +25500,8 @@ async def stt_status(
     audiocpp_downloaded = await asyncio.to_thread(stt_audiocpp_sidecar.downloaded_model_ids)
     # Choosing the launch backend can run the binary's --version.
     audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
+    # The first probe imports torch, Transformers and PyAV (seconds); keep it off the event loop.
+    transformers_available = await asyncio.to_thread(is_available)
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
@@ -25507,7 +25509,7 @@ async def stt_status(
         transformers_downloaded.append(model)
     response = JSONResponse(
         content = {
-            "available": is_available(),
+            "available": transformers_available,
             "loaded_model": sidecar.loaded_model,
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
@@ -25516,7 +25518,7 @@ async def stt_status(
             "models": list(STT_MODELS.keys()),
             # Transformers block mirrors the gguf shape so clients read either generically; top-level fields above are kept for old clients.
             "transformers": {
-                "available": is_available(),
+                "available": transformers_available,
                 "loaded_model": sidecar.loaded_model,
                 "loading": sidecar.is_loading(),
                 "device": sidecar.device,
@@ -49035,7 +49037,8 @@ _GENERATE_FAILURE_FALLBACK = "Image generation failed."
 # Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
-        ("out of memory", "outofmemory", "oom"),
+        # The last one is stable-diffusion.cpp's model manager: classified here only for a render that failed.
+        ("out of memory", "outofmemory", "oom", "cannot make enough memory available"),
         "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
     ),
     (
@@ -49060,9 +49063,16 @@ def _generate_failure_detail(message: str) -> str:
     the engine's text, which can carry local paths and argv."""
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
-        if any(n in text for n in needles):
+        if any(_failure_text_mentions(text, n) for n in needles):
             return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
     return _GENERATE_FAILURE_FALLBACK
+
+
+def _failure_text_mentions(text: str, needle: str) -> bool:
+    """Bare ``oom`` only as a word: a native renderer's log tail can echo the prompt ("a cozy room")."""
+    if needle == "oom":
+        return re.search(r"(?<![a-z0-9])oom(?![a-z0-9])", text) is not None
+    return needle in text
 
 
 # Keyed by account id, not account_scope(): the scope moves when the first managed account appears.

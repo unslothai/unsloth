@@ -6301,6 +6301,9 @@ class ExternalProviderClient:
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
+                    # .done / part.done repeat the deltas' text: show each part once, from whichever arrives first.
+                    reasoning_shown_parts: set = set()
+                    last_reasoning_part = None
                     # Give each function call its own delta.tool_calls[].index so parallel calls do not collide.
                     saw_function_call = False
                     function_call_index = 0
@@ -6694,7 +6697,16 @@ class ExternalProviderClient:
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
                                     )
-                                    summary_text = _extract_reasoning_text(item.get("summary"))
+                                    summary = item.get("summary")
+                                    summary_text = "\n\n".join(
+                                        filter(
+                                            None,
+                                            map(
+                                                _extract_reasoning_text,
+                                                summary if isinstance(summary, list) else [summary],
+                                            ),
+                                        )
+                                    )
                                     if summary_text and not reasoning_emitted:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
@@ -6887,8 +6899,21 @@ class ExternalProviderClient:
                                 recorded_reasoning = _record_openai_reasoning_replay_item(event)
                                 if recorded_reasoning:
                                     last_openai_reasoning_replay_item = recorded_reasoning
-                                reasoning_delta = _extract_reasoning_text(event)
+                                reasoning_part = (
+                                    event.get("item_id"),
+                                    event.get("summary_index", event.get("content_index")),
+                                )
+                                is_delta = event_type.endswith(".delta")
+                                if not is_delta and reasoning_part in reasoning_shown_parts:
+                                    continue
+                                reasoning_delta = _extract_reasoning_text(
+                                    event if is_delta else (event.get("part") or event)
+                                )
                                 if reasoning_delta:
+                                    reasoning_shown_parts.add(reasoning_part)
+                                    if reasoning_open and reasoning_part != last_reasoning_part:
+                                        reasoning_delta = f"\n\n{reasoning_delta}"
+                                    last_reasoning_part = reasoning_part
                                     if not reasoning_open:
                                         reasoning_delta = f"<think>{reasoning_delta}"
                                         reasoning_open = True

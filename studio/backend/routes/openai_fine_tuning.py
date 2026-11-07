@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import importlib.util
 import json
 import os
@@ -15,8 +16,7 @@ import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from heapq import heapify, heappop, heappush
-from itertools import chain, count
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -563,18 +563,21 @@ def _load_aliases() -> None:
         ).fetchall()
     finally:
         conn.close()
-    for alias, run_id, account_id, created_at in rows:
-        _ALIAS_RUN[alias] = (run_id, account_id)
-        _RUN_ALIAS[run_id] = alias
-        if created_at:
-            _ALIAS_CREATED[alias] = created_at
+    for row in rows:
+        _record_alias(*row)
     _aliases_loaded.add(account_id)
 
 
-def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
+def _record_alias(
+    alias: str, run_id: str, account_id: Optional[str], created_at: Optional[int]
+) -> None:
     _ALIAS_RUN[alias] = (run_id, account_id)
     _RUN_ALIAS[run_id] = alias
-    _ALIAS_CREATED[alias] = created_at
+    if created_at:
+        _ALIAS_CREATED[alias] = created_at
+
+
+def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
     try:
         conn = _alias_db()
         try:
@@ -896,15 +899,12 @@ async def _start_queued(entry: _Queued) -> bool:
                 return False
             _finish(entry, "failed", started.message or started.error or "Training did not start")
             return True
-        # In the job's own account database: the drainer may carry whichever account started it.
-        await arun_as(
-            entry.account,
-            asyncio.to_thread(
-                _save_alias, entry.alias, started.job_id, entry.account.account_id, entry.created_at
-            ),
-        )
+        record = (entry.alias, started.job_id, entry.account.account_id, entry.created_at)
+        _record_alias(*record)
         _remember_start(started.job_id, entry.request.model_dump(), entry.created_at)
         _finish(entry, "started")
+        # In the job's own account database: the drainer may carry whichever account started it.
+        await arun_as(entry.account, asyncio.to_thread(_save_alias, *record))
     if entry.cancel_requested:
         # Cancelled while its start was in flight: stop it as a cancel of the running job would.
         await arun_as(entry.account, _stop_run(started.job_id, entry.subject))
@@ -946,6 +946,11 @@ async def _start_batch(group: list[_Queued]) -> Optional[bool]:
     batch_id = getattr(get_training_backend(), "current_job_id", None)
     if batch_id:
         _remember_batch(batch_id, run_ids)
+    # Every member leaves the queue as its run before any await, so no listing sees it as neither.
+    for member, run_id in zip(group, run_ids):
+        _record_alias(member.alias, run_id, member.account.account_id, member.created_at)
+        _remember_start(run_id, member.request.model_dump(), member.created_at)
+        _finish(member, "started")
     for member, run_id in zip(group, run_ids):
         await arun_as(
             member.account,
@@ -953,8 +958,6 @@ async def _start_batch(group: list[_Queued]) -> Optional[bool]:
                 _save_alias, member.alias, run_id, member.account.account_id, member.created_at
             ),
         )
-        _remember_start(run_id, member.request.model_dump(), member.created_at)
-        _finish(member, "started")
     for member, run_id in zip(group, run_ids):
         if member.cancel_requested:
             await arun_as(member.account, _cancel_run(run_id, member.subject))
@@ -1135,28 +1138,28 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Newest created first, ties broken by public id alone so a job keeps its place from queue
-    # to history. History is newest start first and no job starts before it is created, so
-    # a buffered row created after the current row's start is final.
-    def key(created_at: int, public_id: str) -> tuple[int, int, str]:
-        return -created_at, -_ALIAS_ORDER.get(public_id, -1), public_id
+    # Newest created first, same-second ties by public id: a job keeps its place from queue to
+    # history and across restarts. History is newest start first and no job starts before it is
+    # created, so a buffered row created after the current row's start is final.
+    def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
+        return (-created_at, public_id, seq), row, is_run
 
-    buffered = [
-        (key(job["created_at"], job["id"]), seq, job, False)
+    heap = [
+        item(job["created_at"] or 0, job["id"], seq, job, False)
         for seq, job in enumerate(chain(pending, live.values()))
     ]
-    heapify(buffered)
-    for seq, run in enumerate(_iter_runs(), len(buffered)):
+    heapq.heapify(heap)
+    for seq, run in enumerate(_iter_runs(), len(heap)):
         # A live run can acquire its history row between the status and history reads.
         if run["id"] in live:
             continue
         started = _unix(run.get("started_at")) or 0
-        while buffered and -buffered[0][0][0] > started:
-            yield heappop(buffered)[2:]
+        while heap and -heap[0][0][0] > started:
+            yield heapq.heappop(heap)[1:]
         public_id = _RUN_ALIAS.get(run["id"]) or _job_id(run["id"])
-        heappush(buffered, (key(min(_run_created(run), started), public_id), seq, run, True))
-    while buffered:
-        yield heappop(buffered)[2:]
+        heapq.heappush(heap, item(min(_run_created(run), started), public_id, seq, run, True))
+    while heap:
+        yield heapq.heappop(heap)[1:]
 
 
 def _list_job_page(
@@ -1184,6 +1187,14 @@ def _list_job_page(
     return {"object": "list", "data": jobs, "has_more": False}
 
 
+def _pending_jobs(via_api_key: bool) -> dict[str, dict[str, Any]]:
+    return {
+        entry.alias: _for_caller(_queued_job(entry), via_api_key)
+        for entry in reversed(_ALIASES.values())
+        if _own_alias(entry.alias) is not None
+    }
+
+
 @router.get("/fine_tuning/jobs")
 async def list_fine_tuning_jobs(
     after: Optional[str] = None,
@@ -1192,6 +1203,8 @@ async def list_fine_tuning_jobs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     await asyncio.to_thread(_load_aliases)
+    # Before the awaits: a job that starts meanwhile may be in neither the status nor the history.
+    queued = _pending_jobs(via_api_key)
     after_run = await _resolve(after) if after else None
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
@@ -1205,11 +1218,16 @@ async def list_fine_tuning_jobs(
                     after = job["id"]
 
     # After the awaits, so a job that started meanwhile is listed as its run.
-    pending = [
-        _for_caller(_queued_job(entry), via_api_key)
-        for entry in reversed(_ALIASES.values())
-        if _own_alias(entry.alias) is not None
-    ]
+    current = _pending_jobs(via_api_key)
+    pending = [job for alias, job in current.items() if alias not in queued]
+    for alias, job in queued.items():
+        run = _ALIAS_RUN.get(alias)
+        if (
+            alias in current
+            or run is None
+            or (run[0] not in live and await asyncio.to_thread(get_run, run[0]) is None)
+        ):
+            pending.append(current.get(alias, job))
     return await asyncio.to_thread(
         _list_job_page, pending, live, after, after_run, limit, via_api_key
     )

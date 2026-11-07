@@ -2100,6 +2100,12 @@ export const ar = {
           "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
         autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
         xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
+        speedLimit: "حد سرعة التنزيل",
+        speedLimitDescription:
+          "لا حد ما لم يُحدَّد رقم. يستخدم التنزيل المحدود HTTPS.",
+        speedLimitNoLimit: "بلا حد",
+        speedLimitInvalid: "أدخل عددًا بوحدة Mbit/s أو اترك الحقل فارغًا.",
+        speedLimitUsesHttps: "تستخدم التنزيلات HTTPS ما دام حد السرعة مضبوطًا. لا تزال الملفات التي يتجاوز حجمها 50 غيغابايت تستخدم Xet من دون الحد.",
       },
       uploads: {
         sectionTitle: "عمليات الرفع",
@@ -2494,6 +2500,10 @@ export const ar = {
         },
         contrast: {
           label: "التباين",
+        },
+        elementOutline: {
+          label: "حدود العناصر",
+          description: "قوة الحدود حول الأزرار والحقول والبطاقات والقوائم.",
         },
         reduceMotion: {
           label: "تقليل الحركة",
@@ -5485,7 +5495,7 @@ export const ar = {
     skippedVersion: "تم تخطي {component} {version} مؤقتًا",
     skippedUpdate: "تم تخطي تحديث {component} مؤقتًا",
     skippedUpdates: "تم تخطي تحديثات {components} مؤقتًا",
-    vulkanFaster: "Vulkan أسرع من ROCM بأكثر من 10%. لا حاجة لإعادة التشغيل",
+    vulkanFaster: "أسرع بأكثر من 10%",
     noRestart: "لا حاجة لإعادة التشغيل",
     downloadSize: "تنزيل بحجم {size}",
     backendChange: "خلفية {change}",
@@ -5494,8 +5504,8 @@ export const ar = {
     installingPhase: "جارٍ تثبيت {component} ({current} من {total})...",
     installingCount: "جارٍ تثبيت {count} تحديثات...",
     bundleTitle: "{count} تحديثات لبيئة التشغيل",
-    newBackend: "خلفية جديدة لـ {component}",
-    newUpdate: "تحديث جديد لـ {component}",
+    newBackend: "خلفية جديدة لبيئة التشغيل",
+    newUpdate: "تحديث جديد لبيئة التشغيل",
     hideUpdate: "إخفاء تحديث {component} حتى إعادة فتح Unsloth",
     hideUpdates: "إخفاء تحديثات {components} حتى إعادة فتح Unsloth",
     whatsNew: "ما الجديد",

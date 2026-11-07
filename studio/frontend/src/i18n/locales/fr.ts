@@ -2123,6 +2123,12 @@ export const fr = {
           "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
         autoCurrently: "Auto utilise {transport} sur cette machine.",
         xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+        speedLimit: "Limite de vitesse de téléchargement",
+        speedLimitDescription:
+          "Aucune limite tant qu'aucune valeur n'est définie. Un téléchargement limité utilise HTTPS.",
+        speedLimitNoLimit: "Aucune limite",
+        speedLimitInvalid: "Saisissez un nombre en Mbit/s ou laissez le champ vide.",
+        speedLimitUsesHttps: "Les téléchargements utilisent HTTPS tant qu'une limite de vitesse est définie. Les fichiers de plus de 50 Go utilisent toujours Xet, sans la limite.",
       },
       uploads: {
         sectionTitle: "Téléversements",
@@ -2521,6 +2527,10 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contour des éléments",
+          description: "Intensité des bordures des boutons, champs, cartes et menus.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -5569,7 +5579,7 @@ export const fr = {
     skippedVersion: "{component} {version} ignoré pour l'instant",
     skippedUpdate: "Mise à jour de {component} ignorée pour l'instant",
     skippedUpdates: "Mises à jour de {components} ignorées pour l'instant",
-    vulkanFaster: "Vulkan est plus de 10 % plus rapide que ROCM. Aucun redémarrage nécessaire",
+    vulkanFaster: "Plus de 10 % plus rapide",
     noRestart: "Aucun redémarrage nécessaire",
     downloadSize: "Téléchargement de {size}",
     backendChange: "Backend {change}",
@@ -5578,8 +5588,8 @@ export const fr = {
     installingPhase: "Installation de {component} ({current} sur {total})...",
     installingCount: "Installation de {count} mises à jour...",
     bundleTitle: "{count} mises à jour du runtime",
-    newBackend: "Nouveau backend {component}",
-    newUpdate: "Nouvelle mise à jour de {component}",
+    newBackend: "Nouveau backend du runtime",
+    newUpdate: "Nouvelle mise à jour du runtime",
     hideUpdate: "Masquer la mise à jour de {component} jusqu'à la réouverture d'Unsloth",
     hideUpdates: "Masquer les mises à jour de {components} jusqu'à la réouverture d'Unsloth",
     whatsNew: "Nouveautés",

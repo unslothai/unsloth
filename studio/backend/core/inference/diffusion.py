@@ -104,6 +104,7 @@ from .diffusion_compat import (
     speech_pick_refusal,
 )
 from .diffusion_device import (
+    apply_cpu_render_threads,
     DiffusionDeviceTarget,
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
@@ -237,6 +238,7 @@ from .diffusion_memory import (
     release_pinned_host_memory,
     request_background_encoder_pins,
     finish_encoder_pins_at_load,
+    trim_host_heap_after_load,
     start_background_pins,
     stop_background_pins,
     refine_balanced_plan_for_components,
@@ -393,6 +395,8 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
+from . import diffusion_lora_files as lora_files
+from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -525,8 +529,10 @@ from .diffusion_transformer_quant import (
     NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     int8_text_stream_scope,
+    join_probe_table_prewarm,
     quantize_transformer,
     select_transformer_quant_scheme,
+    start_probe_table_prewarm,
     stored_denoiser_precision,
     transformer_is_quantised,
 )
@@ -579,6 +585,30 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
         return False
     handles = getattr(state, "cuda_graphs", ()) or ()
     return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
+
+
+def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
+    """Re-merges adapters merged into a quantized file's weights in place (no recompile, no recapture). False when
+    nothing was merged."""
+    if not lora_quant_merge.merged(pipe):
+        return False
+    if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
+        raise ValueError(
+            "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
+            "until the model is reloaded. Reload the model with the new adapter weights."
+        )
+    try:
+        lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated})
+    except Exception as exc:
+        # set_weights left the base weights: record that, so the next request merges again.
+        pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in updated)
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+        raise ValueError(
+            f"Could not apply the new LoRA weights ({exc}); the adapters are off until the next change."
+        ) from exc
+    pipe._unsloth_loras = updated
+    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+    return True
 
 
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
@@ -897,6 +927,8 @@ def _baked_lora_names(pipe: Any) -> list:
     return names
 
 
+# Adapters baked into a quantized single file; ``_unsloth_loras_baked`` also stays set after a declined quantize.
+_QUANT_FILE_LORA_BAKE_ATTR = "_unsloth_quant_file_loras_baked"
 # ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
 _PINNED_LORA_SCALES_ATTR = "_unsloth_pinned_lora_scales"
 # ``(module, adapter)`` for the baked LoRA layers OUTSIDE the denoisers (a text encoder carrying the same file's
@@ -994,8 +1026,15 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     weights): the caller then takes the set_adapters + graph reset path."""
     pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
     if not pinned:
+        if lora_files.kron_only_selection(pipe):
+            # LoKR scales are tensors written in place; the CFG replica holds copies, so it is rebuilt.
+            lora_files.set_kron_weights(pipe, weights)
+            invalidate_cfg_replica(pipe, "the LoKR weights changed")
+            return True
         return False
     import torch
+
+    lora_files.set_kron_weights(pipe, weights)
 
     for module, adapter, _base in pinned:
         value = module.scaling.get(adapter)
@@ -1647,6 +1686,8 @@ class _LoadState:
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
     bg_compile: Any = None
+    # The first inline compile's float seeds (diffusion_bg_compile.InlineFloatSeeds); holds the DiTs until it kept.
+    inline_float_seeds: Any = None
     # GraphedForward handles installed on the denoiser modules.
     cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
@@ -6262,51 +6303,60 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if auto and _auto_keeps_bf16_reason(fam, base = base or repo_id) is not None:
-                    bf16_memory = snapshot_device_memory(target)
-                    bf16_plan = self._bf16_table_plan(
-                        target,
-                        fam,
-                        base or repo_id or "",
-                        memory_mode,
-                        cpu_offload,
-                        kind = kind,
-                        repo_id = repo_id,
-                        fetch_base = fetch_base,
-                        text_encoder_quant = None if local_files_only else text_encoder_quant,
-                        device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
-                    )
-                    # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
-                    if (
-                        bf16_plan is not None
-                        and _auto_quant_eager_reason(
-                            fam, bf16_plan, transformer_prequant_path, base = base or repo_id
+                # The scheme probe in _planned_quant_scheme waits ~4-5 s on a child (cold card): start that child now so it
+                # overlaps the diffusers import _auto_keeps_bf16_reason pays, and join it before free VRAM is read.
+                probe = start_probe_table_prewarm(str(getattr(target, "device", "cuda")))
+                try:
+                    if auto and _auto_keeps_bf16_reason(fam, base = base or repo_id) is not None:
+                        join_probe_table_prewarm(probe)
+                        bf16_memory = snapshot_device_memory(target)
+                        bf16_plan = self._bf16_table_plan(
+                            target,
+                            fam,
+                            base or repo_id or "",
+                            memory_mode,
+                            cpu_offload,
+                            kind = kind,
+                            repo_id = repo_id,
+                            fetch_base = fetch_base,
+                            text_encoder_quant = None if local_files_only else text_encoder_quant,
+                            device_memory_override = replace(
+                                bf16_memory, free_mib = bf16_memory.total_mib
+                            ),
                         )
-                        is not None
-                        and not (
-                            local_files_only
-                            and not any(
-                                self._released_transformer_cached(candidate)
-                                for candidate in dict.fromkeys(
-                                    (
-                                        fetch_base,
-                                        base,
-                                        repo_id,
-                                        prefer_ungated_mirror(base or repo_id or ""),
-                                    )
-                                )
-                                if candidate
+                        # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
+                        if (
+                            bf16_plan is not None
+                            and _auto_quant_eager_reason(
+                                fam, bf16_plan, transformer_prequant_path, base = base or repo_id
                             )
-                        )
-                    ):
-                        return None
-                scheme = _planned_quant_scheme(
-                    fam,
-                    target,
-                    mode,
-                    base_repo = base,
-                    prequant_path = transformer_prequant_path,
-                )
+                            is not None
+                            and not (
+                                local_files_only
+                                and not any(
+                                    self._released_transformer_cached(candidate)
+                                    for candidate in dict.fromkeys(
+                                        (
+                                            fetch_base,
+                                            base,
+                                            repo_id,
+                                            prefer_ungated_mirror(base or repo_id or ""),
+                                        )
+                                    )
+                                    if candidate
+                                )
+                            )
+                        ):
+                            return None
+                    scheme = _planned_quant_scheme(
+                        fam,
+                        target,
+                        mode,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                    )
+                finally:
+                    join_probe_table_prewarm(probe, discard = True)
                 if scheme is None or scheme == TQ_AUTO:
                     return None
                 # Under auto, a rung whose plan still offloads yields to the next resident rung; an explicit scheme is never swapped, only honored or refused.
@@ -10267,10 +10317,13 @@ class DiffusionBackend:
                                         hf_token = hf_token,
                                     )
                                     for name, path, _weight in baked:
-                                        pipe.load_lora_weights(path, adapter_name = name)
-                                    pipe.set_adapters(
+                                        lora_files.load_adapter(
+                                            pipe, path, name, getattr(fam, "name", None)
+                                        )
+                                    lora_files.set_adapter_weights(
+                                        pipe,
                                         [n for (n, _p, _w) in baked],
-                                        adapter_weights = [w for (_n, _p, w) in baked],
+                                        [w for (_n, _p, w) in baked],
                                     )
                                     pipe._unsloth_loras = baked
                                     pipe._unsloth_loras_baked = True
@@ -10409,6 +10462,40 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
+                    if comfy_compile and _has_active_lora(loras):
+                        # A quantized single file bakes its adapters before the compile; a new adapter set reloads.
+                        baked = self._resolve_lora_set(
+                            [(i, w) for (i, w) in loras if w != 0],
+                            family = getattr(fam, "name", None),
+                            hf_token = hf_token,
+                        )
+                        for name, path, _weight in baked:
+                            lora_files.load_adapter(pipe, path, name, getattr(fam, "name", None))
+                        lora_files.set_adapter_weights(
+                            pipe,
+                            [n for (n, _p, _w) in baked],
+                            [w for (_n, _p, w) in baked],
+                        )
+                        pipe._unsloth_loras = baked
+                        pipe._unsloth_loras_baked = True
+                        setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
+                        # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
+                        quant_merged = (
+                            plan.offload_policy == OFFLOAD_NONE
+                            and lora_quant_merge.merge(
+                                pipe,
+                                _lora_fuse_dits(pipe),
+                                {n: w for (n, _p, w) in baked},
+                                getattr(target, "device", "cuda"),
+                                logger,
+                            )
+                        )
+                        if not quant_merged:
+                            logger.info(
+                                "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
+                                "before the compile",
+                                len(baked),
+                            )
                     quant_forces_compile = (
                         transformer_quant_engaged is not None or comfy_compile
                     ) and (
@@ -10608,6 +10695,8 @@ class DiffusionBackend:
                         backend = "image",
                         audit = load_audit,
                         logger = logger,
+                        explicit_off = speed_mode is not None
+                        and normalize_speed_mode(speed_mode) == SPEED_OFF,
                     )
                     if speed_deferred:
                         from .diffusion_qwenimage21_eager import install_for_pipe as q21_eager
@@ -10687,6 +10776,9 @@ class DiffusionBackend:
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
                         )
+                        if compile_ctx is not None and getattr(target, "device", None) == "cuda":
+                            # The first render compiles inline: warm the workers and keys while the load finishes.
+                            bg_compile.start_deferred_prewarm(logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # A shipped grid was tuned on the shipped scheduler: no ComfyUI shift.
@@ -10899,7 +10991,7 @@ class DiffusionBackend:
                         except Exception:  # noqa: BLE001 - unpriced: the unconditional switch
                             plan_steps = None
                         plan = prefer_whole_module_offload(
-                            pipe, plan, logger = logger, steps = plan_steps
+                            pipe, plan, logger = logger, steps = plan_steps, family = fam.name
                         )
                         streamed_headroom = plan.estimates.get("measured_streamed_headroom_mib")
                         headroom = streamed_headroom or plan.estimates.get(
@@ -11351,6 +11443,8 @@ class DiffusionBackend:
             plan.estimates,
         )
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
+        # after the pins: their pageable sources are freed by now
+        trim_host_heap_after_load(logger)
         return self.status()
 
     @staticmethod
@@ -11682,11 +11776,12 @@ class DiffusionBackend:
             )
             for name, path, _weight in baked:
                 check_cancelled()
-                pipe.load_lora_weights(path, adapter_name = name)
+                lora_files.load_adapter(pipe, path, name, getattr(fam, "name", None))
             check_cancelled()
-            pipe.set_adapters(
+            lora_files.set_adapter_weights(
+                pipe,
                 [n for (n, _p, _w) in baked],
-                adapter_weights = [w for (_n, _p, w) in baked],
+                [w for (_n, _p, w) in baked],
             )
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
@@ -13520,7 +13615,10 @@ class DiffusionBackend:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
-        if quant in ("int8", "fp8", "nvfp4", "mxfp8"):
+        # A quantized single file reports no transformer_quant but bakes its adapters the same way.
+        if quant in ("int8", "fp8", "nvfp4", "mxfp8") or getattr(
+            pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
+        ):
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
             return
 
@@ -13528,7 +13626,7 @@ class DiffusionBackend:
             if current:
                 self._unfuse_loras(state, pipe)
                 try:
-                    pipe.unload_lora_weights()
+                    lora_files.unload_adapters(pipe)
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
@@ -13566,15 +13664,17 @@ class DiffusionBackend:
         weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
             try:
-                pipe.set_adapters(names, adapter_weights = weights)
+                lora_files.set_adapter_weights(pipe, names, weights)
             except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
                 pass
             else:
                 pipe._unsloth_loras = desired
-                # A captured graph bakes the scales in.
-                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-                # Same adapters, new scales: the replica takes the scales; a rebuild only when they do not line up.
-                if not mirror_cfg_replica_adapter_scales(pipe, logger):
+                # A captured graph bakes PEFT's float scales in; LoKR scales are tensors it reads at run time.
+                if not lora_files.kron_only_selection(pipe):
+                    cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                # The scale mirror skips LoKR buffers: LoKR or misaligned layers rebuild the replica.
+                kron = lora_files.kron_names(pipe)
+                if kron or not mirror_cfg_replica_adapter_scales(pipe, logger):
                     invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
         # PEFT targets to_q / to_k / to_v: a fused U-Net that dropped them gets them back first (bit-exact).
@@ -13583,14 +13683,14 @@ class DiffusionBackend:
         file_sigs = _lora_file_sigs(desired)
         try:
             if current:
-                pipe.unload_lora_weights()
+                lora_files.unload_adapters(pipe)
             setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
             for name, path, _weight in desired:
-                pipe.load_lora_weights(path, adapter_name = name)
-            pipe.set_adapters(names, adapter_weights = weights)
+                lora_files.load_adapter(pipe, path, name, getattr(state.family, "name", None))
+            lora_files.set_adapter_weights(pipe, names, weights)
         except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
             try:
-                pipe.unload_lora_weights()
+                lora_files.unload_adapters(pipe)
             except Exception:  # noqa: BLE001
                 pass
             pipe._unsloth_loras = ()
@@ -13658,11 +13758,13 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
                 disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
+                if _remerge_quant_loras(state, pipe, disabled):
+                    return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
                     return
-                pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
+                lora_files.set_adapter_weights(pipe, names, [0.0] * len(names))
                 pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -13691,12 +13793,15 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
+        if _remerge_quant_loras(state, pipe, updated):
+            return
         if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
             pipe._unsloth_loras = updated
             return
-        pipe.set_adapters(
+        lora_files.set_adapter_weights(
+            pipe,
             [n for (n, _p, _w) in updated],
-            adapter_weights = [w for (_n, _p, w) in updated],
+            [w for (_n, _p, w) in updated],
         )
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -13985,6 +14090,29 @@ class DiffusionBackend:
             else "",
         )
 
+    def _inline_float_seeds(self, state: Any) -> Any:
+        """This load's seeder for a compile inside a render until it kept its names, else None. A load with a
+        background compile seeds there; a load not compiled yet (deferred tier) is asked again on the next render."""
+        held = getattr(state, "inline_float_seeds", None)
+        if held is not None:
+            return None if held.done() else held
+        try:
+            if getattr(state, "bg_compile", None) is not None:
+                return None
+            if "compiled" not in tuple(getattr(state, "speed_optims", None) or ()):
+                return None
+            seed_dir = getattr(getattr(state, "compile_cache_ctx", None), "dir", None)
+            if seed_dir is None or not bg_compile.float_seeds_enabled():
+                return None
+            dits = bg_compile.float_seed_dits(state.pipe)
+            if not dits:
+                return None
+            seeds = bg_compile.InlineFloatSeeds(dits, seed_dir, logger = logger)
+            object.__setattr__(state, "inline_float_seeds", seeds)
+            return seeds
+        except Exception:  # noqa: BLE001 - no seeds, main's compile
+            return None
+
     @_release_render_on_unload
     @holds_inference
     @with_hires
@@ -14085,11 +14213,13 @@ class DiffusionBackend:
             kick_bg = False
             bg_eager = False
             bg_token = None
+            float_seeds = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
             aux_pass = bg_compile.auxiliary()
             restore_eager_gate: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
+                apply_cpu_render_threads(state.device)
                 # Local `state` keeps the pipe alive past unload() nulling _state; resolve (prompt, seed) jobs first.
                 jobs, seed = resolve_batch_jobs(
                     prompt = prompt,
@@ -14143,6 +14273,8 @@ class DiffusionBackend:
                 bg_eager = bg is not None and bg.pending()
                 if bg_eager:
                     bg_token = bg_compile._FORCE_EAGER.set(True)
+                # An inline compile (no background compile) skips the float restart a returning load already learned.
+                float_seeds = None if bg_eager or aux_pass else self._inline_float_seeds(state)
                 if aux_pass:
                     # The force-eager signal never reaches a whole-module compiled U-Net on its own.
                     restore_eager_gate = bg_compile.gate_compiled_eager(
@@ -15016,6 +15148,9 @@ class DiffusionBackend:
                         chunk_placement: list = []
 
                         def _enter_denoise_phase(gen = gen) -> None:
+                            if float_seeds is not None:
+                                # Before the first (compiling) denoiser forward.
+                                float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
@@ -15045,6 +15180,9 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU) there is no queue to be ahead of, so flip now."""
+                            if float_seeds is not None:
+                                # Before the VAE decode's compile adds its own names.
+                                float_seeds.keep()
                             # every step ran (deferred returns settled), the pin still holds, no VAE OOM unpin yet
                             chunk_placement.append(
                                 denoiser_offload(state.pipe, state.offload_policy)
@@ -15086,6 +15224,11 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                (
+                                    bg_compile.seed_before_first_forward(float_seeds)
+                                    if float_seeds is not None
+                                    else nullcontext()
+                                ),
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
@@ -15624,7 +15767,10 @@ class DiffusionBackend:
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
         )
-        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
+        # Baked adapters ride inside the compiled build.
+        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(
+            state.pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
+        )
         lora_block = _lora_load_block_reason(state.pipe)
         lora_load_ok = lora_block is None
         lora_reason = lora_block or diffusion_lora.lora_unavailable_reason(

@@ -2097,6 +2097,12 @@ export const ko = {
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+        speedLimit: "다운로드 속도 제한",
+        speedLimitDescription:
+          "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
+        speedLimitNoLimit: "제한 없음",
+        speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",
@@ -2488,6 +2494,10 @@ export const ko = {
         },
         contrast: {
           label: "대비",
+        },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",
@@ -5476,7 +5486,7 @@ export const ko = {
     skippedVersion: "{component} {version}을(를) 이번에는 건너뛰었습니다",
     skippedUpdate: "{component} 업데이트를 이번에는 건너뛰었습니다",
     skippedUpdates: "{components} 업데이트를 이번에는 건너뛰었습니다",
-    vulkanFaster: "Vulkan이 ROCM보다 10% 이상 빠릅니다. 다시 시작할 필요 없음",
+    vulkanFaster: "10% 이상 빠름",
     noRestart: "다시 시작할 필요 없음",
     downloadSize: "{size} 다운로드",
     backendChange: "{change} 백엔드",
@@ -5485,8 +5495,8 @@ export const ko = {
     installingPhase: "{component} 설치 중 ({current}/{total})...",
     installingCount: "업데이트 {count}개 설치 중...",
     bundleTitle: "런타임 업데이트 {count}개",
-    newBackend: "새 {component} 백엔드",
-    newUpdate: "새 {component} 업데이트",
+    newBackend: "새 런타임 백엔드",
+    newUpdate: "새 런타임 업데이트",
     hideUpdate: "Unsloth를 다시 열 때까지 {component} 업데이트 숨기기",
     hideUpdates: "Unsloth를 다시 열 때까지 {components} 업데이트 숨기기",
     whatsNew: "새로운 기능",

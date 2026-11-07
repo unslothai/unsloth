@@ -55,10 +55,13 @@ def test_family_allowlist_and_kill_switch(monkeypatch):
     assert sh.int8_act_family(types.SimpleNamespace(name = "qwen-image"))
     assert sh.int8_act_family(types.SimpleNamespace(name = "Qwen-Image"))
     assert sh.int8_act_family("qwen-image")
-    for other in ("qwen-image-edit", "flux.1", "z-image", "hidream-i1", "qwen-image-2.1", None):
+    assert sh.int8_act_family(types.SimpleNamespace(name = "qwen-image-edit"))
+    assert sh.int8_act_family("Qwen-Image-Edit")
+    for other in ("qwen-image-layered", "flux.1", "z-image", "hidream-i1", "qwen-image-2.1", None):
         assert not sh.int8_act_family(types.SimpleNamespace(name = other))
     monkeypatch.setenv(sh.INT8_ACT_ENV, "0")
     assert not sh.int8_act_family(types.SimpleNamespace(name = "qwen-image"))
+    assert not sh.int8_act_family(types.SimpleNamespace(name = "qwen-image-edit"))
 
 
 def test_quantize_sets_the_flag_only_when_asked():

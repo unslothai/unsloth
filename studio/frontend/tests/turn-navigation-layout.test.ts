@@ -32,3 +32,11 @@ test("turn navigation is on by default and stays off once turned off", async () 
   assert.match(prefs, /showTurnNavigation: true,/);
   assert.match(prefs, /showTurnNavigation: saved\?\.showTurnNavigation !== false,/);
 });
+
+test("Bookmark is offered only once the rail shows, from the rail's own turn minimum", () => {
+  const source = readSrc("components/assistant-ui/turn-navigation.tsx");
+  const item = source.slice(source.indexOf("const BookmarkTurnMenuItemInner"));
+  assert.match(item, /threadTurns\(thread\.messages\)\.openerIds\.length >= MIN_NAVIGATOR_TURNS/);
+  assert.match(item, /if \(!railShown \|\| !turnBookmark\) \{\n\s*return null;/);
+  assert.match(source, /if \(openerIds\.length < MIN_NAVIGATOR_TURNS\) \{\n\s*return null;/);
+});

@@ -100,7 +100,7 @@ export type BrowserTab = {
   chat: string;
 };
 
-type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean };
+type ChatBrowser = { open: boolean; activeTabId: string | null; fullView: boolean; floating: boolean };
 
 /** The chat on screen before the chat page names it (chat-page.tsx `shownChatKey`). */
 export const NEW_CHAT = "new";
@@ -334,7 +334,7 @@ type BrowserState = {
   bookmarkSequence: number;
   device: DeviceMode;
   fullView: boolean;
-  /** The floating window layout, for every chat and kept across closes. */
+  /** The floating window layout of the chat on screen, kept across closes (others keep theirs in `chats`). */
   floating: boolean;
   /** Floated by a close mid-run (close-browser.ts): its own close restores the chosen layout. */
   floatedForAgent: boolean;
@@ -505,7 +505,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         // Another chat's: it shows there next time, without moving this chat's panel.
         const saved = state.chats[chat];
         const activeTabId = background && saved?.activeTabId ? saved.activeTabId : owned.id;
-        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, activeTabId } } };
+        return { tabs, chats: { ...state.chats, [chat]: { open: true, fullView: saved?.fullView ?? false, floating: saved?.floating ?? false, activeTabId } } };
       }
       return {
         open: true,
@@ -534,7 +534,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (chat === state.chat) return;
       const chats = { ...state.chats };
       if (state.tabs.some((tab) => tab.chat === state.chat)) {
-        chats[state.chat] = { open: state.open, activeTabId: state.activeTabId, fullView: state.fullView };
+        chats[state.chat] = {
+          open: state.open,
+          activeTabId: state.activeTabId,
+          fullView: state.fullView,
+          floating: state.floating && !state.floatedForAgent,
+        };
       } else {
         delete chats[state.chat];
       }
@@ -553,6 +558,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         activeTabId: fresh?.id ?? activeTabId,
         open,
         fullView: open && (saved ? saved.fullView : state.fullView),
+        // Each chat floats only once it was floated there; a chat new to the browser opens beside it.
+        floating: saved?.floating ?? false,
+        floatedForAgent: false,
         annotateTabId: null,
         renamingTabId: null,
       });
@@ -576,7 +584,15 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return;
       }
       set((state) => ({
-        chats: { ...state.chats, [chat]: { open: true, fullView: state.chats[chat]?.fullView ?? false, activeTabId: tabId } },
+        chats: {
+          ...state.chats,
+          [chat]: {
+            open: true,
+            fullView: state.chats[chat]?.fullView ?? false,
+            floating: state.chats[chat]?.floating ?? false,
+            activeTabId: tabId,
+          },
+        },
       }));
     },
     openTabIn: (chat, url, options) => {

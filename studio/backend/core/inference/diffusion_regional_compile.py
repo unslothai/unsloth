@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 _VERIFIED_BLOCKS: dict[str, tuple[str, ...]] = {
     "Lumina2Transformer2DModel": ("Lumina2TransformerBlock",),
+    "CosmosTransformer3DModel": ("CosmosTransformerBlock",),
     "HiDreamImageTransformer2DModel": (
         "HiDreamImageTransformerBlock",
         "HiDreamImageSingleTransformerBlock",
