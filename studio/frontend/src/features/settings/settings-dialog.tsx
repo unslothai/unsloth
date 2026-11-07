@@ -45,8 +45,10 @@ import {
   type ComponentType,
   type FC,
   type ReactNode,
+  type RefObject,
   Suspense,
   lazy,
+  memo,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -109,25 +111,67 @@ const TAB_LOADERS = {
     import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
 } satisfies Record<SettingsTab, () => Promise<{ default: FC<SettingsPanelProps> }>>;
 
-function lazyTabs<
-  T extends Record<string, () => Promise<{ default: FC<SettingsPanelProps> }>>,
->(
-  loaders: T,
-): Record<keyof T, ComponentType<SettingsPanelProps>> {
-  const out = {} as Record<keyof T, ComponentType<SettingsPanelProps>>;
-  for (const id of Object.keys(loaders) as (keyof T)[]) {
-    out[id] = lazy(loaders[id]);
+// Components whose module has arrived, so a later first render need not suspend on it, and the
+// requests in flight, shared by the prefetch and the panel's own load.
+const loadedTabs: Partial<Record<SettingsTab, FC<SettingsPanelProps>>> = {};
+const tabRequests: Partial<
+  Record<SettingsTab, Promise<{ default: FC<SettingsPanelProps> }>>
+> = {};
+
+function loadTab(id: SettingsTab): Promise<{ default: FC<SettingsPanelProps> }> {
+  let request = tabRequests[id];
+  if (!request) {
+    request = TAB_LOADERS[id]().then(
+      (m) => {
+        loadedTabs[id] = m.default;
+        return m;
+      },
+      (error: unknown) => {
+        // Not kept: a failed prefetch must not become the panel's own load, which tries afresh.
+        tabRequests[id] = undefined;
+        throw error;
+      },
+    );
+    tabRequests[id] = request;
+  }
+  return request;
+}
+
+// It warms panels nobody asked for yet, so a failed chunk must not surface as a rejection.
+function prefetchTab(id: SettingsTab): boolean {
+  if (loadedTabs[id] || tabRequests[id]) {
+    return false;
+  }
+  loadTab(id).catch(() => undefined);
+  return true;
+}
+
+function lazyTabs(): Record<SettingsTab, ComponentType<SettingsPanelProps>> {
+  const out = {} as Record<SettingsTab, ComponentType<SettingsPanelProps>>;
+  for (const id of Object.keys(TAB_LOADERS) as SettingsTab[]) {
+    out[id] = lazy(() => loadTab(id));
   }
   return out;
 }
 
-const LAZY_TABS = lazyTabs(TAB_LOADERS);
+const LAZY_TABS = lazyTabs();
+// Panels that have committed in this page. A panel's first view is its costly one (first mount,
+// cold code), so an open that would show it paints the dialog first and renders it right after.
+const shownTabs = new Set<SettingsTab>();
+// Past the first paint and the chat's history load.
+const STARTUP_PREFETCH_DELAY_MS = 3000;
+// The rest of the panels load once per page, one per idle slot after an open, so no single task
+// right after the open fetches and evaluates all of them.
+const tabsLeftToPrefetch: SettingsTab[] = Object.keys(TAB_LOADERS) as SettingsTab[];
 
 /** Marks the panel that has committed, from inside Suspense: while a panel is still loading its
  *  fallback replaces this whole subtree, so the marker is absent. A hidden empty element (no box,
  *  no text) rather than an effect on the pane: the pane's ref is not attached yet when a child's
  *  layout effect runs on first open. The long-chat gate's Settings sweep waits on it. */
 function PanelCommitted({ tab, children }: { tab: SettingsTab; children: ReactNode }) {
+  useLayoutEffect(() => {
+    shownTabs.add(tab);
+  }, [tab]);
   return (
     <>
       <span hidden aria-hidden="true" data-settings-panel-ready={tab} />
@@ -305,6 +349,137 @@ function useStackedLayout(): boolean {
   return width > 1000 || narrow;
 }
 
+interface PendingScroll {
+  tab: SettingsTab;
+  entry: string;
+}
+
+interface SettingsPanelPaneProps {
+  activeTab: SettingsTab;
+  isOwner: boolean;
+  pendingScroll: PendingScroll | null;
+  onPendingScrollDone: () => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
+}
+
+/**
+ * The active tab's panel. Mounted with the dialog's content, so an open renders the requested
+ * tab directly: the deferred value only lags behind tab switches made while the dialog is open.
+ * Memoised, so the dialog's own re-renders on open (ref-driven state, measured layout) skip it.
+ */
+const SettingsPanelPane = memo(function SettingsPanelPane({
+  activeTab,
+  isOwner,
+  pendingScroll,
+  onPendingScrollDone,
+  scrollRef,
+}: SettingsPanelPaneProps) {
+  const t = useT();
+  const requestedTab = resolveSettingsTab(activeTab, isOwner);
+  // Deferred so the nav highlight updates before a heavy panel mounts. On mount it is the
+  // requested tab, never the one shown last; null (no panel yet) only for a tab's first view.
+  const deferredTab = useDeferredValue<SettingsTab | null>(
+    requestedTab,
+    shownTabs.has(requestedTab) ? undefined : null,
+  );
+  const panelTab = deferredTab === null ? null : resolveSettingsTab(deferredTab, isOwner);
+  // A module that has already arrived renders directly: lazy() would still suspend once on it.
+  // Picked once per tab while mounted, so the panel's component type never changes under it.
+  const Tab = useMemo(
+    () => (panelTab === null ? null : (loadedTabs[panelTab] ?? LAZY_TABS[panelTab])),
+    [panelTab],
+  );
+
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
+  // Not on mount or for the first panel: the scroller mounts with the dialog, already at the top.
+  const scrolledTabRef = useRef(panelTab);
+  useLayoutEffect(() => {
+    const previous = scrolledTabRef.current;
+    if (previous === panelTab) {
+      return;
+    }
+    scrolledTabRef.current = panelTab;
+    if (previous !== null) {
+      scrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }, [panelTab, scrollRef]);
+
+  // Panels render deferred and load lazily, so observe until the target row exists.
+  useEffect(() => {
+    if (!pendingScroll) {
+      return;
+    }
+    // Wait for the destination tab, or a same-named row in the previous tab could match.
+    if (panelTab !== pendingScroll.tab) {
+      return;
+    }
+    const root = scrollRef.current;
+    if (!root) {
+      return;
+    }
+    const attempt = (): boolean => {
+      const target = [
+        ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
+      ].find((el) => el.dataset.settingsLabel === pendingScroll.entry);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("settings-search-hit");
+        window.setTimeout(
+          () => target.classList.remove("settings-search-hit"),
+          1600,
+        );
+        onPendingScrollDone();
+        return true;
+      }
+      return false;
+    };
+    const observer = new MutationObserver(() => {
+      if (attempt()) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    const frame = window.requestAnimationFrame(() => {
+      if (attempt()) {
+        observer.disconnect();
+      }
+    });
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [pendingScroll, panelTab, scrollRef, onPendingScrollDone]);
+
+  if (panelTab === null || Tab === null) {
+    return null;
+  }
+  return (
+    // Only a panel's first view waits, so the fallback is delayed and a
+    // promptly arriving panel never flashes it.
+    <SettingsPanelBoundary
+      tab={panelTab}
+      message={t("settings.dialog.panelFailed")}
+      reloadLabel={t("settings.dialog.panelReload")}
+    >
+      <Suspense
+        fallback={
+          <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+            {t("common.loading")}
+          </div>
+        }
+      >
+        <PanelCommitted tab={panelTab}>
+          <Tab
+            searchEntry={
+              pendingScroll?.tab === panelTab ? pendingScroll.entry : undefined
+            }
+          />
+        </PanelCommitted>
+      </Suspense>
+    </SettingsPanelBoundary>
+  );
+});
+
 export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
@@ -319,13 +494,14 @@ export function SettingsDialog() {
       if (!node) {
         return;
       }
+      // Only from the observer, which also fires once on observe: there layout is already done,
+      // where a read here, mid-commit, forces it. Unset reads as 0px, the CSS fallback.
       const sync = () => {
         const width = `${node.offsetWidth - node.clientWidth}px`;
-        if (node.style.getPropertyValue("--rail-scrollbar") !== width) {
+        if ((node.style.getPropertyValue("--rail-scrollbar") || "0px") !== width) {
           node.style.setProperty("--rail-scrollbar", width);
         }
       };
-      sync();
       const observer = new ResizeObserver(sync);
       observer.observe(node);
       return () => {
@@ -344,22 +520,43 @@ export function SettingsDialog() {
   const opener = useSettingsDialogStore((s) => s.opener);
   const openerFallback = useSettingsDialogStore((s) => s.openerFallback);
   const reduced = useReducedMotion();
-  // Deferred so the nav highlight updates before a heavy panel mounts.
-  const deferredTab = useDeferredValue(activeTab);
-  const panelTab = resolveSettingsTab(deferredTab, isOwner);
-  const Tab = LAZY_TABS[panelTab];
   const [query, setQuery] = useState("");
+
+  // After startup, on idle: the tab Settings opens on and the shortcuts list (Mod+/), so a first
+  // open renders its panel in the same pass rather than behind a chunk fetch.
+  useEffect(() => {
+    let cancelIdle: (() => void) | undefined;
+    const timer = window.setTimeout(() => {
+      cancelIdle = scheduleIdleTask(() => {
+        prefetchTab(resolveSettingsTab(useSettingsDialogStore.getState().activeTab, isOwner));
+        prefetchTab("keyboard-shortcuts");
+      }, 2000);
+    }, STARTUP_PREFETCH_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      cancelIdle?.();
+    };
+  }, [isOwner]);
 
   // Prefetch other panels on idle once opened; nothing runs while closed.
   useEffect(() => {
-    if (!open) {
+    if (!open || tabsLeftToPrefetch.length === 0) {
       return;
     }
-    return scheduleIdleTask(() => {
-      for (const load of Object.values(TAB_LOADERS)) {
-        void load().catch(() => undefined);
+    let cancel: (() => void) | undefined;
+    const next = () => {
+      // Panels already loaded or loading cost no slot.
+      for (let id = tabsLeftToPrefetch.shift(); id; id = tabsLeftToPrefetch.shift()) {
+        if (prefetchTab(id)) {
+          break;
+        }
       }
-    });
+      if (tabsLeftToPrefetch.length > 0) {
+        cancel = scheduleIdleTask(next);
+      }
+    };
+    cancel = scheduleIdleTask(next);
+    return () => cancel?.();
   }, [open]);
 
   const results = useMemo(() => {
@@ -394,69 +591,15 @@ export function SettingsDialog() {
     }).filter((r) => r.tabMatches || r.entries.length > 0);
   }, [query, t, visibleTabs, hubSource, isOwner, canUpgradeToFullInstall]);
 
-  const [pendingScroll, setPendingScroll] = useState<{
-    tab: SettingsTab;
-    entry: string;
-  } | null>(null);
+  const [pendingScroll, setPendingScroll] = useState<PendingScroll | null>(null);
+  const clearPendingScroll = useCallback(() => setPendingScroll(null), []);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
-
-  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
-  useLayoutEffect(() => {
-    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
-  }, [panelTab]);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
     setQuery("");
     setPendingScroll(entry ? { tab, entry } : null);
   };
-
-  // Panels render deferred and load lazily, so observe until the target row exists.
-  useEffect(() => {
-    if (!pendingScroll) {
-      return;
-    }
-    // Wait for the destination tab, or a same-named row in the previous tab could match.
-    if (panelTab !== pendingScroll.tab) {
-      return;
-    }
-    const root = mainScrollRef.current;
-    if (!root) {
-      return;
-    }
-    const attempt = (): boolean => {
-      const target = [
-        ...root.querySelectorAll<HTMLElement>("[data-settings-label]"),
-      ].find((el) => el.dataset.settingsLabel === pendingScroll.entry);
-      if (target) {
-        target.scrollIntoView({ behavior: "smooth", block: "center" });
-        target.classList.add("settings-search-hit");
-        window.setTimeout(
-          () => target.classList.remove("settings-search-hit"),
-          1600,
-        );
-        setPendingScroll(null);
-        return true;
-      }
-      return false;
-    };
-    const observer = new MutationObserver(() => {
-      if (attempt()) {
-        observer.disconnect();
-      }
-    });
-    observer.observe(root, { childList: true, subtree: true });
-    const frame = window.requestAnimationFrame(() => {
-      if (attempt()) {
-        observer.disconnect();
-      }
-    });
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(frame);
-    };
-  }, [pendingScroll, panelTab]);
 
   useEffect(() => {
     if (open) {
@@ -489,18 +632,32 @@ export function SettingsDialog() {
     about: null,
   });
 
+  const focusTabButton = useCallback((tab: SettingsTab): boolean => {
+    const button = tabButtonRefs.current[tab];
+    if (!button) {
+      return false;
+    }
+    button.focus({ preventScroll: true });
+    if (document.activeElement !== button) {
+      return false;
+    }
+    // "nearest" moves only the list, never the panel beside it.
+    button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return true;
+  }, []);
+
+  // Tab changes while open (a search result, a deep link): focus follows the active tab.
   useEffect(() => {
     if (!open) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
-      const button = tabButtonRefs.current[activeTab];
-      button?.focus({ preventScroll: true });
-      // "nearest" moves only the list, never the panel beside it.
-      button?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      if (document.activeElement !== tabButtonRefs.current[activeTab]) {
+        focusTabButton(activeTab);
+      }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [open, activeTab]);
+  }, [open, activeTab, focusTabButton]);
 
   return (
     <>
@@ -508,6 +665,13 @@ export function SettingsDialog() {
         <DialogContent
           data-settings-dialog
           showCloseButton={false}
+          // Straight to the active tab: Radix's default focuses the search box first, and each
+          // focus move restyles the page in WebKit (one move instead of two on every open).
+          onOpenAutoFocus={(e) => {
+            if (focusTabButton(activeTab)) {
+              e.preventDefault();
+            }
+          }}
           overlayClassName="bg-black/40"
           overlayTone="strong"
           onCloseAutoFocus={(e) => {
@@ -718,31 +882,13 @@ export function SettingsDialog() {
                   ref={mainScrollRef}
                   className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
                 >
-                  {/* Only a panel's first view waits, so the fallback is delayed and a
-                      promptly arriving panel never flashes it. */}
-                  <SettingsPanelBoundary
-                    tab={panelTab}
-                    message={t("settings.dialog.panelFailed")}
-                    reloadLabel={t("settings.dialog.panelReload")}
-                  >
-                    <Suspense
-                      fallback={
-                        <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
-                          {t("common.loading")}
-                        </div>
-                      }
-                    >
-                      <PanelCommitted tab={panelTab}>
-                        <Tab
-                          searchEntry={
-                            pendingScroll?.tab === panelTab
-                              ? pendingScroll.entry
-                              : undefined
-                          }
-                        />
-                      </PanelCommitted>
-                    </Suspense>
-                  </SettingsPanelBoundary>
+                  <SettingsPanelPane
+                    activeTab={activeTab}
+                    isOwner={isOwner}
+                    pendingScroll={pendingScroll}
+                    onPendingScrollDone={clearPendingScroll}
+                    scrollRef={mainScrollRef}
+                  />
                 </div>
               </DropdownGlowContext.Provider>
             </main>
