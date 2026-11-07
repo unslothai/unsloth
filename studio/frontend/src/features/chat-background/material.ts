@@ -5,6 +5,7 @@
 import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
 // eslint-disable-next-line no-restricted-imports
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
@@ -170,6 +171,20 @@ export function useGlassStrength(): number {
 
 let nativeApplied = false;
 
+// WebKit repaints a glass surface's blurred shadows and backdrop whenever anything inside it
+// changes, and on CPU painting that dominates scrolling and typing. Its children get their own
+// layers there (index.css, data-glass-layers); Chromium composites these already.
+const WEBKIT_LAYERS =
+  typeof navigator !== "undefined" &&
+  /AppleWebKit/.test(navigator.userAgent) &&
+  !/Chrom|Edg|Android/i.test(navigator.userAgent);
+// WebKitGTK (the Linux app) also runs every backdrop-filter again on each composite, on the CPU, so
+// there glass drops its live blur except the sidebar's (index.css, data-glass-cpu). macOS WebKit
+// composites backdrops on the GPU and keeps real frosted glass.
+const WEBKIT_GTK =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
+
 export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
@@ -217,6 +232,19 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
     );
   }, [menus, material, here]);
   useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-layers",
+      WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-cpu",
+      WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    const root = document.documentElement;
     const wantsNative = material === "macos" && nativeMaterialAvailable();
     let cancelled = false;
     if (!wantsNative) {

@@ -17,6 +17,10 @@ from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 
 Q8_0 = gguf.GGMLQuantizationType.Q8_0
 Q4_K = gguf.GGMLQuantizationType.Q4_K
+needs_fused = pytest.mark.skipif(
+    not gc._torch_supports_fused_q8_0(torch.__version__),
+    reason = "fused Q8_0 needs torch >= 2.7",
+)
 
 
 @pytest.fixture(autouse = True)
@@ -76,6 +80,7 @@ def _bits(t):
 )
 @pytest.mark.parametrize("adversarial", [False, True], ids = ["gguf_quantized", "random_bytes"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+@needs_fused
 def test_fused_q8_0_is_bit_identical_eager_and_compiled(adversarial, dtype, emulate):
     # Studio sets emulate_precision_casts on some renders, so the fused kernel must be exact with and without it.
     raw = _q8_0_bytes(96, 256, adversarial = adversarial)
@@ -103,6 +108,7 @@ def _linear(
     return lin
 
 
+@needs_fused
 def test_naive_fusion_would_not_be_bit_identical():
     """Guards the int16 bitcast in _q8_0_dequant_cast: without it inductor skips the fp16 rounding."""
 
@@ -116,6 +122,7 @@ def test_naive_fusion_would_not_be_bit_identical():
     assert not torch.equal(_bits(got), _bits(_stock_dense(raw, torch.bfloat16)))
 
 
+@needs_fused
 def test_patched_q8_0_linear_skips_the_unfused_dequant_and_matches_stock(monkeypatch):
     raw = _q8_0_bytes(64, 128, seed = 3)
     lin = _linear(raw, Q8_0, 64, 128)
@@ -155,6 +162,7 @@ def test_other_quant_types_take_the_stock_forward(monkeypatch):
     assert torch.equal(_bits(got), _bits(expected))
 
 
+@needs_fused
 def test_fused_q8_0_has_no_graph_breaks_and_one_dynamic_graph():
     raw = _q8_0_bytes(32, 128)
     explain = torch._dynamo.explain(gc._q8_0_blocks_dequant_cast)(raw, torch.bfloat16)
@@ -171,6 +179,7 @@ def test_fused_q8_0_has_no_graph_breaks_and_one_dynamic_graph():
     assert counter.frame_count == 1  # new layer shapes reuse the graph: no recompiles
 
 
+@needs_fused
 def test_fused_q8_0_uninstall_and_kill_switch(monkeypatch):
     stock = gguf_utils.GGUFLinear.forward_native
     assert gc.install_compiled_dequant() is True
@@ -180,6 +189,32 @@ def test_fused_q8_0_uninstall_and_kill_switch(monkeypatch):
     assert gc.is_fused_q8_0_installed() is False
 
     monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_FUSED_Q8_0", "0")
+    assert gc.install_compiled_dequant() is True
+    assert gc.is_fused_q8_0_installed() is False
+    assert gguf_utils.GGUFLinear.forward_native is stock
+
+
+@pytest.mark.parametrize(
+    "version, ok",
+    [
+        ("2.4.1+cu121", False),
+        ("2.6.0+cu124", False),
+        ("2.6.0+rocm6.2.4", False),
+        ("2.7.1+cu126", True),
+        ("2.11.0+rocm7.14.0", True),
+        ("2.15.0.dev20261101+cu132", True),
+        ("10.0.0", True),
+        ("", False),
+        ("unknown", False),
+    ],
+)
+def test_fused_q8_0_torch_floor(version, ok):
+    assert gc._torch_supports_fused_q8_0(version) is ok
+
+
+def test_torch_below_the_floor_keeps_the_stock_forward(monkeypatch):
+    stock = gguf_utils.GGUFLinear.forward_native
+    monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
     assert gc.install_compiled_dequant() is True
     assert gc.is_fused_q8_0_installed() is False
     assert gguf_utils.GGUFLinear.forward_native is stock

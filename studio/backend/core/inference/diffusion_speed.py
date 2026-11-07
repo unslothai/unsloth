@@ -1202,6 +1202,7 @@ def _compile_repeated_blocks(
     try:
         from . import diffusion_aot_cache
         diffusion_aot_cache.install(logger)
+        diffusion_aot_cache.pin_autotune_key(logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
@@ -2058,6 +2059,13 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             logger.info(
                 "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
             )
+        return False
+    from . import diffusion_lora_quant_merge as lora_quant_merge
+
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
+    if lora_quant_merge.merged(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
         return False
     # Prefer pipe-level fuse (covers every component); else fuse each DiT so dual-DiT families fuse both.
     fn = getattr(pipe, "fuse_qkv_projections", None)

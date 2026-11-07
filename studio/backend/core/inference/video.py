@@ -173,6 +173,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
 from .media_decode_phase import denoise_phase as _denoise_phase
+from . import diffusion_bg_compile
 from . import diffusion_render_thread as render_thread
 from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
@@ -1260,38 +1261,42 @@ def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
         bg.abandon("an image-to-video render records no compile sample")
 
 
-def _float_seed_dits(pipe: Any) -> list:
-    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
+# Shared with the image backend's first compiled render.
+_float_seed_dits = diffusion_bg_compile.float_seed_dits
+_COMPILE_PREWARM_LOCK = threading.Lock()
+_COMPILE_PREWARM_STARTED = False
+
+
+def _start_compile_prewarm(logger: Any = None) -> bool:
+    """Once per process, on a side thread: inductor's compile workers, Triton's and inductor's keys (1.5 s of Triton
+    install hashing landed in a returning LTX-2.5 first clip on an L4). Never raises; False when already started."""
+    global _COMPILE_PREWARM_STARTED
+    if not diffusion_bg_compile.prewarm_enabled():
+        return False
+    with _COMPILE_PREWARM_LOCK:
+        if _COMPILE_PREWARM_STARTED:
+            return False
+        _COMPILE_PREWARM_STARTED = True
+
+    def run() -> None:
+        for warm in (
+            diffusion_bg_compile.warm_compile_pool,
+            diffusion_bg_compile.warm_triton_key,
+            diffusion_bg_compile.warm_inductor_key,
+        ):
+            try:
+                warm(logger)
+            except Exception:  # noqa: BLE001 - the first compile does it inline as before
+                pass
+
     try:
-        from .diffusion_speed import _guarded_dits
-
-        dits = []
-        for dit in _guarded_dits(pipe):
-            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
-            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
-                dits.append(dit)
-        return dits
-    except Exception:  # noqa: BLE001 - no seeds, main's compile
-        return []
+        threading.Thread(target = run, name = "unsloth-video-compile-prewarm", daemon = True).start()
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
-@contextlib.contextmanager
-def _seed_before_first_forward(float_seeds: Any):
-    """Also seed at the first DiT forward: H3 modular's progress bar is its loop wrapper's, not the pipe's."""
-    handles = []
-
-    def _pre(*_args: Any) -> None:
-        float_seeds.seed()
-
-    try:
-        for module in list(getattr(float_seeds, "modules", None) or ()):
-            with contextlib.suppress(Exception):
-                handles.append(module.register_forward_pre_hook(_pre))
-        yield
-    finally:
-        for handle in handles:
-            with contextlib.suppress(Exception):
-                handle.remove()
+_seed_before_first_forward = diffusion_bg_compile.seed_before_first_forward
 
 
 def _video_float_seed_dir(
@@ -10545,6 +10550,9 @@ class VideoBackend:
                     speed_optims += ("hv15_vae_vector_mask",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
+        if "compiled" in speed_optims and getattr(target, "device", None) == "cuda":
+            # The first clip compiles inline: start the workers and hash the keys while the load finishes.
+            _start_compile_prewarm(logger)
         with self._generate_lock:
             # A cancelled load must not place weights on a GPU the arbiter may have reassigned.
             if _load_token is not None and _load_token != self._load_token:
