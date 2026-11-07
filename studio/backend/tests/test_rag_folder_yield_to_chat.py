@@ -130,3 +130,30 @@ def test_non_folder_work_never_waits():
             target = lambda: (folder_sync.wait_while_chat_busy(), done.set()), daemon = True
         ).start()
         assert done.wait(timeout = 2)
+
+
+def test_retirement_during_the_wait_stops_the_document(monkeypatch):
+    import sqlite3
+
+    from core.rag import job_leases
+
+    retired = threading.Event()
+    monkeypatch.setattr(ingestion, "account_is_retired", retired.is_set)
+    errors: list = []
+
+    def document():
+        folder_sync._worker_state.folder_id = "folder-1"
+        try:
+            ingestion._progress(sqlite3.connect(":memory:"), "job-1", "embedding", 0.7)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    with active_generations.ActiveGeneration(threading.Event(), kind = "chat"):
+        thread = threading.Thread(target = document, daemon = True)
+        thread.start()
+        thread.join(timeout = 1.5)
+        assert thread.is_alive()
+        retired.set()
+    thread.join(timeout = 10)
+
+    assert len(errors) == 1 and isinstance(errors[0], job_leases.JobLeaseLost), errors
