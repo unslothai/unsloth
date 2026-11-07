@@ -3419,20 +3419,146 @@ def _discard_resident_quant_write(owner: Any, token: Any = None) -> None:
         pass
 
 
-def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
+def _take_resident_quant_write(owner: Any, token: Any) -> Any:
+    """This load's pending resident write, now owned by the caller (None if another load replaced it)."""
     slot = getattr(owner, "_resident_quant_write", None)
     if slot is None or slot[0] != token:
-        return
+        return None
     owner._resident_quant_write = None
+    return slot[1]
+
+
+def _start_resident_quant_write(owner: Any, pipe: Any, token: Any) -> None:
+    _start_taken_resident_write(pipe, _take_resident_quant_write(owner, token))
+
+
+def _start_taken_resident_write(pipe: Any, write: Any) -> None:
+    if write is None:
+        return
     try:
-        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, slot[1])
-        slot[1].start()
+        setattr(pipe, _RESIDENT_QUANT_WRITE_ATTR, write)
+        write.start()
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         logger.warning("diffusion.prequant_cache: resident background write skipped (%s)", exc)
         try:
-            slot[1].discard()
+            write.discard()
         except Exception:  # noqa: BLE001
             pass
+
+
+# "0": a first load's cache writes start as soon as it is published, beside its first render.
+VIDEO_CACHE_WRITES_AFTER_RENDER_ENV = "UNSLOTH_VIDEO_CACHE_WRITES_AFTER_RENDER"
+# Seconds a load with no render may sit before its held writes start anyway.
+VIDEO_CACHE_WRITE_IDLE_ENV = "UNSLOTH_VIDEO_CACHE_WRITE_IDLE_S"
+_VIDEO_CACHE_WRITE_IDLE_DEFAULT_S = 120.0
+_HELD_CACHE_WRITES_ATTR = "_unsloth_held_cache_writes"
+
+
+def _cache_writes_after_render() -> bool:
+    raw = (os.environ.get(VIDEO_CACHE_WRITES_AFTER_RENDER_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _cache_write_idle_s() -> float:
+    raw = (os.environ.get(VIDEO_CACHE_WRITE_IDLE_ENV) or "").strip()
+    try:
+        value = float(raw) if raw else _VIDEO_CACHE_WRITE_IDLE_DEFAULT_S
+    except ValueError:
+        value = _VIDEO_CACHE_WRITE_IDLE_DEFAULT_S
+    return max(0.0, value)
+
+
+def _start_cache_writes(
+    pipe: Any, cast_writes: Any, native_writes: Any, resident_write: Any
+) -> None:
+    if cast_writes is not None:
+        pipe._unsloth_cast_writes = cast_writes
+        cast_writes.start()
+    if native_writes is not None:
+        setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
+        native_writes.start()
+    _start_taken_resident_write(pipe, resident_write)
+
+
+class _HeldCacheWrites:
+    """A first load's cache writes, held until its first render ends or ``idle_s`` idle: beside that render they
+    contend with its compile and denoise for CPU, disk and host RAM."""
+
+    def __init__(self, pipe: Any, writes: tuple, busy: Callable[[], bool], idle_s: float):
+        import weakref
+
+        self._pipe = weakref.ref(pipe)
+        self._writes: Optional[tuple] = writes
+        self._busy = busy
+        self._lock = threading.Lock()
+        self._timer: Optional[threading.Timer] = None
+        if idle_s > 0:
+            self._timer = threading.Timer(idle_s, self._on_idle)
+            self._timer.daemon = True
+            self._timer.name = "video-cache-write-idle"
+
+    def arm(self) -> None:
+        if self._timer is not None:
+            self._timer.start()
+
+    def _take(self) -> Optional[tuple]:
+        # Caller holds self._lock.
+        writes, self._writes = self._writes, None
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+        return writes
+
+    def _on_idle(self) -> None:
+        # A render in flight releases them when it ends.
+        try:
+            if self._busy():
+                return
+        except Exception:  # noqa: BLE001 - unreadable: start them
+            pass
+        self.release("the backend sat idle after the load")
+
+    def release(self, why: str) -> None:
+        # Started and registered on the pipe under the lock: a concurrent discard either cancels them first or runs
+        # after, so the teardown's finish calls see every started writer.
+        with self._lock:
+            writes = self._take()
+            pipe = self._pipe()
+            if writes is None or pipe is None:
+                return
+            logger.info("diffusion.prequant_cache: first-load cache writes start now (%s)", why)
+            try:
+                _start_cache_writes(pipe, *writes)
+            except Exception as exc:  # noqa: BLE001 - a cache write never fails a render
+                logger.warning("diffusion.prequant_cache: held cache writes skipped (%s)", exc)
+
+    def discard(self) -> None:
+        with self._lock:
+            writes = self._take()
+        for write in writes or ():
+            if write is None:
+                continue
+            try:
+                write.discard() if hasattr(write, "discard") else write.finish(0.0)
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
+
+
+def _release_held_cache_writes(pipe: Any, why: str) -> None:
+    held = getattr(pipe, _HELD_CACHE_WRITES_ATTR, None) if pipe is not None else None
+    if held is not None:
+        held.release(why)
+
+
+def _discard_held_cache_writes(pipe: Any) -> None:
+    held = getattr(pipe, _HELD_CACHE_WRITES_ATTR, None) if pipe is not None else None
+    if held is None:
+        return
+    try:
+        setattr(pipe, _HELD_CACHE_WRITES_ATTR, None)
+    except Exception:  # noqa: BLE001
+        pass
+    held.discard()
 
 
 def _finish_resident_quant_write(pipe: Any) -> None:
@@ -10964,13 +11090,18 @@ class VideoBackend:
         if fam.is_moe:
             defer_late_expert_pins(pipe, (getattr(pipe, "transformer_2", None),), logger)
         start_background_pins(pipe)
-        if cast_writes is not None:
-            pipe._unsloth_cast_writes = cast_writes
-            cast_writes.start()
-        if native_writes is not None:
-            setattr(pipe, _NATIVE_WRITES_ATTR, native_writes)
-            native_writes.start()
-        _start_resident_quant_write(self, pipe, _load_token)
+        held = (cast_writes, native_writes, _take_resident_quant_write(self, _load_token))
+        if any(w is not None for w in held) and _cache_writes_after_render():
+            holder = _HeldCacheWrites(
+                pipe, held, busy = self._generate_lock.locked, idle_s = _cache_write_idle_s()
+            )
+            setattr(pipe, _HELD_CACHE_WRITES_ATTR, holder)
+            holder.arm()
+            logger.info(
+                "diffusion.prequant_cache: this first load's cache writes wait for its first render"
+            )
+        else:
+            _start_cache_writes(pipe, *held)
         return self.status()
 
     @staticmethod
@@ -13581,6 +13712,7 @@ class VideoBackend:
                 # The pinned clip and stream chunks (~3x the clip) otherwise stay in torch's host cache until unload.
                 output = video_frames = None
                 release_pinned_host_memory()
+                _release_held_cache_writes(getattr(state, "pipe", None), "the first render ended")
 
     @staticmethod
     def _resolve_keyframes(
@@ -14363,7 +14495,8 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
-            # A cast cache write still reads the components the teardown frees.
+            # Cast writes still read the components the teardown frees.
+            _discard_held_cache_writes(getattr(state, "pipe", None))
             _finish_cast_writes(getattr(state, "pipe", None))
             _finish_native_writes(getattr(state, "pipe", None))
             _finish_resident_quant_write(getattr(state, "pipe", None))
