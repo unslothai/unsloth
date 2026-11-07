@@ -301,6 +301,48 @@ class VideoGenerationPresetParams(BaseModel):
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
 
 
+class TrainingPresetParams(BaseModel):
+    """Image LoRA training form. Numbers carry no bounds: the form autosaves mid-edit, and
+    DiffusionTrainingStartRequest validates them on Start."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    familyName: str = Field(default = "", max_length = 80)
+    baseChoice: str = Field(default = "", max_length = 1024)
+    customBase: str = Field(default = "", max_length = 4096)
+    durationUnit: Literal["steps", "epochs"] = "steps"
+    steps: float = Field(default = 500, allow_inf_nan = False)
+    epochs: float = Field(default = 10, allow_inf_nan = False)
+    learningRate: float = Field(default = 0.0001, allow_inf_nan = False)
+    rank: float = Field(default = 16, allow_inf_nan = False)
+    resolution: float = Field(default = 768, allow_inf_nan = False)
+    batchSize: float = Field(default = 1, allow_inf_nan = False)
+    gradAccum: float = Field(default = 1, allow_inf_nan = False)
+    seed: float = Field(default = 42, allow_inf_nan = False)
+    saveSteps: float = Field(default = 0, allow_inf_nan = False)
+    sampleEvery: float = Field(default = 0, allow_inf_nan = False)
+    saveTotalLimit: float = Field(default = 2, allow_inf_nan = False)
+    lrScheduler: Literal[
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "constant",
+        "constant_with_warmup",
+    ] = "constant"
+    lrWarmupSteps: float = Field(default = 0, allow_inf_nan = False)
+    gradCheckpoint: bool = True
+    bucketing: bool = True
+    randomFlip: bool = False
+    cfgDropout: float = Field(default = 0, allow_inf_nan = False)
+    loraDropout: float = Field(default = 0, allow_inf_nan = False)
+    flowShiftMode: Literal["default", "custom"] = "default"
+    flowShift: float = Field(default = 3, allow_inf_nan = False)
+    precision: Literal["bf16", "fp16", "no"] = "bf16"
+    basePrecision: Literal["nf4", "bf16", "int8", "fp8", "mxfp8", "auto"] = "auto"
+    compileTransformer: Literal["off", "on", "auto"] = "auto"
+
+
 class MediaGenerationPreset(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -321,6 +363,10 @@ class ImageGenerationPreset(MediaGenerationPreset):
 
 class VideoGenerationPreset(MediaGenerationPreset):
     params: VideoGenerationPresetParams
+
+
+class TrainingPreset(MediaGenerationPreset):
+    params: TrainingPresetParams
 
 
 class MediaGenerationPresetState(BaseModel):
@@ -344,6 +390,10 @@ class VideoGenerationPresetState(MediaGenerationPresetState):
     currentParams: VideoGenerationPresetParams = Field(default_factory = VideoGenerationPresetParams)
 
 
+class TrainingPresetState(MediaGenerationPresetState):
+    currentParams: TrainingPresetParams = Field(default_factory = TrainingPresetParams)
+
+
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
     # No cap on read: upsert_media_generation_preset owns the limit; a cap here would 500 the GET.
     customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
@@ -352,6 +402,11 @@ class ImageGenerationPresetSettings(ImageGenerationPresetState):
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
     customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
+    saved: bool = False
+
+
+class TrainingPresetSettings(TrainingPresetState):
+    customPresets: list[TrainingPreset] = Field(default_factory = list)
     saved: bool = False
 
 
@@ -542,8 +597,33 @@ def update_video_generation_preset_settings(
     return {"saved": True}
 
 
+@_account_settings_router.get(
+    "/generation-presets/training",
+    response_model = TrainingPresetSettings,
+)
+def get_training_preset_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> TrainingPresetSettings:
+    return _get_generation_preset_settings("training", TrainingPresetSettings)
+
+
+@_account_settings_router.put("/generation-presets/training")
+def update_training_preset_settings(
+    payload: TrainingPresetState, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    set_media_generation_preset_settings(
+        "training",
+        payload.model_dump(),
+        lambda stored, submitted: _preserve_recovered_defaults(
+            TrainingPresetState, stored, submitted
+        ),
+    )
+    return {"saved": True}
+
+
 def _upsert_custom_generation_preset(
-    kind: Literal["image", "video"], payload: ImageGenerationPreset | VideoGenerationPreset
+    kind: Literal["image", "video", "training"],
+    payload: ImageGenerationPreset | VideoGenerationPreset | TrainingPreset,
 ) -> dict[str, bool]:
     try:
         schema = type(payload)
@@ -571,9 +651,16 @@ def upsert_custom_video_generation_preset(
     return _upsert_custom_generation_preset("video", payload)
 
 
+@_account_settings_router.put("/generation-presets/training/custom")
+def upsert_custom_training_preset(
+    payload: TrainingPreset, current_subject: str = Depends(get_current_subject)
+) -> dict[str, bool]:
+    return _upsert_custom_generation_preset("training", payload)
+
+
 @_account_settings_router.delete("/generation-presets/{kind}/custom")
 def delete_custom_generation_preset(
-    kind: Literal["image", "video"],
+    kind: Literal["image", "video", "training"],
     name: str,
     current_subject: str = Depends(get_current_subject),
 ) -> dict[str, bool]:
