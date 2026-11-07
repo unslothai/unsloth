@@ -458,15 +458,20 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
 @pytest.mark.parametrize(
     "system, expected",
     [
-        ("Linux", "| UNSLOTH_STUDIO_HOME=/srv/studios/a sh"),
-        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '/srv/studios/a'; irm"),
+        ("Linux", "| UNSLOTH_STUDIO_HOME={quoted} sh"),
+        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '{root}'; irm"),
     ],
 )
 def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys, system, expected):
     import platform as _platform
+    import shlex
+
     import typer
 
     studio = _studio()
+    # The root as this host spells it: a Windows runner prints `\srv\studios\a` for either target shell.
+    root = str(Path("/srv/studios/a"))
+    expected = expected.format(root = root, quoted = shlex.quote(root))
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
