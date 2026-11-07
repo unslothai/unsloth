@@ -29,7 +29,6 @@ import {
   installClaudeAgentSdk,
 } from "./api/providers-api";
 import {
-  CLAUDE_CODE_NPM_INSTALL,
   CLAUDE_CODE_SETUP_URL,
   CLAUDE_CODE_SIGN_IN,
   type ClaudeAgentChecklistItem,
@@ -37,6 +36,7 @@ import {
   claudeAgentChecklist,
   claudeAgentInitialSelection,
   claudeAgentInstallCommand,
+  claudeAgentNpmInstall,
   claudeAgentModelGroups,
   claudeAgentModelOptions,
   claudeAgentModelsToSave,
@@ -217,6 +217,7 @@ export function ClaudeAgentSetup({
   );
   const groups = claudeAgentModelGroups(options);
   const checklist = claudeAgentChecklist(step);
+  const npmInstall = claudeAgentNpmInstall(status?.host_os);
   const modelsToSave = claudeAgentModelsToSave(options, selected, extraModels);
 
   function applyStatus(next: ClaudeAgentStatus) {
@@ -444,10 +445,14 @@ export function ClaudeAgentSetup({
                 <CommandLine
                   command={claudeAgentInstallCommand(status?.host_os)}
                 />
-                <span className="text-xs text-muted-foreground">
-                  {t("claudeAgent.stepInstallNpm")}
-                </span>
-                <CommandLine command={CLAUDE_CODE_NPM_INSTALL} />
+                {npmInstall ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {t("claudeAgent.stepInstallNpm")}
+                    </span>
+                    <CommandLine command={npmInstall} />
+                  </>
+                ) : null}
                 <a
                   href={CLAUDE_CODE_SETUP_URL}
                   target="_blank"

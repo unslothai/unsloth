@@ -182,6 +182,13 @@ export function claudeAgentInstallCommand(
   ];
 }
 
+/** null on Windows: npm installs a claude.cmd shim, which the Agent SDK refuses to run. */
+export function claudeAgentNpmInstall(
+  hostOs: ClaudeAgentStatus["host_os"],
+): string | null {
+  return hostOs === "windows" ? null : CLAUDE_CODE_NPM_INSTALL;
+}
+
 export function claudeAgentStatusLine(status: ClaudeAgentStatus): string {
   return [
     status.account,
