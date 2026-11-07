@@ -31,7 +31,7 @@ from huggingface_hub import HfApi, ModelCard
 from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
-from utils.models import is_vision_model, audio_vlm_vision_checked, get_base_model_from_lora
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import (
     detect_audio_type,
@@ -1076,12 +1076,12 @@ class ExportBackend:
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
                 # Only a definitive no (not an unreadable config) takes the multimodal load below.
-                audio_vlm_without_vision = False
+                audio_vlm_multimodal = False
                 if self._audio_type == "audio_vlm" and not self.is_vision:
-                    vision_now, vision_known = audio_vlm_vision_checked(
+                    takes, known = audio_vlm_multimodal_lm_checked(
                         model_id, hf_token = probe_token, local_files_only = local_files_only
                     )
-                    audio_vlm_without_vision = vision_known and not vision_now
+                    audio_vlm_multimodal = known and takes
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
 
                 self.diffusion_lm_profile = (
@@ -1185,7 +1185,7 @@ class ExportBackend:
                     **_offload_kw,
                 )
 
-            elif self._audio_type == "audio_vlm" and audio_vlm_without_vision:
+            elif self._audio_type == "audio_vlm" and audio_vlm_multimodal:
                 # LFM3-Audio: the text load builds the bare backbone with no LM head; Training and Chat use this class.
                 from unsloth import FastModel
                 from transformers import AutoModelForMultimodalLM

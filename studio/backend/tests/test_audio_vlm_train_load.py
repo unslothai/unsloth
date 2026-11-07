@@ -89,10 +89,14 @@ def load(monkeypatch):
         vision,
         returns = None,
         vision_known = True,
+        multimodal = None,
     ):
+        multimodal = not vision if multimodal is None else multimodal
         monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **k: vision)
         monkeypatch.setattr(
-            trainer_mod, "audio_vlm_vision_checked", lambda *a, **k: (vision, vision_known)
+            trainer_mod,
+            "audio_vlm_multimodal_lm_checked",
+            lambda *a, **k: (multimodal, vision_known),
         )
         if returns is not None:
             calls["returns"] = returns
@@ -131,4 +135,9 @@ def test_audio_with_vision_keeps_the_default_load(load):
 def test_an_inconclusive_vision_probe_keeps_the_default_load(load):
     # A transient probe failure reads as no vision; Gemma 3n / 4 must not lose their default load to it.
     _, kwargs = load(vision = False, vision_known = False)
+    assert "auto_model" not in kwargs
+
+
+def test_audio_without_a_multimodal_class_keeps_the_default_load(load):
+    _, kwargs = load(vision = False, multimodal = False)  # AudioFlamingo3
     assert "auto_model" not in kwargs

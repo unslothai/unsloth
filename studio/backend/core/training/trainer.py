@@ -73,7 +73,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, audio_vlm_vision_checked, detect_audio_type_checked
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, detect_audio_type_checked
 from utils.models.diffusion_lm import (
     diffusion_lm_profile_for_model,
     loaded_diffusion_profile,
@@ -229,9 +229,9 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 _FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
 
 
-def _audio_vlm_auto_model_kwargs(vision: bool) -> dict:
+def _audio_vlm_auto_model_kwargs(multimodal: bool) -> dict:
     """No vision tower (LFM3-Audio): the default load builds a backbone with no LM head, so use Chat's class."""
-    if vision:
+    if not multimodal:
         return {}
     import transformers
 
@@ -1273,15 +1273,15 @@ class UnslothTrainer:
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
             # Only a definitive no (not an unreadable config) takes the multimodal class.
-            audio_vlm_has_vision = vision
+            audio_vlm_multimodal = False
             if self.is_audio_vlm and not vision:
-                vision_now, vision_known = audio_vlm_vision_checked(
+                takes, known = audio_vlm_multimodal_lm_checked(
                     metadata_name,
                     hf_token = hf_token,
                     local_files_only = local_files_only,
                     revision = model_revision,
                 )
-                audio_vlm_has_vision = vision_now or not vision_known
+                audio_vlm_multimodal = known and takes
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -1486,7 +1486,7 @@ class UnslothTrainer:
             elif self.is_audio_vlm:
                 from unsloth import FastModel
 
-                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(audio_vlm_has_vision)
+                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(audio_vlm_multimodal)
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     **audio_vlm_kwargs,
                     model_name = lookup_name,
