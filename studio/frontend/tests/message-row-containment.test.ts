@@ -90,6 +90,7 @@ function world(gate = true, innerHeight = 900) {
   const observers: FakeObserver[] = [];
   const resizeListeners: Array<() => void> = [];
   let frames: Array<() => void> = [];
+  const keyListeners: Array<(event: unknown) => void> = [];
   const win = {
     innerHeight,
     addEventListener: (type: string, cb: () => void) => { if (type === "resize") resizeListeners.push(cb); },
@@ -101,7 +102,10 @@ function world(gate = true, innerHeight = 900) {
   vm.runInNewContext(outputText, {
     exports,
     window: win,
-    document: { documentElement: { hasAttribute: (name: string) => gate && name === MESSAGE_ROW_CONTAINMENT_ATTRIBUTE } },
+    document: {
+      documentElement: { hasAttribute: (name: string) => gate && name === MESSAGE_ROW_CONTAINMENT_ATTRIBUTE },
+      addEventListener: (type: string, cb: (event: unknown) => void) => { if (type === "keydown") keyListeners.push(cb); },
+    },
     requestAnimationFrame: (cb: () => void) => { frames.push(cb); return frames.length; },
     IntersectionObserver: class {
       own: FakeObserver;
@@ -128,6 +132,8 @@ function world(gate = true, innerHeight = 900) {
     observers,
     resize: (height: number) => { win.innerHeight = height; resizeListeners.forEach((cb) => cb()); },
     resizeListeners,
+    keydown: (event: { key: string; metaKey?: boolean; ctrlKey?: boolean; target?: unknown }) =>
+      keyListeners.forEach((cb) => cb({ metaKey: false, ctrlKey: false, target: null, ...event })),
   };
 }
 
@@ -207,6 +213,26 @@ test("a row released at a new width keeps the first visible row where the reader
   assert.equal(rows[7].hasAttribute("data-row-distant"), false);
   assert.equal(anchor.getBoundingClientRect().top, before, "the 400 px the released row grew is scrolled away");
   assert.equal(viewport.scrollTop, 6200);
+});
+
+test("select all releases every skipped row before the browser selects, keeping the reader in place", () => {
+  const w = world();
+  const viewport = new Viewport();
+  const rows = Array.from({ length: 12 }, () => new Row(viewport, 0, 600));
+  viewport.scrollTop = 6600;
+  rows.forEach((row) => w.observe(row, (delta) => { viewport.scrollTop += delta; }));
+  w.report(...rows);
+  w.settle();
+  // The column narrowed while rows 0-7 were skipped: each is 1000 px once laid out again.
+  for (const row of rows.slice(0, 8)) viewport.releasedHeight.set(row, 1000);
+  const anchor = rows[11];
+  const before = anchor.getBoundingClientRect().top;
+  // Typing select-all in an input is the input's own; nothing is released.
+  w.keydown({ key: "a", metaKey: true, target: { closest: () => ({}) } });
+  assert.equal(rows[0].hasAttribute("data-row-distant"), true);
+  w.keydown({ key: "a", ctrlKey: true });
+  assert.equal(rows.some((r) => r.hasAttribute("data-row-distant")), false);
+  assert.equal(anchor.getBoundingClientRect().top, before, "the 3200 px the released rows grew is scrolled away");
 });
 
 test("no correction when the release changed nothing, and none without a released row", () => {

@@ -126,6 +126,24 @@ function refreshReach() {
   }
 }
 
+/** Select All renders every skipped row at once (WebKit lays out selected content), so a reader
+ *  scrolled up after the column narrowed would jump. Release them first, anchored, before the
+ *  browser's default action picks its range (the same order message-window-controller.ts uses). */
+export function releaseAllRows() {
+  for (const [viewport, watch] of watches) {
+    const changes: Array<[Element, boolean]> = [];
+    for (const row of watch.rows) if (row.hasAttribute(ROW_DISTANT_ATTRIBUTE)) changes.push([row, false]);
+    toggleRows(viewport, changes);
+  }
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+  const target = event.target as Element | null;
+  if (target?.closest?.("input, textarea, [contenteditable=true]")) return;
+  releaseAllRows();
+}
+
 let resizeHooked = false;
 
 export function observeDistantRow(row: HTMLElement, adjust?: Adjust) {
@@ -136,6 +154,7 @@ export function observeDistantRow(row: HTMLElement, adjust?: Adjust) {
   if (!resizeHooked && typeof window !== "undefined") {
     resizeHooked = true;
     window.addEventListener("resize", refreshReach, { passive: true });
+    document.addEventListener("keydown", onKeyDown, true);
   }
 
   let watch = watches.get(viewport);
