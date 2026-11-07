@@ -149,9 +149,8 @@ def _token_bound(download: Any) -> Any:
 
 @contextlib.contextmanager
 def guardrail_hub_token(token: Any):
-    """cosmos_guardrail downloads with no token argument, so it would skip the Settings token and lend a managed
-    account the ambient login. One permanent wrapper reads this load's token from a context variable, so
-    overlapping loads (cancel and reload) never see each other's; None keeps the ambient login."""
+    """cosmos_guardrail downloads without a token argument; a permanent wrapper sends this load's token from a
+    context variable, so overlapping loads never share one. None keeps the ambient login."""
     if isinstance(token, str):
         token = token.strip() or None
     module = None
