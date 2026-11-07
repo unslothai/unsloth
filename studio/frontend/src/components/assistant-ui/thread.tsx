@@ -4069,7 +4069,9 @@ const Composer: FC<{
   const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDraftRef = useRef<{ key: string; text: string } | null>(null);
-  // Restore only the selected chat unless the user opted into sharing.
+  // The key flips before the runtime swaps threads, so until the restored text is on screen
+  // the composer still shows the previous chat's text and saving it would file it under this key.
+  const awaitingRestoreRef = useRef<{ scope: string; stale: string; text: string } | null>(null);
   useEffect(() => {
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
@@ -4095,9 +4097,11 @@ const Composer: FC<{
         draftSaveTimerRef.current = null;
       }
       writeComposerDraft(draftKey, "");
+      awaitingRestoreRef.current = { scope: draftScope, stale: composer.getState().text, text: "" };
       composer.setText("");
       return;
     }
+    awaitingRestoreRef.current = { scope: draftScope, stale: composer.getState().text, text: draft };
     composer.setText(draft);
   }, [draftScope, draftKey, shareDraft, referenceThreadId, aui]);
   // Compare's composer, so whichever is on screen shows the latest draft.
@@ -4216,6 +4220,11 @@ const Composer: FC<{
     }
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     if (composerText !== aui.composer().getState().text) return;
+    const awaiting = awaitingRestoreRef.current;
+    if (awaiting?.scope === draftScope) {
+      if (composerText === awaiting.stale && composerText !== awaiting.text) return;
+      awaitingRestoreRef.current = null;
+    }
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
     if (shareDraft) publishDraft(composerText, draftSource);
