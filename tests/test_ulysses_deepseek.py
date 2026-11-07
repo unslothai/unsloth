@@ -401,7 +401,6 @@ def test_ulysses_sft_turns_padding_free_off_for_attention_that_refuses_packing(k
     args = config("ulysses")
     module.SFTTrainer(model = plain, args = args)
     assert args.padding_free is not False
-    # Without CP the refusing class trains packed as before.
     args = config("ulysses")
     args.context_parallel_size = 1
     module.SFTTrainer(model = refusing, args = args)
@@ -604,13 +603,11 @@ def test_ulysses_sft_string_model_gets_the_instance_outcome(kind, packing, monke
             outcomes.append((args.packing, args.padding_free is False, args.eval_packing))
             if kind == "v32" and packing and model is path:
                 assert "DeepseekV32Attention refuses packed batches" in caplog.text
-        # The string ends where the instance does.
         assert outcomes[0] == outcomes[1], outcomes
         if kind in ("v32", "v4"):
             assert outcomes[0] == (False, True, False)
         else:
             assert outcomes[0][1] is False
-        # Without CP a string trains packed as before (V4 stays off for its own boundary reason).
         args = config(1)
         module.SFTTrainer(model = path, args = args)
         if kind != "v4":
@@ -656,7 +653,6 @@ def test_ulysses_deepseek_imports_on_torch_without_amp_custom_fwd(device, monkey
     monkeypatch.setattr(torch.amp, "custom_fwd", fake_amp("fwd"), raising = False)
     monkeypatch.setattr(torch.amp, "custom_bwd", fake_amp("bwd"), raising = False)
     modern = _load_ulysses_deepseek_copy(ud.__file__, "_ud_amp_modern")
-    # The repo's device branch: XPU autocast is replayed on xpu, CUDA / HIP on cuda.
     assert seen == [("fwd", device), ("bwd", device)]
 
     monkeypatch.delattr(torch.amp, "custom_fwd")

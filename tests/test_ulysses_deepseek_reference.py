@@ -98,9 +98,7 @@ def _manager(cp_size, group):
     return manager
 
 
-# ---------------------------------------------------------------------------------------------
 # 1. Model-level parity: V2 / V3 (main's generic route), V3.2 (indexer), V4 (sliding / CSA / HCA).
-# ---------------------------------------------------------------------------------------------
 
 
 def _mla(**extra):
@@ -352,7 +350,6 @@ def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
     # transformers runs the MoE router, the V3.2 / V4 indexer scores and V4's compressor gate softmax
     # in fp32, so even the reference moves at ~1e-8 with the batch shape.
     tol = dict(rtol = 1e-6, atol = 1e-6)
-    # Single-process fp64 reference on the same right-padded batch (mask applied).
     ref_logits = reference(input_ids = ids, attention_mask = mask, use_cache = False).logits
     (_sum_ce(ref_logits, shift) / count).backward()
     # Valid tokens must not depend on the padding: each row alone, unpadded.
@@ -363,7 +360,6 @@ def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
                 ref_logits[row, :n].detach(), alone[0], msg = _named("ref pad"), **tol
             )
 
-    # CP arm: this DP replica's rows, CP over its group.
     rows = list(range(rank // cp_size, len(lengths), dp))
     manager = _manager(cp_size, group)
     manager.attach_attention_hooks(model)
@@ -513,9 +509,7 @@ def test_deepseek_cp_negative_control_fails(name):
         _spawn(_parity_worker, case["world"], case)
 
 
-# ---------------------------------------------------------------------------------------------
 # 2. V3.2 indexer: global causal top-k vs transformers' full-sequence indexer.
-# ---------------------------------------------------------------------------------------------
 
 
 def _topk_worker(rank, world, seq):
@@ -570,9 +564,7 @@ def test_v32_global_topk_matches_full_sequence_indexer(world):
     _spawn(_topk_worker, world, 24)
 
 
-# ---------------------------------------------------------------------------------------------
 # 3. Chunked sink attention custom backward vs an independent fp64 reference.
-# ---------------------------------------------------------------------------------------------
 
 
 def _reference_sink(q, kv, block_bias, sinks, window, scaling):
@@ -638,9 +630,7 @@ def test_chunked_sink_attention_dropping_a_chunk_is_wrong(chunk, monkeypatch):
         _sink_case(chunk, monkeypatch)
 
 
-# ---------------------------------------------------------------------------------------------
 # 4. The own-mask exemption covers only layer types and the window.
-# ---------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("kind", ["v32", "v4"])
