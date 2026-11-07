@@ -79,10 +79,7 @@ function reducedMotionActive(el: HTMLElement): boolean {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 }
 
-/**
- * Reduce motion gives every element a 0.01ms `all` transition, so a flip would start one
- * transition per element per changed colour. Only then: the extra restyle costs WebKit more than it saves.
- */
+// Reduce motion's 0.01ms `all` transition starts one per element per colour on a flip; otherwise the extra restyle costs WebKit more.
 export function withoutTransitions(change: () => void): void {
   const el = document.documentElement;
   if (!reducedMotionActive(el)) {
