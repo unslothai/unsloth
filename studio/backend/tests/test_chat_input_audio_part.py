@@ -904,7 +904,6 @@ def test_a_spoken_reply_refuses_tool_turns_after_the_question(monkeypatch, trail
         {"role": "tool", "tool_call_id": "c1", "content": "Paris"},
     ]
     question = [{"role": "user", "content": ""}]
-    # Tool turns before the question are answered history; after it they would be dropped.
     messages = question + tool_turns if trailing_tool else tool_turns + question
     body = {
         "model": "m",
