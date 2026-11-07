@@ -366,8 +366,7 @@ export function useFloatingPanelLayout(
     const left = monitorBox.left - constraintsBox.left;
     const top = monitorBox.top - constraintsBox.top;
 
-    // Sync inline size where max-width/height clipped a native resize. A state-held width is the
-    // user's choice: clamping it here would keep a squeezed panel narrow once the window widens.
+    // Sync inline size where max-width/height clipped a native resize; a state-held width is left alone.
     const inlineWidth = Number.parseFloat(monitor.style.width);
     const inlineHeight = Number.parseFloat(monitor.style.height);
     if (
