@@ -11,6 +11,7 @@ import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
   keptNumFrames,
   pickedFpsFor,
+  presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -166,4 +167,16 @@ test("a picked rate applies only to the family it was picked on", () => {
   const edge = defaults({ fps_range: [12, 30] });
   assert.equal(resolveVideoFps(edge, pickedFpsFor({ family: "cosmos3-nano", fps: 16 }, "cosmos3-edge")), 24);
   assert.equal(pickedFpsFor(null, "cosmos3-edge"), null);
+});
+
+test("a preset's stored rate is restored only when the loaded family offers it", () => {
+  const nano = videoFpsOptions(defaults({ fps_choices: [10, 16, 24, 30] }));
+  assert.equal(presetVideoFps(nano, 10), 10);
+  // A preset saved before rates were stored, or on another family, falls back to the family default.
+  assert.equal(presetVideoFps(nano, null), null);
+  assert.equal(presetVideoFps(nano, 12), null);
+  assert.equal(presetVideoFps(null, 30), null);
+  // Nano's 7.875 s target: 77 frames at 10 fps, not the 237 a stale 30 fps pick would render.
+  const at10 = videoDurationOptions([7.875], 10, 4, 1, 5, 397);
+  assert.deepEqual(at10.map((o) => o.frames), [77]);
 });

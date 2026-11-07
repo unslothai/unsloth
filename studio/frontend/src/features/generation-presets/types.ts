@@ -39,4 +39,5 @@ export interface VideoGenerationPresetParams {
   guidance: number;
   flowShift: number | null;
   audioFlowShift: number | null;
+  fps?: number | null;
 }
