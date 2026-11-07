@@ -238,6 +238,7 @@ from .diffusion_memory import (
     release_pinned_host_memory,
     request_background_encoder_pins,
     finish_encoder_pins_at_load,
+    finish_encoder_pins_before_render,
     trim_host_heap_after_load,
     start_background_pins,
     stop_background_pins,
@@ -11443,7 +11444,7 @@ class DiffusionBackend:
             plan.estimates,
         )
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
-        # after the pins: their pageable sources are freed by now
+        # Encoder pins still running return their sources' heap at the first render.
         trim_host_heap_after_load(logger)
         return self.status()
 
@@ -14220,6 +14221,10 @@ class DiffusionBackend:
             try:
                 self._state_device_target(state)
                 apply_cpu_render_threads(state.device)
+                # Encoder pins the load left running finish first: a render racing a pinner runs slower.
+                finish_encoder_pins_before_render(state.pipe, cancel, logger)
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Local `state` keeps the pipe alive past unload() nulling _state; resolve (prompt, seed) jobs first.
                 jobs, seed = resolve_batch_jobs(
                     prompt = prompt,

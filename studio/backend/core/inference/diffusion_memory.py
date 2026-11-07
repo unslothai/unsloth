@@ -6691,14 +6691,62 @@ def request_background_encoder_pins(pipe: Any) -> None:
         pass
 
 
+# "0": the image load waits for its encoder pins before it returns, and streamed encoders pin after the
+# transformer's up-front pin (the old order).
+ENCODER_PINS_AFTER_LOAD_ENV = "UNSLOTH_DIFFUSION_ENCODER_PINS_AFTER_LOAD"
+_PINS_SETTLED_ATTR = "_unsloth_encoder_pins_settled"
+
+
+def _encoder_pins_after_load() -> bool:
+    return not _env_off(ENCODER_PINS_AFTER_LOAD_ENV)
+
+
+def _mark_pins_settled(pipe: Any) -> None:
+    try:
+        setattr(pipe, _PINS_SETTLED_ATTR, True)
+    except Exception:  # noqa: BLE001 - the next render just checks the pinners again
+        pass
+
+
 def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
-    """Wait for the encoder pins; left running into the first prompt they cost what they saved (FLUX.1 B200)."""
+    """Start the encoder pins and return; the first render waits for them (finish_encoder_pins_before_render).
+    A cold encoder file kept Qwen-Image's 8 GiB load waiting 24-28 s here. Under the kill switch the load waits."""
     if pipe is None:
         return 0.0
-    start_background_pins(pipe)
+    started = start_background_pins(pipe)
+    if _encoder_pins_after_load():
+        if started and logger is not None:
+            logger.info(
+                "diffusion.memory: the load returns while %d encoder pinner(s) finish; the first render waits for them",
+                started,
+            )
+        return 0.0
     waited = finish_background_pins(pipe)
+    _mark_pins_settled(pipe)
     if waited >= 0.5 and logger is not None:
         logger.info("diffusion.memory: the load waited %.1f s for the encoder pins", waited)
+    return waited
+
+
+def finish_encoder_pins_before_render(
+    pipe: Any,
+    cancel: Any = None,
+    logger: Any = None,
+) -> float:
+    """Wait (cancellable) for the encoder pins a load left running, so a render never races them; once they are
+    done, return the heap their sources freed. A no-op once settled."""
+    if pipe is None or getattr(pipe, _PINS_SETTLED_ATTR, False):
+        return 0.0
+    if not getattr(pipe, _PENDING_PINS_ATTR, None):
+        _mark_pins_settled(pipe)
+        return 0.0
+    waited = finish_background_pins(pipe, cancel)
+    if cancel is not None and cancel.is_set():
+        return waited
+    _mark_pins_settled(pipe)
+    if waited >= 0.5 and logger is not None:
+        logger.info("diffusion.memory: the first render waited %.1f s for the encoder pins", waited)
+    trim_host_heap_after_load(logger)
     return waited
 
 
@@ -7410,6 +7458,15 @@ def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
             pinner.stop(timeout)
         except Exception:  # noqa: BLE001 - teardown is best effort
             pass
+
+
+def _start_deferred_pinning(pipe: Any, module: Any) -> bool:
+    """Start ``module``'s deferred pinner now; False when it has none."""
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        if pinner.module is module:
+            pinner.start()
+            return True
+    return False
 
 
 def _drop_deferred_pinning(pipe: Any, module: Any) -> None:
@@ -8676,7 +8733,15 @@ def _apply_streaming_offload(
         else:
             pinned_mib[0] = encoder_left_mib
 
-        for comp_name, (module, offload_type) in streamed.items():
+        early_pins = pin_encoders and _encoder_pins_after_load()
+
+        def _pins_early(name: Any, module: Any, offload_type: str) -> bool:
+            return early_pins and _encoder_defers(name, module, offload_type)
+
+        # Whole-pin deferred encoders first, their pinner started at once: a cold encoder file then reads beside the
+        # transformer's slab pin, not after it. Within the plan's budget, which already priced both pins.
+        order = sorted(streamed.items(), key = lambda kv: not _pins_early(kv[0], *kv[1]))
+        for comp_name, (module, offload_type) in order:
             kwargs: dict[str, Any] = {
                 "onload_device": onload,
                 "offload_device": offload,
@@ -8733,6 +8798,14 @@ def _apply_streaming_offload(
                 install_group_prefetch(module, onload, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
+            if _pins_early(comp_name, module, offload_type) and _start_deferred_pinning(
+                pipe, module
+            ):
+                if logger is not None:
+                    logger.info(
+                        "diffusion.memory: %s pins in the background beside the transformer's pin",
+                        type(module).__name__,
+                    )
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module, offload_type in streamed.values():
