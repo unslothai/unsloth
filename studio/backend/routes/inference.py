@@ -22907,8 +22907,12 @@ async def _generate_tts_wav(
         if not backend.active_model_name:
             raise HTTPException(status_code = 400, detail = "No model loaded.")
         model_info = backend.models.get(backend.active_model_name, {})
-        # A chat model that speaks (LFM3) reads aloud too, so read aloud needs no TTS model.
-        chat_speaks = model_info.get("audio_type") == "audio_vlm" and bool(model_info.get("speaks"))
+        # A chat model that speaks (LFM3) reads aloud too; the MLX backend has no TTS mode for it.
+        chat_speaks = (
+            model_info.get("audio_type") == "audio_vlm"
+            and bool(model_info.get("speaks"))
+            and not model_info.get("is_mlx")
+        )
         if not model_info.get("is_audio") and not chat_speaks:
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = _orchestrator_public_model_id(backend)

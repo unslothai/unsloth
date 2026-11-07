@@ -292,11 +292,16 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
         is_loaded = False
         _is_audio = False
 
-    def backend_for(speaks):
+    def backend_for(speaks, is_mlx = False):
         class _Orchestrator:
             active_model_name = "LiquidAI/LFM3-Audio-2B"
             models = {
-                active_model_name: {"is_audio": False, "audio_type": "audio_vlm", "speaks": speaks}
+                active_model_name: {
+                    "is_audio": False,
+                    "audio_type": "audio_vlm",
+                    "speaks": speaks,
+                    "is_mlx": is_mlx,
+                }
             }
 
             def generate_audio_response(self, **_kwargs):
@@ -315,7 +320,9 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
     wav, rate, _, audio_type = asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
     assert (wav, rate, audio_type) == (b"RIFFwav", 24000, "audio_vlm")
 
-    monkeypatch.setattr(route, "get_inference_backend", lambda: backend_for(False))
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
-    assert exc.value.detail == "Active model is not an audio model."
+    # MLX speaks in chat but has no TTS mode, so read aloud keeps its old refusal there.
+    for silent in (backend_for(False), backend_for(True, is_mlx = True)):
+        monkeypatch.setattr(route, "get_inference_backend", lambda silent = silent: silent)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
+        assert exc.value.detail == "Active model is not an audio model."
