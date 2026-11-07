@@ -838,8 +838,8 @@ async def get_gguf_download_progress_response(
     ) -> tuple[int, frozenset[str]]:
         if progress_variant is None:
             return expected_total, frozenset()
-        # No GGUF quant label starts with "@", so a scope never has a requirement: asking would only
-        # send a model_info(files_metadata) request to the Hub on every progress poll.
+        # A variant starting with "@" is a scope (see _scope_variant): its files are not a GGUF plan, so
+        # the requirement lookup never applies and would only cost a model_info request per poll.
         requirement = (
             None
             if progress_variant.startswith(_SCOPE_PREFIX)
