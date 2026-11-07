@@ -150,11 +150,21 @@ def test_out_of_memory_redoes_the_call_eagerly_without_the_wrapper(host, llama, 
         return real(*args, **kwargs)
 
     monkeypatch.setattr(GG, "decode_step", oom_once)
+    # The redo runs after the handler: its traceback would keep the failed call's cache alive.
+    handling = []
+    real_redo = GG.redo_eagerly
+
+    def redo(model):
+        handling.append(sys.exc_info()[0])
+        return real_redo(model)
+
+    monkeypatch.setattr(GG, "redo_eagerly", redo)
     redos = GG.EAGER_REDOS
     with pytest.warns(UserWarning, match = "out of GPU memory"):
         out = _gen(llama)
     assert torch.equal(out, eager)
     assert GG.EAGER_REDOS == redos + 1
+    assert handling == [None]
     # The redo ran without _GraphDecodeSteps: decode_step saw only the failed attempt's steps.
     assert len(calls) == 2
     assert "forward" not in llama.__dict__

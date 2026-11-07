@@ -2514,11 +2514,16 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
                 output = _run(_eager_scope(), "eager")
             else:
                 rng = _generic_decode_graphs.rng_state(input_ids.device)
+                out_of_memory = False
                 try:
                     output = _run(_GraphDecodeSteps(self), "graph")
                 except torch.cuda.OutOfMemoryError:
                     if not _generic_decode_graphs.replayable(kwargs):
                         raise
+                    out_of_memory = True
+                if out_of_memory:
+                    # Outside the handler: its traceback holds the failed call's frames (cache, graph
+                    # buffers), which would stay allocated through the redo.
                     # Redo once without the graph wrapper, from the call's starting RNG and a fresh cache.
                     _generic_decode_graphs.redo_eagerly(self)
                     _clear_generation_caches(self)
