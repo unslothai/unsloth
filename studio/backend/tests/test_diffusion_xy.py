@@ -95,7 +95,6 @@ def test_lora_weight_axis_targets_one_entry_and_zero_drops_it():
         [("a", 1.0)],
         [("a", 1.0), ("b", 1.0)],
     ]
-    # Both cells keep an active adapter, so neither can trigger a compile: row order stands.
     assert plan.order == [0, 1]
 
 
@@ -281,7 +280,6 @@ def test_stop_between_cells_ends_the_grid(client):
 
     def _generate(**kwargs):
         calls.append(kwargs)
-        # The denoise is over, so only the grid can take this Stop.
         assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": True}
         return {
             "images": [Image.new("RGB", (64, 64), "gray")],

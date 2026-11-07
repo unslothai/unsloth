@@ -49460,7 +49460,7 @@ async def generate_diffusion_image(
     return await _generate_diffusion_image_core(request)
 
 
-# Running grids by account: a Stop between cells, or while a cell waits for the engine, finds no denoise to land on.
+# Running grids by account: a Stop between cells or before a queued cell finds no denoise to land on.
 _xy_grid_stops: list[tuple[Optional[str], Any]] = []
 
 

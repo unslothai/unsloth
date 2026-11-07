@@ -205,7 +205,6 @@ def compose_grid(images: list[Any], plan: XYPlan):
     full_h = max(im.height for im in images)
     has_rows = any(plan.y_labels)
     scale = min(1.0, math.sqrt(MAX_GRID_PIXELS / (plan.nx * plan.ny * full_w * full_h)))
-    # The label bands count too: shrink again until the whole canvas fits.
     for _ in range(4):
         cw, ch = max(1, int(full_w * scale)), max(1, int(full_h * scale))
         font_size = max(12, (cw + ch) // 25)
