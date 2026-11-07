@@ -26631,6 +26631,12 @@ async def voice_decision_put(
     return JSONResponse(content = await asyncio.to_thread(_voice_decision_response))
 
 
+@studio_router.get("/voice/trace")
+async def voice_trace_enabled(current_subject: str = Depends(get_current_subject)):
+    """Whether loop events are recorded; reads no decision model, unlike /voice/models/status."""
+    return JSONResponse(content = {"trace": bool(os.environ.get("UNSLOTH_VAD_DEBUG_DIR"))})
+
+
 @studio_router.post("/voice/trace")
 async def voice_trace(
     payload: VoiceTraceRequest, current_subject: str = Depends(get_current_subject)
