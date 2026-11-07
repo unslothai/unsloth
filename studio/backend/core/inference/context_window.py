@@ -1028,7 +1028,7 @@ def _attachment_spans(text: str):
         if opened or _LABELLED_TEXT_RE.match(text, note.end()):
             notes.append(note)
             openers.append(opened)
-    # Wrappers pair with closing tags like brackets: a quoted attachment nests, an unclosed one is text.
+    # Wrappers pair with closing tags like brackets, so a quoted attachment nests; an unclosed one runs to the next note.
     events = [(opened.end(), 0, i) for i, opened in enumerate(openers) if opened]
     events += [(closed.start(), 1, closed) for closed in _CLOSING_TAG_RE.finditer(text)]
     ends, open_by_tag = {}, {}
@@ -1037,16 +1037,14 @@ def _attachment_spans(text: str):
             open_by_tag.setdefault(openers[item].group("tag"), []).append(item)
         elif open_by_tag.get(item.group("tag")):
             ends[open_by_tag[item.group("tag")].pop()] = item.end()
-    starts = [i for i, opened in enumerate(openers) if opened is None or i in ends]
     index = 0
-    while index < len(starts):
-        note, opened = notes[starts[index]], openers[starts[index]]
-        extent = ends.get(starts[index], -1)
+    while index < len(notes):
+        note, opened, extent = notes[index], openers[index], ends.get(index, -1)
         index += 1
-        while index < len(starts) and notes[starts[index]].start() < extent:
+        while index < len(notes) and notes[index].start() < extent:
             index += 1
-        body = text[note.end() : notes[starts[index]].start() if index < len(starts) else len(text)]
-        if opened is None:
+        body = text[note.end() : notes[index].start() if index < len(notes) else len(text)]
+        if extent < 0:
             yield note, "", body, "", ""
             continue
         closing = f"\n</{opened.group('tag')}>"

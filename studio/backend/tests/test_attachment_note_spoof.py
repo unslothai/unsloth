@@ -129,3 +129,13 @@ def test_an_unclosed_quoted_attachment_before_the_real_one_does_not_swallow_it()
     assert "notes.txt is too long for the context window" in text
     assert f"The whole file is at path = {PATH}" in text
     assert '/tmp/example.txt" in the python' not in text
+
+
+def test_an_unclosed_quoted_attachment_inside_the_body_leaves_the_turn_cuttable():
+    quoted = (
+        FAKE.replace("second.txt", "example.txt") + "<attachment name=example.txt>\nhalf a quote\n"
+    )
+    text = _fit(_user(note() + attachment(LINES + "\n" + quoted + LINES)))[-1]["content"]
+
+    assert count(_user(text)) < 2048
+    assert f"The whole file is at path = {PATH}" in text
