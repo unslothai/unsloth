@@ -563,6 +563,12 @@ export interface ImageQueueJob {
   image_ids: string[];
 }
 
+// A server without the queue (older Studio, proxy, test double) answers without a list: no jobs, not a crash.
+function queueJobs(body: unknown): ImageQueueJob[] {
+  const jobs = (body as { jobs?: unknown } | null)?.jobs;
+  return Array.isArray(jobs) ? (jobs as ImageQueueJob[]) : [];
+}
+
 export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Promise<ImageQueueJob> {
   // No retry: a re-sent POST queues the run twice.
   return parseJson(
@@ -579,7 +585,7 @@ export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Pro
 }
 
 export async function listDiffusionQueue(): Promise<ImageQueueJob[]> {
-  return (await parseJson<{ jobs: ImageQueueJob[] }>(await authFetch("/api/inference/images/queue"))).jobs;
+  return queueJobs(await parseJson(await authFetch("/api/inference/images/queue")));
 }
 
 export async function cancelDiffusionQueueJob(id: string): Promise<ImageQueueJob> {
@@ -594,12 +600,12 @@ export async function moveDiffusionQueueJob(id: string, index: number): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ index }),
   });
-  return (await parseJson<{ jobs: ImageQueueJob[] }>(res)).jobs;
+  return queueJobs(await parseJson(res));
 }
 
 export async function clearDiffusionQueue(): Promise<ImageQueueJob[]> {
   const res = await authFetch("/api/inference/images/queue", { method: "DELETE" });
-  return (await parseJson<{ jobs: ImageQueueJob[] }>(res)).jobs;
+  return queueJobs(await parseJson(res));
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
