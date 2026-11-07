@@ -586,7 +586,7 @@ def test_starter_characters_arrive_once_with_portraits_and_stay_deleted(client):
     assert full["firstMes"] and full["alternateGreetings"] and full["characterBook"]["entries"]
     assert client.get(f"/api/characters/{rin['id']}/avatar").headers["content-type"] == "image/webp"
     # The tutor replaces the roleplay instructions with its own.
-    leo = next(c for c in starters if c["name"] == "Leo Marsh")
+    leo = next(c for c in starters if c["name"] == "Leo")
     tutor = client.get(f"/api/characters/{leo['id']}").json()
     assert "language tutor" in tutor["systemPrompt"] and tutor["postHistoryInstructions"]
 
