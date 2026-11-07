@@ -62,6 +62,16 @@ test("edits made before the stored preset lands are kept", () => {
   assert.match(panel, /presetsReadyRef\.current = trainingPresets\.presetsReady;/);
 });
 
+test("a preset family only /info reports is not seeded from the fallback family", () => {
+  assert.match(
+    panel,
+    /const familyPending =\s+family\?\.name !== familyName && \(infoLoadState === "idle" \|\| infoLoadState === "loading"\);/,
+  );
+  const seed = panel.slice(panel.indexOf("const familyPending ="));
+  assert.match(seed, /if \(!family \|\| familyPending\) return;/);
+  assert.match(seed, /\}, \[family, familyPending, loadedBaseRepo, reportedFamily\]\);/);
+});
+
 test("every saved field is applied back to the form", () => {
   const current = panel.slice(
     panel.indexOf("const currentPresetParams = useMemo<TrainingPresetParams>("),

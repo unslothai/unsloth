@@ -612,8 +612,11 @@ export function DiffusionTrainPanel({
     }
   }, [loadedFamily, families]);
 
+  // A restored preset can name a family only /info reports; seeding the fallback would drop its base.
+  const familyPending =
+    family?.name !== familyName && (infoLoadState === "idle" || infoLoadState === "loading");
   useEffect(() => {
-    if (!family) return;
+    if (!family || familyPending) return;
     // Compare by name: an info refresh yields a new object but is not a family change.
     if (seededBaseFamily.current !== family.name) {
       seededBaseFamily.current = family.name;
@@ -647,7 +650,7 @@ export function DiffusionTrainPanel({
           : "auto",
       );
     }
-  }, [family, loadedBaseRepo, reportedFamily]);
+  }, [family, familyPending, loadedBaseRepo, reportedFamily]);
 
   // Reset to bf16 on a DiT family, or an fp16 left from SDXL is rejected.
   useEffect(() => {
