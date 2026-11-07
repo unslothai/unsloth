@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -251,6 +252,20 @@ def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
         "& 'C:\\Managed Node\\npm.cmd' install -g '@openai/codex'",
     ]
     assert env is not None
+
+
+def test_install_command_keeps_an_apostrophe_in_a_windows_prefix(monkeypatch):
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Managed Node\npm.cmd")
+    prefix = r"C:\Users\O'Brien\AppData\Roaming\npm"
+    hint = start._npm_install_hint("@openai/codex@latest", prefix = prefix)
+
+    command, _ = start._install_command(hint)
+
+    assert command[-1] == (
+        "& 'C:\\Managed Node\\npm.cmd' install -g --prefix "
+        "'C:\\Users\\O''Brien\\AppData\\Roaming\\npm' '@openai/codex@latest'"
+    )
 
 
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
@@ -1436,6 +1451,24 @@ def test_dsh_resolver_searches_past_an_unrelated_earlier_path_entry(monkeypatch,
     )
 
     assert Path(resolved).parent == harness_dir
+
+
+def test_dsh_first_run_installs_the_latest_dist_tag(monkeypatch):
+    hints = []
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    monkeypatch.setattr(start, "_which_deepseek_harness_with_install_dirs", lambda: None)
+    monkeypatch.setattr(start, "_install_agent", lambda name, hint: hints.append(hint))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *a, **k: pytest.fail("a missing dsh must stop before model connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["dsh"])
+
+    assert result.exit_code == 1
+    assert len(hints) == 1
+    assert shlex.split(hints[0])[-1] == "@deepseek-ai/dsh@latest", hints
 
 
 def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
@@ -2796,6 +2829,123 @@ def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     config = tomllib.loads((home / "config.toml").read_text())
     assert config["mcp_servers"] == {"docs": {"url": "http://127.0.0.1:9000/mcp"}}
     assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
+
+
+def test_codex_keeps_the_users_instructions_skills_rules_and_prompts(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    (source_home / "rules").mkdir()
+    (source_home / "rules" / "default.rules").write_text(
+        'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    )
+    (source_home / "prompts").mkdir()
+    (source_home / "prompts" / "summarize.md").write_text("Summarize the diff.\n")
+    (source_home / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "Answer in French.\n"
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert "forbidden" in (home / "rules" / "user-default.rules").read_text()
+    assert not (home / "rules").is_symlink()
+    assert (home / "prompts" / "summarize.md").read_text() == "Summarize the diff.\n"
+    # Codex persists an approval by appending to $CODEX_HOME/rules/default.rules.
+    with open(home / "rules" / "default.rules", "a") as rules:
+        rules.write('prefix_rule(pattern = ["ls"], decision = "allow")\n')
+    assert "allow" not in (source_home / "rules" / "default.rules").read_text()
+
+    (source_home / "AGENTS.md").unlink()
+    (source_home / "AGENTS.override.md").write_text("Answer in German.\n")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+    assert not os.path.lexists(home / "AGENTS.md")
+    assert (source_home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+
+
+def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "old").mkdir(parents = True)
+    (source_home / "AGENTS.md").write_text("first\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "old").is_dir()
+
+    (source_home / "AGENTS.md").write_text("second\n")
+    (source_home / "skills" / "old").rmdir()
+    (source_home / "skills" / "new").mkdir()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "second\n"
+    assert not (home / "skills" / "old").exists()
+    assert (home / "skills" / "new").is_dir()
+
+
+def test_codex_merges_user_rules_into_a_used_saved_home_as_real_files(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "rules").mkdir(parents = True)
+    forbid = 'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    (source_home / "rules" / "default.rules").write_text(forbid)
+    (source_home / "rules" / "team.rules").write_text(forbid)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "rules").mkdir(parents = True)
+    approved = 'prefix_rule(pattern = ["ls"], decision = "allow")\n'
+    (home / "rules" / "default.rules").write_text(approved)
+
+    for _ in range(2):
+        assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+        rules = {p.name: p for p in (home / "rules").iterdir()}
+        assert set(rules) == {"default.rules", "user-default.rules", "team.rules"}
+        assert not any(p.is_symlink() for p in rules.values())
+        assert rules["default.rules"].read_text() == approved
+        assert rules["user-default.rules"].read_text() == forbid
+        assert rules["team.rules"].read_text() == forbid
+
+    (source_home / "rules" / "team.rules").unlink()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "rules" / "team.rules")
+    assert (source_home / "rules" / "default.rules").read_text() == forbid
+
+
+def test_codex_merges_user_skills_into_a_used_saved_home(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "skills" / ".system").mkdir(parents = True)
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert (home / "skills" / ".system").is_dir()
+    assert not (source_home / "skills" / ".system").exists()
+
+    shutil.rmtree(source_home / "skills" / "release")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "skills" / "release")
+    assert (home / "skills" / ".system").is_dir()
+
+
+def test_codex_links_user_files_from_a_relative_codex_home(fake_studio, tmp_path, monkeypatch):
+    (tmp_path / "user-codex").mkdir()
+    (tmp_path / "user-codex" / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", "user-codex")
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (tmp_path / "agents" / "codex" / "AGENTS.md").read_text() == "Answer in French.\n"
 
 
 def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
@@ -4279,6 +4429,99 @@ def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
         assert "model_reasoning_effort" not in profile
 
 
+@pytest.mark.parametrize("subagent", [[], ["--as-subagent"], ["--auto-route"]])
+@pytest.mark.parametrize(
+    "version, launches", [((0, 133, 0), False), ((0, 134, 0), True), (None, True)]
+)
+def test_codex_too_old_for_profile_files_stops_before_launch(
+    version, launches, subagent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        start, "_require_agent_for_launch", lambda name, hint, launch: f"/bin/{name}"
+    )
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex", *subagent])
+    assert bool(launched) is launches
+    if launches:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 1
+        assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
+        assert "Update it the way it was installed, or remove it" in result.output
+        assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
+@pytest.mark.parametrize("after, launches", [((0, 134, 0), True), ((0, 133, 0), False)])
+def test_codex_too_old_offers_the_update_with_the_managed_npm(
+    after, launches, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/codex")
+    versions = iter([(0, 133, 0), after])
+    monkeypatch.setattr(start, "_codex_executable_version", lambda _: next(versions, after))
+    hint = start._npm_install_hint("@openai/codex@latest")
+    monkeypatch.setattr(start, "_codex_update_hint", lambda _: hint)
+    install_agent = start._install_agent
+
+    def install_from_a_tty(*args, **kwargs):
+        # CliRunner swaps sys.stdin, so fake the TTY only for the prompt.
+        with mock.patch.object(start.sys, "stdin", SimpleNamespace(isatty = lambda: True)):
+            return install_agent(*args, **kwargs)
+
+    monkeypatch.setattr(start, "_install_agent", install_from_a_tty)
+    prompts = []
+    monkeypatch.setattr(start.typer, "confirm", lambda text, **k: prompts.append(text) or True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/studio/node/bin/npm")
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env = None, **k: ran.append((command, env)) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda name, **k: f"/bin/{name}")
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex"])
+    assert prompts == [f"Update `codex` now with `{hint}`?"]
+    if os.name == "nt":
+        assert ran[0][0][-1] == "& " + start._powershell_quote("/studio/node/bin/npm") + hint[3:]
+    else:
+        assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
+    assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
+    assert bool(launched) is launches
+    if not launches:
+        assert result.exit_code == 1
+        assert f"Update it with `{hint}`" in result.output
+
+
+def test_codex_update_hint_targets_the_resolved_install(tmp_path):
+    prefix = tmp_path / "global"
+    bin_dir = prefix if os.name == "nt" else prefix / "bin"
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
+    (package / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(bin_dir / "codex")) == start._npm_install_hint(
+        "@openai/codex@latest", prefix = prefix
+    )
+    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Homebrew links codex with a symlink")
+def test_codex_update_hint_uses_brew_for_a_homebrew_codex(tmp_path):
+    target = tmp_path / "Caskroom" / "codex" / "0.133.0" / "codex"
+    target.parent.mkdir(parents = True)
+    target.touch()
+    link = tmp_path / "bin" / "codex"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    # A leftover npm package under the same prefix must not win over the brew-owned link.
+    (tmp_path / "lib" / "node_modules" / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(link)) == "brew upgrade codex"
+
+
 def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
     fake_studio, tmp_path, monkeypatch
 ):
@@ -4523,6 +4766,18 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     assert loads == []
     assert f"Reusing loaded model: {MODEL['id']}\n" in result.output
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+
+
+def test_connect_loaded_ollama_model_keeps_its_tag(fake_studio):
+    fake_studio.state["models"] = [{"id": "ollama/qwen3:8b", "context_length": 40960}]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "ollama/qwen3:8b"]
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == []
+    assert "Reusing loaded model: ollama/qwen3:8b\n" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", "ollama/qwen3:8b")
 
 
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
@@ -5021,8 +5276,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         ),
     )
     cmd = captured["command"]
-    # Windows launches through this interpreter (`python -X utf8 ...`), so "run" follows a longer head.
-    assert cmd[1 if os.name != "nt" else cmd.index("run")] == "run"
+    assert cmd[0] == sys.executable
+    assert cmd[cmd.index("-c") + 2] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"

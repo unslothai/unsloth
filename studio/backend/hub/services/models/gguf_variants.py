@@ -996,6 +996,7 @@ async def _audio_cpp_variants_answer(
 ) -> Optional[VariantsAnswer]:
     """group audio.cpp umbrella and package components; generic single-file repos return None."""
     from core.inference import audio_cpp_models
+    from core.inference.audio_cpp_failures import estimate_resident_gb, gpu_estimate_applies
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
@@ -1055,6 +1056,7 @@ async def _audio_cpp_variants_answer(
         for variant in model.variants:
             for path in {f.path for f in variant.files}:
                 counts[path] = counts.get(path, 0) + 1
+        gpu_placed = gpu_estimate_applies(model.audio_type)
         rows = []
         for variant in model.variants:
             row_model = model.with_variant(variant)
@@ -1101,6 +1103,11 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    estimated_resident_gb = (
+                        estimate_resident_gb(variant.size_bytes, model.family)
+                        if gpu_placed and not row_model.cpu_only
+                        else None
+                    ),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,
                     partial = partial,
@@ -1146,7 +1153,7 @@ async def _mlx_precision_variants_answer(
     else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
     if is_local_path(repo_id) or not _is_valid_repo_id(repo_id):
         return None
-    from hub.utils.mlx_variants import cached_precision_folder
+    from hub.utils.mlx_variants import cached_precision_folder, looks_like_mlx_repo
     from hub.utils.snapshot_filters import (
         precision_variant_subfolders,
         repo_ships_root_safetensors,
@@ -1170,7 +1177,11 @@ async def _mlx_precision_variants_answer(
                 logger.debug("MLX precision folders for %s unavailable: %s", repo_id, exc)
             else:
                 tags = {str(tag).lower() for tag in (info.tags or [])}
-                if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
+                if (
+                    "mlx" not in tags
+                    and str(info.library_name or "").lower() != "mlx"
+                    and not looks_like_mlx_repo(repo_id)
+                ):
                     return None
                 sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
                 hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
@@ -1604,8 +1615,9 @@ async def get_gguf_variants_answer(
     hf_token = account_access.account_hf_token(hf_token)
     from core.inference.audio_cpp_models import is_umbrella_id
 
-    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path.
-    if not local_path or is_umbrella_id(repo_id):
+    # Umbrella folder and package repo (YuE2) On Device rows send their row id as local_path.
+    row_id = bool(local_path) and local_path.strip().lower() == (repo_id or "").strip().lower()
+    if not local_path or is_umbrella_id(repo_id) or row_id:
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
         if audio_cpp_answer is not None:
             return audio_cpp_answer

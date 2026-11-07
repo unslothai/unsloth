@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat } from "@/lib/time-format";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -139,7 +140,7 @@ function CardFrame({
   const selected = select?.selection.has(selectKey) ?? false;
   const selecting = (select?.selection.size ?? 0) > 0;
   return (
-    <div className="group/library-card relative">
+    <div className="group/library-card has-[:focus-visible]:[--card-time-opacity:1] relative">
       <button
         type="button"
         aria-label={label}
@@ -210,6 +211,7 @@ function PlayButton({ item }: { item: LibraryItem }) {
 
 export function ItemCard({ item }: { item: LibraryItem }) {
   const locale = useLocale();
+  useTimeFormat();
   const actions = useLibraryActions();
   const showTime = useLibrarySettingsStore((s) => s.showCardDates);
   const square = useLibrarySettingsStore((s) => s.imageLayout === "square");
@@ -240,7 +242,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-[var(--card-time-opacity,0)] transition-opacity group-hover/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}

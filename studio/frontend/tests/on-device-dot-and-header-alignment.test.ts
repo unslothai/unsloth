@@ -57,10 +57,11 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
   assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
   assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[44px]"'));
   // The partial mark sits with the name so it does not widen one row's badge slot.
-  const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
-  const row = gguf.slice(0, gguf.indexOf("\n  };"));
+  const gguf = PICKERS.slice(PICKERS.indexOf("const DownloadedGgufDeviceRow"));
+  const row = gguf.slice(0, gguf.indexOf("\n});"));
   assert.ok(row.includes('alignMeta="device"'));
-  assert.ok(row.includes("showVision={c.has_vision"));
+  assert.ok(row.includes("showVision={showVision}"));
+  assert.ok(PICKERS.includes("showVision={c.has_vision ?? visionByRepo[c.repo_id]}"));
   assert.ok(row.includes("partial={isPartialRepo}"));
   assert.match(
     PICKERS,
@@ -113,7 +114,13 @@ test("the parameter chip leads its column, so the modality gap is the cluster's 
   // Local rows share the downloaded rows' button and shell: same inset, full-width hover.
   assert.match(PICKERS, /downloadedRowButtonClassName =\s*"bg-transparent pr-1/);
   assert.equal(PICKERS.split('className="pr-1"').length - 1, 0);
-  assert.equal(PICKERS.split("{renderLocalRowMenu(m)}").length - 1, 3);
+  // Custom folder, LM Studio and models-directory rows share one row component and its menu.
+  assert.equal(PICKERS.match(/renderLocalDeviceRow\(\s*m,/g)?.length ?? 0, 3);
+  const local = PICKERS.slice(PICKERS.indexOf("const LocalModelDeviceRow = memo("));
+  assert.match(
+    local.slice(0, local.indexOf("\n});")),
+    /<span className=\{ROW_ACTIONS_CLASS\}>[\s\S]*?<ModelRowMenu/,
+  );
 });
 
 
@@ -251,9 +258,12 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("gpuGb={expanderGpuGb}").length - 1,
-    10,
-    "eight expanders and the two quant rows beside them",
+    6,
+    "four expanders and the two quant rows beside them",
   );
+  // The memoized On Device rows' two expanders take the same figure through one props object.
+  assert.ok(PICKERS.includes("gpuGb: expanderGpuGb,"));
+  assert.equal(PICKERS.split("gpuGb={expander.gpuGb}").length - 1, 2);
   assert.ok(
     HUB_CARD.includes(
       "const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));",
@@ -267,9 +277,12 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(PICKERS.includes("mediaLoad: diffusionLoad,"));
   assert.equal(
     PICKERS.split("diffusionLoad={diffusionLoad}").length - 1,
-    8,
+    4,
     "every task-scoped expander",
   );
+  // And the memoized On Device rows' expanders, through their shared props object.
+  assert.equal(PICKERS.split("diffusionLoad={expander.diffusionLoad}").length - 1, 2);
+  assert.match(PICKERS, /useMemo<DeviceRowExpanderProps>\(\s*\(\) => \(\{\s*diffusionLoad,/);
   // On a host pool drop the RAM tier, or the APU window is counted with the RAM it maps.
   assert.ok(PICKERS.includes("function mediaRamBudgetGb("));
   assert.ok(
@@ -311,9 +324,11 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
-    8,
+    4,
     "every task-scoped expander counts the scoped inventory",
   );
+  assert.ok(PICKERS.includes("gpuCount: expanderGpuCount,"));
+  assert.equal(PICKERS.split("gpuCount={expander.gpuCount}").length - 1, 2);
   assert.equal(
     PICKERS.split("gpuCount={gpu.deviceCount}").length - 1,
     1,
@@ -321,7 +336,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.equal(
     PICKERS.split("<GgufVariantExpander").length - 1,
-    9,
+    7,
     "and that is every expander there is",
   );
   // Pass raw devices to gpuSharedHostMemoryGb; pre-folding undercounted multi-socket hosts.
@@ -437,9 +452,11 @@ test("a diffusion model uses its load device's shared-pool verdict", () => {
   assert.ok(PICKERS.includes("diffusionLoad ? mediaGgufPickerStatus(fit) : fit"));
   assert.equal(
     PICKERS.split("hostPooledMemory={gpu.loadDeviceSharesHostMemory}").length - 1,
-    8,
+    4,
     "every task-scoped expander learns the pool kind",
   );
+  assert.ok(PICKERS.includes("const hostPooledMemory = gpu.loadDeviceSharesHostMemory;"));
+  assert.equal(PICKERS.split("hostPooledMemory={expander.hostPooledMemory}").length - 1, 2);
 });
 
 test("the row tooltip reports the figure the verdict was reached with", () => {

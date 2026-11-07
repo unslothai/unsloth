@@ -82,7 +82,7 @@ _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
 _DSH_PATCH_FILE = "unsloth.patch.yml"
-_DSH_PACKAGE = "@deepseek-ai/dsh"
+_DSH_PACKAGE = "@deepseek-ai/dsh@latest"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
@@ -173,6 +173,9 @@ _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
 _CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_USER_FILES = ("AGENTS.md", "AGENTS.override.md", "skills", "rules", "prompts")
+_CODEX_USER_FILES_MANIFEST = "unsloth_user_files.json"
+_CODEX_COPIED_DIRS = {"agents", "skills", "rules", "prompts", "plugins", "marketplaces", "sessions"}
 _CODEX_EPHEMERAL_STALE_SECONDS = 24 * 60 * 60
 _CODEX_EPHEMERAL_HEARTBEAT_SECONDS = 60
 _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
@@ -656,9 +659,16 @@ def _vibe_install_hint() -> str:
     return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
-def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
+def _npm_install_hint(
+    package: str,
+    *,
+    ignore_scripts: bool = False,
+    prefix: Optional[Path] = None,
+) -> str:
     parts = ["npm", "install", "-g"]
-    if os.name != "nt":
+    if prefix is not None:
+        parts.extend(("--prefix", str(prefix)))
+    elif os.name != "nt":
         # No home (bare container UID): fall back to npm's own prefix instead of failing.
         try:
             parts.extend(("--prefix", str(Path.home() / ".local")))
@@ -1464,13 +1474,11 @@ def _start_studio_server(
 ) -> tuple:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return (base, server)."""
     global _auto_served_server
-    # Windows goes through this interpreter, not the launcher on PATH: shutil.which resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of the .cmd shim (#8490). Without this, a user who reached the CLI through unsloth.cmd would still fail here. sys.executable is the interpreter already running this command, so the child inherits the same environment.
-    if sys.platform == "win32":
-        # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
-        from unsloth_cli.commands.studio import _managed_cli_argv
-        launch_head = _managed_cli_argv(Path(sys.executable))
-    else:
-        launch_head = [shutil.which("unsloth") or "unsloth"]
+    # This interpreter, not the `unsloth` on PATH: that can be missing, another install, or on Windows the denied unsloth.exe (#8490).
+    # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
+    from unsloth_cli.commands.studio import _managed_cli_argv
+
+    launch_head = _managed_cli_argv(Path(sys.executable))
     parsed = urlparse(base)
     # Tools default off means passthrough mode (relay the agent's own tools); --no-cloudflare means loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging travel via the child env below (version-agnostic) rather than new run flags that an older re-exec'd run could mistake for llama-server args.
     command = [
@@ -3284,6 +3292,7 @@ def _merge_codex_config(
 # Keep custom-model behavior aligned with Codex's own unknown-model fallback. This Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PROFILE_FILE_MIN_VERSION = (0, 134, 0)
 _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 # Older Codex sends no reasoning for a model without reasoning summaries, and older Pi has no samplingParams.
 _CODEX_REASONING_REQUEST_MIN_VERSION = (0, 145, 0)
@@ -3305,6 +3314,18 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
         return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
     return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _codex_update_hint(executable: str) -> Optional[str]:
+    # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH, so an unknown install gets None.
+    if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
+        return "brew upgrade codex"
+    directory = Path(executable).parent
+    prefix = directory if os.name == "nt" else directory.parent
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules") / "@openai/codex"
+    if package.is_dir():
+        return _npm_install_hint("@openai/codex@latest", prefix = prefix)
+    return None
 
 
 def _codex_supports_model_catalog() -> bool:
@@ -3538,17 +3559,21 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
     return tables
 
 
-def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
-    _, _, carried = _codex_mcp_manifest(home)
+def _codex_user_home(home: Path) -> Path:
     source = _codex_source_home()
     home_key = home.resolve(strict = False)
-    if source.resolve(strict = False) == home_key:
-        # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
-        followed = _codex_mcp_followed(home)
-        if followed is not None and followed.resolve(strict = False) != home_key:
-            source = followed
-        else:
-            source = _codex_source_home(ignore_configured = True)
+    if source.resolve(strict = False) != home_key:
+        return source
+    # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
+    followed = _codex_mcp_followed(home)
+    if followed is not None and followed.resolve(strict = False) != home_key:
+        return followed
+    return _codex_source_home(ignore_configured = True)
+
+
+def _with_user_codex_mcp_servers(text: str, home: Path, source: Path) -> str:
+    _, _, carried = _codex_mcp_manifest(home)
+    home_key = home.resolve(strict = False)
     source_key = str(source.resolve(strict = False))
     tables = _codex_mcp_tables(source, frozenset({str(home_key), source_key}))
     # Only replace what came from the user's config; servers added in this home stay.
@@ -3584,7 +3609,9 @@ def write_codex_config(
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
     if keep_mcp_servers:
-        merged = _with_user_codex_mcp_servers(merged, home)
+        source = _codex_user_home(home)
+        merged = _with_user_codex_mcp_servers(merged, home, source)
+        _link_codex_user_files(home, source)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
@@ -3762,6 +3789,85 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
     return result.returncode == 0
 
 
+def _link_codex_entry(source: Path, target: Path) -> bool:
+    _remove_overlay_entry(target)
+    try:
+        target.symlink_to(source, target_is_directory = source.is_dir())
+        return True
+    except OSError:
+        pass
+    if source.is_file():
+        # Only auth.json: Codex rewrites it in place, but a SQLite db under a second name keeps its own WAL and corrupts (sqlite.org/howtocorrupt.html 2.6).
+        if source.name == "auth.json":
+            with contextlib.suppress(OSError):
+                os.link(source, target)
+                return True
+        shutil.copy2(source, target)
+        return True
+    if source.is_dir():
+        if _create_directory_junction(source, target):
+            return True
+        if source.name in _CODEX_COPIED_DIRS:
+            shutil.copytree(source, target)
+            return True
+    return False
+
+
+def _link_codex_user_files(home: Path, source: Path) -> None:
+    manifest = home / _CODEX_USER_FILES_MANIFEST
+    try:
+        linked = json.loads(manifest.read_text(encoding = "utf-8"))["entries"]
+    except (OSError, ValueError, TypeError, KeyError):
+        linked = []
+    for entry in linked if isinstance(linked, list) else []:
+        parts = entry.split("/") if isinstance(entry, str) else []
+        if (
+            0 < len(parts) <= 2
+            and parts[0] in _CODEX_USER_FILES
+            and all(part not in ("", ".", "..") and "\\" not in part for part in parts)
+            and os.path.lexists(home.joinpath(*parts))
+        ):
+            _remove_overlay_entry(home.joinpath(*parts))
+    entries = []
+    for name in _CODEX_USER_FILES:
+        # Resolved: a relative or temporary source would leave dangling links.
+        entry = (source / name).resolve(strict = False)
+        target = home / name
+        if not entry.exists():
+            continue
+        if name == "rules" and entry.is_dir() and not os.path.lexists(target):
+            # Codex appends approvals to rules/default.rules: a linked dir would write them into the user's.
+            target.mkdir()
+        if not os.path.lexists(target):
+            if _link_codex_entry(entry, target):
+                entries.append(name)
+        elif (
+            entry.is_dir()
+            and target.is_dir()
+            and not target.is_symlink()
+            and not _is_junction(target)
+        ):
+            # Codex creates skills/.system in every home it runs in.
+            for child in entry.iterdir():
+                child_target = target / child.name
+                if name == "rules" and child.is_file():
+                    # Codex skips symlinked *.rules (DirEntry::file_type); default.rules stays this home's.
+                    if child.name == "default.rules" or os.path.lexists(child_target):
+                        child_target = target / f"user-{child.name}"
+                    if os.path.lexists(child_target):
+                        continue
+                    try:
+                        os.link(child.resolve(strict = False), child_target)
+                    except OSError:
+                        shutil.copy2(child, child_target)
+                elif os.path.lexists(child_target) or not _link_codex_entry(
+                    child.resolve(strict = False), child_target
+                ):
+                    continue
+                entries.append(f"{name}/{child_target.name}")
+    _write_private_json(manifest, {"entries": entries})
+
+
 def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
@@ -3798,8 +3904,6 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
         for target in list(overlay.iterdir()):
             _remove_overlay_entry(target)
 
-    # Keep the user's auth, config, plugins, agents, skills, rules and session state visible. Symlinks make this an overlay rather than a stale copy; if Windows denies them, directory junctions keep large runtime state shared without a bulk copy, and the configuration surfaces and sessions are copied only when both link forms are unavailable.
-    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces", "sessions"}
     entries = []
     if source_home.is_dir():
         for source in source_home.iterdir():
@@ -3809,28 +3913,8 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                 _CODEX_PARENT_OVERLAY_MANIFEST,
             }:
                 continue
-            target = overlay / source.name
-            _remove_overlay_entry(target)
-            try:
-                target.symlink_to(source, target_is_directory = source.is_dir())
+            if _link_codex_entry(source, overlay / source.name):
                 entries.append(source.name)
-            except OSError:
-                if source.is_file():
-                    # Only auth.json: Codex rewrites it in place, but a SQLite db under a second name keeps its own WAL and corrupts (sqlite.org/howtocorrupt.html 2.6).
-                    linked = False
-                    if source.name == "auth.json":
-                        with contextlib.suppress(OSError):
-                            os.link(source, target)
-                            linked = True
-                    if not linked:
-                        shutil.copy2(source, target)
-                    entries.append(source.name)
-                elif source.is_dir():
-                    if _create_directory_junction(source, target):
-                        entries.append(source.name)
-                    elif source.name in fallback_dirs:
-                        shutil.copytree(source, target)
-                        entries.append(source.name)
     # Not signed in yet: a dangling link lands the first login in the user's home, not the overlay.
     auth = source_home / "auth.json"
     if not os.path.lexists(auth):
@@ -4609,7 +4693,6 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             "Unsloth-managed Node installation was found. Install Node.js with npm, "
             "then re-run."
         )
-    args = shlex.split(install_hint)
     env = dict(os.environ)
     # dirname, not Path().parent: Path picks its flavour from os.name, which the tests override. Empty means npm is a bare name; prepending "" would put the cwd on PATH.
     npm_dir = os.path.dirname(npm)
@@ -4617,7 +4700,8 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
     if npm_dir:
         env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
     if os.name == "nt":
-        command = "& " + " ".join(_powershell_quote(arg) for arg in [npm, *args[1:]])
+        # The hint is already PowerShell-quoted; shlex would drop the doubled ' of a path like O'Brien.
+        command = "& " + _powershell_quote(npm) + install_hint.lstrip()[len("npm") :]
         return (
             [
                 "powershell",
@@ -4629,14 +4713,19 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             ],
             env,
         )
-    return [npm, *args[1:]], env
+    return [npm, *shlex.split(install_hint)[1:]], env
 
 
-def _install_agent(name: str, install_hint: str) -> Optional[str]:
+def _install_agent(
+    name: str,
+    install_hint: str,
+    *,
+    update: bool = False,
+) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then re-resolve it on PATH. Consent-based, and a non-interactive stdin cannot answer the prompt, so both the no-TTY and declined cases return None and let the caller print the hint and exit.
     if not sys.stdin.isatty():
         return None
-    typer.echo(f"`{name}` is not installed.")
+    typer.echo(f"`{name}` is {'too old' if update else 'not installed'}.")
     # Make the supply-chain risk explicit before the prompt: these are the vendors' own installers (curl | bash, irm | iex, npm), run with the user's privileges, and nothing checks a signature or hash on the fetched content. Naming the source turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
     if source:
@@ -4660,7 +4749,8 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
             "there is no signature or hash check."
         )
     typer.secho(warning, fg = "yellow", err = True)
-    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
+    action = "Update" if update else "Install"
+    if not typer.confirm(f"{action} `{name}` now with `{install_hint}`?", default = False):
         return None
     install_command, install_env = _install_command(install_hint)
     try:
@@ -5003,9 +5093,11 @@ def _connect(
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
+    unsplit = None
     if model and not explicit_connection:
         repo, variant = _split_repo_variant(model)
         if variant:
+            unsplit = (model, load)
             model = repo
             if not load.gguf_variant:
                 load = load._replace(gguf_variant = variant)
@@ -5028,6 +5120,19 @@ def _connect(
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        # Studio's own ids can carry a tag (ollama/qwen3:8b), so a loaded model of that exact id wins over the split.
+        if (
+            unsplit
+            and server is None
+            and any(
+                entry.get("loaded") is not False
+                and _model_id_matches(
+                    entry.get("id"), requested, allow_casefold = is_loopback_url(base)
+                )
+                for entry in _loaded_models(base, key)
+            )
+        ):
+            model, load = unsplit
         connection = None if server is not None else _connection_entry(base, key, requested)
         if connection is not None:
             if not connections:
@@ -7540,7 +7645,23 @@ def codex(
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
-    _require_agent_for_launch("codex", install_hint, launch and not app)
+    executable = _require_agent_for_launch("codex", install_hint, launch and not app)
+    version = executable and _codex_executable_version(executable)
+    if version and version < _CODEX_PROFILE_FILE_MIN_VERSION:
+        needed = (
+            f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
+            f"but {executable} is {'.'.join(map(str, version))}."
+        )
+        update_hint = _codex_update_hint(executable)
+        updated = update_hint and _install_agent("codex", update_hint, update = True)
+        version = updated and _codex_executable_version(updated)
+        if not updated or (version and version < _CODEX_PROFILE_FILE_MIN_VERSION):
+            if update_hint:
+                _fail(f"{needed} Update it with `{update_hint}`.")
+            _fail(
+                f"{needed} Update it the way it was installed, or remove it so "
+                "`unsloth start codex` can install a current one."
+            )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None
