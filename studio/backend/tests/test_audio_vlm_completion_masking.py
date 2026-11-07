@@ -178,3 +178,32 @@ def test_undetectable_markers_warn_and_train_full_sequences(fake_unsloth, monkey
     assert "could not be applied" in caplog.text
     for ids, labels in zip(batch["input_ids"].tolist(), batch["labels"].tolist()):
         assert labels == [-100 if token in (PAD, AUDIO) else token for token in ids]
+
+
+class _Lfm3Tokenizer(_Tokenizer):
+    audio_token_id = None  # LFM3-Audio's tokenizer names no placeholder id
+
+
+class _Lfm3Processor(_Processor):
+    """LFM3-Audio-2B: the processor, not its tokenizer, holds audio_token_id; its __call__ is text-first."""
+
+    audio_token_id = AUDIO
+
+    def __init__(self):
+        self.tokenizer = _Lfm3Tokenizer(preset_markers = True)
+
+    def __call__(
+        self,
+        text = None,
+        audio = None,
+        return_tensors = None,
+        padding = None,
+    ):
+        return super().__call__(text, audio, return_tensors, padding)
+
+
+def test_lfm3_audio_placeholders_on_the_processor_stay_out_of_the_loss(fake_unsloth):
+    batch = _collate(_Lfm3Processor())
+    for ids, labels in zip(batch["input_ids"].tolist(), batch["labels"].tolist()):
+        assert AUDIO in ids
+        assert labels == [-100 if token in (PAD, AUDIO) else token for token in ids]

@@ -2788,7 +2788,22 @@ export const uk = {
           "Переглядайте, що інші застосунки надсилають до API цього сервера, в міру надходження.",
         summary: "Запити, помилки й використання токенів наживо",
         status: "Активних: {active} · Нещодавніх: {recent} · {model}",
-        noModelLoaded: "модель не завантажено",
+        noModelLoaded: "Модель не завантажено",
+        memory: "Пам'ять",
+        gpuInUse: "GPU у використанні",
+        availableForModels: "Доступно для моделей",
+        refreshRate: "Частота оновлення",
+        refreshRateDescription: "Як часто плаваючий монітор зчитує використання пам'яті та GPU, поки він відкритий.",
+        refreshEvery: "Кожні {seconds} с",
+        unsloth: "Unsloth",
+        otherApps: "Інші застосунки",
+        otherInUse: "Інше використання",
+        freeLabel: "Вільно",
+        unslothApp: "Застосунок Unsloth",
+        unslothShare: "Показувати частку Unsloth",
+        unslothShareDescription: "Розділяє пам'ять на те, що використовує Unsloth, що використовують інші застосунки, і що вільно.",
+        modelBreakdown: "Розбивка за моделями",
+        modelBreakdownDescription: "Розділяє частку Unsloth на смузі пам'яті на кожну завантажену модель і решту застосунку.",
         autoOpen: "Автоматично відкривати плаваючий монітор",
         autoOpenDescription:
           "Відкриває невелику панель, коли надходить трафік API.",
@@ -2805,8 +2820,7 @@ export const uk = {
         gpuUnusableDetail: "Виявлено, але PyTorch не може його використовувати",
         detailedView: "Докладний вигляд",
         detailedViewDescription:
-          "Показувати в плаваючому вікні навантаження CPU, а також навантаження, температуру й споживання кожного GPU.",
-        cpuLoad: "Навантаження CPU",
+          "Показувати в плаваючому вікні навантаження, температуру й споживання кожного GPU.",
         gpuLoad: "Навантаження GPU",
         temperature: "Температура",
         power: "Споживання",
@@ -2822,7 +2836,7 @@ export const uk = {
         unavailable: "недоступно",
         detecting: "Пошук GPU...",
         unreadable: "Не вдалося прочитати дані про обладнання цього сервера.",
-        noGpu: "Видимих GPU не виявлено. Вище показано лише ресурси CPU.",
+        noGpu: "Окремий GPU не виявлено.",
         noUsableGpu: "На цьому комп’ютері немає GPU, придатного для PyTorch.",
         mismatchCpuBuild:
           "PyTorch — це збірка лише для CPU ({version}), тому наведені нижче GPU не можна використовувати. Відновіть інсталяцію, щоб повернути підтримку GPU.",
@@ -2911,7 +2925,7 @@ export const uk = {
           "бекенд інференс прискорювач готова збірка перемкнути рушій власний шлях папка каталог виконуваний файл llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Пам’ять моделей",
+        title: "Завантаження моделей",
         keepResident: "Тримати модель у пам’яті GPU",
         keepResidentDescription: "Залишатися у VRAM між запитами.",
         keepResidentHint:
@@ -3111,7 +3125,7 @@ export const uk = {
       configurationDocs: "документацію",
       configurationFlagsSuffix: "щодо прапорців.",
       modelNote:
-        "Codex потребує моделі GGUF, яку обслуговує llama-server. Інші агенти можуть також використовувати моделі на основі transformers; вилучіть --model, щоб використати модель, уже завантажену в Unsloth.",
+        "Claude Code і Codex потребують моделі GGUF, яку обслуговує llama-server, або моделі MLX. Інші агенти можуть також використовувати моделі на основі transformers; вилучіть --model, щоб використати модель, уже завантажену в Unsloth.",
       subagent: {
         title: "Використовувати локальну модель як субагента",
         description:
@@ -3187,6 +3201,8 @@ export const uk = {
     },
     chat: {
       groups: {
+        replies: { title: "Відповіді" },
+        thinkingTools: { title: "Міркування та інструменти" },
         conversations: {
           title: "Розмови",
         },
@@ -3286,11 +3302,20 @@ export const uk = {
         "Показувати під кожною відповіддю, коли її завершено.",
       showReplyTimesKeywords:
         "позначка часу час годинник дата година коли завершено надійшло відповідь повідомлення timestamp",
-      showGenerationDetails: "Відомості про генерування",
+      showGenerationDetails: "Докладна інформація про швидкість і завантаження",
       showGenerationDetailsDescription:
-        "Показувати поточну швидкість обробки запиту й відповіді з кількістю токенів, а також де завантажено шари моделі.",
+        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток, а також показує, куди завантажено шари моделі.",
       showGenerationDetailsKeywords:
         "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
+      generationStatsUpdates: "Статистика швидкості й контексту",
+      generationStatsUpdatesDescription:
+        "У реальному часі рахує токени за секунду й використання контексту, поки відповідь передається. Після завершення оновлює їх, коли кожна відповідь закінчена.",
+      generationStatsUpdatesHint:
+        "У реальному часі оновлює показник токенів за секунду під відповіддю та смугу контексту вгорі чату кілька разів на секунду, поки відповідь пишеться. Після завершення оновлює їх один раз, коли кожна відповідь закінчена. Режим реального часу може спричиняти підвисання або знижувати продуктивність, особливо на старих чи завантажених комп'ютерах.",
+      generationStatsUpdatesSettled: "Після завершення",
+      generationStatsUpdatesRealtime: "У реальному часі",
+      generationStatsUpdatesKeywords:
+        "реальний час наживо оновлення швидкість контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
@@ -5629,6 +5654,7 @@ export const uk = {
     monitor: {
       dragHandleLabel:
         "Перемістити монітор реального часу. Клавіші зі стрілками зсувають його, подвійне клацання скидає положення.",
+      resizeHint: "Перетягніть край або кут, щоб змінити ширину. Подвійне клацання скидає її.",
       reconnecting: "Повторне підключення...",
     },
   },

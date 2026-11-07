@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Turning assistant text into what the voice actually speaks, and into the chunks
-// it speaks one at a time. Dependency-free: these are the only part of the voice
-// path testable without a mic or a GPU.
-
 const SPEECH_STRIP_RE =
   /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
 
@@ -33,8 +29,7 @@ export function stripForSpeech(text: string): string {
     .trim();
 }
 
-// Words whose trailing period ends an abbreviation, not a sentence. Splitting
-// there hands the codec a fragment ("Dr.") and starts the next clip mid-thought.
+// A trailing period on these ends an abbreviation, not a sentence ("Dr.").
 const SPEECH_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "eg",
   "ie", "approx", "dept", "est", "fig", "no", "vol", "inc", "ltd", "co",
@@ -42,36 +37,54 @@ const SPEECH_ABBREVIATIONS = new Set([
   "nov", "dec",
 ]);
 
+const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr"]);
+
+const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
+
 export function splitIntoSentences(text: string): string[] {
-  // Horizontal whitespace only: a newline is a boundary the regex below relies on.
   const norm = text
     .replace(/[^\S\n]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .trim();
-  const raw = norm.match(/[^.!?\n]*[.!?]+|\S[^.!?\n]*$|\S[^.!?\n]*(?=\n)/g);
+  // A sentence ends at .!? (plus closing quotes) only before whitespace or the end, so "3.5",
+  // ".env", "./train.py" and "D.C." stay whole; a line without one ends at the newline.
+  const raw = norm.match(/\S[^\n]*?(?:[.!?]+["'”’»)\]]*(?=\s|$)|(?=\n|$))/g);
   if (!raw) return [text];
   const out: string[] = [];
-  for (const chunk of raw) {
-    const part = chunk.trim();
-    if (!part) continue;
+  let lead = "";
+  for (let part of raw) {
+    if (lead) {
+      part = `${lead} ${part}`;
+      lead = "";
+    }
     const prev = out[out.length - 1];
+    // Punctuation alone ("...", "--") is no request of its own.
+    if (!speakable(part)) {
+      if (prev === undefined) lead = part;
+      else out[out.length - 1] = `${prev} ${part}`;
+      continue;
+    }
     if (prev !== undefined) {
-      // Quotes and brackets only CLOSE when whitespace or the end follows one.
-      // Followed by a letter it opens a quotation, which is a real boundary.
-      const closer = /^["')\]]+(\s|$)/.test(part);
-      const tail = prev.replace(/["')\]]+$/, "");
-      const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
-      const decimal = /\d\.$/.test(tail) && /^\d/.test(part);
+      const tail = prev.replace(/["'”’»)\]]+$/, "");
+      const word = /([A-Za-z]+)\.$/.exec(tail)?.[1]?.toLowerCase();
+      // "J. Smith", "John F. Kennedy" are names; "pick option A. Then" is a boundary.
+      const nameInitial =
+        /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
+      // "etc. Then I left": these also end sentences, so only a lowercase word or digit continues one.
       const abbrev =
-        lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());
-      if (decimal || initial || abbrev || closer) {
-        // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
-        out[out.length - 1] = prev + (decimal || initial || closer ? "" : " ") + part;
+        word !== undefined &&
+        SPEECH_ABBREVIATIONS.has(word) &&
+        (!SENTENCE_FINAL_ABBREVIATIONS.has(word) || /^[a-z\d]/.test(part));
+      // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
+      const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
+      if (nameInitial || initial || abbrev || initialism) {
+        out[out.length - 1] = `${prev} ${part}`;
         continue;
       }
     }
     out.push(part);
   }
-  return out.filter(Boolean);
+  if (lead) out.push(lead);
+  return out;
 }

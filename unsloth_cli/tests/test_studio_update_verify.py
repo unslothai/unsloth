@@ -458,15 +458,20 @@ def test_a_tauri_update_is_verified_too(monkeypatch):
 @pytest.mark.parametrize(
     "system, expected",
     [
-        ("Linux", "| UNSLOTH_STUDIO_HOME=/srv/studios/a sh"),
-        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '/srv/studios/a'; irm"),
+        ("Linux", "| UNSLOTH_STUDIO_HOME={quoted} sh"),
+        ("Windows", "$env:UNSLOTH_STUDIO_HOME = '{root}'; irm"),
     ],
 )
 def test_a_custom_root_is_carried_into_the_reinstall_command(monkeypatch, capsys, system, expected):
     import platform as _platform
+    import shlex
+
     import typer
 
     studio = _studio()
+    # The root as this host spells it: a Windows runner prints `\srv\studios\a` for either target shell.
+    root = str(Path("/srv/studios/a"))
+    expected = expected.format(root = root, quoted = shlex.quote(root))
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)
     monkeypatch.setattr(
         studio._studio_deps, "damaged_installed_files", lambda *a, **k: ["x: y is missing"]
@@ -493,7 +498,10 @@ def test_a_root_with_spaces_is_quoted(monkeypatch, capsys):
     monkeypatch.setattr(_platform, "system", lambda: "Linux")
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
-    assert "UNSLOTH_STUDIO_HOME='/srv/my studios/a' sh" in capsys.readouterr().err
+    import shlex
+
+    root = shlex.quote(str(Path("/srv/my studios/a")))  # as this host prints it
+    assert f"UNSLOTH_STUDIO_HOME={root} sh" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -592,13 +600,18 @@ def test_the_message_covers_packages_the_installer_will_not_repair(monkeypatch, 
 @pytest.mark.parametrize(
     "system, exe, expected",
     [
-        ("Linux", "/srv/my studios/a/bin/python", "'/srv/my studios/a/bin/python' -m pip"),
-        ("Windows", r"C:\my studios\a\python.exe", "& 'C:\\my studios\\a\\python.exe' -m pip"),
+        ("Linux", "/srv/my studios/a/bin/python", "{quoted} -m pip"),
+        ("Windows", r"C:\my studios\a\python.exe", "& '{path}' -m pip"),
     ],
 )
 def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, exe, expected):
     import platform as _platform
+    import shlex
+
     import typer
+
+    # The interpreter as this host prints it (a POSIX path gets backslashes on a Windows runner).
+    expected = expected.format(path = str(Path(exe)), quoted = shlex.quote(str(Path(exe))))
 
     studio = _studio()
     monkeypatch.setattr(studio._studio_deps, "running_outside_managed_venv", lambda *a: False)

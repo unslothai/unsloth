@@ -53,6 +53,7 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
+import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
 import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
@@ -157,6 +158,7 @@ import {
 } from "@/components/assistant-ui/turn-navigation";
 import {
   IntentAwareScrollProvider,
+  useAdjustForContentInsertedAbove,
   useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
@@ -437,6 +439,7 @@ import {
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
 import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -3283,6 +3286,7 @@ const Composer: FC<{
       : null;
   // Expand only once the input wraps, latched so it cannot flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, inputRef);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
@@ -5858,7 +5862,7 @@ const Composer: FC<{
                 placeholder={
                   overlay ? "Type your edits for your image" : "Ask anything"
                 }
-                ref={inputRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
@@ -8359,6 +8363,10 @@ const AssistantMessage: FC = () => {
   useEffect(() => {
     if (replyRef.current) return observeReplyPaint(replyRef.current);
   }, [replyRef]);
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (replyRef.current) return observeDistantRow(replyRef.current, adjustAbove);
+  }, [replyRef, adjustAbove]);
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
@@ -9178,6 +9186,11 @@ const ScheduledTaskSource: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  const promptRef = focusReveal.ref;
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (promptRef.current) return observeDistantRow(promptRef.current, adjustAbove);
+  }, [promptRef, adjustAbove]);
   // Attachments alone (annotations, images) get no empty bubble under them.
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),

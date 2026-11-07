@@ -95,10 +95,17 @@ def media_held_mib() -> dict[int, int]:
 
 
 def media_owner_held_mib(owner: str) -> Optional[int]:
-    """MiB admitted for one resident media owner across its GPUs, or None when unpriced. Never raises."""
+    """MiB one resident media owner holds across its GPUs: its admitted need less the generation headroom
+    it is not using while idle (as media_unallocated_mib counts it). None when unpriced or loading. Never raises."""
     try:
         need = _media_records().get(owner)
-        total = sum(int(mib) for mib in need.values()) if need else 0
+        if not need:
+            return None
+        loading, generating = _media_busy(owner)
+        if loading:
+            return None
+        headroom = 0 if generating else int(getattr(need, "headroom_mib", 0))
+        total = sum(max(0, int(mib) - headroom) for mib in need.values())
         return total or None
     except Exception:  # noqa: BLE001
         return None

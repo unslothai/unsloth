@@ -1202,6 +1202,7 @@ def _compile_repeated_blocks(
     try:
         from . import diffusion_aot_cache
         diffusion_aot_cache.install(logger)
+        diffusion_aot_cache.pin_autotune_key(logger)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
