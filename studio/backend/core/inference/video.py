@@ -3449,7 +3449,7 @@ def _start_cache_writes(
 
 class _HeldCacheWrites:
     """A first load's cache writes, held until its first render ends or ``idle_s`` idle: beside that render they
-    contend for CPU/disk/RAM (Wan2.2-5B, L4: first denoise 270 s with the native write, 45 s without)."""
+    contend with its compile and denoise for CPU, disk and host RAM."""
 
     def __init__(self, pipe: Any, writes: tuple, busy: Callable[[], bool], idle_s: float):
         import weakref
@@ -3469,9 +3469,9 @@ class _HeldCacheWrites:
             self._timer.start()
 
     def _take(self) -> Optional[tuple]:
-        with self._lock:
-            writes, self._writes = self._writes, None
-            timer, self._timer = self._timer, None
+        # Caller holds self._lock.
+        writes, self._writes = self._writes, None
+        timer, self._timer = self._timer, None
         if timer is not None:
             timer.cancel()
         return writes
@@ -3486,18 +3486,22 @@ class _HeldCacheWrites:
         self.release("the backend sat idle after the load")
 
     def release(self, why: str) -> None:
-        writes = self._take()
-        pipe = self._pipe()
-        if writes is None or pipe is None:
-            return
-        logger.info("diffusion.prequant_cache: first-load cache writes start now (%s)", why)
-        try:
-            _start_cache_writes(pipe, *writes)
-        except Exception as exc:  # noqa: BLE001 - a cache write never fails a render
-            logger.warning("diffusion.prequant_cache: held cache writes skipped (%s)", exc)
+        # Started and registered on the pipe under the lock: a concurrent discard either cancels them first or runs
+        # after, so the teardown's finish calls see every started writer.
+        with self._lock:
+            writes = self._take()
+            pipe = self._pipe()
+            if writes is None or pipe is None:
+                return
+            logger.info("diffusion.prequant_cache: first-load cache writes start now (%s)", why)
+            try:
+                _start_cache_writes(pipe, *writes)
+            except Exception as exc:  # noqa: BLE001 - a cache write never fails a render
+                logger.warning("diffusion.prequant_cache: held cache writes skipped (%s)", exc)
 
     def discard(self) -> None:
-        writes = self._take()
+        with self._lock:
+            writes = self._take()
         for write in writes or ():
             if write is None:
                 continue

@@ -140,3 +140,38 @@ def test_generate_releases_and_unload_discards_before_finishing():
     src = inspect.getsource(V.VideoBackend)
     discard = src.index('_discard_held_cache_writes(getattr(state, "pipe", None))')
     assert discard < src.index('_finish_cast_writes(getattr(state, "pipe", None))')
+
+
+def test_a_discard_racing_a_release_waits_until_the_writers_are_registered():
+    log = []
+    gate = threading.Event()
+    entered = threading.Event()
+
+    class _Slow(_W):
+        def start(self):
+            entered.set()
+            gate.wait(5)
+            return super().start()
+
+    pipe = _Pipe()
+    writes = (_Slow(log, "cast"), None, None)
+    holder = V._HeldCacheWrites(pipe, writes, busy = lambda: False, idle_s = 0.0)
+    setattr(pipe, V._HELD_CACHE_WRITES_ATTR, holder)
+    releaser = threading.Thread(target = holder.release, args = ("idle",))
+    releaser.start()
+    assert entered.wait(5)
+    done = threading.Event()
+
+    def _teardown():
+        V._discard_held_cache_writes(pipe)
+        # what the unload's finish calls read next
+        log.append(("teardown sees", getattr(pipe, "_unsloth_cast_writes", None) is writes[0]))
+        done.set()
+
+    tearer = threading.Thread(target = _teardown)
+    tearer.start()
+    assert not done.wait(0.2)  # blocked behind the release
+    gate.set()
+    releaser.join(5)
+    tearer.join(5)
+    assert log == [("start", "cast"), ("teardown sees", True)]
