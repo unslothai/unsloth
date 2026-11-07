@@ -728,6 +728,26 @@ def test_jobs_created_within_one_clock_tick_list_newest_submitted_first(queue, m
     assert [j.id for j in listed.data] == [j.id for j in jobs[::-1]]
 
 
+def test_a_job_started_directly_lists_ahead_of_an_older_same_second_job(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        queued = await _create(client, uploaded.id, suffix = "queued")
+        await client.fine_tuning.jobs.cancel(queued.id)
+        gpu["busy"] = False
+        direct = await _create(client, uploaded.id, suffix = "direct")
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        _forget_aliases(monkeypatch)
+        restarted = await client.fine_tuning.jobs.list(limit = 1)
+        return direct, first, restarted
+
+    direct, first, restarted = _run(flow())
+    assert not direct.id.startswith("ftjob_q")
+    assert first.data[0].id == restarted.data[0].id == direct.id
+
+
 def test_cancelling_a_job_whose_start_is_in_flight_stops_it(queue, monkeypatch):
     client, calls, live, gpu = queue
     release = asyncio.Event()

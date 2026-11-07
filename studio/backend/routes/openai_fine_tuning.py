@@ -587,7 +587,9 @@ def _record_alias(
         _ALIAS_CREATED[alias] = created_at
 
 
-def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: int) -> None:
+def _save_alias(
+    alias: str, run_id: str, account_id: Optional[str], created_at: Optional[int]
+) -> None:
     try:
         conn = _alias_db()
         try:
@@ -1002,6 +1004,13 @@ def _ensure_drainer() -> None:
         _drainer = asyncio.get_running_loop().create_task(_drain())
 
 
+def _next_created_ns() -> int:
+    global _last_created_ns
+    # Strictly increasing: Windows clocks can tick every ~16 ms.
+    _last_created_ns = max(time.time_ns(), _last_created_ns + 1)
+    return _last_created_ns
+
+
 def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: bool) -> _Queued:
     entry = _Queued(
         alias = f"ftjob_q{secrets.token_hex(8)}",
@@ -1013,10 +1022,7 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
-    global _last_created_ns
-    # Strictly increasing: Windows clocks can tick every ~16 ms.
-    _last_created_ns = max(time.time_ns(), _last_created_ns + 1)
-    _ALIAS_CREATED_NS[entry.alias] = _last_created_ns
+    _ALIAS_CREATED_NS[entry.alias] = _next_created_ns()
     _ensure_drainer()
     return entry
 
@@ -1114,8 +1120,13 @@ async def create_fine_tuning_job(
         raise _bad_request(
             message if host_paths_visible(via_api_key) else redact_paths_in_text(message), 409
         )
-    created_at = int(datetime.now(timezone.utc).timestamp())
+    created_at = _now()
+    # Only the ns stamp is saved: created_at keeps coming from the run, as before.
+    record = (_job_id(started.job_id), started.job_id, current_account_id(), None)
+    _ALIAS_CREATED_NS[record[0]] = _next_created_ns()
+    _record_alias(*record)
     _remember_start(started.job_id, request.model_dump(), created_at)
+    await asyncio.to_thread(_save_alias, *record)
     return _for_caller(
         _job_object(
             started.job_id,
