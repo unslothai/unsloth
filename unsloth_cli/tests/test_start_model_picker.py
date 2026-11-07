@@ -344,9 +344,10 @@ def test_asks_only_with_a_terminal_on_both_ends(monkeypatch, stdin_tty, stdout_t
     ],
 )
 def test_gguf_filter_matches_gguf_rows_only(tmp_path, model, detail, expected):
-    if model.startswith("{tmp}"):
-        model = model.format(tmp = tmp_path)
-        (tmp_path / model.rsplit("/", 1)[-1]).mkdir()
+    if model.startswith("{tmp}/"):
+        folder = tmp_path / model.removeprefix("{tmp}/")
+        folder.mkdir()
+        model = str(folder)
     assert model_picker._is_gguf_entry(cat.ModelEntry("Downloaded", "n", detail, model)) is expected
 
 
