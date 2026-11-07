@@ -34,6 +34,7 @@ _KEY_GRACE_S = 300.0
 _DEFAULT_WAIT_S = 3600.0
 # A followed video hands back its job this long before the call's own timeout, which would stop it.
 _FOLLOW_MARGIN_S = 15.0
+_WATCH_POLL_S = 30.0
 _POLL_S = 0.25
 _STOP_WAIT_S = 30.0
 
@@ -235,6 +236,28 @@ def _stop_turn(cancel_event: Any) -> None:
         ticket.stop()
 
 
+def _still_running(result: Any) -> bool:
+    from studio_mcp.jobs import RUNNING
+    content = getattr(result, "structured_content", None)
+    return isinstance(content, dict) and content.get("status") in RUNNING
+
+
+def _watch_turn(cancel_event: Any, ticket: GenerationTicket) -> None:
+    """A video still rendering when its call returns is stopped with its chat. Only a Stop or an
+    aborted turn sets this per-request event; a turn that ends normally leaves it unset."""
+    if not callable(getattr(cancel_event, "wait", None)):
+        return
+
+    def watch() -> None:
+        until = time.monotonic() + _KEY_MAX_S
+        while time.monotonic() < until:
+            if cancel_event.wait(_WATCH_POLL_S):
+                ticket.stop()
+                return
+
+    threading.Thread(target = watch, name = "chat-video-stop", daemon = True).start()
+
+
 def _stop(future: Any, ticket: Any) -> None:
     # Cancelling the route alone leaves an image render running on the GPU; stop it and let the route unwind.
     if ticket.stop():
@@ -340,6 +363,8 @@ def call(
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unsloth Studio chat tool %s failed", name)
             return f"Error: MCP tool '{name}' failed: {exc}"
+        if name == "generate_video" and cancel_event is not None and _still_running(result):
+            _watch_turn(cancel_event, ticket)
         return _flatten_result(_without_nulls(result), ui_resource_uri)
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.

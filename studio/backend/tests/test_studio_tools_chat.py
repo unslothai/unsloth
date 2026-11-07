@@ -691,3 +691,56 @@ def test_following_a_video_falls_back_to_the_job_and_never_outlives_its_limit(mo
     # A refused create is not followed.
     refused = SimpleNamespace(is_error = True, structured_content = None)
     assert _follow(monkeypatch, _VideoReads(), refused, 600) is refused
+
+
+def test_a_video_still_rendering_when_its_call_returns_is_stopped_with_its_chat(monkeypatch):
+    from core.inference.generation_ticket import GenerationTicket
+
+    monkeypatch.setattr(studio_tools_mcp, "_WATCH_POLL_S", 0.05)
+    render, stop, ticket = threading.Event(), threading.Event(), GenerationTicket()
+    ticket.bind(render)
+    assert studio_tools_mcp._still_running(
+        SimpleNamespace(structured_content = {"status": "in_progress"})
+    )
+    assert not studio_tools_mcp._still_running(
+        SimpleNamespace(structured_content = {"status": "completed"})
+    )
+    studio_tools_mcp._watch_turn(stop, ticket)
+    time.sleep(0.2)
+    # The turn goes on (the model answers): the render keeps going.
+    assert not render.is_set()
+    stop.set()
+    assert render.wait(2)
+    # A stand-in event with no wait() is ignored rather than watched.
+    studio_tools_mcp._watch_turn(SimpleNamespace(is_set = lambda: True), GenerationTicket())
+
+
+@pytest.mark.parametrize(
+    "name, status, watched",
+    [
+        ("generate_video", "queued", True),
+        ("generate_video", "completed", False),
+        ("list_training_runs", "queued", False),
+    ],
+)
+def test_only_a_chats_still_running_video_is_watched(
+    server_loop, monkeypatch, name, status, watched
+):
+    seen = []
+
+    async def answer(
+        caller,
+        tool,
+        args,
+        ticket = None,
+        config_check = None,
+        follow_until = None,
+    ):
+        return SimpleNamespace(content = [], structured_content = {"id": "v1", "status": status})
+
+    studio(monkeypatch, RUN_PAYLOADS)
+    monkeypatch.setattr(studio_tools_mcp, "_call", answer)
+    monkeypatch.setattr(studio_tools_mcp, "_watch_turn", lambda event, ticket: seen.append(event))
+    turn = threading.Event()
+    out = bridge(OWNER, name, {}, cancel_event = turn)
+    assert not out.startswith("Error") and seen == ([turn] if watched else []), out
