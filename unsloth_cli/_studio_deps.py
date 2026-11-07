@@ -450,7 +450,6 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 # setup.ps1/setup.sh run `npm install` inside the installed tree, shrinking the lockfile.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
-# The Windows console launcher the update transaction moves aside and may restore from an older copy.
 _MANAGED_LAUNCHER_NAME = "unsloth.exe"
 
 
