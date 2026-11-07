@@ -18,6 +18,7 @@ from typing import Optional
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.paths.storage_roots import account_path
 
+from .diffusion_content import ROLE_LORA, inspect_checkpoint
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
 
@@ -25,6 +26,7 @@ _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
+_HUB_REPO_PREFIXES = ("models--", "datasets--", "spaces--")
 _EXPORT_LOCK = threading.Lock()
 # ``<stem>.json`` with these stems marks a model or pipeline folder to the model scanners.
 _MODEL_SENTINEL_STEMS = frozenset(
@@ -134,24 +136,36 @@ def _is_dir(p: Path) -> bool:
 
 
 def _scan_folder_roots() -> list[Path]:
-    """Registered custom model folders plus their direct sub-folders (where an export lands)."""
+    """The Models folder, its cache home and registered custom folders, each with its direct
+    sub-folders (where an export lands; hub repo folders skipped) and any ComfyUI ``loras`` folders."""
+    from hub.utils.comfy_models import comfy_lora_scan_roots
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    cache = get_hf_cache_paths()
     try:
         from storage.studio_db import list_scan_folders
         folders = list_scan_folders()
     except Exception:  # noqa: BLE001 -- discovery never fails on the scan-folder table
-        return []
+        folders = []
     roots: list[Path] = []
-    for folder in folders:
-        root = Path(folder.get("path") or "")
+    for path in (
+        cache.hub_cache,
+        cache.cache_home,
+        *(folder.get("path") or "" for folder in folders),
+    ):
+        root = Path(path)
         if not _is_dir(root):
             continue
         try:
             children = list(root.iterdir())
         except OSError:
             children = []
-        subdirs = sorted(c for c in children if not c.name.startswith(".") and _is_dir(c))
+        subdirs = sorted(
+            c for c in children if not c.name.startswith((".", *_HUB_REPO_PREFIXES)) and _is_dir(c)
+        )
         roots.append(root)
         roots.extend(subdirs[:_MAX_SCAN_FOLDER_SUBDIRS])
+        roots.extend(comfy_lora_scan_roots(root))
     return roots
 
 
@@ -208,7 +222,7 @@ def _scan_local() -> list[LoraCatalogEntry]:
     found = [(p, p.name if stem_counts.get(p.stem, 0) > 1 else p.stem) for p in files]
     used = {entry_id for _, entry_id in found}
     seen = {os.path.normcase(os.path.realpath(p)) for p in files}
-    # Custom models folders contribute only sidecar-marked image LoRAs, so model weights never show up here.
+    # Custom models folders contribute only image LoRAs, so model weights never show up here.
     for root in _scan_folder_roots():
         for p in _weight_files(root):
             key = os.path.normcase(os.path.realpath(p))
@@ -286,14 +300,26 @@ def _sidecar_data(weight_path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def is_image_lora_file(path: Path) -> bool:
-    """A .safetensors/.gguf whose sidecar marks it as an image LoRA (``kind``, or a trainer sidecar
-    from before the marker). Model scanners use this to keep image LoRAs out of model listings."""
-    if path.suffix.lower() not in _ALL_EXTS:
-        return False
+def _has_lora_sidecar(path: Path) -> bool:
     data = _sidecar_data(path)
     return data is not None and (
         data.get("kind") == LORA_SIDECAR_KIND or data.get("source") == "studio-trained"
+    )
+
+
+def is_image_lora_file(path: Path) -> bool:
+    """Sidecar-marked image LoRA, or a .safetensors of LoRA tensors not beside a model marker (a chat
+    adapter has the same keys). Model scanners use this to keep image LoRAs out of model listings."""
+    if path.suffix.lower() not in _ALL_EXTS:
+        return False
+    if _has_lora_sidecar(path):
+        return True
+    return (
+        path.suffix.lower() == ".safetensors"
+        and not any(
+            os.path.lexists(path.with_name(f"{stem}.json")) for stem in _MODEL_SENTINEL_STEMS
+        )
+        and inspect_checkpoint(str(path)).role == ROLE_LORA
     )
 
 
@@ -375,7 +401,7 @@ def export_local_lora(lora_id: str, dest_dir: Path) -> Path:
         if not out.exists():
             return not out.with_suffix(".json").exists()
         return filecmp.cmp(src, out, shallow = False) and (
-            not out.with_suffix(".json").exists() or is_image_lora_file(out)
+            not out.with_suffix(".json").exists() or _has_lora_sidecar(out)
         )
 
     with _EXPORT_LOCK:
@@ -644,7 +670,7 @@ _DIFFUSERS_LORA_BAKED_QUANT = ("int8", "fp8")
 # Prototype schemes with no validated LoRA path (and no shipped families needing one).
 _DIFFUSERS_LORA_BLOCKED_QUANT = ("nvfp4", "mxfp8")
 # In-tree pipelines with no LoRA loader mixin (no load_lora_weights / set_adapters / unload_lora_weights).
-_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES = ("moss-image",)
+_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES: tuple[str, ...] = ()
 
 
 def diffusers_lora_family_supported(family: Optional[str]) -> bool:
@@ -658,6 +684,54 @@ def diffusers_lora_family_message(family: Optional[str]) -> str:
     )
 
 
+def _whole_pipeline_label(family: str) -> Optional[str]:
+    from .diffusion_families import detect_family
+
+    fam = detect_family("", override = family) if family else None
+    if fam is None or not fam.single_file_is_pipeline:
+        return None
+    return fam.label or fam.name
+
+
+def lora_unavailable_reason(
+    *,
+    engine: Optional[str],
+    family: Optional[str],
+    model_kind: Optional[str],
+    transformer_quant: Optional[str],
+    compiled: bool = False,
+) -> Optional[str]:
+    """Why ``engine`` cannot apply LoRAs to this build, shown on the Images page; None when it can."""
+    fam = (family or "").lower()
+    name = family or "this model"
+    if engine == "mlx":
+        from .mlx_diffusion_routing import mlx_capabilities
+        if mlx_capabilities(fam).loras:
+            return None
+        return f"The MLX engine does not apply LoRAs to {name} yet."
+    if engine == "sd_cpp":
+        if any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS):
+            return None
+        return f"The native sd.cpp engine cannot apply LoRAs to {name}."
+    if not diffusers_lora_family_supported(fam):
+        return f"LoRAs are not supported for {name} yet: its pipeline has no LoRA loader."
+    quant = (transformer_quant or "").lower()
+    if quant in _DIFFUSERS_LORA_BAKED_QUANT:
+        return None  # load-time bake; adapters ride inside the compiled quantized build
+    if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
+        return f"LoRAs cannot be applied to a {quant.upper()} transformer."
+    # A GGUF transformer takes adapters unfused (peft wraps each GGUFLinear); only a whole-pipeline GGUF is refused.
+    whole = _whole_pipeline_label(fam) if model_kind == "gguf" else None
+    if whole:
+        return (
+            f"LoRAs are not applied to a whole-pipeline {whole} GGUF. "
+            "Load the .safetensors checkpoint to use LoRAs."
+        )
+    if compiled:
+        return "Speed compiled this model, so LoRAs are off. Reload it with Speed set to Off or Eager to use LoRAs."
+    return None
+
+
 def supports_lora(
     *,
     engine: Optional[str],
@@ -666,19 +740,13 @@ def supports_lora(
     transformer_quant: Optional[str],
     compiled: bool = False,
 ) -> bool:
-    """Adapters bake before torch.compile for torchao int8/fp8; native sd_cpp is LoRA-capable families only, nvfp4/mxfp8 unsupported."""
-    fam = (family or "").lower()
-    if engine == "sd_cpp":
-        return any(tok in fam for tok in _NATIVE_LORA_FAMILY_TOKENS)
-    if not diffusers_lora_family_supported(fam):
-        return False
-    quant = (transformer_quant or "").lower()
-    if quant in _DIFFUSERS_LORA_BAKED_QUANT:
-        return True  # load-time bake; adapters ride inside the compiled quantized build
-    if quant in _DIFFUSERS_LORA_BLOCKED_QUANT:
-        return False
-    if model_kind == "gguf":
-        return False  # GGUF diffusers transformer: use the native engine for LoRA
-    if compiled:
-        return False  # can't load an adapter onto an already-compiled transformer
-    return True
+    return (
+        lora_unavailable_reason(
+            engine = engine,
+            family = family,
+            model_kind = model_kind,
+            transformer_quant = transformer_quant,
+            compiled = compiled,
+        )
+        is None
+    )

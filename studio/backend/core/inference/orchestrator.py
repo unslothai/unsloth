@@ -207,13 +207,23 @@ class _LoadCancelled(Exception):
 _CTX = mp.get_context("spawn")
 
 
+def _is_dispatcher_wake(resp) -> bool:
+    return isinstance(resp, dict) and resp.get("type") == _DISPATCHER_WAKE
+
+
 _DISPATCH_READ_TIMEOUT = 30.0
 
 _STOP_NOTICE_INTERVAL = 0.1
 _DISPATCH_POLL_INTERVAL = 0.5
+# Parent-sent reply that only wakes a dispatcher parked in its poll; no request_id, every reader skips it.
+_DISPATCHER_WAKE = "_dispatcher_wake"
 _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _CANCELLED_ROWS_GRACE = 5.0
+_SHUTDOWN_CANCEL_GRACE_S = 0.5
+_SHUTDOWN_JOIN_SLICE_S = 0.05
+_SHUTDOWN_READER_IDLE_S = 0.8
+_SHUTDOWN_READER_MAX_S = 5.0
 
 # Transformers TTS only; generous since _ensure_subprocess_alive already catches dead workers.
 _AUDIO_GENERATION_TIMEOUT = 900.0
@@ -274,6 +284,12 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_int8_prefill",
     "mlx_int8_prefill_requested",
     "mlx_int8_prefill_reason",
+    "mlx_ane_prefill",
+    "mlx_ane_prefill_requested",
+    "mlx_ane_prefill_reason",
+    "mlx_fast_verify",
+    "mlx_fast_verify_requested",
+    "mlx_fast_verify_reason",
     "mlx_offload",
     "chat_template_override_requested",
     "chat_template_override_reason",
@@ -398,11 +414,13 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
         "is_mlx": model_info.get("is_mlx", False),
+        "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
         "is_audio": model_info.get("is_audio", False),
         "audio_type": model_info.get("audio_type"),
         "has_audio_input": model_info.get("has_audio_input", False),
         "has_video_input": model_info.get("has_video_input", False),
+        "speaks": model_info.get("speaks", False),
         "context_length": model_info.get("context_length"),
         "native_context_length": model_info.get("native_context_length"),
         "max_context_length": model_info.get("max_context_length"),
@@ -415,6 +433,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "precision_folder": model_info.get("precision_folder"),
         "audio_workflows": model_info.get("audio_workflows"),
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
@@ -434,10 +453,21 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     }
 
 
+def _load_settings(sub_config: dict) -> dict:
+    """What decides the weights and runtime a worker holds; the rest changes with each request."""
+    return {
+        key: value
+        for key, value in sub_config.items()
+        if key not in ("max_seq_length", "gpu_selection", "disable_xet")
+    }
+
+
 class InferenceOrchestrator:
     """Inference backend orchestrator, subprocess-based. Same API surface as InferenceBackend (so
     routes/inference.py needs minimal changes); all heavy ML work happens in a persistent
     subprocess."""
+
+    _replies_read = 0
 
     _load_download_keys: Sequence[str] = ()
 
@@ -848,24 +878,22 @@ class InferenceOrchestrator:
             # Already gone: a nonzero status is an unwaited crash and keeps its replay.
             exitcode = getattr(self._proc, "exitcode", 0) if self._proc is not None else 0
             self._worker_stopped_deliberately = exitcode == 0
+            self._stop_shutdown_drainer()
             self._proc = None
             return True
 
         self._teardown_going_out()
+        if self._drain_event is not None:
+            self._drain_event.set()
         self._cancel_generation()
-        time.sleep(0.5)
-
-        self._drain_queue()
+        self._drain_unread_replies()
 
         try:
             self._cmd_queue.put({"type": "shutdown"})
         except (OSError, ValueError):
             self._teardown_not_sent()
 
-        try:
-            self._proc.join(timeout = timeout)
-        except Exception:
-            pass
+        self._join_worker_draining(timeout + _SHUTDOWN_CANCEL_GRACE_S)
 
         if self._proc is not None and self._proc.is_alive():
             logger.warning("Inference subprocess did not exit gracefully, terminating")
@@ -898,6 +926,10 @@ class InferenceOrchestrator:
             )
             return False
 
+        # Termination can leave a partial queue frame that blocks even get_nowait().
+        if self._proc is not None and self._proc.exitcode == 0:
+            self._let_readers_finish()
+        self._stop_shutdown_drainer()
         # Without this flag every model switch replayed a healthy worker's stderr at ERROR.
         self._worker_stopped_deliberately = True
         self._proc = None
@@ -911,6 +943,155 @@ class InferenceOrchestrator:
         logger.info("Inference subprocess shut down")
         return True
 
+    def _join_worker_draining(self, timeout: float) -> None:
+        """Join while draining replies: a child exits only once its queue feeder flushes."""
+        proc = self._proc
+        try:
+            if getattr(proc, "sentinel", None) is None:
+                proc.join(timeout = timeout)
+                return
+            now = time.monotonic()
+            deadline = now + max(timeout, 0.0)
+            reader_hard_deadline = now + _SHUTDOWN_READER_MAX_S
+            reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+            seen = self._replies_read
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                proc.join(timeout = min(_SHUTDOWN_JOIN_SLICE_S, remaining))
+                now = time.monotonic()
+                if self._replies_read != seen:
+                    seen = self._replies_read
+                    reader_idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+                abandoned = False
+                if now >= min(reader_hard_deadline, reader_idle_deadline):
+                    with self._mailbox_lock:
+                        for rid, mailbox in tuple(self._direct_mailboxes.items()):
+                            owner = self._request_cancel_events.get(rid)
+                            if owner is None:
+                                continue
+                            owner.set()
+                            self._request_cancel_events.pop(rid, None)
+                            mailbox.put({"type": "gen_done", "request_id": rid})
+                            mailbox.put(
+                                {
+                                    "type": "audio_error",
+                                    "request_id": rid,
+                                    "cancelled": True,
+                                    "error": "Audio generation cancelled",
+                                }
+                            )
+                            self._direct_mailboxes.pop(rid, None)
+                            abandoned = True
+                self._drain_unread_replies()
+                if abandoned:
+                    proc.join(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                if not proc.is_alive():
+                    break
+        except Exception:
+            pass
+
+    def _drain_unread_replies(self) -> None:
+        """Route pending replies unless a direct reader owns the queue."""
+        with self._mailbox_lock:
+            if self._direct_mailboxes:
+                return
+        resp_queue, worker = self._resp_queue, self._proc
+        if resp_queue is None:
+            return
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is not None and state[0] is resp_queue and state[1].is_alive():
+            return
+        stop = threading.Event()
+
+        def drain():
+            try:
+                while not stop.is_set():
+                    with self._mailbox_lock:
+                        if (
+                            self._direct_mailboxes
+                            or self._resp_queue is not resp_queue
+                            or self._proc is not worker
+                        ):
+                            return
+                    try:
+                        resp = resp_queue.get(timeout = _SHUTDOWN_JOIN_SLICE_S)
+                    except queue.Empty:
+                        continue
+                    except (EOFError, OSError, ValueError):
+                        return
+                    rid = resp.get("request_id") if isinstance(resp, dict) else None
+                    with self._mailbox_lock:
+                        if self._resp_queue is not resp_queue or self._proc is not worker:
+                            return
+                        mbox = self._mailboxes.get(rid) if rid else None
+                        if mbox is not None:
+                            mbox.put(resp)
+            finally:
+                if stop.is_set():
+                    reader = getattr(resp_queue, "_reader", None)
+                    if reader is not None:
+                        reader.close()
+
+        thread = threading.Thread(target = drain, daemon = True, name = "inference-shutdown-drain")
+        self._shutdown_drainer = (resp_queue, thread, stop)
+        thread.start()
+
+    def _stop_shutdown_drainer(self) -> None:
+        state = getattr(self, "_shutdown_drainer", None)
+        if state is None:
+            return
+        resp_queue, thread, stop = state
+        stop.set()
+        # A dead producer can leave a partial frame; its parent's writer otherwise prevents EOF.
+        writer = getattr(resp_queue, "_writer", None)
+        if writer is not None:
+            writer.close()
+        thread.join(timeout = _SHUTDOWN_JOIN_SLICE_S * 2)
+        if not thread.is_alive():
+            reader = getattr(resp_queue, "_reader", None)
+            if reader is not None:
+                reader.close()
+        self._shutdown_drainer = None
+
+    def _let_readers_finish(self) -> None:
+        """A stream reports a worker crash once the handle swaps, so let it read its tail first."""
+        now = time.monotonic()
+        hard_deadline = now + _SHUTDOWN_READER_MAX_S
+        idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+        seen = self._replies_read
+        while now < min(hard_deadline, idle_deadline):
+            with self._mailbox_lock:
+                if not self._mailboxes and not self._direct_mailboxes:
+                    return
+            self._drain_unread_replies()
+            time.sleep(0.02)
+            now = time.monotonic()
+            if self._replies_read != seen:
+                seen = self._replies_read
+                idle_deadline = now + _SHUTDOWN_READER_IDLE_S
+
+    @staticmethod
+    def _free_vram_mib() -> Optional[dict[int, int]]:
+        """Free MiB per visible device from fresh live telemetry, or None when unreadable."""
+        from utils.hardware import get_visible_gpu_utilization
+        try:
+            from utils.hardware import gpu_query
+
+            result: dict[int, int] = {}
+            # Consecutive samples are compared: a cached one would read as settled.
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+            for device in devices:
+                index = int(device["index"])
+                total = float(device["vram_total_gb"])
+                used = float(device["vram_used_gb"])
+                result[index] = max(int((total - used) * 1024), 0)
+            return result or None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+
     @staticmethod
     def _wait_for_worker_vram_settle(
         since_kill: float,
@@ -919,10 +1100,9 @@ class InferenceOrchestrator:
         max_wait: float = 2.0,
         interval: float = 0.25,
         tolerance_mib: int = 256,
+        before_kill_free_mib: Optional[dict[int, int]] = None,
     ) -> bool:
         """Poll cross-platform live telemetry until dead-worker VRAM stabilises."""
-        from utils.hardware import get_visible_gpu_utilization
-
         if since_kill <= 0:
             return not expected_free_gb
         deadline = time.monotonic() + max(max_wait, 0.0)
@@ -930,21 +1110,14 @@ class InferenceOrchestrator:
         def _probe() -> Optional[dict[int, int]]:
             if time.monotonic() >= deadline:
                 return None
-            try:
-                from utils.hardware import gpu_query
+            return InferenceOrchestrator._free_vram_mib()
 
-                result: dict[int, int] = {}
-                # Consecutive samples are compared: a cached one would read as settled.
-                with gpu_query.fresh_reads():
-                    devices = get_visible_gpu_utilization().get("devices", [])
-                for device in devices:
-                    index = int(device["index"])
-                    total = float(device["vram_total_gb"])
-                    used = float(device["vram_used_gb"])
-                    result[index] = max(int((total - used) * 1024), 0)
-                return result or None
-            except (KeyError, TypeError, ValueError, OverflowError):
-                return None
+        def _released(after: dict[int, int], before: dict[int, int]) -> bool:
+            return any(
+                after[index] - before[index]
+                >= max(tolerance_mib, int(max(after[index], before[index]) * 0.02))
+                for index in after
+            )
 
         previous = _probe()
         if not previous:
@@ -961,7 +1134,16 @@ class InferenceOrchestrator:
 
         if _threshold_reached(previous):
             return True
-        observed_reclaim = False
+        # A release that landed before the first poll is still a release: without the pre-kill
+        # sample it read as stable-but-unreleased and the wait ran to its deadline.
+        observed_reclaim = bool(
+            before_kill_free_mib
+            and before_kill_free_mib.keys() == previous.keys()
+            and _released(previous, before_kill_free_mib)
+        )
+        # A release seen only against the pre-kill sample may be partial: ask for two stable polls.
+        stable_needed = 2 if observed_reclaim else 1
+        stable_run = 0
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -970,12 +1152,9 @@ class InferenceOrchestrator:
             current = _probe()
             if not current or current.keys() != previous.keys():
                 return not expected_free_gb
-            if any(
-                current[index] - previous[index]
-                >= max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
-                for index in current
-            ):
+            if _released(current, previous):
                 observed_reclaim = True
+                stable_needed = 1
             if _threshold_reached(current):
                 return True
             stable = all(
@@ -983,11 +1162,47 @@ class InferenceOrchestrator:
                 < max(tolerance_mib, int(max(current[index], previous[index]) * 0.02))
                 for index in current
             )
+            stable_run = stable_run + 1 if stable else 0
             # Stable low samples can precede delayed driver reclaim; trust stability only after a release.
-            if stable and observed_reclaim and not expected_mib:
+            if stable and observed_reclaim and not expected_mib and stable_run >= stable_needed:
                 return True
             previous = current
         return not expected_free_gb
+
+    @staticmethod
+    def _describe_vram_shortfall(expected_free_gb: dict[int, float]) -> str:
+        """Report measured free VRAM, or nothing when telemetry is unavailable."""
+        try:
+            from utils.hardware import get_visible_gpu_utilization, gpu_query
+            with gpu_query.fresh_reads():
+                devices = get_visible_gpu_utilization().get("devices", [])
+        except Exception:
+            return ""
+        parts = []
+        for device in devices:
+            try:
+                index = int(device["index"])
+                needed = expected_free_gb.get(index)
+                if needed is None:
+                    continue
+                free = max(float(device["vram_total_gb"]) - float(device["vram_used_gb"]), 0.0)
+                parts.append(
+                    f"free {free:.1f} GiB of the {float(needed):.1f} GiB needed on cuda:{index}"
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return "; ".join(parts)
+
+    @staticmethod
+    def _vram_wait_message(expected_free_gb: dict[int, float]) -> str:
+        """The settle check cannot identify which process holds VRAM (#16436)."""
+        shortfall = InferenceOrchestrator._describe_vram_shortfall(expected_free_gb)
+        detail = f" ({shortfall})" if shortfall else ""
+        return (
+            "GPU memory has not freed up yet; not starting the replacement model"
+            f"{detail}. A reply may still be finishing, or another app may be "
+            "holding the GPU. Retry shortly."
+        )
 
     def _reset_worker_scoped_state(self) -> None:
         """Drop bookkeeping that only means anything for the worker that just died."""
@@ -1088,6 +1303,7 @@ class InferenceOrchestrator:
 
     def _observe_response(self, resp, worker):
         """Retire ``worker`` if its Metal queue is dead; nothing else reaps it."""
+        self._replies_read += 1
         detail = resp.get("error") or ""
         if worker is None or not is_metal_queue_dead(detail):
             return resp
@@ -1191,8 +1407,12 @@ class InferenceOrchestrator:
         resp_queue = self._resp_queue
         if resp_queue is None:
             return None
+        started = time.monotonic()
         try:
             resp = resp_queue.get(timeout = timeout)
+            while _is_dispatcher_wake(resp):
+                left = None if timeout is None else max(started + timeout - time.monotonic(), 0.0)
+                resp = resp_queue.get(timeout = left)
             return self._observe_response(resp, worker) if observe else resp
         except queue.Empty:
             return None
@@ -1269,11 +1489,13 @@ class InferenceOrchestrator:
             return events
         while True:
             try:
-                events.append(self._resp_queue.get_nowait())
+                resp = self._resp_queue.get_nowait()
             except queue.Empty:
                 return events
             except (EOFError, OSError, ValueError):
                 return events
+            if not _is_dispatcher_wake(resp):
+                events.append(resp)
 
     def _direct_reader(
         self,
@@ -1390,7 +1612,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video_b64: Optional[str] = None,
+        videos_b64: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1426,8 +1648,8 @@ class InferenceOrchestrator:
         if response_format is not None:
             cmd["response_format"] = response_format
             cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
-        if video_b64:
-            cmd["video_base64"] = video_b64
+        if videos_b64:
+            cmd["videos_base64"] = videos_b64
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1557,6 +1779,9 @@ class InferenceOrchestrator:
                     yield int(resp.get("row", 0)), resp.get("text", "")
                 else:
                     yield resp.get("text", "")
+            elif rtype == "speech":
+                if rows is None and not stop_sent:
+                    yield {"speech": resp.get("speech"), "sample_rate": resp.get("sample_rate")}
             elif rtype == "diffusion_frame":
                 if frames and rows is None and not stop_sent:
                     yield {
@@ -1610,9 +1835,30 @@ class InferenceOrchestrator:
             if thread is not None and self._dispatcher_thread is not thread:
                 return
             self._dispatcher_stop.set()
+            if self._dispatcher_thread.is_alive():
+                self._wake_dispatcher()
             self._dispatcher_thread.join(timeout = _DISPATCH_STOP_TIMEOUT)
             self._dispatcher_thread = None
             logger.debug("Dispatcher thread stopped")
+
+    def _wake_dispatcher(self) -> None:
+        """Best effort: on failure the dispatcher still stops on its next poll timeout."""
+        resp_queue = self._resp_queue
+        if resp_queue is None:
+            return
+        try:
+            # Pending data already wakes the reader; a dead writer may still hold the feeder lock.
+            if not resp_queue.empty():
+                return
+            # Interpreter exit must not wait on this put over a full or dead pipe.
+            cancel_join = getattr(resp_queue, "cancel_join_thread", None)
+            if cancel_join is not None:
+                cancel_join()
+            resp_queue.put_nowait({"type": _DISPATCHER_WAKE})
+        except Exception:
+            logger.debug(
+                "Dispatcher wake-up put failed; stopping on the poll timeout", exc_info = True
+            )
 
     def _dispatcher_loop(self) -> None:
         """Background loop: read resp_queue and route to mailboxes by request_id."""
@@ -1627,6 +1873,8 @@ class InferenceOrchestrator:
                 continue
             except (EOFError, OSError, ValueError):
                 break
+            if _is_dispatcher_wake(resp):
+                continue  # loop condition rechecks the stop flag
 
             # Sole consumer of the response queue; never let routing kill it, or every in-flight stream hangs.
             try:
@@ -1695,7 +1943,7 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         rows: Optional[list] = None,
         expected_model: Optional[str] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -1753,7 +2001,7 @@ class InferenceOrchestrator:
             tool_protocol_active = tool_protocol_active,
             seed = seed,
             rows = rows,
-            video_b64 = video,
+            videos_b64 = videos,
             diffusion_frames = diffusion_frames,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
@@ -2001,6 +2249,8 @@ class InferenceOrchestrator:
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
         mlx_int8_prefill: bool = False,
+        mlx_ane_prefill: bool = False,
+        mlx_fast_verify: bool = False,
         mlx_offload: tuple = (None, None),
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
@@ -2018,8 +2268,9 @@ class InferenceOrchestrator:
         engine_options = None,
         n_parallel: Optional[int] = None,
     ) -> bool:
-        """Load a model for inference. Always spawns a fresh subprocess per load for a clean
-        interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
+        """Load a model for inference. Spawns a fresh subprocess per load for a clean interpreter
+        (no stale unsloth patches, torch.compile caches, or getsource failures); only a smaller
+        context on the MLX load already held is applied in place."""
         if engine != "auto":
             return self._load_managed_engine(
                 engine,
@@ -2079,6 +2330,8 @@ class InferenceOrchestrator:
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
                 "mlx_int8_prefill": bool(mlx_int8_prefill),
+                "mlx_ane_prefill": bool(mlx_ane_prefill),
+                "mlx_fast_verify": bool(mlx_fast_verify),
                 "mlx_offload": tuple(mlx_offload),
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
@@ -2096,8 +2349,11 @@ class InferenceOrchestrator:
             if audio_cpp_model:
                 # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
                 sub_config["audio_cpp"] = True
-                if audio_load_runs_on_cpu(getattr(config, "audio_type", None), audio_device):
-                    # A CPU-only runtime runs Auto on the CPU too: say so, so no card is chosen and the worker hides them.
+                if audio_load_runs_on_cpu(
+                    getattr(config, "audio_type", None), audio_device, config.audio_cpp
+                ):
+                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
+                    # is chosen and the worker hides them.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
@@ -2134,12 +2390,31 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            # Always spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
+            if self._narrow_context_in_place(
+                sub_config, model_name, parallel_slots, load_cancel_event
+            ):
+                self.loading_models.discard(model_name)
+                if on_prior_worker_released is not None:
+                    on_prior_worker_released()
+                return True
+
+            # Otherwise spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
+            before_kill_free_mib = None
             if self._ensure_subprocess_alive():
                 self._cancel_generation()
-                time.sleep(0.3)
+                if post_handoff_expected_free_gb is None and not (
+                    len(resolved_gpu_ids or ()) == 1
+                    and isinstance(gpu_selection, dict)
+                    and gpu_selection.get("required_gb") is not None
+                ):
+                    # No free-VRAM target for the settle wait below: sample the live worker's
+                    # footprint so a release already finished by the first poll is recognised.
+                    try:
+                        before_kill_free_mib = self._free_vram_mib()
+                    except Exception:  # noqa: BLE001 - an unreadable sample keeps the plain settle wait
+                        before_kill_free_mib = None
                 if self._shutdown_subprocess() is False:
                     # Worker survived kill (wedged CUDA syscall); do not spawn a second over its GPU memory.
                     raise RuntimeError(
@@ -2162,15 +2437,16 @@ class InferenceOrchestrator:
                     required_gb = gpu_selection.get("required_gb")
                     if required_gb is not None:
                         expected_free_gb = {int(resolved_gpu_ids[0]): float(required_gb)}
-                settled = self._wait_for_worker_vram_settle(
+                # An MLX worker first reads memory seconds after its imports, past the old worker's reclaim.
+                settled = (
+                    expected_free_gb is None and sub_config["device_backend"] == "mlx"
+                ) or self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
+                    before_kill_free_mib = before_kill_free_mib,
                 )
                 if expected_free_gb is not None and not settled:
-                    raise RuntimeError(
-                        "GPU memory from the previous inference worker was not released; "
-                        "not starting the replacement model. Retry shortly."
-                    )
+                    raise RuntimeError(self._vram_wait_message(expected_free_gb))
 
             # Previous worker gone, VRAM back: the last moment before a long download.
             if on_prior_worker_released is not None:
@@ -2300,6 +2576,7 @@ class InferenceOrchestrator:
                         self.models[self.active_model_name] = _mirrored_model_entry(
                             model_info, model_name
                         )
+                        self._worker_load_settings = (self._proc, _load_settings(sub_config))
                         self.models[self.active_model_name]["parallel_slots"] = parallel_slots
                         self.models[self.active_model_name]["can_batch"] = model_info.get(
                             "can_batch"
@@ -2312,6 +2589,9 @@ class InferenceOrchestrator:
                             _audio_type in NATIVE_AUDIO_TYPES
                             and audio_load_runs_on_cpu(_audio_type, audio_device)
                         ) or model_info.get("audio_cpp_backend") == "cpu"
+                        self.models[self.active_model_name]["audio_cpu_only"] = bool(
+                            getattr(getattr(config, "audio_cpp", None), "cpu_only", False)
+                        )
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
@@ -2362,6 +2642,77 @@ class InferenceOrchestrator:
             raise
         finally:
             self._release_load_downloads()
+
+    def _narrow_context_in_place(
+        self,
+        sub_config: dict,
+        model_name: str,
+        parallel_slots,
+        cancel_event = None,
+    ) -> bool:
+        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        proc = self._proc
+        entry = self.models.get(model_name)
+        held = getattr(self, "_worker_load_settings", None)
+        if (
+            sub_config["device_backend"] != "mlx"
+            or sub_config["mlx_distributed"]
+            or entry is None
+            or self.active_model_name != model_name
+            or entry.get("parallel_slots") != parallel_slots
+            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
+            or held != (proc, _load_settings(sub_config))
+            or not proc.is_alive()
+            or self._replies_in_flight()
+        ):
+            return False
+        with self._dispatcher_lifecycle_lock:
+            if self._worker_reserved_for is not None:
+                return False
+            self._worker_reserved_for = "the context is being narrowed"
+        acquired = False
+        try:
+            # A running dispatcher would drop the reply.
+            if not self._wait_worker_idle():
+                return False
+            acquired = self._gen_lock.acquire(timeout = 5.0)
+            if not acquired or self._proc is not proc:
+                return False
+            with self._active_cancel_lock:
+                if self._active_cancel_events:
+                    return False
+            with self._send_order_lock:
+                self._send_cmd(
+                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                )
+                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+            if not fields:
+                return False
+            from utils.process_lifetime import is_process_shutting_down
+
+            with self._subprocess_shutdown_lock:
+                if (
+                    is_process_shutting_down()
+                    or self._proc is not proc
+                    or model_name not in self.loading_models
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    return False
+                entry.update(fields)
+                self.load_generation += 1
+                self._loaded_by_user_action = False
+            logger.info(
+                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Could not narrow the context in place: %s", exc)
+            return False
+        finally:
+            if acquired:
+                self._gen_lock.release()
+            with self._dispatcher_lifecycle_lock:
+                self._worker_reserved_for = None
 
     def _claim_load_downloads(self, resp: dict) -> None:
         from hub.services.load_downloads import claim_load_downloads
@@ -2772,6 +3123,7 @@ class InferenceOrchestrator:
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
         force_reset: bool = False,
+        keeps_boundary: bool = False,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
@@ -2900,7 +3252,7 @@ class InferenceOrchestrator:
                 max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
-                keeps_boundary = _keeps_compaction_boundary(thread_id),
+                keeps_boundary = keeps_boundary or _keeps_compaction_boundary(thread_id),
                 can_reset = can_reset,
                 recall_offered = recall_offered,
                 reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -2937,6 +3289,7 @@ class InferenceOrchestrator:
                 fitted,
                 conversation,
                 branch_messages = live_branch or conversation,
+                query_messages = request_branch,
                 thread_id = thread_id,
                 # A forged tool exchange is only safe when the request advertises the tool.
                 style = "tool" if recall_offered else "inline",
@@ -3193,7 +3546,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3227,7 +3580,7 @@ class InferenceOrchestrator:
             stop = stop,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
-            video = video,
+            videos = videos,
             diffusion_frames = diffusion_frames,
         )
 
@@ -3258,7 +3611,7 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
     ) -> Generator[Any, None, None]:
@@ -3290,7 +3643,7 @@ class InferenceOrchestrator:
             logit_bias = logit_bias,
             stop = stop,
             rows = rows,
-            video = video,
+            videos = videos,
             response_format = response_format,
             reasoning_is_extracted = reasoning_is_extracted,
         )
@@ -3444,6 +3797,8 @@ class InferenceOrchestrator:
         _request_ids = {id(message) for message in initial}
         _sticky_boundary_applied = False
         _conversation_recall_done = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Loop notices are user turns, so the fit stops protecting the question as the newest user turn.
         _rolling_anchor_ids: set[int] = set()
         for message in reversed(initial):
@@ -3452,7 +3807,7 @@ class InferenceOrchestrator:
                 break
 
         def _fit_iteration(conversation: list, active_tools: list, live_branch: list) -> dict:
-            nonlocal _sticky_boundary_applied, _conversation_recall_done
+            nonlocal _sticky_boundary_applied, _conversation_recall_done, _loop_cut
             if loop_images:
                 # The count cannot price pictures.
                 return {}
@@ -3484,6 +3839,10 @@ class InferenceOrchestrator:
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,
+                keeps_boundary = _loop_cut,
+            )
+            _loop_cut = _loop_cut or any(
+                event.get("dropped_messages") for event in result.get("events") or ()
             )
             # The saved boundary applies once, in the first fit that runs (not resumed or failed).
             if result.get("boundary_applied"):
@@ -3594,7 +3953,7 @@ class InferenceOrchestrator:
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
         rows: Optional[list] = None,
-        video: Optional[str] = None,
+        videos: Optional[list[str]] = None,
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
@@ -3663,7 +4022,7 @@ class InferenceOrchestrator:
                 stop = stop,
                 rows = rows,
                 expected_model = expected_model,
-                video = video,
+                videos = videos,
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
@@ -3711,7 +4070,7 @@ class InferenceOrchestrator:
                 tool_protocol_active = tool_protocol_active,
                 seed = seed,
                 rows = rows,
-                video_b64 = video,
+                videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
@@ -4141,8 +4500,11 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
-        """Audio input generation (e.g. Gemma 3n): streams text tokens."""
+        """Audio input generation (e.g. Gemma 3n): streams text tokens; with ``speak``, then one
+        ``{"speech", "sample_rate"}`` item carrying the spoken reply."""
         yield from self._generate_audio_input_inner(
             audio_array = audio_array,
             audio_type = None,  # worker uses generate_audio_input_response
@@ -4159,6 +4521,8 @@ class InferenceOrchestrator:
             stats_holder = stats_holder,
             stop = stop,
             extra_audio_arrays = extra_audio_arrays,
+            speak = speak,
+            tools = tools,
         )
 
     def _generate_audio_input_inner(
@@ -4178,6 +4542,8 @@ class InferenceOrchestrator:
         stats_holder: Optional[dict] = None,
         stop = None,
         extra_audio_arrays: Optional[list] = None,
+        speak: bool = False,
+        tools: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR). ``stats_holder``: as in
         generate_chat_response, caller-owned and filled on gen_done with the worker's usage /
@@ -4223,6 +4589,10 @@ class InferenceOrchestrator:
                 cmd["use_adapter"] = use_adapter
             if stop:
                 cmd["stop"] = stop
+            if speak:
+                cmd["speak"] = True
+            if tools is not None:
+                cmd["tools"] = tools
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
             try:

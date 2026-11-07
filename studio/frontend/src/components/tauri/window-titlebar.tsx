@@ -9,6 +9,7 @@ import {
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
+import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
@@ -79,6 +80,10 @@ export function shouldUseCustomWindowTitlebar(): boolean {
     return false;
   }
   return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
+}
+
+export function usesWindowsTitlebar(): boolean {
+  return isTauri && /\bwin(?:32|64|dows)?\b/.test(getClientPlatform());
 }
 
 export function shouldUseNativeMacWindowTitlebar(): boolean {
@@ -208,6 +213,7 @@ export function DesktopTitlebarNavigation({
   /** Off in mobile, where Navbar's SidebarTrigger owns the slot; a spacer holds it open. */
   showSidebarToggle?: boolean;
 }): ReactElement {
+  const t = useT();
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
   };
@@ -227,13 +233,13 @@ export function DesktopTitlebarNavigation({
         className,
       )}
       role="toolbar"
-      aria-label="Sidebar and page navigation"
+      aria-label={t("desktopShell.navigation")}
     >
       {showSidebarToggle ? (
         <button
           type="button"
-          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          title={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
+          aria-label={expanded ? t("desktopShell.collapseSidebar") : t("desktopShell.expandSidebar")}
           onMouseDown={stopTitlebarDrag}
           onDoubleClick={stopTitlebarDrag}
           onClick={(event) => {
@@ -254,8 +260,8 @@ export function DesktopTitlebarNavigation({
       )}
       <button
         type="button"
-        title="Go back"
-        aria-label="Go back"
+        title={t("desktopShell.goBack")}
+        aria-label={t("desktopShell.goBack")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -272,8 +278,8 @@ export function DesktopTitlebarNavigation({
       </button>
       <button
         type="button"
-        title="Go forward"
-        aria-label="Go forward"
+        title={t("desktopShell.goForward")}
+        aria-label={t("desktopShell.goForward")}
         onMouseDown={stopTitlebarDrag}
         onDoubleClick={stopTitlebarDrag}
         onClick={(event) => {
@@ -297,6 +303,7 @@ export function WindowTitlebar({
 }: {
   showSidebarSurface?: boolean;
 }): ReactElement | null {
+  const t = useT();
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
@@ -496,17 +503,19 @@ export function WindowTitlebar({
       )}
       <header
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
         data-titlebar-live-width-scope=""
         data-slot="window-titlebar"
+        data-wallpaper-sidebar-pinned={showSidebarSurface && pinned || undefined}
         data-viewport-backdrop-open={backdropOpen ? "" : undefined}
         data-viewport-backdrop-tone={backdropTone ?? undefined}
-        aria-label="Window titlebar"
+        aria-label={t("desktopShell.titlebar")}
       >
         {showSidebarSurface && (
           <div
+            data-wallpaper-chrome-controls=""
             // Glyph in the sidebar's icon column, over New chat's pencil: 19px in, less 6px padding.
             className="pointer-events-auto absolute left-0 top-0 flex h-full min-w-0 items-center pl-[calc(4.75*var(--spacing)-6px)]"
             style={{ width: titlebarNavigationWidth }}
@@ -536,17 +545,18 @@ export function WindowTitlebar({
             "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
+          data-wallpaper-chrome-controls=""
           role="toolbar"
-          aria-label="Window controls"
+          aria-label={t("desktopShell.windowControls")}
         >
           <WindowControlButton
-            label="Minimize window"
+            label={t("desktopShell.minimize")}
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
             <CaptionGlyph kind="minimize" />
           </WindowControlButton>
           <WindowControlButton
-            label={maximized ? "Restore window" : "Maximize window"}
+            label={maximized ? t("desktopShell.restore") : t("desktopShell.maximize")}
             onClick={() =>
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
@@ -554,7 +564,7 @@ export function WindowTitlebar({
             <CaptionGlyph kind={maximized ? "restore" : "maximize"} />
           </WindowControlButton>
           <WindowControlButton
-            label="Close window"
+            label={t("desktopShell.close")}
             // No optimistic overlay: a quit confirmation may still be asking; Rust raises the overlay.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-[#c42b1c] hover:text-white active:bg-[#c42b1c]/90"
@@ -568,38 +578,38 @@ export function WindowTitlebar({
         <>
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("North")}
           />
           {/* resize grips stay above dialogs and notifications. */}
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("South")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("West")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("East")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+            className="modal-pe-live pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("NorthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+            className="modal-pe-live pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
             style={{
               zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
               // keep the resize corner outside the close button.
@@ -610,13 +620,13 @@ export function WindowTitlebar({
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthEast")}
           />

@@ -87,7 +87,14 @@ def _hit(conn, scope, q, k, monkeypatch):
     return got
 
 
-def test_cache_matches_vec0_on_unnormalised_nan_zero_and_tied_rows(rag_conn, monkeypatch):
+@pytest.mark.parametrize("block, fetch", [(None, None), (7, 11)])
+def test_cache_matches_vec0_on_unnormalised_nan_zero_and_tied_rows(
+    rag_conn, monkeypatch, block, fetch
+):
+    # Small sizes push the build across fetch blocks and the scan across matvec blocks.
+    if block:
+        monkeypatch.setattr(vec_cache, "_BLOCK", block)
+        monkeypatch.setattr(vec_cache, "_FETCH", fetch)
     rows = _vectors(300)
     rows[5] = np.nan
     rows[9] = 0.0
@@ -291,3 +298,46 @@ def test_the_builder_opens_and_closes_through_the_connection_gate(monkeypatch, t
     conn = vec_cache._connect(str(tmp_path / "x.db"))
     assert isinstance(conn, sqlite_gate.GatedConnection) and len(opened) == 1
     conn.close()
+
+
+def test_appends_write_in_place_and_an_older_entry_keeps_its_rows(rag_conn, monkeypatch):
+    rows = _vectors(40)
+    _add(rag_conn, "kb_a", "d", rows)
+    q = rows[3]
+    _warm(rag_conn, "kb_a", q, monkeypatch)
+    (old,) = vec_cache._entries.values()
+    before = _hit(rag_conn, "kb_a", q, 10, monkeypatch)
+    stores = {id(old.store)}
+    for i in range(6):
+        _add(rag_conn, "kb_a", f"e{i}", _vectors(5, seed = 100 + i))
+        (cur,) = vec_cache._entries.values()
+        stores.add(id(cur.store))
+    assert cur.n == 70
+    # Geometric growth: six appends reallocate at most a couple of times, not once each.
+    assert len(stores) <= 3
+    # _search_entry gives distances; search_dense gives 1 - distance.
+    assert vec_cache._search_entry(np, old, q, 10)[0] == [
+        (c, pytest.approx(1 - s, abs = 1e-6)) for c, s in before
+    ]
+    _same(
+        _hit(rag_conn, "kb_a", q, 70, monkeypatch),
+        _search(rag_conn, "kb_a", q, 70, monkeypatch, False),
+    )
+
+
+def test_block_scan_scratch_stays_bounded_by_block_plus_fetch(monkeypatch):
+    import tracemalloc
+
+    monkeypatch.setattr(vec_cache, "_BLOCK", 4096)
+    n, f = 200_000, 4096
+    store = vec_cache._Store(np, n, 1)
+    store.mat[:] = np.random.default_rng(0).standard_normal((n, 1), dtype = np.float32)
+    store.rowids[:] = np.arange(n)
+    store.ids[:] = "c"
+    entry = vec_cache._Entry((0, 0, 0), n, store, 0)
+    tracemalloc.start()
+    vec_cache._search_entry(np, entry, [1.0], f)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    # Result list aside, a scan that kept every block's candidates would hold ~n * 12 bytes (2.4 MB).
+    assert peak < 1.5 * 2**20, peak

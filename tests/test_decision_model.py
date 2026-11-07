@@ -251,6 +251,35 @@ def test_dataset_skips_bad_rows_and_names_the_most_common_reason(checkpoint):
     assert torch.allclose(batch["target"].sum(-1), torch.ones(3))
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_needs_no_model_and_stops_at_the_first_usable_row(clef):
+    assert FastDecisionModel.rows_problem([], clef) == ""
+    no_gold = {**_row(0), "gold": {}}
+    no_questions = {"state": "only a state"}
+    assert FastDecisionModel.rows_problem([no_questions], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+    assert FastDecisionModel.rows_problem([no_questions, no_questions], clef) == (
+        "row 1 needs state, questions and gold (and 1 more like it)"
+    )
+    assert FastDecisionModel.rows_problem([no_gold], clef).startswith('row 1: "')
+
+    def record(name, question):
+        seen.append(name)
+
+    seen = []
+    assert FastDecisionModel.rows_problem([no_gold, _row(1), no_questions], clef, record) is None
+    assert len(seen) == 1
+
+
+def test_rows_problem_applies_the_callers_validation():
+    def refuse(name, question):
+        raise ValueError("is over the limit")
+
+    problem = FastDecisionModel.rows_problem([_row(0)], False, refuse)
+    assert problem.endswith("is over the limit (and 2 more like it)")
+
+
 def test_holdout_takes_whole_rows_and_never_overshoots():
     items = [{"row": row} for row in range(50) for _ in range(3)]
     train, held = FastDecisionModel.split_holdout(items, 3407)
@@ -331,6 +360,26 @@ def test_head_learning_rate_and_weight_decay(checkpoint, tmp_path, lora):
         for name, group in grouped:
             assert group["lr"] == (8e-4 if name.startswith("encoder.") else head_lr)
             assert group["weight_decay"] == (0.0 if name in no_decay else 0.01)
+
+
+@pytest.mark.skipif(
+    not hasattr(TrainingArguments, "activation_checkpointing"),
+    reason = "transformers < 5.23 reads gradient_checkpointing",
+)
+def test_trainer_checkpoints_the_encoder_not_the_wrapper(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model,
+        args = _args(tmp_path, max_steps = 1, gradient_checkpointing = True),
+        train_dataset = items,
+        processing_class = tokenizer,
+    )
+    assert trainer.args.activation_checkpointing is False
+    assert model.encoder.is_gradient_checkpointing
+    trainer.train()
 
 
 def test_length_grouping_only_with_gradient_accumulation(checkpoint, tmp_path):
@@ -567,6 +616,29 @@ def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
         assert not compiled
         assert all(layer._compiled_call_impl is None for layer in layers)
         assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, {"label": "true"})
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
 
 
 def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
@@ -962,6 +1034,68 @@ def _clef_rows(n):
         }
         row["gold"]["tags"] = row["gold"]["team"]["label"]
     return rows
+
+
+def _clef_items_with(tokenizer, rows):
+    report = {"total": 0, "skipped": 0, "reason": None, "truncated": 0}
+    items = decision._clef_items(rows, tokenizer, 4096, None, report, lambda *args: None)
+    return [
+        (item["input_ids"], item["record"].input_ids, item["record"].questions, item["targets"])
+        for item in items
+    ], report
+
+
+def test_clef_items_tokenize_each_repeated_string_once():
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    rows = [{**_row(i), "state": {"ticket": i, "note": "word " * (40 * i)}} for i in range(24)]
+    texts = []
+
+    class Counting:
+        def __call__(self, text, **kwargs):
+            texts.append(text)
+            return tokenizer(text, **kwargs)
+
+    items, report = _clef_items_with(Counting(), rows)
+    # Each row on its own, as encode_record sees a plain tokenizer.
+    plain = [
+        encode_record(tokenizer, {"state": r["state"], "questions": QUESTIONS}, max_length = 4096)
+        for r in rows
+    ]
+    assert [item[1] for item in items] == [record.input_ids for record in plain]
+    assert [item[2] for item in items] == [record.questions for record in plain]
+    assert all(list(item[1]) == item[0] for item in items)
+    assert report["skipped"] == 0
+    # Every distinct string once: the fixed prompt and option texts are shared by every row.
+    assert len(texts) == len(set(texts))
+    assert len(texts) < 2 * len(rows) + 30
+
+
+def test_memo_tokenizer_returns_fresh_lists_and_passes_other_calls_through():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    memo = decision._MemoTokenizer(tokenizer)
+    first = memo("OPTION 1: ", add_special_tokens = False).input_ids
+    first.extend([1, 2, 3])
+    assert (
+        memo("OPTION 1: ", add_special_tokens = False).input_ids
+        == tokenizer("OPTION 1: ", add_special_tokens = False).input_ids
+    )
+    long = "state " * 200
+    assert (
+        memo(long, add_special_tokens = False).input_ids
+        == tokenizer(long, add_special_tokens = False).input_ids
+    )
+    assert long not in memo.cache
+    assert memo("hi").input_ids == tokenizer("hi").input_ids
+    assert (
+        memo(["a", "b"], add_special_tokens = False).input_ids
+        == tokenizer(["a", "b"], add_special_tokens = False).input_ids
+    )
 
 
 def test_clef_encoding_is_token_identical_to_cloudflares():
@@ -1366,6 +1500,11 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     assert sorted(p.name for p in out.iterdir()) == before
     assert (out / "joint_head.safetensors").read_bytes() == head
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
+
+
+def test_structured_instructions_train_as_written():
+    question = {"type": "noul", "instructions": {"ask": "これは緊急ですか"}}
+    assert "これは緊急ですか" in _decision_common._internal(question)["ins"]
 
 
 def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):

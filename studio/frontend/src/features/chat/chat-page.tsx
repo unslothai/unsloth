@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -25,6 +26,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -82,6 +84,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { useMarkChatCompare } from "@/features/chat-background";
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
@@ -103,7 +106,10 @@ import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
   BrowserToggleButton,
+  FloatingResizeHandles,
   chatKeyOfThread,
+  closeOrFloatBrowser,
+  floatSurface,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -113,15 +119,11 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   Edit03Icon,
-  FolderAttachmentIcon,
-  Folder01Icon,
-  Folder02Icon,
-  FolderExportIcon,
   LayoutAlignRightIcon,
   MoreHorizontalIcon,
   MoreVerticalIcon,
@@ -130,8 +132,10 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
+import { Folder02Icon, FolderAttachmentIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { useAui } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ProjectIcon } from "@/lib/project-icon";
 import { useNavigate } from "@tanstack/react-router";
 import {
   SaveTemporaryChatMenu,
@@ -178,7 +182,7 @@ import {
   chatModelSwitchMeta,
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
-import { ContextUsageBar } from "./components/context-usage-bar";
+import { LiveContextUsageBar } from "./components/live-context-usage-bar";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -254,6 +258,13 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
+import {
+  isLoadingPick,
+  loadComparePaneModel,
+  registerComparePaneRunPreparer,
+} from "./compare-run-ownership";
+import { checkpointMatchesPick } from "./lib/resident-model-match";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
 import {
@@ -280,6 +291,7 @@ import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import type { ChatSearch } from "./chat-search";
 import {
   type ComparePairReadState,
   checkpointCompareClass,
@@ -609,8 +621,21 @@ function useStoredChatTitle(threadId: string | null): string | undefined {
   return title && title.id === threadId ? title.title : undefined;
 }
 
+// WebKitGTK restyles the long thread when panel constraints re-register, then again
+// for the staged resize. Keep constraints stable and resize in one step on this renderer.
+const IMMEDIATE_CONTEXT_PANEL =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
+
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
-const BROWSER_PANEL_DEFAULT_SIZE = "50%";
+// t3code's default docked width, never more than half the chat or under the panel's 30% minimum.
+const BROWSER_PANEL_DEFAULT_PX = 540;
+
+function browserPanelDefaultSize(split: HTMLElement | null | undefined): string {
+  const width = split?.getBoundingClientRect().width ?? 0;
+  if (width <= 0) return "50%";
+  return `${Math.min(50, Math.max(30, (BROWSER_PANEL_DEFAULT_PX / width) * 100))}%`;
+}
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
@@ -653,11 +678,11 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // Dragged shut means closed.
     if (size <= 5) {
-      closeBrowser();
+      closeOrFloatBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [closeBrowser]);
+  }, []);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -681,20 +706,25 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
+  // Floating stays mounted here, so switching layouts never reloads the page.
+  const browserFloating =
+    useBrowserStore((state) => state.floating) && showBrowserPanel && !browserFullView;
+  const browserDocked = showBrowserPanel && !browserFloating;
   const chatDock = useBrowserStore((state) => state.chatDock);
   const chatOnRight =
     useBrowserStore((state) => state.chatSide === "right") &&
-    showBrowserPanel &&
+    browserDocked &&
     !browserFullView;
   const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
   useEffect(() => {
     defaultPanelSizeRef.current = showBrowserPanel
-      ? BROWSER_PANEL_DEFAULT_SIZE
+      ? browserPanelDefaultSize(contextSurfaceRef.current?.closest<HTMLElement>(".chat-artifact-split"))
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  const showContextPanel = showResearchPanel || showBrowserPanel;
+  const showContextPanel = showResearchPanel || browserDocked;
 
-  const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
+  const artifactLayoutActive =
+    showContextPanel || (!IMMEDIATE_CONTEXT_PANEL && isArtifactPanelLayoutActive);
   const artifactPanelSettledOpen =
     showContextPanel &&
     isArtifactPanelLayoutActive &&
@@ -708,9 +738,17 @@ const SingleContent = memo(function SingleContent({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
   useEffect(() => {
-    if (!showContextPanel || browserOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
+    if (IMMEDIATE_CONTEXT_PANEL) {
+      panel.resize(
+        showContextPanel
+          ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
+          : "0%",
+      );
+      return;
+    }
+    if (!showContextPanel || browserOpenSequence === 0) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
@@ -718,6 +756,7 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
+    if (IMMEDIATE_CONTEXT_PANEL) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
 
@@ -786,7 +825,7 @@ const SingleContent = memo(function SingleContent({
   useEffect(() => {
     const surface = contextSurfaceRef.current;
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
-    if (!surface || !root || !showBrowserPanel) return;
+    if (!surface || !root || !browserDocked) return;
     let width = "";
     const insets = () =>
       root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
@@ -819,7 +858,13 @@ const SingleContent = memo(function SingleContent({
         element.style.removeProperty("--studio-side-panel-left");
       }
     };
-  }, [showBrowserPanel, chatOnRight]);
+  }, [browserDocked, chatOnRight]);
+
+  useLayoutEffect(() => {
+    const surface = contextSurfaceRef.current;
+    if (!surface || !browserFloating) return;
+    return floatSurface(surface);
+  }, [browserFloating]);
 
   // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
   const browserLayout = `${browserFullView}:${chatOnRight}`;
@@ -828,14 +873,14 @@ const SingleContent = memo(function SingleContent({
     if (seenBrowserLayoutRef.current === browserLayout) return;
     seenBrowserLayoutRef.current = browserLayout;
     const panel = artifactPanelRef.current;
-    if (!panel || !showBrowserPanel) return;
+    if (!panel || !browserDocked) return;
     const frameId = window.requestAnimationFrame(() => {
       panel.resize(
         artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
       );
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [browserLayout, showBrowserPanel]);
+  }, [browserLayout, browserDocked]);
 
   // With no chat beside it, the chat header would sit over the browser's tabs.
   useEffect(() => {
@@ -893,13 +938,18 @@ const SingleContent = memo(function SingleContent({
           id="chat-thread"
           defaultSize="100%"
           // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
+          // The browser can take most of the row (it opens small); research keeps the chat wider.
+          // On WebKitGTK the open constraints stay registered while closed: the zero-width,
+          // collapsed sibling already lets the chat fill the group.
           minSize={
             browserFullView
               ? "0%"
               : chatOnRight
-                ? "34%"
-                : artifactLayoutActive
-                  ? "42%"
+                ? "28%"
+                : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
+                  ? showResearchPanel
+                    ? "42%"
+                    : "30%"
                   : "100%"
           }
           className="h-full min-h-0 min-w-0 overflow-hidden"
@@ -966,20 +1016,20 @@ const SingleContent = memo(function SingleContent({
           minSize={
             showResearchPanel
               ? "30%"
-              : artifactPanelSettledOpen
+              : (IMMEDIATE_CONTEXT_PANEL || artifactPanelSettledOpen)
                 ? "30%"
                 : "0%"
           }
           maxSize={
             chatOnRight
-              ? "66%"
+              ? "72%"
               : showResearchPanel
               ? "58%"
-              : artifactLayoutActive
-                ? "58%"
+              : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
+                ? "70%"
                 : "0%"
           }
-          collapsible={showBrowserPanel}
+          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -989,13 +1039,17 @@ const SingleContent = memo(function SingleContent({
           <div
             ref={contextSurfaceRef}
             data-artifact-surface-visible={
-              isArtifactSurfaceVisible ? "true" : "false"
+              (IMMEDIATE_CONTEXT_PANEL ? showContextPanel : isArtifactSurfaceVisible)
+                ? "true"
+                : "false"
             }
+            {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              (showResearchPanel || showBrowserPanel) &&
+              (showResearchPanel || browserDocked) &&
                 (chatOnRight ? "border-r" : "border-l"),
-              (showResearchPanel || showBrowserPanel) && "border-border/70",
+              (showResearchPanel || browserDocked) && "border-border/70",
+              browserFloating && "chat-browser-floating",
             )}
             style={showBrowserPanel ? { transform: "none" } : undefined}
           >
@@ -1007,7 +1061,8 @@ const SingleContent = memo(function SingleContent({
                />
              ) : showBrowserPanel ? (
               <Suspense fallback={null}>
-                <BrowserPanel active={chatActive} />
+                <BrowserPanel active={chatActive} floating={browserFloating} floatable={true} />
+                {browserFloating ? <FloatingResizeHandles /> : null}
               </Suspense>
             ) : null}
           </div>
@@ -1146,6 +1201,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1157,6 +1214,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const { state: compareRead, retry: retryCompareRead } =
     useCompareVariant(pairId);
@@ -1184,6 +1243,8 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
+      loadPaneModel={loadPaneModel}
+      cancelPaneModelLoad={cancelPaneModelLoad}
     />
   );
 });
@@ -1281,6 +1342,7 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  useMarkChatCompare();
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -1550,6 +1612,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1561,6 +1625,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -1591,6 +1657,50 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+
+  useEffect(
+    () =>
+      registerComparePaneRunPreparer(pairId, async (pane, signal) => {
+        const sel = pane === "model1" ? model1 : model2;
+        if (!sel.id) return;
+        const store = () => useChatRuntimeStore.getState();
+        // A shared Send has already loaded this pane's model, so it is active here.
+        await loadComparePaneModel(
+          {
+            name: compareModelDisplayName(sel.id),
+            isActive: () =>
+              checkpointMatchesPick(
+                store().params.checkpoint,
+                store().activeGgufVariant,
+                sel,
+              ),
+            isLoading: () => isLoadingPick(store().loadingModelPick, sel),
+            cancelLoad: () => void cancelPaneModelLoad(),
+            load: () =>
+              loadPaneModel({
+                id: sel.id,
+                isLora: sel.isLora,
+                ggufVariant: sel.ggufVariant,
+                ...(sel.ggufVariant || sel.id.toLowerCase().endsWith(".gguf")
+                  ? { isGguf: true }
+                  : {}),
+                isDiffusion: sel.isDiffusion,
+                config:
+                  sel.config ??
+                  resolveResidentInitialConfig(sel.id, sel.ggufVariant ?? null)
+                    .config,
+                keepSpeculative: true,
+                throwOnError: true,
+                previousConfig: currentRuntimePerModelConfig({
+                  includeMaxSeqLength: true,
+                }),
+              }),
+          },
+          signal,
+        );
+      }),
+    [pairId, model1, model2, loadPaneModel, cancelPaneModelLoad],
+  );
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -2194,7 +2304,8 @@ function ProjectLanding({
         </div>
       ) : (
         <div
-          className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
+          data-wallpaper-reading-surface=""
+          className="relative flex min-h-0 min-w-0 flex-1 basis-0 overflow-y-auto px-5"
           style={
             {
               ["--thread-max-width" as string]: "48rem",
@@ -2331,7 +2442,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover has-[[data-state=open]]:[--row-date-opacity:0]"
                     >
                       <button
                         type="button"
@@ -2351,7 +2462,7 @@ function ProjectLanding({
                             {displayTitle}
                           </div>
                         </div>
-                        <span className="shrink-0 text-ui-14 text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
+                        <span className="shrink-0 text-ui-14 text-muted-foreground opacity-[var(--row-date-opacity,1)] transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0">
                           {preview?.date ??
                             formatProjectChatDate(item.createdAt)}
                         </span>
@@ -2430,7 +2541,7 @@ function ProjectLanding({
                                 }
                               >
                                 <HugeiconsIcon
-                                  icon={Folder01Icon}
+                                  icon={ProjectIcon}
                                   strokeWidth={1.75}
                                   className="size-icon"
                                 />
@@ -2478,7 +2589,7 @@ function ProjectLanding({
                           onSelect={() => void handleArchive(item)}
                         >
                           <HugeiconsIcon
-                            icon={Archive03Icon}
+                            icon={ArchiveIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -2489,7 +2600,7 @@ function ProjectLanding({
                           onSelect={() => handleDelete(item)}
                         >
                           <HugeiconsIcon
-                            icon={Delete02Icon}
+                            icon={TrashIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -2592,22 +2703,6 @@ function ProjectLanding({
       </AlertDialog>
     </>
   );
-}
-
-export type ChatSearch = {
-  thread?: string;
-  compare?: string;
-  new?: string;
-  project?: string;
-};
-
-export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
-  return {
-    thread: typeof search.thread === "string" ? search.thread : undefined,
-    compare: typeof search.compare === "string" ? search.compare : undefined,
-    new: typeof search.new === "string" ? search.new : undefined,
-    project: typeof search.project === "string" ? search.project : undefined,
-  };
 }
 
 type PendingHubAutoLoad = {
@@ -4590,7 +4685,7 @@ export function ChatPage({
     <ChatComposerFocusableContext.Provider
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
+    <div data-chat-page-root="" className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces escape the hidden wrapper, so gate them on `active`. */}
       {active && <GuidedTour {...tour.tourProps} />}
       {/* One app-level mount driven by global state, or Compare's composers each render a copy. */}
@@ -4625,7 +4720,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
+          <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4760,12 +4855,14 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
+          <div data-wallpaper-chrome-controls="" className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
             (view.mode === "single" ||
               (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
-              <ContextUsageBar
+              <LiveContextUsageBar
+                // Keyed like the adapter's run (resolvedThreadId || "__default"), local ids included.
+                liveThreadKey={activeThreadId ?? "__default"}
                 compactUnknownAsIcon={view.mode === "single"}
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
@@ -4802,6 +4899,7 @@ export function ChatPage({
               <BrowserToggleButton
                 active={active}
                 hideWhenOpen={view.mode === "single" || showBrowserOverlay}
+                floatable={view.mode === "single"}
               />
             ) : null}
             {view.mode === "single" &&
@@ -4874,6 +4972,7 @@ export function ChatPage({
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
             sibling so it hides this rather than unmounting it, since ComparePane builds its own
             providers and nesting throws. */}
+        <LibraryAttachmentTargetContext.Provider value={active ? shownChatKey : null}>
         {baseView ? (
           <div
             className={
@@ -4946,9 +5045,12 @@ export function ChatPage({
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
+            loadPaneModel={selectModel}
+            cancelPaneModelLoad={cancelLoading}
           />
         ) : null}
 
+        </LibraryAttachmentTargetContext.Provider>
         {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 

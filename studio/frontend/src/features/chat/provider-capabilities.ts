@@ -196,6 +196,11 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   {
     providerType: "gemini",
+    prefixes: ["gemini-3.1-flash-lite-image"],
+    cap: 4096,
+  },
+  {
+    providerType: "gemini",
     prefixes: ["gemini-3", "gemini-pro", "gemini-flash"],
     cap: 65536,
   },
@@ -312,10 +317,11 @@ export function resolveExternalMaxTokensClamp(input: {
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  if (normalizedId.startsWith("openai/")) return "openai";
-  if (normalizedId.startsWith("anthropic/")) return "anthropic";
-  if (normalizedId.startsWith("google/")) return "gemini";
-  if (normalizedId.startsWith("deepseek/")) return "deepseek";
+  const id = normalizedId.replace(/^~/, "");
+  if (id.startsWith("openai/")) return "openai";
+  if (id.startsWith("anthropic/")) return "anthropic";
+  if (id.startsWith("google/")) return "gemini";
+  if (id.startsWith("deepseek/")) return "deepseek";
   return null;
 }
 
@@ -346,14 +352,16 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
+function isKimiK3(modelId: string | null | undefined): boolean {
+  return /^kimi-k3(?:$|[.-])/.test(modelId?.trim().toLowerCase() ?? "");
+}
+
 /** Search and Think stay exclusive on Kimi, except kimi-k3, which has no thinking off switch. */
 export function kimiSearchExcludesThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return (
-    providerType === "kimi" && modelId?.trim().toLowerCase() !== "kimi-k3"
-  );
+  return providerType === "kimi" && !isKimiK3(modelId);
 }
 
 /** Whether the provider exposes a server-side web_fetch tool emitting a document block.
@@ -559,7 +567,8 @@ function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
     m.startsWith("gemini-3-pro-image") ||
     m.startsWith("gemini-3.1-flash-image") ||
     m.startsWith("nano-banana-pro") ||
-    m.startsWith("nano-banana-2")
+    m.startsWith("nano-banana-2") ||
+    m.startsWith("gemini-nano-banana-2")
   );
 }
 
@@ -655,6 +664,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   },
   qwen: OPENAI_COMPAT_BASE,
   zai: { ...OPENAI_COMPAT_BASE, presencePenalty: false },
+  // Fixed server-side; the backend omits them too.
+  minimax: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
   huggingface: OPENAI_COMPAT_BASE,
   // OpenRouter silently drops unsupported params, so surface every knob.
   openrouter: ALL_SUPPORTED,
@@ -706,7 +724,7 @@ export function getProviderCapabilities(
     };
   }
   // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
-  if (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3") {
+  if (providerType === "kimi" && isKimiK3(modelId)) {
     return { ...PROVIDER_CAPABILITIES.kimi, presencePenalty: false };
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
@@ -917,12 +935,26 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
   };
 }
 
+function resolveMiniMaxReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+  if (modelId.startsWith("minimax-m3.1")) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+    });
+  }
+  if (modelId === "minimax-m3") {
+    return withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
+  return withEnableThinkingStyle();
+}
+
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
   // toggleable, k2-thinking always on, k2.5 and others none.
   // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
   // and takes reasoning_effort low|high|max instead.
-  if (modelId === "kimi-k3") {
+  if (isKimiK3(modelId)) {
     return {
       ...withReasoningEffortStyle({
         supportsReasoning: true,
@@ -1273,6 +1305,8 @@ export function getExternalReasoningCapabilities(
         ? table
         : (catalogCapabilities("mistral", normalizedModel) ?? table);
     }
+    case "minimax":
+      return resolveMiniMaxReasoningCapabilities(modelForMatching);
     case "gemini": {
       // Compat gateways drop native thinkingConfig, so hide the ladder.
       if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {
@@ -1346,7 +1380,10 @@ export function providerModelReplaysReasoning(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
+  return (
+    providerType === "minimax" ||
+    (providerType === "kimi" && isKimiK3(modelId))
+  );
 }
 
 /** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */

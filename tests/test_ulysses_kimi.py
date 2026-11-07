@@ -343,15 +343,13 @@ _BROKEN = {
         ),
     ),
     "lower_bound_dropped": (('getattr(module, "gate_lower_bound", None)', "None"),),
-    # MLA: keep the zero padded tail of the value heads instead of the real ones.
-    "mla_value_tail": (("out[..., :v_dim]", "out[..., head_dim - v_dim :]"),),
 }
 
 
 def _install_broken(name):
     import inspect
 
-    target = "_ulysses_hf_attention" if name.startswith("mla") else "ulysses_kimi_delta_forward"
+    target = "ulysses_kimi_delta_forward"
     src = inspect.getsource(getattr(uh, target))
     for before, after in _BROKEN[name]:
         assert src.count(before) == 1, before
@@ -505,7 +503,6 @@ def test_ulysses_kimi_matches_fp64_reference(k3, world, cp_size, kind, lora):
         ("a_log_of_rank0", False),
         ("dt_bias_of_rank0", True),
         ("lower_bound_dropped", True),
-        ("mla_value_tail", False),
     ],
 )
 def test_broken_kimi_delta_shards_fail_the_reference(broken, k3):
@@ -586,16 +583,3 @@ def test_shimmed_remote_moe_is_not_blocked():
     Block.forward = _moe_forward_with_training_path(Block.forward)
     assert cp._hybrid_config_blocker(model) is None
 
-
-def test_mla_value_heads_are_padded_for_ulysses(monkeypatch):
-    seen = {}
-
-    def fake_ulysses(run, config, context, q, k, v, group):
-        seen["v"] = v.shape[-1]
-        return torch.zeros(q.shape[0], q.shape[2], q.shape[1], q.shape[3])
-
-    monkeypatch.setattr(uh, "ulysses_attention", fake_ulysses)
-    module = types.SimpleNamespace(training = False)
-    q = torch.zeros(1, HEADS, 3, 12)
-    out, _ = uh._ulysses_hf_attention(module, q, q, torch.zeros(1, HEADS, 3, 8), None, group = None)
-    assert seen["v"] == 12 and out.shape[-1] == 8

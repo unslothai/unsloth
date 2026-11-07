@@ -69,6 +69,7 @@ from backend.utils.wheel_utils import (
     xformers_torch_requirement_unmet,
 )
 from backend.utils.uv_path_safety import uv_safe_path as _uv_safe_path
+from backend.utils import rocm_flash_attn as _rocm_flash_attn
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -1092,6 +1093,17 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
         if ceiling is not None and ceiling <= _TORCHCODEC_MIN_ON_TORCH_INDEX:
             return None  # window sits entirely below what any torch index publishes
     return _torch_accelerator_index_url(torch_version, _TORCHCODEC_INDEX_TAGS)
+
+
+def _torchao_index_url(torch_version: "str | None") -> "str | None":
+    """_torch_accelerator_index_url, but None on Windows for download.pytorch.org's cuNNN leaves:
+    they serve torchao for Linux only, so the pin always fails and the untagged fallback then
+    fails every later update's tag check. Mirrors, explicit indexes and cpu/xpu stay pinned."""
+    url = _torch_accelerator_index_url(torch_version)
+    tag = _torch_index_tag(torch_version)
+    if IS_WINDOWS and tag and _is_cuda_family_leaf(tag) and url == f"{_PYTORCH_DEFAULT_WHL}/{tag}":
+        return None
+    return url
 
 
 def _torch_index_tag(
@@ -5434,7 +5446,7 @@ def _install_torchao_for_torch(torch_version: "str | None", default_index: bool 
     """
     spec = _select_torchao_spec(torch_version)
     # See _TORCHAO_DEFAULT_SPEC. Unlike torchcodec, rocm leaves do publish torchao.
-    index = None if default_index else _torch_accelerator_index_url(torch_version)
+    index = None if default_index else _torchao_index_url(torch_version)
     # --no-deps guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
     needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
@@ -5498,7 +5510,7 @@ def _resync_torch_coupled_packages(label_before: str) -> bool:
         try:
             _spec = _select_torchao_spec(_label_after)
             # Same pin as step 4, or PyPI's build lands over it; ==0.18.0 never equals 0.18.0+cu130.
-            _ao_index = _torch_accelerator_index_url(_label_after)
+            _ao_index = _torchao_index_url(_label_after)
             _ao_args = ["--force-reinstall", "--no-deps", "--no-cache-dir"]
             if _pin_needs_reinstall(_spec, _torch_index_tag(_label_after) if _ao_index else ""):
                 _note(f"torch {_label_after} after repair -- reinstalling {_spec}")
@@ -8045,7 +8057,7 @@ def _flash_attn_importable() -> bool:
     """
     try:
         result = subprocess.run(
-            [sys.executable, "-c", "import flash_attn"],
+            [sys.executable, "-c", _rocm_flash_attn.IMPORT_PROBE],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
             timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT,
@@ -8100,6 +8112,9 @@ def _ensure_flash_attn() -> None:
     )
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
+    if env is not None and env.get("hip_version") and not IS_WINDOWS:
+        _ensure_rocm_triton_flash_attn(env, stale)
+        return
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and not (env or {}).get("hip_version") and _flash_attn_gpu_below_floor():
         # Unsloth only turns FlashAttention 2 on from sm80; a T4 would download it for nothing.
@@ -8162,6 +8177,66 @@ def _ensure_flash_attn() -> None:
         _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
+
+
+def _rocm_gfx_codes() -> list[str]:
+    try:
+        return _detect_amd_gfx_codes()
+    except Exception:
+        return []
+
+
+@contextlib.contextmanager
+def _temporary_environ(values: dict[str, str]):
+    saved = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def _ensure_rocm_triton_flash_attn(env: dict[str, str], stale: bool) -> None:
+    """Best-effort Triton AMD flash-attn on ROCm RDNA3/4; failure leaves SDPA."""
+    reason = _rocm_flash_attn.install_skip_reason(
+        platform = sys.platform,
+        hip_version = env.get("hip_version"),
+        gfx_codes = _rocm_gfx_codes(),
+    )
+    if reason is not None:
+        _note(f"flash-attn (ROCm Triton backend) skipped: {reason}")
+        if stale:
+            _remove_stale_flash_attn()
+        return
+    with _install_heartbeat("flash-attn"):
+        deps_ok = pip_install_try(
+            "Installing flash-attn build dependencies",
+            "--no-cache-dir",
+            *_rocm_flash_attn.FLASH_ATTN_TRITON_AMD_BUILD_DEPS,
+        )
+        installed = False
+        if deps_ok:
+            with _temporary_environ(_rocm_flash_attn.FLASH_ATTN_TRITON_AMD_BUILD_ENV):
+                installed = pip_install_try(
+                    "Installing flash-attn (ROCm Triton backend)",
+                    "--no-build-isolation",
+                    "--no-deps",
+                    "--no-cache-dir",
+                    *(["--force-reinstall"] if stale else []),
+                    _rocm_flash_attn.FLASH_ATTN_TRITON_AMD_SPEC,
+                    constrain = False,
+                )
+    if installed and _flash_attn_importable():
+        _note("flash-attn installed (ROCm Triton backend)")
+        return
+    if _installed_distribution_version("flash-attn") is not None:
+        # An unimportable copy breaks diffusers and xformers imports: never leave one behind.
+        _remove_stale_flash_attn()
+    _step("warning", "Continuing without flash-attn (ROCm Triton backend did not install)", _warn)
 
 
 # The compiled extension each SSM kernel loads (kernel_install.KERNELS checks the same import).
@@ -9138,8 +9213,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: pip refuses `--upgrade-package mlx` beside `mlx==0.32.3` as a double
         # requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
-            # rest.
+            # _requirement_name stops at "==" and "@", not at a range specifier.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
             )
@@ -9925,23 +9999,129 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
 FEED_CEILING_MARKER = "unsloth_feed_ceiling.json"
 
 
-def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
-    """Desktop's backend floor, lowered to a lagging index's newest release (#14031).
+def _no_torch_pair(
+    unsloth_spec,
+    zoo_spec,
+    use_uv = True,
+    uv_executable = "uv",
+    install_env = None,
+):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
 
-    Returns the (unsloth, unsloth-zoo) requirements to install. A lowered unsloth comes with
-    the zoo it was resolved against, since the no-torch path installs --no-deps and so never
-    reads unsloth's zoo floor. Twin of install.sh's _relax_unsloth_floors_to_index.
-    """
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix = "unsloth-pair-") as target:
+            cmd = (
+                [
+                    uv_executable,
+                    "pip",
+                    "install",
+                    "--python",
+                    sys.executable,
+                    "--resolution",
+                    "highest",
+                ]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env = install_env,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    timeout = 120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path = [target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+
+def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
+    """Backend requirements permitted by the Desktop floor and package index (#14031)."""
     zoo_spec = "unsloth-zoo"
     desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-    if not (desktop_min_ver and package_name == "unsloth"):
+    if package_name != "unsloth" or (not desktop_min_ver and not NO_TORCH):
         return package_name, zoo_spec
-    spec = f"unsloth>={desktop_min_ver}"
+    spec = f"unsloth>={desktop_min_ver}" if desktop_min_ver else package_name
     marker = Path(sys.prefix) / FEED_CEILING_MARKER
     try:
         marker.unlink()
     except OSError:
         pass
+    if NO_TORCH:
+        pair = _no_torch_pair(
+            spec,
+            zoo_spec,
+            use_uv = USE_UV,
+            install_env = _install_env_for_cmd(
+                ["uv", "pip", "install"] if USE_UV else [sys.executable, "-m", "pip", "install"]
+            ),
+        )
+        if pair is None:
+            raise RuntimeError(
+                "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"
+            )
+        available, zoo, lowered = pair
+        if lowered and desktop_min_ver:
+            _note(
+                f"[WARN] your package index cannot meet {spec}; installing unsloth {available} + unsloth-zoo {zoo}",
+                _warn,
+            )
+            try:
+                marker.write_text(
+                    json.dumps({"requested": desktop_min_ver, "available": available}) + "\n",
+                    encoding = "utf-8",
+                )
+            except OSError:
+                pass
+        return f"unsloth=={available}", f"unsloth-zoo=={zoo}"
     if not USE_UV:
         return spec, zoo_spec
 
@@ -9979,8 +10159,6 @@ def _desktop_unsloth_spec(package_name: str) -> "tuple[str, str]":
 
     found = resolve(spec, zoo_spec, deps = True) or {}
     if found.get("unsloth"):
-        # The zoo it resolved against as a floor: the no-torch install is --no-deps, so a bare
-        # unsloth-zoo under UV_RESOLUTION=lowest could pick one below unsloth's own zoo floor.
         return spec, (
             f"unsloth-zoo>={found['unsloth-zoo']}" if found.get("unsloth-zoo") else zoo_spec
         )
@@ -10267,7 +10445,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.12"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -11729,7 +11907,8 @@ def _git_remote_commit(
     env.setdefault("GIT_ASKPASS", "echo")
     try:
         probe = subprocess.run(
-            [exe, "ls-remote", "--", url, revision],
+            # A pattern-filtered ls-remote omits the peeled line unless it is asked for.
+            [exe, "ls-remote", "--", url, revision, f"{revision}^{{}}"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -11748,8 +11927,8 @@ def _git_remote_commit(
         if ref and _COMMIT_REVISION_RE.fullmatch(sha):
             rows[ref] = sha.lower()
     for ref in (
-        f"refs/tags/{revision}^{{}}",
         f"refs/heads/{revision}",
+        f"refs/tags/{revision}^{{}}",
         f"refs/tags/{revision}",
         revision,
     ):

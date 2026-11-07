@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           disable-sudo: true
@@ -42,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -75,6 +75,7 @@ jobs:
         run: |
           python3 -m pytest -q -n 4 \
             tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_appimage_toolchain_contract.py \
             tests/studio/test_lint_ci_scans_committed_files.py \
             tests/studio/test_agent_guides_verdicts.py \
             tests/studio/test_agent_guides_openclaw_node.py \
@@ -83,6 +84,7 @@ jobs:
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_cached_paths_hold_no_credentials.py \
+            tests/studio/test_playwright_cache_keys_name_the_os.py \
             tests/studio/test_actions_are_pinned_to_commits.py \
             tests/studio/test_local_actions_are_in_path_filters.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
@@ -150,7 +152,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           disable-sudo: true
@@ -169,7 +171,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

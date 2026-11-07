@@ -8,6 +8,7 @@ fall back to released bf16 encoder."""
 
 from __future__ import annotations
 
+import functools
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -374,6 +375,9 @@ H3_TE_STREAMED_GB = 3.0
 # Power-of-two arenas: torch's pinned allocator rounds each allocation up (13% extra pinned one by one).
 _PIN_ARENA_BYTES = 1 << 31
 _PIN_ALIGN = 512
+# Arena fills (copies plus zeroed tails) run on a pool, so they are parallel from any calling thread.
+_PIN_COPY_THREADS = 8
+_PIN_ZERO_CHUNK = 64 << 20
 
 
 def h3_te_stream_enabled() -> bool:
@@ -483,15 +487,18 @@ def _round_up(value: int, multiple: int) -> int:
     return (value + multiple - 1) // multiple * multiple
 
 
-def _pinned_arena(size: int) -> Any:
+def _pinned_arena(size: int, fill: Any) -> Any:
+    """A pinned uint8 arena of ``size`` bytes, every byte written by ``fill`` (before registering, where registered)."""
     import torch
 
     from .diffusion_memory import registered_pinned_empty
 
-    arena = registered_pinned_empty(size)
+    arena = registered_pinned_empty(size, fill = fill)
     if arena is not None:
         return arena
-    return torch.empty(size, dtype = torch.uint8, pin_memory = True)
+    arena = torch.empty(size, dtype = torch.uint8, pin_memory = True)
+    fill(arena)
+    return arena
 
 
 def pin_module_in_place(
@@ -519,22 +526,33 @@ def pin_module_in_place(
         if tensor.numel() == 0 or (_arena_factory is None and tensor.is_pinned()):
             continue
         todo.append((tensor, owners))
-    # Largest first, first fit.
+    # Largest first, first fit. Placed up front, so each arena is filled before it is registered.
     todo.sort(key = lambda item: item[0].numel() * item[0].element_size(), reverse = True)
-    arenas: list[list] = []  # [arena tensor, used bytes]
+    arenas: list[list] = []  # [arena bytes, used bytes, [(tensor, owners, offset)]]
     pinned = 0
     for tensor, owners in todo:
         nbytes = tensor.numel() * tensor.element_size()
         need = _round_up(nbytes, _PIN_ALIGN)
-        slot = next((a for a in arenas if a[0].numel() - a[1] >= need), None)
+        slot = next((a for a in arenas if a[0] - a[1] >= need), None)
         if slot is None:
-            size = max(int(arena_bytes), 1 << (need - 1).bit_length())
-            arena = _arena_factory(size) if _arena_factory is not None else _pinned_arena(size)
-            slot = [arena, 0]
+            slot = [max(int(arena_bytes), 1 << (need - 1).bit_length()), 0, []]
             arenas.append(slot)
-        offset = slot[1]
-        view = slot[0][offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
-        view.copy_(tensor.detach())
+        slot[2].append((tensor, owners, slot[1]))
+        slot[1] += need
+        pinned += nbytes
+    placed = []  # (tensor, owners, pinned view)
+    for size, _used, entries in arenas:
+        fill = functools.partial(_fill_arena, entries = entries)
+        if _arena_factory is not None:
+            arena = _arena_factory(size)
+            fill(arena)
+        else:
+            arena = _pinned_arena(size, fill)
+        placed.extend(
+            (tensor, owners, _arena_view(arena, tensor, offset))
+            for tensor, owners, offset in entries
+        )
+    for tensor, owners, view in placed:
         if repoint:
             # Only when the old storage is not an mmap view (weights the loader already copied or cast).
             tensor.data = view
@@ -546,9 +564,46 @@ def pin_module_in_place(
             )
             for table, name, _is_param in owners:
                 table[name] = replacement
-        slot[1] = offset + need
-        pinned += nbytes
     return pinned
+
+
+def _arena_view(arena: Any, tensor: Any, offset: int) -> Any:
+    nbytes = tensor.numel() * tensor.element_size()
+    return arena[offset : offset + nbytes].view(tensor.dtype).view(tensor.shape)
+
+
+def _fill_arena(arena: Any, *, entries: list) -> None:
+    """Copies each tensor to its offset and zeroes the rest, on a thread pool (copy_, zero_ and their page faults
+    release the GIL). Writing every byte faults the arena's pages in the copy itself, with no separate zero pass."""
+    jobs = []  # (destination, source tensor or None to zero)
+    end = 0
+    for tensor, _owners, offset in entries:
+        if offset > end:
+            jobs.append((arena[end:offset], None))
+        jobs.append((_arena_view(arena, tensor, offset), tensor))
+        end = offset + tensor.numel() * tensor.element_size()
+    jobs.extend(
+        (arena[start : start + _PIN_ZERO_CHUNK], None)
+        for start in range(end, arena.numel(), _PIN_ZERO_CHUNK)
+    )
+
+    def run(job: tuple) -> None:
+        dst, src = job
+        if src is None:
+            dst.zero_()
+        else:
+            dst.copy_(src.detach())
+
+    workers = min(_PIN_COPY_THREADS, len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            run(job)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "unsloth-h3-te-pin") as pool:
+        # list() re-raises the first failed copy, before any owner is replaced.
+        list(pool.map(run, jobs))
 
 
 def stream_h3_text_encoder(
@@ -645,3 +700,209 @@ def stream_h3_text_encoder(
             "pinned" if pin else "pageable",
         )
     return mode
+
+
+# A mapped conditioner larger than the page cache is re-read from disk every prompt (L4: +78-84 s); anon pages are not.
+H3_TE_RESIDENT_ENV = "UNSLOTH_H3_TE_RESIDENT"
+_H3_TE_RESIDENT_MIN_MIB = 1024
+_H3_TE_COPY_THREADS = 4
+
+
+def h3_te_resident_enabled() -> bool:
+    """``UNSLOTH_H3_TE_RESIDENT=0`` leaves the streamed conditioner on its memory mapping."""
+    import os
+    return str(os.environ.get(H3_TE_RESIDENT_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _streamed_host_tensors(target: Any, groups: Optional[list] = None) -> list:
+    """(group, tensor, host) pageable CPU tensors, language model first: vision is only read for image prompts."""
+    import torch
+
+    if groups is None:
+        from .diffusion_memory import _offload_groups
+        groups = _offload_groups(target)
+    names = {id(m): n for n, m in target.named_modules()}
+
+    def _late(group: Any) -> bool:
+        mods = list(getattr(group, "modules", None) or ())
+        leader = getattr(group, "onload_leader", None)
+        name = names.get(id(mods[0] if mods else leader), "")
+        return "visual" in name.split(".")
+
+    out: list = []
+    seen: set = set()
+    for group in sorted(groups, key = _late):
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        tensors = (
+            [t for m in getattr(group, "modules", None) or () for t in m.parameters()]
+            + [t for m in getattr(group, "modules", None) or () for t in m.buffers()]
+            + list(getattr(group, "parameters", None) or ())
+            + list(getattr(group, "buffers", None) or ())
+        )
+        for tensor in tensors:
+            host = cpu.get(tensor, tensor)
+            if id(tensor) in seen or host is None or host.device.type != "cpu":
+                continue
+            seen.add(id(tensor))
+            if type(host) is not torch.Tensor and type(host) is not torch.nn.Parameter:
+                continue  # tensor subclasses keep their own storage layout
+            if host.numel() == 0 or host.is_pinned():
+                continue
+            out.append((group, tensor, host))
+    return out
+
+
+def keep_h3_te_resident(
+    text_encoder: Any,
+    *,
+    logger: Any = None,
+    groups: Optional[list] = None,
+    host_ram: Any = None,
+) -> int:
+    """Copy the share of the streamed conditioner that fits beside the reserve into anonymous RAM; run after every
+    load-time host allocation. ``host_ram``: ``(total, available, commit)`` MiB. Returns MiB copied. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        if target is None or not h3_te_resident_enabled():
+            return 0
+        undo = _undo_list(target)  # marks the share as managed: later calls top it up
+        copied_ids = {id(e[3]) for e in undo}
+        entries = [e for e in _streamed_host_tensors(target, groups) if id(e[2]) not in copied_ids]
+        need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
+        if need <= 0:
+            return 0
+        from .diffusion_small_host import (
+            encoder_resident_share_mib,
+            host_commit_mib,
+            host_ram_mib,
+        )
+
+        if host_ram is None:
+            total, available = host_ram_mib()
+            commit = host_commit_mib()
+        else:
+            total, available, commit = host_ram
+        share, why = encoder_resident_share_mib(
+            need,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = commit,
+            min_share_mib = min(need, _H3_TE_RESIDENT_MIN_MIB),
+        )
+        if share <= 0:
+            if logger is not None:
+                logger.info("video.h3_te_resident: the conditioner stays memory-mapped (%s)", why)
+            return 0
+        budget = share << 20
+        chosen = []
+        for entry in entries:
+            nbytes = entry[2].numel() * entry[2].element_size()
+            if nbytes <= budget:
+                chosen.append(entry)
+                budget -= nbytes
+        copied = _copy_host_tensors_(chosen, undo = undo)
+        mib = copied >> 20
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d of %d MiB of the streamed conditioner copied into host RAM (%s)",
+                mib,
+                need,
+                why,
+            )
+        return mib
+    except Exception as exc:  # noqa: BLE001 -- the mapping still works
+        if logger is not None:
+            logger.warning("video.h3_te_resident: kept the mapping: %s", exc)
+        return 0
+
+
+_TE_RESIDENT_UNDO_ATTR = "_unsloth_te_resident_undo"
+
+
+def _undo_list(target: Any) -> list:
+    undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None)
+    if undo is None:
+        undo = []
+        try:
+            setattr(target, _TE_RESIDENT_UNDO_ATTR, undo)
+        except Exception:  # noqa: BLE001 -- no undo: the share cannot yield
+            return []
+    return undo
+
+
+def top_up_h3_te_resident(text_encoder: Any, *, logger: Any = None) -> int:
+    """``keep_h3_te_resident`` again after the load (a re-fit released resident denoiser host copies): copies the
+    next share of the still-mapped conditioner. Only for a share the load already manages. Returns MiB copied."""
+    target = getattr(text_encoder, "model", None)
+    if target is None or getattr(target, _TE_RESIDENT_UNDO_ATTR, None) is None:
+        return 0
+    return keep_h3_te_resident(text_encoder, logger = logger)
+
+
+def yield_h3_te_resident(
+    text_encoder: Any,
+    nbytes: int,
+    *,
+    logger: Any = None,
+) -> int:
+    """Return up to ``nbytes`` of the conditioner's resident share to its memory mapping (last copied first: vision,
+    then the deepest language layers), so the anonymous copies are freed. Returns bytes given back. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None) if target is not None else None
+        if not undo or nbytes <= 0:
+            return 0
+        import torch
+
+        freed = 0
+        with torch.no_grad():
+            while undo and freed < nbytes:
+                group, tensor, mapped, copy = undo.pop()
+                cpu = getattr(group, "cpu_param_dict", None)
+                if cpu is not None and cpu.get(tensor) is copy:
+                    cpu[tensor] = mapped
+                if tensor.device.type == "cpu" and tensor.data_ptr() == copy.data_ptr():
+                    tensor.data = mapped
+                freed += copy.numel() * copy.element_size()
+                del copy
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d MiB of the conditioner's resident share returned to its mapping "
+                "(host RAM for a demoted denoiser block)",
+                freed >> 20,
+            )
+        return freed
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.warning("video.h3_te_resident: could not yield the resident share: %s", exc)
+        return 0
+
+
+def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
+    import torch
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fresh(host: Any) -> Any:
+        out = torch.empty_like(host, memory_format = torch.contiguous_format)
+        out.copy_(host)  # releases the GIL: parallel page faults keep the disk queue full
+        return out
+
+    with torch.no_grad(), ThreadPoolExecutor(_H3_TE_COPY_THREADS) as pool:
+        fresh = list(pool.map(lambda e: _fresh(e[2]), entries))
+    copied = 0
+    with torch.no_grad():
+        for (group, tensor, host), new in zip(entries, fresh):
+            cpu = getattr(group, "cpu_param_dict", None)
+            if cpu is not None and tensor in cpu:
+                cpu[tensor] = new
+            if tensor.device.type == "cpu" and tensor.data_ptr() == host.data_ptr():
+                tensor.data = new
+            if undo is not None:
+                undo.append((group, tensor, host, new))
+            copied += new.numel() * new.element_size()
+    return copied

@@ -26,6 +26,7 @@ export interface ExternalProviderConfig {
   /** The type as the backend stores it (may differ from providerType). Absent means unknown. */
   backendProviderType?: string;
   maxOutputTokens?: number;
+  extraHeaders?: Record<string, string>;
 
   hasApiKey?: boolean;
   shared?: boolean;
@@ -136,6 +137,7 @@ const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "openai",
   "anthropic",
   "gemini",
+  "minimax",
   "openrouter",
 ]);
 
@@ -250,9 +252,17 @@ export function providerModelSupportsVision(
 // Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
 // the family, unknown for a given model, so an MCP picture is not sent to one the
 // registry says nothing about.
-const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen", "qwencloud", "zai"]);
+const MIXED_CATALOG_PROVIDER_TYPES = new Set([
+  "huggingface",
+  "openrouter",
+  "qwen",
+  "qwencloud",
+  "zai",
+  "opencode",
+  "opencode_go",
+]);
 // Mirrors _CATALOG_VISION_NAMESPACES: mixed catalogs whose model catalog answers vision per model.
-const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai"]);
+const CATALOG_VISION_PROVIDER_TYPES = new Set(["qwencloud", "zai", "opencode", "opencode_go"]);
 
 /** Same rule as the backend's _external_takes_mcp_images, so stripped images are not resent. */
 export function providerModelTakesMcpImages(
@@ -355,6 +365,18 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
+/** Copy saved headers into chat state. Validation lives in extra-headers.ts, loaded with Connections. */
+export function extraHeadersFromSaved(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
+    if (name && typeof headerValue === "string") headers[name] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 /** All types except ChatGPT subscriptions; both stored and UI types are checked. */
 export function supportsProviderMaxOutputTokens(
   uiProviderType: string | null | undefined,
@@ -365,6 +387,22 @@ export function supportsProviderMaxOutputTokens(
     uiProviderType !== OPENAI_CODEX_PROVIDER_TYPE &&
     backendProviderType !== OPENAI_CODEX_PROVIDER_TYPE
   );
+}
+
+// One picker entry: the plan picks the registry type, and with it the URL that decides the billing.
+export const OPENCODE_PLANS = [
+  { providerType: "opencode", label: "Console" },
+  { providerType: "opencode_go", label: "Go" },
+] as const;
+
+export function isOpenCodeProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  return OPENCODE_PLANS.some((plan) => plan.providerType === providerType);
+}
+
+export function connectionPickerValue(providerType: string): string {
+  return isOpenCodeProviderType(providerType) ? "opencode" : providerType;
 }
 
 export const CUSTOM_PROVIDER_PRESETS = [
@@ -510,9 +548,9 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
-const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
-const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
+export const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
@@ -589,6 +627,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
         ? raw.backendProviderType.trim()
         : undefined,
     maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
+    extraHeaders: extraHeadersFromSaved(raw.extraHeaders),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,
