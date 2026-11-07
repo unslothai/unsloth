@@ -892,10 +892,7 @@ _DEEPSEEK_CASES = {
         "lora+experts": "v4_cp2_lora_experts",
     },
 }
-# Gemma 4 (transformers' Gemma4ForCausalLM, fused experts, attention_k_eq_v): sliding and global layers (their own
-# head_dim and key / value heads) on the generic route, right padded rows, fp64 against one process, every gradient
-# (None vs zero) and one AdamW step. HF checkpointing only; text-only models (multimodal Gemma 4 refuses at attach:
-# its vision attention is bidirectional).
+# Gemma 4: text-only Gemma4ForCausalLM, HF checkpointing only.
 _GEMMA4 = "tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference"
 _GEMMA4_EAGER = "eager: block compile not measured for this family"
 _GEMMA4_CASES = {
@@ -905,7 +902,6 @@ _GEMMA4_CASES = {
 }
 # Attention implementations a family's evidence ran (default: _MOE_COMMON's sdpa and eager).
 _MOE_ATTENTION = {"deepseek_v4": ("eager",)}
-# Families whose evidence ran text-only models: their multimodal rows stay unverified.
 _MOE_TEXT_ONLY = {
     "gemma4": "multimodal Gemma 4 refuses under Ulysses (its vision attention is bidirectional); only the "
     "text-only Gemma4ForCausalLM ran",

@@ -176,12 +176,7 @@ def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
 
 
 def _model_heads(model):
-    """(attention heads, key / value heads) of every attention layer kind, sorted; empty when unknown.
-
-    Heterogeneous configs (Gemma 4 on transformers >= 5.15) raise on global reads of per-layer
-    attributes, so each layer's config is read; there Gemma 4's global layers carry their own key /
-    value head count. Older Gemma 4 configs hold it as num_global_key_value_heads (attention_k_eq_v).
-    """
+    """Sorted (heads, kv heads) per attention layer kind; per_layer_config first since Gemma 4 global reads raise."""
     config = getattr(model, "config", None)
     text = getattr(config, "text_config", None) or config
     if not isinstance(getattr(text, "num_attention_heads", None), int):

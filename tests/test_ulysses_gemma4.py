@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for Gemma 4 text models on CPU gloo ranks.
-
-Gemma 4 runs main's generic route (its own attention function after the exchange, with its sliding
-window, scale 1.0, KV sharing, per-layer embeddings, attention_k_eq_v and MoE): fp64 against one
-process, every gradient and one AdamW step. What Gemma 4 adds on top: its heterogeneous config
-(transformers >= 5.15 refuses a global num_key_value_heads read; the global layers carry their own
-key / value head count), so the head split is checked per layer before any collective.
-"""
+"""Ulysses CP for Gemma 4 text models on CPU gloo ranks: fp64 parity and the per-layer head split."""
 
 import copy
 import os
@@ -111,7 +104,6 @@ def _model(
     checkpoint = False,
     lora = None,
 ):
-    # Unsloth's grouped-GEMM MoE kernels need CUDA; the CPU parity check uses the torch experts.
     os.environ.setdefault("UNSLOTH_MOE_BACKEND", "native_torch")
     torch.manual_seed(0)
     if kind.startswith("mm_"):
@@ -122,18 +114,15 @@ def _model(
     model.config._attn_implementation = attn
     model.config.use_cache = False
     for module in model.modules():
-        # Grouped expert kernels may touch CUDA in a forked CPU worker.
         if hasattr(module, "set_experts_implementation"):
             module.set_experts_implementation("eager")
     if checkpoint:
-        # HF gradient checkpointing: every decoder layer (and its CP attention) is recomputed in backward.
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
     if lora:
         from peft import LoraConfig, get_peft_model
 
         extra = {}
         if lora == "experts":
-            # LoRA on the routed experts too: the fused 3D expert weights.
             extra["target_parameters"] = ["experts.gate_up_proj", "experts.down_proj"]
         targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
         model = get_peft_model(
@@ -188,7 +177,6 @@ def _grad_status(grad):
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
     with tempfile.TemporaryDirectory() as d:
@@ -211,7 +199,6 @@ def _entry(rank, world, init_file, fn, args):
 
 
 def _cp_groups(world, size):
-    """Contiguous CP groups (rank // size = DP replica); every rank creates every group."""
     mine = None
     for start in range(0, world, size):
         ranks = list(range(start, start + size))
@@ -219,10 +206,6 @@ def _cp_groups(world, size):
         if dist.get_rank() in ranks:
             mine = group
     return mine
-
-
-# ---------------------------------------------------------------------------------------------
-# Model-level parity on main's generic route: fp64 against one process.
 
 
 def _model_case(
@@ -252,7 +235,6 @@ def _model_case(
 
     rows = list(range(rank // size, ids.shape[0], dp))
     manager = _manager(size, group)
-    # Every rank refuses here, before any collective, if a layer kind's heads cannot be split.
     cp._check_cp_model(model, size, "ulysses")
     manager.attach_attention_hooks(model)
     attention = [m for n, m in model.named_modules() if n.endswith("self_attn")]
@@ -272,7 +254,6 @@ def _model_case(
     real = uh._ulysses_hf_attention
 
     def counted(*args, **kwargs):
-        # The head shard each layer kind sees: (query heads, key / value heads, head_dim).
         calls.append((args[1].shape[1], args[2].shape[1], args[1].shape[-1]))
         return real(*args, **kwargs)
 
@@ -297,7 +278,6 @@ def _model_case(
     finally:
         uh._ulysses_hf_attention = real
     if control is None:
-        # Engagement: main's Ulysses attention runs once per layer (twice under checkpointing).
         runs = 2 if case.get("checkpoint") else 1
         text = _config(case["kind"])
         assert len(calls) == runs * text.num_hidden_layers, (len(calls), runs)
@@ -323,9 +303,7 @@ def _model_case(
             grad, expected, rtol = 1e-5, atol = 1e-6, msg = lambda m: f"{name}: {m}"
         )
         assert _grad_status(grad) == _grad_status(expected), name
-    # One AdamW step with weight decay: None skips the parameter, zero still decays it. A large eps
-    # keeps the first step Lipschitz in the gradient (Gemma 4's RMSNorm runs in float32 even under
-    # float64, so gradients carry float32 rounding).
+    # Large eps: Gemma 4's RMSNorm runs in float32 even under float64, so gradients carry float32 rounding.
     for net in (reference, model):
         trainable = [p for p in net.parameters() if p.requires_grad]
         torch.optim.AdamW(trainable, lr = 1e-3, eps = 1e-3, weight_decay = 0.1).step()
@@ -343,7 +321,6 @@ E2B = dict(kind = "e2b")
 MOE = dict(kind = "moe")
 HD512 = dict(kind = "hd512")
 CASES = {
-    # Windows 3 / 9 cross the seam; 64 covers the whole sequence.
     "e2b_cp2": dict(E2B, cp = 2, world = 2, window = 3),
     "e2b_cp2_window9_prompt_masked": dict(E2B, cp = 2, world = 2, window = 9, labels = "prompt_masked"),
     "e2b_cp2_window64": dict(E2B, cp = 2, world = 2, window = 64),
@@ -393,13 +370,8 @@ def test_gemma4_negative_controls_fail():
     _spawn(_controls_worker, 2)
 
 
-# ---------------------------------------------------------------------------------------------
-# What main lacks: the head split per layer kind (heterogeneous configs).
-
-
 def test_gemma4_head_counts_are_read_per_layer():
     model = _model("moe", dtype = torch.float32)
-    # transformers >= 5.15: the global read raises (a RuntimeError, so getattr's default does not catch it).
     with pytest.raises(RuntimeError, match = "per-layer attribute"):
         model.config.num_key_value_heads
     assert cp._model_heads(model) == [(4, 1), (4, 2)]
@@ -407,7 +379,6 @@ def test_gemma4_head_counts_are_read_per_layer():
     cp._check_cp_model(model, 2, "ulysses")
     cp._check_cp_model(model, 4, "ulysses")
     assert cp.resolve_cp_backend("auto", 2, model) == "ulysses"
-    # Gemma 4 configs from before per-layer configs: num_global_key_value_heads gated by attention_k_eq_v.
     old = types.SimpleNamespace(
         config = types.SimpleNamespace(
             num_attention_heads = 6,
@@ -419,30 +390,22 @@ def test_gemma4_head_counts_are_read_per_layer():
     assert cp._model_heads(old) == [(6, 3), (6, 6)]
     old.config.attention_k_eq_v = False
     assert cp._model_heads(old) == [(6, 6)]
-    # Homogeneous configs keep main's single pair (no key / value heads: one per query head).
     llama = types.SimpleNamespace(config = types.SimpleNamespace(num_attention_heads = 8))
     assert cp._model_heads(llama) == [(8, 8)]
     assert cp._model_heads(types.SimpleNamespace(config = None)) == []
 
 
 def test_gemma4_global_layer_heads_that_cannot_split_refuse_before_any_collective():
-    # Sliding layers: 6 query / 6 KV heads split over 2; global layers: 3 KV heads do not.
     text = _config(
         "moe", num_attention_heads = 6, num_key_value_heads = 6, num_global_key_value_heads = 3
     )
     assert {layer.num_key_value_heads for layer in text.per_layer_config} == {3, 6}
     model = types.SimpleNamespace(config = text)
     assert cp._model_heads(model) == [(6, 3), (6, 6)]
-    # No process group exists here: the refusal is raised before any collective.
     with pytest.raises(ValueError, match = r"key/value heads \(3\)"):
         cp._ulysses_head_plans(model, 2)
-    # auto falls back to ring, which refuses the window with its own reason.
     assert cp.resolve_cp_backend("auto", 2, model) == "ring"
     assert cp.resolve_cp_backend("auto", 3, model) == "ulysses"
-
-
-# ---------------------------------------------------------------------------------------------
-# Covered by main: the window rules, the fast forward refusal, multimodal refusal.
 
 
 def _check(
@@ -466,20 +429,16 @@ def test_gemma4_generic_route_gates(monkeypatch):
     assert not cp._supports_context_parallel(model, "ring")
     assert _check(model) is None
     assert "sliding" in _check(model, "ring")
-    # DPO / GRPO keep the Llama-style rule.
     assert _check(model, allow_hybrids = False) is not None
-    # Llama's fast forward ignores the window: Gemma 4 attention running it is not generic, and refuses.
     attention = type(model.model.layers[0].self_attn)
     monkeypatch.setattr(attention, "forward", LlamaAttention_fast_forward)
     assert not cp._generic_hf_attention(model)
     assert "sliding" in _check(model)
     assert "sliding" in _check(model, allow_hybrids = False)
     monkeypatch.undo()
-    # Multimodal Gemma 4 stays refused: its vision attention is bidirectional, which main's attach refuses.
     multimodal = _model("mm_e2b", dtype = torch.float32)
     with pytest.raises(NotImplementedError, match = "Gemma4VisionAttention is bidirectional"):
         _manager(2, None, local = 0).attach_attention_hooks(multimodal)
-    # Off the generic route, windowed model types stay refused; chunked layers refuse everywhere.
     for model_type in ("gemma3_text", "mistral", "qwen2", "gemma4_text"):
         other = types.SimpleNamespace(
             model_type = model_type,
@@ -492,9 +451,7 @@ def test_gemma4_generic_route_gates(monkeypatch):
     assert cp._unsupported_attention(text, "ulysses", generic = True) == "chunked_attention layers"
 
 
-# ---------------------------------------------------------------------------------------------
-# Flash: main hands the global layers' head_dim to the model's own flash function, so a head_dim
-# flash-attn cannot run fails under CP exactly as in one process (no silent switch to SDPA).
+# A head_dim flash-attn cannot run fails under CP as in one process (no silent switch to SDPA).
 
 _FLASH_MAX_HEAD_DIM = 256  # flash-attn 2's forward / backward limit
 

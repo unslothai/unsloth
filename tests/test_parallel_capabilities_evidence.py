@@ -368,9 +368,6 @@ def test_deepseek_evidence_ids_are_real_parity_cases():
     ids = ["full", "lora", "lora+experts"],
 )
 def test_gemma4_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
-    # tests/test_ulysses_gemma4.py::test_gemma4_cp_matches_fp64_reference: cp 2 / 4, dp 2 x cp 2, HF
-    # checkpointing, sdpa and eager, text-only. Unsloth's checkpoint, FSDP2 x cp, the router loss and
-    # multimodal Gemma 4 stay refused.
     kw = dict(
         trainer = "sft",
         family = "gemma4",
