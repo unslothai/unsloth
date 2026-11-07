@@ -938,3 +938,25 @@ def test_step_type_ids_only_with_prebuilt_masks():
     assert out is not kwargs and kwargs["mm_token_type_ids"] is t
     for name in ("mm_token_type_ids", "token_type_ids"):
         assert out[name].shape == (2, 1) and out[name].stride() == (1, 1)
+
+
+def test_step_that_fills_the_window_is_never_captured(host, gemma3):
+    # A first decode step at count == window - 1 fills the window. Its key is the filling one, but the capture
+    # records after the warm-up advanced the counters (the rolling branch): a kept graph of that key would then
+    # roll a window that is still filling. That step runs eagerly; the window-full key is captured after it.
+    window = gemma3.config.sliding_window
+    # A call past the window first: the roll index exists, so a capture of the rolling branch would succeed.
+    short, short_mask = _ids(gemma3, 2, length = 3)
+    _fresh(gemma3)
+    _generate(gemma3, short, short_mask, True, window + 4)
+    assert GG._ROLL_INDEX
+    ids, mask = _ids(gemma3, 2, length = window - 1)
+    _fresh(gemma3)
+    new = 8
+    eager = _generate(gemma3, ids, mask, False, new)
+    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
+    s = GG.stats(gemma3)
+    assert s["refusals"] == {"sliding window fills in this step": 1}, s
+    assert s["captures"] == 1 and s["validations"] == 1 and s["replays"] == new - 3, s
+    state = gemma3.__dict__[GG._ATTR]
+    assert all(all(key[2]) for key in state.validated), state.validated

@@ -1010,6 +1010,17 @@ def _window_reason(cache, q_len):
     return None
 
 
+def _window_fills(cache, q_len):
+    """Whether this step fills a sliding window (count + q_len reaches it). Its key is the filling one, but a
+    capture records after the warm-up advanced the counters, i.e. the rolling branch: never capture it."""
+    for layer in cache.layers:
+        if type(layer) in _SLIDING_LAYERS:
+            count = _host_counter(layer)
+            if count is not None and count < layer.max_cache_len <= count + q_len:
+                return True
+    return False
+
+
 def _window_state(cache):
     """Per sliding layer: whether its window is full (it rolls) or still filling (writes at the counter)."""
     return tuple(
@@ -1667,6 +1678,9 @@ def decode_step(
                 state.cache_sig = sig
             if state.call_stop is not None:
                 return _refusal(state, state.call_stop)
+            if _window_fills(cache, 1):
+                # A filling-key graph already captured replays this step correctly; a new one would not.
+                return _refusal(state, "sliding window fills in this step")
             return _capture(state, key, forward, kwargs, leaves, cache)
         for buffer, leaf in zip(entry.leaves, leaves):
             buffer.copy_(_compact(leaf))
