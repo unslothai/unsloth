@@ -1855,6 +1855,13 @@ export const id = {
         sttQuantDescription:
           "Pilih atau cari model STT untuk dijalankan secara lokal, lalu kuantisasinya.",
         sttDeviceLabel: "Muat ke",
+        sttContextLabel: "Konteks suara",
+        sttContextAuto: "Otomatis (disarankan)",
+        sttContextAutoDescription:
+          "Menyesuaikan dengan setiap rekaman, dengan lebih banyak memori untuk audio yang lebih panjang. Runtime lama mungkin memerlukan ukuran tetap untuk mengurangi memori. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextFixedDescription:
+          "Batas yang lebih kecil menggunakan lebih sedikit memori. Rekaman yang tidak muat memerlukan batas lebih tinggi atau Otomatis. Berlaku untuk Qwen3-ASR di Suara dan Transkripsikan.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU jika tersedia",
         sttDeviceCpu: "RAM CPU",
         sttDeviceAutoDescription: "Gunakan GPU jika ada, dan CPU jika tidak.",

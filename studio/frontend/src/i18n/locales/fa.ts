@@ -1844,6 +1844,13 @@ export const fa = {
         sttQuantDescription:
           "یک مدل STT را برای اجرای محلی انتخاب یا جستجو کنید، سپس کوانتیزه‌سازی آن را.",
         sttDeviceLabel: "بارگذاری در",
+        sttContextLabel: "زمینهٔ صدا",
+        sttContextAuto: "خودکار (پیشنهادی)",
+        sttContextAutoDescription:
+          "با هر ضبط تنظیم می‌شود و برای صدای طولانی‌تر حافظهٔ بیشتری مصرف می‌کند. محیط‌های اجرای قدیمی‌تر ممکن است برای کاهش حافظه به اندازهٔ ثابت نیاز داشته باشند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextFixedDescription:
+          "محدودیت‌های کوچک‌تر حافظهٔ کمتری مصرف می‌کنند. ضبط‌هایی که جا نمی‌شوند به محدودیت بالاتر یا خودکار نیاز دارند. برای Qwen3-ASR در صدا و رونویسی اعمال می‌شود.",
+        sttContextTokens: "{count} توکن",
         sttDeviceAuto: "GPU در صورت وجود",
         sttDeviceCpu: "RAM پردازنده (CPU)",
         sttDeviceAutoDescription:

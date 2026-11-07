@@ -1850,6 +1850,13 @@ export const tr = {
         sttQuantDescription:
           "Yerel olarak çalıştırılacak bir STT modeli seçin veya arayın, ardından nicelemesini seçin.",
         sttDeviceLabel: "Yükleneceği yer",
+        sttContextLabel: "Ses bağlamı",
+        sttContextAuto: "Otomatik (önerilen)",
+        sttContextAutoDescription:
+          "Her kayda uyum sağlar, daha uzun seslerde daha fazla bellek kullanır. Eski çalışma ortamları belleği azaltmak için sabit bir boyut gerektirebilir. Ses ve Yazıya dök bölümlerindeki Qwen3-ASR için geçerlidir.",
+        sttContextFixedDescription:
+          "Daha küçük sınırlar daha az bellek kullanır. Sığmayan kayıtlar daha yüksek bir sınır veya Otomatik gerektirir. Ses ve Yazıya dök bölümlerindeki Qwen3-ASR için geçerlidir.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "Varsa GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription: "Varsa GPU'yu, yoksa CPU'yu kullanın.",
