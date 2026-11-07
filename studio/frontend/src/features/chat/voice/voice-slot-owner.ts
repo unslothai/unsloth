@@ -41,6 +41,8 @@ function serial<T>(op: () => Promise<T>): Promise<T> {
 
 export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
   let loaded: string | null = null;
+  // False for a voice found already serving (the Audio page's): voice mode borrows it, never unloads it.
+  let owned = false;
   let pending: Promise<boolean> | null = null;
   let closed = false;
   // Voice turned off, or the page left, while the load was in flight: the off
@@ -48,8 +50,9 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
   const stale = () => closed || deps.voiceOff();
 
   const unloadOwn = () => {
-    const id = loaded;
+    const id = owned ? loaded : null;
     loaded = null;
+    owned = false;
     deps.setLoaded(false);
     if (id) {
       void serial(() =>
@@ -66,6 +69,7 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
         const { loadVoice, unloadVoice, voiceServing } = await deps.api();
         if (await voiceServing(id)) {
           if (stale()) return false;
+          owned = owned && loaded === id;
           loaded = id;
           deps.setLoaded(true);
           return true;
@@ -77,8 +81,10 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
         deps.setLoading(true);
         const previous = loaded;
         if (previous && previous !== id) {
+          const mine = owned;
           loaded = null;
-          await unloadVoice(previous).catch(() => {});
+          owned = false;
+          if (mine) await unloadVoice(previous).catch(() => {});
         }
         await loadVoice(id);
         if (stale()) {
@@ -86,6 +92,7 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
           return false;
         }
         loaded = id;
+        owned = true;
         deps.setLoaded(deps.pickedVoice() === id);
         return true;
       } catch (error) {

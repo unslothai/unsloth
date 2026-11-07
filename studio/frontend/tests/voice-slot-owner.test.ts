@@ -133,3 +133,31 @@ test("a new page keeps the voice an old page's stale cleanup would unload", asyn
   assert.equal(newPage.loadedId, "kokoro");
   assert.ok(served.has("kokoro"), "the new page's voice was unloaded under it");
 });
+
+test("a voice the Audio page was already serving is borrowed, never unloaded", async () => {
+  const calls: string[] = [];
+  const owner = createVoiceSlotOwner({
+    api: async () => ({
+      voiceServing: async () => true,
+      loadVoice: async (id) => {
+        calls.push(`load ${id}`);
+      },
+      unloadVoice: async (id) => {
+        calls.push(`unload ${id}`);
+      },
+    }),
+    pickedVoice: () => "kokoro",
+    hasChatModel: () => true,
+    voiceOff: () => false,
+    setLoaded: () => {},
+    setLoading: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
+  assert.equal(await owner.ensure(), true);
+  assert.equal(owner.loadedId, "kokoro");
+  owner.unloadOwn();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls, []);
+});
