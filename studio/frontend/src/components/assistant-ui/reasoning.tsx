@@ -587,8 +587,7 @@ function ReasoningTail({
       data-slot="reasoning-tail"
       data-capped={capped ? "" : undefined}
       className={cn(
-        // A mask paints only inside its box, so it bleeds into the side padding (keeps list markers). Expanded
-        // keeps this exact box so nothing moves or rewraps; the top padding sits outside the scroller.
+        // The mask bleeds into the side padding (keeps list markers); expanded keeps this box so nothing rewraps.
         (capped || expanded) &&
           "-ml-[calc(1.25rem*var(--ui-space-scale,1))] -mr-[calc(0.5rem*var(--ui-space-scale,1))] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-[calc(1.25rem*var(--ui-space-scale,1))] pr-[calc(0.5rem*var(--ui-space-scale,1))] pb-3 [scrollbar-gutter:stable] [&>[data-slot=reasoning-text]]:pt-1",
         capped && "max-h-[min(22rem,48vh)]",
@@ -624,7 +623,6 @@ function ReasoningEndRule({ capped }: { capped: boolean }) {
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      // A capped box's own bottom padding spaces its last line, so the gap shows only at the end.
       className={cn(capped ? "mt-2" : "mt-6", "mb-2 border-border border-t")}
     />
   );
@@ -787,7 +785,7 @@ const ReasoningGroupBlock = ({
 
   // null until toggled by hand, then it outranks the setting for the round.
   const [override, setOverride] = useState<boolean | null>(null);
-  // The header's expand button lifts the cap for this round; a new round or a setting change restores it.
+  // Expand lifts the cap for this round only.
   const [tailExpanded, setTailExpanded] = useState(false);
   const [tailOverflowing, setTailOverflowing] = useState(false);
   const [duration, setDuration] = useState<number>(0);

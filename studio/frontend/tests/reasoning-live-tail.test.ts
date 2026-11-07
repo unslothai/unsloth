@@ -87,7 +87,6 @@ test("the header's expand button lifts the cap for the round and appears only wh
   assert.match(reasoning, /expanded=\{capped && tailExpanded\}/);
   assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
   assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
-  // The box reports overflow without re-rendering on every scroll: only a change calls back.
   assert.match(tail, /if \(now !== overflowing\.current\) \{\s*overflowing\.current = now;\s*onOverflowRef\.current\(now\);/);
 });
 
@@ -115,7 +114,6 @@ test("each edge fades only while more is past it, set without a re-render", () =
   const css = readSrc("index.css");
   assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-above\] \{\s*--trace-fade-top: 1\.25rem;/);
   assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-below\] \{\s*--trace-fade-bottom: 1\.5rem;/);
-  // The scrollbar's strip is a second, unfaded mask layer.
   assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;\s*mask-position: 0 0, right;/);
   assert.match(reasoning, /capped \? "mt-2" : "mt-6", "mb-2 border-border border-t"/);
   assert.doesNotMatch(tail, /setState|useState/);
