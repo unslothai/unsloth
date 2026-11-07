@@ -697,13 +697,23 @@ def invalidate(model):
     BUFFER_EPOCH += 1
 
 
+# _decode_fused_nf4's plan / batch plan / legacy homes: scratch buffers and weight references.
+FUSED_NF4_ATTRS = (
+    "_unsloth_fused_nf4_plan",
+    "_unsloth_fused_nf4_batch_plan",
+    "_unsloth_fused_nf4_homes",
+)
+
+
 def release(model):
-    """Drops captured steps and the persistent decode buffers (frees their memory)."""
+    """Drops captured steps, the persistent decode buffers and fused NF4 plans (frees their memory)."""
     global BUFFER_EPOCH
     found = False
     for module in model.modules():
         d = module.__dict__
         d.pop(HELD, None)
+        for name in FUSED_NF4_ATTRS:
+            d.pop(name, None)
         state = d.get("_unsloth_decode_graphs")
         if state is not None:
             found = True
@@ -1031,7 +1041,11 @@ def decode_step(
         _fill_keep(state, s, mask, bsz, kv_len, cap, device)
 
     autocast = _autocast_state()
-    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
+    # The fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4) records other launches: its own steps,
+    # keyed on whether it may run now (a disabled NF4 backend must not replay a fused graph).
+    fused_module = sys.modules.get(__package__ + "._decode_fused_nf4")
+    fused = fused_module.graph_key() if fused_module is not None else "0"
+    key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span, fused)
     step = state.graphs.get(key)
     if step is None and not worth_capturing(kv_len):
         state.eager_steps += 1
