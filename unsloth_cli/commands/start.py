@@ -5985,6 +5985,38 @@ def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
     )
 
 
+def _hermes_mcp_env(home: Path) -> dict:
+    # Hermes fills ${VAR} in mcp_servers from HERMES_HOME/.env (hermes mcp add --auth bearer stores tokens there); pass only the carried servers' names, never write them to disk.
+    origin, carried = _hermes_mcp_manifest(home)
+    source = _hermes_user_home(origin) if origin is not None else None
+    if not carried or source is None or source.resolve(strict = False) == home.resolve(strict = False):
+        return {}
+    servers = _hermes_mcp_servers(home) or {}
+    wanted = set()
+    for name in carried & servers.keys():
+        for ref in re.findall(r"\$\{([^}]+)\}", json.dumps(servers[name])):
+            ref = ref.strip()
+            wanted.add(ref[4:].strip() if ref.startswith("env:") else ref)
+    try:
+        lines = (source / ".env").read_text(encoding = "utf-8").splitlines()
+    except (OSError, ValueError):
+        return {}
+    env = {}
+    for line in lines:
+        key, sep, value = line.strip().removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or key not in wanted:
+            continue
+        if len(value) > 1 and value[0] == value[-1] == '"':
+            value = value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+        elif len(value) > 1 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0].strip()
+        env[key] = value
+    return env
+
+
 def write_hermes_config(
     base: str,
     model: dict,
@@ -8196,6 +8228,9 @@ def hermes(
             keep_mcp_servers = True,
         )
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
+        if launch:
+            # A --no-launch recipe is printed, so its shell keeps supplying these itself.
+            env = {**_hermes_mcp_env(home), **env}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 

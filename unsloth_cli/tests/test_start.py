@@ -12084,3 +12084,35 @@ def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monke
 
     assert progress.downloaded_bytes == 2 * GiB
     assert server.count("my-lora") == 0
+
+
+def test_hermes_launch_passes_carried_mcp_secrets_from_the_users_env(
+    fake_studio, tmp_path, monkeypatch
+):
+    pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "mcp_servers:\n  remote:\n    url: https://mcp.example/mcp\n"
+        "    headers:\n      Authorization: Bearer ${MCP_REMOTE_API_KEY}\n"
+        "  quoted:\n    url: https://q.example/mcp\n    headers: {X-Key: '${env:Q_KEY}'}\n"
+    )
+    (source_home / ".env").write_text(
+        "OPENROUTER_API_KEY=not-for-the-session\n"
+        "MCP_REMOTE_API_KEY=sekret # rotated\n"
+        'export Q_KEY="a \\"b\\" # c"\n'
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/hermes")
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda command, env, **kw: launched.append(env) or 0)
+    result = CliRunner().invoke(start.start_app, ["hermes"])
+    assert result.exit_code == 0, result.output
+    env = launched[0]
+    assert env["MCP_REMOTE_API_KEY"] == "sekret"
+    assert env["Q_KEY"] == 'a "b" # c'
+    assert "OPENROUTER_API_KEY" not in env
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "sekret" not in result.output
