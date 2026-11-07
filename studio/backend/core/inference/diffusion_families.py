@@ -299,9 +299,7 @@ _QWENIMAGE_MOD_WEIGHT_ONLY = ("img_mod", "txt_mod")
 # pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
-# ``FamilyProfile.rdna_auto_w8a8``, measured on gfx1151 (Radeon 8060S, torch 2.11 + ROCm 7.13), 1024^2, both arms
-# compiled from render 1, LPIPS-alex vs the compiled bf16 render (bf16 A/A repeat bit-identical, s/img spread <= 0.2%).
-# Wan2.1-1.3B (slower, LPIPS 0.139) and Wan2.2-5B (LPIPS 0.123) failed the 0.10 bar there; edit / layered unmeasured.
+# rdna_auto_w8a8: gfx1151, ROCm 7.13, 1024^2, both arms compiled, LPIPS vs compiled bf16. Wan failed the 0.10 LPIPS bar.
 _QWENIMAGE21_RDNA_AUTO_W8A8 = "compiled int8 W8A8 measured 83.3 vs 95.1 s/image against compiled bf16 on gfx1151 (25 steps), LPIPS 0.020"
 _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "

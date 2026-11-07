@@ -321,8 +321,7 @@ def _rocm_fused_w8a8_refusal(torch: Any) -> Optional[str]:
 
 
 def rocm_rdna_w8a8_ready() -> bool:
-    """True on a ROCm RDNA3 / RDNA3.5 / RDNA4 device where the compiled W8A8 linear can run (inductor runtime present,
-    ``UNSLOTH_NATIVE_INT8_FUSED`` not off, no earlier failure): there W8A8 beats the weight-only int8 path."""
+    """ROCm RDNA device where the compiled W8A8 linear can run (UNSLOTH_NATIVE_INT8_FUSED not off)."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return False
     try:

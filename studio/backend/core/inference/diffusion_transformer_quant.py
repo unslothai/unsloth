@@ -1216,21 +1216,17 @@ def _rocm_cuda(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and torch_is_rocm()
 
 
-# ``FamilyProfile.rdna_auto_w8a8``: families whose AUTO runs native compiled W8A8 on ROCm RDNA3 / RDNA4.
 _FAMILY_RDNA_AUTO_W8A8: dict[str, str] = _profile_table("rdna_auto_w8a8", quant = True)
 
 
 def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
-    """The measured reason AUTO picks native int8 W8A8 for ``family`` on this ROCm RDNA device, or None (bf16 auto).
-    ``UNSLOTH_NATIVE_INT8_ACT=0`` turns it off: weight-only int8 measured no faster than bf16 on gfx1151."""
+    """Measured reason AUTO picks W8A8 for ``family`` on ROCm RDNA, else None. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
     reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
     if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
         return None
-    # Measured on Linux only; Windows ROCm runs the speed tier off, where W8A8 has nothing to compile with.
+    # Linux only: Windows ROCm has no compile tier.
     if not _sys.platform.startswith("linux"):
         return None
-    # The compiled W8A8 linear must run here; the auto pick always quantises activations (explicit int8 keeps its
-    # weight-only default).
     if int8_act_disabled() or not rocm_rdna_w8a8_ready():
         return None
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:

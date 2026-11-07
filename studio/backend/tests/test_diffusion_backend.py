@@ -13344,7 +13344,6 @@ def test_auto_on_rdna_keeps_bf16_for_an_unmeasured_family(fake_runtime, tmp_path
 
 
 def test_auto_on_rdna_with_speed_off_stays_bf16(fake_runtime, tmp_path, monkeypatch):
-    # An explicit Speed "off" is a bit-exact request: auto quant stays off, as on every other host.
     backend = DiffusionBackend()
     calls = _stub_rdna_w8a8_host(backend, monkeypatch)
     status = backend.load_pipeline(

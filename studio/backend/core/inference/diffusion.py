@@ -8601,9 +8601,7 @@ class DiffusionBackend:
                         auto_bf16_when_resident_reason(getattr(fam, "name", None))
                         == SMALL_DIT_BF16_WHEN_RESIDENT
                     )
-                # ROCm RDNA3 / RDNA4: AUTO runs the native compiled int8 W8A8 linear for families measured faster than
-                # compiled bf16 there at the same LPIPS bar (``FamilyProfile.rdna_auto_w8a8``). A resident-only rule
-                # like the native path's; an explicit offload / low-VRAM request keeps bf16.
+                # ROCm RDNA AUTO W8A8 (FamilyProfile.rdna_auto_w8a8); resident only, offload / low-VRAM keeps bf16.
                 rdna_auto_w8a8 = (
                     rdna_auto_w8a8_reason(target, getattr(fam, "name", None))
                     if transformer_quant == TQ_AUTO
@@ -10542,8 +10540,7 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                     ):
-                        # Measured with the rest of the DiT compiled: the W8A8 linear alone (eager blocks) trails
-                        # compiled bf16 on gfx1151.
+                        # W8A8 with eager blocks trails compiled bf16 on gfx1151.
                         logger.info(
                             "diffusion.speed: speed_mode=default from render 1 (auto int8 W8A8 on RDNA is "
                             "measured compiled)"

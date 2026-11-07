@@ -212,7 +212,7 @@ def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatc
 
 
 def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
-    # Measured on gfx1151 against compiled bf16; Wan (LPIPS > 0.10), the small DiTs and edit / layered stay bf16.
+    # Wan, small DiTs, edit / layered stay bf16.
     assert set(tq._FAMILY_RDNA_AUTO_W8A8) == {"qwen-image", "qwen-image-2.1"}
 
 
