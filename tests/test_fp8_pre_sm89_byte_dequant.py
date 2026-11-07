@@ -235,6 +235,19 @@ ROCM_ROUTES = [
 ]
 
 
+def test_hip_bytes_dequant_takes_fp16_once_its_rounding_is_exact(monkeypatch):
+    """The gfx11 byte decoder was kept off fp16 while its fp16 cast rounded unlike the torch loop;
+    #14992's integer rounding (on by default on ROCm) closed that, so fp16 routes with bf16 / fp32."""
+    monkeypatch.setattr(fp8, "_HIP_FP8_BYTES_DEQUANT", True)
+    monkeypatch.setattr(fp8, "_rocm_bytes_dequant_arch", lambda device: True)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert fp8._hip_bytes_dequant("cuda", torch.float16)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert fp8._hip_bytes_dequant("cuda", torch.bfloat16)
+    assert not fp8._hip_bytes_dequant("cuda", torch.float16)
+
+
 @needs_cuda
 @pytest.mark.parametrize("arch, triton_version, expected, old", ROCM_ROUTES)
 def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
@@ -247,10 +260,13 @@ def test_rocm_routes(monkeypatch, arch, triton_version, expected, old):
     assert (
         route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float32, **hip) == ragged
     )
-    # fp16 output keeps the old route (the torch loop rounds fp16 differently on gfx1151).
-    assert (
-        route((11, 5), weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip) == "torch"
-    )
+    # fp16 output takes the byte decoder with the integer fp16 rounding (#14992, the ROCm default);
+    # without it the torch loop keeps the route (gfx1151 fuses the fp16 cast into v_fma_mixlo_f16).
+    fp16 = dict(weight = _weight(130, 200, "cuda"), out_dtype = torch.float16, **hip)
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "1")
+    assert route((11, 5), **fp16) == ragged
+    monkeypatch.setenv("UNSLOTH_FP8_EXACT_F16_ROUND", "0")
+    assert route((11, 5), **fp16) == "torch"
     assert route((11, 5), weight = w.float().to(torch.float8_e5m2), **hip) == "triton_fp8"
     if hasattr(torch, "float8_e4m3fnuz"):
         fnuz = w.float().nan_to_num(0).clamp(-240, 240).to(torch.float8_e4m3fnuz)
