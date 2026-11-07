@@ -753,6 +753,8 @@ export const pl = {
       "Zamknięcie tego okna nie zatrzymuje konfiguracji. Jej wynik pojawi się w sekcji Ustawienia > Bezpieczeństwo.",
   },
   composerSettings: {
+    shareDraft: "Udostępniaj szkice między czatami",
+    shareDraftDescription: "Używaj jednego szkicu w czatach i porównaniach. Domyślnie wyłączone; każdy czat zachowuje własny szkic.",
     title: "Pole wiadomości",
     plainText: "Pole wiadomości z czystym tekstem",
     plainTextDescription:

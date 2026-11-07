@@ -615,6 +615,7 @@ async function waitForBackendLoadToSettle(): Promise<void> {
 }
 
 export function SharedComposer({
+  draftId,
   handlesRef,
   model1,
   model2,
@@ -625,6 +626,7 @@ export function SharedComposer({
   sendUnavailableReason,
   requireStableCheckpoint = false,
 }: {
+  draftId: string;
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
@@ -647,48 +649,50 @@ export function SharedComposer({
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
   const incognito = useChatRuntimeStore((s) => s.incognito);
+  const shareDraft = useChatPreferencesStore((s) => s.shareComposerDraft);
+  const syncDraft = shareDraft && !incognito;
+  const draftKey = composerDraftKey(draftId, shareDraft);
+  const draftScope = incognito ? null : draftKey;
   const [text, setText] = useState(() =>
-    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
+    incognito ? "" : latestDraft(draftKey),
   );
   const [draftSource] = useState(() => Symbol("compare composer"));
   // Text that came from the chat composer, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
-  const unsavedDraftRef = useRef<string | null>(null);
-  const incognitoBeforeRef = useRef(incognito);
+  const unsavedDraftRef = useRef<{ key: string; text: string } | null>(null);
+  const draftScopeBeforeRef = useRef(draftScope);
   useEffect(() => {
-    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
-    if (incognitoBeforeRef.current !== incognito) {
-      incognitoBeforeRef.current = incognito;
-      if (!incognito) {
-        remoteDraftRef.current = latestDraft();
-        setText(remoteDraftRef.current);
-      }
+    if (draftScopeBeforeRef.current !== draftScope) {
+      draftScopeBeforeRef.current = draftScope;
+      remoteDraftRef.current = incognito ? "" : latestDraft(draftKey);
+      setText(remoteDraftRef.current);
       return;
     }
     if (incognito || text === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
-    publishDraft(text, draftSource);
+    if (shareDraft) publishDraft(text, draftSource);
     // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
     if (text === "") {
-      writeComposerDraft(composerDraftKey(), "");
+      writeComposerDraft(draftKey, "");
       unsavedDraftRef.current = null;
       return;
     }
-    unsavedDraftRef.current = text;
+    unsavedDraftRef.current = { key: draftKey, text };
     const timer = setTimeout(() => {
-      writeComposerDraft(composerDraftKey(), text);
+      writeComposerDraft(draftKey, text);
       unsavedDraftRef.current = null;
     }, 300);
     return () => clearTimeout(timer);
-  }, [text, incognito, draftSource]);
-  // Leaving Compare inside the debounce still saves what was typed.
+  }, [text, draftScope, draftKey, incognito, shareDraft, draftSource]);
+  // Leaving Compare or changing its draft scope inside the debounce still saves what was typed.
   useEffect(
     () => () => {
       if (unsavedDraftRef.current !== null) {
-        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+        writeComposerDraft(unsavedDraftRef.current.key, unsavedDraftRef.current.text);
+        unsavedDraftRef.current = null;
       }
     },
-    [],
+    [draftScope],
   );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
@@ -718,12 +722,13 @@ export function SharedComposer({
     [],
   );
   useEffect(() => {
-    if (incognito) return;
+    if (!syncDraft) return;
     return subscribeDraft(draftSource, (next) => {
+      unsavedDraftRef.current = null;
       remoteDraftRef.current = next;
       setCurrentText(next);
     });
-  }, [incognito, draftSource, setCurrentText]);
+  }, [syncDraft, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {

@@ -707,6 +707,8 @@ export const sv = {
       "Att stänga detta stoppar inte konfigurationen. Resultatet visas i Inställningar > Säkerhet.",
   },
   composerSettings: {
+    shareDraft: "Dela utkast mellan chattar",
+    shareDraftDescription: "Använd ett utkast för chattar och jämförelser. Av som standard; varje chatt behåller sitt eget utkast.",
     title: "Skrivfält",
     plainText: "Skrivfält med oformaterad text",
     plainTextDescription:

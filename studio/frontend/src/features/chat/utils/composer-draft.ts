@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One draft shared by every chat, so the last thing typed follows the user. The chat-draft prefix
-// is what the account switch clears (account-transition.ts).
+// Sharing is opt-in. Keep its existing slots so opting out never destroys an unsent draft.
+// The chat-draft prefix is what account-transition.ts clears on account switches.
 const DRAFT_KEY = "chat-draft:latest";
 const PASTE_DRAFT_KEY = "chat-draft-pastes:latest";
-// Pre-upgrade per-chat drafts: adopted when their chat opens, removed with their chat.
+// Per-chat drafts retain the pre-sharing keys.
 const LEGACY_DRAFT_PREFIX = "chat-draft:";
 const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 
-export function composerDraftKey(): string {
-  return DRAFT_KEY;
+export function composerDraftKey(threadId: string, shared = false): string {
+  return shared ? DRAFT_KEY : `${LEGACY_DRAFT_PREFIX}${threadId}`;
 }
 
 // Pasted attachments live in their own slot rather than inside the text draft, so typing never
 // rewrites a paste that can run to megabytes.
-export function composerPasteDraftKey(): string {
-  return PASTE_DRAFT_KEY;
+export function composerPasteDraftKey(threadId: string, shared = false): string {
+  return shared ? PASTE_DRAFT_KEY : `${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`;
 }
 
 export function readPasteDraft(key: string): string[] {
@@ -38,14 +38,20 @@ export function readPasteDraft(key: string): string[] {
 
 // This tab's pastes once it saves any, as `latest` is for its text.
 let latestPastes: string[] | null = null;
+const perChatPastes = new Map<string, string[]>();
 
-export function latestPasteDraft(): string[] {
-  return latestPastes !== null ? [...latestPastes] : readPasteDraft(PASTE_DRAFT_KEY);
+export function latestPasteDraft(key = PASTE_DRAFT_KEY): string[] {
+  if (key === PASTE_DRAFT_KEY) {
+    return latestPastes !== null ? [...latestPastes] : readPasteDraft(key);
+  }
+  if (!perChatPastes.has(key)) perChatPastes.set(key, readPasteDraft(key));
+  return [...perChatPastes.get(key)!];
 }
 
 // A quota error here leaves the text draft untouched, hence separate slots.
 export function writePasteDraft(key: string, pastes: readonly string[]): void {
   if (key === PASTE_DRAFT_KEY) latestPastes = [...pastes];
+  else perChatPastes.set(key, [...pastes]);
   try {
     if (pastes.length > 0) {
       window.localStorage.setItem(key, JSON.stringify(pastes));
@@ -67,6 +73,7 @@ export function readComposerDraft(key: string): string | null {
 }
 
 export function writeComposerDraft(key: string, text: string): void {
+  if (key !== DRAFT_KEY) perChatDrafts.set(key, text);
   try {
     if (text.length > 0) window.localStorage.setItem(key, text);
     else window.localStorage.removeItem(key);
@@ -99,9 +106,9 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
       adopted = true;
       seeded = null;
       latestPastes = null;
+      // Moved, not copied: a copy left behind would return a prompt sent from the shared slot.
+      clearComposerDraft(id);
     }
-    storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
-    storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
     return adopted;
   } catch {
     return false;
@@ -115,8 +122,13 @@ type DraftListener = (text: string, source: symbol) => void;
 const draftListeners = new Set<DraftListener>();
 let latest: string | null = null;
 let seeded: string | null = null;
+const perChatDrafts = new Map<string, string>();
 
-export function latestDraft(): string {
+export function latestDraft(key = DRAFT_KEY): string {
+  if (key !== DRAFT_KEY) {
+    if (!perChatDrafts.has(key)) perChatDrafts.set(key, readComposerDraft(key) ?? "");
+    return perChatDrafts.get(key)!;
+  }
   if (latest !== null) return latest;
   seeded ??= readComposerDraft(DRAFT_KEY) ?? "";
   return seeded;
@@ -136,8 +148,10 @@ export function subscribeDraft(source: symbol, listener: (text: string) => void)
   return () => draftListeners.delete(wrapped);
 }
 
-// A deleted chat's leftover per-chat draft; never the shared one.
+// Deleting a chat clears only its own draft, never the shared one.
 export function clearComposerDraft(threadId: string): void {
+  perChatDrafts.delete(composerDraftKey(threadId));
+  perChatPastes.delete(composerPasteDraftKey(threadId));
   try {
     window.localStorage.removeItem(`${LEGACY_DRAFT_PREFIX}${threadId}`);
     window.localStorage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`);

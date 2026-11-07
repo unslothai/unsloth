@@ -57,8 +57,8 @@ test("a per-chat draft from before the upgrade becomes the shared draft when its
   store.set("chat-draft:t1", "unsent");
   store.set("chat-draft-pastes:t1", '["pasted"]');
   adoptLegacyDraft("t1");
-  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "unsent");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("", true)), ["pasted"]);
   assert.equal(store.has("chat-draft:t1"), false);
   assert.equal(store.has("chat-draft-pastes:t1"), false);
 });
@@ -66,15 +66,15 @@ test("a per-chat draft from before the upgrade becomes the shared draft when its
 test("an old new-chat draft is adopted when a new chat opens", () => {
   store.set("chat-draft:__new__", "unsent");
   adoptLegacyDraft(null);
-  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "unsent");
 });
 
 test("a newer shared draft wins over an old per-chat one", () => {
-  writeComposerDraft(composerDraftKey(), "newer");
+  writeComposerDraft(composerDraftKey("", true), "newer");
   store.set("chat-draft:t1", "older");
   adoptLegacyDraft("t1");
-  assert.equal(readComposerDraft(composerDraftKey()), "newer");
-  assert.equal(store.has("chat-draft:t1"), false);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "newer");
+  assert.equal(store.has("chat-draft:t1"), true);
 });
 
 test("a paste too big to adopt rolls back the text, so the next try still carries both", () => {
@@ -82,15 +82,15 @@ test("a paste too big to adopt rolls back the text, so the next try still carrie
   store.set("chat-draft-pastes:t1", '["pasted"]');
   const setItem = window.localStorage.setItem;
   window.localStorage.setItem = (key: string, value: string) => {
-    if (key === composerPasteDraftKey()) throw new Error("QuotaExceededError");
+    if (key === composerPasteDraftKey("", true)) throw new Error("QuotaExceededError");
     setItem(key, value);
   };
   assert.equal(adoptLegacyDraft("t1"), false);
   window.localStorage.setItem = setItem;
-  assert.equal(readComposerDraft(composerDraftKey()), null);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), null);
   assert.equal(adoptLegacyDraft("t1"), true);
-  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "unsent");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("", true)), ["pasted"]);
 });
 
 test("composers hear each other's text, never their own", () => {
@@ -111,7 +111,7 @@ const openTab = () =>
   import(`../src/features/chat/utils/composer-draft.ts?tab=${Math.random()}`);
 
 test("a new tab or a reload starts from the saved draft", async () => {
-  writeComposerDraft(composerDraftKey(), "saved before the reload");
+  writeComposerDraft(composerDraftKey("", true), "saved before the reload");
   const tab = await openTab();
   assert.equal(tab.latestDraft(), "saved before the reload");
 });
@@ -124,9 +124,9 @@ test("typing or sending in another tab never rewrites this tab's draft", async (
   // The other tab's debounced save, then its send clearing the slot; the browser
   // tells this tab about each with a storage event.
   const otherTabWrites = (text: string) => {
-    writeComposerDraft(composerDraftKey(), text);
+    writeComposerDraft(composerDraftKey("", true), text);
     for (const listener of windowListeners.get("storage") ?? []) {
-      listener({ key: composerDraftKey(), newValue: text === "" ? null : text });
+      listener({ key: composerDraftKey("", true), newValue: text === "" ? null : text });
     }
   };
   otherTabWrites("typed in the other tab");
@@ -139,22 +139,22 @@ test("typing or sending in another tab never rewrites this tab's draft", async (
 test("this tab keeps its own text after another tab saves", async () => {
   const tab = await openTab();
   tab.publishDraft("mine", Symbol("chat"));
-  writeComposerDraft(composerDraftKey(), "theirs");
+  writeComposerDraft(composerDraftKey("", true), "theirs");
   assert.equal(tab.latestDraft(), "mine");
 });
 
 test("a new tab starts from the saved pastes, then keeps its own", async () => {
-  writePasteDraft(composerPasteDraftKey(), ["saved paste"]);
+  writePasteDraft(composerPasteDraftKey("", true), ["saved paste"]);
   const tab = await openTab();
   assert.deepEqual(tab.latestPasteDraft(), ["saved paste"]);
-  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
-  writePasteDraft(composerPasteDraftKey(), ["pasted in the other tab"]);
+  tab.writePasteDraft(tab.composerPasteDraftKey("", true), []);
+  writePasteDraft(composerPasteDraftKey("", true), ["pasted in the other tab"]);
   assert.deepEqual(tab.latestPasteDraft(), [], "a chat switch here does not pick it up");
 });
 
 test("an adopted per-chat paste reaches the restore", async () => {
   const tab = await openTab();
-  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
+  tab.writePasteDraft(tab.composerPasteDraftKey("", true), []);
   store.set("chat-draft-pastes:t1", '["old paste"]');
   assert.equal(tab.adoptLegacyDraft("t1"), true);
   assert.deepEqual(tab.latestPasteDraft(), ["old paste"]);
@@ -168,7 +168,7 @@ test("a failed adoption keeps the old draft rather than losing it", () => {
 });
 
 test("an unsent paste survives a reload", () => {
-  const key = composerPasteDraftKey();
+  const key = composerPasteDraftKey("", true);
   const paste = `Deploy log\n${"line\n".repeat(500)}`;
 
   writePasteDraft(key, [paste]);
@@ -183,41 +183,111 @@ test("an unsent paste survives a reload", () => {
 test("the paste slot is separate from the text draft", () => {
   // Typing must never rewrite a paste that can run to megabytes, so the two
   // live under different keys.
-  assert.notEqual(composerDraftKey(), composerPasteDraftKey());
+  assert.notEqual(composerDraftKey("", true), composerPasteDraftKey("", true));
 });
 
 test("deleting a chat drops its old per-chat draft but keeps the shared one", () => {
-  writeComposerDraft(composerDraftKey(), "typed");
-  writePasteDraft(composerPasteDraftKey(), ["pasted"]);
+  writeComposerDraft(composerDraftKey("", true), "typed");
+  writePasteDraft(composerPasteDraftKey("", true), ["pasted"]);
   store.set("chat-draft:t1", "old");
   store.set("chat-draft-pastes:t1", '["old"]');
   clearComposerDraft("t1");
   assert.equal(store.has("chat-draft:t1"), false);
   assert.equal(store.has("chat-draft-pastes:t1"), false);
-  assert.equal(readComposerDraft(composerDraftKey()), "typed");
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "typed");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("", true)), ["pasted"]);
 });
 
 test("the shared draft keeps the prefix the account switch clears", () => {
-  assert.ok(composerDraftKey().startsWith("chat-draft"));
-  assert.ok(composerPasteDraftKey().startsWith("chat-draft"));
+  assert.ok(composerDraftKey("", true).startsWith("chat-draft"));
+  assert.ok(composerPasteDraftKey("", true).startsWith("chat-draft"));
 });
 
 test("a paste too big for the quota does not cost the typed draft", () => {
-  writeComposerDraft(composerDraftKey(), "typed");
+  writeComposerDraft(composerDraftKey("", true), "typed");
   failWrites = true;
 
-  writePasteDraft(composerPasteDraftKey(), ["x".repeat(64)]);
-  assert.equal(readComposerDraft(composerDraftKey()), "typed");
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), []);
+  writePasteDraft(composerPasteDraftKey("", true), ["x".repeat(64)]);
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "typed");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("", true)), []);
 });
 
 test("a corrupt paste slot reads as empty rather than throwing", () => {
-  const key = composerPasteDraftKey();
+  const key = composerPasteDraftKey("", true);
   for (const raw of ["not json", '{"text":"a"}', "[1,2]", ""]) {
     store.set(key, raw);
     assert.deepEqual(readPasteDraft(key), []);
   }
   store.set(key, JSON.stringify(["keep", 5, null, "also"]));
   assert.deepEqual(readPasteDraft(key), ["keep", "also"]);
+});
+
+test("draft text and pastes belong to their chat unless sharing is explicitly enabled", () => {
+  const first = composerDraftKey("chat-a");
+  const second = composerDraftKey("chat-b");
+  writeComposerDraft(first, "unfinished A");
+  writePasteDraft(composerPasteDraftKey("chat-a"), ["large paste A"]);
+  assert.equal(readComposerDraft(second), null);
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("chat-b")), []);
+  writeComposerDraft(second, "unfinished B");
+  assert.equal(readComposerDraft(first), "unfinished A");
+  clearComposerDraft("chat-b");
+  assert.equal(readComposerDraft(first), "unfinished A");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey("chat-a")), ["large paste A"]);
+  assert.equal(composerDraftKey("chat-a", true), composerDraftKey("chat-b", true));
+  assert.equal(composerPasteDraftKey("chat-a", true), composerPasteDraftKey("chat-b", true));
+});
+
+test("a fresh New chat nonce does not restore another unsaved chat or the old shared draft", () => {
+  writeComposerDraft(composerDraftKey("first-new-chat"), "not sent yet");
+  writeComposerDraft(composerDraftKey("", true), "shared before upgrade");
+  assert.equal(readComposerDraft(composerDraftKey("second-new-chat")), null);
+  assert.equal(readComposerDraft(composerDraftKey("first-new-chat")), "not sent yet");
+  assert.equal(readComposerDraft(composerDraftKey("", true)), "shared before upgrade");
+});
+
+test("shared publications cannot replace a per-chat draft", () => {
+  writeComposerDraft(composerDraftKey("chat-a"), "my local draft");
+  publishDraft("from Compare", Symbol("compare"));
+  assert.equal(readComposerDraft(composerDraftKey("chat-a")), "my local draft");
+  assert.equal(latestDraft(), "from Compare");
+});
+
+test("per-chat text and pastes stay isolated from other open tabs", async () => {
+  const tab = await openTab();
+  const textKey = tab.composerDraftKey("isolated-chat");
+  const pasteKey = tab.composerPasteDraftKey("isolated-chat");
+  assert.equal(tab.latestDraft(textKey), "");
+  assert.deepEqual(tab.latestPasteDraft(pasteKey), []);
+  writeComposerDraft(textKey, "other tab's draft");
+  writePasteDraft(pasteKey, ["other tab's paste"]);
+  assert.equal(tab.latestDraft(textKey), "");
+  assert.deepEqual(tab.latestPasteDraft(pasteKey), []);
+  tab.writeComposerDraft(textKey, "my draft");
+  tab.writePasteDraft(pasteKey, ["my paste"]);
+  writeComposerDraft(textKey, "another external edit");
+  writePasteDraft(pasteKey, ["another external paste"]);
+  assert.equal(tab.latestDraft(textKey), "my draft");
+  assert.deepEqual(tab.latestPasteDraft(pasteKey), ["my paste"]);
+  const reloaded = await openTab();
+  assert.equal(reloaded.latestDraft(textKey), "another external edit");
+  assert.deepEqual(reloaded.latestPasteDraft(pasteKey), ["another external paste"]);
+});
+
+test("a draft adopted into the shared slot and sent there does not return when sharing is turned off", async () => {
+  const tab = await openTab();
+  const textKey = tab.composerDraftKey("adopted-chat");
+  const pasteKey = tab.composerPasteDraftKey("adopted-chat");
+  tab.writeComposerDraft(textKey, "sent from the shared slot");
+  tab.writePasteDraft(pasteKey, ["sent paste"]);
+  assert.equal(tab.adoptLegacyDraft("adopted-chat"), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "sent from the shared slot");
+  tab.publishDraft("", Symbol("chat"));
+  tab.writeComposerDraft(tab.composerDraftKey("", true), "");
+  tab.writePasteDraft(tab.composerPasteDraftKey("", true), []);
+  assert.equal(tab.latestDraft(textKey), "");
+  assert.deepEqual(tab.latestPasteDraft(pasteKey), []);
+  const reloaded = await openTab();
+  assert.equal(reloaded.latestDraft(textKey), "");
+  assert.deepEqual(reloaded.latestPasteDraft(pasteKey), []);
 });

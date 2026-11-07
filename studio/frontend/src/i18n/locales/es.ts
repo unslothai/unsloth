@@ -665,6 +665,8 @@ export const es = {
     keepsRunning: "Cerrar esto no detiene la configuración. El resultado aparece en Ajustes > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
     plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",

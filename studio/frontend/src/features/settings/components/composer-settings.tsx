@@ -135,6 +135,16 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
             </div>
           </SettingsRow>
           <SettingsRow
+            label={t("composerSettings.shareDraft")}
+            description={t("composerSettings.shareDraftDescription")}
+          >
+            <Switch
+              aria-label={t("composerSettings.shareDraft")}
+              checked={prefs.shareComposerDraft}
+              onCheckedChange={prefs.setShareComposerDraft}
+            />
+          </SettingsRow>
+          <SettingsRow
             label={t("composerSettings.plainText")}
             description={t("composerSettings.plainTextDescription")}
           >

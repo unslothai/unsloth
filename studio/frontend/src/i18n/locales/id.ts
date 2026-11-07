@@ -746,6 +746,8 @@ export const id = {
       "Menutup ini tidak menghentikan penyiapan. Hasilnya ditampilkan di Pengaturan > Keamanan.",
   },
   composerSettings: {
+    shareDraft: "Bagikan draf antarobrolan",
+    shareDraftDescription: "Gunakan satu draf untuk obrolan dan perbandingan. Nonaktif secara default; setiap obrolan menyimpan drafnya sendiri.",
     title: "Kolom pesan",
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:

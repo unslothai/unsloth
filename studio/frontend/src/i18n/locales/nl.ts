@@ -753,6 +753,8 @@ export const nl = {
       "Als je dit sluit, wordt het instellen niet gestopt. Het resultaat wordt weergegeven in Instellingen > Beveiliging.",
   },
   composerSettings: {
+    shareDraft: "Concepten delen tussen chats",
+    shareDraftDescription: "Gebruik één concept voor chats en vergelijkingen. Standaard uit; elke chat bewaart zijn eigen concept.",
     title: "Invoerveld",
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:

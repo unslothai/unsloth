@@ -665,6 +665,8 @@ export const ptBR = {
     keepsRunning: "Fechar isto não interrompe a configuração. O resultado aparece em Configurações > Segurança.",
   },
   composerSettings: {
+    shareDraft: "Compartilhar rascunhos entre conversas",
+    shareDraftDescription: "Use um único rascunho em conversas e comparações. Desativado por padrão; cada conversa mantém seu próprio rascunho.",
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
     plainTextDescription: "Manter código, Markdown e links como texto literal. Desative para mostrar uma prévia formatada.",

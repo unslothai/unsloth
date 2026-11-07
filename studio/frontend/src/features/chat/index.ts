@@ -72,6 +72,7 @@ export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   ChatComposerFocusableContext,
+  NewChatDraftIdContext,
   pythonToolRunsInStudio,
   useChatActive,
   useInComparePane,
