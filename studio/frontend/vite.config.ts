@@ -9,6 +9,7 @@ import { chatPagePreload } from "./vite-plugin-chat-preload";
 import { childSelectorOrder } from "./vite-plugin-child-selectors";
 import { hasAnchorOrder } from "./vite-plugin-has-anchor";
 import { katexWoff2Only } from "./vite-plugin-katex-woff2";
+import { preloadNonceInHead } from "./vite-plugin-preload-nonce";
 import { viewportMediaGate } from "./vite-plugin-viewport-media";
 import { previewRuntime } from "./vite-preview-runtime.ts";
 
@@ -35,7 +36,7 @@ export default defineConfig({
   cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
   // Reasoning's highlighter loads only the grammar it needs in its module worker.
   worker: { format: "es" },
-  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only()],
+  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only(), preloadNonceInHead()],
   // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {
