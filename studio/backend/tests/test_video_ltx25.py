@@ -3181,6 +3181,7 @@ def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monke
 
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 << 10)
     monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 128 << 10)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
     monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes, fill = None: None)
     pipe = _park_pipe()
     names = [name for name, _m, _mib in v25._parkable_components(pipe, "cpu")]
@@ -3213,6 +3214,10 @@ def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monke
     monkeypatch.delenv(v25.PARK_COMPANIONS_ENV)
     assert v25._park_for_encode(pipe, "cpu", 0) is None
     fresh = _park_pipe()
+    # Windows: free RAM is not enough when the commit limit has no room for the copy.
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 1)
+    assert v25._park_for_encode(fresh, "cpu", 10) is None
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 1)
     assert v25._park_for_encode(fresh, "cpu", 10) is None
     assert v25._PARK_HOST_ATTR not in fresh.components["connectors"].__dict__
