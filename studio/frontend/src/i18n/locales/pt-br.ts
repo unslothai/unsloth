@@ -2112,6 +2112,12 @@ export const ptBR = {
           "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
         autoCurrently: "O Auto está usando {transport} nesta máquina.",
         xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
+        speedLimit: "Limite de velocidade de download",
+        speedLimitDescription:
+          "Sem limite até que um valor seja definido. Um download limitado usa HTTPS.",
+        speedLimitNoLimit: "Sem limite",
+        speedLimitInvalid: "Digite um número em Mbit/s ou deixe o campo vazio.",
+        speedLimitUsesHttps: "Os downloads usam HTTPS enquanto houver um limite de velocidade. Arquivos acima de 50 GB continuam usando Xet, sem o limite.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2507,6 +2513,10 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno dos elementos",
+          description: "Intensidade da borda de botões, campos, cartões e menus.",
         },
         reduceMotion: {
           label: "Reduzir movimento",

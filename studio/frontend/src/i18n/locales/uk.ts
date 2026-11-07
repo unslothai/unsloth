@@ -2326,6 +2326,12 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
+        speedLimitUsesHttps: "Поки встановлено обмеження швидкості, завантаження використовують HTTPS. Файли понад 50 ГБ і далі завантажуються через Xet без обмеження.",
       },
       uploads: {
         sectionTitle: "Вивантаження",
@@ -2717,6 +2723,10 @@ export const uk = {
         },
         contrast: {
           label: "Контраст",
+        },
+        elementOutline: {
+          label: "Контур елементів",
+          description: "Насиченість меж кнопок, полів, карток і меню.",
         },
         reduceMotion: {
           label: "Зменшити рух",

@@ -2302,6 +2302,12 @@ export const id = {
           "Memilih per mesin dan beralih ke HTTPS jika Xet macet atau gagal di sini.",
         autoCurrently: "Otomatis menggunakan {transport} di mesin ini.",
         xetMissing: "Xet tidak tersedia karena hf_xet tidak terinstal.",
+        speedLimit: "Batas kecepatan unduhan",
+        speedLimitDescription:
+          "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
+        speedLimitNoLimit: "Tanpa batas",
+        speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",
@@ -2694,6 +2700,10 @@ export const id = {
         },
         contrast: {
           label: "Kontras",
+        },
+        elementOutline: {
+          label: "Garis tepi elemen",
+          description: "Kekuatan garis tepi tombol, kolom, kartu, dan menu.",
         },
         reduceMotion: {
           label: "Kurangi gerakan",

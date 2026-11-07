@@ -2307,6 +2307,12 @@ export const vi = {
           "Chọn theo từng máy và chuyển sang HTTPS nếu Xet bị đứng hoặc lỗi ở đây.",
         autoCurrently: "Tự động đang dùng {transport} trên máy này.",
         xetMissing: "Xet không khả dụng vì chưa cài đặt hf_xet.",
+        speedLimit: "Giới hạn tốc độ tải xuống",
+        speedLimitDescription:
+          "Không giới hạn trừ khi đặt một giá trị. Tải xuống bị giới hạn dùng HTTPS.",
+        speedLimitNoLimit: "Không giới hạn",
+        speedLimitInvalid: "Nhập một số Mbit/s hoặc để trống.",
+        speedLimitUsesHttps: "Khi đặt giới hạn tốc độ, các lượt tải xuống dùng HTTPS. Các tệp trên 50 GB vẫn dùng Xet, không bị giới hạn.",
       },
       uploads: {
         sectionTitle: "Tải lên",
@@ -2696,6 +2702,10 @@ export const vi = {
         },
         contrast: {
           label: "Độ tương phản",
+        },
+        elementOutline: {
+          label: "Viền phần tử",
+          description: "Độ đậm của viền nút, ô nhập, thẻ và menu.",
         },
         reduceMotion: {
           label: "Giảm chuyển động",
