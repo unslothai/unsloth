@@ -120,3 +120,34 @@ test("resident refresh bypasses cached and in-flight pre-load memory", async () 
   requests[2].resolve(new Response(null, { status: 503 }));
   assert.equal(await again, null);
 });
+
+test("a fast monitor poll does not join a pending fetch on the 10 s GPU cache", async () => {
+  const requests: { url: string; resolve: (response: Response) => void }[] = [];
+  const system = loadWithStubs<typeof SystemHooks>(
+    new URL("../src/hooks/use-system.ts", import.meta.url),
+    {
+      react: {},
+      "@/config/env": { refreshDeviceTypeAfterSystemInfo: () => {} },
+      "@/features/auth": {
+        authFetch: (url: string) =>
+          new Promise<Response>((resolve) => {
+            requests.push({ url, resolve });
+          }),
+      },
+    },
+    { relativePassthrough: true },
+  );
+  const settings = system.fetchSystemInfo({ force: true });
+  const monitor = system.fetchSystemInfo({ force: true, gpuMaxAgeMs: 2000 });
+  assert.equal(requests.length, 1);
+  requests[0].resolve(Response.json({ memory: { available_gb: 20 } }));
+  await settings;
+  await Promise.resolve();
+  assert.equal(requests[1].url, "/api/system?gpu_max_age=2");
+  // A pending fetch at least as fresh is shared.
+  const sharer = system.fetchSystemInfo({ force: true, gpuMaxAgeMs: 5000 });
+  assert.equal(requests.length, 2);
+  requests[1].resolve(Response.json({ memory: { available_gb: 18 } }));
+  assert.equal((await monitor)?.memory.available_gb, 18);
+  assert.equal(await sharer, await monitor);
+});

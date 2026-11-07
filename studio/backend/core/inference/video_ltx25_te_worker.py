@@ -676,6 +676,126 @@ def _stream_need_mib_or_none(config: dict, model: Any) -> Optional[int]:
 STREAM_ENCODE_ENV = "UNSLOTH_LTX25_TE_STREAM"
 
 
+def _to_device(tensor: Any, device: Any) -> Any:
+    """Device copy; non-blocking from pinned memory (same-stream reader, host copy never written)."""
+    try:
+        pinned = tensor.device.type == "cpu" and tensor.is_pinned()
+    except Exception:  # noqa: BLE001 -- unknown: the blocking copy
+        pinned = False
+    return tensor.to(device, copy = True, non_blocking = pinned)
+
+
+def _onloads_whole(model: Any) -> bool:
+    """Whether ``_Onload`` reaches every tensor ``model.to`` would move: no module overrides ``_apply``."""
+    import torch
+    try:
+        return all(type(m)._apply is torch.nn.Module._apply for m in model.modules())
+    except Exception:  # noqa: BLE001 -- unknown: keep ``model.to``
+        return False
+
+
+def _discrete_card(device: Any) -> bool:
+    """A CUDA card with its own memory. On unified memory (Apple, Jetson / GB10, Strix Halo) a kept host copy would
+    hold the encoder twice in the same RAM during the encode, so those keep ``model.to``."""
+    if str(device).split(":", 1)[0] != "cuda":
+        return False
+    try:
+        from core.inference.host_pinning import host_pinning_allowed
+        return bool(host_pinning_allowed(device))
+    except Exception:  # noqa: BLE001 -- unclassifiable: keep ``model.to``
+        return False
+
+
+# "0" keeps the non-resident encoder's host copy pageable.
+PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
+
+
+def _pin_host_copy(model: Any, config: dict) -> int:
+    """Copy a non-resident encoder's host weights into registered (pinned) chunks once, Linux CUDA only and only with
+    room for the transient second copy, so uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
+    if config.get("resident") or (os.environ.get(PIN_HOST_ENV) or "").strip() == "0":
+        return 0
+    device = str(config.get("device") or "")
+    if not device.startswith("cuda"):
+        return 0
+    try:
+        from core.inference.diffusion_memory import (
+            _exact_pin_supported,
+            _named_buffers,
+            _pin_host_weights,
+        )
+
+        if not _exact_pin_supported(device):
+            return 0
+        host = {name: p.data for name, p in model.named_parameters() if p.device.type == "cpu"}
+        buffers = {name: b for name, b in _named_buffers(model) if b.device.type == "cpu"}
+        if not _pin_fits_twice(list(host.values()) + list(buffers.values())):
+            return 0
+        return int(
+            _pin_host_weights(model, host, None, buffer_host = buffers, exact = True, device = device)
+            or 0
+        )
+    except Exception as exc:  # noqa: BLE001 -- an optimisation: the encode reads the pageable copy
+        print(f"video.ltx25_te: host copy left pageable ({exc})", file = sys.stderr, flush = True)
+        return 0
+
+
+def _own_host_copy(model: Any) -> bool:
+    """Copy the host weights out of the checkpoint's file mapping into process memory, once, before the first card
+    encode. Base did this implicitly (``model.to("cpu")`` after each encode); kept mapped, the pages are page cache the
+    server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
+    import torch
+
+    if not _host_fits(list(model.parameters()) + list(model.buffers()), copies = 1):
+        # Base's streamed and CPU encodes kept the mapping too; a short host keeps it rather than risk the OOM killer.
+        return False
+    try:
+        # Keyed by identity: a tied tensor is copied once and stays shared.
+        done: dict = {}
+        with torch.no_grad():
+            for module in model.modules():
+                for table in (module._parameters, module._buffers):
+                    for key, tensor in list(table.items()):
+                        if tensor is None or tensor.device.type != "cpu":
+                            continue
+                        if isinstance(tensor, torch.nn.Parameter):
+                            if id(tensor) not in done:
+                                done[id(tensor)] = tensor
+                                tensor.data = tensor.data.clone()
+                            continue
+                        if id(tensor) not in done:
+                            done[id(tensor)] = tensor.clone()
+                        table[key] = done[id(tensor)]
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the mapped copy still encodes, only slower when evicted
+        print(f"video.ltx25_te: host copy left mapped ({exc})", file = sys.stderr, flush = True)
+        return False
+
+
+def _pin_fits_twice(tensors: list) -> bool:
+    """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
+    storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
+    without that room the pin pushed the box into reclaim and encodes took 70-80 s instead of 22 s."""
+    return _host_fits(tensors, copies = 2)
+
+
+def _host_fits(tensors: list, copies: int) -> bool:
+    """Whether host RAM holds ``copies`` more copies of ``tensors`` above the pin reserve."""
+    from core.inference.diffusion_memory import (
+        _PIN_RESERVE_FRACTION,
+        _PIN_RESERVE_MIN_BYTES,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+    )
+
+    available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
+    if available is None or total is None:
+        return False
+    need = sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    return (int(available) << 20) - int(copies) * need >= reserve
+
+
 class _Onload:
     """Moves the tensors of some modules to a device and back. Parameters keep their identity (``.data`` swaps, so a
     tied weight moves once); the host tensors are kept and restored, so returning costs no copy."""
@@ -701,11 +821,11 @@ class _Onload:
                             if id(tensor) not in self.moved:
                                 self.moved[id(tensor)] = tensor
                                 self.saved.append((tensor, None, None, tensor.data))
-                                tensor.data = tensor.data.to(self.device, copy = True)
+                                tensor.data = _to_device(tensor.data, self.device)
                             continue
                         moved = self.moved.get(id(tensor))
                         if moved is None:
-                            moved = tensor.to(self.device, copy = True)
+                            moved = _to_device(tensor, self.device)
                             self.moved[id(tensor)] = moved
                         self.saved.append((None, table, key, tensor))
                         table[key] = moved
@@ -773,11 +893,26 @@ def _memory_stats(device: str) -> dict:
     except Exception:  # noqa: BLE001 -- stats are best-effort
         pass
     try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        stats["host_rss_mib"] = info.rss >> 20
+        if getattr(info, "peak_wset", None):  # Windows has no getrusage
+            stats["host_peak_rss_mib"] = info.peak_wset >> 20
+    except Exception:  # noqa: BLE001 -- stats are best-effort
+        pass
+    try:
         import resource
-        stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
-        with open("/proc/self/statm", encoding = "ascii") as fh:
-            stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
-    except Exception:  # noqa: BLE001 -- not Linux
+
+        # ru_maxrss is KiB on Linux but bytes on macOS.
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        stats["host_peak_rss_mib"] = peak >> (20 if sys.platform == "darwin" else 10)
+        if "host_rss_mib" not in stats:
+            with open("/proc/self/statm", encoding = "ascii") as fh:
+                stats["host_rss_mib"] = (
+                    int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+                ) >> 20
+    except Exception:  # noqa: BLE001 -- Windows, or no /proc
         pass
     return stats
 
@@ -833,8 +968,6 @@ def _encode_on(
     max_len: int,
     server_reserved_mib: Optional[int] = None,
 ) -> tuple[Any, Any, str]:
-    import torch
-
     resident = bool(config.get("resident"))
     device, stream = _encode_plan(config, model, server_reserved_mib)
     tokenizer.padding_side = "left"
@@ -849,10 +982,68 @@ def _encode_on(
         return_tensors = "pt",
     )
     config["_streamed"] = stream is not None
+    oom: Optional[str] = None
+    try:
+        embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
+    except Exception as exc:
+        if resident or device == "cpu" or not _is_out_of_memory(exc):
+            raise
+        oom = str(exc)
+    if oom is not None:
+        # Outside the handler, so the failed attempt's card tensors are gone before the CPU encode; then hand the
+        # card back, since the server plans the denoise against it.
+        _empty_accelerator_cache(device)
+        print(
+            f"video.ltx25_te: out of memory encoding on {device} ({oom}); encoding on the CPU",
+            file = sys.stderr,
+            flush = True,
+        )
+        device, config["_streamed"] = "cpu", False
+        embeds_host, mask_host = _run_encode(model, config, inputs, device, None)
+    return embeds_host, mask_host, device
+
+
+def _empty_accelerator_cache(device: Any) -> None:
+    import torch
+
+    kind = str(device).split(":", 1)[0]
+    accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
+    if accel is not None and accel.is_available():
+        accel.empty_cache()
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    import torch
+    kinds = tuple(
+        k
+        for k in (
+            getattr(torch, "OutOfMemoryError", None),
+            getattr(torch.cuda, "OutOfMemoryError", None),
+        )
+        if isinstance(k, type)
+    )
+    return (bool(kinds) and isinstance(exc, kinds)) or "out of memory" in str(exc).lower()
+
+
+def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any) -> tuple[Any, Any]:
+    import torch
+
+    resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
-    if onloaded:
+    if not resident and device != "cpu" and _discrete_card(device):
+        if config.get("_pin_host") and "_pinned_bytes" not in config:
+            config["_pinned_bytes"] = _pin_host_copy(model, config)
+        if not config.get("_pinned_bytes") and not config.get("_owned_host"):
+            config["_owned_host"] = _own_host_copy(model)
+    # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
+    whole = (
+        _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
+    )
+    if whole is None and onloaded:
         model.to(device)
     try:
+        if whole is not None:
+            whole.add([model])
         with (
             _streamed(stream, device) if stream is not None else _no_context(),
             torch.inference_mode(),
@@ -864,15 +1055,14 @@ def _encode_on(
             mask_host = mask.to("cpu")
             del embeds
     finally:
-        if onloaded:
+        if whole is not None:
+            whole.restore()
+        elif onloaded:
             model.to("cpu")
         # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise keeps
         # ~1.7 GB cached through the denoise, an onloaded one the whole encoder.
-        kind = str(device).split(":", 1)[0]
-        accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
-        if accel is not None and accel.is_available():
-            accel.empty_cache()
-    return embeds_host, mask_host, device
+        _empty_accelerator_cache(device)
+    return embeds_host, mask_host
 
 
 def _no_context() -> Any:
@@ -924,6 +1114,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
         if kind != "encode":
             continue
         try:
+            config["_pin_host"] = bool(msg.get("pin_host"))
             embeds, mask, device = _encode_on(
                 tokenizer,
                 model,
@@ -940,6 +1131,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "mask": mask,
                     "device": device,
                     "streamed": bool(config.get("_streamed")),
+                    "pinned_mib": int(config.get("_pinned_bytes") or 0) >> 20,
                     **_memory_stats(config.get("device") or ""),
                 }
             )

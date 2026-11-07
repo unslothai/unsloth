@@ -102,11 +102,14 @@ export function speakableReply(text: string): string {
     .map(dropJsonLines())
     .join("\n")
     // List markers: "1." on its own reads as a one-word sentence.
-    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "");
+    .replace(/^[ \t]*(?:\d{1,2}[.)]|[-*+•])(?=[ \t]|$)[ \t]*/gm, "")
+    // A line with no words (")$.") would be glued onto the sentence before it and voiced as noise.
+    .split("\n")
+    .map((line) => (speakable(line) ? line : ""))
+    .join("\n");
 }
 
-// Words whose trailing period ends an abbreviation, not a sentence. Splitting
-// there hands the codec a fragment ("Dr.") and starts the next clip mid-thought.
+// A trailing period on these ends an abbreviation, not a sentence ("Dr.").
 const SPEECH_ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "mt", "vs", "etc", "eg",
   "ie", "approx", "dept", "est", "fig", "no", "vol", "inc", "ltd", "co",
@@ -114,52 +117,67 @@ const SPEECH_ABBREVIATIONS = new Set([
   "nov", "dec",
 ]);
 
+const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr"]);
+
+const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
+
 /** The streamed text stops right after this sentence's period, which may not end it yet:
  *  "about 2." becomes "about 2.5 inches", "Dr." becomes "Dr. Smith". */
 export function sentenceMayContinue(sentence: string, textEndsWithSpace: boolean): boolean {
   if (!textEndsWithSpace) return true;
   const tail = sentence.replace(/["')\]]+$/, "");
+  // "in the U.S." may go on ("U.S. about it"); the splitter only joins it once the next word is in.
+  if (/(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail)) return true;
   const word = /(?:^|\s)([A-Za-z]+)\.$/.exec(tail)?.[1];
   return word !== undefined && (word.length === 1 || SPEECH_ABBREVIATIONS.has(word.toLowerCase()));
 }
 
 export function splitIntoSentences(text: string): string[] {
-  // Horizontal whitespace only: a newline is a boundary the regex below relies on.
   const norm = text
     .replace(/[^\S\n]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .trim();
-  const raw = norm.match(/[^.!?\n]*[.!?]+|\S[^.!?\n]*$|\S[^.!?\n]*(?=\n)/g);
+  // A sentence ends at .!? (plus closing quotes) only before whitespace or the end, so "3.5",
+  // ".env", "./train.py" and "D.C." stay whole; a line without one ends at the newline.
+  const raw = norm.match(/\S[^\n]*?(?:[.!?]+["'”’»)\]]*(?=\s|$)|(?=\n|$))/g);
   if (!raw) return [text];
   const out: string[] = [];
-  let at = 0;
-  for (const chunk of raw) {
-    const start = norm.indexOf(chunk, at);
-    at = start + chunk.length;
-    const part = chunk.trim();
-    // Whether a space or newline came before it: "2.5" has none, "in 2020. 30 people" has one.
-    const spaced = /^\s/.test(chunk) || (start > 0 && /\s/.test(norm[start - 1] ?? ""));
-    if (!part) continue;
+  let lead = "";
+  for (let part of raw) {
+    if (lead) {
+      part = `${lead} ${part}`;
+      lead = "";
+    }
     const prev = out[out.length - 1];
+    // Punctuation alone ("...", "--") is no request of its own.
+    if (!speakable(part)) {
+      if (prev === undefined) lead = part;
+      else out[out.length - 1] = `${prev} ${part}`;
+      continue;
+    }
     if (prev !== undefined) {
-      // Quotes and brackets only CLOSE when whitespace or the end follows one.
-      // Followed by a letter it opens a quotation, which is a real boundary.
-      const closer = /^["')\]]+(\s|$)/.test(part);
-      const tail = prev.replace(/["')\]]+$/, "");
-      const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
-      const decimal = /\d\.$/.test(tail) && !spaced && /^\d/.test(part);
+      const tail = prev.replace(/["'”’»)\]]+$/, "");
+      const word = /([A-Za-z]+)\.$/.exec(tail)?.[1]?.toLowerCase();
+      // "J. Smith", "John F. Kennedy" are names; "pick option A. Then" is a boundary.
+      const nameInitial =
+        /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
+      // "etc. Then I left": these also end sentences, so only a lowercase word or digit continues one.
       const abbrev =
-        lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());
-      if (decimal || initial || abbrev || closer) {
-        // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
-        out[out.length - 1] = prev + (decimal || initial || closer ? "" : " ") + part;
+        word !== undefined &&
+        SPEECH_ABBREVIATIONS.has(word) &&
+        (!SENTENCE_FINAL_ABBREVIATIONS.has(word) || /^[a-z\d]/.test(part));
+      // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
+      const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
+      if (nameInitial || initial || abbrev || initialism) {
+        out[out.length - 1] = `${prev} ${part}`;
         continue;
       }
     }
     out.push(part);
   }
-  return out.filter(Boolean);
+  if (lead) out.push(lead);
+  return out;
 }
 
 // While the LLM is still writing, only terminated sentences are safe to speak;

@@ -392,6 +392,40 @@ def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) 
     return [dict(r) for r in rows]
 
 
+def _insert_chunk(
+    conn: sqlite3.Connection, scope: str, document_id: str, chunk, regions_json
+) -> int:
+    """Writes one chunks row and its FTS5 row; returns the chunks rowid."""
+    chunk_id = f"{document_id}:{chunk.chunk_index}"
+    cur = conn.execute(
+        "INSERT OR REPLACE INTO chunks("
+        "id, document_id, scope, chunk_index, text, page_number, "
+        "source_page_index, page_char_start, page_char_end, token_count, "
+        "whole_document_token_count, kind, pdf_regions_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            chunk_id,
+            document_id,
+            scope,
+            chunk.chunk_index,
+            chunk.text,
+            chunk.page_number,
+            chunk.source_page_index,
+            getattr(chunk, "page_char_start", None),
+            getattr(chunk, "page_char_end", None),
+            chunk.token_count,
+            getattr(chunk, "whole_document_token_count", None),
+            getattr(chunk, "kind", "text"),
+            regions_json,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
+        (chunk.text, chunk_id, scope),
+    )
+    return cur.lastrowid
+
+
 def add_chunks(
     conn: sqlite3.Connection,
     scope: str,
@@ -416,33 +450,14 @@ def add_chunks(
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
         chunk_regions = regions[i] if regions and i < len(regions) else None
-        regions_json = json.dumps(chunk_regions) if chunk_regions else None
-        cur = conn.execute(
-            "INSERT OR REPLACE INTO chunks("
-            "id, document_id, scope, chunk_index, text, page_number, "
-            "source_page_index, page_char_start, page_char_end, token_count, "
-            "whole_document_token_count, kind, pdf_regions_json) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                chunk_id,
-                document_id,
+        chunk_rowids.append(
+            _insert_chunk(
+                conn,
                 scope,
-                chunk.chunk_index,
-                chunk.text,
-                chunk.page_number,
-                chunk.source_page_index,
-                getattr(chunk, "page_char_start", None),
-                getattr(chunk, "page_char_end", None),
-                chunk.token_count,
-                getattr(chunk, "whole_document_token_count", None),
-                getattr(chunk, "kind", "text"),
-                regions_json,
-            ),
-        )
-        chunk_rowids.append(cur.lastrowid)
-        conn.execute(
-            "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
-            (chunk.text, chunk_id, scope),
+                document_id,
+                chunk,
+                json.dumps(chunk_regions) if chunk_regions else None,
+            )
         )
         vec_rowids.append(
             conn.execute(
@@ -472,6 +487,12 @@ def add_chunks(
             vectors[: len(vec_rowids)],
             chunk_rowids = chunk_rowids,
         )
+
+
+def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, chunks) -> None:
+    """chunks + FTS5 rows only, no vec0 row: keyword search finds them, dense search never does. Uncommitted."""
+    for chunk in chunks:
+        _insert_chunk(conn, scope, document_id, chunk, None)
 
 
 def replace_document_vectors(

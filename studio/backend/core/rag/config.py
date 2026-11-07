@@ -90,6 +90,11 @@ FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 *
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
+# Small linked-folder files in flight, clamped to workers..64; past the workers they only wait to embed.
+FOLDER_INGEST_IN_FLIGHT = int(os.environ.get("RAG_FOLDER_INGEST_IN_FLIGHT", "16"))
+FOLDER_INGEST_BATCH_FILE_BYTES = int(
+    os.environ.get("RAG_FOLDER_INGEST_BATCH_FILE_BYTES", str(1024 * 1024))
+)
 
 # Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"

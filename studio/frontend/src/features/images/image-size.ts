@@ -117,3 +117,12 @@ export function restorableSize(
   const scale = upTo > downTo ? 1 : Math.min(Math.max(1, upTo), downTo);
   return fitSize(width * scale, height * scale, limits);
 }
+
+// A server X/Y grid's width / height are the grid's pixels; its recipe is the first cell's, at the cell size.
+export function xyGridCellSize(image: {
+  xy_grid?: { cell_width?: number; cell_height?: number } | null;
+}): { width: number; height: number } | null {
+  const w = image.xy_grid?.cell_width;
+  const h = image.xy_grid?.cell_height;
+  return w && h && w > 0 && h > 0 ? { width: w, height: h } : null;
+}

@@ -129,6 +129,43 @@ def test_appearance_check(base, mode, fails, monkeypatch):
     assert [v["fail"] for v in rows] == [fails]
 
 
+# Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
+# between runs; 25 runs, 2026-11-07).
+RUNNER_READINGS = [
+    ("blurred", "thread_scroll", 8.3),
+    (am.GLASS, "reasoning_toggle", 7.8),
+    ("blurred", "settings_scroll", 14.0),
+    ("frosted", "settings_scroll", 13.5),
+]
+
+
+@pytest.mark.parametrize("mode, area, ratio", RUNNER_READINGS)
+def test_shipped_ceilings_clear_runner_noise_but_not_a_real_regression(
+    mode, area, ratio, monkeypatch
+):
+    monkeypatch.setattr(am, "MAX_RATIO", 4.0)
+
+    def verdict(r):
+        pages = {
+            (am.SHORT, "default"): _page({area: {"elements": 10, "cpu_ms": 100}}),
+            (am.SHORT, mode): _page({area: {"elements": 10, "cpu_ms": 100 * r}}),
+        }
+        result = {**_result(pages), "areas": [area]}
+        [row] = [
+            v
+            for v in am.judge(result, known = am.KNOWN_DEFAULT)
+            if v["kind"] == "appearance" and v["metric"] == "cpu_ms" and v["mode"] == mode
+        ]
+        return row["fail"]
+
+    assert not verdict(
+        ratio
+    ), f"{mode}:{area} at {ratio}x, a reading main already gets, fails the shipped ceiling"
+    assert verdict(
+        ratio * 1.5
+    ), f"{mode}:{area} at 1.5x main's worst reading still passes; the ceiling catches nothing"
+
+
 def test_an_area_that_stops_running_fails():
     pages = {
         (am.SHORT, "default"): _page({"a": {"elements": 10, "cpu_ms": 10}}),
