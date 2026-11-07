@@ -2362,6 +2362,8 @@ def _pipeline_precision_gate(monkeypatch, **memory):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2676,6 +2678,8 @@ def test_a_pipeline_pick_may_pin_a_precision(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     monkeypatch.setattr(diffusion_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     backend.assert_precision_available(
         types.SimpleNamespace(name = "z-image"),
@@ -2762,6 +2766,8 @@ def test_a_transformer_family_still_reaches_the_scheme_check(monkeypatch):
         lambda self, fam: _cuda_target(),
     )
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: True)
+    # The admit path; the refusal on a host that cannot compile is pinned by its own test below.
+    monkeypatch.setattr(diffusion_module, "compile_eligible", lambda target, **kw: True)
     seen: list = []
     monkeypatch.setattr(
         diffusion_module,
