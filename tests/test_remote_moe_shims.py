@@ -47,6 +47,10 @@ import torch.nn.functional as F
 from torch import nn
 
 class Cfg:
+    # A PretrainedConfig in the hub code: PEFT 0.18 reads model.config.to_dict().
+    def to_dict(self):
+        return dict(vars(self))
+
     def __init__(self):
         self.hidden_size = 16; self.n_routed_experts = 8; self.num_experts_per_tok = 2
         self.moe_intermediate_size = 8; self.n_shared_experts = 1; self.routed_scaling_factor = 2.5
@@ -1011,10 +1015,17 @@ def test_idle_expert_hook_is_inert_without_every_expert_blocks_and_when_all_are_
     assert block._unsloth_cp_expert_tokens.gt(0).all()
     grads = {n: p.grad.clone() for n, p in block.named_parameters() if p.grad is not None}
     assert cp.drop_idle_expert_grads([block]) == 0
-    assert "_unsloth_cp_expert_tokens" not in block.__dict__
     for n, p in block.named_parameters():
         if n in grads:
             assert torch.equal(p.grad, grads[n]), n
+    # The next window forgets only experts whose gradients were cleared since (zero_grad).
+    for expert in block.experts[:4]:
+        expert.zero_grad(set_to_none = True)
+    cp.start_expert_window([block])
+    assert block._unsloth_cp_expert_tokens.gt(0).tolist() == [False] * 4 + [True] * 4
+    block.zero_grad(set_to_none = True)
+    cp.start_expert_window([block])
+    assert "_unsloth_cp_expert_tokens" not in block.__dict__
     # No counts recorded (CP off): every expert counts as idle, but CP never installs the hook.
     block(_routed_tokens((0, 1), 0)).pow(2).sum().backward()
     assert "_unsloth_cp_expert_tokens" not in block.__dict__
@@ -1034,3 +1045,250 @@ def test_an_expert_parallel_block_is_not_counted_as_running_every_expert():
     block.train()
     with pytest.raises(Exception):  # the port has no training path of its own
         block(torch.randn(1, 3, 16))
+
+
+def _ulysses_manager(
+    size,
+    rank,
+    backend = "ulysses",
+):
+    from unsloth import context_parallel as cp
+
+    manager = object.__new__(cp.ContextParallelManager)
+    manager.size = size
+    manager.backend = backend
+    if backend == "ring":
+        from torch.distributed.device_mesh import init_device_mesh
+        manager.mesh = init_device_mesh("cpu", (size,))
+    else:
+        manager.mesh = types.SimpleNamespace(get_group = lambda: None, get_local_rank = lambda: rank)
+    return manager
+
+
+def _pad_routed_embedding():
+    # Token t routes to experts _PAD_ROUTES[t]; token 0 is the id context parallelism pads with.
+    weight = torch.cat([_routed_tokens(experts, t)[0, :1] for t, experts in enumerate(_PAD_ROUTES)])
+    return nn.Embedding.from_pretrained(weight, freeze = True)
+
+
+_PAD_ROUTES = ((6, 7), (0, 1), (2, 3), (4, 5))
+
+
+def _moe_cp_padding_worker(rank, world, lora, backend):
+    """Five real tokens over 2 ranks: the manager pads with id 0 (Ulysses: one token, on rank 1's
+    shard; ring: three, load balanced over both), the only token routed to experts 6 and 7. One
+    process never routes to them."""
+    import copy
+
+    import torch.distributed as dist
+
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(lora)
+    reference = copy.deepcopy(block)
+    embed = _pad_routed_embedding()
+    ids = torch.tensor([[1, 2, 3, 1, 2]])
+    shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
+    count = shift.ne(-100).sum()
+
+    def loss_of(module, input_ids, shift_labels):
+        out = module(embed(input_ids)).pow(2).sum(-1)
+        return (out * shift_labels.ne(-100)).sum() / count
+
+    adamw = dict(lr = 1e-2, weight_decay = 0.1)
+    optimizer = torch.optim.AdamW([p for p in block.parameters() if p.requires_grad], **adamw)
+    ref_optimizer = torch.optim.AdamW(
+        [p for p in reference.parameters() if p.requires_grad], **adamw
+    )
+    assert cp.install_idle_expert_grad_hook(optimizer, block)
+    for step in range(2):
+        optimizer.zero_grad(set_to_none = True)
+        ref_optimizer.zero_grad(set_to_none = True)
+        loss_of(reference, ids, shift).backward()
+        manager = _ulysses_manager(world, rank, backend)
+        inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
+        with manager.apply(inputs):
+            local = inputs["input_ids"]
+            assert local.shape == ((1, 3) if backend == "ulysses" else (1, 4))
+            # Synthetic pad tokens are on this shard, and they really run through the MoE.
+            assert bool(local.eq(0).any()) == (backend == "ring" or rank == world - 1)
+            loss_of(block, local, inputs["shift_labels"]).backward()
+        for param in block.parameters():
+            if param.requires_grad:
+                assert param.grad is not None  # every expert ran, as DDP needs
+                dist.all_reduce(param.grad)
+        before = {n: p.detach().clone() for n, p in block.named_parameters()}
+        optimizer.step()
+        ref_optimizer.step()
+        for (name, got), want in zip(block.named_parameters(), reference.parameters()):
+            if not got.requires_grad:
+                continue
+            expert = int(name.split(".")[1]) if name.startswith("experts.") else None
+            if expert in (6, 7):
+                assert want.grad is None, name
+                assert got.grad is None, f"{name}: a pad-only expert kept its zero gradient"
+                assert torch.equal(got, before[name]), f"pad-only {name} moved at step {step}"
+            assert (got.grad is None) == (want.grad is None), name
+            torch.testing.assert_close(got, want, msg = lambda m: f"{name} step {step}: {m}")
+        for p, q in zip(
+            optimizer.param_groups[0]["params"], ref_optimizer.param_groups[0]["params"]
+        ):
+            assert (p in optimizer.state) == (q in ref_optimizer.state)
+
+
+@pytest.mark.parametrize(
+    "lora, backend",
+    [(False, "ulysses"), (True, "ulysses"), (False, "ring")],
+    ids = ["full-ulysses", "lora_experts-ulysses", "full-ring"],
+)
+def test_context_parallel_padding_does_not_count_as_expert_usage(lora, backend):
+    """When the sequence length does not divide the CP size, the manager appends synthetic pad
+    tokens. Their routes must not mark an expert as used: one process never sees them, so an
+    expert only they pick has a None gradient there and AdamW must leave it alone under CP too."""
+    _moe_spawn(_moe_cp_padding_worker, 2, lora, backend)
+
+
+# Per optimizer step, two gradient accumulation micro-batches, the experts each rank routes to.
+# Step 0 overflows under fp16 loss scaling, so GradScaler skips optimizer.step() (and its pre-hook).
+# Step 1: 0 to 3 idle everywhere; they were used only in the discarded window. Step 2: 4 to 7 idle.
+_AMP_ROUTES = (
+    (((0, 1), (2, 3)), ((0, 1), (2, 3))),
+    (((4, 5), (6, 7)), ((4, 5), (6, 7))),
+    (((0, 1), (0, 1)), ((2, 3), (0, 1))),
+)
+
+
+class _CheckpointedLayer(nn.Module):
+    def __init__(self, block, gc):
+        super().__init__()
+        self.block = block
+        self.gc = gc
+
+    def forward(self, x):
+        if self.gc:
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(self.block, x, use_reentrant = False)
+        return self.block(x)
+
+
+def _moe_amp_skip_worker(rank, world, set_to_none, gc):
+    """Trainer.training_step (Unsloth's CP wrapper) over DDP, GradScaler skipping the first step,
+    against one process seeing every rank's tokens with the same scaler."""
+    import copy
+
+    import trl
+    from torch.nn.parallel import DistributedDataParallel
+
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(False)
+    reference = _CheckpointedLayer(copy.deepcopy(block), gc)
+    model = DistributedDataParallel(_CheckpointedLayer(block, gc), find_unused_parameters = False)
+    adamw = dict(lr = 1e-2, weight_decay = 0.1)
+    optimizer = torch.optim.AdamW([p for p in block.parameters() if p.requires_grad], **adamw)
+    ref_optimizer = torch.optim.AdamW(
+        [p for p in reference.parameters() if p.requires_grad], **adamw
+    )
+    scaler = torch.amp.GradScaler("cpu", init_scale = 1.0)
+    ref_scaler = torch.amp.GradScaler("cpu", init_scale = 1.0)
+    micros = len(_AMP_ROUTES[0])
+
+    class Trainer:
+        def __init__(self):
+            pass
+
+        def training_step(
+            self,
+            model,
+            inputs,
+            num_items_in_batch = None,
+        ):
+            loss = model(_routed_tokens(self.route, self.seed)).pow(2).sum() / micros
+            scaler.scale(loss).backward()
+
+        def prediction_step(self, model, inputs, prediction_loss_only):
+            return (None, None, None)
+
+        def train(self):
+            pass
+
+        def evaluate(self):
+            pass
+
+        def evaluation_loop(self, *a, **k):
+            pass
+
+    trl.SFTTrainer = Trainer
+    cp.patch_sft_trainer(install_cp_methods = True)
+    trainer = Trainer()
+    trainer.model, trainer.optimizer = model, optimizer
+    trainer.state = types.SimpleNamespace(global_step = 0)
+    trainer._context_parallel_manager = _ulysses_manager(world, rank)
+    probe = next(n for n, p in block.named_parameters() if p.requires_grad)
+    for step, micro_routes in enumerate(_AMP_ROUTES):
+        for micro, routes in enumerate(micro_routes):
+            seed = step * 100 + micro * 10
+            trainer.route, trainer.seed = routes[rank], seed + rank
+            trainer.training_step(model, {"input_ids": torch.ones(1, 4, dtype = torch.long)}, 4)
+            for peer in range(world):
+                loss = reference(_routed_tokens(routes[peer], seed + peer)).pow(2).sum()
+                ref_scaler.scale(loss / (world * micros)).backward()
+        if step == 0:  # an fp16 overflow on every rank
+            for module in (block, reference.block):
+                module.get_parameter(probe).grad.view(-1)[0] = float("inf")
+        before = {n: p.detach().clone() for n, p in block.named_parameters()}
+        scaler.step(optimizer)
+        ref_scaler.step(ref_optimizer)
+        scaler.update()
+        ref_scaler.update()
+        if step == 0:
+            assert not optimizer.state and not ref_optimizer.state  # really skipped
+            assert scaler.get_scale() < 1.0
+        else:
+            for (name, got), want in zip(block.named_parameters(), reference.block.parameters()):
+                if got.requires_grad:
+                    assert (got.grad is None) == (want.grad is None), (step, name)
+        for (name, got), want in zip(block.named_parameters(), reference.block.parameters()):
+            if not got.requires_grad:
+                continue
+            expert = int(name.split(".")[1]) if name.startswith("experts.") else None
+            if step == 2 and set_to_none and expert is not None and expert >= 4:
+                assert torch.equal(got, before[name]), f"idle {name} moved at step {step}"
+            torch.testing.assert_close(got, want, msg = lambda m: f"{name} step {step}: {m}")
+        # Trainer's model.zero_grad() (set_to_none = True); set_to_none = False keeps zero tensors.
+        model.zero_grad(set_to_none = set_to_none)
+        reference.zero_grad(set_to_none = set_to_none)
+        trainer.state.global_step += 1
+
+
+@pytest.mark.parametrize("gc", [False, True], ids = ["plain", "checkpointed"])
+@pytest.mark.parametrize("set_to_none", [True, False], ids = ["set_to_none", "zeroed"])
+def test_a_skipped_amp_step_does_not_leak_expert_usage(set_to_none, gc):
+    """fp16 GradScaler skips optimizer.step() on overflow, so the step pre-hook never runs for that
+    window. Its expert usage must not carry into the next window (an expert used only there would
+    keep a zero gradient and AdamW would decay it), with gradient accumulation and checkpoint
+    recompute; with zero_grad(set_to_none = False) one process keeps zero gradients, which CP
+    must mirror instead of dropping them."""
+    _moe_spawn(_moe_amp_skip_worker, 2, set_to_none, gc)
+
+
+def test_real_token_masks_never_mark_a_real_token_as_padding():
+    """The MoE sees only a shard's token count: masks of graph-building forwards of one size are
+    OR-ed, and one with nothing appended makes every token of that size real."""
+    manager = _ulysses_manager(2, 1)
+    odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
+    manager._prepare_inputs(odd)
+    manager._prepare_inputs(odd)  # prediction_step, then apply: still knows the real length
+    manager._ulysses_shard(odd)
+    assert manager.real_token_mask(3).tolist() == [True, True, False]
+    assert manager.real_token_mask(4) is None
+    even = {"input_ids": torch.ones(1, 6, dtype = torch.long)}
+    manager._prepare_inputs(even)
+    manager._ulysses_shard(even)
+    assert manager.real_token_mask(3) is None
+    manager._clear_real_tokens()
+    odd = {"input_ids": torch.ones(1, 5, dtype = torch.long)}
+    with torch.no_grad():  # nothing to recompute: not noted
+        manager._prepare_inputs(odd)
+        manager._ulysses_shard(odd)
+    assert manager.real_token_mask(3) is None

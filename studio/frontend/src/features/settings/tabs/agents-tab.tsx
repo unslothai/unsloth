@@ -65,6 +65,7 @@ import {
   buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
+  pickAgentVariant,
   quoteShellArg,
 } from "../components/agent-command";
 import {
@@ -267,22 +268,10 @@ function localGgufEntries(
   return entries;
 }
 
-function pickVariant(
-  available: Set<string>,
-  candidates: (string | null | undefined)[],
-): string | null {
-  for (const candidate of candidates) {
-    if (candidate && available.has(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function activeGgufSelection(
+function activeAgentModelSelection(
   status: InferenceStatusResponse | null,
 ): { model: string; variant: string | null; named: boolean } | null {
-  if (!status?.is_gguf) {
+  if (!(status?.is_gguf || status?.is_mlx)) {
     return null;
   }
   if (!status.model_identifier) {
@@ -539,6 +528,8 @@ export function AgentsTab() {
     null,
   );
   const [statusSettled, setStatusSettled] = useState(false);
+  // State, not the ref: status can land after the variants listing and must re-pick then.
+  const [rootMlxResident, setRootMlxResident] = useState<string | null>(null);
   const activeModelRef = useRef<{
     model: string;
     variant: string | null;
@@ -838,7 +829,7 @@ export function AgentsTab() {
     });
   }, []);
 
-  // Follow the resident GGUF away too, or the command would switch the shared server back.
+  // Follow the resident model away too, or the command would switch the shared server back.
   // An explicit pick wins, except a native-grant label, which is not loadable.
   const dropActiveModel = useCallback(
     (attachOnly: string | null, wasActive: string | null) => {
@@ -861,10 +852,15 @@ export function AgentsTab() {
 
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
-      const active = activeGgufSelection(status);
+      const active = activeAgentModelSelection(status);
       activeModelRef.current = active
         ? { model: active.model, variant: active.variant }
         : null;
+      setRootMlxResident(
+        active && status.is_mlx && active.variant === null
+          ? modelKey(active.model)
+          : null,
+      );
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -942,6 +938,7 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
+    const keepRoot = rootMlxResident === modelKey(selectedModel);
 
     // After discovery a scanned directory's path is its identity; only a loose .gguf is variantless.
     const localDir =
@@ -997,14 +994,13 @@ export function AgentsTab() {
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
         }
-        const nextVariant =
-          pickVariant(available, [
-            rememberedVariant(selectedModel),
-            preferredVariant,
-            info.default_variant,
-          ]) ??
-          uniqueVariants[0]?.quant ??
-          null;
+        const nextVariant = pickAgentVariant(available, {
+          remembered: rememberedVariant(selectedModel),
+          preferred: preferredVariant,
+          defaultVariant: info.default_variant,
+          first: uniqueVariants[0]?.quant ?? null,
+          keepRoot,
+        });
         setSelectedVariant(nextVariant);
       })
       .catch(() => {
@@ -1013,12 +1009,13 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        setSelectedVariant(preferredVariant);
-        if (preferredVariant) {
+        const fallback = keepRoot ? null : preferredVariant;
+        setSelectedVariant(fallback);
+        if (fallback) {
           setVariants([
             {
               filename: "",
-              quant: preferredVariant,
+              quant: fallback,
               // biome-ignore lint/style/useNamingConvention: API response field
               size_bytes: 0,
             },
@@ -1039,10 +1036,11 @@ export function AgentsTab() {
     hfToken,
     preferredVariant,
     rememberedVariant,
+    rootMlxResident,
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models.
+  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models and a resident MLX one.
 
   return (
     <div className="settings-page">

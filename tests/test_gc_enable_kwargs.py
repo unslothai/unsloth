@@ -12,7 +12,7 @@ import transformers.modeling_utils as hf_modeling_utils
 from transformers import PreTrainedModel, Qwen3Config, Qwen3ForCausalLM
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
+UTILS = os.path.join(HERE, "unsloth", "_gc_kwargs.py")
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 FUNCS = (
@@ -24,6 +24,7 @@ FUNCS = (
 )
 ASSIGNS = ("_OFFLOADING_CHECKPOINT_SHIMS", "_GC_KWARGS_WARNED")
 NATIVE = "offload" in inspect.signature(PreTrainedModel.gradient_checkpointing_enable).parameters
+RENAMED = hasattr(PreTrainedModel, "activation_checkpointing_enable")
 
 
 def _load():
@@ -41,13 +42,22 @@ def _load():
 
 @pytest.fixture
 def patched():
-    original = PreTrainedModel.__dict__["gradient_checkpointing_enable"]
+    original = {
+        name: PreTrainedModel.__dict__[name]
+        for name in (
+            "gradient_checkpointing_enable",
+            "activation_checkpointing_enable",
+            "_activation_checkpointing_enable",
+        )
+        if name in PreTrainedModel.__dict__
+    }
     previous_checkpoint = hf_modeling_utils.checkpoint
     patch = _load().get("patch_gradient_checkpointing_enable_kwargs")
     if patch is not None:
         patch()
     yield
-    PreTrainedModel.gradient_checkpointing_enable = original
+    for name, function in original.items():
+        setattr(PreTrainedModel, name, function)
     hf_modeling_utils.checkpoint = previous_checkpoint
 
 
@@ -150,6 +160,73 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
 
 
 @pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_every_n_layers_survives_flag_rewrite_through_activation_checkpointing_enable(patched):
+    model = _model()
+    model.activation_checkpointing_enable(activation_checkpointing_kwargs = None, every_n_layers = 2)
+    assert _flags(model) == [True, False, True, False]
+    for module in model.modules():
+        if hasattr(module, "gradient_checkpointing"):
+            module.gradient_checkpointing = True
+    assert _flags(model) == [True, False, True, False]
+
+
+@pytest.mark.skipif(RENAMED, reason = "before transformers 5.23 the patched method is the public one")
+def test_explicit_every_n_layers_beats_the_dict_on_the_legacy_api(patched):
+    model = _model()
+    model.gradient_checkpointing_enable({"every_n_layers": 2}, every_n_layers = 1)
+    assert _flags(model) == [True, True, True, True]
+
+
+@pytest.mark.skipif(
+    not RENAMED,
+    reason = "the old name is an alias of activation_checkpointing_enable from transformers 5.23",
+)
+def test_every_n_layers_dict_through_instance_wrapper_of_old_name(patched):
+    # vision.py wraps the old name per instance (gemma3n / gemma4, forced non-reentrant).
+    model = _model()
+    original = model.gradient_checkpointing_enable
+    model.gradient_checkpointing_enable = lambda **kwargs: original(**kwargs)
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False, "every_n_layers": 2}
+    )
+    assert _flags(model) == [True, False, True, False]
+    _grads(model)
+
+
+@pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_offload_dropped_under_offloading_shim_through_activation_checkpointing_enable(
+    patched, smart_gc, monkeypatch
+):
+    entered = []
+    real = hf_modeling_utils.save_on_cpu
+
+    class Counting(real):
+        def __init__(
+            self,
+            pin_memory = False,
+            device_type = "cuda",
+        ):
+            pin_memory = pin_memory and torch.accelerator.is_available()
+            super().__init__(pin_memory = pin_memory, device_type = device_type)
+
+        def __enter__(self):
+            entered.append(1)
+            return super().__enter__()
+
+    monkeypatch.setattr(hf_modeling_utils, "save_on_cpu", Counting)
+    model = _model()
+    model.activation_checkpointing_enable(
+        activation_checkpointing_kwargs = {"use_reentrant": True}, offload = True
+    )
+    _grads(model)
+    assert entered == []
+
+
+@pytest.mark.skipif(
     not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17"
 )
 def test_native_offload_dropped_only_under_offloading_shim(patched, smart_gc, monkeypatch):
@@ -244,6 +321,7 @@ def _vision_nonre_checkpoint(offload_hooks):
             "_orig_checkpoint": torch.utils.checkpoint.checkpoint,
             "_offload": True,
             "_offload_activation_hooks": offload_hooks,
+            "_gc_checkpoint_owner": lambda function: None,
         }
         for n in body:
             if isinstance(n, ast.FunctionDef) and n.name == "_nonre_checkpoint":
@@ -272,7 +350,7 @@ def test_native_offload_dropped_under_vision_non_reentrant_offload(patched, monk
             return super().__enter__()
 
     @contextlib.contextmanager
-    def offload_hooks():
+    def offload_hooks(owner = None):
         hooked.append(1)
         yield
 

@@ -1349,16 +1349,22 @@ export async function listChatMessages(
   return data.messages;
 }
 
-/** Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers. */
+/**
+ * Batch fetch; falls back to per-thread listChatMessages on 404/405 from older servers.
+ * view "search" trims messages to what the search index reads; older backends ignore it.
+ */
 export async function batchListChatMessages(
   threadIds: string[],
+  options: { view?: "search" } = {},
 ): Promise<Map<string, MessageRecord[]>> {
   const out = new Map<string, MessageRecord[]>();
   if (threadIds.length === 0) return out;
   const response = await authFetch("/api/chat/messages:batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ threadIds }),
+    body: JSON.stringify(
+      options.view ? { threadIds, view: options.view } : { threadIds },
+    ),
   });
   if (response.status === 404 || response.status === 405) {
     const per = await Promise.all(
@@ -1534,7 +1540,11 @@ export async function buildBackendChatExport(): Promise<{
   messages: MessageRecord[];
 }> {
   const response = await authFetch("/api/chat/export");
-  return parseJsonOrThrow(response);
+  const data = await parseJsonOrThrow<Awaited<
+    ReturnType<typeof buildBackendChatExport>
+  > | null>(response);
+  if (!data) throw new Error("The chat export did not download completely.");
+  return data;
 }
 
 // Server-side legacy-Dexie import ledger, so a studio.db wipe keeps the import recoverable.

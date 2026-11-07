@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for DeepSeek (V2 / V3 MLA, V3.2 DSA indexer, V4 sink attention), on CPU
-gloo ranks. transformers' own forwards are the single-rank reference."""
+"""Ulysses context parallelism for DeepSeek on CPU gloo ranks: V2 / V3 MLA on main's generic route, V3.2 (DSA
+indexer) and V4 (sink attention) on their own forwards. transformers' own forwards are the single-rank reference."""
 
 import os
 import tempfile
@@ -177,6 +177,20 @@ def _parity_worker(rank, world, kind, control):
         for module in model.modules():
             if getattr(module, "_unsloth_cp_orig_forward", None) is not None:
                 module.forward = module._unsloth_cp_orig_forward
+    calls = []
+    if not control:
+        # The new path provably runs: once per layer, no silent fallback to the stock forward.
+        owner, fn_name = uh, "_ulysses_hf_attention"
+        if kind in ("v32", "v4"):
+            from unsloth.utils import ulysses_deepseek as ud
+            owner, fn_name = ud, f"ulysses_deepseek_{kind}_forward"
+        real = getattr(owner, fn_name)
+
+        def counted(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        setattr(owner, fn_name, counted)
     inputs = {"input_ids": ids.clone(), "labels": ids.clone()}
     manager._prepare_inputs(inputs)
     with manager.apply(inputs):
@@ -184,6 +198,8 @@ def _parity_worker(rank, world, kind, control):
             input_ids = inputs["input_ids"], position_ids = inputs["position_ids"], use_cache = False
         )
         _loss(out.logits, inputs["shift_labels"], count).backward()
+    if not control:
+        assert len(calls) == model.config.num_hidden_layers, (kind, len(calls))
     for name, param in model.named_parameters():
         if name not in reference:
             continue
@@ -244,27 +260,44 @@ def test_deepseek_v4_gates():
     assert not cp._supports_context_parallel(model, "ring")
 
 
-def test_mla_custom_scale_reaches_every_backend(monkeypatch):
-    seen = {}
-
-    def fake_ulysses(run, config, context, q, k, v, group):
-        seen["config"] = config
-        return torch.zeros(q.shape[0], q.shape[2], q.shape[1], q.shape[3])
-
-    monkeypatch.setattr(uh, "ulysses_attention", fake_ulysses)
-    module = types.SimpleNamespace(training = False)
-    q = torch.zeros(1, 4, 3, 24)
-    out, _ = uh._ulysses_hf_attention(
-        module, q, q, torch.zeros(1, 4, 3, 16), None, group = None, scaling = 0.3
+@pytest.mark.parametrize("kind", KINDS)
+def test_ulysses_deepseek_route(kind):
+    # V2 / V3 MLA (YaRN scale, value heads narrower than q / k) are plain registry attention: main's generic
+    # route runs their own attention function. V3.2 / V4 must take their own forward instead: on the generic
+    # route the indexer / compressor would see one shard and the rebuilt causal mask would drop the top-k.
+    model = _model(kind)
+    _manager(2, 0).attach_attention_hooks(model)
+    layers = [m for n, m in model.named_modules() if n.endswith("self_attn")]
+    assert len(layers) == model.config.num_hidden_layers
+    for module in layers:
+        own = getattr(module, "_unsloth_cp_orig_forward", None) is not None
+        generic = getattr(module, "_unsloth_cp_ulysses_attention", False)
+        assert (own, generic) == ((True, False) if kind in ("v32", "v4") else (False, True)), kind
+    # transformers 4.x builds per-expert modules, which the model check refuses under CP.
+    per_expert = any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()
     )
-    config = seen["config"]
-    assert config.flash_dense_kwargs["softmax_scale"] == 0.3
-    assert config.flash_varlen_kwargs["softmax_scale"] == 0.3
-    assert config.sdpa_kwargs == {"scale": 0.3} and config.xformers_kwargs == {"scale": 0.3}
-    assert out.shape[-1] == 16
-    # The default scale leaves the backends on their own defaults.
-    uh._ulysses_hf_attention(module, q, q, q, None, group = None, scaling = 24**-0.5)
-    assert seen["config"].sdpa_kwargs is None
+    assert cp._supports_context_parallel(model, "ulysses") is not per_expert
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_deepseek_model_checks_as_main_does(kind):
+    # SFT accepts every DeepSeek generation under Ulysses; DPO / GRPO refuse it like any generic Hugging Face
+    # attention model; ring and the router auxiliary loss stay refused.
+    model = _model(kind)
+    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+        # transformers 4.x: per-expert modules stall DDP's reduction under CP (find_unused_parameters off).
+        with pytest.raises(NotImplementedError, match = "per-expert modules"):
+            cp._check_cp_model(model, 2, "ulysses", allow_hybrids = True)
+        return
+    cp._check_cp_model(model, 2, "ulysses", allow_hybrids = True)
+    with pytest.raises(NotImplementedError, match = "verified for SFTTrainer"):
+        cp._check_cp_model(model, 2, "ulysses", allow_hybrids = False)
+    with pytest.raises(NotImplementedError):
+        cp._check_cp_model(model, 2, "ring", allow_hybrids = True)
+    model.config.output_router_logits = True
+    with pytest.raises(NotImplementedError, match = "router auxiliary loss"):
+        cp._check_cp_model(model, 2, "ulysses", allow_hybrids = True)
 
 
 @pytest.mark.parametrize("wrap", ["none", "checkpoint"])
@@ -514,6 +547,7 @@ def _block_compile_checkpoint_worker(rank, world):
             _loss(out.logits, inputs["shift_labels"], count).backward()
 
 
+@pytest.mark.skipif("v32" not in KINDS, reason = "transformers without DeepSeek-V3.2")
 def test_ulysses_deepseek_checkpointing_with_block_compile():
     """V3.2 fp32 CP=2 SFT failed with CheckpointError (62 vs 61 saved tensors): the eager Ulysses
     forward split each compiled decoder layer, the MoE layer's post-attention part failed to compile,

@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const he = {
+  turns: {
+    label: "סבב {number}",
+    bookmarkedLabel: "סבב {number}, מסומן",
+    bookmark: "סימון הסבב",
+    removeBookmark: "הסרת הסימון",
+    navigator: "סבבים",
+  },
   chatBackground: {
     noBackground: "ללא רקע",
     sizing: "התאמת גודל תמונה",
+    sizingPosition: "גודל ומיקום התמונה",
     fill: "מילוי",
     fit: "התאמה",
     stretch: "מתיחה",
     original: "גודל מקורי",
+    fitWidth: "התאמה לרוחב",
+    fitHeight: "התאמה לגובה",
     zoom: "זום",
     outline: "מסגרת שדה ההודעה",
     fade: "דעיכה אל הרקע",
@@ -28,11 +38,18 @@ export const he = {
     halftone: "חצי גוון",
     scanlines: "קווי סריקה",
     visibility: "נראות",
+    conversationVisibility: "נראות בשיחות",
     blur: "טשטוש תמונה",
     position: "מיקום",
+    horizontal: "מיקום אופקי",
+    vertical: "מיקום אנכי",
+    scope: "הצגה ב",
+    scopeNewChat: "דף צ׳אט חדש",
+    scopeChats: "צ׳אטים",
+    scopeAll: "כל הדפים",
     positionValue: "אופקי {x}%, אנכי {y}%",
-    newChat: "צ׳אט חדש",
-    conversation: "שיחה",
+    newChat: "תצוגה מקדימה של צ'אט חדש",
+    conversation: "תצוגה מקדימה של שיחה",
     prompt: "מה תרצו לחקור?",
     response: "השיחה נשארת ברורה על גבי הרקע.",
     storageError: "לא ניתן לשמור את הרקע. בדקו את שטח האחסון בדפדפן.",
@@ -40,6 +57,26 @@ export const he = {
     dimensionsError: "בחרו תמונה קטנה מ־40 מגה־פיקסל.",
     decodeError: "לא ניתן לקרוא את התמונה. נסו קובץ אחר.",
     effectError: "לא ניתן ליצור את האפקט. בחרו ללא או תמונה אחרת.",
+    material: "זכוכית",
+    materialSolid: "כבוי",
+    materialTransparent: "שקוף",
+    materialFrosted: "חלבי",
+    materialBlurred: "מטושטש",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "זכוכית המערכת של macOS",
+    materialMacosNote: "משתמש בחומר החלון השקוף-למחצה של macOS, כך ששולחן העבודה נראה מבעדו.",
+    materialNativeFailed: "גרסה זו של Unsloth Desktop לא יכולה להשתמש בחומר של macOS. עדכנו את האפליקציה כדי להפעיל אותו.",
+    glassTheme: "ערכת נושא זכוכית",
+    materialStyle: "סגנון",
+    materialMenus: "תפריטי זכוכית",
+    materialMenusDescription: "גם תפריטים נפתחים, תפריטים ובוררים משתמשים בזכוכית.",
+    materialStrength: "עוצמת הזכוכית",
+    lens: "עדשת זכוכית",
+    lensDescription: "מעקמת את התמונה מתחת לתיבת הכתיבה כמו זכוכית אמיתית.",
+    lensOff: "כבוי",
+    lensMagnify: "הגדלה",
+    lensShrink: "הקטנה",
   },
 
   linkMenu: {
@@ -162,12 +199,16 @@ export const he = {
         history: "קורא את היסטוריית הגלישה שלך",
         move: "מזיז את העכבר",
         drag: "גורר",
+        tabs: "בודק את הכרטיסיות",
+        readFile: "קורא את הקובץ",
+        editFile: "עורך את הקובץ",
       },
     },
     title: "דפדפן",
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",
     newTabFullView: "כרטיסייה חדשה בתצוגה מלאה",
+    newTabFloating: "כרטיסייה חדשה בחלון צף",
     closeTab: "סגור כרטיסייה",
     close: "סגור דפדפן",
     show: "הצג דפדפן",
@@ -299,18 +340,24 @@ export const he = {
     downloadLocationReset: "איפוס",
     askBeforeDownloadingSetting: "לשאול לפני הורדה",
     askBeforeDownloadingSettingDescription: "אישור קבצים מאתרים לפני שהם נשמרים.",
+    askBeforeProgramDownloadsSetting: "לשאול לפני הורדת תוכנות",
+    askBeforeProgramDownloadsSettingDescription: "אישור קבצים שיכולים להריץ תוכנות, כמו .exe או .dmg, גם כשהורדות אחרות לא שואלות.",
     downloadSitesSetting: "הרשאות הורדה לאתרים",
     downloadSitesSettingDescription: "אתרים שבחרתם תמיד לאפשר או לחסום מהם הורדות.",
     downloadSitesNone: "סמנו \"לזכור לפעם הבאה\" כשתישאלו, והאתר יופיע כאן.",
     downloadSitesFor: "הורדות מ-{host}",
     downloadSitesRemove: "לשכוח את {host}",
     downloadSiteAllow: "תמיד לאפשר",
+    downloadSiteAllowAll: "לאפשר גם תוכנות",
     downloadSiteBlock: "תמיד לחסום",
     downloadPrompt: {
       title: "להוריד את הקובץ הזה?",
       description: "{host} רוצה לשמור את {name} במחשב שלכם.",
       dangerous: "קבצים כאלה יכולים להריץ תוכנות במחשב שלך. הורד אותו רק אם אתה סומך על {host}.",
       remember: "לזכור לפעם הבאה",
+      once: "לשאול בפעם הבאה",
+      site: "תמיד עבור {host}",
+      all: "תמיד להוריד, מכל אתר",
       cancel: "ביטול",
       download: "הורדה",
       blocked: "נחסמה הורדה מ-{host}.",
@@ -353,6 +400,12 @@ export const he = {
       openChat: "פתח בתצוגה מלאה",
       moveLeft: "העבר לחלונית השמאלית",
       moveRight: "העבר לחלונית הימנית",
+    },
+    floating: {
+      enter: "חלון צף",
+      dock: "עגינה לצד",
+      close: "סגירת החלון הצף",
+      handle: "הזזת החלון. מקשי החצים מזיזים אותו, ו־Shift עם החצים משנה את גודלו.",
     },
     annotate: {
       countOne: "הערה אחת",
@@ -649,6 +702,8 @@ export const he = {
     plainText: "עורך טקסט פשוט",
     plainTextDescription:
       "שמור קוד, Markdown וקישורים כטקסט מילולי. כבה כדי להציג תצוגה מקדימה מעוצבת.",
+    richPaste: "הדבקת טקסט מעוצב",
+    richPasteDescription: "מדביק קישורים, טבלאות ועיצוב כ-Markdown. {shortcut} מדביק טקסט פשוט. עורך טקסט עשיר מלא בקרוב.",
     showContext: "שימוש בחלון ההקשר",
     sendShortcut: "קיצור שליחה",
     sendMultiline: "{mod} + Enter להנחיות מרובות שורות",
@@ -753,36 +808,6 @@ export const he = {
     compactEmpty: "אין עדיין מה לכווץ",
     compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
-  halloween: {
-    navLabel: "ממתק או תעלול…",
-    title: "ממתק או תעלול?!",
-    description: "רקחנו כמה הפחדות בשביל Unsloth, כאן עד סוף אוקטובר.",
-    chooseTheme: "בחירת ערכת נושא מפחידה",
-    spookyGreetings: "ברכות מפחידות",
-    spookyGreetingsDescription: "העצלן מקבל שיחות חדשות בהפחדה.",
-    decorations: "עכבישים ועטלפים",
-    decorationsDescription:
-      "קורי עכביש בפינות, ומדי פעם עכביש או עטלף בערכת נושא של ליל כל הקדושים.",
-    surprise: "ממתק או תעלול!",
-    surpriseDescription: "העצלן יבחר בשבילך ערכת נושא.",
-    themesTitle: "ערכות נושא מפחידות",
-    back: "חזרה",
-    footer: "Unsloth יחזור לרגיל בחצות של 1 בנובמבר.",
-    removeNow: "הסרה עכשיו",
-    hideFromSidebar: "הסתרה מסרגל הצד",
-    greeting: {
-      pumpkins: "הדלעות כבר מגולפות. מה הלאה?",
-      brewing: "בואו נרקח משהו",
-      trickOrTreat: "ממתק או תעלול?",
-      manor: "ברוכים הבאים לאחוזה",
-      manorName: "ברוכים הבאים לאחוזה, {name}",
-      happyHalloween: "ליל כל הקדושים שמח",
-      happyHalloweenName: "ליל כל הקדושים שמח, {name}",
-      spirits: "הרוחות מקשיבות…",
-      mysteries: "אילו תעלומות נגלה הלילה?",
-      conjure: "מה אוכל לכשף בשבילך?",
-    },
-  },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
     goodToSeeYouName: "טוב לראות אותך, {name}",
@@ -805,6 +830,8 @@ export const he = {
   picker: {
     unifiedTightFit: "התאמה צפופה",
     unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
+    residentToRun: "להרצה",
+    residentToRunHint: "זיכרון GPU שבדיקת הטעינה דורשת בזמן הריצה",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -1004,7 +1031,7 @@ export const he = {
       deleteProjects: "מחק פרויקטים",
       deleteProjectsTitle: "מחיקת פרויקטים",
       deleteProjectsDescription:
-        "למחוק {count} פרויקטים? הצ'אטים שלהם יימחקו לצמיתות.",
+        "{count} פרויקטים וכל הצ'אטים שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteProjectsFilesDescription:
         "תיקיית סביבת העבודה של כל פרויקט תוסר מהדיסק.",
       countSelected: "{count} נבחרו",
@@ -1015,7 +1042,7 @@ export const he = {
       markRead: "סמן כנקרא",
       deleteChats: "מחק צ'אטים",
       deleteTitle: "מחיקת צ'אטים",
-      deleteDescription: "למחוק {count} צ'אטים? פעולה זו אינה ניתנת לביטול.",
+      deleteDescription: "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       deleteFilesDescription:
         "תיקיית ארגז החול של כל צ'אט תוסר מהדיסק. קבצים שנכתבו בתוך פרויקט יישארו בסביבת העבודה שלו.",
       deleteFilesLabel: "מחק קבצים ותיקיית ארגז חול",
@@ -1063,7 +1090,7 @@ export const he = {
     dialog: {
       deleteChat: {
         title: "מחיקת צ'אט",
-        description: 'האם אתה בטוח שברצונך למחוק את הצ\'אט "{name}"?',
+        description: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
       },
       deleteRun: {
         title: "מחיקת הרצת אימון",
@@ -1088,6 +1115,7 @@ export const he = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "יש להגדיר את סיסמת בעל ההתקנה לפני הוספת חשבון נוסף. הסיסמה תשמש לכניסה לאחר שיהיו בהתקנה כמה חשבונות.",
       signsInAs: "מתחבר בתור {username}",
       signsInAsOwner: "מתחבר בתור {alias} או {username}",
       signInName: "שם ההתחברות שלך",
@@ -1115,6 +1143,9 @@ export const he = {
       modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
       modelAccessSave: "שמירה",
       modelAccessLimited: "גישה מוגבלת למודלים",
+      rename: "שינוי שם",
+      renameTitle: "שינוי השם של {username}",
+      renameDescription: "בחרו את השם שבו החשבון הזה מתחבר. השיחות, הקבצים ומפתחות ה-API נשארים בחשבון. המשתמש יתנתק ויתחבר מחדש עם השם החדש והסיסמה הנוכחית.",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
@@ -1920,6 +1951,26 @@ export const he = {
       chatDefaults: "ברירות מחדל של הצ'אט",
       autoTitleNewChats: "מתן כותרת אוטומטית לצ'אטים חדשים",
       autoTitleNewChatsDescription: "צור כותרת מההודעה הראשונה.",
+      mlWarmup: {
+        sectionTitle: "ביצועים בעת ההפעלה",
+        description: "הכן את התכונות שנבחרו לשימוש ראשון מהיר יותר. כל האפשרויות כבויות כברירת מחדל. האפשרויות עשויות לטעון תלויות משותפות ולהשתמש ביותר RAM במצב סרק.",
+        restartRequired: "השינויים יחולו לאחר הפעלה מחדש של Unsloth.",
+        hardwareLabel: "זיהוי חומרה",
+        hardwareDescription: "זהה מעבדי GPU והכן את PyTorch.",
+        textLabel: "מודלי טקסט",
+        textDescription: "הכן את התמיכה במודלי טקסט של Transformers.",
+        datasetsLabel: "הכנת מערכי נתונים",
+        datasetsDescription: "הכן את Datasets ואת התלויות שלה לתצוגות מקדימות ולעיבוד.",
+        mediaLabel: "מודלי תמונה ווידאו",
+        mediaDescription: "הכן את Diffusers ואת התלויות המשותפות של המודלים.",
+        advanced: "מתקדם",
+        quantizationLabel: "בדיקות מקדימות לקוונטיזציה של תמונות",
+        quantizationDescription: "בדוק את התמיכה לפני הטעינה הראשונה של מודל תמונה שעבר קוונטיזציה. הדבר עשוי להגדיל לזמן קצר את השימוש ב-RAM.",
+        requiredBySelections: "נדרש עבור האפשרויות שבחרת.",
+        disabledByEnv: "מושבת על ידי UNSLOTH_STUDIO_DISABLE_TORCH_WARM בסביבת השרת.",
+        loadError: "טעינת הגדרות ההכנה המוקדמת בעת ההפעלה נכשלה.",
+        saveError: "שמירת הגדרות ההכנה המוקדמת בעת ההפעלה נכשלה.",
+      },
       helperLlm: {
         sectionTitle: "מודל עזר (Helper LLM)",
         preloadOnStartup: "שמור מודל עזר במטמון בעת ההפעלה",
@@ -1972,6 +2023,7 @@ export const he = {
         loadError: "טעינת הגדרות ההחלפה האוטומטית של מודלים נכשלה.",
         saveError: "שמירת הגדרות ההחלפה האוטומטית של מודלים נכשלה.",
         idleError: "הזן 0 כדי לשמור את המודל טעון, או לפחות 60 שניות.",
+        idleUnsaved: "עדיין לא נשמר.",
         keepKv: "שמור הקשר צ'אט על פני פריקות",
         keepKvDescription:
           "שמור את מטמון ה-KV לפני פריקה בחוסר פעילות, או לפני שמודל תמונה או וידאו תופס את ה-GPU, כדי שצ'אטים שיחודשו ידלגו על קריאה מחדש של ההיסטוריה. עד 10 GB בדיסק.",
@@ -2037,6 +2089,14 @@ export const he = {
           off: "מריץ כל קריאה לכלי בלי לשאול. קוד Python ו-Terminal עדיין רץ בארגז החול, שמגביל לאילו קבצים במחשב שלך הוא יכול לגשת. ללא ארגז חול פעיל של מערכת ההפעלה, קריאות מסוכנות ישאלו קודם.",
           full: "מריץ כל קריאה לכלי בלי לשאול ומכבה את ארגז החול של הקוד, כך שקוד Python ו-Terminal יכול לקרוא ולשנות כל קובץ שהחשבון שלך יכול לגשת אליו.",
         },
+      },
+      display: {
+        title: "תצוגה",
+        timeFormat: "תבנית שעה",
+        timeFormatDescription: "הצגת שעות בתבנית של 12 או 24 שעות.",
+        timeFormatSystem: "ברירת המחדל של המערכת",
+        timeFormat12: "12 שעות",
+        timeFormat24: "24 שעות",
       },
       notifications: {
         sectionTitle: "התראות",
@@ -2115,6 +2175,12 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",
@@ -2211,10 +2277,14 @@ export const he = {
         label: "סוג התקנה",
         description:
           "צ'אט בלבד (GGUF). ההתקנה המלאה מוסיפה אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות.",
+        descriptionCpu:
+          "צ'אט בלבד (GGUF). לא נמצא GPU נתמך, ולכן ההתקנה המלאה מוסיפה אימון על ה-CPU.",
         action: "שדרג להתקנה מלאה",
         confirmTitle: "לשדרג להתקנה המלאה?",
         confirmDescription:
           "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. ההתקנה המלאה מוסיפה את PyTorch עבור ה-GPU של מכונה זו, ומאפשרת אימון, ייצוא, וידאו, מודלים של safetensors ותכונות נוספות ליצירת תמונות. היא מורידה כמה ג'יגה-בייט (לפחות 5 GB של שטח דיסק) ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+        confirmDescriptionCpu:
+          "התקנה זו של צ'אט בלבד מריצה מודלים של GGUF. לא נמצא GPU נתמך במכונה זו, ולכן ההתקנה המלאה מוסיפה את PyTorch עבור ה-CPU, ומאפשרת אימון על ה-CPU. אימון על CPU איטי בהרבה מאימון על GPU. היא דורשת לפחות 5 GB של שטח דיסק ומפעילה מחדש את השרת. הצ'אטים, המודלים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "שדרג",
         keywords:
           "full install upgrade סוג התקנה התקנה מלאה שדרוג צ'אט בלבד chat only gguf add training אימון train fine-tune pytorch torch ייצוא וידאו יצירת תמונות safetensors",
@@ -2259,6 +2329,13 @@ export const he = {
       avatarShapeRounded: "פינות מעוגלות",
       greetingSloth: "ברכה",
       greetingSlothDescription: "הצגת הברכה בצ'אטים חדשים.",
+      greetingDefault: "ברירת מחדל",
+      greetingCustom: "מותאם אישית",
+      greetingImage: "תמונה",
+      greetingText: "טקסט הברכה",
+      greetingTextDescription: "השאירו ריק כדי להשתמש בברכות המובנות.",
+      greetingFileError: "בחרו קובץ PNG, JPEG, WebP או GIF קטן מ-10 MB.",
+      greetingImageError: "לא ניתן להשתמש בתמונה הזו. נסו תמונה קטנה יותר.",
       chooseSloth: "או בחר עצלן",
       noPicture: "ללא תמונת פרופיל",
       noneLabel: "ללא",
@@ -2376,21 +2453,32 @@ export const he = {
         label: "ערכת נושא",
         description: "הצבעים שבשימוש בכל רחבי Unsloth, במצב בהיר וכהה.",
         standard: "סטנדרטית",
-        classic: "קלאסית",
-        minimal: "מינימלית",
         moreThemes: "ערכות נושא נוספות",
-        halloween: "האלווין",
       },
-      trickOrTreat: {
-        label: "ממתק או תעלול",
-        description:
-          "ערכות נושא של ליל כל הקדושים וברכות מפחידות, עד 1 בנובמבר.",
+      composer: {
+        title: "תיבת הכתיבה",
+      },
+      code: {
+        title: "קוד",
+        fontDescription: "בלוקי קוד בצ׳אט, תצוגות מקדימות של קבצים ודוגמאות API.",
+        lineNumbers: {
+          label: "מספרי שורות",
+          description: "מספור השורות של בלוקי קוד בצ׳אט.",
+        },
+        wordWrap: {
+          label: "גלישת שורות",
+          description: "גלישת שורות ארוכות בבלוקי קוד במקום גלילה הצידה.",
+        },
+        ligatures: {
+          label: "ליגטורות גופן",
+          description: "איחוד סמלים כמו => ו-!= לגליף אחד כשגופן הקוד תומך בכך.",
+        },
       },
       custom: {
         chatWidth: {
           label: "רוחב הצ'אט",
           description: "רוחב ההודעות ותיבת ההודעה.",
-          standard: "רגיל",
+          standard: "ברירת מחדל",
           wide: "רחב",
           full: "רוחב מלא",
         },
@@ -2467,6 +2555,10 @@ export const he = {
         },
         contrast: {
           label: "ניגודיות",
+        },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
         },
         reduceMotion: {
           label: "הפחתת תנועה",
@@ -2557,7 +2649,7 @@ export const he = {
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
-        noGpu: "לא זוהה GPU גלוי. משאבי CPU בלבד מוצגים למעלה.",
+        noGpu: "לא זוהה GPU ייעודי.",
         noUsableGpu: "אף GPU במחשב זה אינו שמיש על ידי PyTorch.",
         mismatchCpuBuild:
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
@@ -2643,7 +2735,7 @@ export const he = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
-        title: "זיכרון מודל",
+        title: "טעינת מודל",
         keepResident: "שמור מודל בזיכרון ה-GPU",
         keepResidentDescription: "הישאר ב-VRAM בין פרומפטים.",
         keepResidentHint:
@@ -2832,7 +2924,7 @@ export const he = {
       configurationDocs: "תיעוד",
       configurationFlagsSuffix: "עבור דגלים.",
       modelNote:
-        "Codex דורש מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
+        "Claude Code ו-Codex דורשים מודל GGUF המוגש על ידי llama-server, או מודל MLX. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
       subagent: {
         title: "השתמש במודל מקומי כתת-סוכן",
         description:
@@ -2906,6 +2998,8 @@ export const he = {
     },
     chat: {
       groups: {
+        replies: { title: "תשובות" },
+        thinkingTools: { title: "חשיבה וכלים" },
         conversations: {
           title: "שיחות",
         },
@@ -2991,22 +3085,35 @@ export const he = {
         "ההתראות חסומות. יש לאפשר אותן ל-Unsloth בהגדרות הדפדפן או המערכת ולנסות שוב.",
       replyNotificationKeywords:
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
+      showLinkPreviews: "תצוגות מקדימות של קישורים",
+      showLinkPreviewsDescription: "הצגת תצוגות מקדימות במעבר העכבר מעל קישורי מקורות.",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       showReplyTimes: "זמני תשובות",
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
       showGenerationDetailsDescription:
-        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "נתוני מהירות והקשר",
+      generationStatsUpdatesDescription:
+        "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
+      generationStatsUpdatesHint:
+        "זמן אמת מרענן את מד הטוקנים לשנייה מתחת לתשובה ואת סרגל ההקשר בראש הצ'אט כמה פעמים בשנייה בזמן שהתשובה נכתבת. בסיום מעדכן אותם פעם אחת, אחרי שכל תשובה מסתיימת. זמן אמת עלול לגרום להאטה או לביצועים נמוכים יותר, במיוחד במחשבים ישנים או עמוסים.",
+      generationStatsUpdatesSettled: "בסיום",
+      generationStatsUpdatesRealtime: "זמן אמת",
+      generationStatsUpdatesKeywords:
+        "זמן אמת חי עדכון מהירות הקשר נתונים realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
-      composerAtBottom: "תיבת הכתיבה למטה",
-      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
+      turnNavigation: "ניווט בין סבבים",
+      turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
+      composerPosition: "מיקום תיבת הכתיבה",
+      composerPositionDescription: "היכן תיבת הכתיבה מופיעה כשמתחילים צ'אט חדש, מראש הדף ועד תחתיתו.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",
@@ -3271,10 +3378,10 @@ export const he = {
         moveFailed: "העברת הצ'אטים נכשלה",
         deleteChatsTitle: "מחיקת צ'אטים ({count})",
         deleteChatsWarning:
-          "למחוק את הצ'אטים שנבחרו ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteArchivedTitle: "מחיקת {count} צ'אטים מהארכיון",
         deleteArchivedWarning:
-          "למחוק את הצ'אטים שנבחרו מהארכיון ({count})? פעולה זו אינה ניתנת לביטול.",
+          "{count} צ'אטים בארכיון וההודעות שלהם יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleting: "מוחק...",
       },
       title: "נתונים",
@@ -3482,6 +3589,9 @@ export const he = {
         docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
+        codeTitle: "קריאה מקוד",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "לקוחות MCP אחרים מתחברים לכאן עם אותו אסימון.",
         enable: "הגש בקשות",
         enableDescription: "מגיש את /v1/systemone. הפעלה מורידה את המודל.",
         enableRemoteDescription: "מגיש את /v1/systemone.",
@@ -3625,8 +3735,6 @@ export const he = {
         repoCheckoutFallback:
           "אם עותק המאגר עדיין ברשותך, הרץ מתוכו את תוכנית ההתקנה המקומית:",
         restartAfterUpdate: "הפעל מחדש את Unsloth לאחר העדכון.",
-        desktopManaged:
-          "אפליקציית שולחן העבודה בודקת עדכונים באופן אוטומטי. תוכל גם לבדוק או לעדכן כאן בכל עת.",
         desktopReady: "עדכוני אפליקציית שולחן עבודה",
         desktopReadyDescription:
           "בדוק האם קיימת גרסה חדשה יותר של אפליקציית שולחן העבודה.",
@@ -3636,7 +3744,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "האפליקציה התחברה לשרת Unsloth שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
+          "מחובר לשרת Unsloth בפורט {port} שהאפליקציה הזו לא הפעילה, כמו `unsloth studio` בטרמינל. עצור אותו במקום שבו הופעל, ואז צא מהאפליקציה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -3666,6 +3774,8 @@ export const he = {
   },
   studio: {
     routeTitle: "אימון",
+    cpuTrainingNotice:
+      "לא נמצא GPU, ולכן האימון רץ על ה-CPU. הוא איטי בהרבה מאימון על GPU ותומך במודלי טקסט בלבד (LoRA או כוונון מלא).",
     wizard: {
       modelTitle: "מודל",
       modelDescription: "בחר מודל ושיטת אימון",
@@ -3938,7 +4048,6 @@ export const he = {
           imageDataset:
             "מערך נתונים זה נראה כמכיל תמונות, שאינן ניתנות להזרמה.",
           audioDataset: "מערך נתונים זה נראה כמכיל אודיו, שאינו ניתן להזרמה.",
-          appleSilicon: "הזרמה אינה נתמכת עדיין ב-Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "השלמות עוזר בלבד",
@@ -4757,9 +4866,9 @@ export const he = {
       dialog: {
         renameChat: "שינוי שם צ'אט",
         deleteChatDescription:
-          "צ'אט זה יימחק לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הצ'אט וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteProjectDescription:
-          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. פעולה זו אינה ניתנת לביטול.",
+          "הפרויקט והצ'אטים שלו ({count}) יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
         deleteFilesMany: "הסר גם את הקבצים ותיקיות ארגז החול שצ'אטים אלה יצרו.",
         deleteProjectFilesLabel: "מחק את תיקיית סביבת העבודה של הפרויקט",
         deleteProjectFiles: "תיקיית סביבת העבודה של הפרויקט תוסר מהדיסק.",
@@ -5131,6 +5240,8 @@ export const he = {
     removeLevel: "הסר רמה {n}",
     addLevel: "הוסף רמה",
     jsonHelp: "גוף הבקשה. הרצה שולחת אותו כפי שהוא.",
+    copyBody: "העתקת גוף הבקשה",
+    copyCurl: "העתקה כ-cURL",
     examples: "דוגמאות",
     presetToolApproval: "אישור קריאות לכלים של סוכן",
     presetPromptInjection: "זיהוי הזרקת פרומפט",
@@ -5228,14 +5339,14 @@ export const he = {
     renameChat: "שינוי שם הצ'אט",
     chatName: "שם הצ'אט",
     deleteChat: "מחיקת צ'אט",
-    deleteChatDescription: "למחוק את {name}? ההודעות שלו יימחקו לצמיתות.",
+    deleteChatDescription: "הצ'אט \"{name}\" וההודעות שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     importChats: "ייבוא צ'אטים",
     importDestination: "בחרו לאן לייבא את {name}:",
     selectDestination: "בחירת יעד",
     recents: "אחרונים",
     import: "ייבוא",
     deleteProject: "מחיקת פרויקט",
-    deleteProjectDescription: "למחוק את {name}? הצ'אטים שלו יימחקו לצמיתות.",
+    deleteProjectDescription: "הפרויקט \"{name}\" וכל הצ'אטים שלו יימחקו לצמיתות. לא ניתן לבטל פעולה זו.",
     deleteProjectFiles: "תיקיית העבודה של הפרויקט תוסר מהדיסק.",
     deleteAll: "מחיקת הכול",
     projectFallback: "פרויקט",
@@ -5318,6 +5429,18 @@ export const he = {
     flaggedIntro: "הסורק האוטומטי שלנו סימן בעיות, ביניהן:",
     nothingFlagged:
       "הסורק האוטומטי שלנו לא סימן קבצים מדאיגים, אבל כדאי לבדוק שוב.",
+    unscannedTitle: "לא ניתן היה לסרוק את קובצי המודל",
+    unscannedBody: "{model} כולל משקלי pickle, שיכולים להריץ קוד בזמן הטעינה, ואין עבורם סריקת תוכנות זדוניות זמינה, ולכן לא ניתן לטעון אותו. {note}",
+    unscannedIntro: "קבצים שלא ניתן היה לסרוק:",
+    switchSourceNote: "כדי לטעון אותו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    reconnectNote: "התחברו ל-Hugging Face כדי שאפשר יהיה לקרוא את הסריקה, ונסו שוב.",
+    managedTitle: "קוד מותאם אישית כבוי בחשבון זה",
+    managedNote: "הוא כבוי בחשבונות מנוהלים. בקשו מבעל ההתקנה להפעיל אותו.",
+    notFoundTitle: "לא נמצא ב-{source}",
+    notFoundBody: "{model} לא נמצא ב-{source}, ולכן לא ניתן היה להריץ את בדיקות האבטחה. בדקו את השם, או הגדירו אסימון עם גישה אם המאגר פרטי.",
+    notOnModelScopeBody: "{model} אינו זמין ב-ModelScope, ולכן לא ניתן היה להריץ את בדיקות האבטחה ולא ניתן לטעון אותו משם. כדי להשתמש בו, החליפו את מקור המודלים ל-Hugging Face בהגדרות.",
+    checksFailedTitle: "לא ניתן היה להריץ את בדיקות האבטחה",
+    checksFailedBody: "לא ניתן היה לקרוא את {model} מ-{source}, ולכן לא ניתן היה להשלים את בדיקות האבטחה ולא ניתן לטעון אותו. בדקו את החיבור ואת האסימון ונסו שוב. {note}",
     enableAndContinue: "הפעל והמשך",
   },
   tour: {
@@ -5482,7 +5605,7 @@ export const he = {
     skippedVersion: "דילגת על {component} {version} בינתיים",
     skippedUpdate: "דילגת על העדכון של {component} בינתיים",
     skippedUpdates: "דילגת על העדכונים של {components} בינתיים",
-    vulkanFaster: "Vulkan מהיר ביותר מ-10% מ-ROCM. אין צורך בהפעלה מחדש",
+    vulkanFaster: "מהיר ביותר מ-10%",
     noRestart: "אין צורך בהפעלה מחדש",
     downloadSize: "הורדה של {size}",
     backendChange: "סביבת חישוב {change}",
@@ -5491,8 +5614,8 @@ export const he = {
     installingPhase: "מתקין את {component} ({current} מתוך {total})...",
     installingCount: "מתקין {count} עדכונים...",
     bundleTitle: "{count} עדכוני סביבת זמן ריצה",
-    newBackend: "סביבת חישוב חדשה עבור {component}",
-    newUpdate: "עדכון חדש עבור {component}",
+    newBackend: "סביבת חישוב חדשה לזמן הריצה",
+    newUpdate: "עדכון חדש לסביבת זמן הריצה",
     hideUpdate: "הסתר את העדכון של {component} עד לפתיחה מחדש של Unsloth",
     hideUpdates: "הסתר את העדכונים של {components} עד לפתיחה מחדש של Unsloth",
     whatsNew: "מה חדש",
@@ -5500,5 +5623,61 @@ export const he = {
     later: "מאוחר יותר",
     update: "עדכן",
     undo: "ביטול פעולה",
+  },
+  generationStats: {
+    working: "מעבד...",
+    processingPrompt: "עיבוד הפרומפט {percent}%",
+    compactingContext: "דוחס את ההקשר...",
+    timeLeft: "נותרו {eta}",
+    tokensOne: "{count} טוקן",
+    tokens: "{count} טוקנים",
+    tokensOf: "{done} / {total} טוקנים",
+    draftAccepted: "טיוטה: {accepted}/{drafted} התקבלו ({percent}%)",
+    timing: {
+      trigger: "תזמון ההודעה",
+      firstToken: "טוקן ראשון",
+      speedInStep: "מהירות (בתוך שלב)",
+      effective: "אפקטיבית",
+      output: "פלט",
+      denoising: "הסרת רעש",
+      stepsOne: "{count} שלב",
+      steps: "{count} שלבים",
+      blocksOne: "{count} בלוק",
+      blocks: "{count} בלוקים",
+      canvas: "קנבס",
+      generation: "יצירה",
+      answerTokens: "טוקני תשובה",
+      prompt: "פרומפט",
+      total: "סה״כ",
+      chunks: "מקטעים",
+      promptEval: "הערכת פרומפט",
+      promptSpeed: "מהירות פרומפט",
+      speed: "מהירות",
+      tokens: "טוקנים",
+      draftAccepted: "טיוטה שהתקבלה",
+      denoisingSteps: "שלבי הסרת רעש",
+      blocksLabel: "בלוקים",
+      cacheHits: "פגיעות במטמון",
+      cacheWrites: "כתיבות למטמון",
+      stopReason: "סיבת עצירה",
+      stoppedByYou: "נעצר על ידך",
+      endOfTurn: "סוף התור",
+      lengthLimit: "מגבלת אורך",
+      toolCall: "קריאה לכלי",
+      contentFilter: "מסנן תוכן",
+    },
+    placement: {
+      title: "מיקום המשקולות",
+      allOnCpu: "כל {total} השכבות על ה-CPU",
+      split: "{gpu} מתוך {total} שכבות על ה-GPU, {cpu} על ה-CPU",
+      allOnGpu: "כל {total} השכבות על ה-GPU",
+      expertCache: "כל {total} השכבות על ה-GPU, כל המומחים ב-RAM (מטמון מומחים של {amount} על ה-GPU)",
+      expertSpillOne: "כל {total} השכבות על ה-GPU, משקולות המומחים של {count} שכבה ב-RAM",
+      expertSpill: "כל {total} השכבות על ה-GPU, משקולות המומחים של {count} שכבות ב-RAM",
+      inUnifiedMemory: "{amount} בזיכרון מאוחד",
+      inSharedMemory: "{amount} בזיכרון משותף",
+      inVram: "{amount} ב-VRAM",
+      inRam: "{amount} ב-RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

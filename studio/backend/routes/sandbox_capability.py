@@ -41,11 +41,16 @@ def _setup_fields_for(request: Request, isolated: bool) -> dict:
 
 def _refresh(force: bool) -> None:
     from core.inference import os_sandbox
+
     if os_sandbox._background_probes_disabled():
         return  # UNSLOTH_DISABLE_SANDBOX_WARMUP=1: answers come only from real launches
+    probe_force = force
     for tool in os_sandbox.ISOLATED_TOOLS:
         if force or not os_sandbox.has_tool_isolation_answer(tool):
-            os_sandbox.refresh_tool_isolation(tool, force = force)
+            available = os_sandbox.refresh_tool_isolation(tool, force = probe_force)
+            if available and sys.platform in ("linux", "darwin"):
+                # POSIX tools share a probe. An undecided check can leave an older cached pass.
+                probe_force = False
 
 
 def _capability() -> dict:

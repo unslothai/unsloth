@@ -182,6 +182,7 @@ class TestClearGpuCache:
         with (
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU),
             patch("utils.hardware.hardware.is_apple_silicon", return_value = True),
+            patch("torch.backends.mps.is_available", return_value = True),
             patch("torch.mps.empty_cache") as mock_empty,
         ):
             clear_gpu_cache()

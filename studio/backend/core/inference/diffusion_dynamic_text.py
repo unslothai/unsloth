@@ -130,6 +130,8 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
     "Krea2Transformer2DModel": FIXED_LENGTH,  # padded to max_sequence_length 512
+    "ChromaTransformer2DModel": FIXED_LENGTH,  # T5 padded to max_sequence_length 512
+    "CosmosTransformer3DModel": FIXED_LENGTH,  # Anima: the text conditioner pads to min_sequence_length 512
     "Lumina2Transformer2DModel": FIXED_LENGTH,  # Gemma padded to max_sequence_length 256
     "HunyuanImageTransformer2DModel": FIXED_LENGTH,  # padded to the tokenizer max length
     "HiDreamImageTransformer2DModel": FIXED_LENGTH,  # T5 / Llama padded to max_sequence_length 128

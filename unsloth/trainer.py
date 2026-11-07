@@ -212,6 +212,23 @@ def _should_pack(config) -> bool:
     return not getattr(config, "_unsloth_disable_auto_packing", False)
 
 
+def _pipeline_parallel_env_requested() -> bool:
+    try:
+        return int(os.environ.get("UNSLOTH_PP_SIZE", "1").strip() or 1) > 1
+    except ValueError:
+        return False
+
+
+def _cp_x_tp_env_requested() -> bool:
+    """UNSLOTH_CP_SIZE and UNSLOTH_TP_SIZE above 1 (UNSLOTH_PARALLEL writes both): packed rows are refused there."""
+    try:
+        cp = int(os.environ.get("UNSLOTH_CP_SIZE", "1").strip() or 1)
+        tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1").strip() or 1)
+    except ValueError:
+        return False
+    return cp > 1 and tp > 1
+
+
 def _should_auto_padding_free(config) -> bool:
     if config is None or _AUTO_PADDING_FREE_ENV_DISABLED or getattr(config, "packing", False):
         return False
@@ -971,7 +988,7 @@ class UnslothTrainingArguments(TrainingArguments):
         # Not fields of the pristine SFTConfig captured at import.
         context_parallel = {
             "context_parallel_size": kwargs.pop("context_parallel_size", 1),
-            "context_parallel_backend": kwargs.pop("context_parallel_backend", "ring"),
+            "context_parallel_backend": kwargs.pop("context_parallel_backend", "auto"),
             "context_parallel_rotate_method": kwargs.pop(
                 "context_parallel_rotate_method", "allgather"
             ),
@@ -1907,28 +1924,45 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 # several classes, so a "yes" from the resolved one is not proof about the
                 # instance. A correct "no" has already turned both flags off, which is the
                 # condition the post-init check skips on, so leaving it armed is free.
-        is_ring_context_parallel = (getattr(config_arg, "context_parallel_size", 1) or 1) > 1 and (
-            getattr(config_arg, "context_parallel_backend", None) or "ring"
-        ) == "ring"
-        # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an automatic
-        # padding-free choice would fail the first CP step.
+        cp_size = getattr(config_arg, "context_parallel_size", 1) or 1
+        is_ring_context_parallel = False
         ulysses_packing_blocker = None
-        if (
-            (getattr(config_arg, "context_parallel_size", 1) or 1) > 1
-            and getattr(config_arg, "context_parallel_backend", None) == "ulysses"
-            and not _packing_gate_deferred
-        ):
-            from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
-            ulysses_packing_blocker = _ulysses_packing_blocker(model)
+        if isinstance(cp_size, int) and cp_size > 1:
+            from .context_parallel import resolve_cp_backend
+
+            # 'auto' (the default) is Ulysses unless the heads cannot be split, so packing stays on.
+            cp_backend = resolve_cp_backend(
+                getattr(config_arg, "context_parallel_backend", None),
+                cp_size,
+                model if not isinstance(model, str) else None,
+            )
+            # Ring cannot keep packed rows apart: packing goes off below, as before 'auto' existed.
+            is_ring_context_parallel = cp_backend == "ring"
+            # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
+            # automatic padding-free choice would fail the first CP step.
+            if cp_backend == "ulysses" and not _packing_gate_deferred:
+                from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
+                ulysses_packing_blocker = _ulysses_packing_blocker(model)
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(
             "UNSLOTH_RETURN_LOGITS", "0"
         ) == "1" or _wants_eval_logits(original_init, args, kwargs)
+        # UNSLOTH_PP_SIZE: packed rows are not carried between pipeline stages yet (models/pp_env.py).
+        is_pipeline_parallel_env = _pipeline_parallel_env_requested()
+        # cp x tp refuses packed rows: never turn them on automatically there. An explicit packing /
+        # padding_free = True stays, so the capability check refuses it with the alternative.
+        auto_off_cp_tp = (
+            _cp_x_tp_env_requested()
+            and not getattr(config_arg, "packing", False)
+            and getattr(config_arg, "padding_free", None) is not True
+        )
         blocked = (
             (data_collator is not None)
             or is_ring_context_parallel
             or ulysses_packing_blocker is not None
+            or is_pipeline_parallel_env
+            or auto_off_cp_tp
             or (is_processor and not processor_text_only)
             or is_auto_processor_vlm
             or is_vision_dataset
@@ -1962,6 +1996,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if (
             is_ring_context_parallel
             or ulysses_packing_blocker is not None
+            or is_pipeline_parallel_env
             or boundary_blocker is not None
         ) and getattr(config_arg, "eval_packing", None):
             setattr(config_arg, "eval_packing", False)
@@ -1981,11 +2016,18 @@ def _patch_sft_trainer_auto_packing(trl_module):
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
             elif is_ring_context_parallel:
-                reason = "ring context parallelism"
+                reason = (
+                    "ring context parallelism ('auto' chose ring: the attention heads cannot be split over "
+                    f"{cp_size} ranks)"
+                    if getattr(config_arg, "_unsloth_cp_backend_auto", False)
+                    else "ring context parallelism; context_parallel_backend = 'ulysses' keeps it"
+                )
             elif ulysses_packing_blocker is not None:
                 reason = (
                     f"Ulysses context parallelism: {ulysses_packing_blocker} refuses packed batches"
                 )
+            elif is_pipeline_parallel_env:
+                reason = "pipeline parallel (UNSLOTH_PP_SIZE)"
             elif boundary_blocker is not None:
                 reason = f"{boundary_blocker} mixes tokens across packed documents"
             elif forward_rejects_packing:

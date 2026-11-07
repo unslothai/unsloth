@@ -45,6 +45,7 @@ from core.inference.diffusion_device import (
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -363,10 +364,86 @@ def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[in
     return len(cores) or None
 
 
-def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
-    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
-    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
+# 0 keeps one sd.cpp thread per physical core on an SMT host (the default runs one per logical CPU there).
+SD_CPP_CPU_SMT_ENV = "UNSLOTH_DIFFUSION_CPU_SMT"
+# Many-core servers keep one thread per core: ggml's per-op barrier across many threads outweighs SMT gains.
+SD_CPP_CPU_SMT_MAX_CORES = 16
+
+
+def _linux_hybrid_cpu(sysfs: str = "/sys/devices") -> bool:
+    """Intel hybrid (P + E) hosts register a ``cpu_atom`` PMU."""
+    try:
+        with open(f"{sysfs}/cpu_atom/cpus", encoding = "utf-8") as f:
+            return bool(f.read().strip())
+    except OSError:
+        return False
+
+
+def _smt_threads_enabled() -> bool:
+    return os.environ.get(SD_CPP_CPU_SMT_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# GetLogicalProcessorInformationEx: RelationProcessorCore records (one per physical core).
+_RELATION_PROCESSOR_CORE = 0
+
+
+def _parse_windows_cores(buf: bytes) -> Optional[tuple[int, bool]]:
+    """(cores, hybrid); byte 9 of each record is EfficiencyClass, more than one class = P + E cores."""
+    import struct
+
+    offset, cores, classes = 0, 0, set()
+    while offset + 10 <= len(buf):
+        relationship, size = struct.unpack_from("<II", buf, offset)
+        if size <= 0:
+            return None
+        if relationship == _RELATION_PROCESSOR_CORE:
+            cores += 1
+            classes.add(buf[offset + 9])
+        offset += size
+    return (cores, len(classes) > 1) if cores else None
+
+
+def _windows_cores() -> Optional[tuple[int, bool]]:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        size = wintypes.DWORD(0)
+        kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, None, ctypes.byref(size)
+        )
+        if not size.value:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, buf, ctypes.byref(size)
+        ):
+            return None
+        return _parse_windows_cores(buf.raw[: size.value])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _smt_threads(physical: int, allowed: Optional[int], hybrid: bool, smt: bool) -> int:
+    if (
+        smt
+        and allowed
+        and physical < allowed
+        and physical <= SD_CPP_CPU_SMT_MAX_CORES
+        and _smt_threads_enabled()
+        and not hybrid
+    ):
+        return allowed
+    return physical
+
+
+def _default_threads(smt: bool = True) -> int:
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else logical CPUs on a small non-hybrid SMT host, else physical
+    cores, else ``os.cpu_count() // 2``; capped by the cgroup quota. SMT measured 1.06-1.26x faster, pixel-identical,
+    on 2-4 core VMs; hybrid hosts keep the core count (ggml's even split would wait on E cores)."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -378,8 +455,12 @@ def _default_threads() -> int:
         return performance_cores
     linux = sys.platform.startswith("linux")
     physical = _linux_physical_cores() if linux else None
+    windows = None if linux else _windows_cores()
     if physical:
-        threads = physical
+        threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
+    elif windows is not None and smt:
+        cores, hybrid = windows
+        threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
         cpu = os.cpu_count()
         threads = cpu // 2 if cpu else 8
@@ -426,7 +507,7 @@ def _explicit_threads() -> Optional[int]:
         return performance_cores
     if sys.platform.startswith("linux"):
         cpu = os.cpu_count()
-        threads = _default_threads()
+        threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
         if threads == sd_default:
             return None
@@ -1251,7 +1332,8 @@ def _note_failed_upgrade(accelerator: str) -> None:
 # fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
 # with no output (caught by exit status). One-way and one-deep; CUDA needs no rung. Vulkan falls
 # to CPU: a CPU-torch host is routed to it, and one that cannot start it must not lose sd.cpp.
-_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
+# "cuda" -> "cpu" is the CPU-torch route's rung only (_cuda_cpu_rung_applies): a CUDA torch has diffusers.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu", "cuda": "cpu"}
 
 
 def _vulkan_cpu_rung_applies() -> bool:
@@ -1262,6 +1344,15 @@ def _vulkan_cpu_rung_applies() -> bool:
         return get_device() == DeviceType.CPU
     except Exception:  # noqa: BLE001
         return True
+
+
+def _cuda_cpu_rung_applies() -> bool:
+    """Only a CPU torch (routed to CUDA beside llama.cpp's) may step a CUDA build down to CPU."""
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+        return get_device() == DeviceType.CPU
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # The sonames the upstream ROCm archive imports and does not ship.
@@ -1411,6 +1502,9 @@ def sd_cpp_listed_device(
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """A CPU-only probe is decisive only if the ROCm runtime is proven absent; else two strikes apply."""
     klass = _accelerator_class_of(accelerator)
+    if klass == "cuda":
+        # llama.cpp's CUDA build already proved the driver, so the sd.cpp build is at fault.
+        return fallback_accelerator_for(klass) == "cpu"
     if klass != "rocm" or not fallback_accelerator_for(klass):
         return False
     return rocm_runtime_resolvable() is False
@@ -1428,6 +1522,8 @@ def fallback_accelerator_for(accelerator: Optional[str]) -> Optional[str]:
         want = _installer_module().accelerator_class(accelerator)
     except Exception:  # noqa: BLE001
         want = (accelerator or "").strip().lower()
+    if want == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     nxt = _ACCELERATOR_FALLBACK.get(want)
     return nxt if nxt and nxt != want else None
 
@@ -1764,6 +1860,8 @@ def note_accelerator_runtime_failure(
     klass = _accelerator_class_of(accelerator)
     if not klass or klass not in _ACCELERATOR_FALLBACK:
         return
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return
     fingerprint = dict(fingerprint) if isinstance(fingerprint, dict) else _accelerator_fingerprint()
     records = _stored_accelerator_runtime_failures()
     records.update({k: v for k, v in _accelerator_runtime_failures.items() if k not in records})
@@ -1884,6 +1982,8 @@ def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
     record = _record_under_current_rule(klass, record)
     if klass == "vulkan" and not _vulkan_cpu_rung_applies():
         return _decisive_evidence_only(record)
+    if klass == "cuda" and not _cuda_cpu_rung_applies():
+        return None
     return record
 
 
@@ -2927,6 +3027,18 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_extra_sample_args(state: Any) -> Optional[str]:
+    """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
+    if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
+        return None
+    return sd_cpp_args_mod.moss_uncond_skip_sample_args(
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+        getattr(state, "gguf_filename", None),
+    )
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
     """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
@@ -3645,10 +3757,12 @@ class SdCppDiffusionBackend:
                 if run_accelerator is None and binary:
                     run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
-                # A CPU torch running the Vulkan build renders on a card torch never measured, so
+                # A CPU torch running a GPU build renders on a card torch never measured, so
                 # auto offloads.
-                vulkan = torch_device == "cpu" and off_torch is None and klass == "vulkan"
-                placed = "vulkan" if vulkan else torch_device
+                unmeasured = (
+                    torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
+                )
+                placed = klass if unmeasured else torch_device
                 # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
                 # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
                 if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
@@ -3657,7 +3771,7 @@ class SdCppDiffusionBackend:
                 if placed == "cpu":
                     return placed, ()
                 return placed, tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
                 )
 
             device, offload = _placement(*_running())
@@ -4841,6 +4955,7 @@ class SdCppDiffusionBackend:
                     ],
                     qwen_image_layers = layers,
                     hires = hires_payload,
+                    extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -5150,6 +5265,9 @@ class SdCppDiffusionBackend:
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
+        extra_sample_args = _request_extra_sample_args(state)
+        if extra_sample_args:
+            extra_args += ["--extra-sample-args", extra_sample_args]
 
         images = []
         seeds: list[int] = []
