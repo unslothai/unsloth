@@ -60,6 +60,17 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
+// Saves go one at a time, across remounts too: the server may finish two in-flight writes in either order.
+let saveQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueSave(
+  run: () => Promise<McpAccessSettings>,
+): Promise<McpAccessSettings> {
+  const save = saveQueue.then(run);
+  saveQueue = save.catch(() => undefined);
+  return save;
+}
+
 export function McpAccessSection({
   apiKey = null,
 }: {
@@ -75,8 +86,6 @@ export function McpAccessSection({
   const [toolsOpen, setToolsOpen] = useState(false);
   // Newest save (switch or tools); each reply is a full snapshot, so an older one must not land last.
   const saveRequest = useRef(0);
-  // Saves go one at a time: the server may finish two in-flight writes in either order.
-  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [toolsError, setToolsError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -102,7 +111,7 @@ export function McpAccessSection({
 
   useEffect(() => {
     let live = true;
-    loadMcpAccess().then(
+    enqueueSave(loadMcpAccess).then(
       (next) => live && setSettings(next),
       (err) =>
         live &&
@@ -114,12 +123,6 @@ export function McpAccessSection({
       live = false;
     };
   }, []);
-
-  const enqueueSave = (run: () => Promise<McpAccessSettings>) => {
-    const save = saveQueue.current.then(run);
-    saveQueue.current = save.catch(() => undefined);
-    return save;
-  };
 
   const apply = async (enabled: boolean) => {
     const request = ++saveRequest.current;
