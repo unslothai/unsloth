@@ -7566,6 +7566,120 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
+def test_hermes_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text(
+        "model:\n  default: cloud-model\n"
+        "mcp_servers:\n"
+        "  github:\n    command: npx\n    args: [-y, '@modelcontextprotocol/server-github']\n"
+        "  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert config["model"]["default"] == MODEL["id"]
+
+    config["mcp_servers"]["local"] = {"command": "local-server"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+    user_config.write_text("mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert user_config.read_text() == "mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+
+
+def test_hermes_mcp_servers_follow_the_origin_from_a_recipe_shell(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    user_config.write_text("mcp_servers:\n  github:\n    command: g\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"github": {"command": "g"}}
+
+
+def test_hermes_fresh_session_from_a_recipe_shell_keeps_saved_home_servers(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    config["mcp_servers"]["local"] = {"command": "l"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh = tmp_path / "session" / "config.yaml"
+    fresh.parent.mkdir()
+    start.write_hermes_config(BASE, MODEL, fresh, keep_mcp_servers = True)
+    assert yaml.safe_load(fresh.read_text())["mcp_servers"] == {
+        "local": {"command": "l"},
+        "docs": {"command": "d"},
+    }
+
+
+def test_hermes_relative_origin_survives_a_directory_change(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    (tmp_path / "user-hermes").mkdir()
+    (tmp_path / "user-hermes" / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", "user-hermes")
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"docs": {"command": "d"}}
+
+
+def test_hermes_mcp_servers_follow_the_active_profile(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    root = tmp_path / "user-hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents = True)
+    (root / "config.yaml").write_text("mcp_servers:\n  personal:\n    command: p\n")
+    (root / "active_profile").write_text("work\n")
+    (profile / "config.yaml").write_text("mcp_servers:\n  work:\n    command: w\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((tmp_path / "agents" / "hermes" / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"work": {"command": "w"}}
+
+
 @pytest.mark.parametrize(("found", "warned"), [("v20.19.5", True), ("v22.19.0", False)])
 def test_pi_warns_when_node_is_older_than_it_needs(monkeypatch, capsys, found, warned):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/usr/bin/node")
@@ -12099,3 +12213,62 @@ def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monke
 
     assert progress.downloaded_bytes == 2 * GiB
     assert server.count("my-lora") == 0
+
+
+def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
+    fake_studio, tmp_path, monkeypatch
+):
+    pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "mcp_servers:\n  remote:\n    url: https://mcp.example/mcp\n"
+        "    headers:\n      Authorization: Bearer ${MCP_REMOTE_API_KEY}\n"
+        "  quoted:\n    url: https://q.example/mcp\n    headers: {X-Key: '${env:Q_KEY}'}\n"
+    )
+    quoted = 'export Q_KEY="a # b" # rotated'
+    (source_home / ".env").write_text(
+        f"OPENROUTER_API_KEY=not-for-the-session\nMCP_REMOTE_API_KEY=sekret\n{quoted}\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "sekret" not in result.output
+    assert (home / ".env").read_text() == f"MCP_REMOTE_API_KEY=sekret\n{quoted}\n"
+    if os.name != "nt":
+        assert (home / ".env").stat().st_mode & 0o777 == 0o600
+
+    # A key added in the saved home stays; a key the user dropped goes.
+    with (home / ".env").open("a") as handle:
+        handle.write("MCP_LOCAL_API_KEY=mine\n")
+    (source_home / ".env").write_text("MCP_REMOTE_API_KEY=rotated\n")
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    assert (home / ".env").read_text() == "MCP_LOCAL_API_KEY=mine\nMCP_REMOTE_API_KEY=rotated\n"
+
+    # A fresh session from that recipe shell also gets the saved home's own server secrets.
+    config = (home / "config.yaml").read_text() + (
+        "  local:\n    url: https://l.example/mcp\n"
+        "    headers: {Authorization: 'Bearer ${MCP_LOCAL_API_KEY}'}\n"
+    )
+    (home / "config.yaml").write_text(config)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh = tmp_path / "session"
+    fresh.mkdir()
+    start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
+    assert (fresh / ".env").read_text() == "MCP_REMOTE_API_KEY=rotated\nMCP_LOCAL_API_KEY=mine\n"
+
+    # A key removed at the origin is not revived from the saved home's copy.
+    (source_home / ".env").write_text("OTHER=1\n")
+    start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
+    assert (fresh / ".env").read_text() == "MCP_LOCAL_API_KEY=mine\n"
+
+    # A server kept in the saved home still gets a key it shares with a dropped origin server.
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    (source_home / ".env").write_text("MCP_REMOTE_API_KEY=shared\n")
+    (source_home / "config.yaml").write_text("mcp_servers: {}\n")
+    (home / "config.yaml").write_text(
+        config.replace("${MCP_LOCAL_API_KEY}", "${MCP_REMOTE_API_KEY}")
+    )
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()

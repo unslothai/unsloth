@@ -63,6 +63,7 @@ _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 # Not "unsloth": Hermes strips a `<provider>/` prefix, so unsloth/<repo> stops matching model.default.
 _HERMES_PROVIDER = "unsloth-studio"
 _HERMES_LEGACY_PROVIDER = "unsloth"
+_HERMES_MCP_MANIFEST = "unsloth_mcp_servers.json"
 # Skip the installer's interactive setup wizard: `unsloth start hermes` runs this hint unattended and then writes its own session-scoped Hermes config, so the wizard's global API-key/model prompts would block the launch and point the user at a different provider than the one Unsloth just configured. Both installers expose a skip flag: `-SkipSetup` (PowerShell) and `--skip-setup` (POSIX, passed to the piped script via `bash -s --`). Pin both the fetched script and the repository checkout it performs to the same full commit so a later change to either upstream branch cannot silently replace code that Unsloth executes with the user's privileges.
 _HERMES_INSTALL_COMMIT = "f1af945f6c576eccb126fa955edc9be258b33020"
 _HERMES_INSTALL_BASE = (
@@ -5996,11 +5997,122 @@ def _set_hermes_provider(
     }
 
 
+def _hermes_mcp_manifest(home: Path) -> tuple:
+    try:
+        state = json.loads((home / _HERMES_MCP_MANIFEST).read_text(encoding = "utf-8"))
+        origin, servers = state.get("origin"), set(state["servers"])
+        owned = set(state.get("env", ()))
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None, set(), set()
+    return (origin if isinstance(origin, str) else None), servers, owned
+
+
+def _hermes_mcp_servers(home: Path) -> Optional[dict]:
+    import yaml
+
+    try:
+        config = yaml.safe_load((home / "config.yaml").read_text(encoding = "utf-8"))
+    except OSError:
+        return {}
+    except (yaml.YAMLError, ValueError):
+        return None
+    servers = config.get("mcp_servers") if isinstance(config, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
+    home_key = home.resolve(strict = False)
+    configured = os.environ.get("HERMES_HOME", "").strip()
+    built = None
+    if configured:
+        configured = str(Path(configured).expanduser().resolve(strict = False))
+        origin = _hermes_mcp_manifest(Path(configured))[0]
+        if origin is not None:
+            # A home Unsloth built (the recipe exports HERMES_HOME=home) points back at its origin.
+            built, configured = Path(configured), origin
+    source = _hermes_user_home(configured)
+    if source.resolve(strict = False) == home_key:
+        configured = ""
+        source = _hermes_user_home()
+        if source.resolve(strict = False) == home_key:
+            return
+    servers = _hermes_mcp_servers(source)
+    if servers is None:
+        return
+    if built is not None and built.resolve(strict = False) != home_key:
+        # Servers added in that saved home (hermes mcp add in the recipe shell); the origin wins a clash.
+        inherited = _hermes_mcp_manifest(built)[1]
+        local = _hermes_mcp_servers(built) or {}
+        servers = {
+            **{n: v for n, v in local.items() if n not in inherited and n not in servers},
+            **servers,
+        }
+    carried = _hermes_mcp_manifest(home)[1]
+    current = config.get("mcp_servers")
+    # Only replace what came from the user's config; servers added in this home stay.
+    kept = {
+        name: spec
+        for name, spec in (current.items() if isinstance(current, dict) else ())
+        if name not in carried and name not in servers
+    }
+    if kept or servers:
+        config["mcp_servers"] = {**kept, **servers}
+    else:
+        config.pop("mcp_servers", None)
+    sources = ((source, set()), (built, _hermes_mcp_manifest(built)[2] if built else set()))
+    owned = _carry_hermes_mcp_env(home, config.get("mcp_servers", {}), sources)
+    (home / _HERMES_MCP_MANIFEST).write_text(
+        json.dumps({"origin": configured, "servers": sorted(servers), "env": owned}) + "\n",
+        encoding = "utf-8",
+    )
+
+
+def _hermes_env_key(line: str) -> str:
+    return line.strip().removeprefix("export ").partition("=")[0].strip()
+
+
+def _carry_hermes_mcp_env(home: Path, servers: dict, sources: tuple) -> list:
+    # Hermes fills ${VAR} in mcp_servers from HERMES_HOME/.env (hermes mcp add --auth bearer keeps tokens there): copy only those lines, verbatim, so Hermes parses them itself.
+    path = home / ".env"
+    try:
+        current = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, ValueError):
+        current = []
+    owned = _hermes_mcp_manifest(home)[2]
+    found = {_hermes_env_key(line) for line in current} - owned
+    wanted = set()
+    for ref in re.findall(r"\$\{([^}]+)\}", json.dumps(servers)):
+        ref = ref.strip()
+        wanted.add(ref[4:].strip() if ref.startswith("env:") else ref)
+    carried, local = [], set(found)
+    # A saved home's own copies are skipped so a key removed at the origin stays removed.
+    for source, skip in sources:
+        if source is None or source.resolve(strict = False) == home.resolve(strict = False):
+            continue
+        try:
+            lines = (source / ".env").read_text(encoding = "utf-8").splitlines()
+        except (OSError, ValueError):
+            continue
+        keys = {_hermes_env_key(line) for line in lines} & (wanted - found - skip)
+        carried += [line for line in lines if _hermes_env_key(line) in keys]
+        found |= keys
+    lines = [line for line in current if _hermes_env_key(line) in local] + carried
+    if lines != current:
+        if lines:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+        else:
+            path.unlink(missing_ok = True)
+    return sorted(found - local)
+
+
 def write_hermes_config(
     base: str,
     model: dict,
     path: Path,
     request_body: Optional[dict] = None,
+    keep_mcp_servers: bool = False,
 ) -> None:
     import yaml
 
@@ -6026,6 +6138,8 @@ def write_hermes_config(
             )
             return
     _set_hermes_provider(config, base, model, request_body)
+    if keep_mcp_servers:
+        _with_user_hermes_mcp_servers(config, path.parent)
     text = yaml.safe_dump(config, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -7109,20 +7223,29 @@ def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
     return _AppTarget("openclaw", "OpenClaw app", path, updates)
 
 
-def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
-    # Hermes Desktop follows the sticky active profile.
-    home = Path.home() / ".hermes"
-    if sys.platform == "win32":
+def _hermes_user_home(configured: str = "") -> Path:
+    if configured:
+        home = Path(configured).expanduser()
+        if home.parent.name == "profiles":
+            return home
+    elif sys.platform == "win32":
         # Hermes' Windows default home (hermes_constants._get_platform_default_hermes_home).
         local = os.environ.get("LOCALAPPDATA", "").strip()
         home = (Path(local) if local else Path.home() / "AppData" / "Local") / "hermes"
+    else:
+        home = Path.home() / ".hermes"
     try:
         profile = (home / "active_profile").read_text(encoding = "utf-8").strip()
     except OSError:
         profile = ""
-    path = home / "config.yaml"
     if profile != "default" and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", profile):
-        path = home / "profiles" / profile / "config.yaml"
+        return home / "profiles" / profile
+    return home
+
+
+def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
+    # Hermes Desktop follows the sticky active profile.
+    path = _hermes_user_home() / "config.yaml"
 
     def updates(text, path, base, key, entry):
         settings: dict = {}
@@ -8187,7 +8310,13 @@ def hermes(
         return
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state) like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
-        write_hermes_config(base, entry, home / "config.yaml", server_options.request_body())
+        write_hermes_config(
+            base,
+            entry,
+            home / "config.yaml",
+            server_options.request_body(),
+            keep_mcp_servers = True,
+        )
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
