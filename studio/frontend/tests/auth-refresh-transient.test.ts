@@ -406,8 +406,7 @@ test("the route guard still sends a rejected refresh to /login", async (t) => {
   assert.equal(f.tokens.refresh, null);
 });
 
-// Web Locks only exist in secure contexts, so a plain-HTTP origin such as http://<lan-ip>:8888
-// lets two tabs send the same single-use refresh token: one rotates, the other gets a 401.
+// Web Locks need a secure context, so plain-HTTP tabs can race one single-use refresh token.
 test("without Web Locks a peer tab's rotation does not sign every tab out", async (t) => {
   const f = fixture(t, [
     () => new Promise<Response>((resolve) =>

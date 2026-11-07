@@ -348,8 +348,7 @@ async function peerRotated(
 async function runRefresh(
   refreshToken: string,
   preserveSessionMark = false,
-  // Without Web Locks (insecure origins) another tab may spend the same single-use token first;
-  // only a rotation inside this session mark counts as that peer's. null: anchor at the 401.
+  // No Web Locks: a peer tab may spend this token first. null: mark read at the 401.
   peerSessionMark?: string | null,
 ): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
@@ -447,7 +446,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
           clearTimeout(timer);
         }
       })()
-    : // A mark minted here can lose a peer tab's concurrent write, so it is not proof of a switch.
+    : // A mark minted here may lose a peer's write, so it is not proof of a switch.
       runRefresh(refreshToken, false, priorMark === null ? null : sessionMark);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
