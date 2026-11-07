@@ -38,6 +38,7 @@ def test_dense_quant_reprobe_is_throttled(monkeypatch):
     import main
 
     calls = []
+    monkeypatch.setitem(sys.modules, "torch", sys.modules.get("torch") or types.ModuleType("torch"))
     monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
     monkeypatch.setattr(main, "_refresh_dense_quant_capability", lambda: calls.append(1) or True)
     monkeypatch.setattr(main, "_dense_quant_capability", True)

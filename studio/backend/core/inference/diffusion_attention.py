@@ -973,6 +973,8 @@ def _sync_rocm_flash_baseline() -> None:
         ROCM_FLASH_ADMISSIONS.clear()
         _ROCM_FLASH_BUCKETS.clear()
         _ROCM_FLASH_STORED_MISSES.clear()
+        _ROCM_FLASH_SEGMENTS_MEMO.clear()
+        _ROCM_FLASH_TRACED_KEYS.clear()
         _ROCM_FLASH_BASELINE[0] = current
 
 
@@ -1113,9 +1115,28 @@ def _rocm_flash_traced_reason(
         dtype = getattr(torch, dtype_name.rpartition(".")[2], None)
         if not isinstance(dtype, torch.dtype):
             return "compiled or captured"
-        return _rocm_flash_bucket_reason(device, dtype, geometries, q_bucket, kv_bucket, b_bucket)
+        before = set(_ROCM_FLASH_BUCKETS)
+        try:
+            return _rocm_flash_bucket_reason(
+                device, dtype, geometries, q_bucket, kv_bucket, b_bucket
+            )
+        finally:
+            _ROCM_FLASH_TRACED_KEYS.update(set(_ROCM_FLASH_BUCKETS) - before)
     except Exception:  # noqa: BLE001
         return "compiled or captured"
+
+
+# Dynamo replays a frame after a graph break, so segments must answer as on the first pass (else
+# SpeculationLogDivergence, Wan2.2 on gfx1151). Key excludes verdicts added by traced calls.
+_ROCM_FLASH_TRACED_KEYS: set = set()
+_ROCM_FLASH_SEGMENTS_MEMO: dict = {}
+
+
+def _rocm_flash_segments_key(args: tuple) -> tuple:
+    known = frozenset(
+        (k, v) for k, v in _ROCM_FLASH_BUCKETS.items() if k not in _ROCM_FLASH_TRACED_KEYS
+    )
+    return (*args, id(_active_rocm_flash_gate()), known)
 
 
 # Traced query lengths are routed by segments up to this many tokens; longer ones guard on their own bucket.
@@ -1168,6 +1189,30 @@ def _rocm_flash_traced_segments(
     own (``known`` False). ``kv_bucket`` None means keys are as long as queries. Run in plain Python while Dynamo
     traces (constant-marked like ``_rocm_flash_traced_reason``); ``()`` when anything is odd (the caller falls back
     to the per-bucket route)."""
+    args = (raw_device, dtype_name, heads, head_dim, geometries, kv_bucket, b_bucket)
+    try:
+        key = _rocm_flash_segments_key(args)
+        if key in _ROCM_FLASH_SEGMENTS_MEMO:
+            return _ROCM_FLASH_SEGMENTS_MEMO[key]
+        segments = _rocm_flash_traced_segments_uncached(*args)
+        # Under both keys: reading stored verdicts while building the segments moves the key itself.
+        _ROCM_FLASH_SEGMENTS_MEMO[key] = _ROCM_FLASH_SEGMENTS_MEMO[
+            _rocm_flash_segments_key(args)
+        ] = segments
+        return segments
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def _rocm_flash_traced_segments_uncached(
+    raw_device: str,
+    dtype_name: str,
+    heads: int,
+    head_dim: int,
+    geometries: tuple,
+    kv_bucket: Optional[int],
+    b_bucket: int,
+) -> tuple:
     try:
         import torch
 

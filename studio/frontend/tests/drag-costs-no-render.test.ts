@@ -81,3 +81,26 @@ test("dragging the monitor does not republish its frame per frame", () => {
   assert.doesNotMatch(update, /setFrame/);
   assert.doesNotMatch(update, /getBoundingClientRect/);
 });
+
+test("a drag measures from the grab point, so an edge clamp never slides the grip off the pointer", () => {
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
+  const update = panel.slice(
+    panel.indexOf("function updateDrag"),
+    panel.indexOf("function finishDrag"),
+  );
+  assert.match(update, /session\.baseLeft \+ event\.clientX - session\.startX/);
+  assert.match(update, /session\.baseTop \+ event\.clientY - session\.startY/);
+  assert.doesNotMatch(update, /session\.startX = /);
+  assert.match(panel, /\? clamp\(session\.left, 0, maxLeft\)/);
+  assert.doesNotMatch(panel, /\? clamp\(monitorBox\.left - constraintsBox\.left/);
+});
+
+test("dragged panels opt out of reduce motion's transitions, so a drop never flashes at the start", () => {
+  for (const path of [
+    "components/floating-monitor.tsx",
+    "features/api-monitor/api-monitor-overlay.tsx",
+    "features/loaded-models/loaded-models-indicator.tsx",
+  ]) {
+    assert.match(readSrc(path), /"[^"]*\btransition-none\b[^"]*"/, path);
+  }
+});

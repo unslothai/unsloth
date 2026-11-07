@@ -94,6 +94,8 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 ### Run & Build with AI
 * Run and train LLMs, MLX, GGUF, diffusion, decision, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
+* **Browser use:** [Navigate sites](https://unsloth.ai/docs/basics/browser-use), fill out forms, read PDFs, and edit files beside your chat with a local model.
+* **Sandboxing:** Restrict which files your model can access when it runs commands in a [sandbox](https://unsloth.ai/docs/new/studio/sandboxing-in-unsloth).
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
 * **Remote & LAN:** Access your local models from any device on [LAN](https://unsloth.ai/docs/basics/lan) or remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
@@ -161,6 +163,8 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
+
+To choose Desktop's local HTTP port, set `UNSLOTH_DESKTOP_PORT=9000` in the environment that launches the app, then fully quit and reopen Desktop. Unset or empty keeps the default port 8888. If the selected port is busy, Desktop tries the next 20 ports. Choose a port between 1024 and 65515; Desktop rejects ranges containing a browser-restricted port. This setting applies to Desktop, including backend restarts after updates; it does not change the web UI's `unsloth studio -p` option or the separate LAN access port.
 
 ### Unsloth Studio (web UI)
 
@@ -407,7 +411,7 @@ Cap Unsloth's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8
 
 #### Vulkan, custom llama.cpp backends:
 
-You can force the backend during installation: 
+Pick the llama.cpp build GGUF chat runs on during installation. PyTorch is picked separately from your GPU, so this does not change it:
 ```bash
 export UNSLOTH_LLAMA_CPP_BACKEND=vulkan   # or cpu, cuda, rocm, auto
 curl -fsSL https://unsloth.ai/install.sh | sh
@@ -415,6 +419,15 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 ```powershell
 $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
+```
+
+To choose PyTorch yourself, pin its index:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_TORCH_INDEX_FAMILY=cpu sh   # or a family like rocm7.2
+```
+Or skip PyTorch for GGUF chat only:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
 ```
 
 #### audio.cpp audio engine:

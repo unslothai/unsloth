@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { refreshDeviceTypeAfterSystemInfo } from "@/config/env";
 import { useEffect, useMemo, useState } from "react";
 import { disposableTimeoutSignal } from "../features/hub/lib/abort-signals";
 import {
@@ -118,6 +119,7 @@ let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
 /** The in-flight fetch's GPU freshness bound; undefined is the server's 10 s cache. */
 let systemFetchGpuMaxAgeMs: number | undefined;
+let systemFetchProbesMedia = false;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
 let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
@@ -210,9 +212,14 @@ function scheduleVulkanRetry(): void {
   );
 }
 
-export function systemUrl(refreshMemory: boolean, gpuMaxAgeMs?: number): string {
+export function systemUrl(
+  refreshMemory: boolean,
+  gpuMaxAgeMs?: number,
+  probeMedia = false,
+): string {
   const params = new URLSearchParams();
   if (refreshMemory) params.set("refresh_memory", "true");
+  if (probeMedia) params.set("probe_media", "true");
   if (gpuMaxAgeMs !== undefined && Number.isFinite(gpuMaxAgeMs) && gpuMaxAgeMs > 0) {
     params.set("gpu_max_age", String(gpuMaxAgeMs / 1000));
   }
@@ -224,35 +231,44 @@ export async function fetchSystemInfo({
   force = false,
   refreshMemory = false,
   gpuMaxAgeMs,
+  probeMedia = false,
 }: {
   force?: boolean;
   refreshMemory?: boolean;
   /** GPU readings no older than this (the backend clamps to 1-10 s; default is its 10 s cache). */
   gpuMaxAgeMs?: number;
+  probeMedia?: boolean;
 } = {}): Promise<SystemInfoResponse | null> {
   if (systemFetchPromise) {
     // A pending fetch with a looser GPU bound would hand a fast poll the 10 s cache.
     const looser =
       gpuMaxAgeMs !== undefined &&
       (systemFetchGpuMaxAgeMs === undefined || systemFetchGpuMaxAgeMs > gpuMaxAgeMs);
-    if (!refreshMemory && !looser) return systemFetchPromise;
-    // An in-flight snapshot may predate the resident model.
+    if (!refreshMemory && !looser && (!probeMedia || systemFetchProbesMedia)) {
+      return systemFetchPromise;
+    }
+    // A resident-memory refresh, fresher GPU read or media probe needs more than an ordinary snapshot.
     await systemFetchPromise;
-    return fetchSystemInfo({ force, refreshMemory, gpuMaxAgeMs });
+    return fetchSystemInfo({ force, refreshMemory, gpuMaxAgeMs, probeMedia });
   }
-  if (!force && !refreshMemory && cachedSystem) return cachedSystem;
+  if (!force && !refreshMemory && !probeMedia && cachedSystem) {
+    refreshDeviceTypeAfterSystemInfo({ detectHardware: true });
+    return cachedSystem;
+  }
 
   systemFetchGpuMaxAgeMs = gpuMaxAgeMs;
+  systemFetchProbesMedia = probeMedia;
   systemFetchPromise = (async () => {
     const timeout = disposableTimeoutSignal(SYSTEM_FETCH_TIMEOUT_MS);
     try {
-      const res = await authFetch(systemUrl(refreshMemory, gpuMaxAgeMs), {
+      const res = await authFetch(systemUrl(refreshMemory, gpuMaxAgeMs, probeMedia), {
         signal: timeout.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
       cachedSystem = { ...(data as SystemInfoResponse), status: "ready" };
+      refreshDeviceTypeAfterSystemInfo();
       systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {
@@ -260,6 +276,7 @@ export async function fetchSystemInfo({
     } finally {
       timeout.dispose();
       systemFetchPromise = null;
+      systemFetchProbesMedia = false;
       scheduleVulkanRetry();
     }
   })();
