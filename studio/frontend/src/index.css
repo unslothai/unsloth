@@ -1810,6 +1810,13 @@ html.force-reduced-motion [data-radix-popper-content-wrapper] {
 	transition-property: none !important;
 }
 
+/* theme-store.ts withoutTransitions: :root outranks both reduced-motion blocks. */
+:root.theme-switching *,
+:root.theme-switching *::before,
+:root.theme-switching *::after {
+	transition: none !important;
+}
+
 /* Same loader exceptions as the OS-level media block below: freezing
    spinners removes the only signal that work is in flight. */
 html.force-reduced-motion .animate-spin {
@@ -6888,6 +6895,10 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="pag
   box-shadow: var(--page-glass-edge, inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--element-outline, 14%), transparent), inset 0 1px 0 rgb(255 255 255 / .072));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+/* The frost makes a field its own layer, painted over an icon placed before it, so lift those icons above the glass. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(svg, span:has(> svg)).absolute:has(~ :is([data-slot="input"], .panel-field, .field-soft)) {
+  z-index: 1;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(button:not(:disabled, [data-slot="checkbox"], [data-slot="switch"]):is([class*="hover:bg-"]:hover, [class*="open:bg-"][data-state="open"])) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
