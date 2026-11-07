@@ -4516,6 +4516,30 @@ html[data-chat-font] .aui-root {
 			contain-intrinsic-size: none !important;
 		}
 	}
+
+	/* A width change re-wraps every message: the browser pane halves the column, 0.5-0.7 s per frame
+	 * on WebKit at 300 messages. Rows marked far away by distant-rows.ts skip layout instead. Every
+	 * row records its size here, so a skipped row keeps its last rendered height; the estimate is
+	 * only for a row never rendered. Gated like the blocks above, and off on WebKitGTK, where
+	 * message-window-controller.ts parks distant rows (message-row-containment.ts). Not released
+	 * by data-interface-zooming: that would lay out the whole thread on every typography change,
+	 * and a stale height after a zoom is corrected on release like one after a width change. */
+	.aui-thread-viewport [data-role][data-message-id] {
+		contain-intrinsic-size: auto 600px;
+	}
+
+	/* Rows are flex items: Chromium lets a size-contained item shrink below its remembered height. */
+	html[data-message-row-containment="on"] .aui-thread-viewport [data-role][data-message-id][data-row-distant] {
+		content-visibility: auto;
+		flex-shrink: 0;
+	}
+
+	@media print {
+		.aui-thread-viewport [data-role][data-message-id] {
+			content-visibility: visible !important;
+			contain-intrinsic-size: none !important;
+		}
+	}
 }
 
 /* !important because Sonner injects its base rules at runtime. */

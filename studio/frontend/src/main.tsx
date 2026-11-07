@@ -15,6 +15,10 @@ import {
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
 import {
+  applyMessageRowContainment,
+  watchMessageRowContainmentOverride,
+} from "./components/assistant-ui/message-row-containment";
+import {
   applyReasoningRowContainment,
   watchReasoningRowContainmentOverride,
 } from "./components/assistant-ui/reasoning-row-containment";
@@ -82,6 +86,8 @@ applyCodeBlockContainment();
 watchCodeBlockContainmentOverride();
 applyReasoningRowContainment();
 watchReasoningRowContainmentOverride();
+applyMessageRowContainment();
+watchMessageRowContainmentOverride();
 
 watchOverlayScrollbarGutter(window);
 watchInputModality(window);
