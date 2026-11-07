@@ -64,7 +64,6 @@ export function mcpToolLabelKey(name: string): TranslationKey | null {
     : null;
 }
 
-/** What a tool does, or null for a tool this build doesn't know yet. */
 export function mcpToolDescriptionKey(name: string): TranslationKey | null {
   return Object.hasOwn(MCP_TOOL_DESCRIPTION_KEYS, name)
     ? MCP_TOOL_DESCRIPTION_KEYS[name]
