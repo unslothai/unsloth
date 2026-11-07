@@ -2874,7 +2874,7 @@ export const en = {
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex and Claude Code require a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+        "Claude Code and Codex need a GGUF model served by llama-server, or an MLX model. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:

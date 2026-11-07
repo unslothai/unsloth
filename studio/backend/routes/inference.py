@@ -19108,7 +19108,11 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request):
+        from hub.utils.mlx_variants import is_precision_folder
+
+        if not is_direct_gguf_request and (
+            not request.gguf_variant or is_precision_folder(request.gguf_variant)
+        ):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             await asyncio.to_thread(reap_dead_worker, backend)
             if (
@@ -19130,9 +19134,11 @@ async def _load_model_impl(
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
                 == request.engine
-                # A resident precision folder (6-bit/) is not the root checkpoint a variantless request names.
-                and not (backend.models.get(backend.active_model_name) or {}).get(
-                    "precision_folder"
+                # Folder names are case-sensitive, so 6-BIT is not the resident 6-bit/.
+                and (request.gguf_variant or "").strip()
+                == str(
+                    (backend.models.get(backend.active_model_name) or {}).get("precision_folder")
+                    or ""
                 )
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
@@ -46451,11 +46457,15 @@ def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict
 
 
 def _structured_tool_history_for_local_template(messages: list[dict]) -> list[dict]:
-    """Local templates only: tool_calls arguments parsed to mappings; HTTP unchanged; unparseable as-is."""
+    """Local templates only: tool_calls arguments parsed to mappings; HTTP unchanged; unparseable as-is.
+    A call-only turn gets empty content: llama-server accepts it absent, but templates such as
+    Qwen3's read message.content and raise."""
     out = []
     for msg in messages:
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
+            if msg.get("content") is None:
+                msg = {**msg, "content": ""}
             new_calls = []
             for tc in tool_calls:
                 fn = tc.get("function") if isinstance(tc, dict) else None

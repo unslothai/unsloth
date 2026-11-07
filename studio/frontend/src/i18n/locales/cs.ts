@@ -3104,7 +3104,7 @@ export const cs = {
       configurationDocs: "dokumentace",
       configurationFlagsSuffix: "s popisem příznaků.",
       modelNote:
-        "Codex a Claude Code vyžadují model GGUF obsluhovaný přes llama-server. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
+        "Claude Code a Codex vyžadují model GGUF obsluhovaný přes llama-server nebo model MLX. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
       subagent: {
         title: "Použít místní model jako subagenta",
         description:
