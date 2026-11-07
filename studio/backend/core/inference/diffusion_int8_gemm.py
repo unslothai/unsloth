@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (sm80 / sm89 stock on
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (every sm8x stock on
 Triton >= 3.8, whose int8 dot spills there), other sm80+ behind a bit-exact probe and a latency check
 (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
 Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
@@ -55,8 +55,6 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# Stock on Triton >= 3.8: its sm8x int8 dot spills (triton-lang/triton#12486) and even spill-free tiles trail cuBLAS.
-_TRITON38_STOCK = ((8, 0), (8, 9))
 # When the arch tile does not fit this part's shared memory, and the unlisted archs' tile (64 KB of stages: fits 99 KB).
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 # Measured slower than cuBLAS: not probed unless forced.
@@ -145,6 +143,12 @@ def _triton_at_least(major: int, minor: int) -> bool:
     return bool(match) and (int(match.group(1)), int(match.group(2))) >= (major, minor)
 
 
+def _triton38_sm8x(cap: tuple) -> bool:
+    """Stock unless forced: Triton >= 3.8 spills every sm8x tile holding 128 int32 accumulators per thread (incl.
+    ``_FALLBACK_CONFIG``; triton-lang/triton#12486), and its spill-free tiles still trail cuBLAS on A100 / L4."""
+    return cap[0] == 8 and _triton_at_least(3, 8)
+
+
 def unlisted_mode() -> str:
     """'off', 'force' (no latency check) or 'auto' for the sm80+ archs without an ``_ARCH_CONFIG`` tile."""
     gemm = int8_gemm_mode()
@@ -169,7 +173,10 @@ def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> 
     mode = unlisted_mode() if mode is None else mode
     if mode == "off" or not unlisted_arch(capability):
         return False
-    return mode == "force" or (int(capability[0]), int(capability[1])) not in _UNLISTED_SKIP
+    if mode == "force":
+        return True
+    cap = (int(capability[0]), int(capability[1]))
+    return cap not in _UNLISTED_SKIP and not _triton38_sm8x(cap)
 
 
 def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
@@ -179,7 +186,7 @@ def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Opti
         return None
     cap = (int(capability[0]), int(capability[1]))
     cfg = _ARCH_CONFIG.get(cap)
-    if mode == "auto" and cap in _TRITON38_STOCK and _triton_at_least(3, 8):
+    if mode == "auto" and _triton38_sm8x(cap):
         return None
     if cfg is None and mode == "force" and cap >= (8, 0):
         return _FALLBACK_CONFIG

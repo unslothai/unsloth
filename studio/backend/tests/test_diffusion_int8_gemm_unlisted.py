@@ -39,6 +39,8 @@ def _reset():
 def _clean(monkeypatch):
     for name in _ENVS:
         monkeypatch.delenv(name, raising = False)
+    # the gate as it runs before Triton 3.8 (from 3.8 every sm8x is stock: test_diffusion_int8_gemm.py)
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: False)
     _reset()
     yield
     _reset()
@@ -85,10 +87,7 @@ class _Fake:
         ((12, 1), True),
     ],
 )
-def test_arch_table(monkeypatch, cap, on):
-    monkeypatch.setattr(
-        g8, "_triton_at_least", lambda major, minor: False
-    )  # sm80 / sm89 stock on Triton 3.8
+def test_arch_table(cap, on):
     assert g8.unlisted_wanted(cap) is on
     if cap >= (8, 0) and cap not in g8._UNLISTED_SKIP:  # exactly one route per sm80+ arch
         assert (g8.arch_config(cap) is not None) is not on

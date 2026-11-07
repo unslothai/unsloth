@@ -70,13 +70,18 @@ def test_force_enables_unmeasured_sm80_plus_only(monkeypatch):
 
 
 @pytest.mark.parametrize("newer", [False, True])
-def test_triton38_keeps_sm80_sm89_stock(monkeypatch, newer):
+def test_triton38_keeps_every_sm8x_stock(monkeypatch, newer):
     monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: newer)
     for cap, cfg in g8._ARCH_CONFIG.items():
-        stock = newer and cap in g8._TRITON38_STOCK
+        stock = newer and cap[0] == 8
         assert g8.arch_config(cap, "auto") == (None if stock else cfg)
         assert g8.arch_config(cap, "force") == cfg  # forcing still runs the kernel
         assert not g8.unlisted_arch(cap) and not g8.unlisted_wanted(cap, "auto")
+    for cap in ((8, 6), (8, 7)):  # unlisted sm8x: no probe / latency check either
+        assert g8.unlisted_wanted(cap, "auto") is not newer
+        assert g8.unlisted_wanted(cap, "force")
+    for cap in ((9, 0), (12, 1)):  # no spill there: unchanged
+        assert g8.unlisted_wanted(cap, "auto")
     assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
     assert g8._gates((8, 9))[0] is not newer
 
@@ -104,6 +109,7 @@ def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
     try:
         assert g8.arch_config((8, 0), "auto") is None
         assert g8.arch_config((8, 9), "auto") is None
+        assert not g8.unlisted_wanted((8, 6), "auto")
         assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
     finally:
         clear()
