@@ -32,6 +32,8 @@ STUDIO_TOOLS_MCP_URL = "http://127.0.0.1" + STUDIO_TOOLS_MCP_PATH
 _KEY_MAX_S = 6 * 3600
 _KEY_GRACE_S = 300.0
 _DEFAULT_WAIT_S = 3600.0
+# A followed video hands back its job this long before the call's own timeout, which would stop it.
+_FOLLOW_MARGIN_S = 15.0
 _POLL_S = 0.25
 _STOP_WAIT_S = 30.0
 
@@ -118,6 +120,7 @@ async def _call(
     args: dict,
     ticket: Optional[GenerationTicket] = None,
     config_check: Any = None,
+    follow_until: Optional[float] = None,
 ) -> Any:
     from fastmcp import Client
 
@@ -131,9 +134,39 @@ async def _call(
                 # As for a remote row: an edit or delete of the row while connecting stops the call.
                 if config_check is not None and not await asyncio.to_thread(config_check):
                     raise RuntimeError("MCP server was updated or removed while connecting")
-                return await client.call_tool(name, args, raise_on_error = False)
+                result = await client.call_tool(name, args, raise_on_error = False)
+                if follow_until is not None:
+                    result = await _follow_video(client, result, follow_until)
+                return result
     finally:
         reset_caller(token)
+
+
+async def _follow_video(client: Any, created: Any, follow_until: float) -> Any:
+    """Follows a chat's video to the end in its own call, as the built-in generate_video tool does,
+    so a Stop reaches the render. Past the call's limit it is left running, never cancelled."""
+    from studio_mcp.jobs import RUNNING
+    from studio_mcp.loading import WAIT_S_LIMIT
+
+    job = getattr(created, "structured_content", None)
+    job_id = job.get("id") if isinstance(job, dict) else None
+    if getattr(created, "is_error", False) or not job_id:
+        return created
+    result = created
+    while (left := follow_until - time.monotonic()) >= 1:
+        read = await client.call_tool(
+            "get_job",
+            {"kind": "video", "id": job_id, "wait_s": int(min(left, WAIT_S_LIMIT))},
+            raise_on_error = False,
+        )
+        # get_job turned off in Settings, or a failed read: the job reference still answers.
+        if getattr(read, "is_error", False):
+            return result
+        result = read
+        status = (getattr(read, "structured_content", None) or {}).get("status")
+        if status not in RUNNING:
+            break
+    return result
 
 
 # Dataset rows as Unsloth Studio wrote them: a null there is data, and an all-null column is still a column.
@@ -274,12 +307,26 @@ def call(
         ticket = GenerationTicket()
         if cancel_event is not None:
             _remember(cancel_event, ticket)
+        deadline = time.monotonic() + limit
         future = contextvars.Context().run(
             asyncio.run_coroutine_threadsafe,
-            arun_as(account, _call(caller, name, args, ticket, config_check)),
+            arun_as(
+                account,
+                _call(
+                    caller,
+                    name,
+                    args,
+                    ticket,
+                    config_check,
+                    **(
+                        {"follow_until": deadline - _FOLLOW_MARGIN_S}
+                        if name == "generate_video"
+                        else {}
+                    ),
+                ),
+            ),
             loop,
         )
-        deadline = time.monotonic() + limit
         while not future.done():
             if cancel_event is not None and cancel_event.is_set():
                 _stop(future, ticket)

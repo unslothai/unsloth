@@ -1338,7 +1338,13 @@ def run_safetensors_tool_loop(
             for _tc in tool_calls if deduplicate_tool_calls else ():
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _reruns_after_new_work(_fn.get("name")):
+                # An unseeded generator: two identical calls are two outputs, and each is new work.
+                if _reruns_after_new_work(_fn.get("name")) and repeatable(_fn.get("name")):
+                    if not reads_only(_fn.get("name")):
+                        novel_kept += 1
+                    novel_at_last_keep[_key] = novel_kept
+                    last_workspace_key = _key
+                elif _reruns_after_new_work(_fn.get("name")):
                     if _key == last_workspace_key:
                         continue
                     if _key in seen_keys:
