@@ -9,6 +9,7 @@ import { chatPagePreload } from "./vite-plugin-chat-preload";
 import { childSelectorOrder } from "./vite-plugin-child-selectors";
 import { hasAnchorOrder } from "./vite-plugin-has-anchor";
 import { katexWoff2Only } from "./vite-plugin-katex-woff2";
+import { preloadNonceInHead } from "./vite-plugin-preload-nonce";
 import { viewportMediaGate } from "./vite-plugin-viewport-media";
 import { previewRuntime } from "./vite-preview-runtime.ts";
 
@@ -35,7 +36,7 @@ export default defineConfig({
   cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
   // Reasoning's highlighter loads only the grammar it needs in its module worker.
   worker: { format: "es" },
-  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only()],
+  plugins: [react(), tailwindcss(), childSelectorOrder(), hasAnchorOrder(), viewportMediaGate(), smokeModuleDelay(), previewRuntime(), chatPagePreload(), katexWoff2Only(), preloadNonceInHead()],
   // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {
@@ -43,7 +44,10 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ["@dagrejs/dagre", "@dagrejs/graphlib"],
+    // react-remove-scroll/UI is only imported by the aliased stand-in (src/lib/remove-scroll.tsx),
+    // which the dev server's first scan does not see; found later, it forces a re-optimize and a
+    // full reload that native Safari does not recover from.
+    include: ["@dagrejs/dagre", "@dagrejs/graphlib", "react-remove-scroll/UI"],
   },
   server: {
     host: "0.0.0.0",
@@ -85,13 +89,22 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@dagrejs/dagre": path.resolve(
-        __dirname,
-        "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
-      ),
-    },
+    alias: [
+      { find: "@", replacement: path.resolve(__dirname, "./src") },
+      {
+        find: "@dagrejs/dagre",
+        replacement: path.resolve(
+          __dirname,
+          "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
+        ),
+      },
+      // Radix's scroll lock without its document wheel / touch listeners, which restyle the
+      // whole page in WebKit on every modal open and close (src/lib/remove-scroll.tsx).
+      {
+        find: /^react-remove-scroll$/,
+        replacement: path.resolve(__dirname, "./src/lib/remove-scroll.tsx"),
+      },
+    ],
   },
   build: {
     commonjsOptions: {

@@ -304,6 +304,9 @@ class VideoFamily:
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
+    # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
+    # instead of staging and quantising the dense shards. Only for a family whose hosted int8 file is ConvRot safetensors.
+    native_offload_from_hosted_int8: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -672,6 +675,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
             ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
         ),
+        native_offload_from_hosted_int8 = True,
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
         # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.

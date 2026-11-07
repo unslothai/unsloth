@@ -99,6 +99,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     HAS_XFORMERS,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
@@ -1094,6 +1095,7 @@ def fast_layernorm_compiled(layernorm, X):
 
 
 # Ported from transformers models/llama/modeling_llama.py#L320
+@context_parallel_attention(rl = True)
 def LlamaAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -3417,13 +3419,20 @@ def runs_fast_forward(
 ):
     """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
     pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    return fast is not None and running_forward(module, name) is fast
+
+
+def running_forward(module, name = "forward"):
+    """The function `module` runs as `name`; for pre_patch's gate, the wrapped fast forward only on marked modules."""
     method = getattr(type(module), name, None)
     method = getattr(method, "__func__", method)
-    if method is fast:
-        return True
-    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
-        return bool(getattr(module, "_unsloth_fast_path", False))
-    return False
+    if getattr(method, "_unsloth_gated", False):
+        return (
+            getattr(method, "__wrapped__", None)
+            if getattr(module, "_unsloth_fast_path", False)
+            else None
+        )
+    return method
 
 
 def mark_unsloth_fast_path(model):
