@@ -1026,9 +1026,43 @@ def test_idle_expert_hook_is_inert_without_every_expert_blocks_and_when_all_are_
     block.zero_grad(set_to_none = True)
     cp.start_expert_window([block])
     assert "_unsloth_cp_expert_tokens" not in block.__dict__
-    # No counts recorded (CP off): every expert counts as idle, but CP never installs the hook.
+    # No counts recorded (CP off): the step keeps every gradient, also if a CP hook is installed.
     block(_routed_tokens((0, 1), 0)).pow(2).sum().backward()
     assert "_unsloth_cp_expert_tokens" not in block.__dict__
+    assert cp.drop_idle_expert_grads([block]) == 0
+    assert all(p.grad is not None for p in block.experts[0].parameters())
+
+
+@pytest.mark.parametrize("skipped", [False, True], ids = ["stepped", "amp_skipped"])
+def test_an_optimizer_reused_without_context_parallelism_keeps_every_gradient(skipped):
+    """The idle-expert step pre-hook stays on the optimizer. A later trainer without CP reusing it
+    must keep the gradients of experts the CP window never routed to (one process has them), also
+    when the last CP step was skipped (GradScaler overflow: the pre-hook never ran)."""
+    from unsloth import context_parallel as cp
+
+    block = _complementary_block(False)
+    optimizer = torch.optim.AdamW(block.parameters(), lr = 1e-2, weight_decay = 0.1)
+    assert cp.install_idle_expert_grad_hook(optimizer, block, window = 0)
+    cp._ACTIVE_MANAGER = object()
+    try:
+        block(_routed_tokens((0, 2), 0)).pow(2).sum().backward()  # CP step: experts 0 and 2
+    finally:
+        cp._ACTIVE_MANAGER = None
+    if not skipped:
+        optimizer.step()  # the hook drops the other experts' zero gradients
+        assert block.experts[1].down_proj.weight.grad is None
+    optimizer.zero_grad(set_to_none = True)
+    # The same optimizer, CP off: experts 1 and 3 only.
+    block(_routed_tokens((1, 3), 1)).pow(2).sum().backward()
+    grads = {n: p.grad.clone() for n, p in block.named_parameters() if p.grad is not None}
+    assert any(n.startswith("experts.1.") for n in grads)
+    before = {n: p.detach().clone() for n, p in block.named_parameters()}
+    optimizer.step()
+    for name, param in block.named_parameters():
+        assert (param.grad is None) == (name not in grads), name
+        if name.startswith(("experts.1.", "experts.3.")):
+            assert torch.equal(param.grad, grads[name]), name
+            assert not torch.equal(param, before[name]), f"{name} did not train"
 
 
 def test_an_expert_parallel_block_is_not_counted_as_running_every_expert():

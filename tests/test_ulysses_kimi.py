@@ -362,9 +362,6 @@ class KimiDeltaAttention(nn.Module):
         cache_params = None,
         **kwargs,
     ):
-        if attention_mask is not None:
-            # The hub layer unpads on a 2D mask; zeroed padding gives the same real-token outputs.
-            hidden_states = hidden_states * attention_mask[:, -hidden_states.shape[1] :, None]
         bsz, seq, _ = hidden_states.shape
         shape = (bsz, seq, HEADS, HEAD_DIM)
         q = self.q_conv1d(self.q_proj(hidden_states)).view(shape)
@@ -399,7 +396,12 @@ class KimiDeltaAttention(nn.Module):
         else:
             gate = self.g_b_proj(self.g_a_proj(hidden_states))
         o = self.o_norm(o, gate.view(shape))
-        return self.o_proj(o.reshape(bsz, seq, -1))
+        o = self.o_proj(o.reshape(bsz, seq, -1))
+        if attention_mask is not None:
+            # The hub layer unpads on the 2D mask and pad_input leaves zero rows at the padding; with
+            # right padding the causal conv and scan never carry it into the real tokens.
+            o = o * attention_mask[:, -seq:, None].to(o.dtype)
+        return o
 
 
 def eager_attention_forward(
@@ -420,8 +422,17 @@ def eager_attention_forward(
     return torch.matmul(weights, value).transpose(1, 2).contiguous(), weights
 
 
-def _causal_mask(length, dtype):
-    return torch.full((length, length), torch.finfo(dtype).min, dtype = dtype).triu(1)[None, None]
+def _causal_mask(
+    length,
+    dtype,
+    padding = None,
+):
+    mask = torch.full((length, length), torch.finfo(dtype).min, dtype = dtype).triu(1)[None, None]
+    if padding is not None:
+        # As transformers' create_causal_mask (sdpa / eager): padded keys are masked for every query,
+        # so a padding query attends its row's real keys.
+        mask = mask.masked_fill(padding[:, None, None, :] == 0, torch.finfo(dtype).min)
+    return mask
 
 
 class KimiMLAAttention(nn.Module):
@@ -496,7 +507,7 @@ class _Layer(nn.Module):
         if isinstance(self.self_attn, KimiDeltaAttention):
             mask = attention_mask
         else:
-            mask = _causal_mask(h.shape[1], h.dtype)
+            mask = _causal_mask(h.shape[1], h.dtype, attention_mask)
         h = h + self.self_attn(hidden_states = self.norm1(h), attention_mask = mask)
         mlp = getattr(self, "block_sparse_moe", None) or self.mlp
         return h + mlp(self.norm2(h))
@@ -522,9 +533,12 @@ class _KimiForCausalLM(nn.Module):
         blocks = [None] * 3
         if moe:
             hub = _hub_kimi_moe_module()
+            moe_config = types.SimpleNamespace(**vars(_MOE_CONFIG))
+            if moe is not True:
+                moe_config.num_experts = moe
             self.config.model_type = "kimi_linear"
-            self.config.num_experts = _MOE_CONFIG.num_experts
-            blocks = [hub.KimiSparseMoeBlock(_MOE_CONFIG) for _ in blocks]
+            self.config.num_experts = moe_config.num_experts
+            blocks = [hub.KimiSparseMoeBlock(moe_config) for _ in blocks]
             for block in blocks:
                 with torch.no_grad():
                     block.gate.e_score_correction_bias.normal_(0, 0.3)  # nonzero, as trained
@@ -1011,6 +1025,120 @@ def test_kimi_moe_under_ulysses_matches_one_process(precision, attn, gc, world, 
     """The parallel_capabilities evidence for Kimi-Linear MoE x context parallel (aux loss off):
     hub MoE block + gate (in-place score bias), KDA and MLA layers, right padded rows."""
     _spawn(_moe_worker, world, cp_size, precision, attn, gc)
+
+
+def _pad_route_worker(rank, world, precision, attn, control):
+    """128 experts, right padded rows of a length the CP size divides: caller padding routes through
+    the MoE in one process, so an expert only padding picks has a zero gradient there (None when no
+    token picks it). CP must give padding the same activations, or such experts differ in None vs
+    zero and AdamW decays / steps a different set. Two AdamW steps, then the optimizer state."""
+    import copy
+
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    if control:
+        # Negative control: the Ulysses mixers leave padding as the unmasked shards compute it.
+        cp.ContextParallelManager.caller_pad_lengths = lambda self, bsz, total: None
+    model = _model(False, moe = 128, attn = attn).double()
+    if precision != "full":
+        model = _inject_lora(model, experts = True)
+    reference = copy.deepcopy(model)
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    adamw = dict(lr = 1e-2, eps = 1e-4, weight_decay = 0.1)
+    optimizer = torch.optim.AdamW(trainable, **adamw)
+    ref_optimizer = torch.optim.AdamW(
+        [p for p in reference.parameters() if p.requires_grad], **adamw
+    )
+    assert cp.install_idle_expert_grad_hook(optimizer, model)
+    bad, pad_only = [], 0
+    for step in range(2):
+        ids, mask, labels = _audit_batch("full", seed = step, seq = 16)
+        shift = F.pad(labels, (0, 1), value = -100)[:, 1:]
+        count = shift.ne(-100).sum()
+        optimizer.zero_grad(set_to_none = True)
+        ref_optimizer.zero_grad(set_to_none = True)
+        _loss(reference(input_ids = ids, attention_mask = mask).logits, shift, count).backward()
+        # An expert only padding routes to: a gradient of zeros (not None) in one process.
+        pad_only += sum(
+            p.grad is not None and not p.grad.any()
+            for n, p in reference.named_parameters()
+            if ".experts." in n and "lora_B" not in n
+        )
+        inputs = {
+            "input_ids": ids.clone(),
+            "attention_mask": mask.clone(),
+            "labels": labels.clone(),
+        }
+        with manager.apply(inputs):
+            assert manager.caller_pad_lengths(2, 16) == (None if control else (11, 9 - step % 2))
+            out = model(
+                input_ids = inputs["input_ids"],
+                position_ids = inputs["position_ids"],
+                attention_mask = inputs["attention_mask"],
+            )
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+        for param in trainable:
+            dist.all_reduce(param.grad)
+        optimizer.step()
+        ref_optimizer.step()
+        for (name, param), ref in zip(model.named_parameters(), reference.parameters()):
+            if (param.grad is None) != (ref.grad is None):
+                bad.append((step, name, "grad None vs zero"))
+            # The CP scan runs in fp32 (as fla does), the reference in fp64.
+            elif param.grad is not None and not torch.allclose(param.grad, ref.grad, 1e-4, 1e-6):
+                bad.append((step, name, "grad"))
+            if not torch.allclose(param, ref, rtol = 1e-5, atol = 1e-5):
+                bad.append((step, name, "param"))
+            mine, want = optimizer.state.get(param, {}), ref_optimizer.state.get(ref, {})
+            if bool(mine) != bool(want):
+                bad.append((step, name, "AdamW state on one side"))
+            elif mine and (
+                float(mine["step"]) != float(want["step"])
+                or not torch.allclose(mine["exp_avg"], want["exp_avg"], 1e-4, 1e-7)
+                or not torch.allclose(mine["exp_avg_sq"], want["exp_avg_sq"], 1e-3, 1e-12)
+            ):
+                bad.append((step, name, "AdamW state"))
+    assert pad_only, "no padding-only expert: the check proves nothing"
+    assert not bad, f"CP diverges from one process: {len(bad)}, first {bad[:3]}"
+
+
+@pytest.mark.parametrize(
+    "precision, attn, world",
+    [
+        ("full", "sdpa", 2),
+        ("lora_experts", "eager", 2),
+        ("full", "eager", 4),
+        ("lora_experts", "sdpa", 4),
+    ],
+    ids = ["full-sdpa-cp2", "lora_experts-eager-cp2", "full-eager-cp4", "lora_experts-sdpa-cp4"],
+)
+def test_kimi_caller_padding_routes_experts_as_one_process(precision, attn, world):
+    _spawn(_pad_route_worker, world, precision, attn, False)
+
+
+@pytest.mark.parametrize("world", [2, 4], ids = ["cp2", "cp4"])
+def test_unmasked_caller_padding_misroutes_experts(world):
+    # The control for the test above: without the single-process padding activations it diverges.
+    with pytest.raises(Exception, match = "CP diverges from one process"):
+        _spawn(_pad_route_worker, world, "full", "sdpa", True)
+
+
+def test_flash_caller_padding_rows_are_zero_as_unpadded_flash():
+    # transformers' flash path unpads on the 2D mask and pads the output back with zeros; a sliding
+    # window under sdpa / eager is left as is (documented), real rows never change.
+    out = torch.randn(2, 6, 3, 4)
+    q = k = v = torch.randn(2, 3, 6, 4)
+
+    def never(*args, **kwargs):
+        raise AssertionError("flash rows need no attention call")
+
+    got = uh._caller_padding_rows(out, None, q, k, v, (4, 6), None, "flash_attention_2", never, {})
+    torch.testing.assert_close(got[0, :4], out[0, :4], rtol = 0, atol = 0)
+    assert not got[0, 4:].any()
+    torch.testing.assert_close(got[1], out[1], rtol = 0, atol = 0)
+    assert uh._caller_padding_rows(out, None, q, k, v, (4, 6), 3, "sdpa", never, {}) is out
 
 
 def test_kimi_gates():
