@@ -482,7 +482,7 @@ def test_a_checkpoint_pin_refuses_another_quant_at_engine_admission():
     for module in ("diffusion", "sd_cpp_backend", "mlx_diffusion_backend"):
         source = (
             Path(__file__).resolve().parents[1] / "core" / "inference" / f"{module}.py"
-        ).read_text()
+        ).read_text(encoding = "utf-8")
         assert "require_pinned_checkpoint(loaded_id, " in source, module
 
 

@@ -92,7 +92,7 @@ test("the Seed field has Random and Reuse last seed buttons", () => {
   );
   assert.match(
     page,
-    /const runSeed = lastSeedOf\(res\.images\);\n\s+if \(runSeed !== null\) setSessionSeed\(runSeed\);/,
+    /const runSeed = lastSeedOf\(res\.images\);[\s\S]{0,300}if \(runSeed !== null && runAt >= sessionSeedAt\.current\) \{[\s\S]{0,120}setSessionSeed\(runSeed\);/,
   );
   assert.match(page, /<Shuffle className="size-4" strokeWidth=\{1\.5\} \/>/);
   assert.match(page, /<HugeiconsIcon icon=\{HistoryIcon\} className="size-4" strokeWidth=\{1\.5\} \/>/);

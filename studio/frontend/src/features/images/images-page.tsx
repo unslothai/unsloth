@@ -2165,6 +2165,14 @@ export function ImagesPage({
   const cancelInFlight = useRef<number | null>(null);
   // A pending cancel can outlive its run via 401 refresh-and-replay and hit a newer run.
   const cancelAbort = useRef<AbortController | null>(null);
+  const resetStopState = useCallback(() => {
+    cancelRequested.current = cancelAcked.current = false;
+    cancelInFlight.current = null;
+    cancelAbort.current?.abort();
+    cancelAbort.current = null;
+    runToken.current += 1;
+    setStopping(false);
+  }, []);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadToastId = useRef<string | number | null>(null);
   // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
@@ -3670,15 +3678,7 @@ export function ImagesPage({
     // window): what renders is the queue's running job, so Stop targets it by id.
     if (queueRunningId && busy === "generating" && !localRun.current && followingJob.current !== queueRunningId) {
       // A different job: the previous one's Stop state and in-flight acknowledgement do not carry over.
-      if (followingJob.current !== null) {
-        cancelRequested.current = false;
-        cancelAcked.current = false;
-        cancelInFlight.current = null;
-        cancelAbort.current?.abort();
-        cancelAbort.current = null;
-        runToken.current += 1;
-        setStopping(false);
-      }
+      if (followingJob.current !== null) resetStopState();
       followingJob.current = queueRunningId;
       return;
     }
@@ -3704,7 +3704,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [queueRunningId, busy, resumeGeneratePoll, imageQueue.jobs]);
+  }, [queueRunningId, busy, resumeGeneratePoll, imageQueue.jobs, resetStopState]);
 
   useEffect(() => {
     void (async () => {
