@@ -35,7 +35,10 @@ import {
 } from "@/components/assistant-ui/message-derived";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
+import {
+  type SettledEscapedMath,
+  normalizeEscapedInlineMath,
+} from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
@@ -48,7 +51,12 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
+  Download01Icon,
+} from "@hugeicons/core-free-icons";
+import { LineWrapDisableIcon, LineWrapIcon } from "@/lib/hugeicons-derived";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
@@ -121,6 +129,7 @@ import {
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeAutoDirection } from "./rehype-auto-direction";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
@@ -632,16 +641,94 @@ export function CodeBlockActions({
   disabled,
   language,
   source,
+  wrappable = true,
 }: {
   disabled: boolean;
   language: string | null;
   source: string | (() => string);
+  /** False where the code is not one streamdown block (reasoning fragments): wrap and expand would reach nothing. */
+  wrappable?: boolean;
 }) {
   const { copied, showCopied } = useCopiedState();
+  const actionsRef = useRef<HTMLDivElement>(null);
+  // Starts from Appearance > Code > Word wrap; the toggle overrides it for this block only.
+  const [wrapped, setWrapped] = useState(
+    () => typeof document !== "undefined" && document.documentElement.hasAttribute("data-code-wrap"),
+  );
+  const wrapLabel = wrapped ? "Disable word wrap" : "Enable word wrap";
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  useEffect(() => {
+    const wrapper = actionsRef.current?.parentElement;
+    if (!wrappable || !wrapper || typeof ResizeObserver === "undefined") return;
+    const check = () => {
+      const body = wrapper.querySelector<HTMLElement>('[data-streamdown="code-block-body"]');
+      wrapper.toggleAttribute("data-scrolls-x", body !== null && body.scrollWidth > body.clientWidth + 1);
+      if (wrapper.hasAttribute("data-code-expanded")) return;
+      setOverflowing(body !== null && body.scrollHeight > body.clientHeight + 1);
+    };
+    // A capped body's code can change without the wrapper resizing (a remount, a wrap toggle): recheck on hover.
+    const observer = new ResizeObserver(check);
+    observer.observe(wrapper);
+    wrapper.addEventListener("pointerenter", check);
+    check();
+    return () => {
+      observer.disconnect();
+      wrapper.removeEventListener("pointerenter", check);
+    };
+  }, [wrappable]);
+  const expandLabel = expanded ? "Collapse code" : "Expand code";
 
   return (
-    <div className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end">
+    <div
+      className="pointer-events-none absolute top-3 right-3 z-20 flex items-center justify-end"
+      data-code-block-actions=""
+      ref={actionsRef}
+    >
       <div className={ACTION_PANEL_CLASS}>
+        {wrappable && <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title={wrapLabel}
+          aria-label={wrapLabel}
+          aria-pressed={wrapped}
+          onClick={() => {
+            const next = !wrapped;
+            // The block is this bar's sibling; index.css keys the per-block wrap on the shared wrapper.
+            actionsRef.current?.parentElement?.setAttribute("data-wrap", next ? "on" : "off");
+            setWrapped(next);
+          }}
+        >
+          <HugeiconsIcon icon={wrapped ? LineWrapDisableIcon : LineWrapIcon} strokeWidth={1.75} className="size-icon" />
+        </button>}
+        {wrappable && (overflowing || expanded) && <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title={expandLabel}
+          aria-label={expandLabel}
+          aria-expanded={expanded}
+          onClick={() => {
+            const next = !expanded;
+            actionsRef.current?.parentElement?.toggleAttribute("data-code-expanded", next);
+            setExpanded(next);
+          }}
+        >
+          <HugeiconsIcon icon={expanded ? ArrowShrink01Icon : ArrowExpand01Icon} strokeWidth={1.75} className="size-icon" />
+        </button>}
+        <button
+          type="button"
+          className={ACTION_BUTTON_CLASS}
+          title="Download file"
+          disabled={disabled}
+          onClick={() => {
+            downloadTextFile(
+              getCodeFilename(language),
+              typeof source === "function" ? source() : source,
+            );
+          }}
+        >
+          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
+        </button>
         <button
           type="button"
           className={ACTION_BUTTON_CLASS}
@@ -660,20 +747,6 @@ export function CodeBlockActions({
             strokeWidth={1.75}
             className="size-icon"
           />
-        </button>
-        <button
-          type="button"
-          className={ACTION_BUTTON_CLASS}
-          title="Download file"
-          disabled={disabled}
-          onClick={() => {
-            downloadTextFile(
-              getCodeFilename(language),
-              typeof source === "function" ? source() : source,
-            );
-          }}
-        >
-          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
         </button>
       </div>
     </div>
@@ -1405,6 +1478,7 @@ function MarkdownTextRenderer({
       // Streamdown caches processors by plugin name and serialized options.
       withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
         [rehypeSandboxImages, { threadId, projectId }],
+        rehypeAutoDirection,
       ]),
     [threadId, projectId],
   );
@@ -1417,6 +1491,10 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  const [settledEscapedMath] = useState<SettledEscapedMath>(() => ({
+    prefix: "",
+    ranges: [],
+  }));
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -1435,12 +1513,20 @@ function MarkdownTextRenderer({
               ),
               searchImages,
             ),
+            isStreaming ? settledEscapedMath : undefined,
           ),
           isStreaming,
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, messageTexts, precedingText, searchImages],
+    [
+      displayText,
+      isStreaming,
+      messageTexts,
+      precedingText,
+      searchImages,
+      settledEscapedMath,
+    ],
   );
   const incrementalCacheRef = useRef({
     messageId,

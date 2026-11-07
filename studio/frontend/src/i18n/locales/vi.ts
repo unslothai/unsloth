@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const vi = {
+  turns: {
+    label: "Lượt {number}",
+    bookmarkedLabel: "Lượt {number}, đã đánh dấu",
+    bookmark: "Đánh dấu lượt",
+    removeBookmark: "Bỏ đánh dấu",
+    navigator: "Các lượt",
+  },
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
+    sizingPosition: "Kích thước và vị trí ảnh",
     fill: "Lấp đầy",
     fit: "Vừa khung",
     stretch: "Kéo giãn",
     original: "Kích thước gốc",
+    fitWidth: "Vừa chiều rộng",
+    fitHeight: "Vừa chiều cao",
     zoom: "Thu phóng",
     outline: "Viền ô soạn tin",
     fade: "Mờ dần vào nền",
@@ -28,11 +38,18 @@ export const vi = {
     halftone: "Bán sắc",
     scanlines: "Đường quét",
     visibility: "Độ hiển thị",
+    conversationVisibility: "Độ hiển thị trong cuộc trò chuyện",
     blur: "Độ mờ ảnh",
     position: "Vị trí",
+    horizontal: "Vị trí ngang",
+    vertical: "Vị trí dọc",
+    scope: "Hiển thị trên",
+    scopeNewChat: "Trang trò chuyện mới",
+    scopeChats: "Trò chuyện",
+    scopeAll: "Mọi trang",
     positionValue: "Ngang {x}%, dọc {y}%",
-    newChat: "Cuộc trò chuyện mới",
-    conversation: "Cuộc trò chuyện",
+    newChat: "Xem trước cuộc trò chuyện mới",
+    conversation: "Xem trước hội thoại",
     prompt: "Bạn muốn khám phá điều gì?",
     response: "Nội dung trò chuyện vẫn rõ ràng trên nền.",
     storageError: "Không thể lưu nền. Kiểm tra dung lượng lưu trữ của trình duyệt.",
@@ -40,6 +57,26 @@ export const vi = {
     dimensionsError: "Chọn ảnh nhỏ hơn 40 megapixel.",
     decodeError: "Không thể giải mã ảnh này. Hãy thử tệp khác.",
     effectError: "Không thể hiển thị hiệu ứng. Chọn Không hoặc chọn ảnh khác.",
+    material: "Kính",
+    materialSolid: "Tắt",
+    materialTransparent: "Trong suốt",
+    materialFrosted: "Kính mờ",
+    materialBlurred: "Làm mờ",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Kính hệ thống macOS",
+    materialMacosNote: "Dùng chất liệu cửa sổ trong mờ của macOS nên màn hình nền sẽ hiện qua.",
+    materialNativeFailed: "Phiên bản Unsloth Desktop này không thể dùng chất liệu macOS. Hãy cập nhật ứng dụng để bật.",
+    glassTheme: "Giao diện kính",
+    materialStyle: "Kiểu",
+    materialMenus: "Menu kính",
+    materialMenusDescription: "Danh sách thả xuống, menu và bộ chọn cũng dùng kính.",
+    materialStrength: "Độ mạnh của kính",
+    lens: "Thấu kính kính",
+    lensDescription: "Bẻ cong hình ảnh bên dưới khung soạn thảo như kính thật.",
+    lensOff: "Tắt",
+    lensMagnify: "Phóng to",
+    lensShrink: "Thu nhỏ",
   },
   linkMenu: {
     openInBrowser: "Mở trong trình duyệt Unsloth",
@@ -169,12 +206,16 @@ export const vi = {
         history: "Đang đọc lịch sử duyệt web của bạn",
         move: "Đang di chuyển chuột",
         drag: "Đang kéo",
+        tabs: "Đang xem các thẻ",
+        readFile: "Đang đọc tệp",
+        editFile: "Đang chỉnh sửa tệp",
       },
     },
     title: "Trình duyệt",
     tabs: "Thẻ trình duyệt",
     newTab: "Thẻ mới",
     newTabFullView: "Thẻ mới ở chế độ toàn màn hình",
+    newTabFloating: "Tab mới trong cửa sổ nổi",
     closeTab: "Đóng thẻ",
     close: "Đóng trình duyệt",
     show: "Hiển thị trình duyệt",
@@ -324,6 +365,8 @@ export const vi = {
     askBeforeDownloadingSetting: "Hỏi trước khi tải xuống",
     askBeforeDownloadingSettingDescription:
       "Xác nhận tệp từ trang web trước khi lưu.",
+    askBeforeProgramDownloadsSetting: "Hỏi trước khi tải xuống chương trình",
+    askBeforeProgramDownloadsSettingDescription: "Xác nhận các tệp có thể chạy chương trình, như .exe hoặc .dmg, ngay cả khi các lượt tải xuống khác không hỏi.",
     downloadSitesSetting: "Quyền tải xuống của trang web",
     downloadSitesSettingDescription:
       "Các trang web bạn đã chọn luôn cho phép hoặc luôn chặn tải xuống.",
@@ -332,6 +375,7 @@ export const vi = {
     downloadSitesFor: "Tải xuống từ {host}",
     downloadSitesRemove: "Quên {host}",
     downloadSiteAllow: "Luôn cho phép",
+    downloadSiteAllowAll: "Cho phép cả chương trình",
     downloadSiteBlock: "Luôn chặn",
     downloadPrompt: {
       title: "Tải xuống tệp này?",
@@ -339,6 +383,9 @@ export const vi = {
       dangerous:
         "Những tệp như thế này có thể chạy chương trình trên máy tính của bạn. Chỉ tải xuống nếu bạn tin tưởng {host}.",
       remember: "Ghi nhớ cho lần sau",
+      once: "Hỏi vào lần sau",
+      site: "Luôn cho {host}",
+      all: "Luôn tải xuống, từ mọi trang",
       cancel: "Hủy",
       download: "Tải xuống",
       blocked: "Đã chặn một lượt tải xuống từ {host}.",
@@ -387,6 +434,12 @@ export const vi = {
       openChat: "Mở ở chế độ toàn màn hình",
       moveLeft: "Chuyển sang ngăn trái",
       moveRight: "Chuyển sang ngăn phải",
+    },
+    floating: {
+      enter: "Cửa sổ nổi",
+      dock: "Ghim sang bên",
+      close: "Đóng cửa sổ nổi",
+      handle: "Di chuyển cửa sổ. Phím mũi tên di chuyển; Shift và phím mũi tên đổi kích thước.",
     },
     annotate: {
       countOne: "1 chú thích",
@@ -700,6 +753,8 @@ export const vi = {
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:
       "Giữ mã, Markdown và liên kết dưới dạng văn bản nguyên bản. Tắt để hiển thị bản xem trước có định dạng.",
+    richPaste: "Dán văn bản có định dạng",
+    richPasteDescription: "Dán liên kết, bảng và định dạng dưới dạng Markdown. {shortcut} dán văn bản thuần. Trình soạn văn bản định dạng đầy đủ sắp ra mắt.",
     showContext: "Mức sử dụng cửa sổ ngữ cảnh",
     sendShortcut: "Phím tắt gửi",
     sendMultiline: "{mod} + Enter cho lời nhắc nhiều dòng",
@@ -814,38 +869,6 @@ export const vi = {
     compactUnsupported:
       "Cần mô hình GGUF hoặc MLX có hỗ trợ công cụ để thu gọn",
   },
-  halloween: {
-    navLabel: "Cho kẹo hay bị ghẹo…",
-    title: "Cho kẹo hay bị ghẹo?!",
-    description:
-      "Chúng tôi đã ủ sẵn vài trò hù dọa cho Unsloth, có mặt đến hết tháng Mười.",
-    chooseTheme: "Chọn một chủ đề rùng rợn",
-    spookyGreetings: "Lời chào ma quái",
-    spookyGreetingsDescription:
-      "Chú lười chào các cuộc trò chuyện mới bằng một màn hù dọa.",
-    decorations: "Nhện và dơi",
-    decorationsDescription:
-      "Mạng nhện, thỉnh thoảng thêm một con nhện hoặc dơi.",
-    surprise: "Cho kẹo hay bị ghẹo!",
-    surpriseDescription: "Để chú lười chọn chủ đề giúp bạn.",
-    themesTitle: "Chủ đề rùng rợn",
-    back: "Quay lại",
-    footer: "Unsloth sẽ trở lại bình thường vào nửa đêm ngày 1 tháng 11.",
-    removeNow: "Gỡ bỏ ngay",
-    hideFromSidebar: "Ẩn khỏi thanh bên",
-    greeting: {
-      pumpkins: "Bí ngô đã khắc xong. Tiếp theo là gì?",
-      brewing: "Bắt đầu nấu thuốc thôi",
-      trickOrTreat: "Cho kẹo hay bị ghẹo?",
-      manor: "Chào mừng đến lâu đài",
-      manorName: "Chào mừng đến lâu đài, {name}",
-      happyHalloween: "Halloween vui vẻ",
-      happyHalloweenName: "Halloween vui vẻ, {name}",
-      spirits: "Các linh hồn đang lắng nghe…",
-      mysteries: "Đêm nay chúng ta sẽ khám phá bí ẩn nào?",
-      conjure: "Tôi có thể phù phép ra gì cho bạn?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Rất vui được gặp bạn",
     goodToSeeYouName: "Rất vui được gặp bạn, {name}",
@@ -870,6 +893,8 @@ export const vi = {
     unifiedTightFit: "Sát giới hạn",
     unifiedTightFitHint:
       "Có thể được nạp với ngữ cảnh ngắn hơn hoặc chạy chậm hơn trên máy Mac này.",
+    residentToRun: "để chạy",
+    residentToRunHint: "Bộ nhớ GPU mà bước kiểm tra tải yêu cầu khi chạy",
     onDevice: "Trên thiết bị",
     huggingFace: "Hugging Face",
     retry: "Thử lại",
@@ -1073,7 +1098,7 @@ export const vi = {
       deleteProjects: "Xóa dự án",
       deleteProjectsTitle: "Xóa dự án",
       deleteProjectsDescription:
-        "Xóa {count} dự án? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+        "{count} dự án và tất cả cuộc trò chuyện của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteProjectsFilesDescription:
         "Thư mục không gian làm việc của từng dự án sẽ bị xóa khỏi ổ đĩa.",
       countSelected: "Đã chọn {count}",
@@ -1085,7 +1110,7 @@ export const vi = {
       deleteChats: "Xóa cuộc trò chuyện",
       deleteTitle: "Xóa cuộc trò chuyện",
       deleteDescription:
-        "Xóa {count} cuộc trò chuyện? Không thể hoàn tác thao tác này.",
+        "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       deleteFilesDescription:
         "Thư mục sandbox riêng của từng cuộc trò chuyện sẽ bị xóa khỏi ổ đĩa. Các tệp chúng đã ghi bên trong một dự án vẫn nằm trong không gian làm việc của dự án đó.",
       deleteFilesLabel: "Xóa tệp và thư mục sandbox",
@@ -1134,7 +1159,7 @@ export const vi = {
       deleteChat: {
         title: "Xóa cuộc trò chuyện",
         description:
-          "Bạn có chắc chắn muốn xóa cuộc trò chuyện “{name}” này không?",
+          "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
       },
       deleteRun: {
         title: "Xóa lượt huấn luyện",
@@ -1159,6 +1184,7 @@ export const vi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Đặt mật khẩu của chủ sở hữu bản cài đặt trước khi thêm tài khoản khác. Bạn sẽ dùng mật khẩu này để đăng nhập khi bản cài đặt có nhiều tài khoản.",
       signsInAs: "Đăng nhập với tên {username}",
       signsInAsOwner: "Đăng nhập với tên {alias} hoặc {username}",
       signInName: "Tên đăng nhập của bạn",
@@ -1189,6 +1215,9 @@ export const vi = {
         "Mỗi dòng một mô hình, ví dụ unsloth/Qwen3-4B-GGUF, hoặc unsloth/* cho cả một tổ chức. Để trống để cho phép mọi mô hình.",
       modelAccessSave: "Lưu",
       modelAccessLimited: "Quyền truy cập mô hình bị giới hạn",
+      rename: "Đổi tên",
+      renameTitle: "Đổi tên {username}",
+      renameDescription: "Chọn tên mà tài khoản này dùng để đăng nhập. Các cuộc trò chuyện, tệp và khóa API vẫn ở trong tài khoản. Người dùng sẽ bị đăng xuất và đăng nhập lại bằng tên mới cùng mật khẩu hiện tại.",
       empty: "Chưa có tài khoản nào khác",
       setupCode: "Mã thiết lập",
       setupFor: "Mã thiết lập cho {username}",
@@ -2039,6 +2068,26 @@ export const vi = {
       chatDefaults: "Mặc định cho trò chuyện",
       autoTitleNewChats: "Tự động đặt tiêu đề cho cuộc trò chuyện mới",
       autoTitleNewChatsDescription: "Tạo tiêu đề từ tin nhắn đầu tiên.",
+      mlWarmup: {
+        sectionTitle: "Hiệu suất khởi động",
+        description: "Chuẩn bị trước các tính năng đã chọn để sử dụng lần đầu nhanh hơn. Mặc định tất cả đều tắt. Khi bật, các tùy chọn có thể tải các thư viện phụ thuộc dùng chung và tăng mức sử dụng RAM khi không hoạt động.",
+        restartRequired: "Thay đổi có hiệu lực sau khi khởi động lại Unsloth.",
+        hardwareLabel: "Phát hiện phần cứng",
+        hardwareDescription: "Phát hiện GPU và chuẩn bị PyTorch.",
+        textLabel: "Mô hình văn bản",
+        textDescription: "Chuẩn bị khả năng hỗ trợ mô hình văn bản của Transformers.",
+        datasetsLabel: "Chuẩn bị tập dữ liệu",
+        datasetsDescription: "Chuẩn bị Datasets và các thư viện phụ thuộc để xem trước và xử lý dữ liệu.",
+        mediaLabel: "Mô hình hình ảnh và video",
+        mediaDescription: "Chuẩn bị Diffusers và các thư viện phụ thuộc dùng chung của mô hình.",
+        advanced: "Nâng cao",
+        quantizationLabel: "Kiểm tra trước lượng tử hóa hình ảnh",
+        quantizationDescription: "Kiểm tra khả năng hỗ trợ trước lần đầu tải mô hình hình ảnh đã lượng tử hóa. Có thể tạm thời làm tăng mức sử dụng RAM.",
+        requiredBySelections: "Bắt buộc đối với các tùy chọn bạn đã chọn.",
+        disabledByEnv: "Bị tắt bởi UNSLOTH_STUDIO_DISABLE_TORCH_WARM trong môi trường backend.",
+        loadError: "Không thể tải cài đặt chuẩn bị sẵn khi khởi động.",
+        saveError: "Không thể lưu cài đặt chuẩn bị sẵn khi khởi động.",
+      },
       helperLlm: {
         sectionTitle: "LLM trợ giúp",
         preloadOnStartup: "Lưu sẵn LLM trợ giúp vào bộ nhớ đệm khi khởi động",
@@ -2103,6 +2152,7 @@ export const vi = {
         loadError: "Không thể tải cài đặt tự động chuyển mô hình.",
         saveError: "Không thể lưu cài đặt tự động chuyển mô hình.",
         idleError: "Nhập 0 để giữ mô hình được nạp, hoặc ít nhất 60 giây.",
+        idleUnsaved: "Chưa được lưu.",
         keepKv: "Giữ ngữ cảnh trò chuyện qua các lần gỡ",
         keepKvDescription:
           "Lưu KV cache trước khi gỡ do không hoạt động, hoặc trước khi một mô hình hình ảnh hay video chiếm GPU, để các cuộc trò chuyện được tiếp tục không phải đọc lại lịch sử. Tối đa 10 GB trên ổ đĩa.",
@@ -2168,6 +2218,14 @@ export const vi = {
           off: "Chạy mọi lệnh gọi công cụ mà không hỏi. Mã Python và terminal vẫn chạy trong sandbox, giới hạn những tệp mà chúng có thể truy cập trên máy tính của bạn. Nếu không có sandbox hệ điều hành hoạt động, các lệnh gọi rủi ro sẽ hỏi trước.",
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
+      },
+      display: {
+        title: "Hiển thị",
+        timeFormat: "Định dạng giờ",
+        timeFormatDescription: "Hiển thị giờ theo định dạng 12 giờ hoặc 24 giờ.",
+        timeFormatSystem: "Mặc định hệ thống",
+        timeFormat12: "12 giờ",
+        timeFormat24: "24 giờ",
       },
       notifications: {
         sectionTitle: "Thông báo",
@@ -2249,6 +2307,12 @@ export const vi = {
           "Chọn theo từng máy và chuyển sang HTTPS nếu Xet bị đứng hoặc lỗi ở đây.",
         autoCurrently: "Tự động đang dùng {transport} trên máy này.",
         xetMissing: "Xet không khả dụng vì chưa cài đặt hf_xet.",
+        speedLimit: "Giới hạn tốc độ tải xuống",
+        speedLimitDescription:
+          "Không giới hạn trừ khi đặt một giá trị. Tải xuống bị giới hạn dùng HTTPS.",
+        speedLimitNoLimit: "Không giới hạn",
+        speedLimitInvalid: "Nhập một số Mbit/s hoặc để trống.",
+        speedLimitUsesHttps: "Khi đặt giới hạn tốc độ, các lượt tải xuống dùng HTTPS. Các tệp trên 50 GB vẫn dùng Xet, không bị giới hạn.",
       },
       uploads: {
         sectionTitle: "Tải lên",
@@ -2353,10 +2417,14 @@ export const vi = {
         label: "Loại cài đặt",
         description:
           "Chỉ trò chuyện (GGUF). Bản cài đặt đầy đủ bổ sung huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung.",
+        descriptionCpu:
+          "Chỉ trò chuyện (GGUF). Không tìm thấy GPU được hỗ trợ, nên bản cài đặt đầy đủ bổ sung huấn luyện trên CPU.",
         action: "Nâng cấp lên bản cài đặt đầy đủ",
         confirmTitle: "Nâng cấp lên bản cài đặt đầy đủ?",
         confirmDescription:
           "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Bản cài đặt đầy đủ bổ sung PyTorch cho GPU của máy này, cho phép huấn luyện, xuất, video, mô hình safetensors và các tính năng tạo ảnh bổ sung. Quá trình này tải xuống vài gigabyte (cần ít nhất 5 GB dung lượng ổ đĩa) và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
+        confirmDescriptionCpu:
+          "Bản cài đặt Chỉ trò chuyện này chạy các mô hình GGUF. Không tìm thấy GPU được hỗ trợ trên máy này, nên bản cài đặt đầy đủ bổ sung PyTorch cho CPU, cho phép huấn luyện trên CPU. Huấn luyện trên CPU chậm hơn nhiều so với trên GPU. Quá trình này cần ít nhất 5 GB dung lượng ổ đĩa và khởi động lại máy chủ. Cuộc trò chuyện, mô hình và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Nâng cấp",
         keywords:
           "cài đặt đầy đủ nâng cấp loại cài đặt chỉ trò chuyện huấn luyện tinh chỉnh xuất tạo ảnh full install upgrade install type chat only gguf add training train fine-tune pytorch torch export video image generation safetensors",
@@ -2401,6 +2469,13 @@ export const vi = {
       avatarShapeRounded: "Bo góc",
       greetingSloth: "Lời chào",
       greetingSlothDescription: "Hiển thị lời chào trong cuộc trò chuyện mới.",
+      greetingDefault: "Mặc định",
+      greetingCustom: "Tùy chỉnh",
+      greetingImage: "Hình ảnh",
+      greetingText: "Nội dung lời chào",
+      greetingTextDescription: "Để trống để dùng lời chào có sẵn.",
+      greetingFileError: "Chọn ảnh PNG, JPEG, WebP hoặc GIF dưới 10 MB.",
+      greetingImageError: "Không thể dùng hình ảnh này. Hãy thử ảnh nhỏ hơn.",
       chooseSloth: "Hoặc chọn một chú lười",
       noPicture: "Không có ảnh hồ sơ",
       noneLabel: "Không có",
@@ -2524,21 +2599,32 @@ export const vi = {
         description:
           "Màu sắc dùng trong toàn bộ Unsloth, ở chế độ sáng và tối.",
         standard: "Tiêu chuẩn",
-        classic: "Cổ điển",
-        minimal: "Tối giản",
         moreThemes: "Thêm chủ đề",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Cho kẹo hay bị ghẹo",
-        description:
-          "Chủ đề Halloween và lời chào rùng rợn, đến hết ngày 1 tháng 11.",
+      composer: {
+        title: "Khung soạn tin",
+      },
+      code: {
+        title: "Mã",
+        fontDescription: "Khối mã trong trò chuyện, bản xem trước tệp và ví dụ API.",
+        lineNumbers: {
+          label: "Số dòng",
+          description: "Đánh số dòng cho khối mã trong trò chuyện.",
+        },
+        wordWrap: {
+          label: "Ngắt dòng",
+          description: "Ngắt các dòng dài trong khối mã thay vì cuộn ngang.",
+        },
+        ligatures: {
+          label: "Chữ ghép",
+          description: "Ghép các ký hiệu như => và != thành một ký tự khi phông chữ mã hỗ trợ.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Độ rộng khung trò chuyện",
           description: "Độ rộng của tin nhắn và khung soạn thảo.",
-          standard: "Tiêu chuẩn",
+          standard: "Mặc định",
           wide: "Rộng",
           full: "Toàn chiều rộng",
         },
@@ -2616,6 +2702,10 @@ export const vi = {
         },
         contrast: {
           label: "Độ tương phản",
+        },
+        elementOutline: {
+          label: "Viền phần tử",
+          description: "Độ đậm của viền nút, ô nhập, thẻ và menu.",
         },
         reduceMotion: {
           label: "Giảm chuyển động",
@@ -2711,7 +2801,7 @@ export const vi = {
         detecting: "Đang kiểm tra GPU...",
         unreadable: "Không thể đọc thông tin phần cứng của máy chủ này.",
         noGpu:
-          "Không phát hiện GPU nào. Tài nguyên chỉ dành cho CPU được hiển thị ở trên.",
+          "Không phát hiện GPU rời.",
         noUsableGpu: "Không có GPU nào trên máy này mà PyTorch có thể sử dụng.",
         mismatchCpuBuild:
           "PyTorch là bản dựng chỉ dành cho CPU ({version}), nên không thể dùng các GPU bên dưới. Hãy sửa chữa bản cài đặt để khôi phục hỗ trợ GPU.",
@@ -2798,7 +2888,7 @@ export const vi = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary suy luận tăng tốc chuyển đổi công cụ tùy chỉnh đường dẫn thư mục tệp thực thi",
       },
       modelMemory: {
-        title: "Bộ nhớ mô hình",
+        title: "Tải mô hình",
         keepResident: "Giữ mô hình trong bộ nhớ GPU",
         keepResidentDescription: "Giữ trong VRAM giữa các lời nhắc.",
         keepResidentHint:
@@ -2996,7 +3086,7 @@ export const vi = {
       configurationDocs: "tài liệu",
       configurationFlagsSuffix: "để biết các cờ.",
       modelNote:
-        "Codex yêu cầu mô hình GGUF do llama-server phục vụ. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
+        "Claude Code và Codex yêu cầu mô hình GGUF do llama-server phục vụ, hoặc mô hình MLX. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
       subagent: {
         title: "Dùng mô hình cục bộ làm tác tử phụ",
         description:
@@ -3070,6 +3160,8 @@ export const vi = {
     },
     chat: {
       groups: {
+        replies: { title: "Phản hồi" },
+        thinkingTools: { title: "Suy nghĩ và công cụ" },
         conversations: {
           title: "Cuộc trò chuyện",
         },
@@ -3159,6 +3251,8 @@ export const vi = {
         "Thông báo đang bị chặn. Hãy cho phép thông báo của Unsloth trong cài đặt trình duyệt hoặc hệ thống, rồi thử lại.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound thông báo cảnh báo xong hoàn tất sẵn sàng trả lời chạy nền thu nhỏ âm thanh",
+      showLinkPreviews: "Xem trước liên kết",
+      showLinkPreviewsDescription: "Hiển thị bản xem trước khi di chuột qua liên kết nguồn.",
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",
@@ -3167,17 +3261,27 @@ export const vi = {
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message dấu thời gian giờ ngày hoàn tất trả lời tin nhắn",
-      showGenerationDetails: "Chi tiết quá trình tạo",
+      showGenerationDetails: "Thông tin chi tiết về tốc độ và tải",
       showGenerationDetailsDescription:
-        "Hiển thị trực tiếp tốc độ xử lý lời nhắc và tốc độ trả lời kèm số token, cùng vị trí nạp các lớp của mô hình.",
+        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp, và cho biết các lớp của mô hình được tải ở đâu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+      generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
+      generationStatsUpdatesDescription:
+        "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",
+      generationStatsUpdatesHint:
+        "Thời gian thực làm mới chỉ số token mỗi giây dưới phản hồi và thanh ngữ cảnh ở đầu cuộc trò chuyện vài lần mỗi giây trong khi phản hồi đang được viết. Khi xong cập nhật chúng một lần, sau khi mỗi phản hồi kết thúc. Thời gian thực có thể gây giật hoặc giảm hiệu năng, nhất là trên máy cũ hoặc đang bận.",
+      generationStatsUpdatesSettled: "Khi xong",
+      generationStatsUpdatesRealtime: "Thời gian thực",
+      generationStatsUpdatesKeywords:
+        "thời gian thực trực tiếp cập nhật tốc độ ngữ cảnh thống kê realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      turnNavigation: "Điều hướng lượt",
+      turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",
@@ -3461,10 +3565,10 @@ export const vi = {
         moveFailed: "Không thể di chuyển cuộc trò chuyện",
         deleteChatsTitle: "Xóa cuộc trò chuyện ({count})",
         deleteChatsWarning:
-          "Xóa các cuộc trò chuyện đã chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteArchivedTitle: "Xóa {count} cuộc trò chuyện đã lưu trữ",
         deleteArchivedWarning:
-          "Xóa các cuộc trò chuyện đã lưu trữ được chọn ({count})? Không thể hoàn tác thao tác này.",
+          "{count} cuộc trò chuyện đã lưu trữ và các tin nhắn của chúng sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleting: "Đang xóa...",
       },
       title: "Dữ liệu",
@@ -3691,6 +3795,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -3844,8 +3951,6 @@ export const vi = {
         repoCheckoutFallback:
           "Nếu bạn vẫn còn bản checkout của kho mã, hãy chạy trình cài đặt cục bộ từ đó:",
         restartAfterUpdate: "Khởi động lại Unsloth sau khi cập nhật.",
-        desktopManaged:
-          "Ứng dụng máy tính tự động kiểm tra phiên bản mới. Bạn cũng có thể kiểm tra hoặc cập nhật tại đây bất cứ lúc nào.",
         desktopReady: "Cập nhật ứng dụng máy tính",
         desktopReadyDescription:
           "Kiểm tra xem có phiên bản ứng dụng máy tính mới hơn không.",
@@ -3855,7 +3960,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -3885,6 +3990,8 @@ export const vi = {
   },
   studio: {
     routeTitle: "Huấn luyện",
+    cpuTrainingNotice:
+      "Không tìm thấy GPU, nên quá trình huấn luyện chạy trên CPU. Việc này chậm hơn nhiều so với huấn luyện trên GPU và chỉ hỗ trợ mô hình văn bản (LoRA hoặc tinh chỉnh toàn bộ).",
     wizard: {
       modelTitle: "Mô hình",
       modelDescription: "Chọn mô hình và phương pháp huấn luyện",
@@ -4166,8 +4273,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",
@@ -5032,9 +5137,9 @@ export const vi = {
       dialog: {
         renameChat: "Đổi tên cuộc trò chuyện",
         deleteChatDescription:
-          "Cuộc trò chuyện này sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Cuộc trò chuyện và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteProjectDescription:
-          "Dự án và các cuộc trò chuyện của dự án ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
+          "Dự án và các cuộc trò chuyện của nó ({count}) sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
         deleteFilesMany:
           "Đồng thời xóa các tệp và thư mục sandbox mà những cuộc trò chuyện này đã tạo.",
         deleteProjectFilesLabel: "Xóa thư mục không gian làm việc của dự án",
@@ -5428,6 +5533,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",
@@ -5532,7 +5639,7 @@ export const vi = {
     chatName: "Tên cuộc trò chuyện",
     deleteChat: "Xóa cuộc trò chuyện",
     deleteChatDescription:
-      "Bạn có chắc muốn xóa {name}? Các tin nhắn trong đó sẽ bị xóa vĩnh viễn.",
+      "Cuộc trò chuyện “{name}” và các tin nhắn của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     importChats: "Nhập cuộc trò chuyện",
     importDestination: "Chọn nơi để nhập {name}:",
     selectDestination: "Chọn đích đến",
@@ -5540,7 +5647,7 @@ export const vi = {
     import: "Nhập",
     deleteProject: "Xóa dự án",
     deleteProjectDescription:
-      "Bạn có chắc muốn xóa {name}? Các cuộc trò chuyện trong đó sẽ bị xóa vĩnh viễn.",
+      "Dự án “{name}” và tất cả cuộc trò chuyện của nó sẽ bị xóa vĩnh viễn. Không thể hoàn tác thao tác này.",
     deleteProjectFiles:
       "Thư mục không gian làm việc của dự án sẽ bị xóa khỏi ổ đĩa.",
     deleteAll: "Xóa tất cả",
@@ -5628,6 +5735,18 @@ export const vi = {
       "Trình quét tự động của chúng tôi đã phát hiện các vấn đề, bao gồm:",
     nothingFlagged:
       "Trình quét tự động của chúng tôi không phát hiện tệp đáng lo ngại nào, nhưng vui lòng kiểm tra lại.",
+    unscannedTitle: "Không thể quét các tệp mô hình",
+    unscannedBody: "{model} có trọng số pickle, loại tệp có thể chạy mã khi tải, và không có kết quả quét phần mềm độc hại cho chúng nên không thể tải. {note}",
+    unscannedIntro: "Các tệp không thể quét:",
+    switchSourceNote: "Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để tải.",
+    reconnectNote: "Hãy kết nối với Hugging Face để đọc được kết quả quét, rồi thử lại.",
+    managedTitle: "Mã tùy chỉnh đã tắt cho tài khoản này",
+    managedNote: "Tính năng này bị tắt với tài khoản được quản lý. Hãy yêu cầu chủ sở hữu bản cài đặt bật nó.",
+    notFoundTitle: "Không tìm thấy trên {source}",
+    notFoundBody: "Không tìm thấy {model} trên {source} nên không thể chạy kiểm tra bảo mật. Hãy kiểm tra tên, hoặc đặt token có quyền truy cập nếu kho lưu trữ là riêng tư.",
+    notOnModelScopeBody: "{model} không có trên ModelScope nên không thể chạy kiểm tra bảo mật và không thể tải từ đó. Hãy chuyển nguồn mô hình sang Hugging Face trong Cài đặt để sử dụng.",
+    checksFailedTitle: "Không thể chạy kiểm tra bảo mật",
+    checksFailedBody: "Không thể đọc {model} từ {source} nên không thể hoàn tất kiểm tra bảo mật và không thể tải. Hãy kiểm tra kết nối và token rồi thử lại. {note}",
     enableAndContinue: "Bật và tiếp tục",
   },
   tour: {
@@ -5795,7 +5914,7 @@ export const vi = {
     skippedVersion: "Tạm thời bỏ qua {component} {version}",
     skippedUpdate: "Tạm thời bỏ qua bản cập nhật {component}",
     skippedUpdates: "Tạm thời bỏ qua các bản cập nhật {components}",
-    vulkanFaster: "Vulkan nhanh hơn ROCM trên 10%. Không cần khởi động lại",
+    vulkanFaster: "Nhanh hơn trên 10%",
     noRestart: "Không cần khởi động lại",
     downloadSize: "Dung lượng tải xuống {size}",
     backendChange: "Backend {change}",
@@ -5804,8 +5923,8 @@ export const vi = {
     installingPhase: "Đang cài đặt {component} ({current} trên {total})...",
     installingCount: "Đang cài đặt {count} bản cập nhật...",
     bundleTitle: "{count} bản cập nhật runtime",
-    newBackend: "Backend {component} mới",
-    newUpdate: "Bản cập nhật {component} mới",
+    newBackend: "Backend runtime mới",
+    newUpdate: "Bản cập nhật runtime mới",
     hideUpdate: "Ẩn bản cập nhật {component} cho đến khi mở lại Unsloth",
     hideUpdates: "Ẩn các bản cập nhật {components} cho đến khi mở lại Unsloth",
     whatsNew: "Có gì mới",
@@ -5813,5 +5932,61 @@ export const vi = {
     later: "Để sau",
     update: "Cập nhật",
     undo: "Hoàn tác",
+  },
+  generationStats: {
+    working: "Đang xử lý...",
+    processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
+    timeLeft: "còn {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "bản nháp được chấp nhận {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Thời gian của tin nhắn",
+      firstToken: "Token đầu tiên",
+      speedInStep: "Tốc độ (trong bước)",
+      effective: "Hiệu dụng",
+      output: "Đầu ra",
+      denoising: "Khử nhiễu",
+      stepsOne: "{count} bước",
+      steps: "{count} bước",
+      blocksOne: "{count} khối",
+      blocks: "{count} khối",
+      canvas: "Khung vẽ",
+      generation: "Quá trình tạo",
+      answerTokens: "Token câu trả lời",
+      prompt: "Lời nhắc",
+      total: "Tổng",
+      chunks: "Đoạn",
+      promptEval: "Xử lý lời nhắc",
+      promptSpeed: "Tốc độ lời nhắc",
+      speed: "Tốc độ",
+      tokens: "Token",
+      draftAccepted: "Bản nháp được chấp nhận",
+      denoisingSteps: "Bước khử nhiễu",
+      blocksLabel: "Khối",
+      cacheHits: "Lượt dùng bộ nhớ đệm",
+      cacheWrites: "Lượt ghi bộ nhớ đệm",
+      stopReason: "Lý do dừng",
+      stoppedByYou: "Bạn đã dừng",
+      endOfTurn: "Kết thúc lượt",
+      lengthLimit: "Giới hạn độ dài",
+      toolCall: "Lệnh gọi công cụ",
+      contentFilter: "Bộ lọc nội dung",
+    },
+    placement: {
+      title: "Vị trí trọng số",
+      allOnCpu: "Cả {total} lớp trên CPU",
+      split: "{gpu} trong {total} lớp trên GPU, {cpu} trên CPU",
+      allOnGpu: "Cả {total} lớp trên GPU",
+      expertCache: "Cả {total} lớp trên GPU, mọi expert trong RAM ({amount} bộ nhớ đệm expert trên GPU)",
+      expertSpillOne: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      expertSpill: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      inUnifiedMemory: "{amount} trong bộ nhớ hợp nhất",
+      inSharedMemory: "{amount} trong bộ nhớ dùng chung",
+      inVram: "{amount} trong VRAM",
+      inRam: "{amount} trong RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

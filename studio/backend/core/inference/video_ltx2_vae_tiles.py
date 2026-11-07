@@ -249,7 +249,7 @@ def tiled_decode(
     """Decode ``z`` in the tiles ``plan_tiles`` picks; on OOM, once more in the stock-size 16-latent tiles."""
     from diffusers.models.autoencoders.vae import DecoderOutput
 
-    from .diffusion_batched import is_oom_error
+    from .video_vae_untiled import _is_oom  # CPU allocator refusals too: tiles plan from host RAM
 
     (th, tw), budgeted = _plan(vae, z)
     floor = (min(MIN_TILE_LATENTS, int(z.shape[-2])), min(MIN_TILE_LATENTS, int(z.shape[-1])))
@@ -261,7 +261,7 @@ def tiled_decode(
     try:
         dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
     except Exception as exc:  # noqa: BLE001
-        if (th, tw) == floor or not is_oom_error(exc):
+        if (th, tw) == floor or not _is_oom(exc):
             raise
         failed = True
     if failed and oom_free_first(vae, z):
@@ -271,7 +271,7 @@ def tiled_decode(
         try:
             dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
         except Exception as exc:  # noqa: BLE001
-            if not is_oom_error(exc):
+            if not _is_oom(exc):
                 raise
             failed = True
     if failed:

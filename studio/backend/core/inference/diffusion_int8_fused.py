@@ -107,12 +107,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         offs,
         mask,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FINAL_ROUND: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FINAL_ROUND: tl.constexpr,  # round to bf16 at the end
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
@@ -161,14 +161,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         p_sb,
         p_ss,
         p_sh,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        HAS_PREFIX: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        CHUNK: tl.constexpr,
-        CHUNK_A: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        HAS_PREFIX: tl.constexpr,  # fused prefix (attn output) columns
+        HEAD_DIM: tl.constexpr,  # hd of the prefix
+        CHUNK: tl.constexpr,  # columns per loop step
+        CHUNK_A: tl.constexpr,  # prefix columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -301,11 +301,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v0,
         offs,
         m,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         g = _pre(
             crow + g0,
@@ -351,11 +351,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         V0,
         stride_c,
         stride_q,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
@@ -413,9 +413,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         K,
         stride_x,
         stride_q,
-        BLOCK: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        BLOCK: tl.constexpr,  # block size along the row
+        ONE_PASS: tl.constexpr,  # row fits one block
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
@@ -455,7 +455,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
 
     @triton.jit
-    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
+    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):  # block size along the row
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
         y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
@@ -469,11 +469,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         o_ptr,
         N,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)

@@ -999,11 +999,77 @@ test("a blocked site's blob: page can't download past the block", async () => {
   prefs.setAskBeforeDownloading(true);
 });
 
-test("the download prompt offers Remember only for files a remembered answer can cover", async () => {
-  const { readFileSync } = await import("node:fs");
-  const source = readFileSync(new URL("../src/features/browser/download-approval.tsx", import.meta.url), "utf8");
-  // A file that runs code asks whatever was remembered (approveDownload), so its prompt has no checkbox.
-  assert.match(source, /\{request\?\.origin && !request\.dangerous \? \(\s*<label/);
+test("a file that runs code can be remembered for its site, or for every site", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const answer = (allow: boolean, remember: boolean | "all") => answerDownload(useApprovalStore.getState().queue[0], allow, remember);
+  try {
+    // Always for this site, on a program: that site's programs stop asking; other sites' still ask.
+    const app = approveDownload("https://f.example/App.dmg", "App.dmg");
+    answer(true, true);
+    assert.equal(await app, true);
+    assert.equal(useDownloadSitesStore.getState().sites["https://f.example"], "allowAll");
+    assert.equal(await approveDownload("https://f.example/Other.pkg", "Other.pkg"), true);
+    const elsewhere = approveDownload("https://g.example/App.dmg", "App.dmg");
+    assert.equal(useApprovalStore.getState().queue.length, 1);
+    // Cancel with every site chosen is this once: nothing is blocked or turned off.
+    answer(false, "all");
+    assert.equal(await elsewhere, false);
+    assert.equal(useBrowserPrefsStore.getState().askBeforeDownloading, true);
+
+    // Every site, on an ordinary file: ordinary files stop asking, programs still ask.
+    const zip = approveDownload("https://h.example/a.zip", "a.zip");
+    const exe = approveDownload("https://h.example/b.exe", "b.exe");
+    const pdf = approveDownload("https://i.example/c.pdf", "c.pdf");
+    answer(true, "all");
+    assert.equal(await zip, true);
+    assert.equal(await pdf, true);
+    assert.deepEqual(useApprovalStore.getState().queue.map(({ name }) => name), ["b.exe"]);
+    assert.equal(useBrowserPrefsStore.getState().askBeforeProgramDownloads, true);
+    // Every site, on a program: programs stop asking too.
+    answer(true, "all");
+    assert.equal(await exe, true);
+    assert.equal(useBrowserPrefsStore.getState().askBeforeProgramDownloads, false);
+    assert.equal(await approveDownload("https://j.example/d.msi", "d.msi"), true);
+    // A program saved from the context menu follows the every-site choice too.
+    const { approveChosenDownload } = await import("../src/features/browser/download-approval-queue.ts");
+    assert.equal(await approveChosenDownload("https://k.example/f.exe", "f.exe"), true);
+    // The agent's downloads of programs still ask whatever the user chose.
+    const agent = approveDownload("https://j.example/e.msi", "e.msi", undefined, "allow");
+    assert.equal(useApprovalStore.getState().queue.length, 1);
+    answer(false, false);
+    assert.equal(await agent, false);
+  } finally {
+    useBrowserPrefsStore.getState().setAskBeforeDownloading(true);
+    useBrowserPrefsStore.getState().setAskBeforeProgramDownloads(true);
+    useDownloadSitesStore.getState().setSite("https://f.example", null);
+  }
+});
+
+test("an answer remembered for other files never settles one the browser agent is waiting on", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  try {
+    const mine = approveDownload("https://m.example/App.dmg", "App.dmg");
+    const agents = approveDownload("https://m.example/Tool.dmg", "Tool.dmg", undefined, "allow");
+    const agentZip = approveDownload("https://m.example/a.zip", "a.zip", undefined, "ask");
+    answerDownload(useApprovalStore.getState().queue[0], true, "all");
+    assert.equal(await mine, true);
+    assert.deepEqual(useApprovalStore.getState().queue.map(({ name }) => name), ["Tool.dmg", "a.zip"]);
+    answerDownload(useApprovalStore.getState().queue[0], true, true);
+    assert.equal(await agents, true);
+    assert.deepEqual(useApprovalStore.getState().queue.map(({ name }) => name), ["a.zip"]);
+    answerDownload(useApprovalStore.getState().queue[0], false, false);
+    assert.equal(await agentZip, false);
+  } finally {
+    useBrowserPrefsStore.getState().setAskBeforeDownloading(true);
+    useBrowserPrefsStore.getState().setAskBeforeProgramDownloads(true);
+    useDownloadSitesStore.getState().setSite("https://m.example", null);
+  }
 });
 
 test("a finished download links to its history row, and an unrecorded one drops its forgotten native id", async () => {

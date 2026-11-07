@@ -13,7 +13,7 @@ import type {
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { AlertCircleIcon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useState } from "react";
@@ -23,7 +23,8 @@ interface UpdateBannerProps {
   info: UpdateInfo | null;
   dismissed: boolean;
   lastFailure: RetainedUpdateFailure | null;
-  isExternalServer?: boolean;
+  // Set while attached to a server this app did not start, which blocks the update.
+  externalServerPort?: number | null;
   updatePolicyMode: DesktopUpdatePolicyMode;
   manualReleaseUrl: string | null;
   // Release page for this version, preferred over the generic changelog.
@@ -48,7 +49,7 @@ export function UpdateBanner({
   info,
   dismissed,
   lastFailure,
-  isExternalServer = false,
+  externalServerPort = null,
   updatePolicyMode,
   manualReleaseUrl,
   releasePageUrl = null,
@@ -72,12 +73,13 @@ export function UpdateBanner({
   );
   const show = showFailure || offerOpen;
   const isManualLinuxPackage = updatePolicyMode === "manual_linux_package";
+  const isExternalServer = externalServerPort !== null;
   const installDisabled = isManualLinuxPackage
     ? manualReleaseUrl === null
     : isExternalServer;
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
-  const icon = showFailure ? AlertCircleIcon : Download01Icon;
+  const icon = showFailure ? Alert02Icon : Download01Icon;
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
@@ -172,7 +174,9 @@ export function UpdateBanner({
                     : isManualLinuxPackage
                       ? t("desktopUpdate.banner.linuxManual")
                       : isExternalServer
-                        ? t("settings.about.update.desktopExternalServer")
+                        ? t("settings.about.update.desktopExternalServer", {
+                            port: externalServerPort,
+                          })
                         : t("desktopUpdate.banner.available")}
                 </p>
               </div>

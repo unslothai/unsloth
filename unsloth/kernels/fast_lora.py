@@ -29,6 +29,7 @@ from .utils import (
     torch_amp_custom_bwd,
 )
 from . import rms_layernorm as _rms_layernorm
+from .fp8_lora import has_fp8_dgrad
 
 _is_compiling = torch.compiler.is_compiling
 
@@ -335,6 +336,31 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
         dX.add_(_dropout_replay(y_dB @ A.t(), mask, p, S))
 
 
+def _grad_needed(ctx, index):
+    # A ctx without the flags (handcrafted) computes every gradient.
+    needs = getattr(ctx, "needs_input_grad", None)
+    return needs is None or index >= len(needs) or bool(needs[index])
+
+
+def _t(x):
+    return None if x is None else x.t()
+
+
+def _lora_AB_grads(X, mask, p, y_dB, A, B, dY, S, need_A, need_B):
+    # A, B transposed; Xd = X through the LoRA dropout mask. None for a frozen factor.
+    if not (need_A or need_B):
+        return None, None
+    d_A = d_B = None
+    Xd = X if mask is None else _dropout_replay(X, mask, p)
+    if need_A:
+        d_A = torch.empty_like(A)
+        d_A.addmm_(Xd.t(), y_dB, alpha = S, beta = 0)
+    if need_B:
+        d_B = torch.empty_like(B)
+        d_B.addmm_(A.t() @ Xd.t(), dY, alpha = S, beta = 0)
+    return d_A, d_B
+
+
 def _shared_XA(X, As, dtype):
     # One X @ [A_1; A_2; ...].t() instead of one pass over X per projection; per-projection column views.
     # Compressed sparse adapters cannot be concatenated: one product each, as before.
@@ -345,16 +371,29 @@ def _shared_XA(X, As, dtype):
     return XA.split_with_sizes([A.shape[0] for A in As], 1)
 
 
-def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
+def _shared_lora_backward(
+    X,
+    dYs,
+    As,
+    Bs,
+    S,
+    dX_out,
+    need_A = None,
+    need_B = None,
+):
     # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
     # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
+    need_A = (True,) * len(As) if need_A is None else need_A
+    need_B = (True,) * len(Bs) if need_B is None else need_B
     A_rows = torch.cat([A.t() for A in As], 0)
     rs = [B.shape[0] for B in Bs]
-    d_Bs = []
-    for AX_, dY, B in zip((A_rows @ X.t()).split_with_sizes(rs, 0), dYs, Bs):
-        d_Bs.append(torch.empty_like(B).addmm_(AX_, dY, alpha = S, beta = 0))
-    # The last view keeps the whole A @ X.t() buffer alive otherwise.
-    del AX_
+    d_Bs = [None] * len(Bs)
+    if any(need_B):
+        for i, (AX_, dY, B) in enumerate(zip((A_rows @ X.t()).split_with_sizes(rs, 0), dYs, Bs)):
+            if need_B[i]:
+                d_Bs[i] = torch.empty_like(B).addmm_(AX_, dY, alpha = S, beta = 0)
+        # The last view keeps the whole A @ X.t() buffer alive otherwise.
+        del AX_
     if _is_compiling() or torch.is_grad_enabled():
         # Traced, Inductor plans the buffers; slice writes would only add scatter copies. A recorded
         # backward (create_graph) cannot write through sibling split views either.
@@ -363,10 +402,12 @@ def _shared_lora_backward(X, dYs, As, Bs, S, dX_out):
         dB = dYs[0].new_empty((X.shape[0], A_rows.shape[0]))
         for dB_, dY, B in zip(dB.split_with_sizes(rs, 1), dYs, Bs):
             dB_.addmm_(dY, B.t(), beta = 0)
-    dA = dB.new_empty((A_rows.shape[0], X.shape[1]))
-    dA.addmm_(dB.t(), X, alpha = S, beta = 0)
-    d_As = [dA_.t() for dA_ in dA.split_with_sizes(rs, 0)]
-    del dA
+    d_As = [None] * len(As)
+    if any(need_A):
+        dA = dB.new_empty((A_rows.shape[0], X.shape[1]))
+        dA.addmm_(dB.t(), X, alpha = S, beta = 0)
+        d_As = [dA_.t() if need else None for dA_, need in zip(dA.split_with_sizes(rs, 0), need_A)]
+        del dA
     if dX_out is None and _is_compiling():
         dX = torch.addmm(dB.new_zeros(1), dB, A_rows, beta = 0, alpha = S)
     elif dX_out is None:
@@ -653,12 +694,19 @@ class LoRA_MLP(torch.autograd.Function):
         if down_mask is not None:
             h = _dropout_replay(h, down_mask, down_p)
 
-        d_downA = torch.empty_like(downA)
-        d_downB = torch.empty_like(downB)
+        # Forward input indices of gate / up / down A, B.
+        need_gateA, need_gateB, need_upA, need_upB, need_downA, need_downB = (
+            _grad_needed(ctx, i) for i in (3, 4, 8, 9, 13, 14)
+        )
 
         # d_downA = h.t() @ (dY @ downB.t()), d_downB = (downA.t() @ h.t()) @ dY, both scaled by downS.
-        d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
-        d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
+        d_downA = d_downB = None
+        if need_downA:
+            d_downA = torch.empty_like(downA)
+            d_downA.addmm_(h.t(), dY @ downB.t(), alpha = downS, beta = 0)
+        if need_downB:
+            d_downB = torch.empty_like(downB)
+            d_downB.addmm_(downA.t() @ h.t(), dY, alpha = downS, beta = 0)
 
         if fused and gateS == upS and df.dtype == de.dtype == dY.dtype:
             (d_gateA, d_upA), (d_gateB, d_upB), dX = _shared_lora_backward(
@@ -668,12 +716,20 @@ class LoRA_MLP(torch.autograd.Function):
                 (gateB, upB),
                 gateS,
                 X if ctx.inplace and not _is_compiling() else None,
+                need_A = (need_gateA, need_upA),
+                need_B = (need_gateB, need_upB),
             )
-            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
-            addmm_(dX, df, upW.t())
+            if has_fp8_dgrad(upW_quant):
+                dX = upW_quant.dgrad_accum(df, upW, dX)
+            else:
+                upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+                addmm_(dX, df, upW.t())
             del upW
-            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
-            addmm_(dX, de, gateW.t())
+            if has_fp8_dgrad(gateW_quant):
+                dX = gateW_quant.dgrad_accum(de, gateW, dX)
+            else:
+                gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+                addmm_(dX, de, gateW.t())
             del gateW
             d_gateBias = d_upBias = None
             d_downBias = _lora_bias_grad(dY, downS) if ctx.biases[2] else None
@@ -681,18 +737,18 @@ class LoRA_MLP(torch.autograd.Function):
                 dX.view(batch, seq_len, hd),
                 None,
                 None,
-                d_gateA.t(),
-                d_gateB.t(),
+                _t(d_gateA),
+                _t(d_gateB),
                 None,
                 None,
                 None,
-                d_upA.t(),
-                d_upB.t(),
+                _t(d_upA),
+                _t(d_upB),
                 None,
                 None,
                 None,
-                d_downA.t(),
-                d_downB.t(),
+                _t(d_downA),
+                _t(d_downB),
                 None,
                 None,
                 None,
@@ -703,10 +759,6 @@ class LoRA_MLP(torch.autograd.Function):
                 d_downBias,
             )
 
-        d_gateA = torch.empty_like(gateA)
-        d_gateB = torch.empty_like(gateB)
-        d_upA = torch.empty_like(upA)
-        d_upB = torch.empty_like(upB)
         up_dB = df @ upB.t()
         gate_dB = de @ gateB.t()
 
@@ -716,15 +768,13 @@ class LoRA_MLP(torch.autograd.Function):
             gate_mask = gate_mask.view(-1, hd)
 
         # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
-        Xd = X if up_mask is None else _dropout_replay(X, up_mask, up_p)
-        d_upA.addmm_(Xd.t(), up_dB, alpha = upS, beta = 0)
-        d_upB.addmm_(upA.t() @ Xd.t(), df, alpha = upS, beta = 0)
-
+        d_upA, d_upB = _lora_AB_grads(
+            X, up_mask, up_p, up_dB, upA, upB, df, upS, need_upA, need_upB
+        )
         # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
-        Xd = X if gate_mask is None else _dropout_replay(X, gate_mask, gate_p)
-        d_gateA.addmm_(Xd.t(), gate_dB, alpha = gateS, beta = 0)
-        d_gateB.addmm_(gateA.t() @ Xd.t(), de, alpha = gateS, beta = 0)
-        del Xd
+        d_gateA, d_gateB = _lora_AB_grads(
+            X, gate_mask, gate_p, gate_dB, gateA, gateB, de, gateS, need_gateA, need_gateB
+        )
 
         gate_has_bias, up_has_bias, down_has_bias = ctx.biases
         d_gateBias = _lora_bias_grad(de, gateS) if gate_has_bias else None
@@ -732,33 +782,39 @@ class LoRA_MLP(torch.autograd.Function):
         d_downBias = _lora_bias_grad(dY, downS) if down_has_bias else None
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
-        # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
-        del upW
+        if has_fp8_dgrad(upW_quant):
+            dX = upW_quant.dgrad(df, upW)
+        else:
+            upW = fast_dequantize(upW.t(), upW_quant, dtype = df.dtype)
+            # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
+            dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+            del upW
         _add_lora_dX(dX, up_dB, upA, upS, up_mask, up_p)
 
-        gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
-        addmm_(dX, de, gateW.t())
-        del gateW
+        if has_fp8_dgrad(gateW_quant):
+            dX.add_(gateW_quant.dgrad(de, gateW))
+        else:
+            gateW = fast_dequantize(gateW.t(), gateW_quant, dtype = de.dtype)
+            addmm_(dX, de, gateW.t())
+            del gateW
         _add_lora_dX(dX, gate_dB, gateA, gateS, gate_mask, gate_p)
 
         return (
             dX.view(batch, seq_len, hd),
             None,
             None,
-            d_gateA.t(),
-            d_gateB.t(),
+            _t(d_gateA),
+            _t(d_gateB),
             None,
             None,
             None,
-            d_upA.t(),
-            d_upB.t(),
+            _t(d_upA),
+            _t(d_upB),
             None,
             None,
             None,
-            d_downA.t(),
-            d_downB.t(),
+            _t(d_downA),
+            _t(d_downB),
             None,
             None,
             None,
@@ -1090,6 +1146,11 @@ class LoRA_QKV(torch.autograd.Function):
 
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
+        # Forward input indices of Q / K / V A, B.
+        need_QA, need_QB, need_KA, need_KB, need_VA, need_VB = (
+            _grad_needed(ctx, i) for i in (3, 4, 8, 9, 13, 14)
+        )
+
         # Weight projection LoRA derivatives; see the Unsloth blogpost.
         if (
             getattr(ctx, "fused", False)
@@ -1107,31 +1168,36 @@ class LoRA_QKV(torch.autograd.Function):
                 (QB, KB, VB),
                 QS,
                 X if ctx.inplace and not _is_compiling() else None,
+                need_A = (need_QA, need_KA, need_VA),
+                need_B = (need_QB, need_KB, need_VB),
             )
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
-                W_ = (
-                    W_.t()
-                    if W_quant_ is None
-                    else fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
-                )
-                addmm_(dX, dY_, W_.t())
+                if has_fp8_dgrad(W_quant_):
+                    dX = W_quant_.dgrad_accum(dY_, W_, dX)
+                else:
+                    W_ = (
+                        W_.t()
+                        if W_quant_ is None
+                        else fast_dequantize(W_.t(), W_quant_, dtype = dY_.dtype)
+                    )
+                    addmm_(dX, dY_, W_.t())
                 del W_
             return (
                 dX.view(batch, seq_len, hd),
                 None,
                 None,
-                d_QA.t(),
-                d_QB.t(),
+                _t(d_QA),
+                _t(d_QB),
                 None,
                 None,
                 None,
-                d_KA.t(),
-                d_KB.t(),
+                _t(d_KA),
+                _t(d_KB),
                 None,
                 None,
                 None,
-                d_VA.t(),
-                d_VB.t(),
+                _t(d_VA),
+                _t(d_VB),
                 None,
                 None,
                 None,
@@ -1140,12 +1206,6 @@ class LoRA_QKV(torch.autograd.Function):
                 None,
             )
 
-        d_QA = torch.empty_like(QA)
-        d_QB = torch.empty_like(QB)
-        d_KA = torch.empty_like(KA)
-        d_KB = torch.empty_like(KB)
-        d_VA = torch.empty_like(VA)
-        d_VB = torch.empty_like(VB)
         q_dB = dQ @ QB.t()
         k_dB = dK @ KB.t()
         v_dB = dV @ VB.t()
@@ -1156,18 +1216,9 @@ class LoRA_QKV(torch.autograd.Function):
 
         # d_QA = X.t() @ (dQ @ QB.t()), d_QB = (QA.t() @ X.t()) @ dQ, both scaled by QS; K and V below are
         # identical with their own scales.
-        Xd = X if Q_mask is None else _dropout_replay(X, Q_mask, Q_p)
-        d_QA.addmm_(Xd.t(), q_dB, alpha = QS, beta = 0)
-        d_QB.addmm_(QA.t() @ Xd.t(), dQ, alpha = QS, beta = 0)
-
-        Xd = X if K_mask is None else _dropout_replay(X, K_mask, K_p)
-        d_KA.addmm_(Xd.t(), k_dB, alpha = KS, beta = 0)
-        d_KB.addmm_(KA.t() @ Xd.t(), dK, alpha = KS, beta = 0)
-
-        Xd = X if V_mask is None else _dropout_replay(X, V_mask, V_p)
-        d_VA.addmm_(Xd.t(), v_dB, alpha = VS, beta = 0)
-        d_VB.addmm_(VA.t() @ Xd.t(), dV, alpha = VS, beta = 0)
-        del Xd
+        d_QA, d_QB = _lora_AB_grads(X, Q_mask, Q_p, q_dB, QA, QB, dQ, QS, need_QA, need_QB)
+        d_KA, d_KB = _lora_AB_grads(X, K_mask, K_p, k_dB, KA, KB, dK, KS, need_KA, need_KB)
+        d_VA, d_VB = _lora_AB_grads(X, V_mask, V_p, v_dB, VA, VB, dV, VS, need_VA, need_VB)
 
         Q_has_bias, K_has_bias, V_has_bias = ctx.biases
         d_QBias = _lora_bias_grad(dQ, QS) if Q_has_bias else None
@@ -1175,37 +1226,46 @@ class LoRA_QKV(torch.autograd.Function):
         d_VBias = _lora_bias_grad(dV, VS) if V_has_bias else None
 
         # Combine the per-projection derivatives into dX.
-        QW = fast_dequantize(QW.t(), QW_quant, dtype = dQ.dtype)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
-        del QW
+        if has_fp8_dgrad(QW_quant):
+            dX = QW_quant.dgrad(dQ, QW)
+        else:
+            QW = fast_dequantize(QW.t(), QW_quant, dtype = dQ.dtype)
+            dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+            del QW
         _add_lora_dX(dX, q_dB, QA, QS, Q_mask, Q_p)
 
-        KW = fast_dequantize(KW.t(), KW_quant, dtype = dK.dtype)
-        addmm_(dX, dK, KW.t())
-        del KW
+        if has_fp8_dgrad(KW_quant):
+            dX.add_(KW_quant.dgrad(dK, KW))
+        else:
+            KW = fast_dequantize(KW.t(), KW_quant, dtype = dK.dtype)
+            addmm_(dX, dK, KW.t())
+            del KW
         _add_lora_dX(dX, k_dB, KA, KS, K_mask, K_p)
 
-        VW = fast_dequantize(VW.t(), VW_quant, dtype = dV.dtype)
-        addmm_(dX, dV, VW.t())
-        del VW
+        if has_fp8_dgrad(VW_quant):
+            dX.add_(VW_quant.dgrad(dV, VW))
+        else:
+            VW = fast_dequantize(VW.t(), VW_quant, dtype = dV.dtype)
+            addmm_(dX, dV, VW.t())
+            del VW
         _add_lora_dX(dX, v_dB, VA, VS, V_mask, V_p)
 
         return (
             dX.view(batch, seq_len, hd),
             None,
             None,
-            d_QA.t(),
-            d_QB.t(),
+            _t(d_QA),
+            _t(d_QB),
             None,
             None,
             None,
-            d_KA.t(),
-            d_KB.t(),
+            _t(d_KA),
+            _t(d_KB),
             None,
             None,
             None,
-            d_VA.t(),
-            d_VB.t(),
+            _t(d_VA),
+            _t(d_VB),
             None,
             None,
             None,
@@ -1343,16 +1403,11 @@ class LoRA_W(torch.autograd.Function):
 
         A, B = A.t(), B.t()
 
-        d_A = torch.empty_like(A)
-        d_B = torch.empty_like(B)
-
         y_dB = dY @ B.t()
 
-        # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S.
-        Xd = X if mask is None else _dropout_replay(X, mask, ctx.dropout_p)
-        d_A.addmm_(Xd.t(), y_dB, alpha = S, beta = 0)
-        d_B.addmm_(A.t() @ Xd.t(), dY, alpha = S, beta = 0)
-        del Xd
+        d_A, d_B = _lora_AB_grads(
+            X, mask, ctx.dropout_p, y_dB, A, B, dY, S, _grad_needed(ctx, 3), _grad_needed(ctx, 4)
+        )
         d_bias = _lora_bias_grad(dY, S) if ctx.has_bias else None
 
         if getattr(ctx, "fused", False) and (
@@ -1365,16 +1420,22 @@ class LoRA_W(torch.autograd.Function):
                 dX = y_dB.new_empty((y_dB.shape[0], A.shape[0])).addmm_(
                     y_dB, A.t(), beta = 0, alpha = S
                 )
-            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-            addmm_(dX, dY, W.t())
+            if has_fp8_dgrad(W_quant):
+                dX = W_quant.dgrad_accum(dY, W, dX)
+            else:
+                W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+                addmm_(dX, dY, W.t())
             del W
         else:
-            W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
-            dX = dY @ W.t()
+            if has_fp8_dgrad(W_quant):
+                dX = W_quant.dgrad(dY, W)
+            else:
+                W = fast_dequantize(W.t(), W_quant, dtype = dY.dtype)
+                dX = dY @ W.t()
             del W
             _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
 
-        return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None, None, d_bias
+        return dX.view(batch, seq_len, hd), None, None, _t(d_A), _t(d_B), None, None, d_bias
 
 
 def apply_lora_o(self, X):

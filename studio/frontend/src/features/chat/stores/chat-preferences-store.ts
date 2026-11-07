@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
@@ -18,22 +19,12 @@ import {
   type DisplayVisibility,
   migrateVisibility,
 } from "../utils/display-visibility.ts";
+import {
+  DEFAULT_GENERATION_STATS_UPDATES,
+  type GenerationStatsUpdates,
+  normaliseGenerationStatsUpdates,
+} from "../lib/live-generation-stats.ts";
 
-// Client-side chat UI prefs kept in localStorage, not the chat DB. confirmDeleteChats: off skips
-// the delete confirm dialog. alwaysDeleteChatFiles: on also removes the sandbox folder.
-// showResponseModel: on shows
-// the producing model on responses. thinkingVisibility / toolVisibility: collapsed, auto or
-// expanded, see display-visibility.ts. foldToolActivityIntoThinking: on hides a round's tool calls
-// until its thinking block is opened, and has no effect while toolVisibility is "expanded".
-// pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
-// showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
-// More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
-// window is hidden or unfocused. showReplyTimes: on shows when each reply finished under it.
-// showGenerationDetails: on shows live prefill / decode figures while a reply streams and where
-// a local model's layers ended up after it loads.
-// filesPanelCollapsed: on shrinks Chat with files to a header and
-// a row of pills. newChatComposerAtBottom: on docks a new chat's composer at the bottom, as once
-// the chat has messages, instead of under the greeting mid-page.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -49,10 +40,14 @@ export interface ChatPreferencesState {
   setAlwaysDeleteChatFiles: (value: boolean) => void;
   showResponseModel: boolean;
   setShowResponseModel: (value: boolean) => void;
+  showLinkPreviews: boolean;
+  setShowLinkPreviews: (value: boolean) => void;
   showReplyTimes: boolean;
   setShowReplyTimes: (value: boolean) => void;
   showGenerationDetails: boolean;
   setShowGenerationDetails: (value: boolean) => void;
+  generationStatsUpdates: GenerationStatsUpdates;
+  setGenerationStatsUpdates: (value: GenerationStatsUpdates) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -69,8 +64,22 @@ export interface ChatPreferencesState {
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
   setFilesPanelCollapsed: (value: boolean) => void;
-  newChatComposerAtBottom: boolean;
-  setNewChatComposerAtBottom: (value: boolean) => void;
+  /** New chat composer height, 0 (top) to 100 (docked at the bottom); 50 is the middle. */
+  newChatComposerPosition: number;
+  setNewChatComposerPosition: (value: number) => void;
+  showTurnNavigation: boolean;
+  setShowTurnNavigation: (value: boolean) => void;
+  richTextPaste: boolean;
+  setRichTextPaste: (value: boolean) => void;
+}
+
+export const COMPOSER_POSITION_MIDDLE = 50;
+export const COMPOSER_POSITION_BOTTOM = 100;
+// Records from the old on/off setting carry only newChatComposerAtBottom.
+export function normaliseComposerPosition(value: unknown, legacyBottom = false): number {
+  if (typeof value === "number" && Number.isFinite(value))
+    return Math.max(0, Math.min(COMPOSER_POSITION_BOTTOM, Math.round(value)));
+  return legacyBottom ? COMPOSER_POSITION_BOTTOM : COMPOSER_POSITION_MIDDLE;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -99,13 +108,16 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ alwaysDeleteChatFiles }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      // Off by default: it adds text under every reply, so it stays opt in.
+      showLinkPreviews: true,
+      setShowLinkPreviews: (showLinkPreviews) => set({ showLinkPreviews }),
       showReplyTimes: false,
       setShowReplyTimes: (showReplyTimes) => set({ showReplyTimes }),
-      // Off by default: it adds a line of numbers under streaming replies, so it stays opt in.
       showGenerationDetails: false,
       setShowGenerationDetails: (showGenerationDetails) =>
         set({ showGenerationDetails }),
+      generationStatsUpdates: DEFAULT_GENERATION_STATS_UPDATES,
+      setGenerationStatsUpdates: (value) =>
+        set({ generationStatsUpdates: normaliseGenerationStatsUpdates(value) }),
       showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -123,16 +135,19 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
-      // Off by default: it asks for notification permission, so it stays opt in.
       notifyWhenReplyFinishes: false,
       setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
         set({ notifyWhenReplyFinishes }),
       filesPanelCollapsed: false,
       setFilesPanelCollapsed: (filesPanelCollapsed) =>
         set({ filesPanelCollapsed }),
-      newChatComposerAtBottom: false,
-      setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
-        set({ newChatComposerAtBottom }),
+      newChatComposerPosition: COMPOSER_POSITION_MIDDLE,
+      setNewChatComposerPosition: (value) =>
+        set({ newChatComposerPosition: normaliseComposerPosition(value) }),
+      showTurnNavigation: true,
+      setShowTurnNavigation: (showTurnNavigation) => set({ showTurnNavigation }),
+      richTextPaste: true,
+      setRichTextPaste: (richTextPaste) => set({ richTextPaste }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -157,8 +172,12 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
+          showLinkPreviews: saved?.showLinkPreviews !== false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,
+          generationStatsUpdates: normaliseGenerationStatsUpdates(
+            saved?.generationStatsUpdates,
+          ),
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
@@ -178,9 +197,17 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
-          newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
+          showTurnNavigation: saved?.showTurnNavigation !== false,
+          richTextPaste: saved?.richTextPaste !== false,
+          newChatComposerPosition: normaliseComposerPosition(
+            saved?.newChatComposerPosition,
+            (persisted as { newChatComposerAtBottom?: unknown } | undefined)
+              ?.newChatComposerAtBottom === true,
+          ),
         };
       },
     },
   ),
 );
+
+syncAcrossWindows(useChatPreferencesStore);
