@@ -10,6 +10,7 @@ leg named ubuntu-latest keeps its check name and maps to ubuntu-24.04 in runs-on
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -43,13 +44,13 @@ def runners(job: dict) -> list[str]:
 
 
 def webkit_jobs() -> list[tuple[str, str, dict]]:
+    """Jobs that drive Playwright with WebKit as an engine; a file name such as test_webkit_*.py is not one."""
     found = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
         doc = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
         for name, job in (doc.get("jobs") or {}).items():
-            if "webkit" in json.dumps(job.get("steps") or []) + json.dumps(
-                job.get("strategy") or {}
-            ):
+            text = json.dumps(job.get("steps") or []) + json.dumps(job.get("strategy") or {})
+            if "playwright" in text and re.search(r"\bwebkit\b", text):
                 found.append((path.name, name, job))
     return found
 
