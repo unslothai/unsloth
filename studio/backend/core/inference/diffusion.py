@@ -14221,7 +14221,6 @@ class DiffusionBackend:
             try:
                 self._state_device_target(state)
                 apply_cpu_render_threads(state.device)
-                # A render racing a pinner runs slower.
                 if finish_encoder_pins_before_render(state.pipe, cancel, logger) > 0.0:
                     # Load-side time: the background compile sizes its slices from render_t0.
                     render_t0 = time.perf_counter()
@@ -15670,8 +15669,7 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
-        # A pinner still copying would hold its host copies past release_pinned_host_memory(); encoder pinners
-        # outlive the load, so wait for the exit.
+        # Encoder pinners outlive the load and hold host copies past release_pinned_host_memory(): wait for exit.
         stop_background_pins(getattr(state, "pipe", None), timeout = None)
         # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:

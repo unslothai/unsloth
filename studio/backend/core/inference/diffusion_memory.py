@@ -6708,8 +6708,7 @@ def _mark_pins_settled(pipe: Any) -> None:
 
 
 def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
-    """Start the encoder pins and return; the first render waits for them. A cold encoder file kept Qwen-Image's
-    8 GiB load waiting 24-28 s here."""
+    """Start the encoder pins and return; the first render waits (a cold file held Qwen-Image's load 24-28 s)."""
     if pipe is None:
         return 0.0
     start_background_pins(pipe)
@@ -8754,8 +8753,7 @@ def _apply_streaming_offload(
         def _pins_early(name: Any, module: Any, offload_type: str) -> bool:
             return early_pins and _encoder_defers(name, module, offload_type)
 
-        # Deferred encoders first; their pinners start after the first denoiser's pin decision, so a cold encoder
-        # file reads beside the transformer's slab pin, not after it.
+        # Deferred encoders first, so a cold encoder file reads beside the transformer's slab pin, not after it.
         order = sorted(streamed.items(), key = lambda kv: not _pins_early(kv[0], *kv[1]))
         early_waiting: list = []
         early_started: list = []
