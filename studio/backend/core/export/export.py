@@ -1075,7 +1075,7 @@ class ExportBackend:
                 self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
-                # An unreadable config reads as no vision; only a definitive no from config.json takes the multimodal load below.
+                # Only a definitive no (not an unreadable config) takes the multimodal load below.
                 audio_vlm_without_vision = False
                 if self._audio_type == "audio_vlm" and not self.is_vision:
                     vision_now, vision_known = audio_vlm_vision_checked(

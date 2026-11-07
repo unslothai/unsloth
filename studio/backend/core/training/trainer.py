@@ -230,8 +230,7 @@ _FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
 
 
 def _audio_vlm_auto_model_kwargs(vision: bool) -> dict:
-    """LFM3-Audio (audio in, no vision tower): the default FastModel load builds its bare backbone with
-    no LM head, so it goes through AutoModelForMultimodalLM, as Chat does. Gemma 3n / 4 keep the default."""
+    """No vision tower (LFM3-Audio): the default load builds a backbone with no LM head, so use Chat's class."""
     if vision:
         return {}
     import transformers
@@ -1273,7 +1272,7 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
-            # An unreadable config reads as no vision; only a definitive no from config.json takes the multimodal class.
+            # Only a definitive no (not an unreadable config) takes the multimodal class.
             audio_vlm_has_vision = vision
             if self.is_audio_vlm and not vision:
                 vision_now, vision_known = audio_vlm_vision_checked(

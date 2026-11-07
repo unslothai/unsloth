@@ -4036,9 +4036,7 @@ def _base_config_dicts(model):
 
 
 def _restore_lfm3_audio_release_config(model, save_directory):
-    """LFM3-Audio's remote config saves as text_config / audio_encoder_config, but llama.cpp converts only
-    the release layout (lfm / encoder / depthformer); LoRA leaves the config as released, so the
-    conversion reads the base's own config.json."""
+    """Swap LFM3-Audio's saved text_config layout for the base's release (lfm / encoder) one, the only one llama.cpp reads."""
     path = os.path.join(save_directory, "config.json")
     try:
         with open(path, encoding = "utf-8") as f:
@@ -4069,8 +4067,7 @@ def _restore_lfm3_audio_release_config(model, save_directory):
 
 
 def _release_layout_for_merged_save(model, save_directory, save_method):
-    # A merged LFM3-Audio folder is reloaded with no PEFT base to look the release config up from,
-    # so it carries the release layout itself. 4-bit keeps its quantization_config.
+    # A merged folder has no PEFT base to read the release config from later. 4-bit keeps its quantization_config.
     if "16bit" not in str(save_method) or not os.path.isdir(str(save_directory)):
         return False
     return _restore_lfm3_audio_release_config(model, save_directory)
@@ -4081,10 +4078,10 @@ def _push_lfm3_audio_release_config(
     save_directory,
     token = None,
 ):
-    # A plain PEFT merged push uploads straight from the merge, so the release layout is pushed after it.
+    # The PEFT merged push uploads straight from the merge, so the release config follows it.
     if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
         return False
-    # After the type check: every other merged push would pay a whoami call that can raise post-upload.
+    # Only now: for other models this whoami could raise after a finished upload.
     repo_id = _determine_username(save_directory, None, token)[0]
     import tempfile
 
