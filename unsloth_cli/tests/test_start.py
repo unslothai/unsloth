@@ -2906,7 +2906,6 @@ def test_codex_merges_user_rules_into_a_used_saved_home_as_real_files(
 
     for _ in range(2):
         assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
-        # Codex loads only regular *.rules files, never symlinks.
         rules = {p.name: p for p in (home / "rules").iterdir()}
         assert set(rules) == {"default.rules", "user-default.rules", "team.rules"}
         assert not any(p.is_symlink() for p in rules.values())
