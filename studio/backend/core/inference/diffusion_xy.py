@@ -103,6 +103,9 @@ def expand(request: Any, rng: Optional[random.Random] = None) -> XYPlan:
     axes = [spec.x, spec.y]
     # Unset fields stay unset per cell, so omitted steps / guidance still follow the loaded model.
     base = request.model_dump(exclude_unset = True, exclude = {"xy"})
+    if request.loras:
+        # Nested defaults (weight 1.0) are unset too, and the weight is what the cells change.
+        base["loras"] = [l.model_dump() for l in request.loras]
     if (
         spec.x.field != "seed"
         and (spec.y is None or spec.y.field != "seed")
@@ -110,6 +113,14 @@ def expand(request: Any, rng: Optional[random.Random] = None) -> XYPlan:
     ):
         # One seed for every cell, so only the swept setting differs (A1111 fix_seed).
         base["seed"] = (rng or random).randrange(2**32)
+    fields = {spec.x.field, spec.y.field if spec.y else None}
+    if (
+        "variation_seed" not in fields
+        and base.get("variation_seed") is None
+        and ("variation_strength" in fields or base.get("variation_strength"))
+    ):
+        # Unset, the engine draws a variation seed per generation, so each cell would get other noise.
+        base["variation_seed"] = (rng or random).randrange(2**32)
     # A rewrite per cell would change the thing being compared.
     base.setdefault("enhance_prompt", False)
     x_values = list(spec.x.values)
@@ -134,9 +145,8 @@ def expand(request: Any, rng: Optional[random.Random] = None) -> XYPlan:
                 where = ".".join(str(p) for p in err.get("loc", ())) or "request"
                 raise ValueError(f"xy cell ({label}): {where}: {err.get('msg')}") from None
             cells.append(XYCell(ix, iy, label, cell))
-    base_loras = len(base.get("loras") or [])
     # Adapter-free cells last: Speed Auto may compile on an adapter-free run, and a compiled load refuses LoRA after.
-    order = sorted(range(len(cells)), key = lambda i: len(cells[i].request.loras or []) < base_loras)
+    order = sorted(range(len(cells)), key = lambda i: not cells[i].request.loras)
     return XYPlan(cells, len(x_values), len(y_values), x_labels, y_labels, order)
 
 

@@ -95,7 +95,8 @@ def test_lora_weight_axis_targets_one_entry_and_zero_drops_it():
         [("a", 1.0)],
         [("a", 1.0), ("b", 1.0)],
     ]
-    assert plan.order == [1, 0]
+    # Both cells keep an active adapter, so neither can trigger a compile: row order stands.
+    assert plan.order == [0, 1]
 
 
 def test_out_of_range_value_names_the_cell():
@@ -308,3 +309,61 @@ def test_grid_infotext_records_the_cell_size():
     assert "Size: 2880x2441," in image_gallery._params_text(meta)
     meta["xy_grid"] = {"cell_width": 768, "cell_height": 768}
     assert "Size: 768x768," in image_gallery._params_text(meta)
+
+
+def test_lora_with_its_default_weight_expands():
+    plan = diffusion_xy.expand(
+        _req(loras = [{"id": "adapter"}], xy = {"x": {"field": "steps", "values": [2, 4]}})
+    )
+    assert [c.request.loras[0].weight for c in plan.cells] == [1.0, 1.0]
+
+
+def test_variation_strength_sweep_shares_one_variation_seed():
+    plan = diffusion_xy.expand(
+        _req(xy = {"x": {"field": "variation_strength", "values": [0.1, 0.3, 0.5]}}),
+        rng = random.Random(0),
+    )
+    seeds = {c.request.variation_seed for c in plan.cells}
+    assert len(seeds) == 1 and None not in seeds
+    plain = diffusion_xy.expand(_req(xy = {"x": {"field": "steps", "values": [2, 4]}}))
+    assert {c.request.variation_seed for c in plain.cells} == {None}
+
+
+def test_cells_with_any_adapter_render_before_adapter_free_ones():
+    plan = diffusion_xy.expand(
+        _req(
+            loras = [{"id": "a", "weight": 1}, {"id": "b", "weight": 0}],
+            xy = {"x": {"field": "lora_weight", "index": 0, "values": [0, 1]}},
+        )
+    )
+    assert plan.order == [1, 0]
+
+
+def test_stop_reaches_a_cell_still_waiting_for_the_engine(client):
+    import core.inference.diffusion as diffusion_module
+    import threading
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _generate(**kwargs):
+        # As the engine does: bind the cell's cancel, then (here) be stopped while queued for the slot.
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
+        client.post("/api/inference/images/generate/cancel")
+        assert cancel.is_set()
+        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+    backend.generate = _generate
+    backend.cancel_generate = lambda **kw: False
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "xy": {"x": {"field": "steps", "values": [2, 4]}}},
+    )
+    assert resp.status_code == 409, resp.text
+    assert client.get("/api/inference/images/gallery").json()["images"] == []

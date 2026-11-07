@@ -49460,16 +49460,16 @@ async def generate_diffusion_image(
     return await _generate_diffusion_image_core(request)
 
 
-# A Stop between two cells finds no denoise to land on, so each running grid also takes it here: (account, stopped).
-_xy_grid_stops: list[tuple[Optional[str], threading.Event]] = []
+# Running grids by account: a Stop between cells, or while a cell waits for the engine, finds no denoise to land on.
+_xy_grid_stops: list[tuple[Optional[str], Any]] = []
 
 
 def _stop_xy_grids() -> bool:
     scope = account_access.account_scope()
-    stops = [event for owner, event in _xy_grid_stops if owner == scope]
-    for event in stops:
-        event.set()
-    return bool(stops)
+    tickets = [ticket for owner, ticket in _xy_grid_stops if owner == scope]
+    for ticket in tickets:
+        ticket.stop()
+    return bool(tickets)
 
 
 async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGenerateResponse:
@@ -49478,6 +49478,7 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     from core.inference import diffusion_xy, image_gallery
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from core.inference.diffusion_segment import render_fence
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
 
     try:
         plan = diffusion_xy.expand(request)
@@ -49487,18 +49488,21 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     pictures: list[Any] = [None] * len(plan.cells)
     global _diffusion_persist_active
     # Progress stays active between cells and through the grid save, so a reload does not settle the run early.
-    stop = (account_access.account_scope(), threading.Event())
+    ticket = GenerationTicket()
+    stop = (account_access.account_scope(), ticket)
     _diffusion_persist_active += 1
     try:
         _xy_grid_stops.append(stop)
         with render_fence():
             for index in plan.order:
-                if stop[1].is_set():
+                if ticket.cancelled():
                     raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
-                result = await _generate_diffusion_image_run(
-                    plan.cells[index].request, captured = captured
-                )
+                # The engine binds each cell's cancel to the ticket before it waits for the slot.
+                with generation_ticket(ticket):
+                    result = await _generate_diffusion_image_run(
+                        plan.cells[index].request, captured = captured
+                    )
                 records[index] = result.images[0]
                 pictures[index] = captured[0]
         first = records[0]
