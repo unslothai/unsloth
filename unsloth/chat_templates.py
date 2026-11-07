@@ -86,8 +86,8 @@ else:
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
 
-# TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
-_DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
+# Unsloth's SFT prep (unsloth_zoo sft_prepare_dataset) trains on "text" when present, else "messages".
+_DATASET_CHECK_COLUMNS = ("text", "messages", "conversations")
 _MEDIA_TYPES = ("image", "image_url", "video", "audio", "input_audio")
 
 
@@ -134,8 +134,11 @@ def _render_dataset_row(row, tokenizer):
     elif "prompt" in row and "completion" in row:
         prompt, completion = row["prompt"], row["completion"]
         if isinstance(prompt, str) and isinstance(completion, str):
-            text = prompt + completion
-            return text, text.strip() == "", True, _has_media(row, ())
+            empty = (prompt + completion).strip() == ""
+            eos = getattr(tokenizer, "eos_token", None)
+            if eos and not completion.endswith(eos):
+                completion += eos  # SFT appends EOS to a string completion
+            return prompt + completion, empty, True, _has_media(row, ())
         if not isinstance(prompt, list) or not isinstance(completion, list):
             raise _MalformedRow("prompt and completion are not both strings or both message lists")
         column, value = "prompt/completion", prompt + completion
