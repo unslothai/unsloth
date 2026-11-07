@@ -447,7 +447,13 @@ def plan(model, args, kwargs, input_ids):
     if kept and max_len:
         # transformers sizes the cache prompt + new tokens - 1 (the last token is never written back).
         length = _kept_len(state)
-        kept = length is not None and max_len - 1 <= length <= _KEEP_MAX_RATIO * max_len
+        # transformers 5.x grows every later call's cache to the longest one so far (_previous_max_cache_length):
+        # this call gets a cache of that size whether or not the kept one is reused, so compare against it.
+        need = max_len - 1
+        previous = getattr(model, "_previous_max_cache_length", -1)
+        if type(previous) is int:
+            need = max(need, previous)
+        kept = length is not None and need <= length <= _KEEP_MAX_RATIO * max(need, 1)
     if state is not None and state.kept is not None and not kept:
         state.clear()
     if bsz > MAX_BSZ:

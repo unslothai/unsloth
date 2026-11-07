@@ -217,6 +217,29 @@ def test_kept_graph_replays_the_next_call_and_training_releases_it(host, llama, 
     llama.eval()
 
 
+def test_a_short_call_after_a_long_one_replays_the_kept_graph(host, llama, monkeypatch):
+    # transformers 5.x sizes every later cache to the longest call so far (_previous_max_cache_length), so a short
+    # call after a long one gets a cache as long as the kept one: it must reuse it, not re-capture every call.
+    _gen(llama, new = 40)
+    s1 = _stats(llama)
+    kept = GG.kept_cache(llama)
+    assert s1["captures"] == 1 and kept is not None, s1
+    monkeypatch.setattr(
+        llama, "_previous_max_cache_length", GG._kept_len(llama.__dict__[GG._ATTR]), raising = False
+    )
+    monkeypatch.setenv(ENV, "0")
+    eager = _gen(llama, new = 10)
+    monkeypatch.delenv(ENV)
+    # The eager call dropped the kept graph; capture again, then short calls reuse it.
+    _gen(llama, new = 40)
+    s2 = _stats(llama)
+    for _ in range(2):
+        assert torch.equal(_gen(llama, new = 10), eager)
+    s3 = _stats(llama)
+    assert s3["captures"] == s2["captures"], (s2, s3)
+    assert s3["replays"] - s2["replays"] == 2 * 9, (s2, s3)
+
+
 def test_other_batch_or_returned_cache_drops_the_kept_graph(host, llama):
     _gen(llama)
     assert GG.kept_cache(llama) is not None
