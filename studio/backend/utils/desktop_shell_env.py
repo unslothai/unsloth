@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Give the desktop app the ROCm environment a terminal launch already has.
-
-unsloth#9926: ``shell_path::fix_path()`` in src-tauri reads the login shell and
-keeps PATH out of it, dropping every ROCm variable beside it. Parity, not
-policy: only a desktop launch, only an AMD host, only allowlisted names that
-are absent here. Every other launch reads no shell.
-"""
+"""Only desktop launches on AMD hosts copy allowlisted ROCm vars that are absent here from the login
+shell; every other launch reads no shell"""
 
 from __future__ import annotations
 

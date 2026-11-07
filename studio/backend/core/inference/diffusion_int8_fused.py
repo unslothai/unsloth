@@ -1,31 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
-reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
-
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen's GELU(tanh) formula op for op (equal
-on every bf16 input), fp contraction off so
-``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
-the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
-Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >= 0.18; bf16 on <= 0.17, where
-``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
-
-Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
-
-ConvRot (Z-Image int8 default): w1 and w3 rotate the same input, so the SwiGLU's fused in-projection is a ConvRotLinear
-(one rotation + one activation quant for both halves). A rotated w2 needs its input rotated BEFORE the quant, which the
-kernel's fused quant cannot do, so that MLP computes the bf16 SiLU product with the stock epilogue ops and hands it to
-w2's own (rotating) forward. Same ops on the same values as the three stock rotated Linears.
-
-``int8_linear`` (also used by Z-Image's fused attention) runs a plain or rotated Int8Tensor Linear as torchao's act
-quant + ``_int_mm`` + epilogue without torchao 0.17's always-on zero-point pass, and the act quant itself as one probed
-Triton kernel (``int8_act_quant_rows``, bit-identical to torchao 0.17 and 0.18): Inductor's codegen of the same per-row
-quant ran 2-3x slower on B200 (Z-Image shapes, M 4224: K 3840 24-32 -> 11 us, K 10240 53-70 -> 32 us).
-A rotated input (ConvRot) is rotated and quantized by one kernel (``_rotated_act_quant``: ``rotq_h16`` of
-``diffusion_convrot_quant``) on an unlisted-arch card it was armed for, else rotation GEMM + act quant.
-Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0`` (all of the above).
-"""
+"""Fused int8 FFN activation kernel, bit-identical to eager; only a plain dynamic symmetric per-row
+Int8Tensor on CUDA with Triton 3.2 or newer takes it, else stock path;
+UNSLOTH_DIFFUSION_INT8_FUSED=0 disables."""
 
 from __future__ import annotations
 
@@ -129,12 +107,12 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         offs,
         mask,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FINAL_ROUND: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FINAL_ROUND: tl.constexpr,  # round to bf16 at the end
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         # Epilogue as torchao: (int32 * x_scale) to bf16, * w_scale, + bias, then bf16; FINAL_ROUND=False defers the last round (it commutes with row max).
         c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
@@ -183,14 +161,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         p_sb,
         p_ss,
         p_sh,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        HAS_PREFIX: tl.constexpr,
-        HEAD_DIM: tl.constexpr,
-        CHUNK: tl.constexpr,
-        CHUNK_A: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        HAS_PREFIX: tl.constexpr,  # fused prefix (attn output) columns
+        HEAD_DIM: tl.constexpr,  # hd of the prefix
+        CHUNK: tl.constexpr,  # columns per loop step
+        CHUNK_A: tl.constexpr,  # prefix columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
@@ -323,11 +301,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v0,
         offs,
         m,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVICT: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVICT: tl.constexpr,  # load eviction policy
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
     ):
         g = _pre(
             crow + g0,
@@ -373,11 +351,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         V0,
         stride_c,
         stride_q,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         # Pass 1 parks the bf16 product in a scratch row: recomputing two int32 rows is ALU-bound.
         row = tl.program_id(0).to(tl.int64)
@@ -435,9 +413,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         K,
         stride_x,
         stride_q,
-        BLOCK: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        BLOCK: tl.constexpr,  # block size along the row
+        ONE_PASS: tl.constexpr,  # row fits one block
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # Matches torchao from_hp PerRow: torchao <=0.17 rounds s, 1/s and x*(1/s) to bf16; >=0.18 keeps them fp32; q = clamp(rint, -128, 127).
         row = tl.program_id(0).to(tl.int64)
@@ -477,7 +455,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 tl.store(qrow + k + offs, p.to(tl.int8), mask = m)
 
     @triton.jit
-    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
+    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):  # block size along the row
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
         y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
@@ -491,11 +469,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         b_ptr,
         o_ptr,
         N,
-        HAS_BIAS: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
-        PIN_RN: tl.constexpr,
-        CHUNK: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
+        PIN_RN: tl.constexpr,  # pin round-to-nearest mul/add (sm100+)
+        CHUNK: tl.constexpr,  # columns per loop step
     ):
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)

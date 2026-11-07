@@ -198,6 +198,7 @@ def test_an_unreadable_file_is_not_damage(site_packages):
         os.chmod(target, 0o644)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "a Windows file name cannot hold a line break")
 def test_a_quoted_line_break_in_a_recorded_name_is_not_damage(site_packages):
     """RECORD is CSV: a quoted field may hold a newline that splitlines breaks."""
     dist_info = _dist(site_packages)
@@ -316,7 +317,9 @@ def test_a_package_directory_replaced_by_a_file_is_damage(site_packages):
 
     shutil.rmtree(site_packages / PKG)
     (site_packages / PKG).write_text("quarantined", encoding = "utf-8")
-    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py is not reachable"]
+    # Windows reports a file in the middle of a path as a missing path, not ENOTDIR; damage either way.
+    reason = "is missing" if sys.platform == "win32" else "is not reachable"
+    assert install_manifest.damaged_payload_files(PKG) == [f"{PKG}/__init__.py {reason}"]
 
 
 def test_the_companion_distribution_is_scanned_too(site_packages):

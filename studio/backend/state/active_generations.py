@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Registry of in-flight chat generations, keyed by conversation.
-
-New Chat leaves the previous conversation streaming, so /load and /unload need
-to know which chats a reload would interrupt: they refuse with 409 unless the
-caller opts in to cancelling them, and GET /inference/active-generations lets
-the UI name them. A frontend guard alone would miss a second tab or a REST call.
-
-Entries hold the same threading.Event as the per-run cancel registry in
-routes/inference.py, so cancel_all() closes each generation's own upstream
-stream and never signals llama-server itself.
-
-A plain dict plus a threading.Lock: no signals, no process groups, no event loop
-affinity, so it behaves identically on Linux, macOS, Windows and WSL.
-"""
+"""In-flight chats: /load and /unload 409 unless opted in to cancel; GET /inference/active-
+generations lists them; cancel_all spares llama-server"""
 
 from __future__ import annotations
 

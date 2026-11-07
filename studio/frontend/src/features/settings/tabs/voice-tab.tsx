@@ -649,9 +649,19 @@ export function VoiceTab() {
     (voice) => voice.id === ttsStudioVoiceId,
   );
   useEffect(() => {
-    if (ttsStudioVoiceId && savedVoicesListed && !hasSelectedStudioVoice) {
-      setTtsStudioVoiceId("");
+    if (!ttsStudioVoiceId || !savedVoicesListed || hasSelectedStudioVoice) {
+      return;
     }
+    let cancelled = false;
+    void useAudioVoicesStore
+      .getState()
+      .confirmGone(ttsStudioVoiceId)
+      .then((gone) => {
+        if (gone && !cancelled) setTtsStudioVoiceId("");
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [
     hasSelectedStudioVoice,
     savedVoicesListed,

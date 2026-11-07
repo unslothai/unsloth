@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Batched multi-image planning for the local diffusion backend.
-
-One generation call can produce N images three ways: a prompt LIST (one image per
-prompt), one prompt x a seed LIST, or the legacy single prompt + ``batch_size``
-(whose per-image seeds derive as base..base+batch_size-1, matching the native
-sd.cpp engine and the gallery recipe replay). These helpers turn the request into
-an explicit per-image ``(prompt, seed)`` job list, chunk it into per-forward
-batches, and support OOM backoff by splitting a failed chunk in half.
-
-Measured on the 32-image eval suites (diffusers 0.39 / torch 2.10): one batched
-forward with per-image ``torch.Generator``s is numerics-safe (LPIPS deltas within
-0.002 of serial) and 10-22x faster end-to-end than serial per-image engines --
-batch 32 fits 4-step 12B-class models on one GPU, batch 8 fits a 20B model at
-1024px with CFG batching. Per-image generators keep every image individually
-reproducible: same-seed images within the same batch shape are bit-identical
-once the compiled graph is settled (the very first generation during an
-in-flight deferred compile can deviate transiently by a few ulps);
-regenerating an image alone with its recorded seed reproduces it up to
-batch-size-dependent kernel numerics (measured mean abs pixel delta ~2.5/255,
-LPIPS delta under 0.002), not bit-exactly.
-
-Pure and torch-free so the CPU unit tests stay light; the engine owns the
-torch.Generator construction and the actual pipeline calls.
-"""
+"""Explicit per-image (prompt, seed) jobs for batched generation; OOM backoff splits a chunk in half."""
 
 from __future__ import annotations
 

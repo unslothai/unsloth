@@ -1,41 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3's PRUNED (curve-form) adaptive layer norm, for hosted pre-quantized denoisers.
-
-MiniMax-H3 spends roughly 40% of its parameters on modulation. Every block owns an
-``adaln_proj.linear`` of shape ``(6 * hidden_size * 3, time_embed_dim)`` = ``(96768, 2688)``, and
-with 50 blocks plus ``norm_out`` that is ~26 GB of the 66 GB denoiser, all of it recomputed from a
-timestep embedding that only ever takes one of a few dozen distinct values in a sampling run.
-
-The reference ComfyUI implementation removes that redundancy. ``silu(time_embedder(t))``, viewed as
-a function of ``t`` over a fixed 1025-point grid on ``[0, 1]``, is a smooth curve living in a
-rank-8 affine subspace, so it factors as ``u(t) ~= mean + B @ c(t)`` with ``B`` of shape
-``(2688, 8)`` and the 8 coordinates ``c(t)`` tabulated per grid point. Folding ``B`` into the
-projection collapses each block's modulation to ``(96768, 8)``:
-
-    dense:  y = W_dense @ silu(temb) + b_dense
-    curve:  y = W_curve @ c(t) + b_curve,  W_curve = W_dense @ B,  b_curve = b_dense + W_dense @ mean
-
-The factorization is AFFINE, not a pure rank-8 product: the bias absorbs the curve's mean. A key
-rename that inherits ``b_dense`` is wrong by an order of magnitude. Nothing here re-derives the
-factorization; the hosted checkpoints ship ``W_curve`` / ``b_curve`` / the table already fitted, and
-this module only rebuilds the module shapes and the forward that consume them.
-
-``MiniMaxH3Transformer3DModel`` cannot load that form as shipped: against the dense config it is 4
-keys missing (``time_embedder.linear_1/linear_2.{weight,bias}``), 1 unexpected
-(``time_embedder.table``) and 51 shape mismatches (every ``adaln_proj.linear.weight`` plus
-``norm_out.linear.weight``, ``(*, 8)`` against ``(*, 2688)``). So a hosted pre-quantized H3 denoiser
-is unloadable by every route until the model is reshaped to match, which is what
-``apply_h3_adaln_curve`` does, in place, between ``from_config`` and ``load_state_dict``.
-
-Two behavioural differences from the dense path, both load-bearing:
-
-* No SiLU. The tabulated curve is the activation's OWN output projected onto the basis, so applying
-  SiLU again would square the nonlinearity.
-* The table is indexed by the RAW timestep, not by the Fourier features. ``time_proj`` is therefore
-  bypassed (it is parameter-free, so the state dict is unaffected).
-"""
+"""MiniMax-H3 curve-form AdaLN; apply_h3_adaln_curve runs between from_config and load_state_dict;
+no SiLU; raw timestep indexes the table; b_curve = b_dense + W_dense @ mean"""
 
 from __future__ import annotations
 

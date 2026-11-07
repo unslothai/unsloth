@@ -142,6 +142,79 @@ def test_pack_matches_mlx_layout_bit_for_bit(bits):
     assert np.array_equal(conv._unpack(np.array(packed), bits), q.reshape(8, 256))
 
 
+def _pack_reference(q, bits):
+    rows, cols = q.shape
+    if 32 % bits == 0:
+        per_word = 32 // bits
+        q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
+        shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
+        return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
+    stream = ((q.astype(np.uint8)[..., None] >> np.arange(bits, dtype = np.uint8)) & 1).reshape(
+        rows, -1
+    )
+    return np.ascontiguousarray(np.packbits(stream, axis = -1, bitorder = "little")).view("<u4")
+
+
+def _quantize_dense_reference(
+    w,
+    bits,
+    group_size = 32,
+):
+    rows, cols = w.shape
+    g = w.reshape(rows, cols // group_size, group_size)
+    levels = float((1 << bits) - 1)
+    bias = conv.round_to_bf16(g.min(axis = -1))
+    scale = conv.round_to_bf16((g.max(axis = -1) - bias) / levels)
+    flat = scale == 0
+    safe_scale = np.where(flat, np.float32(1.0), scale).astype(np.float32)
+    q = np.rint((g - bias[..., None]) / safe_scale[..., None])
+    q = np.where(flat[..., None], 0.0, q)
+    q = np.clip(q, 0, levels).astype(np.uint8).reshape(rows, cols)
+    return _pack_reference(q, bits), scale, bias
+
+
+@pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 8])
+@pytest.mark.parametrize("dtype", [np.uint8, np.int64])
+def test_pack_is_byte_identical_to_the_reference(bits, dtype):
+    for cols in (32, 96, 256, 1024):
+        q = _rng(bits * cols).integers(0, 1 << bits, size = (600, cols)).astype(dtype)
+        got = conv._pack(q, bits)
+        ref = _pack_reference(q, bits)
+        assert got.dtype == np.uint32 and got.shape == ref.shape
+        assert got.tobytes() == ref.tobytes()
+    edge = np.full((3, 32), (1 << bits) - 1, dtype)
+    edge[1] = 0
+    assert conv._pack(edge, bits).tobytes() == _pack_reference(edge, bits).tobytes()
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_pack_does_not_widen_to_uint32_per_element(bits):
+    import tracemalloc
+
+    q = _rng(bits).integers(0, 1 << bits, size = (512, 4096), dtype = np.uint8)
+    tracemalloc.start()
+    try:
+        conv._pack(q, bits)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    # Output plus one uint8 lane; a uint32 copy of q alone is 4 * q.nbytes.
+    assert peak <= q.nbytes * bits // 8 + q.nbytes
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_quantize_dense_is_byte_identical_to_the_reference(bits):
+    w = (_rng(bits).standard_normal((300, 256)) * 0.1).astype(np.float32)
+    w[3, :32] = 0.5
+    w[4, 32:64] = -2.0
+    w[5, :] = np.linspace(-1e4, 1e4, 256, dtype = np.float32)
+    w[6, :32] = np.float32(1e-38)
+    got = conv.quantize_dense_affine(w, bits)
+    ref = _quantize_dense_reference(w, bits)
+    for a, b in zip(got, ref):
+        assert a.tobytes() == np.asarray(b, dtype = a.dtype).tobytes()
+
+
 @pytest.mark.parametrize("bits", [4, 8])
 def test_quantize_dense_roundtrip(bits):
     w = (_rng(1).standard_normal((5, 64)) * 0.1).astype(np.float32)

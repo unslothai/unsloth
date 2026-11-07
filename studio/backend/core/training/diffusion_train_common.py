@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared, family-agnostic building blocks for diffusion LoRA training: dataset discovery, request
-config + validation, image loading, event emission, the stop protocol, adapter publishing, and
-the family/trainer registry, so the SDXL U-Net trainer (``diffusion_lora_trainer``) and the
-flow-matching DiT trainers share them. The pure helpers have no torch/diffusers import at call
-time and are unit-tested without a GPU; this module only routes a request to the right training
-loop."""
+"""Shared diffusion LoRA helpers and family registry; pure helpers avoid torch, so tests need no GPU."""
 
 from __future__ import annotations
 
@@ -527,11 +522,12 @@ _BASE_TRAIN_SPECS: dict[str, dict[str, Any]] = {
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
 
-def _family_vram_note(name: str) -> str:
+def _family_vram_note(name: str, overrides: Optional[dict[str, Any]] = None) -> str:
     """The one-line note, rebuilt from the spec for clients that predate the chip fields."""
     spec = _FAMILY_TRAIN_SPECS.get(name)
     if not spec:
         return ""
+    spec = {**spec, **(overrides or {})}
     gb = spec["qlora_vram_gb"]
     head = f"{spec['params']}, QLoRA by default (~{gb} GB+)." if spec["params"] else f"~{gb} GB+."
     tail = [t for t in (_GATED_NOTE if spec["gated"] else "", spec["note"]) if t]
@@ -950,6 +946,48 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     return None
 
 
+def _training_fetch_repo(base: str, token: Optional[str] = None) -> str:
+    from core.inference.diffusion_families import (
+        _is_local_path,
+        mirror_repo,
+        prefer_ungated_mirror,
+        upstream_is_gated,
+    )
+
+    fetched = prefer_ungated_mirror(base, token)
+    # Anonymous training ignores partial caches of gated upstreams.
+    if (
+        not token
+        and upstream_is_gated(base)
+        and not _is_local_path(base)
+        and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
+    ):
+        fetched = mirror_repo(base) or fetched
+    return fetched
+
+
+def _training_mirror_access_specs(repo: str, note: str = "") -> dict[str, dict[str, Any]]:
+    from core.inference.diffusion_families import mirror_repo, upstream_is_gated
+
+    mirror = mirror_repo(repo)
+    if not mirror or not upstream_is_gated(repo):
+        return {}
+    facts = {}
+    for shown in (repo, mirror):
+        fetched = _training_fetch_repo(shown)
+        gated = upstream_is_gated(fetched)
+        explanation = (
+            f"Downloads from {fetched}. The original model license still applies."
+            if not gated
+            else ""
+        )
+        facts[shown] = {
+            "gated": gated,
+            "note": " ".join(part for part in (note, explanation) if part),
+        }
+    return facts
+
+
 def family_train_infos() -> list[dict[str, Any]]:
     """Lists both registries; drops a family whose pipeline class is missing, since start refuses it."""
     from core.inference.diffusion_families import family_pipeline_available, mirror_repo
@@ -988,6 +1026,12 @@ def family_train_infos() -> list[dict[str, Any]]:
             repo_mirror = mirror_repo(repo)
             if repo_mirror:
                 base_specs[repo_mirror] = dict(base_spec)
+        for repo in repos:
+            for shown, access in _training_mirror_access_specs(
+                repo, str(spec.get("note", ""))
+            ).items():
+                base_specs[shown] = {**base_specs.get(shown, {}), **access}
+        default_facts = base_specs.get(repos[0], {})
         for training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()):
             deploy_bases[training_repo] = inference_repo
             # Mirror-id bases pair like vendor ids; return the inference mirror so Deploy stays ungated.
@@ -1001,12 +1045,14 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "default_base": repos[0],
                 "base_repos": repos,
                 "defaults": train_defaults(name),
-                "vram_note": dit_block or _family_vram_note(name),
+                "vram_note": dit_block or _family_vram_note(name, default_facts),
                 # Dropped on a dit_block, since vram_note then carries the reason.
                 "params": "" if dit_block else spec.get("params", ""),
                 "qlora_vram_gb": None if dit_block else spec.get("qlora_vram_gb"),
-                "gated": False if dit_block else bool(spec.get("gated", False)),
-                "note": "" if dit_block else spec.get("note", ""),
+                "gated": False
+                if dit_block
+                else bool(default_facts.get("gated", spec.get("gated", False))),
+                "note": "" if dit_block else default_facts.get("note", spec.get("note", "")),
                 "precision_modes": fam_modes,
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # Compile: SDXL and DiT trainers, except where the GPU lacks bf16 or the trainer cannot compile.
@@ -1016,6 +1062,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
                 "supports_samples": name in SAMPLE_FAMILIES,
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
+                # The images loader refuses video bases, so the panel offers no Deploy to Create for these.
+                "is_video": name in TRAINABLE_VIDEO_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
                 "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
@@ -1287,25 +1335,10 @@ class DiffusionLoraConfig:
         # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
         # empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
-        from core.inference.diffusion_families import (
-            _is_local_path,
-            mirror_repo,
-            prefer_ungated_mirror,
-            upstream_is_gated,
-        )
-
         if resolved_family == "sdxl":
             fetch_base_model = self.base_model
         else:
-            fetch_base_model = prefer_ungated_mirror(self.base_model, token or None)
-            # Gated upstream with no token only: prefer the mirror even with a cached shard; UNSLOTH_DIFFUSION_NO_MIRROR still wins, and a local clone wins over both.
-            if (
-                not token
-                and upstream_is_gated(self.base_model)
-                and not _is_local_path(self.base_model)
-                and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
-            ):
-                fetch_base_model = mirror_repo(self.base_model) or fetch_base_model
+            fetch_base_model = _training_fetch_repo(self.base_model, token or None)
         # Blank caption_column means "text", matching the start route's fingerprint.
         caption_column = str(self.caption_column or "").strip() or "text"
         bucketing = None if self.bucketing is None else _coerce_bool(self.bucketing)

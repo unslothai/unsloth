@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 Image Klein: a classic pipeline face over Diffusers' modular FLUX.3 blocks.
-
-Diffusers ships FLUX.3 only as a Modular Diffusers workflow (``Flux3DistilledAutoBlocks`` for the
-16-step flow-map checkpoint, ``Flux3AutoBlocks`` for the undistilled base), and the repos carry a
-``modular_model_index.json`` instead of a ``model_index.json``. The image backend drives every
-other family through a ``DiffusionPipeline``: placement (``to`` / model and group offload), the
-step callback (progress, cancel), the decode-phase hook and the scheduler swap all address
-``pipe.<component>``. ``Flux3KleinPipeline`` is that face: it registers the same component
-objects the blocks run, so offload hooks, compiled or quantised replacements and a swapped
-scheduler reach the blocks unchanged, and its ``__call__`` takes the keywords the generate path
-passes.
-
-The component objects are loaded per subfolder (``text_encoder`` also carries the Qwen3-VL
-processor), so only ``transformer/``, ``text_encoder/`` and ``vae/`` are ever read; the repo-root
-BFL single file and ``ae.safetensors`` and the ``variants/`` quantised packages are not.
-"""
+"""FLUX.3 pipeline facade over Modular Diffusers blocks; reads only transformer/, text_encoder/, vae/."""
 
 from __future__ import annotations
 
@@ -60,6 +45,78 @@ FLUX3_COMPONENT_FOLDERS = {
 # (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
 # on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
+
+
+# diffusers ``Flux3TextEncoderStep`` helper args; a build whose helper takes others keeps its own text step.
+FLUX3_TEXT_STEP = "text_encoder"
+_TEXT_HELPER = "_get_qwen3_vl_prompt_embeds"
+_TEXT_HELPER_ARGS = frozenset(
+    {
+        "text_encoder",
+        "tokenizer",
+        "prompt",
+        "device",
+        "max_sequence_length",
+        "pad_multiple",
+        "hidden_states_layers",
+    }
+)
+_TEXT_LAYERS_INPUT = "text_encoder_out_layers"
+
+
+def _text_step(mp: Any) -> tuple[Any, Any]:
+    """``(step, helper)``: the modular pipeline's text step and its class's prompt helper, or ``(None, None)``."""
+    import inspect
+
+    sub_blocks = getattr(getattr(mp, "_blocks", None), "sub_blocks", None)
+    step = sub_blocks.get(FLUX3_TEXT_STEP) if sub_blocks is not None else None
+    helper = getattr(type(step), _TEXT_HELPER, None) if step is not None else None
+    if not callable(helper):
+        return None, None
+    try:
+        if not _TEXT_HELPER_ARGS <= set(inspect.signature(helper).parameters):
+            return None, None
+    except (TypeError, ValueError):
+        return None, None
+    return step, helper
+
+
+def _bridge_text_step(pipe: Any, mp: Any) -> bool:
+    """Route the text step's per-prompt encode through ``pipe.encode_prompt`` (prompt cache, dead-tail probe).
+    Only for this pipe's own encoder and tokenizer; a foreign encoder runs the step's helper unchanged."""
+    import inspect
+    import weakref
+
+    step, helper = _text_step(mp)
+    if step is None:
+        return False
+    signature = inspect.signature(helper)
+    owner_ref = weakref.ref(pipe)
+
+    def bridged(*args: Any, **kwargs: Any) -> Any:
+        owner = owner_ref()
+        try:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+        except TypeError:
+            return helper(*args, **kwargs)
+        a = bound.arguments
+        if (
+            owner is None
+            or a["text_encoder"] is not getattr(owner, "text_encoder", None)
+            or a["tokenizer"] is not getattr(owner, "tokenizer", None)
+        ):
+            return helper(*args, **kwargs)
+        return owner.encode_prompt(
+            prompt = a["prompt"],
+            max_sequence_length = a["max_sequence_length"],
+            device = a["device"],
+            pad_multiple = a["pad_multiple"],
+            hidden_states_layers = a["hidden_states_layers"],
+        )
+
+    setattr(step, _TEXT_HELPER, bridged)
+    return True
 
 
 def flux3_blocks(blocks_class_name: str) -> Any:
@@ -190,9 +247,8 @@ class _Flux3Interrupted(Exception):
 
 
 # Each reference is scaled to this area before the VAE, aspect kept, Lanczos: ComfyUI's
-# ``ReferenceMultiLatent`` with the templates' ``["resize", 1]`` (1.0 megapixels), and the BFL
-# reference's multi-reference rule (each <= 1 MiP). Diffusers alone only downsizes above 16 MiP, so
-# a phone photo would otherwise be encoded at full size. The 16-px grid crop stays with the blocks.
+# ``ReferenceMultiLatent`` ``["resize", 1]`` and BFL's multi-reference rule. Diffusers alone keeps a
+# single reference up to 4 MiP (16 MiP before 0.42.0); the 16-px grid fit stays with the blocks.
 REFERENCE_AREA = 1024 * 1024
 
 
@@ -300,6 +356,7 @@ class _Flux3KleinPipelineMixin:
 
         if self._modular is None:
             self._modular = flux3_blocks(self.config.blocks_class_name).init_pipeline()
+            _bridge_text_step(self, self._modular)
         mp = self._modular
         updates = {}
         for name in ("transformer", "vae", "text_encoder", "tokenizer", "scheduler"):
@@ -309,6 +366,42 @@ class _Flux3KleinPipelineMixin:
         if updates:
             mp.update_components(**updates)
         return mp
+
+    def encode_prompt(
+        self,
+        prompt: str,
+        max_sequence_length: int = 8192,
+        device: Any = None,
+        pad_multiple: Optional[int] = None,
+        hidden_states_layers: Any = None,
+    ):
+        """One prompt's FLUX.3 text embeddings via diffusers' text step helper; ``None`` takes the step's defaults."""
+        import torch
+
+        step, helper = _text_step(self.modular_pipeline())
+        if step is None:
+            raise RuntimeError("this diffusers build's FLUX.3 text step has no known prompt helper")
+        if pad_multiple is None:
+            pad_multiple = step.pad_multiple
+        if hidden_states_layers is None:
+            hidden_states_layers = next(
+                (p.default for p in step.inputs if getattr(p, "name", None) == _TEXT_LAYERS_INPUT),
+                None,
+            )
+            if hidden_states_layers is None:
+                raise RuntimeError(
+                    "this diffusers build's FLUX.3 text step names no default layers"
+                )
+        with torch.no_grad():
+            return helper(
+                text_encoder = self.text_encoder,
+                tokenizer = self.tokenizer,
+                prompt = prompt,
+                device = device,
+                max_sequence_length = int(max_sequence_length),
+                pad_multiple = int(pad_multiple),
+                hidden_states_layers = tuple(hidden_states_layers),
+            )
 
     def _set_guidance(self, mp, guidance_scale: Optional[float]) -> None:
         guider = getattr(mp, "guider", None)

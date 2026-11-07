@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FastFlowLM Q4NX output for the AMD Ryzen AI NPU (XDNA 2).
-
-Kept free of torch/unsloth imports: the backend process converts an existing GGUF directly,
-without loading a model into the export worker.
-"""
+"""FastFlowLM Q4NX for AMD Ryzen AI NPUs; no torch/unsloth imports, converts GGUF directly."""
 
 from __future__ import annotations
 

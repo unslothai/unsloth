@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, NamedTuple, Optional
 
 from loggers import get_logger
+from utils.scan_memo import in_scan_memo
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
@@ -700,8 +701,10 @@ def _scan_hf_cache(
             snapshot_partial_resumable = snapshot_partial_resumable,
         )
         # Denoiser-less pipeline (a GGUF's borrowed VAE / encoder): partial so no picker loads it, flagged so the Hub offers no Continue.
-        if not snapshot_partial and hf_cache_scan.snapshot_pipeline_missing_denoiser(
-            latest_snapshot := hf_cache_scan.latest_snapshot_dir(repo_dir)
+        latest_snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+        if not snapshot_partial and (
+            hf_cache_scan.snapshot_pipeline_missing_denoiser(latest_snapshot)
+            or hf_cache_scan.snapshot_is_encoder_companion(model_id, repo_dir, latest_snapshot)
         ):
             # Some denoiser shards on disk is a torn download, not a prefetch: partial, but not flagged.
             companion_prefetch = not hf_cache_scan.snapshot_denoiser_has_weights(latest_snapshot)
@@ -1728,6 +1731,7 @@ def _classify_unsloth_models(models: List[LocalModelInfo]) -> List[LocalModelInf
         return models
 
 
+@in_scan_memo
 async def list_unsloth_models_response() -> LocalModelListResponse:
     # Off the loop with the scan: classifying a GGUF reads its header.
     try:
@@ -1746,6 +1750,7 @@ async def _account_local_response(response):
     return response.model_copy(update = {"models": models})
 
 
+@in_scan_memo
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 

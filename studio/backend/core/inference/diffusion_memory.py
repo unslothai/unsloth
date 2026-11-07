@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
@@ -323,7 +323,7 @@ def _pin_host_weights(
     import torch
 
     mode = _pin_mode()
-    if mode == "off" or not torch.cuda.is_available() or not host_pinning_allowed():
+    if mode == "off" or not torch.cuda.is_available() or not host_pinning_allowed(device):
         return 0
     # (name, owner tensor, inner attribute or None, the tensor to pin)
     params: list = []
@@ -363,7 +363,7 @@ def _pin_host_weights(
         slots.append((len(chunks) - 1, off))
         off += size
         left -= size
-    exact = exact and _exact_pin_supported()
+    exact = exact and _exact_pin_supported(device)
     if exact:
         # The same slots, so the device copies are unchanged; only the host side loses the rounding.
         used = [0] * len(chunks)
@@ -400,7 +400,9 @@ def _pin_host_weights(
                     type(module).__name__,
                     exc,
                 )
-            return _pin_host_weights(module, host, logger, buffer_host = buffer_host, layout = layout)
+            return _pin_host_weights(
+                module, host, logger, buffer_host = buffer_host, layout = layout, device = device
+            )
     bufs: list = []
     placed: list = []
     try:
@@ -455,10 +457,10 @@ EXACT_PIN_ENV = "UNSLOTH_VIDEO_EXACT_PIN"
 _EXACT_PIN_PAGE = 4096
 
 
-def _exact_pin_supported() -> bool:
+def _exact_pin_supported(device: Any = None) -> bool:
     if (os.environ.get(EXACT_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
-    return _fast_pin_supported()
+    return _fast_pin_supported(device)
 
 
 def _pin_host_weights_exact(
@@ -1012,6 +1014,43 @@ def _wrap_cpu_offload_hook(
     setattr(hook, _KEEP_ATTR, True)
 
 
+def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
+    """The keep-cpu host tensor for ``name`` while ``tensor`` is on the device unchanged since its onload (``_init_hook``'s
+    re-point rule: same object, version and storage), else None."""
+    state = getattr(module, "__dict__", {}).get(_KEEP_ATTR)
+    if (
+        not isinstance(state, dict)
+        or getattr(getattr(tensor, "device", None), "type", "cpu") == "cpu"
+    ):
+        return None
+    try:
+        kept = (state.get("host") or {}).get(name)
+        if kept is not None:
+            seen = (state.get("version") or {}).get(name)
+            if (
+                (state.get("owner") or {}).get(name) is tensor
+                and seen is not None
+                and seen[0] is tensor
+                and seen[1] == tensor._version
+                and seen[2] == _tensor_ptr(tensor)
+            ):
+                return kept
+            return None
+        kept = (state.get("buffer_host") or {}).get(name)
+        seen = (state.get("buffer_version") or {}).get(name)
+        if (
+            kept is not None
+            and seen is not None
+            and seen[0] is tensor
+            and seen[1] == _buffer_version(tensor)
+            and seen[2] == tensor.data_ptr()
+        ):
+            return kept
+    except Exception:  # noqa: BLE001 - a state mid-update: the caller reads the device copy
+        return None
+    return None
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
@@ -1048,6 +1087,61 @@ def reclaim_host_memory(logger: Any = None) -> bool:
             _host_memory_reclaim_warning_logged = True
             try:
                 logger.warning("diffusion.memory: host allocator reclamation failed: %s", exc)
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+LOAD_HEAP_TRIM_ENV = "UNSLOTH_DIFFUSION_LOAD_HEAP_TRIM"
+_load_heap_trim_warning_logged = False
+
+
+def _rss_anon_mib() -> Optional[int]:
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as status:
+            for line in status:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) >> 10
+    except Exception:  # noqa: BLE001 - not Linux, or no procfs
+        return None
+    return None
+
+
+def trim_host_heap_after_load(logger: Any = None) -> bool:
+    """Return the heap a finished load freed to the OS; glibc otherwise keeps it (Qwen-Image-2.1, 8 GiB budget:
+    0.65 GiB warm, 1.9 GiB on a first load). Live tensors and the pinned caches are untouched."""
+    if _env_off(LOAD_HEAP_TRIM_ENV):
+        return False
+    try:
+        reclaim = _resolve_host_memory_reclaimer()
+        if reclaim is None:
+            return False
+        import time
+
+        before = _rss_anon_mib()
+        began = time.perf_counter()
+        reclaim()
+        took = time.perf_counter() - began
+        after = _rss_anon_mib()
+        if logger is not None:
+            if before is not None and after is not None:
+                logger.info(
+                    "diffusion.memory: returned %d MiB of freed heap to the OS after the load (%.0f ms)",
+                    before - after,
+                    took * 1000,
+                )
+            else:
+                logger.info(
+                    "diffusion.memory: returned freed heap to the OS after the load (%.0f ms)",
+                    took * 1000,
+                )
+        return True
+    except Exception as exc:  # noqa: BLE001 - a trim never fails a load
+        global _load_heap_trim_warning_logged
+        if logger is not None and not _load_heap_trim_warning_logged:
+            _load_heap_trim_warning_logged = True
+            try:
+                logger.warning("diffusion.memory: heap trim after the load failed: %s", exc)
             except Exception:  # noqa: BLE001
                 pass
         return False
@@ -1200,9 +1294,6 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
 
 
 def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
-    """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
-    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
-    block pool and reads the whole-step pool on the current card."""
     held = 0
     try:
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
@@ -1301,6 +1392,8 @@ def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
     delay_s: float = 1.0,
+    *,
+    can_stop: Optional[Callable[[DeviceMemory], bool]] = None,
 ) -> DeviceMemory:
     """Max free over spaced reads (a transient only shrinks free); on mps, empty_cache first so freed pool is not budgeted as used memory."""
     device = getattr(target, "device", "cpu")
@@ -1325,11 +1418,13 @@ def settled_snapshot_device_memory(
         pass
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
-    for _ in range(max(0, attempts - 1)):
+    for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.
             if best.free_mib >= best.total_mib - max(2048, int(best.total_mib * 0.10)):
                 break
+        if attempt == 0 and can_stop is not None and can_stop(best):
+            break
         try:
             import time
             time.sleep(delay_s)
@@ -1633,9 +1728,19 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
     # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
     "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
+    # Lumina-Image-2.0, worst per column over tiers / A100 / L4; decode = the first compiled-tier decode (cudnn workspace).
+    "lumina-2": ((1_130, 486, 4_497, 4_497, 4_497), (1_130, 486, 4_497, 4_497, 4_497)),
 }
 # U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
+# A plain bf16 denoiser keeps the whole-module tier the flat plan would take over the measured resident-transformer
+# tier: Lumina-2's encoder is as large as its DiT, and streaming it per prompt was 1% slower per render (L4, 16 GiB).
+_CALIBRATED_KEEPS_WHOLE_MODULE = frozenset({"lumina-2"})
+
+
+def _resident_only_hint(family: Optional[str]) -> bool:
+    parts = str(family or "").split()
+    return bool(parts) and parts[0] in _RESIDENT_ONLY_CALIBRATED
 
 
 def calibrated_image_activation(
@@ -2393,6 +2498,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     return int(required) <= budget
 
 
+def mps_plan_tight(plan: Any) -> bool:
+    """Whether an Apple MPS plan, which stays resident whatever it needs (unified memory), needs more than the 0.85
+    share of its budget a discrete plan stays resident in. False on every other device or when a size is unknown."""
+    try:
+        if plan.device_memory.device != "mps":
+            return False
+        required = plan.estimates.get("resident_required_mib")
+        budget = plan.estimates.get("safe_device_budget_mib")
+    except Exception:  # noqa: BLE001 - malformed plan: not tight
+        return False
+    if required is None or budget is None:
+        return False
+    return int(required) > int(int(budget) * 0.85)
+
+
 def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
     total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
@@ -2408,7 +2528,7 @@ UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
 UNIFIED_OVERSIZE_REQUEST_FIELD = "allow_oversized_load"
 # Must match the Settings switch label and location in frontend unified-memory-load-refusal.ts.
 UNIFIED_OVERSIZE_SETTING_LABEL = "Allow oversized model loads"
-UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model memory"
+UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model loading"
 UNIFIED_OVERSIZE_REFUSAL_CODE = "unified-memory-load"
 
 # Unlike the env var, the per-load flag does NOT lift the MPS allocator cap: that cap is process-wide and set once,
@@ -2844,7 +2964,10 @@ def plan_diffusion_memory(
             stream_transformer = stream_transformer,
         )
         if faster is not None:
+            flat_streamed = policy == OFFLOAD_GROUP and stream_transformer
             policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            if flat_streamed and policy == OFFLOAD_GROUP and not stream_transformer:
+                estimates["calibrated_over_streamed_transformer"] = 1
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
@@ -3221,8 +3344,16 @@ def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPl
     )
 
 
-def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
-    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together."""
+def refine_memory_plan_for_components(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    headroom_mib: int = 0,
+) -> MemoryPlan:
+    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together.
+
+    ``headroom_mib``: what the component's own phase holds beside it (a whole-module onload holds the component AND
+    that phase's activations at once); the caller prices it per phase. 0 (the image path) is the bare size check."""
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
@@ -3253,9 +3384,18 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
     if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
-    if largest_mib <= int(budget):
+    beside = max(0, int(headroom_mib or 0))
+
+    def need(name: str) -> int:
+        # the headroom is the denoise phase's: a text encoder runs in its own phase and keeps the bare check
+        return streamed_sizes[name] + (beside if streamable[name][1] == "block_level" else 0)
+
+    largest_name = max(streamed_sizes, key = need)
+    largest_mib = streamed_sizes[largest_name]
+    if need(largest_name) <= int(budget):
         return plan
+    if streamable[largest_name][1] != "block_level":
+        beside = 0
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
     if resident_mib > int(budget):
@@ -3270,8 +3410,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         estimates = estimates,
         reasons = plan.reasons
         + (
-            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
-            "device budget; streaming transformer blocks and text-encoder layers",
+            f"loaded {largest_name} is {largest_mib} MiB"
+            + (f" (+{beside} MiB runtime headroom)" if beside else "")
+            + f", above the {int(budget)} MiB device budget; streaming transformer blocks and text-encoder layers",
         ),
     )
 
@@ -3284,12 +3425,30 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 # MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
+# Qwen-Image-Edit-2511: 6046 MiB whole render (1024^2, one 1024^2 source, 40 steps, true CFG 3), int8 DiT + encoder.
+# Qwen-Image-2512 t2i: 6032 MiB whole render (1024^2, 20 steps, true CFG 4), int8 DiT + encoder, recorded on sm_120.
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-2.1": 1849,
     "flux.1": 2666,
     "z-image": 2666,
     "moss-image": 2976,
+    "qwen-image-edit": 6046,
+    "qwen-image": 6032,
 }
+# "0": Qwen-Image-Edit places from its learned peak only.
+MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
+# "0": Qwen-Image / Qwen-Image-2512 text-to-image places from its learned peak only.
+MEASURED_ACTIVATION_QWEN_IMAGE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_IMAGE"
+# Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
+# Qwen-Image t2i has its own figure: the borrowed Edit figure (3824) left 3.5 GiB unused at a 16 GiB budget.
+_MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
+    "qwen-image-edit": 3824,
+    "qwen-image": 2560,
+}
+MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# "0": Qwen-Image t2i streams with the borrowed Edit figure again.
+QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
+_QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3321,10 +3480,11 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 
 
 # Small-host int8 DiT, eager: (peak MiB above resident weights at 1024^2, largest int8 DiT MiB covered).
-# FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE. "0" = learned peak alone.
+# T4 fp16, 4 steps, sliced VAE: FLUX.2-klein-4B 2805 (Kaggle), 9B 2459 (Colab); the 4B's covers both.
+# "0" = learned peak alone.
 MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
 _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
-    "flux.2-klein": (2805, 3800),
+    "flux.2-klein": (2805, 8700),
 }
 
 
@@ -3423,8 +3583,10 @@ def measured_image_runtime_mib(
     phase: Optional[str] = None,
     dense_bf16: bool = False,
     small_host_int8: bool = False,
+    streamed: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
+    ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
@@ -3456,6 +3618,18 @@ def measured_image_runtime_mib(
         )
     elif static_seed and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
+        if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
+            seed = _MEASURED_STREAMED_IMAGE_PEAK_MIB.get(str(family or "").lower(), seed)
+            if str(family or "").lower() == "qwen-image" and _env_off(QWEN_IMAGE_STREAMED_SEED_ENV):
+                seed = _QWEN_IMAGE_BORROWED_STREAMED_MIB
+        if str(family or "").lower() == "qwen-image-edit" and _env_off(
+            MEASURED_ACTIVATION_QWEN_EDIT_ENV
+        ):
+            seed = None
+        if str(family or "").lower() == "qwen-image" and _env_off(
+            MEASURED_ACTIVATION_QWEN_IMAGE_ENV
+        ):
+            seed = None
         if seed is None and phase_seeds:
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
@@ -4165,10 +4339,12 @@ def prefer_whole_module_offload(
     *,
     logger: Any = None,
     steps: Optional[int] = None,
+    family: Optional[str] = None,
 ) -> MemoryPlan:
     """``refined``, or whole-module offload in its place where it beats streaming. With ``steps`` the switch is
     priced from this card's measured bandwidth and bf16 throughput (RTX PRO 6000 streams faster at 4 steps, B200 does
     not); unmeasurable or without ``steps`` it is kept. Plain bf16 only: an fp16 T4 run pointed the other way.
+    A ``_CALIBRATED_KEEPS_WHOLE_MODULE`` family's measured plan is priced as the streamed plan it replaced.
     """
     switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
     if switch in ("0", "off", "false", "no", "never"):
@@ -4177,11 +4353,16 @@ def prefer_whole_module_offload(
         if (
             getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
             or refined.offload_policy != OFFLOAD_GROUP
-            or not bool(getattr(refined, "stream_transformer", True))
             or getattr(refined, "secondary_ordinal", None) is not None
         ):
             return refined
         est = refined.estimates
+        calibrated = bool(
+            str(family or "") in _CALIBRATED_KEEPS_WHOLE_MODULE
+            and est.get("calibrated_over_streamed_transformer")
+        )
+        if not calibrated and not bool(getattr(refined, "stream_transformer", True)):
+            return refined
         model_dense, companions = est.get("model_dense_mib"), est.get("companion_dense_mib")
         floors = [
             int(f)
@@ -4201,7 +4382,7 @@ def prefer_whole_module_offload(
         # A refined plan pinning the whole denoiser runs every step resident: kept.
         sizes = _loaded_component_mib(pipe) or {}
         dit = sum(m for m, r in sizes.values() if r == "dit") or transformer
-        if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
+        if not calibrated and int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
             return refined
         reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
         priced: dict = {}
@@ -4236,6 +4417,8 @@ def prefer_whole_module_offload(
                     declined = _WHOLE_MODULE_DECLINED_REASON.format(**fields)
                     if logger is not None:
                         logger.info("diffusion.memory: %s", declined)
+                    if calibrated:
+                        return refined
                     if per_request_whole_enabled():
                         try:
                             setattr(
@@ -4253,6 +4436,10 @@ def prefer_whole_module_offload(
                 reason += _WHOLE_MODULE_COST_REASON.format(**fields)
         if logger is not None:
             logger.info("diffusion.memory: %s", reason)
+        kept = dict(refined.estimates)
+        if calibrated:
+            # the generate guard prices it as main's flat whole-module plan
+            kept.pop("calibrated_headroom_mib", None)
         return replace(
             refined,
             offload_policy = OFFLOAD_MODEL,
@@ -4263,7 +4450,7 @@ def prefer_whole_module_offload(
             resident_transformer_mib = None,
             resident_text_encoder_mib = None,
             reasons = refined.reasons + (reason,),
-            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor, **priced},
+            estimates = {**kept, "whole_module_kept_below_floor_mib": floor, **priced},
         )
     except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
         if logger is not None:
@@ -4513,6 +4700,15 @@ def _refine_plan_from_loaded_weights(
             measured_dense_bf16 = dense_bf16,
             measured_small_host_int8 = small_host_int8,
             measured_learned_cfg_off = bool(cfg_off_only and learned),
+            # tier / phase seed measured on text-to-image: unpriced references size flat (measured_request_extra_mib)
+            measured_omits_references = bool(
+                getattr(pipe, "_unsloth_unpriced_references", False)
+                and str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES
+                and (
+                    (dense_mib is not None and getattr(pipe, "_unsloth_dense_tier_seeds", False))
+                    or (dense_mib is None and getattr(pipe, "_unsloth_phase_seeds", False))
+                )
+            ),
             loaded_transformer_mib = dit,
             loaded_text_encoder_mib = encoders,
             loaded_other_mib = other,
@@ -4573,11 +4769,32 @@ def _refine_plan_from_loaded_weights(
             ):
                 # partial: the encode keeps the flat room (install_encode_release)
                 window = _stream_window_mib(pipe)
-                streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
+                streamed_headroom = headroom
+                if static_seed and not small_host_int8:
+                    streamed_headroom = min(
+                        headroom,
+                        measured_image_runtime_mib(
+                            family,
+                            speed_mode,
+                            compute_bytes = compute_bytes or 2,
+                            quant = read_quant,
+                            phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
+                            static_seed = static_seed,
+                            streamed = True,
+                        )
+                        or headroom,
+                    )
+                streamed_room = min(
+                    _streamed_dit_room_mib(memory, streamed_headroom, other, window), dit
+                )
                 if streamed_room > dit_room:
                     encode_room = int(dit_room)
                     dit_room, room, wide_dit = streamed_room, streamed_room, True
                     estimates["stream_window_mib"] = window
+                    if streamed_headroom < headroom:
+                        estimates["measured_streamed_headroom_mib"] = streamed_headroom
+                        # seed covers denoise only; flat encode room on top overran at 16 GiB
+                        encode_room = 0
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         )
@@ -5160,7 +5377,7 @@ def hook_resident_denoiser(
         return False
     dit_mib = _module_pin_mib(transformer)
     # the load's _torchao_stream_pinnable rule: unpinned, the apply copies the whole transformer to pageable host RAM
-    if not _streamed_pin_plan(dit_mib, 0)[0]:
+    if not _streamed_pin_plan(dit_mib, 0, device = onload)[0]:
         if logger is not None:
             logger.info(
                 "diffusion.memory: the resident transformer keeps no offload hooks (%d MiB cannot be pinned)",
@@ -5195,7 +5412,7 @@ def hook_resident_denoiser(
             _torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib),
             logger,
         )
-        if not _pin_top_level_group(transformer, logger, pinned_mib):
+        if not _pin_top_level_group(transformer, logger, pinned_mib, device = onload):
             _skip_top_level_copy_back(transformer, logger)
         if gkwargs.get("record_stream"):
             install_group_prefetch(transformer, onload, logger)
@@ -5635,6 +5852,7 @@ def measured_request_extra_mib(
     sized["static_seed"] = bool(reserve[8]) if len(reserve) > 8 and reserve[8] is not None else True
     sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
     sized["small_host_int8"] = bool(len(reserve) > 11 and reserve[11])
+    sized["streamed"] = bool(len(reserve) > 12 and reserve[12])
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
@@ -5758,7 +5976,15 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
-    if policy == OFFLOAD_MODEL:
+    if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
+        policy = OFFLOAD_GROUP
+        try:
+            pipe._unsloth_applied_plan = replace(
+                plan, offload_policy = OFFLOAD_GROUP, stream_text_encoders = True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
         keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
@@ -5867,6 +6093,154 @@ def apply_memory_plan(
         with fast_upload(modules, placement, logger = logger):
             pipe.to(placement)
     return policy, tiling_engaged
+
+
+UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
+# Measured SDXL 1024^2, 25 steps, diffusers 0.41, L4 bf16 / T4 fp16; MiB above weights.
+_MEASURED_UNET_OFFLOAD_DENOISE_MIB = 817
+# Streamed: worst phase is the VAE decode (L4 bf16).
+_MEASURED_UNET_STREAMED_PEAK_MIB = 2435
+# force_upcast fp16 VAE (T4) decodes in fp32.
+_MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
+_UNET_STREAM_SLACK_MIB = 512
+# Streamed denoise: 333 MiB above the weights at 1024^2 (L4 bf16, CFG pair, incl. the ~168 MiB prefetch window), the
+# activations scaled linearly to 2048^2 so a larger canvas still fits beside the resident leaves: 168 + 4 x 165.
+_MEASURED_UNET_STREAMED_DENOISE_MIB = 828
+# =0: size the resident leaves from the decode peak for the whole render (no lending, the #16295 sizing).
+UNET_STREAM_LEND_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM_LEND"
+
+
+def unet_stream_lends_decode() -> bool:
+    """Resident UNet leaves are sized from the denoise peak and lent to the VAE decode (release_for_decode streams the
+    shortfall again before the decode and re-pins it after), as ComfyUI unloads part of the UNet for its decode."""
+    return not _env_off(UNET_STREAM_LEND_ENV)
+
+
+def unet_decode_lend(fp32_decode: bool = False) -> tuple[int, int, int, bool]:
+    """The ``DECODE_LEND_ATTR`` tuple of a streamed UNet: the decode's measured peak above the weights at 1024^2,
+    scaled linearly with the canvas (a tiled decode grows slower: it releases more than it needs, never less)."""
+    peak = (
+        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+        if fp32_decode
+        else _MEASURED_UNET_STREAMED_PEAK_MIB
+    )
+    return (peak, peak, DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT, False)
+
+
+def _measured_reserve_mib(peak_mib: int) -> int:
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-(peak_mib * _MEASURED_PEAK_MARGIN) // step) * step)
+
+
+def unet_stream_room_mib(
+    free_mib: int,
+    unet_mib: int,
+    vae_mib: int,
+    *,
+    fp32_decode: bool = False,
+    lend: Optional[bool] = None,
+) -> Optional[int]:
+    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. ``lend`` (default: the kill switch
+    ``UNSLOTH_DIFFUSION_UNET_STREAM_LEND``): sized from the denoise peak, the decode borrows the shortfall through
+    release_for_decode; off: sized so the decode fits beside every resident leaf for the whole render."""
+    if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
+        return None
+    if lend is None:
+        lend = unet_stream_lends_decode()
+    if lend:
+        peak = _MEASURED_UNET_STREAMED_DENOISE_MIB
+    else:
+        peak = (
+            _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+            if fp32_decode
+            else _MEASURED_UNET_STREAMED_PEAK_MIB
+        )
+    reserve = _measured_reserve_mib(peak) + _UNET_STREAM_SLACK_MIB
+    return max(0, int(free_mib) - int(vae_mib) - reserve)
+
+
+def _vae_decodes_in_fp32(vae: Any) -> bool:
+    try:
+        import torch
+        first = next(iter(vae.parameters()), None)
+        return (
+            first is not None
+            and first.dtype == torch.float16
+            and bool(getattr(getattr(vae, "config", None), "force_upcast", False))
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _stream_unet_instead_of_model_offload(
+    pipe: Any,
+    placement: str,
+    logger: Any = None,
+) -> bool:
+    """Stream a UNet too large for whole-module offload (which OOMs on step one) leaf by leaf."""
+    if _env_off(UNET_STREAM_ENV):
+        return False
+    try:
+        import torch
+
+        unet = getattr(pipe, "unet", None)
+        if not isinstance(unet, torch.nn.Module) or getattr(pipe, "transformer", None) is not None:
+            return False
+        onload = torch.device(placement)
+        if onload.type != "cuda" or not torch.cuda.is_available():
+            return False
+        free, total = (int(x) for x in torch.cuda.mem_get_info(onload))
+        free_mib = max(0, free - user_budget_reserve_bytes(onload, total)) >> 20
+
+        def _mib(m: Any) -> int:
+            if not isinstance(m, torch.nn.Module):
+                return 0
+            ts = {id(t): t for t in list(m.parameters()) + list(m.buffers())}
+            return sum(t.numel() * t.element_size() for t in ts.values()) >> 20
+
+        unet_mib = _mib(unet)
+        vae = getattr(pipe, "vae", None)
+        fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
+        lend = unet_stream_lends_decode()
+        room = unet_stream_room_mib(
+            free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend
+        )
+        if room is None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    _set_group_offload_failure(pipe, None)
+    applied = _apply_group_offload(
+        pipe,
+        placement,
+        logger,
+        stream_text_encoders = True,
+        resident_transformer_mib = room or None,
+        denoiser = "unet",
+    )
+    if applied:
+        try:
+            # deferred speed profile would rebuild weights outside the leaf hooks; read by _engage_deferred_speed
+            pipe._unsloth_unet_streamed = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # the leaves were sized from the denoise peak: the decode borrows its shortfall (release_for_decode)
+            setattr(
+                pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
+            unet_mib,
+            free_mib,
+            f"streaming it leaf by leaf, {room} MiB kept resident"
+            if applied
+            else "streaming failed, whole-module offload",
+        )
+    return applied
 
 
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
@@ -6050,6 +6424,24 @@ def _module_registered_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
+def _module_offload_registered_mib(module: Any) -> int:
+    """Registered MiB a group offload pins: page-rounded, counted once per owning submodule (UMT5's tied embedding pins twice)."""
+    try:
+        total = 0
+        for sub in module.modules():
+            seen: set[int] = set()
+            for tensor in list(sub.parameters(recurse = False)) + list(sub.buffers(recurse = False)):
+                if id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                total += sum(
+                    _page_bytes(nbytes) for nbytes in _storage_nbytes(tensor) if nbytes > 0
+                )
+        return -(-total // (1024 * 1024))
+    except Exception:  # noqa: BLE001 - priced as the per-tensor pin
+        return _module_host_mib(module)
+
+
 def _unique_tensors(module: Any) -> list:
     seen: set[int] = set()
     out = []
@@ -6088,7 +6480,7 @@ def _apply_group_offloading_packed(
     pack = (
         bool(kwargs.get("use_stream"))
         and not kwargs.get("low_cpu_mem_usage", False)
-        and host_pinning_allowed()
+        and host_pinning_allowed(kwargs.get("onload_device"))
     )
     expected = None
     if pack:
@@ -6135,8 +6527,34 @@ def _pin_budget_mib() -> Optional[int]:
     available = _available_system_memory_mib()
     if total is None or available is None:
         return None
+    available = _pin_available_mib(int(available))
     reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
-    return max(0, int(available) - reserve)
+    return max(0, available - reserve)
+
+
+# 0 restores the stricter cgroup reading that counts mapped file pages on the active list as used.
+PIN_CREDIT_MAPPED_ENV = "UNSLOTH_DIFFUSION_PIN_CREDIT_MAPPED"
+
+
+def _pin_available_mib(available_mib: int) -> int:
+    """Under a cgroup limit, the reading with clean mapped page cache credited (pins replace the checkpoint's mmap
+    views), taken whole rather than added to ``available_mib``: the lists move between two samples."""
+    if str(os.environ.get(PIN_CREDIT_MAPPED_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return available_mib
+    try:
+        from utils import host_memory
+
+        headroom = host_memory.credited_cgroup_headroom_mib()
+        if headroom is None:
+            return available_mib
+        return int(host_memory.usable_mib(host_memory.system_available_mib(), headroom))
+    except Exception:  # noqa: BLE001 - the uncredited reading still stands
+        return available_mib
 
 
 def _remove_group_offload_hooks(module: Any) -> None:
@@ -6173,10 +6591,11 @@ def _streamed_pin_plan(
     transformer_mib: int,
     encoder_mib: int,
     logger: Any = None,
+    device: Any = None,
 ) -> tuple[bool, bool]:
-    """(pin transformer, pin encoders), transformer first."""
+    """(pin transformer, pin encoders), transformer first. ``device``: the onload target the pins serve."""
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
-    if forced in ("0", "off", "false", "no") or not host_pinning_allowed():
+    if forced in ("0", "off", "false", "no") or not host_pinning_allowed(device):
         return False, False
     if forced in ("1", "on", "true", "yes"):
         return True, True
@@ -6244,13 +6663,13 @@ def request_background_pins(pipe: Any) -> None:
         pass
 
 
-def _background_pin_enabled() -> bool:
+def _background_pin_enabled(device: Any = None) -> bool:
     return (os.environ.get(BACKGROUND_PIN_ENV) or "").strip().lower() not in (
         "0",
         "off",
         "false",
         "no",
-    ) and host_pinning_allowed()
+    ) and host_pinning_allowed(device)
 
 
 # "0": image-load streamed encoders pin into slabs up front instead of on a background worker.
@@ -6259,6 +6678,9 @@ ENCODER_BACKGROUND_PIN_ENV = "UNSLOTH_DIFFUSION_ENCODER_BACKGROUND_PIN"
 PARTIAL_ENCODER_PIN_ENV = "UNSLOTH_DIFFUSION_PARTIAL_ENCODER_PIN"
 _ENCODER_PIN_REQUEST_ATTR = "_unsloth_background_encoder_pin_requested"
 _PARTIAL_PIN_MIN_MIB = 256
+# "0": old behaviour (power-of-two pin price, no partial encoder prefix).
+VIDEO_EXACT_PIN_PLAN_ENV = "UNSLOTH_VIDEO_EXACT_PIN_PLAN"
+_CAST_WRITES_PENDING_ATTR = "_unsloth_cast_writes_pending"
 
 
 def request_background_encoder_pins(pipe: Any) -> None:
@@ -6280,19 +6702,82 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
     return waited
 
 
-def _encoder_background_pin_wanted(pipe: Any) -> bool:
+def _encoder_background_pin_wanted(pipe: Any, device: Any = None) -> bool:
     # Needs the registered pin: per-tensor pin_memory() rounds to a power of two, past the weight-byte budget.
     return (
         bool(getattr(pipe, _ENCODER_PIN_REQUEST_ATTR, False))
         and not _env_off(ENCODER_BACKGROUND_PIN_ENV)
-        and _background_pin_enabled()
-        and _fast_pin_supported()
+        and _background_pin_enabled(device)
+        and _fast_pin_supported(device)
     )
 
 
-def _streamed_pin_leftover_mib(transformer_mib: int, pin_transformer: bool) -> int:
+def note_cast_cache_writes(pipe: Any, writes: Any) -> None:
+    """Record the cast-cache writes a first load in a Studio home deferred; the pin plan reads them (``done()``)."""
+    try:
+        setattr(pipe, _CAST_WRITES_PENDING_ATTR, writes)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes keeps the exact plan
+        pass
+
+
+def _cast_cache_write_pending(pipe: Any) -> bool:
+    writes = getattr(pipe, _CAST_WRITES_PENDING_ATTR, None)
+    if writes is None:
+        return False
+    try:
+        return not writes.done()
+    except Exception:  # noqa: BLE001 - unreadable: treat as still writing
+        return True
+
+
+def _video_exact_pins(
+    pipe: Any,
+    device: Any = None,
+    logger: Any = None,
+) -> bool:
+    """Video load priced at page-rounded bytes; a first load still writing its cast cache keeps the default plan (extra pins cost it 3-11 s)."""
+    if not (
+        bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
+        and not _env_off(VIDEO_EXACT_PIN_PLAN_ENV)
+        and _fast_pin_supported(device)
+    ):
+        return False
+    if _cast_cache_write_pending(pipe):
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: this load writes its cast cache (first load in this home): its pins keep the "
+                "default plan, no encoder prefix"
+            )
+        return False
+    return True
+
+
+def _late_encoder_pin_cap(
+    pipe: Any,
+    module: Any,
+    device: Any = None,
+) -> Callable[[], int]:
+    """Encoder pin cap read when the pinner starts, not at plan time (the load still holds source shards then), minus earlier pinners' unplaced bytes."""
+
+    def cap() -> int:
+        budget = _streamed_pin_leftover_mib(0, False, device)
+        owed = 0
+        for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+            if pinner.module is module:
+                break
+            owed += pinner.outstanding_bytes()
+        return max(0, (int(budget) << 20) - owed)
+
+    return cap
+
+
+def _streamed_pin_leftover_mib(
+    transformer_mib: int,
+    pin_transformer: bool,
+    device: Any = None,
+) -> int:
     """Pin budget MiB left after the transformer; 0 wherever ``_streamed_pin_plan`` would not pin by budget."""
-    if _env_off(PARTIAL_ENCODER_PIN_ENV) or not host_pinning_allowed():
+    if _env_off(PARTIAL_ENCODER_PIN_ENV) or not host_pinning_allowed(device):
         return 0
     forced = str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower()
     if forced in ("0", "off", "false", "no", "1", "on", "true", "yes") or _pinned_memory_capped():
@@ -6305,6 +6790,55 @@ def _streamed_pin_leftover_mib(transformer_mib: int, pin_transformer: bool) -> i
 
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+
+DENOISER_RESIDENT = "resident"
+DENOISER_PARTIAL = "partial"
+DENOISER_STREAMED = "streamed"
+
+
+def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: a denoiser another offload
+    hook moves counts as one streamed group, an unhooked one as one resident group, None when unreadable."""
+    resident = total = 0
+    try:
+        for name in _DENOISER_NAMES:
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            groups = _offload_groups(module)
+            if groups:
+                total += len(groups)
+                resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
+                continue
+            registry = getattr(module, "_diffusers_hook", None)
+            total += 1
+            if not (
+                any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+                or any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {}))
+            ):
+                resident += 1
+    except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
+        return None
+    return resident, total
+
+
+def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """resident | partial | streamed for a group-offloaded pipeline; None for other policies or an unreadable one."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    counts = denoiser_residency(pipe)
+    if counts is None:
+        return None
+    resident, total = counts
+    if resident >= total:
+        return DENOISER_RESIDENT
+    return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
+    """The placement every denoise of one image ran with; None when they differ."""
+    distinct = set(placements)
+    return distinct.pop() if len(distinct) == 1 else None
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
@@ -6372,7 +6906,7 @@ def request_fast_pins(pipe: Any) -> None:
         pass
 
 
-def _fast_pin_supported() -> bool:
+def _fast_pin_supported(device: Any = None) -> bool:
     if (os.environ.get(FAST_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     # WDDM / WSL2 cap page-locked memory; ROCm's register path is unmeasured.
@@ -6381,7 +6915,11 @@ def _fast_pin_supported() -> bool:
     try:
         import torch
 
-        if is_rocm_torch(torch) or not torch.cuda.is_available() or not host_pinning_allowed():
+        if (
+            is_rocm_torch(torch)
+            or not torch.cuda.is_available()
+            or not host_pinning_allowed(device)
+        ):
             return False
         cudart = torch.cuda.cudart()
         return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")
@@ -6442,6 +6980,41 @@ class _RegisteredHostBuffer:
             pass
 
 
+# "0" restores torch's pinned allocator for up-front pinned slabs.
+REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
+
+
+def registered_pinned_empty(
+    nbytes: int, fill: Optional[Callable[[Any], None]] = None
+) -> Optional[Any]:
+    """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
+    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel.
+    ``fill(buf)``, when given, writes every byte before registering, in place of the zero fill: the copy faults the
+    pages, saving a full write pass (an 8 GB H3 conditioner pin: 3.8 -> 3.4 s hot, 6.1 -> 4.1 s cold, A100 VM).
+    Its errors propagate."""
+    if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if int(nbytes) <= 0 or not _fast_pin_supported():
+        return None
+    import numpy as np
+    import torch
+
+    try:
+        holder = _RegisteredHostBuffer(int(nbytes))
+        buf = torch.from_numpy(np.asarray(holder))
+    except Exception:  # noqa: BLE001
+        return None
+    if fill is not None:
+        fill(buf)
+    try:
+        if fill is None:
+            buf.zero_()
+        holder.register()
+    except Exception:  # noqa: BLE001
+        return None
+    return buf
+
+
 def registered_host_copy(src: Any) -> Any:
     """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
     import numpy as np
@@ -6454,16 +7027,16 @@ def registered_host_copy(src: Any) -> Any:
     return out
 
 
-def _registered_pin(src: Any) -> Any:
+def _registered_pin(src: Any, device: Any = None) -> Any:
     """``src.pin_memory()`` in registered host memory where the type allows (GGUF re-wrapped, avoiding pow2 rounding)."""
     import torch
 
-    if not host_pinning_allowed():
+    if not host_pinning_allowed(device):
         return src  # integrated GPU: a pinned copy only takes RAM from the card
     if type(src) is torch.Tensor:
         return registered_host_copy(src)
     gguf = _gguf_parameter_class()
-    if gguf is not None and type(src) is gguf and _exact_pin_supported():
+    if gguf is not None and type(src) is gguf and _exact_pin_supported(device):
         pinned = registered_host_copy(src.as_tensor())
         return gguf(pinned, requires_grad = False, quant_type = src.quant_type)
     return src.pin_memory()
@@ -6489,19 +7062,25 @@ class _GroupPinner:
         import threading
 
         self.fast = bool(fast)
-        # Pin whole groups in order while they fit; the rest stay pageable (diffusers pins them per onload).
-        self.byte_cap = None if byte_cap is None else max(0, int(byte_cap))
+        # Pin whole groups in order while they fit; the rest stay pageable.
+        if byte_cap is None or callable(byte_cap):
+            self.byte_cap = byte_cap
+        else:
+            self.byte_cap = max(0, int(byte_cap))
         self.module = module
         self.label = type(module).__name__
         self.groups = groups
         self.device = device
         self.logger = logger
         self.pinned = 0
+        self.copied = 0
         self.waited_s = 0.0
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self.after: list = []
+        self.late = False
+        self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
             setattr(group, _BG_PIN_ATTR, self)
@@ -6511,6 +7090,34 @@ class _GroupPinner:
             if not self._started:
                 self._started = True
                 self._thread.start()
+
+    def _entry(self) -> None:
+        import time
+
+        began = time.perf_counter()
+        for dep in self.after:
+            dep.start()
+        while self.after and not self._stop.is_set():
+            if all(dep.join(0) for dep in self.after):
+                break
+            elapsed = time.perf_counter() - began
+            # Fast (not disk-bound) pins: pinning beside the others wins; overlapping the render only moves the cost.
+            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / max(elapsed, 1e-3)
+            if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
+                self.late = False
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: host weights pin at %.1f GiB/s; %s pins beside the others",
+                        rate / 2**30,
+                        self.label,
+                    )
+                break
+            time.sleep(0.1)
+        if self._stop.is_set():
+            for event in self._done.values():
+                event.set()
+            return
+        self._run()
 
     def wait(self, group: Any) -> None:
         import threading
@@ -6555,12 +7162,37 @@ class _GroupPinner:
             and not src.is_pinned()
         ]
 
+    def _submit(self, pool: Any, src: Any) -> Any:
+        future = pool.submit(_registered_pin, src, self.device)
+        future.add_done_callback(functools.partial(self._count_copy, int(src.nbytes)))
+        return future
+
+    def _count_copy(self, nbytes: int, future: Any) -> None:
+        if not future.cancelled():
+            self.copied += nbytes
+
     @staticmethod
     def _fast_result(future: Any, src: Any) -> Any:
         try:
             return future.result()
         except Exception:  # noqa: BLE001 - registration refused: the allocator's pin for this tensor
             return src.pin_memory()
+
+    def outstanding_bytes(self) -> int:
+        """Bytes this pinner may still place: its unpinned groups (placed ones already left that sum), within what
+        its byte cap has left."""
+        try:
+            need = sum(
+                _page_bytes(src.nbytes)
+                for group in self.groups
+                for _t, src in self._unpinned(group)
+            )
+        except Exception:  # noqa: BLE001 - unreadable: owes nothing
+            return 0
+        cap = self.byte_cap
+        if callable(cap) or cap is None:
+            return need
+        return min(need, max(0, int(cap) - int(self.pinned)))
 
     def _capped_groups(self) -> list:
         if self.byte_cap is None:
@@ -6584,6 +7216,14 @@ class _GroupPinner:
         failed = None
         pool = None
         try:
+            if callable(self.byte_cap):
+                self.byte_cap = max(0, int(self.byte_cap()))
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: %s pins up to %.1f GiB of its offload groups (cap read at pin start)",
+                        self.label,
+                        self.byte_cap / 2**30,
+                    )
             if self.byte_cap is not None:
                 kept = self._capped_groups()
                 kept_ids = {id(g) for g in kept}
@@ -6613,7 +7253,7 @@ class _GroupPinner:
                         (
                             tensor,
                             src,
-                            pool.submit(_registered_pin, src),
+                            self._submit(pool, src),
                         )
                         for tensor, src in self._unpinned(group)
                     ]
@@ -6704,18 +7344,64 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+def finish_background_pins(
+    pipe: Any,
+    cancel: Any = None,
+    include_late: bool = True,
+) -> float:
     """Blocks until deferred pinners finish, since a render overlapping one runs measurably slower."""
     import time
 
     start = time.perf_counter()
-    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
         pinner.start()
+    # Late pinners last: one may still turn early until the pinners before it finish.
+    for pinner in sorted(pinners, key = lambda p: bool(getattr(p, "late", False))):
+        if not include_late and getattr(pinner, "late", False):
+            continue
         # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
         while not pinner.join(0.25):
             if cancel is not None and cancel.is_set():
                 return time.perf_counter() - start
     return time.perf_counter() - start
+
+
+# "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
+LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
+_LATE_PIN_PROBE_S = 0.2
+_LATE_PIN_PARALLEL_BPS = 3 << 30
+
+
+def defer_late_expert_pins(
+    pipe: Any,
+    late_modules: Any,
+    logger: Any = None,
+) -> int:
+    """Pin ``late_modules`` after the other pinners when disk-bound, so the render waits only for those; a late
+    group's onload still waits for its own pin. Wan2.2-A14B (A100): both experts at once made the first render wait
+    47.8 s."""
+    if _env_off(LATE_EXPERT_PIN_ENV):
+        return 0
+    late_ids = {id(m) for m in late_modules or () if m is not None}
+    pending = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    late = [p for p in pending if id(p.module) in late_ids]
+    early = [p for p in pending if id(p.module) not in late_ids]
+    if not late or not early:
+        return 0
+    for pinner in late:
+        pinner.after = list(early)
+        pinner.late = True
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: %d late expert(s) (%.1f GiB) pin after the other %d pinner(s) (%.1f GiB); "
+            "the first render waits for those only",
+            len(late),
+            sum(p.outstanding_bytes() for p in late) / 2**30,
+            len(early),
+            sum(p.outstanding_bytes() for p in early) / 2**30,
+        )
+    return len(late)
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
@@ -6746,7 +7432,7 @@ def _defer_pinning(
         return False
     if fast is None:
         fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False))
-    fast = bool(fast) and _fast_pin_supported()
+    fast = bool(fast) and _fast_pin_supported(device)
     pinner = _GroupPinner(module, groups, device, logger, fast = fast, byte_cap = byte_cap)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
@@ -6858,17 +7544,21 @@ def install_group_offload_buffer_restore() -> bool:
 
 
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+# read-only: diffusers leaves the top-level group's cpu_param_dict empty
+TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
 def _pin_top_level_group(
     module: Any,
     logger: Any = None,
     pinned_mib: Optional[list] = None,
+    device: Any = None,
 ) -> bool:
-    """Onloads from one pinned host copy, async; skipped for torchao weights (not re-pointable) and when the copy does not fit pinnable host RAM."""
+    """Onloads from one pinned host copy, async; skipped for torchao weights (not re-pointable) and when the copy does not fit pinnable host RAM.
+    ``device``: the group's onload target (None: the current device)."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
-    if not host_pinning_allowed():
+    if not host_pinning_allowed(device):
         return False
     try:
         import torch
@@ -6952,6 +7642,7 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
         if logger is not None:
@@ -7032,6 +7723,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_top_no_copy_back = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "
@@ -7058,9 +7750,11 @@ def _apply_group_offload(
     background_pin: Optional[bool] = None,
     resident_transformer_mib: Optional[int] = None,
     resident_text_encoder_mib: Optional[int] = None,
+    denoiser: str = "transformer",
 ) -> bool:
-    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back."""
-    transformer = getattr(pipe, "transformer", None)
+    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back.
+    ``denoiser="unet"`` streams leaf by leaf (UNet blocks are too coarse for groups)."""
+    transformer = getattr(pipe, denoiser, None)
     if transformer is None:
         return False
     if not stream_transformer and not stream_text_encoders:
@@ -7091,7 +7785,9 @@ def _apply_group_offload(
 
         # Dual-DiT pipelines (Ideogram 4): second DiT is as large as the first, so stream all DiTs.
         streamed: dict[str, Any] = {}
-        if stream_transformer:
+        if stream_transformer and denoiser != "transformer":
+            streamed[denoiser] = transformer
+        elif stream_transformer:
             streamed["transformer"] = transformer
             for extra in ("transformer_2", "unconditional_transformer"):
                 module = getattr(pipe, extra, None)
@@ -7115,6 +7811,9 @@ def _apply_group_offload(
             "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
             "use_stream": use_stream,
         }
+        if denoiser != "transformer":
+            gkwargs["offload_type"] = "leaf_level"
+            gkwargs.pop("num_blocks_per_group")
         # Gated on the signature so older diffusers still works.
         _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:
@@ -7129,17 +7828,27 @@ def _apply_group_offload(
             background_pin
             and use_stream
             and "low_cpu_mem_usage" in _params
-            and _background_pin_enabled()
+            and _background_pin_enabled(onload)
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
+        # Power-of-two pricing read Wan's 12.5 GiB UMT5 as 17 GiB, so it never pinned on 31-51 GiB hosts.
+        exact_defer = defer and _video_exact_pins(pipe, onload, logger)
+        if exact_defer:
+            _host_price = pin_mib
+
+            def pin_mib(module: Any) -> int:
+                if _torchao_weight_classes(module):
+                    return _host_price(module)
+                return _module_offload_registered_mib(module)
+
         # Image loads: only the streamed encoders defer (registered pins, priced at weight bytes); torchao ones cannot.
         encoders_defer = (
             not defer
             and stream_text_encoders
             and use_stream
             and "low_cpu_mem_usage" in _params
-            and _encoder_background_pin_wanted(pipe)
+            and _encoder_background_pin_wanted(pipe, onload)
         )
 
         def _encoder_defers(module: Any) -> bool:
@@ -7159,6 +7868,7 @@ def _apply_group_offload(
                 dit_pin_mib,
                 sum(enc_pin_mib(m) for m in streamed_encoders.values()),
                 logger,
+                device = onload,
             )
             gkwargs["low_cpu_mem_usage"] = not pin_streamed[0]
         small_host = bool(getattr(pipe, "_unsloth_small_host", None))
@@ -7167,8 +7877,20 @@ def _apply_group_offload(
             pin_streamed = (False, False)
             gkwargs["low_cpu_mem_usage"] = True
         encoder_cap_mib = 0
+        late_prefix = (
+            exact_defer
+            and stream_text_encoders
+            and not pin_streamed[1]
+            and not small_host
+            and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+        )
+        if late_prefix and logger is not None:
+            logger.info(
+                "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                "free when the load returns"
+            )
         if encoders_defer and stream_text_encoders and not pin_streamed[1] and not small_host:
-            encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0])
+            encoder_cap_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_streamed[0], onload)
             if encoder_cap_mib and logger is not None:
                 logger.info(
                     "diffusion.memory: streamed encoders pin a %d MiB prefix of their offload groups in the background",
@@ -7206,7 +7928,7 @@ def _apply_group_offload(
                     logger,
                 )
             installed += 1
-            if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
+            if use_stream and not _pin_top_level_group(module, logger, pinned_mib, device = onload):
                 _skip_top_level_copy_back(module, logger)
             if use_stream and gkwargs.get("record_stream"):
                 install_group_prefetch(module, onload, logger)
@@ -7229,6 +7951,16 @@ def _apply_group_offload(
                 if defer and whole:
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     _defer_pinning(pipe, module, onload, logger)
+                elif late_prefix and use_stream and not _torchao_weight_classes(module):
+                    apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
+                    _defer_pinning(
+                        pipe,
+                        module,
+                        onload,
+                        logger,
+                        fast = True,
+                        byte_cap = _late_encoder_pin_cap(pipe, module, onload),
+                    )
                 elif _encoder_defers(module) and (whole or encoder_left_mib > 0):
                     apply_group_offloading(module, **{**ekwargs, "low_cpu_mem_usage": True})
                     cap = None if whole else int(encoder_left_mib) << 20
@@ -7349,7 +8081,9 @@ def stream_text_encoders_onto(
         if str(n).startswith("text_encoder") and isinstance(m, torch.nn.Module)
     }
     if "low_cpu_mem_usage" in params:
-        pin = _streamed_pin_plan(0, sum(_module_pin_mib(m) for m in encoders.values()), logger)
+        pin = _streamed_pin_plan(
+            0, sum(_module_pin_mib(m) for m in encoders.values()), logger, device = onload
+        )
         kwargs["low_cpu_mem_usage"] = not pin[1]
     done: list[str] = []
     try:
@@ -7629,6 +8363,9 @@ def image_activation_verdict(
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
         # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
+        # Not on a U-Net: its ControlNet adds no tokens and stays under the measured decode peak.
+        if controlnet and _resident_only_hint(family):
+            controlnet = False
         input_pixels = max(0, int(condition_pixels or 0))
         conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
         if calibrated_placement and controlnet:
@@ -7873,11 +8610,20 @@ def _apply_streaming_offload(
         defer = (
             prefetch
             and bool(getattr(pipe, _BACKGROUND_PIN_REQUEST_ATTR, False))
-            and _background_pin_enabled()
+            and _background_pin_enabled(onload)
         )
         # an up-front pin packs into slabs (_apply_group_offloading_packed); a deferred one pins per tensor
         pin_mib = _module_host_mib if defer else _module_pin_mib
-        encoders_defer = not defer and prefetch and _encoder_background_pin_wanted(pipe)
+        exact_defer = defer and _video_exact_pins(pipe, onload, logger)
+        if exact_defer:
+            _host_price = pin_mib
+
+            def pin_mib(module: Any) -> int:
+                if _torchao_weight_classes(module):
+                    return _host_price(module)
+                return _module_offload_registered_mib(module)
+
+        encoders_defer = not defer and prefetch and _encoder_background_pin_wanted(pipe, onload)
 
         def _encoder_defers(name: Any, module: Any, offload_type: str) -> bool:
             return (
@@ -7898,10 +8644,25 @@ def _apply_streaming_offload(
             leaf_mib = sum(
                 leaf_pin_mib(n, m, t) for n, (m, t) in streamed.items() if t != "block_level"
             )
-            pin_dits, pin_encoders = _streamed_pin_plan(dit_pin_mib, leaf_mib, logger)
+            pin_dits, pin_encoders = _streamed_pin_plan(
+                dit_pin_mib, leaf_mib, logger, device = onload
+            )
+        late_prefix = (
+            exact_defer
+            and prefetch
+            and not pin_encoders
+            and not getattr(pipe, "_unsloth_small_host", None)
+            and not _env_off(PARTIAL_ENCODER_PIN_ENV)
+            and host_pinning_allowed(onload)
+        )
+        if late_prefix and logger is not None:
+            logger.info(
+                "diffusion.memory: streamed encoders pin the prefix of their offload groups that fits the host RAM "
+                "free when the load returns"
+            )
         encoder_left_mib = 0
         if encoders_defer and not pin_encoders:
-            encoder_left_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_dits)
+            encoder_left_mib = _streamed_pin_leftover_mib(dit_pin_mib, pin_dits, onload)
             if encoder_left_mib and logger is not None:
                 logger.info(
                     "diffusion.memory: streamed encoders pin a %d MiB prefix of their offload groups in the background",
@@ -7939,6 +8700,23 @@ def _apply_streaming_offload(
             _apply_group_offloading_packed(apply_group_offloading, module, kwargs, logger)
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
+            elif (
+                late_prefix
+                and not pin
+                and offload_type != "block_level"
+                and str(comp_name).startswith("text_encoder")
+                and not _torchao_weight_classes(module)
+                and kwargs.get("use_stream")
+                and kwargs.get("low_cpu_mem_usage")
+            ):
+                _defer_pinning(
+                    pipe,
+                    module,
+                    onload,
+                    logger,
+                    fast = True,
+                    byte_cap = _late_encoder_pin_cap(pipe, module, onload),
+                )
             elif enc_defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 cap = None if pin else int(encoder_left_mib) << 20
                 _defer_pinning(pipe, module, onload, logger, fast = True, byte_cap = cap)
@@ -7948,7 +8726,7 @@ def _apply_streaming_offload(
             if (
                 use_stream
                 and offload_type == "block_level"
-                and not _pin_top_level_group(module, logger, pinned_mib)
+                and not _pin_top_level_group(module, logger, pinned_mib, device = onload)
             ):
                 _skip_top_level_copy_back(module, logger)
             if use_stream and prefetch and offload_type == "block_level":

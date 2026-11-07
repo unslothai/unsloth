@@ -1,10 +1,6 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Pure resolver for `unsloth studio [run] --enable-tools/--disable-tools`.
-
-Kept as a standalone module so the truth table can be unit-tested
-without spinning up Typer or the studio venv.
-"""
+"""Pure resolver for --enable-tools/--disable-tools, kept free of Typer so it is unit-testable."""
 
 import ipaddress
 import socket

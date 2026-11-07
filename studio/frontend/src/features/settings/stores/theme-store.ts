@@ -6,7 +6,7 @@ import {
   COLOR_THEME_IDS,
   type ColorThemeId,
   isColorThemeId,
-} from "../lib/color-themes";
+} from "../lib/color-themes.ts";
 
 export type Theme = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";

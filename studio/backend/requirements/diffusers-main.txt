@@ -1,12 +1,10 @@
-# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
-# Today that is FLUX.3 Image Klein: Diffusers support merged as huggingface/diffusers#15046 on 2026-10-15 and is
-# in no release yet. The commit below is main as of 2026-10-16 (d42ebf9c, the FLUX.3 prompt upsampler block,
-# huggingface/diffusers#15058), which carries that merge; past it only FLUX.3 files changed. Studio drops the
-# upsampler step from the blocks (diffusion_flux3.flux3_blocks). Comment the line out again (and empty
-# _UNRELEASED_MIN_DIFFUSERS) once a release carries it.
+# DISABLED (line commented out) while diffusers-pin.txt's release carries every family. To re-enable,
+# uncomment with the new commit + archive-sha256 and add the minimum to _UNRELEASED_MIN_DIFFUSERS
+# (diffusion_families.py); when active it installs by default, UNSLOTH_DIFFUSERS_MAIN=0 opts out.
+# Last used for FLUX.3 Image Klein (huggingface/diffusers#15046, #15058) until 0.42.0 shipped.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
-# reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
+# reached a release yet. Qwen-Image-2.1 was the first: it merged on 2026-09-18, four weeks after
 # 0.40.0 was cut, and until 0.41.0 shipped (2026-10-06) nothing on PyPI could run it. Without this
 # file the only way to run such a model is to break the release pin by hand.
 #
@@ -41,5 +39,6 @@
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
 # archive-sha256: c46925a12c1b64340272dbd4c5d72a4298ecd4c96cad2c9d549b85a99ffb491f
 #
-# Retiring a pin: bump diffusers-pin.txt to the release and comment the line out (done for 0.41.0).
-diffusers @ git+https://github.com/huggingface/diffusers.git@d42ebf9c6e0b46103b74283f5324357a67acaa04
+# Retiring a pin: bump diffusers-pin.txt to the release and comment the line out (done for 0.41.0
+# and 0.42.1).
+# diffusers @ git+https://github.com/huggingface/diffusers.git@d42ebf9c6e0b46103b74283f5324357a67acaa04

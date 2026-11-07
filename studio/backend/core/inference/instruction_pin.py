@@ -1,34 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the user's standing instructions when the rolling window evicts everything else.
-
-The defect this exists for. `context_window.truncate_oldest_messages` protects system and
-developer groups, the final group, and the newest USER group. So "do task B, and always
-report results as a table" is safe only while it IS the newest user turn. After a few
-agent turns and a short follow-up -- "continue", "yes", "keep going" -- the newest user
-group is that filler, and the instruction becomes an ordinary eviction candidate: the
-oldest one, so the first to go.
-
-Then the archive cannot rescue it either, because the forced recall on the compaction
-turn uses the latest user message as its query. The archive gets searched for the word
-"continue".
-
-That follow-up is not a contrived case. OpenCode writes a synthetic "Continue if you have
-next steps" turn after every auto compaction, and Zed emits "Continue where you left
-off", so in both, the newest user turn straight after a compaction is filler by
-construction. Everyone else's answer is to ask a summarizer to remember the instruction;
-this is the deterministic version, and Zed's 80 KB verbatim replay of recent user
-messages is the closest existing thing to it.
-
-Two knobs, both off by default so the change ships inert:
-
-    ROLLING_INSTRUCTION_PIN_GROUPS      how many instruction groups to hold (0 = today)
-    ROLLING_INSTRUCTION_PIN_MAX_TOKENS  absolute ceiling on what they may cost
-
-The pin is applied through `truncate_oldest_messages`'s existing `protected_message_ids`
-parameter, so nothing in the rolling-window layer changes.
-"""
+"""Keeps standing instructions past filler turns; opt-in via ROLLING_INSTRUCTION_PIN_GROUPS (0 = off)"""
 
 from __future__ import annotations
 

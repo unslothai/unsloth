@@ -66,14 +66,14 @@ test("Train and Video are still the capability-gated rows", async () => {
   // Video needs its own disabled state; reusing the chat-only verdict un-gates it on MLX-only Macs.
   for (const [id, disabled] of [
     // Train stays enabled only to open the full install dialog on an upgradable Chat only install.
-    ["train", /disabled: chatOnlyMeasured && !fullInstall,/],
+    ["train", /disabled: trainBlocked && !fullInstall,/],
     ["video", /disabled: (?!chatOnlyMeasured)\w+,/],
   ] as const) {
     const body = bodies.get(id);
     assert.ok(body, `no ${id} row`);
     assert.match(
       body,
-      /pending: capabilitiesUnknown,/,
+      /pending: capabilitiesUnknown && !detectionDeferred,/,
       `the ${id} row renders its disabled state before the verdict is measured`,
     );
     assert.match(

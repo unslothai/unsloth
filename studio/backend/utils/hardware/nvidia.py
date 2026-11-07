@@ -571,6 +571,12 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     return len(entries)
 
 
+def has_nvidia_driver() -> bool:
+    return (
+        shutil.which(_nvidia_smi_executable()) is not None or _linux_nvidia_procfs_gpu_count() > 0
+    )
+
+
 # Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
 _CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
 
@@ -756,6 +762,32 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
             return []
         rows.append(row_by_bus[key])
     return rows or None
+
+
+def get_pci_bus_ids() -> dict[int, tuple[int, str]]:
+    """nvidia-smi row index -> normalized PCI bus id; {} when nvidia-smi does not answer."""
+    try:
+        smi = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if smi.returncode != 0:
+        return {}
+    bus_ids: dict[int, tuple[int, str]] = {}
+    for line in smi.stdout.strip().splitlines():
+        index, _, bus_id = (part.strip() for part in line.partition(","))
+        key = _normalize_bus_id(bus_id)
+        if index.isdigit() and key is not None:
+            bus_ids[int(index)] = key
+    return bus_ids
 
 
 def get_physical_gpu_inventory() -> dict[str, Any]:

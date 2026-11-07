@@ -65,6 +65,7 @@ import {
   buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
+  pickAgentVariant,
   quoteShellArg,
 } from "../components/agent-command";
 import {
@@ -89,6 +90,7 @@ import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
+import { useFreshApiKeyStore } from "../stores/fresh-api-key-store";
 import { LineBox } from "@/components/ui/line-box";
 
 const DOCS_URL = UNSLOTH_START_DOCS_URL;
@@ -266,22 +268,10 @@ function localGgufEntries(
   return entries;
 }
 
-function pickVariant(
-  available: Set<string>,
-  candidates: (string | null | undefined)[],
-): string | null {
-  for (const candidate of candidates) {
-    if (candidate && available.has(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function activeGgufSelection(
+function activeAgentModelSelection(
   status: InferenceStatusResponse | null,
 ): { model: string; variant: string | null; named: boolean } | null {
-  if (!status?.is_gguf) {
+  if (!(status?.is_gguf || status?.is_mlx)) {
     return null;
   }
   if (!status.model_identifier) {
@@ -348,12 +338,15 @@ function CopyableCode({
   copied,
   onCopy,
   breakAll = true,
+  sensitive = false,
 }: {
   value: string;
   copyLabel: string;
   copied: boolean;
   onCopy: () => void;
   breakAll?: boolean;
+  /** Holds a real API key: reload-snapshot.js clears it instead of saving it to sessionStorage. */
+  sensitive?: boolean;
 }) {
   const t = useT();
 
@@ -365,6 +358,7 @@ function CopyableCode({
           "block min-w-0 whitespace-pre-wrap border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
           breakAll ? "break-all" : "break-words",
         )}
+        data-reload-snapshot-sensitive={sensitive ? "" : undefined}
       >
         {value}
       </LineBox>
@@ -390,9 +384,11 @@ function CopyableCode({
 function SubagentSection({
   agent,
   command,
+  sensitive,
 }: {
   agent: AgentDetails;
   command: string;
+  sensitive: boolean;
 }) {
   const t = useT();
   const prompt =
@@ -429,6 +425,7 @@ function SubagentSection({
           copyLabel={t("settings.agents.subagent.copySetupCommand")}
           copied={commandCopy.copied}
           onCopy={commandCopy.copy}
+          sensitive={sensitive}
         />
       </div>
 
@@ -473,6 +470,7 @@ export function AgentsTab() {
   // A Tauri origin is unreachable for the CLI, so use the backend URL; on loopback deviceType
   // decides (it can report wsl).
   const studioBase = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const freshApiKey = useFreshApiKeyStore((s) => s.key);
   const inferredCommandOs: ExampleOs = (
     isLoopbackBase(studioBase)
       ? deviceType === "windows"
@@ -530,6 +528,8 @@ export function AgentsTab() {
     null,
   );
   const [statusSettled, setStatusSettled] = useState(false);
+  // State, not the ref: status can land after the variants listing and must re-pick then.
+  const [rootMlxResident, setRootMlxResident] = useState<string | null>(null);
   const activeModelRef = useRef<{
     model: string;
     variant: string | null;
@@ -641,12 +641,12 @@ export function AgentsTab() {
   const modelArgs = attachOnly
     ? ""
     : [selectedModelArgs, selectedModelFlags].filter(Boolean).join(" ");
-  // No key: the CLI caches an explicit key per base, overwriting a working saved one.
   const shellCommands = buildAgentShellCommands(
     studioBase,
     commandOs,
     selectedAgent,
     modelArgs,
+    freshApiKey,
   );
   const command = shellCommands.primary;
   const {
@@ -829,7 +829,7 @@ export function AgentsTab() {
     });
   }, []);
 
-  // Follow the resident GGUF away too, or the command would switch the shared server back.
+  // Follow the resident model away too, or the command would switch the shared server back.
   // An explicit pick wins, except a native-grant label, which is not loadable.
   const dropActiveModel = useCallback(
     (attachOnly: string | null, wasActive: string | null) => {
@@ -852,10 +852,15 @@ export function AgentsTab() {
 
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
-      const active = activeGgufSelection(status);
+      const active = activeAgentModelSelection(status);
       activeModelRef.current = active
         ? { model: active.model, variant: active.variant }
         : null;
+      setRootMlxResident(
+        active && status.is_mlx && active.variant === null
+          ? modelKey(active.model)
+          : null,
+      );
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -933,6 +938,7 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
+    const keepRoot = rootMlxResident === modelKey(selectedModel);
 
     // After discovery a scanned directory's path is its identity; only a loose .gguf is variantless.
     const localDir =
@@ -988,14 +994,13 @@ export function AgentsTab() {
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
         }
-        const nextVariant =
-          pickVariant(available, [
-            rememberedVariant(selectedModel),
-            preferredVariant,
-            info.default_variant,
-          ]) ??
-          uniqueVariants[0]?.quant ??
-          null;
+        const nextVariant = pickAgentVariant(available, {
+          remembered: rememberedVariant(selectedModel),
+          preferred: preferredVariant,
+          defaultVariant: info.default_variant,
+          first: uniqueVariants[0]?.quant ?? null,
+          keepRoot,
+        });
         setSelectedVariant(nextVariant);
       })
       .catch(() => {
@@ -1004,12 +1009,13 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        setSelectedVariant(preferredVariant);
-        if (preferredVariant) {
+        const fallback = keepRoot ? null : preferredVariant;
+        setSelectedVariant(fallback);
+        if (fallback) {
           setVariants([
             {
               filename: "",
-              quant: preferredVariant,
+              quant: fallback,
               // biome-ignore lint/style/useNamingConvention: API response field
               size_bytes: 0,
             },
@@ -1030,10 +1036,11 @@ export function AgentsTab() {
     hfToken,
     preferredVariant,
     rememberedVariant,
+    rootMlxResident,
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models.
+  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models and a resident MLX one.
 
   return (
     <div className="settings-page">
@@ -1421,6 +1428,7 @@ export function AgentsTab() {
             copyLabel={t("settings.agents.copyGeneratedCommand")}
             copied={copied}
             onCopy={handleCopy}
+            sensitive={freshApiKey !== null}
           />
           {selectedAgent === "vscode" && (
             <p className="text-ui-11 leading-relaxed text-muted-foreground">
@@ -1445,6 +1453,7 @@ export function AgentsTab() {
           key={`${selectedAgent}:${commandModel}`}
           command={shellCommands.subagent}
           agent={selectedAgentDetails}
+          sensitive={freshApiKey !== null}
         />
 
         <p className="text-ui-11 leading-relaxed text-muted-foreground">

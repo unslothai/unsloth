@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Manage FastFlowLM NPU models through a private Lemonade server.
-
-Installs and validates the runtime, manages its catalog, and loads models by
-``lemonade:<id>``. Health checks confirm residency and context length.
-GGUF models are unsupported. This module does not import the GPU stack.
-"""
+"""Runs FastFlowLM NPU models via a private Lemonade server; loads lemonade:<id>; GGUF unsupported;
+does not import the GPU stack."""
 
 from __future__ import annotations
 

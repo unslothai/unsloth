@@ -22,7 +22,7 @@ const API_TAB = read("../src/features/settings/tabs/api-keys-tab.tsx");
 test("the API tab renders the section and search finds it", () => {
   const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
   assert.match(API_TAB, /<ApiExamplesPanel/);
-  assert.match(tabs, /<DecisionApiSection showHeading=\{false\} \/>/);
+  assert.match(tabs, /<DecisionApiSection[\s\S]*?showHeading=\{false\}/);
   assert.match(tabs, /searchLabel: "settings\.apiKeys\.decisionApi\.title"/);
   assert.match(tabs, /data-settings-label=\{\s*entry\.searchLabel \? t\(entry\.searchLabel\) : undefined\s*\}/);
   assert.ok(
@@ -172,15 +172,18 @@ test("reports a resident model as loaded only when it is the selected one", () =
   assert.match(SECTION, /settings\.loadingModel === settings\.model/);
 });
 
-test("a failed first load still renders the section with its error", () => {
-  assert.match(SECTION, /if \(!settings\) \{\s*return error \?/);
+test("before settings load, the section renders its header with the error or a loading line", () => {
+  assert.match(
+    SECTION,
+    /if \(!settings\) \{[\s\S]*?\{header\}\s*<div>\s*\{errorLine \?\? \([\s\S]*?decisionApi\.loading/,
+  );
   assert.match(
     SECTION,
     /translate\("settings.apiKeys.decisionApi.loadError"\)/,
   );
 });
 
-test("Open Connections works off the dialog too, where the API page shows this card", () => {
+test("The Connections link works off the dialog too, where the API page shows this card", () => {
   assert.match(
     SECTION,
     /onClick=\{\(\) =>\s*useSettingsDialogStore\.getState\(\)\.openDialog\("connections"\)\s*\}/,

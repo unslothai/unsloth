@@ -1,16 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion GGUF -> mflux pre-quantized transformer layout (numpy + gguf only, streamed per tensor).
-
-Q4_0 / Q4_1 / Q8_0 map exactly onto MLX affine group-32 (dequant = q * scale + bias):
-  Q4_0: scale d, bias -8d;  Q4_1: scale d, bias m;  Q8_0: q = qs + 128, scale d, bias -128d.
-Q5_0 / Q5_1 likewise onto 5-bit (Q5_0: bias -16d; Q5_1: bias m), the fifth bit coming from the block's qh word.
-Q4_K / Q5_K keep their codes too: each 32-wide sub-block is affine with scale d * sc and bias -dmin * m, so they land
-on MLX 4 / 5-bit group-32; only the scale product is rounded to the 16-bit scale dtype, as the d of Q4_0 already is.
-Q6_K uses 16-wide groups, which MLX does not have: its exact dequantized values are re-quantized to 8-bit group-32,
-whose step is at most a quarter of Q6_K's own. Q2_K / Q3_K (16-wide, 2-3 bits) are refused.
-"""
+"""Diffusion GGUF to mflux layout (numpy and gguf only, streamed per tensor); Q2_K and Q3_K refused;
+Q6_K re-quantized to 8-bit; others map onto MLX group-32."""
 
 from __future__ import annotations
 
@@ -134,18 +126,25 @@ def _pack(q: np.ndarray, bits: int) -> np.ndarray:
     rows, cols = q.shape
     if (cols * bits) % 32:
         raise ValueError(f"{cols} columns do not pack into {bits}-bit words")
-    if 32 % bits == 0:
-        per_word = 32 // bits
-        q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
-        shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
-        return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
-    out = np.empty((rows, cols * bits // 32), dtype = np.uint32)
-    shifts = np.arange(bits, dtype = np.uint8)
+    q = np.asarray(q).astype(np.uint8, copy = False)
+    out = np.empty((rows, cols * bits // 32), dtype = "<u4")
+    stream = out.view(np.uint8)
+    if 8 % bits == 0:
+        per_byte = 8 // bits
+        lanes = q.reshape(rows, cols // per_byte, per_byte)
+        np.copyto(stream, lanes[..., 0])
+        for k in range(1, per_byte):
+            stream |= lanes[..., k] << np.uint8(bits * k)
+        return out
+    # 8 elements = `bits` bytes: the low bytes of a little-endian uint64.
     for start in range(0, rows, _ROW_CHUNK):
-        chunk = np.asarray(q[start : start + _ROW_CHUNK]).astype(np.uint8)
-        stream = ((chunk[..., None] >> shifts) & 1).reshape(chunk.shape[0], -1)
-        packed = np.packbits(stream, axis = -1, bitorder = "little")
-        out[start : start + _ROW_CHUNK] = np.ascontiguousarray(packed).view("<u4")
+        lanes = q[start : start + _ROW_CHUNK].reshape(-1, cols // 8, 8)
+        acc = lanes[..., 0].astype("<u8")
+        for k in range(1, 8):
+            acc |= lanes[..., k].astype("<u8") << np.uint64(bits * k)
+        stream[start : start + _ROW_CHUNK] = (
+            acc.view(np.uint8).reshape(-1, cols // 8, 8)[..., :bits].reshape(lanes.shape[0], -1)
+        )
     return out
 
 
@@ -299,9 +298,13 @@ def quantize_dense_affine(
     scale = round_to_bf16((hi - bias) / levels)
     flat = scale == 0
     safe_scale = np.where(flat, np.float32(1.0), scale).astype(np.float32)
-    q = np.rint((g - bias[..., None]) / safe_scale[..., None])
-    q = np.where(flat[..., None], 0.0, q)
-    q = np.clip(q, 0, levels).astype(np.uint8).reshape(rows, cols)
+    # In place, same ops and order as before: output stays byte-identical.
+    q = np.subtract(g, bias[..., None], dtype = np.float32)
+    np.divide(q, safe_scale[..., None], out = q)
+    np.rint(q, out = q)
+    q[flat] = 0.0
+    np.clip(q, 0, levels, out = q)
+    q = q.astype(np.uint8).reshape(rows, cols)
     return _pack(q, bits), scale.astype(np.float32), bias.astype(np.float32)
 
 

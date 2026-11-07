@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
-
-``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
-small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
-"""
+"""Host-RAM LRU of text-encoder outputs; hits return copies so in-place edits cannot poison renders."""
 
 from __future__ import annotations
 

@@ -8,7 +8,8 @@ import type {
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
-import { useMonitorFrameStore, useShortcut } from "@/features/settings";
+import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-store";
+import { useShortcut } from "@/features/settings/hooks/use-shortcut";
 import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import {
@@ -17,7 +18,6 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import {
-  ExpandIcon,
   DragDropVerticalIcon,
   ApiIcon,
   Cancel01Icon,
@@ -44,6 +44,7 @@ import {
   placeFloatingPanel,
 } from "./panel-placement";
 import { computeStats } from "./use-api-monitor";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 
 const OPEN_POLL_MS = 1500;
 // The body scrolls, so the grip may shrink below content size (the hardware monitor's floor).
@@ -390,7 +391,8 @@ function ApiMonitorPanel({
         exit={{ opacity: 0 }}
         /* Panel language from the sidebar menu: soft surface, menu corner, heading font. */
         className={cn(
-          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
+          // transition-none: see floating-monitor.tsx (a drop must not flash at the start spot).
+          "menu-soft-surface pointer-events-auto absolute flex max-h-full transition-none w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
           // The CSS corner until it has been measured, so the first paint
           // is the corner it has always opened in rather than the top left.
           layout ? "top-0 left-0 resize" : "bottom-0 right-0",
@@ -576,7 +578,7 @@ function ApiMonitorPanel({
           className="mt-1 flex shrink-0 h-[calc(33px*var(--ui-space-scale,1))] w-full items-center justify-center gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
         >
           <HugeiconsIcon
-            icon={ExpandIcon}
+            icon={ExpandArrowsIcon}
             strokeWidth={1.75}
             className="size-icon shrink-0"
           />

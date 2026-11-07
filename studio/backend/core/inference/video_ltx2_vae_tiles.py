@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free LTX-2 / 2.3 VAE decode: the fewest, largest tiles that fit free VRAM (untiled when it fits).
-
-Stock tiles (16 latents, 2-latent blend) are narrower than the decoder's receptive field, so every seam shows a line.
-Kill switch ``UNSLOTH_VIDEO_VAE_WIDE_TILES=0``; ``UNSLOTH_VIDEO_VAE_UNTILED=0`` keeps >= 2 tiles. Tiles span every
-frame: Studio never decodes LTX framewise.
-"""
+"""Seam-free LTX-2/2.3 VAE tiling: widest tiles fitting VRAM; tiles span every frame, Studio never
+decodes framewise; UNSLOTH_VIDEO_VAE_WIDE_TILES=0 reverts; UNSLOTH_VIDEO_VAE_UNTILED=0 keeps >=2
+tiles"""
 
 from __future__ import annotations
 
@@ -83,6 +80,23 @@ def axis_weights(
         MARGIN_LATENTS if margin is None else margin,
         RAMP_LATENTS if ramp is None else ramp,
     )
+
+
+_WEIGHTS_ATTR = "_unsloth_ltx2_tile_weights"
+
+
+def _cached_weights(
+    vae: Any, starts: list[int], tile: int, length: int, scale: int, torch: Any, device: Any
+) -> list:
+    """``axis_weights`` memoised per VAE (a repeat decode syncs no device)."""
+    cache = vae.__dict__.setdefault(_WEIGHTS_ATTR, {}) if hasattr(vae, "__dict__") else {}
+    key = (tuple(starts), int(tile), int(length), int(scale), str(device))
+    hit = cache.get(key)
+    if hit is None:
+        if len(cache) >= 64:
+            cache.clear()
+        hit = cache[key] = axis_weights(starts, tile, length, scale, torch, device)
+    return hit
 
 
 def output_frames(vae: Any, latent_frames: int) -> int:
@@ -201,8 +215,8 @@ def _decode_tiles(
     hs, ws = tile_starts(height, th), tile_starts(width, tw)
     if len(hs) == 1 and len(ws) == 1:
         return vae.decoder(z, temb, causal = causal)
-    wy = axis_weights(hs, th, height, ratio, torch, z.device)
-    wx = axis_weights(ws, tw, width, ratio, torch, z.device)
+    wy = _cached_weights(vae, hs, th, height, ratio, torch, z.device)
+    wx = _cached_weights(vae, ws, tw, width, ratio, torch, z.device)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, x in enumerate(ws):
@@ -235,7 +249,7 @@ def tiled_decode(
     """Decode ``z`` in the tiles ``plan_tiles`` picks; on OOM, once more in the stock-size 16-latent tiles."""
     from diffusers.models.autoencoders.vae import DecoderOutput
 
-    from .diffusion_batched import is_oom_error
+    from .video_vae_untiled import _is_oom  # CPU allocator refusals too: tiles plan from host RAM
 
     (th, tw), budgeted = _plan(vae, z)
     floor = (min(MIN_TILE_LATENTS, int(z.shape[-2])), min(MIN_TILE_LATENTS, int(z.shape[-1])))
@@ -247,7 +261,7 @@ def tiled_decode(
     try:
         dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
     except Exception as exc:  # noqa: BLE001
-        if (th, tw) == floor or not is_oom_error(exc):
+        if (th, tw) == floor or not _is_oom(exc):
             raise
         failed = True
     if failed and oom_free_first(vae, z):
@@ -257,7 +271,7 @@ def tiled_decode(
         try:
             dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
         except Exception as exc:  # noqa: BLE001
-            if not is_oom_error(exc):
+            if not _is_oom(exc):
                 raise
             failed = True
     if failed:
@@ -327,4 +341,5 @@ def uninstall(vae: Any) -> None:
     else:
         vae.tiled_decode = own
     vae.__dict__.pop("_unsloth_last_decode_tile", None)
+    vae.__dict__.pop(_WEIGHTS_ATTR, None)
     vae._unsloth_wide_tiles = False

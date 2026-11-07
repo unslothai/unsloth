@@ -1,28 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Opt-in low-precision casting of the diffusion pipeline's text encoder(s).
-
-The transformer arrives quantised in the GGUF, but the companion text encoder loads dense
-(bf16) and is often the largest resident component (Qwen3 / T5-XXL / Mistral run to many GB).
-This shrinks it in place, with four backends:
-
-  fp8         - diffusers layerwise casting: 8-bit (e4m3) storage, upcast per layer. ~2x
-                smaller. Any fp8-capable CUDA card (cc >= 8.9).
-  fp8_dynamic - torchao dynamic fp8 COMPUTE (per-row): keeps the matmul in fp8 on the tensor
-                cores (torch._scaled_mm) instead of upcasting. ~2x smaller + speedup; cc >= 8.9.
-  int8        - torchao dynamic int8 COMPUTE (per-token act + per-channel weight, _int_mm),
-                with per-layer keep-bf16 selection. Degrades on large encoders unless the
-                sensitive decoder blocks stay bf16, so applied only for families with a
-                measured schedule (else falls back to fp8). ~2x smaller; cc >= 8.0.
-  nvfp4       - torchao NVFP4 weight-only: 4-bit float storage, two-level microscaling, each
-                weight dequantised to bf16 per forward (no FP4 GEMM). ~3.5x smaller (lowest
-                VRAM) but a steeper quality cost and a slower prompt encode; cc >= 8.0.
-
-All keep norms / embeddings full precision, are a memory-vs-quality tradeoff (off by default),
-and pair well with streamed (group) offload where the text encoder stays resident. Quantify
-the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao imported lazily.
-"""
+"""Opt-in text-encoder casting: fp8, fp8_dynamic, int8 or nvfp4, norms kept full precision; int8
+falls back to fp8 unless measured; torch, diffusers, torchao imported lazily; off by default"""
 
 from __future__ import annotations
 
@@ -115,6 +95,68 @@ def resolve_te_quant_request(
     # quantize_text_encoders as an unknown mode on every default load of that family.
     scheme = normalize_te_quant(auto_scheme)
     return (AutoTeQuant(scheme) if scheme is not None else None), True
+
+
+# Families whose automatic int8 encoder is the larger share of the default load's error AND whose bf16 encoder costs no
+# speed once resident. qwen-image (Qwen2.5-VL-7B, 2512, 16 prompts, G4, LPIPS vs the bf16 pipeline): int8 ConvRot
+# encoder 0.087 mean, bf16 encoder 0.059 at the same s/img, +6.1 GiB resident.
+TE_BF16_AUTO_FAMILIES = frozenset({"qwen-image"})
+TE_BF16_AUTO_ENV = "UNSLOTH_DIFFUSION_TE_BF16_AUTO"
+TE_BF16_AUTO_REASON = (
+    "bf16 text encoder kept automatically: the denoiser stays resident with room for it"
+)
+
+
+def te_bf16_auto_enabled() -> bool:
+    import os
+    return os.environ.get(TE_BF16_AUTO_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def te_bf16_auto_wanted(
+    raw_request: Optional[str],
+    family: Optional[str],
+    auto_scheme: Optional[str],
+    kind: Optional[str],
+) -> bool:
+    """Whether an unset / auto text-encoder request may be upgraded to the bf16 encoder (room still to be proven).
+    An explicit pick (none, off, fp8, int8, ...) always wins, as does the kill switch."""
+    if not te_bf16_auto_enabled() or not te_quant_is_auto(raw_request):
+        return False
+    if kind != "pipeline" or (family or "").lower() not in TE_BF16_AUTO_FAMILIES:
+        return False
+    return normalize_te_quant(auto_scheme) == TE_QUANT_INT8
+
+
+def te_bf16_auto_margin_mib(required_mib: int) -> int:
+    return max(512, int(required_mib) // 10)
+
+
+def te_bf16_auto_fits(plan: Any) -> tuple[bool, str]:
+    """``plan`` is priced with the bf16 encoder on this card's free memory. Engage only when it keeps everything
+    resident on one discrete card with ``max(512 MiB, 10%)`` of the requirement still free."""
+    if plan is None:
+        return False, "no plan"
+    from .diffusion_memory import OFFLOAD_NONE
+
+    if getattr(plan, "offload_policy", None) != OFFLOAD_NONE:
+        return False, f"plan offloads ({getattr(plan, 'offload_policy', None)})"
+    if (
+        getattr(plan, "stream_text_encoders", False)
+        or getattr(plan, "secondary_ordinal", None) is not None
+    ):
+        return False, "plan streams or splits"
+    memory = getattr(plan, "device_memory", None)
+    if getattr(memory, "memory_kind", None) != "discrete_vram":
+        return False, f"memory kind {getattr(memory, 'memory_kind', None)}"
+    estimates = getattr(plan, "estimates", None) or {}
+    required = estimates.get("resident_required_mib")
+    budget = estimates.get("safe_device_budget_mib")
+    if required is None or budget is None:
+        return False, "unsized plan"
+    margin = te_bf16_auto_margin_mib(required)
+    if int(required) + margin > int(budget):
+        return False, f"needs {int(required)} + {margin} MiB, budget {int(budget)} MiB"
+    return True, f"needs {int(required)} + {margin} MiB, budget {int(budget)} MiB"
 
 
 def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:

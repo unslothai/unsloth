@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Credential-safe urllib redirects. Stdlib-only: the standalone installers import it
-without reaching the rest of the backend."""
+"""Credential-safe urllib redirects; stdlib-only so standalone installers can import it"""
 
 import urllib.parse
 import urllib.request

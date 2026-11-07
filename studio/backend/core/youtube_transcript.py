@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read a YouTube video's captions as plain text, with no third-party client.
-
-Two hops, both against youtube.com. ``POST /youtubei/v1/player`` with the ANDROID
-InnerTube client lists the caption tracks and the video metadata, then the chosen
-track's ``baseUrl`` is downloaded as ``fmt=json3`` and flattened.
-
-The ANDROID client matters. Caption URLs taken from the watch page's
-``ytInitialPlayerResponse`` belong to the WEB client, and YouTube now answers those
-with 200 and an empty body unless the request carries a proof-of-origin token, which
-only its BotGuard JS can mint. The ANDROID client's URLs still resolve unsigned.
-"""
+"""Captions via ANDROID InnerTube player API; WEB-client caption URLs need a proof-of-origin token."""
 
 from __future__ import annotations
 

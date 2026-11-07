@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model and template mappings for dataset processing.
-
-Maps model names to their chat templates and response markers.
-"""
+"""Maps model names to chat templates and response markers for dataset processing."""
 
 TEMPLATE_TO_MODEL_MAPPER = {
     "phi-3.5": (

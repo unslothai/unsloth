@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool definitions and executors for LLM tool calling: web search (DuckDuckGo), Python code
-execution, and terminal commands."""
+"""Tool definitions and executors for LLM calls: DuckDuckGo search, Python code, terminal commands."""
 
 import ast
 import base64
@@ -27,6 +26,7 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import contextvars
 import queue
 import random
 import re
@@ -41,6 +41,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import unicodedata
 import zlib
 from contextvars import ContextVar
 
@@ -104,6 +105,8 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils.host_policy import _literal_ip_address
+from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
@@ -133,6 +136,9 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# While text engines fail, no early image lookup: its answer is discarded and adds to rate limiting.
+_TEXT_SEARCH_FAILURE_HOLD_S = 120.0
+_text_search_failed_at: "float | None" = None
 # Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
@@ -8748,6 +8754,230 @@ def _sandbox_preexec():
             pass
 
 
+# _sandbox_preexec without a Python pre-exec (Linux): Popen does setsid/umask in C, setpriv and prlimit exec in
+# place (same PID), so the server is vforked instead of forked through interpreter code.
+_SANDBOX_SHIM_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_sandbox_shims: "tuple[str, str] | None | bool" = False  # False = not probed yet
+_sandbox_shims_lock = threading.Lock()
+
+
+def _trusted_system_binary(name: str) -> "str | None":
+    """Root-owned, not group/world writable, no set-id bit or file capability: either would clear the death signal.
+    World-readable too: an unreadable binary runs non-dumpable, which hides /proc/<pid>/exe from the readiness wait."""
+    for directory in _SANDBOX_SHIM_DIRS:
+        path = os.path.join(directory, name)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if (
+            not S_ISREG(st.st_mode)
+            or st.st_uid != 0
+            or st.st_mode & 0o022
+            or st.st_mode & (stat.S_ISUID | stat.S_ISGID)
+            or not st.st_mode & 0o111
+            or not st.st_mode & 0o004
+        ):
+            continue
+        try:
+            os.getxattr(path, "security.capability")
+            continue
+        except OSError:
+            pass
+        return path
+    return None
+
+
+def _probe_sandbox_shims() -> "tuple[str, str] | None":
+    setpriv = _trusted_system_binary("setpriv")
+    prlimit = _trusted_system_binary("prlimit")
+    if setpriv is None or prlimit is None:
+        return None
+    try:
+        # Old setpriv lacks --pdeathsig (util-linux < 2.33), and busybox-style builds take other flags.
+        # The limits a launch sets, so a policy refusing one of them (SELinux checks a changed hard limit) keeps
+        # the pre-exec, which skips a refused limit where prlimit would refuse the launch.
+        limits = _sandbox_rlimit_args()
+        if not limits:
+            soft, hard = _resource.getrlimit(_resource.RLIMIT_CPU)
+            limits = [
+                "--cpu={}:{}".format(
+                    "unlimited" if soft == _resource.RLIM_INFINITY else soft,
+                    "unlimited" if hard == _resource.RLIM_INFINITY else hard,
+                )
+            ]
+        result = subprocess.run(
+            [
+                setpriv,
+                "--no-new-privs",
+                "--pdeathsig",
+                "KILL",
+                "--",
+                prlimit,
+                *limits,
+                "--",
+                setpriv,
+                "--dump",
+            ],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            env = {"PATH": os.defpath, "LC_ALL": "C"},
+            timeout = 5,
+            start_new_session = True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        return None
+    # Read back after two more execs: an LSM transition on exec (AppArmor, SELinux) would clear the death signal.
+    dump = result.stdout.decode("ascii", "replace").splitlines()
+    if (
+        result.returncode != 0
+        or "no_new_privs: 1" not in dump
+        or not any(
+            line.startswith("Parent death signal:") and line.split(":", 1)[1].strip(" []") == "KILL"
+            for line in dump
+        )
+    ):
+        return None
+    try:
+        # Read by _wait_for_death_signal.
+        os.readlink("/proc/self/exe")
+    except OSError:
+        return None
+    return setpriv, prlimit
+
+
+def _sandbox_exec_shims() -> "tuple[str, str] | None":
+    global _sandbox_shims
+    if _sandbox_shims is False:
+        with _sandbox_shims_lock:
+            if _sandbox_shims is False:
+                _sandbox_shims = _probe_sandbox_shims()
+    return _sandbox_shims
+
+
+def _sandbox_rlimit_args() -> "list[str] | None":
+    """The limits _sandbox_preexec would set, as prlimit flags; None if one could fail there (it skips a failing
+    limit, prlimit refuses the launch), so the caller keeps the pre-exec for that host."""
+    if _resource is None:
+        return None
+    wanted = []
+    try:
+        wanted.append(
+            (
+                "nproc",
+                _resource.RLIMIT_NPROC,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+            )
+        )
+    except ValueError:
+        pass
+    wanted.append(("fsize", _resource.RLIMIT_FSIZE, 100 * 1024 * 1024))
+    if _sandbox_as_bytes is not None:
+        wanted.append(("as", _resource.RLIMIT_AS, _sandbox_as_bytes))
+    try:
+        wanted.append(
+            (
+                "cpu",
+                _resource.RLIMIT_CPU,
+                int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+            )
+        )
+    except ValueError:
+        pass
+    try:
+        nofile = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384"))
+        hard_cur = _resource.getrlimit(_resource.RLIMIT_NOFILE)[1]
+        target = nofile if hard_cur == _resource.RLIM_INFINITY else min(nofile, hard_cur)
+        if target > _sandbox_nr_open():
+            # Above fs.nr_open setrlimit fails even under the hard limit: the pre-exec skips it.
+            return None
+        wanted.append(("nofile", _resource.RLIMIT_NOFILE, target))
+    except (ValueError, OSError):
+        pass
+    args = []
+    for flag, resource_id, value in wanted:
+        if not isinstance(value, int) or value < 0 or value >= 2**63:
+            return None
+        try:
+            hard_cur = _resource.getrlimit(resource_id)[1]
+        except (ValueError, OSError):
+            return None
+        if hard_cur != _resource.RLIM_INFINITY and value > hard_cur:
+            # Raising a hard limit needs CAP_SYS_RESOURCE: the pre-exec skips it without, raises it with.
+            if _has_cap_sys_resource():
+                return None
+            continue
+        args.append(f"--{flag}={value}:{value}")
+    return args
+
+
+def _sandbox_nr_open() -> int:
+    """fs.nr_open, or 0 when unreadable (which keeps the pre-exec)."""
+    try:
+        with open("/proc/sys/fs/nr_open", encoding = "ascii") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _has_cap_sys_resource() -> bool:
+    """Unknown counts as held, which keeps the pre-exec."""
+    try:
+        with open("/proc/self/status", encoding = "ascii", errors = "replace") as f:
+            for line in f:
+                if line.startswith("CapEff:"):
+                    return bool(int(line.split()[1], 16) & (1 << 24))
+    except (OSError, ValueError, IndexError):
+        pass
+    return True
+
+
+def _sandbox_shim_argv(argv, env) -> "tuple[str, ...] | None":
+    """argv behind setpriv and prlimit, or None to keep _sandbox_preexec."""
+    # Python 3.9 forks (no vfork) even without a pre-exec, so the shims would only add two execs there.
+    if sys.platform != "linux" or sys.version_info < (3, 10) or not argv:
+        return None
+    shims = _sandbox_exec_shims()
+    if shims is None:
+        return None
+    # A missing program keeps Popen's own FileNotFoundError instead of a prlimit exit status.
+    search = os.pathsep.join(os.get_exec_path(env))
+    if shutil.which(argv[0], path = search) is None:
+        return None
+    limits = _sandbox_rlimit_args()
+    if not limits:
+        # Without a flag prlimit prints its limits table on a terminal before running the program.
+        return None
+    setpriv, prlimit = shims
+    return (setpriv, "--no-new-privs", "--pdeathsig", "KILL", "--", prlimit, *limits, "--", *argv)
+
+
+def _wait_for_death_signal(pid: int, setpriv: str) -> None:
+    """Popen returns before setpriv arms the death signal; the pre-exec armed it before Popen returned, so this
+    waits as long as Popen would have (no deadline: returning early would hand back an unarmed child)."""
+    delay = 0.0001
+    while True:
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            return  # exited (setpriv is readable, so a live one is not hidden)
+        if exe not in (setpriv, setpriv + " (deleted)"):
+            return
+        time.sleep(delay)
+        delay = min(delay * 2, 0.005)
+
+
+def _spawn_behind_sandbox_shims(prepared, popen_kwargs):
+    proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+    if prepared.execution_record is not None:
+        prepared.execution_record = dataclasses.replace(
+            prepared.execution_record, execution_status = "started"
+        )
+    _wait_for_death_signal(proc.pid, os.path.realpath(prepared.argv[0]))
+    return proc
+
+
 def _account_confinement():
     """Confinement for the acting account's next child: None for owner, raises if unavailable."""
     return account_confinement(_SANDBOX_SITE_DIR)
@@ -8866,16 +9096,24 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
         argv = tuple(plan.argv)
         packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
         if os.path.isdir(packages):
-            # The trusted sitecustomize appends these after installed packages for Python and Terminal alike.
-            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = packages
+            # Served by sitecustomize's last-resort finder, not sys.path, so plugin discovery never sees them.
+            env["_UNSLOTH_HOST_SESSION_PACKAGES"] = os.pathsep.join(
+                os_sandbox.session_package_paths(packages)
+            )
             env["PYTHONNOUSERSITE"] = "1"
             # Chat-installed CLIs the approved call names resolve too, but only after every system executable.
             # Copies of just those: a tool probing for a command it lacks never reaches the rest of the folder.
-            requested = _requested_chat_clis(
-                os.path.join(packages, "Scripts" if os.name == "nt" else "bin"),
-                script if script is not None else " ".join(map(str, argv)),
-                os.path.join(private, ".unsloth-chat-bin"),
-            )
+            requested = None
+            # Reversed, so the scheme's own scripts dir wins a name clash, as it does on PATH.
+            for scripts in reversed(os_sandbox.session_script_dirs(packages)):
+                requested = (
+                    _requested_chat_clis(
+                        scripts,
+                        script if script is not None else " ".join(map(str, argv)),
+                        os.path.join(private, ".unsloth-chat-bin"),
+                    )
+                    or requested
+                )
             if requested:
                 env["PATH"] = os.pathsep.join(
                     part for part in (env.get("PATH", ""), requested) if part
@@ -9096,7 +9334,22 @@ def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
     popen_kwargs["cwd"] = prepared.workdir
     popen_kwargs["env"] = prepared.env
     if sys.platform != "win32":
-        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+        if prepared.preexec_fn is _bypass_preexec:
+            # setsid in C: a Python pre-exec forks the whole server instead of vfork.
+            popen_kwargs.pop("preexec_fn", None)
+            popen_kwargs["start_new_session"] = True
+        else:
+            shim_argv = None
+            if prepared.preexec_fn is _sandbox_preexec and prepared.spawn_callback is None:
+                shim_argv = _sandbox_shim_argv(prepared.argv, prepared.env)
+            if shim_argv is not None:
+                popen_kwargs.pop("preexec_fn", None)
+                popen_kwargs["start_new_session"] = True
+                popen_kwargs["umask"] = 0o077
+                prepared.argv = shim_argv
+                prepared.spawn_callback = _spawn_behind_sandbox_shims
+            else:
+                popen_kwargs["preexec_fn"] = prepared.preexec_fn
     popen_kwargs["close_fds"] = prepared.close_fds
     if prepared.pass_fds:
         # Empty for every fallback, so Windows never sees a kwarg it rejects.
@@ -9740,6 +9993,23 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
     if not _usable_session_id(session_id) and not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     return _get_project_workdir(session_id)
+
+
+def session_runs_in_user_folder(session_id: "str | None") -> bool:
+    """Whether this session's code tools run in the owner's chosen project folder, resolved as the executor does."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+
+        # One read rules out most projects before the four the full resolution makes.
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        if not available_project_working_folder(project):
+            return False
+        workdir = _project_workdir_for(session_id)
+        return bool(workdir) and _is_user_project_folder(session_id, workdir)
+    except Exception:
+        return False
 
 
 def _get_project_workdir(session_id: str) -> str | None:
@@ -12041,19 +12311,21 @@ DEEP_RESEARCH_TOOL = {
     "function": {
         "name": "deep_research",
         "description": (
-            "Start Deep Research on the user's question: a multi-step web investigation that "
-            "gathers current sources and writes a cited report, replacing your reply. The user "
-            "turned this on because they want researched answers, so call it for any question "
-            "about the world -- facts, events, laws, products, papers, prices, comparisons, "
-            "anything that may have changed since your training -- even when you think you know "
-            "the answer. Do not answer such questions from memory.\n"
-            "Do not call it for a message with no question in it, such as a hello or a thanks, or "
-            "for a request to write or transform text the user supplied.\n"
-            "If the topic is too vague to research well, do not call this yet: ask one short "
-            "clarifying question, then call it once the user has narrowed it down.\n"
-            "The question you pass is what gets researched, so make it specific and "
-            "self-contained: fold in what the conversation established rather than repeating "
-            "the user's words."
+            "Hand off the user's factual question or research request to Deep Research. This "
+            "workflow gathers current sources and writes a cited report that replaces your "
+            "reply. Call it before drafting an answer, outline, or report, even when you think "
+            "you know the answer. Do not use it only to look up individual details while "
+            "writing the report yourself.\n"
+            "Research requests include commands to investigate, compare, or write a report, "
+            "including detailed briefs in pasted text or attachments. They do not need to be "
+            "phrased as questions. A supplied research brief is not merely text to rewrite.\n"
+            "Do not call it for a hello, thanks, or a remark about you, or for a request only "
+            "to rewrite or transform supplied text without outside research. If the topic is "
+            "too vague to research well, ask one short clarifying question first.\n"
+            "Call once with a concise, self-contained question covering the whole request, "
+            "including its main topics and requested outputs. Summarize the brief in a few "
+            "sentences rather than copying it or answering it. Include relevant context from "
+            "the conversation so the research workflow can complete the report."
         ),
         "parameters": {
             "type": "object",
@@ -12061,8 +12333,9 @@ DEEP_RESEARCH_TOOL = {
                 "question": {
                     "type": "string",
                     "description": (
-                        "The specific, self-contained question to research. Not the user's raw "
-                        "message unless it already reads as one."
+                        "A concise, self-contained research brief in a few sentences: include the "
+                        "main topics and requested outputs, not just one detail to look up. "
+                        "Do not copy the full prompt or write the report in this argument."
                     ),
                 },
             },
@@ -12088,12 +12361,12 @@ _MCP_TOOL_SEARCH_LIMIT = 5
 # window: small models often answer that a tool is unavailable rather than search for it (#10997).
 _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
-# Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
 _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
+# ranked tools hold until a message's best match is listable and not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12104,6 +12377,7 @@ _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = Non
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+_MCP_RANKED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12330,6 +12604,25 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
+def _mcp_held_ranking(by_name: dict) -> list[str]:
+    key = _mcp_thread_key()
+    if key is None:
+        return []
+    with _MCP_LOADED_LOCK:
+        return [n for n in _MCP_RANKED_THREADS.get(key, ()) if n in by_name]
+
+
+def _mcp_hold_ranking(names: list[str]) -> None:
+    key = _mcp_thread_key()
+    if key is None:
+        return
+    with _MCP_LOADED_LOCK:
+        _MCP_RANKED_THREADS.pop(key, None)
+        _MCP_RANKED_THREADS[key] = names
+        while len(_MCP_RANKED_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_RANKED_THREADS.popitem(last = False)
+
+
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
     specs = [spec for _, _, server_specs in listed for spec in server_specs]
     ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
@@ -12383,14 +12676,30 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     )
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
-        if by_name[name] in listing:
-            continue
-        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-        if cost <= room:
-            listing.append(by_name[name])
-            room -= cost
-    return listing
+    ranked = ranked[:_MCP_TOOL_PRELOAD]
+
+    def filled(names: list[str]) -> list[dict]:
+        chosen = list(listing)
+        left = room
+        for name in dict.fromkeys(ran + names):
+            if by_name[name] in chosen:
+                continue
+            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+            if cost <= left:
+                chosen.append(by_name[name])
+                left -= cost
+        return chosen
+
+    held = _mcp_held_ranking(by_name)
+    chosen = filled(held)
+    held = [name for name in held if by_name[name] in chosen]
+    if ranked and (not held or by_name[ranked[0]] not in chosen):
+        fresh = filled(ranked)
+        # A best match too big to list is not worth dropping the held tools for.
+        if not held or by_name[ranked[0]] in fresh:
+            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
+    _mcp_hold_ranking(held)
+    return chosen
 
 
 def _cached_mcp_catalog() -> list[dict]:
@@ -12575,13 +12884,33 @@ def mcp_fit_loaded(specs: list[dict]) -> list[dict]:
     return fitted
 
 
+def _mcp_search_result(found: list[dict]) -> str:
+    lines = [
+        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}\n"
+        f"  schema: {json.dumps(spec, separators=(',', ':'))}"
+        for spec in found
+    ]
+    return (
+        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
+        "with the parameters in its schema:\n" + "\n".join(lines)
+    )
+
+
 def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
     """(the cached MCP tools a mcp_tool_search call loads, the matches too large to)."""
     arguments = arguments if isinstance(arguments, dict) else {}
     specs = _cached_mcp_catalog()
     order, exact = _mcp_ranked(specs, arguments.get("query"))
     picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
-    fitted = mcp_fit_loaded(picked)
+    fitted = []
+    for spec in picked:
+        retained = [*fitted, spec]
+        if len(mcp_fit_loaded(retained)) != len(retained):
+            continue
+        candidate = _mcp_search_result(retained)
+        # Include the envelope so the result cap cannot split a schema.
+        if _fit_result_to_room(candidate, MCP_TOOL_SEARCH_NAME) == candidate:
+            fitted.append(spec)
     return fitted, [spec for spec in picked if spec not in fitted]
 
 
@@ -12604,14 +12933,7 @@ def _mcp_tool_search(arguments) -> str:
             f"No MCP tool matched '{query.strip()}'. Try other keywords, or one of the tool names "
             f"listed in the {MCP_TOOL_SEARCH_NAME} description."
         )
-    lines = [
-        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}"
-        for spec in found
-    ]
-    return (
-        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
-        "with the parameters in its schema:\n" + "\n".join(lines)
-    )
+    return _mcp_search_result(found)
 
 
 def _mcp_tool_prefix(server: dict) -> str:
@@ -13012,6 +13334,7 @@ def execute_tool(
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
     mcp_image = None,
+    started_read: "StartedUrlRead | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -13262,6 +13585,8 @@ def execute_tool(
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
             return "No query provided."
+        if started_read is not None:
+            return _fit_result_to_room(started_read.result(), name)
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -13451,18 +13776,17 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not found:
         return "No earlier turns of this conversation matched that query."
 
-    # Halve until the rendered result fits: chunk size is a target, not a weight (overlap, other
-    # tokenizer, markup). A single chunk that still does not fit is refused.
+    # One fewer until the text the model reads fits: chunk size is a target, not a weight (overlap,
+    # other tokenizer, markup). A single chunk that still does not fit is refused.
     if budget is not None:
         counter = scope.get("token_counter")
         attempt = max(1, int(top_k or 1))
         while True:
-            rendered = _rendered_conversation_search(found)
-            if _conversation_search_cost(rendered, counter) <= int(budget):
-                return rendered
+            if _conversation_search_cost(found[0], counter) <= int(budget):
+                return _rendered_conversation_search(found)
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
-            attempt = max(1, attempt // 2)
+            attempt -= 1
             found = _recall(attempt)
             if not found:
                 return "No earlier turns of this conversation matched that query."
@@ -13490,7 +13814,7 @@ def _conversation_search_tokens(text: str) -> int:
 
 
 def _rendered_conversation_search(found) -> str:
-    """The tool result exactly as the model would receive it."""
+    """The full result; the model never sees the source map."""
     text, sources = found
     if sources:
         import json as _json
@@ -13781,8 +14105,10 @@ def build_conversation_recall(
     style: str = "tool",
     top_k: int | None = None,
     branch_messages: list[dict] | None = None,
+    query_messages: list[dict] | None = None,
 ) -> dict | None:
-    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates."""
+    """Not gated on rag_scope, since compaction happens with or without document RAG; style=inline avoids forged tool_calls, which break strict templates.
+    ``query_messages`` (the client's transcript) supplies the query when the branch carries a loop's own user-role notices."""
     if not thread_id:
         return None
     try:
@@ -13793,7 +14119,8 @@ def build_conversation_recall(
         return None
 
     # The branch's last user turn: the loop conversation may end with an internal nudge.
-    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
+    _asked = query_messages or branch_messages or conversation
+    query = _last_user_text(_asked) or _last_user_text(conversation)
     if not query:
         return None
     # A nudge ("continue") retrieves nothing, so also query the last real instruction. Not for
@@ -13804,7 +14131,7 @@ def build_conversation_recall(
         from core.inference import instruction_pin
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            _behind = branch_messages or conversation
+            _behind = _asked
             anchor = instruction_pin.last_substantive_instruction(_behind)
             if not anchor:
                 # Use is_thin_query, not a length rule: short prompts can still name something.
@@ -13905,6 +14232,16 @@ def _thread_document_ids(thread_id) -> set | None:
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieves the latest turn for models that skip search_knowledge_base. Toggle rag_scope.autoinject or RAG_AUTOINJECT; floor RAG_AUTOINJECT_MIN_SCORE."""
+    try:
+        from core.rag.retrieval import query_vector_memo
+    except Exception:  # noqa: BLE001 - the build reports an unavailable RAG stack itself
+        return _build_rag_autoinject(conversation, rag_scope)
+    # The thread retry, the hybrid retry and the dense probe re-ask the same query: encode it once.
+    with query_vector_memo():
+        return _build_rag_autoinject(conversation, rag_scope)
+
+
+def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
@@ -14363,6 +14700,10 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
                 return None
             return target
     return None
+
+
+# PyMuPDF is not thread-safe.
+_WEB_PDF_LOCK = threading.Lock()
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -15445,7 +15786,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", content_type
             try:
-                pdf_text = _extract_pdf_text(raw_bytes)
+                queued_at = time.monotonic()
+                with _WEB_PDF_LOCK:
+                    # Time queued behind another read's PDF is not spent on this read.
+                    if deadline is not None:
+                        deadline += time.monotonic() - queued_at
+                    pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
@@ -15663,6 +16009,16 @@ def _window_context_tokens() -> int | None:
 
 def _dense_prefix_chars(text: str, token_budget: float) -> int:
     """Charges non-ASCII one token each: CJK runs 1.3-1.6 chars per token, so the share stays a share."""
+    # Escape-free ASCII costs 0.25 a char: the loop would stop at floor(budget * 4).
+    if (
+        type(text) is str
+        and type(token_budget) in (int, float)
+        and text.isascii()
+        and 0.0 <= token_budget < 2**50
+    ):
+        end = min(len(text), int(token_budget * 4))
+        if text.find("%", 0, end + 1) < 0:
+            return end
     spent = 0.0
     index = 0
     length = len(text)
@@ -16002,8 +16358,18 @@ def _fetch_page_text(
     website_policy: dict | None = None,
 ) -> str:
     """Fetches a URL as readable text (HTML to Markdown); blocks private, loopback and link-local hosts"""
-    if max_chars is None:
-        max_chars = _page_char_budget()
+    page = _download_page(
+        url, timeout = timeout, cancel_event = cancel_event, website_policy = website_policy
+    )
+    return _render_page(page, max_chars)
+
+
+def _download_page(
+    url: str,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+):
     # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
@@ -16029,17 +16395,7 @@ def _fetch_page_text(
         )
         # A 200 README body is authoritative even when HTML; fall back only on failure.
         if err is None and body.strip():
-            readme_body = body
-            # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
-            if _looks_like_html_document(body):
-                from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
-                readme_body = converted if converted.strip() else body
-            if readme_body.strip():
-                return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
-                    max_chars,
-                )
+            return ("readme", url, body)
 
     raw_file_url = _github_blob_raw_url(url)
     if raw_file_url:
@@ -16051,7 +16407,7 @@ def _fetch_page_text(
             **policy_kwargs,
         )
         if err is None and body.strip():
-            return _truncate_page_text(body.strip(), max_chars)
+            return ("text", url, body.strip())
 
     meta: dict = {}
     err, body, content_type = _fetch_url_raw(
@@ -16071,13 +16427,33 @@ def _fetch_page_text(
         return err
 
     # Sniff the body when Content-Type is missing or wrong.
-    is_html = "html" in content_type or _looks_like_html(body)
-    if not is_html:
-        # Converting plain text through the HTML renderer would collapse whitespace.
-        return _truncate_page_text(body.strip(), max_chars)
+    if "html" in content_type or _looks_like_html(body):
+        return ("html", url, body)
+    # Converting plain text through the HTML renderer would collapse whitespace.
+    return ("text", url, body.strip())
 
-    # Convert HTML to Markdown with the builtin converter (no external deps).
+
+# Reads the call's budget context vars: run inside execute_tool, never on a prefetch thread.
+def _render_page(page, max_chars: int | None = None) -> str:
+    if isinstance(page, str):
+        return page
+    if max_chars is None:
+        max_chars = _page_char_budget()
+    kind, url, body = page
+    if kind == "text":
+        return _truncate_page_text(body, max_chars)
     from ._html_to_md import SiteLinks, html_to_markdown
+
+    if kind == "readme":
+        readme_body = body
+        # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
+        if _looks_like_html_document(body):
+            converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
+            readme_body = converted if converted.strip() else body
+        return _truncate_page_text(
+            f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+            max_chars,
+        )
 
     site_links = SiteLinks(url)
     # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
@@ -16395,7 +16771,111 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
-def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
+class StartedUrlRead:
+    def __init__(self, url: str, timeout, cancel_event, website_policy) -> None:
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, url, timeout, cancel_event, website_policy),
+            name = "web-url-read",
+            daemon = True,
+        ).start()
+
+    def _run(self, url, timeout, cancel_event, website_policy) -> None:
+        try:
+            self._value = _download_page(
+                url,
+                timeout = _url_read_timeout(timeout),
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self) -> str:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return _render_page(self._value)
+
+
+def _url_read_timeout(timeout):
+    return 60 if timeout is None else min(timeout, 60)
+
+
+class _ImageSweep:
+    """Image lookup started beside the text search; the caller still decides whether to register it."""
+
+    def __init__(self, lookup) -> None:
+        from .search_images import cache_generation
+
+        # Read before the sweep so a clear-all during it invalidates new entries.
+        self.generation = cache_generation()
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, lookup),
+            name = "web-search-images",
+            daemon = True,
+        ).start()
+
+    def _run(self, lookup) -> None:
+        try:
+            self._value = lookup()
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self):
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+    @classmethod
+    def start(cls, subjects, query, wanted, timeout, website_policy) -> "_ImageSweep | None":
+        """None when the serial path would not reach the network."""
+        try:
+            from ddgs import DDGS
+
+            if not callable(getattr(DDGS, "images", None)):
+                return None
+            if subjects:
+                cleaned = _clean_image_queries(subjects)
+                if not cleaned:
+                    return None
+                return cls(lambda: _image_lookups(cleaned, timeout, website_policy))
+            from .search_images import MAX_IMAGES_PER_SEARCH
+
+            images_fn = DDGS(timeout = timeout).images
+            return cls(
+                lambda: images_fn(
+                    query,
+                    max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2),
+                    safesearch = "moderate",
+                )
+            )
+        except Exception:  # noqa: BLE001 - the serial path stays available
+            logger.debug("image lookup not started early", exc_info = True)
+            return None
+
+
+def _image_search_or_none(
+    subjects: list,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> "str | None":
     """Returns None on failure: an image error must not discard the text results already found."""
     try:
         return _image_search(
@@ -16403,6 +16883,7 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
             timeout = timeout,
             cancel_event = cancel_event,
             website_policy = website_policy,
+            sweep = sweep,
         )
     except Exception as exc:  # noqa: BLE001 - a garnish must not become the answer
         logger.debug("image lookup failed (%s)", type(exc).__name__)
@@ -16410,7 +16891,13 @@ def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy)
 
 
 def _empty_result_with_requested_images(
-    empty_text: str, subjects: list, include_images: bool, timeout, cancel_event, website_policy
+    empty_text: str,
+    subjects: list,
+    include_images: bool,
+    timeout,
+    cancel_event,
+    website_policy,
+    sweep = None,
 ) -> str:
     """Explicitly named image subjects still return pictures when the text search comes back empty."""
     if not subjects:
@@ -16420,7 +16907,7 @@ def _empty_result_with_requested_images(
         return empty_text + "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
     if cancel_event is not None and cancel_event.is_set():
         return empty_text
-    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+    found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
     if found is None:
         return empty_text
     return empty_text + "\n\n---\n\n" + found
@@ -16477,6 +16964,16 @@ def _usable_search_results(results, website_policy):
     ]
 
 
+def _note_text_search_outcome(found: bool, error, timeout) -> None:
+    """Holds back early image lookups after an engine failure; any answer, even empty, clears it."""
+    global _text_search_failed_at
+    if found:
+        _text_search_failed_at = None
+    elif error is not None:
+        empty = _search_failure_message(error, timeout) == EMPTY_SEARCH_RESULTS[0]
+        _text_search_failed_at = None if empty else time.monotonic()
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16490,10 +16987,9 @@ def _web_search(
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
-        fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout = fetch_timeout,
+            timeout = _url_read_timeout(timeout),
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
@@ -16513,6 +17009,7 @@ def _web_search(
     # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
+    sweep = None
     try:
         from .web_access_policy import check_url_access, scope_search_query
 
@@ -16540,6 +17037,13 @@ def _web_search(
                 raise RuntimeError("no approved search engine is available.")
             # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
+            failed_at = _text_search_failed_at
+            if include_images and (
+                failed_at is None or time.monotonic() - failed_at > _TEXT_SEARCH_FAILURE_HOLD_S
+            ):
+                sweep = _ImageSweep.start(
+                    subjects, effective_query, wanted, timeout, website_policy
+                )
             client = DDGS(timeout = timeout)
             # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
             for backend in engine_tiers:
@@ -16561,6 +17065,7 @@ def _web_search(
                     break
         except Exception as exc:
             last_error = exc
+        _note_text_search_outcome(bool(results) or rejected_results, last_error, timeout)
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
@@ -16601,6 +17106,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         parts = []
         for r in results:
@@ -16621,6 +17127,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         text = "\n\n---\n\n".join(parts)
         if wikipedia_fallback:
@@ -16636,7 +17143,7 @@ def _web_search(
         )
         if include_images and subjects:
             # named subjects require one image each rather than a generic image batch.
-            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
+            found = _image_search_or_none(subjects, timeout, cancel_event, website_policy, sweep)
             if found is not None:
                 text += "\n\n---\n\n" + found
         elif include_images and not wikipedia_fallback:
@@ -16646,6 +17153,7 @@ def _web_search(
                 wanted,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         elif subjects:
             # replayed history must retain the disabled-search reminder.
@@ -16662,6 +17170,7 @@ def _web_search(
                 timeout,
                 cancel_event,
                 website_policy,
+                sweep,
             )
         return failure
 
@@ -16691,33 +17200,12 @@ def _clean_image_queries(queries) -> list[str]:
     return cleaned
 
 
-def _image_search(
-    queries,
-    timeout: int = _EXEC_TIMEOUT,
-    cancel_event = None,
-    website_policy: dict | None = None,
-) -> str:
-    # One lookup per subject, concurrently; same registry and tokens as web_search.
+def _image_lookups(cleaned: list, timeout, website_policy) -> list:
     from concurrent.futures import ThreadPoolExecutor
 
-    from .search_images import cache_generation, images_envelope, register_images
+    from ddgs import DDGS
 
-    cleaned = _clean_image_queries(queries)
-    if not cleaned:
-        return "No subjects provided."
-    if cancel_event is not None and cancel_event.is_set():
-        return "Search cancelled."
-    expected_generation = cache_generation()
-    try:
-        from ddgs import DDGS
-
-        from .web_access_policy import scope_search_query
-    except Exception as e:
-        return _search_failure_message(e, timeout)
-    _install_ddgs_http1_retry()
-    _install_ddgs_connect_timeout()
-    if not callable(getattr(DDGS, "images", None)):
-        return "Image search is unavailable in this install."
+    from .web_access_policy import scope_search_query
 
     def lookup(subject: str) -> list:
         # A client per call: ddgs instances are not documented thread-safe.
@@ -16735,7 +17223,40 @@ def _image_search(
             return []
 
     with ThreadPoolExecutor(max_workers = len(cleaned)) as pool:
-        raw_by_subject = list(pool.map(lookup, cleaned))
+        return list(pool.map(lookup, cleaned))
+
+
+def _image_search(
+    queries,
+    timeout: int = _EXEC_TIMEOUT,
+    cancel_event = None,
+    website_policy: dict | None = None,
+    sweep: "_ImageSweep | None" = None,
+) -> str:
+    # Same registry and tokens as web_search; a sweep is these lookups already under way.
+    from .search_images import cache_generation, images_envelope, register_images
+
+    cleaned = _clean_image_queries(queries)
+    if not cleaned:
+        return "No subjects provided."
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
+    expected_generation = cache_generation() if sweep is None else sweep.generation
+    try:
+        from ddgs import DDGS
+
+        from .web_access_policy import scope_search_query  # noqa: F401 - fail here, as before
+    except Exception as e:
+        return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
+    _install_ddgs_connect_timeout()
+    if not callable(getattr(DDGS, "images", None)):
+        return "Image search is unavailable in this install."
+
+    if sweep is not None:
+        raw_by_subject = sweep.result()
+    else:
+        raw_by_subject = _image_lookups(cleaned, timeout, website_policy)
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
 
@@ -16769,7 +17290,14 @@ def _image_search(
     return header + "\n\n" + "\n\n".join(sections) + images_envelope(entries_all)
 
 
-def _web_search_images_suffix(client, query, wanted, cancel_event, website_policy) -> str:
+def _web_search_images_suffix(
+    client,
+    query,
+    wanted,
+    cancel_event,
+    website_policy,
+    sweep = None,
+) -> str:
     # "" when images are unavailable; never raises, the text results stand on their own.
     from .search_images import (
         MAX_IMAGES_PER_SEARCH,
@@ -16783,11 +17311,14 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
     if not callable(images_fn):
         return ""
     # Read before the sweep so a clear-all during it invalidates new entries.
-    expected_generation = cache_generation()
+    expected_generation = cache_generation() if sweep is None else sweep.generation
     try:
-        raw = images_fn(
-            query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
-        )
+        if sweep is not None:
+            raw = sweep.result()
+        else:
+            raw = images_fn(
+                query, max_results = max(wanted, MAX_IMAGES_PER_SEARCH * 2), safesearch = "moderate"
+            )
     except Exception as exc:  # noqa: BLE001 - optional extra; the text results stand on their own
         logger.debug("web_search image lookup skipped (%s)", type(exc).__name__)
         return ""
@@ -16942,15 +17473,32 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
+    _STAR_EXPORTS = frozenset(fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS) | {"modules"}
+
+    def _module_expr(dotted):
+        # posix and nt are the os module under its platform name.
+        top, _, rest = dotted.partition(".")
+        if top in ("posix", "nt"):
+            dotted = "os" + (f".{rest}" if rest else "")
+        return ast.parse(dotted, mode = "eval").body
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
-            self.os_aliases = {"os"}
-            self.subprocess_aliases = {"subprocess"}
-            # Bare name -> fully-qualified form for from-import tracking (e.g. "system" -> "os.system").
-            self.shell_exec_aliases: dict[str, str] = {}
+            # Name -> every value bound to it anywhere; flow- and scope-insensitive, so it fails closed.
+            self.bindings: dict[str, list] = {}
+            self._final: dict = {}
+            self._cache: dict = {}
+            self._guess: dict = {}
+            self._active: set = set()
+            self._cyclic = False
+            self.collecting = False
             self.loop_depth = 0
+
+        def _bind(self, name, value):
+            if self.collecting:
+                self.bindings.setdefault(name, []).append(value)
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -16958,10 +17506,8 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
-                elif alias.name == "os":
-                    self.os_aliases.add(alias.asname or "os")
-                elif alias.name == "subprocess":
-                    self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.asname or alias.name in ("posix", "nt"):
+                    self._bind(alias.asname or alias.name, _module_expr(alias.name))
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -16979,16 +17525,171 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module in ("os", "subprocess"):
-                if node.module == "os":
-                    self.os_aliases.add("os")
-                else:
-                    self.subprocess_aliases.add("subprocess")
-                # Track from-imports of dangerous functions.
+            if node.module and not node.level:
                 for alias in node.names:
-                    fq = f"{node.module}.{alias.name}"
-                    if fq in _SHELL_EXEC_FUNCS:
-                        self.shell_exec_aliases[alias.asname or alias.name] = fq
+                    if alias.name != "*":
+                        names = (alias.name,)
+                    elif node.module in ("os", "posix", "nt", "subprocess", "sys"):
+                        names = _STAR_EXPORTS
+                    else:
+                        continue
+                    for name in names:
+                        self._bind(
+                            alias.asname or name,
+                            ast.Attribute(_module_expr(node.module), name, ast.Load()),
+                        )
+            self.generic_visit(node)
+
+        def _memo(self, kind, node, compute, pending):
+            key = (kind, node.id if isinstance(node, ast.Name) else id(node))
+            if key in self._cache:
+                return self._cache[key]
+            if key in self._active:
+                self._cyclic = True
+                return self._guess.get(key, pending)
+            self._active.add(key)
+            try:
+                self._cache[key] = compute(node)
+            finally:
+                self._active.discard(key)
+            return self._cache[key]
+
+        def _converged(self, query, node):
+            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
+            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
+            previous, self._guess = None, {}
+            while True:
+                self._cache, self._cyclic = dict(self._final), False
+                result = query(node)
+                if not self._cyclic or self._cache == previous:
+                    self._final = self._cache
+                    return result
+                previous = self._guess = self._cache
+
+        def _resolve(self, node):
+            while isinstance(node, ast.NamedExpr):
+                node = node.value
+            if not isinstance(node, ast.Name):
+                return frozenset((node,))
+            return self._memo("resolve", node, self._values_of, frozenset((node,)))
+
+        def _values_of(self, node):
+            values, seen, todo = [], set(), [node]
+            while todo:
+                value = todo.pop()
+                while isinstance(value, ast.NamedExpr):
+                    value = value.value
+                values.append(value)
+                if isinstance(value, ast.Name) and value.id not in seen:
+                    seen.add(value.id)
+                    todo.extend(self.bindings.get(value.id, ()))
+            return frozenset(values)
+
+        def _lookups(self, node):
+            # (owner, name) for owner.name, getattr(owner, "name"), and owner.__dict__ / vars(owner) by key or .get().
+            return self._memo("lookups", node, self._find_lookups, frozenset())
+
+        def _find_lookups(self, node):
+            found = []
+            for value in self._resolve(node):
+                if isinstance(value, ast.Attribute):
+                    found.append((value.value, value.attr))
+                elif isinstance(value, ast.Subscript):
+                    found.extend(self._namespace_lookup(value.value, value.slice))
+                elif isinstance(value, ast.Call) and value.args:
+                    if len(value.args) >= 2 and self._is_builtin(value.func, "getattr"):
+                        found.append((value.args[0], _folded_str_literal(value.args[1])))
+                    for owner, attr in self._lookups(value.func):
+                        if attr == "get":
+                            found.extend(self._namespace_lookup(owner, value.args[0]))
+            return frozenset(found)
+
+        def _namespace_lookup(self, namespace, key):
+            name = _folded_str_literal(key)
+            found = [
+                (owner, name) for owner, attr in self._lookups(namespace) if attr == "__dict__"
+            ]
+            for value in self._resolve(namespace):
+                if (
+                    isinstance(value, ast.Call)
+                    and len(value.args) == 1
+                    and self._is_builtin(value.func, "vars")
+                ):
+                    found.append((value.args[0], name))
+            return found
+
+        def _is_builtin(self, node, name):
+            # By its own name, an alias, or as an attribute (builtins.getattr, importlib.import_module).
+            return any(
+                isinstance(v, ast.Name) and v.id == name for v in self._resolve(node)
+            ) or any(attr == name for _owner, attr in self._lookups(node))
+
+        def _is_registry(self, node):
+            return any(attr == "modules" for _owner, attr in self._lookups(node))
+
+        @staticmethod
+        def _keyword_arg(call, name):
+            found = None
+            for kw in call.keywords:
+                if kw.arg == name:
+                    found = kw.value
+                elif kw.arg is None and isinstance(kw.value, ast.Dict):
+                    for key, value in zip(kw.value.keys, kw.value.values):
+                        if key is not None and _extract_string_from_node(key) == name:
+                            found = value
+            return found
+
+        def _modules_of(self, node):
+            return self._memo("modules", node, self._find_modules, frozenset())
+
+        def _find_modules(self, node):
+            modules = set()
+            for value in self._resolve(node):
+                name = None
+                if isinstance(value, ast.Name):
+                    name = value.id
+                elif isinstance(value, ast.Call):
+                    if self._is_builtin(value.func, "__import__") or self._is_builtin(
+                        value.func, "import_module"
+                    ):
+                        arg = value.args[0] if value.args else self._keyword_arg(value, "name")
+                        name = None if arg is None else _folded_str_literal(arg)
+                    elif value.args and any(
+                        attr == "get" and self._is_registry(owner)
+                        for owner, attr in self._lookups(value.func)
+                    ):
+                        name = _folded_str_literal(value.args[0])
+                elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
+                    name = _folded_str_literal(value.slice)
+                # __import__("os.path") returns the top-level os package.
+                top = (name or "").split(".")[0]
+                if top in ("os", "subprocess"):
+                    modules.add(top)
+                elif top in ("posix", "nt") and not isinstance(value, ast.Name):
+                    modules.add("os")
+            return frozenset(modules)
+
+        def _shell_func_of(self, node):
+            for owner, attr in self._lookups(node):
+                for module in self._modules_of(owner):
+                    if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
+                        return f"{module}.{attr}"
+            return None
+
+        def visit_Assign(self, node):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    self._bind(tgt.id, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None and isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -17002,6 +17703,9 @@ def _check_signal_escape_patterns(code: str):
             self.loop_depth -= 1
 
         def visit_Call(self, node):
+            if self.collecting:
+                self.generic_visit(node)
+                return
             func = node.func
             func_name = None
             if isinstance(func, ast.Attribute):
@@ -17051,16 +17755,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
-            shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
-                # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+            shell_func = self._converged(self._shell_func_of, func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
@@ -17148,7 +17843,7 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
-            if self.loop_depth == 0:
+            if self.collecting or self.loop_depth == 0:
                 self.generic_visit(node)
                 return
             if node.type is None:
@@ -17183,6 +17878,9 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
     visitor = SignalEscapeVisitor()
+    visitor.collecting = True
+    visitor.visit(tree)
+    visitor.collecting = False
     visitor.visit(tree)
 
     if visitor.imports_signal and not signal_tampering:
@@ -17632,9 +18330,17 @@ def _check_signal_escape_patterns(code: str):
         return h
 
     def _is_metadata_host(host: str) -> bool:
-        h = _normalize_host(host)
+        h = _normalize_host(unicodedata.normalize("NFKC", host or ""))
         if not h:
             return False
+        if _provider_metadata_host(h):
+            return True
+        try:
+            ip = _literal_ip_address(h)
+        except ValueError:
+            return True
+        if ip is not None:
+            h = str(ip)
         if h in _METADATA_HOST_LITERALS:
             return True
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):
@@ -19530,9 +20236,9 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
-def _check_code_safety(code: str) -> str | None:
+def _check_code_safety(code: str, *, host_approved: bool = False) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
-    unsafe, or None if OK."""
+    unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
@@ -19544,7 +20250,11 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
+        network_reasons = [
+            item.get("description", "")
+            for item in info.get("network_calls", [])
+            if not (host_approved and item.get("type") == "untrusted_host_blocked")
+        ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
@@ -19620,6 +20330,31 @@ class _WindowsToolJob:
             return False
         return bool(self._kernel32.TerminateJobObject(self._handle, 1))
 
+    def active_processes(self) -> "int | None":
+        """JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses; None when the query fails."""
+        if not self._handle:
+            return None
+        import ctypes
+
+        class _Accounting(ctypes.Structure):
+            _fields_ = [("times", ctypes.c_int64 * 4)] + [
+                (name, ctypes.c_uint32)
+                for name in (
+                    "TotalPageFaultCount",
+                    "TotalProcesses",
+                    "ActiveProcesses",
+                    "TotalTerminatedProcesses",
+                )
+            ]
+
+        info = _Accounting()
+        # 1 = JobObjectBasicAccountingInformation
+        if not self._kernel32.QueryInformationJobObject(
+            self._handle, 1, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return None
+        return info.ActiveProcesses
+
     def close(self) -> None:
         handle, self._handle = self._handle, None
         if handle:
@@ -19650,6 +20385,14 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.AssignProcessToJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
+        kernel32.QueryInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel32.QueryInformationJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
         kernel32.CloseHandle.restype = BOOL
 
@@ -19743,6 +20486,22 @@ def _killpg_captured(pgid) -> None:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         pass
+
+
+def _captured_group_alive(pgid) -> bool:
+    """False when no member provably remains; a pid-only Windows capture cannot tell, nor kill one."""
+    if pgid is None:
+        return False
+    if isinstance(pgid, tuple):
+        if pgid[0] != "windows-job":
+            return False
+        active = pgid[1].active_processes()
+        return active is None or active > 0
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
 
 
 def _cancel_watcher(
@@ -20429,12 +21188,20 @@ def _stamp_size(stamp: str) -> "int | None":
 
 def _file_digest(path: str, expected_size: "int | None" = None) -> "str | None":
     """Opened with O_NOFOLLOW and O_NONBLOCK, so a symlink or FIFO swapped in at the path is rejected."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | no_follow | getattr(os, "O_NONBLOCK", 0)
     fd = None
     try:
+        # Windows has no O_NOFOLLOW: refuse a link up front, and a link swapped in before the
+        # open shows up as a different file once it is open.
+        named = None if no_follow else os.lstat(path)
+        if named is not None and not stat.S_ISREG(named.st_mode):
+            return None
         fd = os.open(path, flags)
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
+            return None
+        if named is not None and (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
             return None
         if expected_size is not None and info.st_size != expected_size:
             return None
@@ -20612,18 +21379,20 @@ def _spill_full_output(
         return None, True
 
 
-def _spill_files(root: str, directory: str, owned: "set[str]") -> "list[str]":
-    """The spills in one directory: the ones ``owned`` records this process having written.
-    Everything else there is the user's, whatever it is called. Links are never spills."""
+def _spill_files(root: str, directory: str, owned: "dict[str, tuple[str, str]]") -> "list[str]":
+    """The spills in one directory, by stamp only: hashing every kept spill on each prune costs up to
+    the whole byte cap, and `_unlink_verified_spill` checks the digest before anything is deleted."""
     try:
         names = os.listdir(directory)
     except OSError:
         return []
-    return [
-        path
-        for path in (os.path.join(directory, name) for name in names)
-        if _is_recorded_spill(root, path, owned)
-    ]
+    spills = []
+    for name in names:
+        path = os.path.join(directory, name)
+        recorded = owned.get(os.path.relpath(path, root).replace(os.sep, "/"))
+        if recorded is not None and recorded[0] == _spill_stamp(path):
+            spills.append(path)
+    return spills
 
 
 def _unlink_verified_spill(root: str, path: str, owned: "dict[str, tuple[str, str]]") -> bool:
@@ -20731,6 +21500,9 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
             if _unlink_verified_spill(root, path, owned):
                 removed.add(path)
         # Manifest follows the files: a name left after its file is gone would still count as owned.
+        # Sandbox removal drops the record without this lock; a recreated directory must not inherit it.
+        if not os.path.exists(_spill_record_path(root)):
+            identity = None
         _write_spill_manifest(
             root,
             {
@@ -20738,6 +21510,7 @@ def _prune_spills_locked(target_dir: str, root: str) -> None:
                 for name, stamp in owned.items()
                 if os.path.join(root, *name.split("/")) not in removed
             },
+            identity = identity,
         )
         # Remove emptied scopes so cleanup does not see the sandbox as non-empty.
         for name in sorted(os.listdir(root)):
@@ -20828,6 +21601,13 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
 
 # Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
 _DRAIN_TAIL_CHARS = 64 * 1024
+_DRAIN_EOF_GRACE_S = 1.5
+# A holder that never lets the reader go quiet is still stopped this long after the leader exits.
+_DRAIN_BUSY_CAP_S = 10.0
+_BACKGROUND_STOPPED_NOTE = (
+    "[Background processes still writing to this output were stopped when the command exited. "
+    "To keep one running, redirect its output to a file, e.g. `nohup cmd > out.log 2>&1 &`.]\n"
+)
 
 
 def _drain_process_output(
@@ -20842,13 +21622,14 @@ def _drain_process_output(
     chunks: list[str] = []
     tail: "deque[str]" = deque()
     kept = joined = tail_chars = omitted_chars = omitted_lines = 0
+    last_read = time.monotonic()
 
     # Captured before waiting so a pipe-holding grandchild can be killed after the leader is reaped.
     if pgid is None:
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
-        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines, last_read
         try:
             # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
             for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
@@ -20873,6 +21654,7 @@ def _drain_process_output(
                         output_callback(line)
                     except Exception:  # noqa: BLE001 - observer must never kill the tool
                         logger.debug("tool output_callback raised", exc_info = True)
+                last_read = time.monotonic()
         except (ValueError, OSError):
             pass  # pipe closed during kill
 
@@ -20891,30 +21673,38 @@ def _drain_process_output(
             proc.wait(timeout = 5)
         except subprocess.TimeoutExpired:
             pass
-    # A grandchild that inherited stdout can hold the pipe open past the main process's exit.
+    # A grandchild holding the inherited stdout outlives the leader: stop the group once the reader has
+    # sat idle for the grace, so a slow drain never kills a redirected background job.
+    background_stopped = False
     if not timed_out:
-        if timeout is not None:
-            # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
-            deadline = started_at + timeout
-            while reader.is_alive():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    timed_out = True
-                    _killpg_captured(pgid)
-                    break
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = min(0.5, remaining))
-        else:
-            # Unlimited timeout drains until the pipe closes, like communicate(timeout=None); cancel stops it.
-            while reader.is_alive():
-                if cancel_event is not None and cancel_event.is_set():
-                    _killpg_captured(pgid)
-                    break
-                reader.join(timeout = 0.5)
+        exited_at = time.monotonic()
+        deadline = None if timeout is None else started_at + timeout
+        # Poll cancel_event in slices: the cancel watcher is gone once the leader exits.
+        while reader.is_alive():
+            if cancel_event is not None and cancel_event.is_set():
+                _killpg_captured(pgid)
+                break
+            now = time.monotonic()
+            past_deadline = deadline is not None and now >= deadline
+            give_up = (
+                now - max(exited_at, last_read) >= _DRAIN_EOF_GRACE_S
+                or now - exited_at >= _DRAIN_BUSY_CAP_S
+                or past_deadline
+            )
+            if give_up and _captured_group_alive(pgid):
+                _killpg_captured(pgid)
+                background_stopped = True
+                break
+            if past_deadline:
+                timed_out = True
+                _killpg_captured(pgid)
+                break
+            reader.join(timeout = 0.25)
     reader.join(timeout = 5)
-    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
+    output = "".join(chunks) + "".join(tail)
+    if background_stopped:
+        output += ("\n" if output and not output.endswith("\n") else "") + _BACKGROUND_STOPPED_NOTE
+    return output, timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -20922,6 +21712,8 @@ _MAX_REPORTED_FILES = 25
 _MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
+_MAX_HISTORY_FILES = 20000
+_MAX_HISTORY_DIRS = 20000
 
 
 def _user_path_parts(parts: "list[str]", root: "str | None" = None) -> "list[str]":
@@ -21009,34 +21801,73 @@ def _snapshot_skips_dir(base: str, name: str) -> bool:
     return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
 
 
-def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
+def _snapshot_workdir_files(workdir: str | None, history: bool = False) -> "dict[str, tuple]":
     """Maps every regular file to a change key; digests are added only on coarse-timestamp volumes."""
-    snapshot: "dict[str, tuple]" = {}
+    return _snapshot_workdir_views(workdir, (history,))[0]
+
+
+def _snapshot_workdir_views(workdir: "str | None", views: "tuple") -> "list":
+    """One walk giving each view (False: files card, True: file history) exactly its own walk."""
+    snapshots: "list[dict[str, tuple]]" = [{} for _ in views]
     if not workdir or not os.path.isdir(workdir):
-        return snapshot
+        return snapshots
+    caps = [
+        (_MAX_HISTORY_FILES, _MAX_HISTORY_DIRS)
+        if history
+        else (_MAX_SNAPSHOT_FILES, _MAX_SNAPSHOT_DIRS)
+        for history in views
+    ]
     # Directories are budgeted separately: empty folders never reach the file cap.
-    visited = 0
-    hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
+    visited = [0] * len(views)
+    hash_budget = [0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES] * len(
+        views
+    )
+    live = set(range(len(views)))
+    # Pre-order restricted to a view's directories is that view's own walk order.
+    owners: "dict[str, list[int]]" = {workdir: sorted(live)}
+    digests: "dict[str, str | None]" = {}
     # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
-        visited += 1
-        if visited > _MAX_SNAPSHOT_DIRS:
-            return _CappedSnapshot(snapshot)
+        here = []
+        for v in owners.pop(base, ()):
+            if v not in live:
+                continue
+            visited[v] += 1
+            if visited[v] > caps[v][1]:
+                snapshots[v] = _CappedSnapshot(snapshots[v])
+                live.discard(v)
+            else:
+                here.append(v)
+        if not live:
+            break
+        if not here:
+            dirs[:] = []
+            continue
         # depth 0 is the workdir itself, whose files are one segment.
-        relative = base[len(workdir) :].strip(os.sep)
-        depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
+        folder = base[len(workdir) :].strip(os.sep)
+        depth = len(_user_path_parts(folder.split(os.sep) if folder else []))
+        prefix = folder.replace(os.sep, "/") + "/" if folder else ""
         # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
-        dirs[:] = (
-            []
-            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [
-                d
-                for d in dirs
-                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
-                and _servable_segment(d)
-                and not _snapshot_skips_dir(base, d)
-            ]
-        )
+        kept = [
+            d
+            for d in dirs
+            if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+            and _servable_segment(d)
+            and not _snapshot_skips_dir(base, d)
+        ]
+        children: "dict[str, list[int]]" = {}
+        for v in here:
+            history = views[v]
+            if not history and depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1:
+                continue
+            for d in kept:
+                # history drops scratch anyway; a torch.compile cache there would spend the whole budget.
+                if history and base == workdir and not file_history.tracked(d + "/", ()):
+                    continue
+                children.setdefault(d, []).append(v)
+        dirs[:] = [d for d in kept if d in children]
+        for d in dirs:
+            owners[os.path.join(base, d)] = children[d]
         for name in names:
             # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
@@ -21047,20 +21878,30 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             try:
                 # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
-                if not S_ISREG(stat.st_mode):
-                    continue
-                relative = os.path.relpath(path, workdir).replace(os.sep, "/")
-                content = None
-                if hash_budget and hash_budget >= stat.st_size:
-                    content = _content_key(path, stat.st_size)
-                    if content is not None:
-                        hash_budget -= stat.st_size
-                snapshot[relative] = (stat.st_mtime_ns, stat.st_size, content)
             except OSError:
                 continue
-            if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return _CappedSnapshot(snapshot)
-    return snapshot
+            if not S_ISREG(stat.st_mode):
+                continue
+            relative = prefix + name
+            for v in here:
+                if v not in live:
+                    continue
+                content = None
+                if hash_budget[v] and hash_budget[v] >= stat.st_size:
+                    if path not in digests:
+                        digests[path] = _content_key(path, stat.st_size)
+                    content = digests[path]
+                    if content is not None:
+                        hash_budget[v] -= stat.st_size
+                snapshots[v][relative] = (stat.st_mtime_ns, stat.st_size, content)
+                if len(snapshots[v]) >= caps[v][0]:
+                    snapshots[v] = _CappedSnapshot(snapshots[v])
+                    live.discard(v)
+            if live.isdisjoint(here):
+                break
+        if not live:
+            break
+    return snapshots
 
 
 class _CappedSnapshot(dict):
@@ -21098,7 +21939,7 @@ def _call_finished(token: "dict | None") -> None:
         return
     if token.get("history") is not None and not token["history"].done:
         # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
-        _history_end(token, _snapshot_workdir_files(token["workdir"]))
+        _history_end(token)
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -21111,48 +21952,51 @@ def _call_finished(token: "dict | None") -> None:
             _workdir_calls.pop(token["workdir"], None)
 
 
-def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+def _history_walk(workdir: str, snap: "dict | None" = None) -> "tuple[dict, bool]":
     """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
     says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    if snap is None:
+        snap = _snapshot_workdir_files(workdir, history = True)
     with _scratch_lock:
         scratch = set(_active_scratch)
     kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
     return kept, not isinstance(snap, _CappedSnapshot)
 
 
-def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+def _history_begin(
+    call_token: dict,
+    session_id: "str | None",
+    walked: "dict | None" = None,
+) -> None:
     if file_history.current_turn() is None:
         return
-    snap, complete = _history_snapshot(before)
+    snap, complete = _history_walk(call_token["workdir"], walked)
     call_token["history"] = file_history.begin_call(
         session_id, call_token.get("workdir"), snap, complete = complete
     )
 
 
-def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+def _history_end(call_token: "dict | None", walked: "dict | None" = None) -> None:
     if not call_token or call_token.get("history") is None:
         return
+    snap, complete = _history_walk(call_token["workdir"], walked)
+    # Checked after the walk: an upload landing mid-walk is in `snap` and must not read as ours.
     if call_token.get("shared"):
-        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
         call_token["history"].ambiguous = True
-    snap, complete = _history_snapshot(after)
     file_history.end_call(call_token["history"], snap, complete = complete)
 
 
-def _walk_lists(workdir: str, rel: str) -> bool:
-    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
-    taken for a deletion by the next python or terminal walk."""
-    parts = rel.split("/")
-    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
-        map(_servable_segment, parts)
-    ):
-        return False
-    base = workdir
-    for part in parts[:-1]:
-        if part.startswith(".") or _snapshot_skips_dir(base, part):
-            return False
-        base = os.path.join(base, part)
-    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
+def _snapshot_and_history_begin(
+    workdir: "str | None", call_token: dict, session_id: "str | None"
+) -> dict:
+    """The pre-run files snapshot, then `_history_begin`, from one walk when history is on."""
+    if file_history.current_turn() is None or call_token.get("workdir") != workdir:
+        before = _snapshot_workdir_files(workdir)
+        _history_begin(call_token, session_id)
+        return before
+    before, walked = _snapshot_workdir_views(workdir, (False, True))
+    _history_begin(call_token, session_id, walked)
+    return before
 
 
 def _history_begin_file(session_id: "str | None", target: str) -> dict:
@@ -21167,7 +22011,11 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
     if rel.startswith(os.pardir) or os.path.isabs(rel):
         return {}
     rel = rel.replace(os.sep, "/")
-    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+    if (
+        not all(map(_servable_segment, rel.split("/")))
+        or rel in _INTERNAL_SANDBOX_FILES
+        or not file_history.tracked(rel, ())
+    ):
         return {}
     try:
         baseline = file_history.store().needs_baseline(workdir)
@@ -21176,7 +22024,7 @@ def _history_begin_file(session_id: "str | None", target: str) -> dict:
         logger.warning("file history: could not open the index", exc_info = True)
         return {}
     if baseline:
-        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        snap, complete = _history_walk(workdir)
         # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
         snap = {**_history_file_snapshot(workdir, rel), **snap}
     else:
@@ -21223,8 +22071,12 @@ def _created_file_sentinels(
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
-    after = _snapshot_workdir_files(workdir)
-    _history_end(token, after)
+    if token is not None and token.get("history") is not None and token.get("workdir") == workdir:
+        after, walked = _snapshot_workdir_views(workdir, (False, True))
+        _history_end(token, walked)
+    else:
+        after = _snapshot_workdir_files(workdir)
+        _history_end(token)
     if token is not None and token.get("shared"):
         # Calls started mid-walk write into `after`, indistinguishable from ours; only known sharing skips.
         return ""
@@ -21316,7 +22168,10 @@ def _python_exec(
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code)
+        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+        error = _check_code_safety(
+            code, host_approved = host_access_approved and not _api_host_access_refused()
+        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
@@ -21343,8 +22198,7 @@ def _python_exec(
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
-    _before = _snapshot_workdir_files(workdir)
-    _history_begin(call_token, session_id, _before)
+    _before = _snapshot_and_history_begin(workdir, call_token, session_id)
     try:
         # In the workdir: sys.path[0] keeps earlier helpers importable and __file__ in the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
@@ -21591,8 +22445,7 @@ def _bash_exec(
         spill_dir = workdir if session_id else None
         call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec, so files a command writes are reported, not "(no output)".
-        _before = _snapshot_workdir_files(workdir)
-        _history_begin(call_token, session_id, _before)
+        _before = _snapshot_and_history_begin(workdir, call_token, session_id)
         safe_env = (
             _build_bypass_env(workdir)
             if disable_sandbox

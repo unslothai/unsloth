@@ -60,9 +60,6 @@ import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import { buildModelVramMap } from "@/lib/vram";
 import type { ModelType, TrainingMethod } from "@/types/training";
-import {
-  ChipIcon,
-} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -87,6 +84,7 @@ import {
   toCachedTrainModelDeviceItem,
   toLocalTrainModelDeviceItem,
 } from "./train-model-picker-view-model";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function explicitLocalPath(path: string): string {
   const trimmed = path.trim();

@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Opt-in serving environments. No engine packages are imported into Studio.
-
-When Studio's own PyTorch and CUDA libraries are the ones an engine is locked to,
-its environment runs on Studio's interpreter and holds only the packages Studio
-lacks or pins differently; Studio's site-packages follow its own on sys.path.
-Otherwise it is a complete isolated environment.
-
-Installation is serialized across Studio processes. Environments are built at
-their final paths (venv scripts contain absolute paths); only the active marker
-is replaced. Runtime leases prevent removing an environment another Studio uses.
-"""
+"""Opt-in engine envs share Studio torch/CUDA when locked, else isolated; none imported into Studio;
+installs serialized; runtime leases block removing an env in use"""
 
 from __future__ import annotations
 
@@ -161,10 +152,19 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
-    if not hardware.DETECTION_COMPLETE.is_set():
-        hardware.ensure_hardware_detected()
-    if hardware.IS_ROCM:
+    # Status is read by idle Chat. The wheel's build family is enough to choose
+    # an engine profile; discovering it must not initialize the ML runtime.
+    if hardware.DETECTION_COMPLETE.is_set():
+        is_rocm = hardware.IS_ROCM
+    else:
+        from core._torchao_stub import _installed_torch_is_rocm, _module_is_rocm
+        torch = sys.modules.get("torch")
+        is_rocm = (
+            _module_is_rocm(torch)
+            if getattr(torch, "__version__", None) is not None
+            else _installed_torch_is_rocm()
+        )
+    if is_rocm:
         return "rocm"
     if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
         return "cuda"
@@ -794,6 +794,17 @@ def _rocm_gpu_arches() -> dict[int, str]:
     return _rocm_arches
 
 
+def _known_rocm_gpu_arches(*, wait: bool) -> dict[int, str]:
+    """Status uses existing runtime information or sysfs; a load may initialize torch.
+
+    Do not cache an empty provisional answer: first use must still run the real
+    probe, including GPU masks and HSA_OVERRIDE_GFX_VERSION.
+    """
+    if wait or "torch" in sys.modules:
+        return _rocm_gpu_arches()
+    return _rocm_arches or {}
+
+
 def _unsupported_amd_gpu(found: list[str]) -> str:
     return (
         "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
@@ -813,7 +824,7 @@ def _rocm_reason(
     wanted = profile(engine)
     if wsl_host.active():
         # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
-        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        arches = _known_rocm_gpu_arches(wait = wait) if gpu_id is not None else {}
         if gpu_id in arches:
             known = [arches[gpu_id]]
         else:
@@ -836,7 +847,11 @@ def _rocm_reason(
         return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
             *wanted["rocm"], wanted["rocm"][0]
         ) + (" (found {}.{}).".format(*found) if found else ".")
-    from utils.hardware.amd import _a_bare_soname_resolves, amd_kfd_gpu_gfx_targets
+    from utils.hardware.amd import (
+        _a_bare_soname_resolves,
+        amd_kfd_gpu_gfx_targets,
+        hsa_override_gfx_target,
+    )
 
     missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
     if missing:
@@ -869,7 +884,17 @@ def _rocm_reason(
         )
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
-    arches = _rocm_gpu_arches()
+    arches = _known_rocm_gpu_arches(wait = wait)
+    if not arches and _rocm_arches is None:
+        kernel = amd_kfd_gpu_gfx_targets()
+        if os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip():
+            # ROCr presents a readable global override for every GPU KFD lists; the kernel's target ignores it.
+            override = hsa_override_gfx_target()
+            if override is None or not kernel:
+                return "Checking for a supported AMD GPU."
+            arches = dict.fromkeys(range(len(kernel)), override)
+        elif kernel is None:
+            return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
     elif gpu_id in arches:

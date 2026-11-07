@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Out-of-process byte transfer for one dictation model download.
-
-The sidecars plan the download in-process and run only the transfer here. A
-thread cannot be interrupted, so cancelling means terminating a process: like
-``hub.workers.hf_download``, cancel is a SIGTERM and the negative returncode is
-what the caller reads as cancelled rather than failed. HF partials resume
-byte-exact, so a SIGTERM costs only the chunk in flight.
-"""
+"""Dictation model byte transfer in its own process; SIGTERM cancel shows as negative returncode and
+costs only the chunk in flight, since HF partials resume byte-exact"""
 
 from __future__ import annotations
 

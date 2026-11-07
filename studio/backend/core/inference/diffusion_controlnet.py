@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Diffusion ControlNet support: family-gated discovery, resolution to a loadable diffusers
-repo/dir, control-image preprocessing, and a capability gate.
-
-Mirrors ``diffusion_lora.py``. Two differences: (1) a ControlNet is a full diffusers repo (loaded
-via ``from_pretrained``), so resolution yields a repo id / local dir, not a file; (2) it needs a
-spatial *control image*, either supplied already-preprocessed ("passthrough") or derived here
-("canny", a dependency-free edge map).
-
-ControlNets are architecture-specific, so discovery is family-gated like the LoRA picker. The
-request never carries a path (only a discovery id or ``owner/name`` repo id), so a client cannot
-make the backend read an arbitrary location.
-"""
+"""Family-gated ControlNet discovery; requests carry only a discovery id or owner/name, never a path."""
 
 from __future__ import annotations
 

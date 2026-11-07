@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Placement planner: spill weights with ``-ot``, never the KV cache.
-
-llama.cpp's ``--fit on`` spills whole layers through ``n_gpu_layers``, and a
-layer's KV cache is allocated on ``model.dev_layer(il)`` (llama-kv-cache.cpp),
-so spilling a layer drags its cache to host RAM with it. Measured at 128K on one
-B200, that is the expensive direction by a wide margin:
-
-    weights spilled, cache resident   71.63 t/s
-    cache spilled, weights resident    3.24 t/s
-
-``-ot`` overrides tensor buffer types WITHOUT touching layer assignment, so the
-cache stays put: measured ``offloaded 66/66 layers to GPU`` with the whole cache
-on CUDA0 even when every block tensor was forced to the host.
-
-This module is pure arithmetic over a :class:`ModelLayout`. It performs no IO and
-reads no globals, so the whole decision table is testable directly.
-"""
+"""Spill weights with -ot, never the KV cache: spilling a layer moves its cache to host RAM too."""
 
 from __future__ import annotations
 

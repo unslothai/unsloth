@@ -3244,6 +3244,10 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = crate::desktop_port::resolve_port(
+        port,
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )?;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.
@@ -3529,9 +3533,9 @@ pub fn start_backend(
     Ok(generation)
 }
 
-async fn generic_backend_health_ok(port: u16) -> bool {
+async fn generic_backend_health_ok(port: u16, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
-    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
+    let client = match crate::loopback_http::client(timeout) {
         Ok(client) => client,
         Err(error) => {
             warn!("Could not build backend validation client: {}", error);
@@ -3611,6 +3615,8 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 
 /// Doubling backoff: each probe costs two requests against a busy backend.
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
+/// The health watchdog's per-request budget: warm-up right after TAURI_PORT can hold the GIL past 2s.
+pub(crate) const PORT_VALIDATION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
 async fn validate_candidate_port(
@@ -3650,16 +3656,24 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
+        // Never past the deadline: the answer would be discarded anyway.
+        let budget = PORT_VALIDATION_PROBE_TIMEOUT
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
         let ok = if let Some(owner) = owner.clone() {
             matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
-                    .await,
+                crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
+                    owner,
+                    Some(port),
+                    false,
+                    budget,
+                )
+                .await,
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
                     crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
                 ) if verified_port == port
             )
         } else {
-            generic_backend_health_ok(port).await
+            generic_backend_health_ok(port, budget).await
         };
         if ok {
             // A late success must not emit server-port after server-start-timeout.
@@ -4194,6 +4208,59 @@ fn stop_adopted_backend(
         "Adopted backend did not stop via exact-port HTTP shutdown; refusing PID fallback without verified port-to-PID binding"
             .to_string(),
     )
+}
+
+// An accepted shutdown first lets a training run save, within the backend's 120 s default budget.
+const ATTACHED_SHUTDOWN_WAIT: Duration = Duration::from_secs(130);
+
+pub fn stop_attached_backend(port: u16) -> Result<(), String> {
+    if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
+        return Ok(());
+    }
+    if try_exact_port_http_shutdown(port, "Attached backend")
+        && wait_for_port_disconnect(port, ATTACHED_SHUTDOWN_WAIT)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "The Unsloth server on port {port} did not stop. Stop it from the terminal that started it, then try again."
+    ))
+}
+
+#[cfg(test)]
+mod attached_backend_stop_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn an_attached_port_with_nothing_on_it_is_already_stopped() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(stop_attached_backend(port), Ok(()));
+    }
+
+    #[test]
+    fn a_server_that_refuses_this_install_is_left_running() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        assert!(stop_attached_backend(port).is_err());
+        assert!(crate::desktop_backend_owner::port_is_listening_blocking(
+            port,
+            Duration::from_millis(150)
+        ));
+    }
 }
 
 /// Graceful shutdown of owned backend handles.
@@ -5869,6 +5936,27 @@ mod managed_cli_working_dir_tests {
         assert_eq!(
             std::fs::canonicalize(out.trim()).unwrap(),
             std::fs::canonicalize(&expected).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod port_validation_budget_tests {
+    #[test]
+    fn port_validation_probes_use_the_validation_budget() {
+        let src = include_str!("process.rs").replace("\r\n", "\n");
+        let start = src
+            .find("async fn validate_candidate_port(")
+            .expect("validate_candidate_port moved; update this guard");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("could not find the function end")];
+        assert!(body.contains("PORT_VALIDATION_PROBE_TIMEOUT"));
+        assert!(body.contains("probe_owned_backend_state_with_timeout("));
+        assert!(body.contains("generic_backend_health_ok(port, budget)"));
+        assert!(!body.contains("probe_owned_backend_state(owner"));
+        assert!(
+            super::PORT_VALIDATION_PROBE_TIMEOUT >= std::time::Duration::from_secs(10),
+            "keep the validation budget at least the health watchdog's"
         );
     }
 }

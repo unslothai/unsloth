@@ -1,30 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.3 pipeline assembly for diffusers 0.39.
-
-diffusers 0.39 ships every LTX-2.3 model class but its single-file loader maps every LTX-2
-checkpoint to the 2.0 config, so 2.3 checkpoints fail a shape check at load. The community
-transformer-only GGUFs also carry the DiT + connectors but NOT the text projections, VAEs, or
-vocoder that 2.3 moved out of the transformer. This assembles the full 2.3 pipeline:
-
-- transformer: from the checkpoint via ``from_single_file`` with the 2.3 config overrides and the
-  ``prompt_adaln_single`` keys pre-renamed (the library converter doesn't know them).
-- connectors: from the checkpoint's connector keys plus the ``text_embedding_projection`` tensors,
-  fetched from the companion file in ``unsloth/LTX-2.3-GGUF`` when not bundled.
-- video/audio VAE, vocoder: from the checkpoint when bundled, else the companion files.
-- scheduler, text encoder (Gemma3), tokenizer: from the LTX-2.0 base repo, which 2.3 shares.
-
-Every config and rename table mirrors diffusers' ``scripts/convert_ltx2_to_diffusers.py`` (the
-authoritative 2.3 mapping the loader hasn't absorbed). Assembled through the constructor, not
-``from_pretrained``, because the vocoder class differs from the base pin (``LTX2VocoderWithBWE`` vs
-``LTX2Vocoder``) and the type gate would reject it.
-"""
+"""LTX-2.3 pipeline is built via the constructor; from_pretrained's type gate rejects the 2.3 vocoder."""
 
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -267,19 +250,54 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
     return names_shapes
 
 
+# Keyed by file identity + stamps: an edited or replaced file is re-read; failures never kept.
+_LTX23_VERDICTS: dict[tuple, bool] = {}
+_LTX23_VERDICTS_LOCK = threading.Lock()
+_LTX23_VERDICTS_MAX = 256
+
+
+def _checkpoint_stamp(checkpoint_path: Path | str) -> Optional[tuple]:
+    try:
+        path = os.fspath(checkpoint_path)
+        st = os.stat(path)
+        return (
+            os.path.realpath(path),
+            st.st_dev,
+            st.st_ino,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
     """True when the checkpoint carries the 9-row LTX-2.3 modulation tables (2.0 has 6-row
     per-block scale/shift tables; 2.3 widens them to 9). An unreadable header returns False so the
     caller falls back to the stock 2.0 path."""
+    stamp = _checkpoint_stamp(checkpoint_path)
+    if stamp is not None:
+        with _LTX23_VERDICTS_LOCK:
+            verdict = _LTX23_VERDICTS.get(stamp)
+        if verdict is not None:
+            return verdict
     try:
         header = read_checkpoint_header(checkpoint_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("video.ltx2_header_probe_failed: %s", exc)
         return False
+    verdict = False
     for name, shape in header.items():
         if name.endswith("transformer_blocks.0.scale_shift_table"):
-            return 9 in shape
-    return False
+            verdict = 9 in shape
+            break
+    if stamp is not None:
+        with _LTX23_VERDICTS_LOCK:
+            if len(_LTX23_VERDICTS) >= _LTX23_VERDICTS_MAX:
+                _LTX23_VERDICTS.clear()
+            _LTX23_VERDICTS[stamp] = verdict
+    return verdict
 
 
 def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:

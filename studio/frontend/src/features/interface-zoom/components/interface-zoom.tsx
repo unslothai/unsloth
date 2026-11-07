@@ -4,15 +4,17 @@
 import { Button } from "@/components/ui/button";
 import {
   getAppliedInterfaceZoom,
-  isImeComposing,
   subscribeAppliedInterfaceZoom,
-  useInterfaceScaleStore,
-} from "@/features/settings";
+} from "@/features/settings/lib/interface-scale-runtime";
+import { isImeComposing } from "@/features/settings/hooks/use-shortcut";
 import {
   formatBindingValueLabel,
   isMacPlatform,
 } from "@/features/settings/lib/keyboard-shortcuts";
-import { INTERFACE_SCALE_RANGE } from "@/features/settings/stores/interface-scale-store";
+import {
+  INTERFACE_SCALE_RANGE,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import {
   shortcutOwningBinding,
   useKeyboardShortcutsStore,
@@ -20,7 +22,6 @@ import {
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { Z_LAYER } from "@/lib/z-layers";
-import { MinusIcon } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -37,7 +38,7 @@ import {
   zoomDirectionForKey,
 } from "../lib/zoom-chords.ts";
 import { createWheelZoomAccumulator, isZoomWheel } from "../lib/zoom-wheel.ts";
-import { PlusSignIcon } from "@hugeicons/core-free-icons";
+import { MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 export const ZOOM_POPUP_HIDE_MS = 2500;
@@ -78,7 +79,7 @@ function ZoomPopup() {
   return (
     // pointer-events-auto survives a modal's body lock.
     <div
-      className="interface-zoom-position pointer-events-auto fixed right-4"
+      className="modal-pe-live interface-zoom-position pointer-events-auto fixed right-4"
       style={{ zIndex: Z_LAYER.ZOOM_POPUP }}
       // Keeps an open modal from treating this as an outside click.
       onPointerDown={(event) => event.stopPropagation()}
@@ -118,7 +119,7 @@ function ZoomPopup() {
           aria-label={t("shell.zoom.zoomOut")}
           title={withChord(t("shell.zoom.zoomOut"), -1)}
         >
-          <MinusIcon
+          <HugeiconsIcon icon={MinusSignIcon}
             strokeWidth={1.75}
             className="size-[calc(16px*var(--ui-space-scale,1))]"
           />

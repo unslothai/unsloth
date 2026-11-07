@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keeping private data out of Deep Research web queries and prompts.
-
-Search queries leave the machine, so credentials, personal identifiers, and private network
-addresses are stripped before a query is issued. Prompt-delimiter tags in gathered evidence
-are escaped so untrusted text cannot close a wrapper block and inject instructions, and a
-source URL cannot close its own citation to inject a link.
-"""
+"""Strips credentials and private addresses from search queries; escapes prompt tags in evidence."""
 
 from __future__ import annotations
 

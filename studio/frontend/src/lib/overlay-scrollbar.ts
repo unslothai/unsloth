@@ -4,18 +4,20 @@
 /** Classic scrollbars take layout space, so their gutter stays unset. */
 
 export const OVERLAY_SCROLLBAR_GUTTER_VAR = "--overlay-scrollbar-gutter";
+/** For a padding-reserved gutter; unset for overlay scrollbars. */
+export const CLASSIC_SCROLLBAR_WIDTH_VAR = "--classic-scrollbar-width";
 
 const MAX_GUTTER_PX = 48;
 
 /** Re-measuring forces layout, so resize bursts are coalesced. */
 const RESIZE_SETTLE_MS = 200;
 
-type Measurement = { gutter: number; reliable: boolean };
+type Measurement = { gutter: number; classic: number; reliable: boolean };
 
 function measure(doc: Document): Measurement {
   const body = doc.body;
   if (!body) {
-    return { gutter: 0, reliable: false };
+    return { gutter: 0, classic: 0, reliable: false };
   }
 
   const probe = doc.createElement("div");
@@ -28,8 +30,9 @@ function measure(doc: Document): Measurement {
   body.appendChild(probe);
 
   try {
-    if (probe.offsetWidth - probe.clientWidth > 0) {
-      return { gutter: 0, reliable: true };
+    const classic = probe.offsetWidth - probe.clientWidth;
+    if (classic > 0) {
+      return { gutter: 0, classic, reliable: true };
     }
 
     // Reveal scrollbars configured to appear only while scrolling.
@@ -42,11 +45,11 @@ function measure(doc: Document): Measurement {
     let gutter = 0;
     for (let offset = 1; offset <= MAX_GUTTER_PX; offset++) {
       if (doc.elementFromPoint(right - offset, y) === content) {
-        return { gutter, reliable: true };
+        return { gutter, classic: 0, reliable: true };
       }
       gutter = offset;
     }
-    return { gutter: 0, reliable: false };
+    return { gutter: 0, classic: 0, reliable: false };
   } finally {
     body.removeChild(probe);
   }
@@ -57,7 +60,7 @@ export function measureOverlayScrollbarGutter(doc: Document): number {
 }
 
 export function applyOverlayScrollbarGutter(doc: Document): number {
-  const { gutter, reliable } = measure(doc);
+  const { gutter, classic, reliable } = measure(doc);
   const root = doc.documentElement;
   if (!reliable) {
     // Keep the last good gutter: one unreadable sweep must not shift rows.
@@ -71,6 +74,11 @@ export function applyOverlayScrollbarGutter(doc: Document): number {
     root.style.setProperty(OVERLAY_SCROLLBAR_GUTTER_VAR, `${gutter}px`);
   } else {
     root.style.removeProperty(OVERLAY_SCROLLBAR_GUTTER_VAR);
+  }
+  if (classic > 0) {
+    root.style.setProperty(CLASSIC_SCROLLBAR_WIDTH_VAR, `${classic}px`);
+  } else {
+    root.style.removeProperty(CLASSIC_SCROLLBAR_WIDTH_VAR);
   }
   return gutter;
 }

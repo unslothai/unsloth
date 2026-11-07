@@ -119,7 +119,6 @@ function langBase(tag: string): string {
 
 const MAX_CURATED_VOICES = 20;
 
-/** Filter, rank and cap voices; the selected voice is always kept. */
 export function curateSystemVoices(
   voices: SpeechSynthesisVoice[],
   selectedVoiceURI?: string,
@@ -211,13 +210,14 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
-/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed. */
+/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed.
+ *  Lists loaded models only: /v1/models rescans every downloaded model once its cache expires. */
 async function resolveReadAloudModel(
   wantsClone: boolean,
   signal?: AbortSignal,
 ): Promise<string | null> {
   try {
-    const res = await authFetch("/v1/models", { signal });
+    const res = await authFetch("/api/inference/loaded-models", { signal });
     if (!res.ok) return null;
     return loadedSpeechModelId(
       audioModelsFromCatalog(await res.json()),
@@ -261,7 +261,6 @@ function readAloudError(
   return new Error(detail);
 }
 
-/** Generate speech via the loaded TTS audio model; returns a WAV data URL. */
 export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
@@ -421,7 +420,6 @@ function speakWithBackendAudio(
   let audioUrl: string | null = null;
   let cancelled = false;
 
-  // Release the element and its multi-MB WAV data URL as soon as playback ends.
   const cleanup = () => {
     if (audio) {
       audio.pause();
@@ -477,7 +475,6 @@ function speakWithBackendAudio(
   };
 }
 
-/** Engines: "system" (speechSynthesis), "studio" (local TTS), "custom" (a connection). */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   static systemVoicesSupported(): boolean {
     return (
@@ -504,7 +501,6 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
       error?: unknown,
     ) => {
       if (res.status.type === "ended") return;
-      // A cancelled or interrupted utterance is a normal stop and must not toast.
       if (
         reason === "error" &&
         error !== "interrupted" &&
@@ -540,7 +536,11 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
         };
       },
     };
-
+    if (!text.trim()) {
+      cancelImpl = () => {};
+      handleEnd("finished");
+      return res;
+    }
     if (
       ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()

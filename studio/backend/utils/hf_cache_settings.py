@@ -194,7 +194,25 @@ def _portable_cache_home() -> Optional[Path]:
         return None
 
 
+def _scan_memoized(name: str, compute):
+    from utils.scan_memo import memoized
+
+    environ = os.environ
+    key = (
+        name,
+        environ.get("HOME"),
+        environ.get("XDG_CACHE_HOME"),
+        environ.get("UNSLOTH_PORTABLE"),
+        environ.get("UNSLOTH_HOME"),
+    )
+    return memoized(key, compute)
+
+
 def get_hf_cache_paths() -> HuggingFaceCachePaths:
+    return _scan_memoized("hf_cache_paths", _get_hf_cache_paths_uncached)
+
+
+def _get_hf_cache_paths_uncached() -> HuggingFaceCachePaths:
     env_paths = _environment_paths()
     if env_paths is not None:
         return env_paths
@@ -457,6 +475,10 @@ def effective_cache_home() -> Path:
 
 
 def known_hf_cache_homes() -> list[Path]:
+    return list(_scan_memoized("known_hf_cache_homes", _known_hf_cache_homes))
+
+
+def _known_hf_cache_homes() -> list[Path]:
     paths = get_hf_cache_paths()
     stored = _stored_cache_home()
     candidates: list[Path] = []
@@ -483,6 +505,10 @@ def known_hf_cache_homes() -> list[Path]:
 
 
 def known_hf_hub_caches() -> list[Path]:
+    return list(_scan_memoized("known_hf_hub_caches", _known_hf_hub_caches))
+
+
+def _known_hf_hub_caches() -> list[Path]:
     active = get_hf_cache_paths()
     out = [active.hub_cache]
     seen = {os.path.normcase(str(_canonical(active.hub_cache)))}

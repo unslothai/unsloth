@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure helpers for text-to-video model identification.
-
-The video registry mirrors ``diffusion_families`` (no torch/diffusers imports, so
-everything unit-tests without the heavy runtime) but is a SEPARATE registry with a
-separate backend: video pipelines take frame/fps arguments, return frame stacks
-(and, for LTX-2, synchronized audio) instead of PIL images, and their artifacts are
-MP4s. Keeping the registries apart means neither picker can mis-route a checkpoint
-to the wrong engine.
-
-A video checkpoint published as a single-file GGUF only carries the DiT weights;
-the VAE / text encoder / connectors / vocoder come from the companion diffusers
-base repo, exactly like the image GGUF path.
-"""
+"""Pure helpers with no torch/diffusers imports (unit-testable without the runtime); separate video
+registry so no picker misroutes; GGUF is DiT-only, needs a base repo"""
 
 from __future__ import annotations
 
@@ -315,6 +304,9 @@ class VideoFamily:
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
+    # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
+    # instead of staging and quantising the dense shards. Only for a family whose hosted int8 file is ConvRot safetensors.
+    native_offload_from_hosted_int8: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -568,7 +560,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "MiniMaxAI/MiniMax-H3",
         aliases = ("minimax_h3", "minimaxh3", "h3"),
         has_audio = True,
-        default_steps = 30,
+        # The t2v template's non-LoRA path: 20 steps, BasicGuider (CFG 1); the turbo LoRA path is the PDD row.
+        default_steps = 20,
         default_guidance = 1.0,
         default_num_frames = 124,
         default_fps = 24,
@@ -595,6 +588,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (66.3, 66.8, 11.1),
         # Regionally compilable; dynamic=True traces once. Engage only when resident (slower under offload).
         supports_torch_compile = True,
+        # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
+        filter_reduction_configs = True,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
@@ -680,6 +675,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
             ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
         ),
+        native_offload_from_hosted_int8 = True,
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
         # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
@@ -765,13 +761,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt. Sizes from Hub metadata (2026-08-04).
+        # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
             ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
         ),
-        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
@@ -830,8 +826,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
         ),
         prequant_filenames = (
-            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
-            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.safetensors"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"),
             ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
             ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
@@ -946,7 +942,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
@@ -991,7 +987,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
@@ -1168,6 +1164,36 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    memo = _detect_video_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    family = _detect_video_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_VIDEO_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = family
+    except TypeError:
+        pass
+    return family
+
+
+_DETECT_VIDEO_FAMILY_MEMO_MAX = 8192
+# Paired with the tables it was filled from: replacing either starts an empty memo.
+_detect_video_family_memo_state: tuple[object, object, dict] = ((), (), {})
+
+
+def _detect_video_family_memo() -> dict:
+    global _detect_video_family_memo_state
+    families, unsupported, memo = _detect_video_family_memo_state
+    if families is not _FAMILIES or unsupported is not _UNSUPPORTED_VIDEO_CHECKPOINTS:
+        memo = {}
+        _detect_video_family_memo_state = (_FAMILIES, _UNSUPPORTED_VIDEO_CHECKPOINTS, memo)
+    return memo
+
+
+def _detect_video_family_by_name(repo_id: str) -> Optional[VideoFamily]:
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None

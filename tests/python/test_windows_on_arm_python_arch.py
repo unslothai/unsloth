@@ -221,6 +221,9 @@ function Remove-StudioVenvTreeWithRetry {{
     Remove-Item -LiteralPath $Path -Recurse -Force
     return $true
 }}
+# Declines the background handoff (as it does off Windows), so the delete is the foreground one
+# above; test_windows_rollback_background_delete.py covers the handoff.
+function Start-StudioVenvRollbackBackgroundDelete {{ param([string]$Path) return $false }}
 {_function("Test-StudioPathPresent")}
 {_function("Complete-StudioVenvRollback")}
 """

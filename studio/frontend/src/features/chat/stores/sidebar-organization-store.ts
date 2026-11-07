@@ -4,6 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+
 export type SidebarOrganizeBy = "project" | "list";
 export type SidebarChatSort = "updated" | "manual";
 export type SidebarProjectSort = "updated" | "name" | "created" | "manual";
@@ -506,3 +508,5 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
     },
   ),
 );
+
+syncAcrossWindows(useSidebarOrganizationStore);

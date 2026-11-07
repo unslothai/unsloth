@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""llama.cpp converter sources (convert_lora_to_gguf.py, gguf-py) from the Unsloth fork's releases.
-
-Each unslothai/llama.cpp release carries ``llama.cpp-source-<tag>.tar.gz`` and the
-``llama-prebuilt-sha256.json`` that pins its digest, so no git and no ggml-org download is
-needed. The backend cannot import the studio/ installer scripts (see
-utils/prebuilt/runtime_libs.py), hence this small standalone copy.
-"""
+"""Fetches llama.cpp converter sources from unslothai release tarballs, verified by sha256 manifest."""
 
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ def private_tmp_path(name: str) -> Path:
 
 
 def private_tmp_dir(name: str) -> Path:
-    """Create (or reuse) a 0700 per-user temp folder; refuse a link, foreign owner or lingering g/o write."""
+    """Create (or reuse) a 0700 per-user temp folder; refuse a link, foreign owner or lingering g/o access."""
     path = private_tmp_path(name)
     path.mkdir(mode = 0o700, parents = True, exist_ok = True)
     if not hasattr(os, "getuid"):
@@ -36,8 +36,8 @@ def private_tmp_dir(name: str) -> Path:
         except OSError:
             pass
         # Re-read: some network and FUSE mounts ignore chmod and report success.
-        if stat.S_IMODE(os.lstat(path).st_mode) & 0o022:
+        if stat.S_IMODE(os.lstat(path).st_mode) & 0o077:
             raise PermissionError(
-                errno.EPERM, "refusing a group- or world-writable temp folder", str(path)
+                errno.EPERM, "refusing a temp folder other users can read or write", str(path)
             )
     return path

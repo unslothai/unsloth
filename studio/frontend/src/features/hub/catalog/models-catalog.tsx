@@ -412,7 +412,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           tabIndex={discoverActive ? undefined : -1}
           className={cn(
             scrollPaneClassName,
-            discoverActive ? "visible" : "pointer-events-none invisible",
+            !discoverActive && "pointer-events-none invisible",
           )}
         >
           {discoverActive ? (
@@ -460,7 +460,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
           tabIndex={downloadedActive ? undefined : -1}
           className={cn(
             scrollPaneClassName,
-            downloadedActive ? "visible" : "pointer-events-none invisible",
+            !downloadedActive && "pointer-events-none invisible",
           )}
         >
           {downloadedActive ? (

@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Translate llama-server's Prometheus /metrics into a periodic, vLLM-style
-engine-stats log line (generation/prompt throughput, requests in flight).
+"""Turns llama-server /metrics into periodic vLLM-style stats lines, only while busy; needs --metrics."""
 
-llama-server already computes these (it needs `--metrics`); this lifts them
-into Unsloth's structured log so the terminal shows serving health, not just
-per-request access lines. Emitted only while there is activity.
-"""
-
+import json
 import math
 import os
 import re
@@ -37,6 +32,7 @@ class LlamaServerStatsLogger:
         headers = None,
     ):
         self._url = f"{base_url.rstrip('/')}/metrics"
+        self._slots_url = f"{base_url.rstrip('/')}/slots"
         self._headers = dict(headers or {})
         # No HTTPSHandler: it builds an SSL context this loopback scrape never needs.
         self._opener = urllib.request.OpenerDirector()
@@ -57,6 +53,7 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
+        self._slot_base = None
 
     def start(self):
         if self._thread is None:
@@ -66,16 +63,21 @@ class LlamaServerStatsLogger:
     def stop(self):
         self._stop.set()
 
-    def _scrape(self):
+    def _get(self, url):
         try:
             # No proxy: the bearer must only ever go to the loopback server.
             with self._opener.open(
-                urllib.request.Request(self._url, headers = self._headers), timeout = 3
+                urllib.request.Request(url, headers = self._headers), timeout = 3
             ) as r:
                 if r.status != 200:
                     return None
-                body = r.read().decode("utf-8", "replace")
+                return r.read().decode("utf-8", "replace")
         except Exception:
+            return None
+
+    def _scrape(self):
+        body = self._get(self._url)
+        if body is None:
             return None
         out = {}
         for k, v in _METRIC_RE.findall(body):
@@ -87,6 +89,23 @@ class LlamaServerStatsLogger:
             if math.isfinite(value):
                 out[k] = value
         return out
+
+    def _live_gen_rate(self, now, running):
+        slots = {}
+        if running:
+            try:
+                slots = {
+                    (s["id"], s["id_task"]): float(s["next_token"][0]["n_decoded"])
+                    for s in json.loads(self._get(self._slots_url))
+                    if s.get("is_processing")
+                }
+            except Exception:
+                slots = None
+        base, self._slot_base = self._slot_base, None if slots is None else (now, slots)
+        if slots is None or base is None or now <= base[0]:
+            return None
+        tokens = sum(max(0.0, n - base[1].get(k, 0.0)) for k, n in slots.items())
+        return tokens / (now - base[0])
 
     @staticmethod
     def _prompt_rate(base, tokens, seconds):
@@ -156,6 +175,13 @@ class LlamaServerStatsLogger:
             prev = (now, decode_calls)
             # The bucket empties on every /metrics read, from any client, so a zero gauge is a reading; counters read a free first token against a millisecond.
             gen_tps = m.get("predicted_tokens_seconds")
+            # The gauge only counts a reply once its slot is released, so a long one reads 0 until it ends.
+            live_gen = self._live_gen_rate(now, running)
+            if running and not gen_tps:
+                if live_gen is not None:
+                    gen_tps = live_gen
+                elif decode_rate:
+                    gen_tps = None
             # /metrics renders one table, so a scrape with no prompt metric measured none.
             prompt_measured = "prompt_tokens_seconds" in m or (
                 "prompt_tokens_total" in m and "prompt_seconds_total" in m

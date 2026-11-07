@@ -25,14 +25,14 @@ import {
   useToolPaneScope,
   useUnresolvedToolPaneScope,
 } from "@/features/chat/tool-output-scope";
-import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { cva, type VariantProps } from "class-variance-authority";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+  UnmeasuredCollapsible as Collapsible,
+  UnmeasuredCollapsibleContent as CollapsibleContent,
+  UnmeasuredCollapsibleTrigger as CollapsibleTrigger,
+  CLOSE_FALLBACK_MARGIN_MS,
+} from "@/components/ui/unmeasured-collapsible";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -44,6 +44,7 @@ import {
 } from "./tool-activity-open-state";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
 import { foldIsActive } from "@/features/chat/utils/display-visibility";
+import { WrenchIcon } from "@/lib/wrench-icon";
 
 const ANIMATION_DURATION = 200;
 
@@ -94,7 +95,7 @@ function ToolGroupRoot({
   if (syncedUncontrolledState !== uncontrolledState) {
     setUncontrolledState(syncedUncontrolledState);
   }
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled
@@ -181,7 +182,7 @@ function ToolGroupTrigger({
         <Spinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
-          icon={Wrench01Icon}
+          icon={WrenchIcon}
           data-slot="tool-group-trigger-wrench"
           className="size-4 shrink-0 text-foreground"
           strokeWidth={2}
@@ -226,15 +227,12 @@ function ToolGroupContent({
   return (
     <CollapsibleContent
       data-slot="tool-group-content"
+      closeDurationMs={ANIMATION_DURATION}
       className={cn(
         "aui-tool-group-content relative overflow-hidden text-sm outline-none",
         "group/collapsible-content ease-out",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
         "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
+        "duration-(--animation-duration)",
         className,
       )}
       {...props}

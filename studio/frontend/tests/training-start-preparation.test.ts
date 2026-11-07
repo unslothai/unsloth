@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   classifyPreparation,
+  hasTrainingLoopStarted,
   parsePreparationProgress,
   resolvePreparationMessage,
   shouldShowPreparationStatus,
@@ -256,4 +257,26 @@ test("one resource id being a prefix of the other does not steal the row", () =>
     classifyPreparation("Downloading dataset: org/foo (1,000 rows)", resources),
     "dataset",
   );
+});
+
+
+test("real training milestones replace resource preparation without inventing compilation", () => {
+  for (const message of [
+    "Starting training loop...",
+    "Running first training step (batch 2 of up to 4)... Loss appears after the optimizer step.",
+    "First training step finished. Waiting for the first loss measurement...",
+    "Training in progress...",
+  ]) {
+    assert.equal(hasTrainingLoopStarted(message), true);
+    assert.equal(shouldShowPreparationStatus("training", 0, false, message), false);
+  }
+  for (const message of [
+    "Loading vision model...",
+    "Tokenizing dataset 50% (10/20)",
+    "Evaluating the base model on 50 held-out decisions...",
+    "Configuring training...",
+  ]) {
+    assert.equal(hasTrainingLoopStarted(message), false);
+    assert.equal(shouldShowPreparationStatus("training", 0, false, message), true);
+  }
 });

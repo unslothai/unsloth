@@ -10,7 +10,6 @@ import {
 import { cn } from "@/lib/utils";
 import {
   InformationCircleIcon,
-  CheckmarkCircle02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
@@ -22,34 +21,15 @@ interface MethodPickerProps {
   disabledReason?: string;
 }
 
-export function MethodPicker({ value, onChange, disabledMethods = [], disabledReason }: MethodPickerProps) {
+export function MethodPicker({
+  value,
+  onChange,
+  disabledMethods = [],
+  disabledReason,
+}: MethodPickerProps) {
   return (
     <div data-tour="export-method" className="flex flex-col gap-3">
-      <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        Export Method
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <button
-              type="button"
-              className="text-foreground/70 hover:text-foreground"
-            >
-              <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            How your model is packaged for deployment.{" "}
-            <a
-              href="https://unsloth.ai/docs/basics/inference-and-deployment"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary underline"
-            >
-              Read more
-            </a>
-          </TooltipContent>
-        </Tooltip>
-      </span>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 @xl/train-section:grid-cols-3">
         {EXPORT_METHODS.map((m) => {
           const selected = value === m.value;
           const isDisabled = disabledMethods.includes(m.value);
@@ -62,29 +42,14 @@ export function MethodPicker({ value, onChange, disabledMethods = [], disabledRe
               aria-pressed={selected}
               onClick={() => !isDisabled && onChange(m.value)}
               className={cn(
-                "flex items-start gap-3 rounded-xl p-4 text-left ring-1 transition-colors",
+                "flex items-start rounded-[18px] p-4 text-left ring-1 transition-colors",
                 isDisabled
                   ? "ring-border opacity-40 cursor-not-allowed"
                   : selected
-                    ? "ring-1 ring-ring-strong bg-wash-5"
+                    ? "ring-transparent bg-wash-5"
                     : "ring-border hover:bg-muted/40",
               )}
             >
-              <div
-                className={cn(
-                  "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 transition-colors",
-                  selected
-                    ? "border-primary bg-primary"
-                    : "border-muted-foreground/30",
-                )}
-              >
-                {selected && (
-                  <HugeiconsIcon
-                    icon={CheckmarkCircle02Icon}
-                    className="size-3 text-primary-foreground"
-                  />
-                )}
-              </div>
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">{m.title}</span>
