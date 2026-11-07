@@ -34,7 +34,6 @@ test("a pass's own context_usage settles its live progress until the next pass s
   store.setLiveDecode("t1", decode);
   assert.equal(live("t1")?.settled, true, "a trailing decode frame keeps it settled");
   store.settleLiveGeneration("t1");
-  // The next pass of the tool loop starts over.
   store.setLivePrefill("t1", prefill);
   assert.equal(live("t1")?.settled, undefined);
   assert.ok(liveContextUsage(live("t1")));
@@ -48,7 +47,6 @@ test("settling is per thread and survives a remount", () => {
   store.settleLiveGeneration("a");
   assert.equal(live("a")?.settled, true);
   assert.equal(live("b")?.settled, undefined, "the other chat keeps counting live");
-  // No live progress (tool finished and cleared it): settling is a no-op.
   store.clearLiveGenerationForThread("a");
   const before = useChatRuntimeStore.getState().liveGenerationByThreadId;
   store.settleLiveGeneration("a");
