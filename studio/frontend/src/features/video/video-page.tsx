@@ -1249,7 +1249,6 @@ function VideoGenerator({
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
-  // Cosmos3-Nano: a clip to continue, and which end of it the new clip starts from.
   const [continuationClip, setContinuationClip] = useState<ReferenceMedia | null>(null);
   const [continuationKeep, setContinuationKeep] = useState<VideoContinuationKeep>("last");
   const [keyframeAspect, setKeyframeAspect] = useState<[number, number] | null>(null);

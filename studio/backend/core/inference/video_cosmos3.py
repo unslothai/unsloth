@@ -223,9 +223,7 @@ def _upright(image: Any, frame: Any) -> Any:
 
 
 def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
-    """The ``count`` frames at the ``keep`` end of an uploaded clip, as RGB PIL images on the output's ``fps`` clock.
-
-    Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
+    """Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
     clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
     import collections
     import math
@@ -253,7 +251,6 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
         origin: Optional[float] = None
 
         def _take(frame: Any, until: float) -> None:
-            # Every output tick before ``until`` (seconds from the first frame) shows ``frame``.
             nonlocal next_target
             while next_target / fps < until - 1e-6:
                 if keep != "first" or len(picked) < count:
@@ -288,7 +285,6 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
                 _take(held, max(stamp - origin, 0.0) + 1 / source_fps)
         except av.error.FFmpegError as exc:
             raise ValueError("That clip could not be decoded.") from exc
-        # Upright as a player shows it: phones store portrait clips landscape with a display rotation.
         frames = [
             _upright(frame.to_image().convert("RGB"), frame) for frame in list(picked)[:count]
         ]
@@ -301,8 +297,7 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
 
 
 def fit_continuation_frames(frames: list, width: int, height: int) -> list:
-    """Centre-crop each frame to the canvas aspect; the pipeline resizes onto the canvas itself, so a clip already at
-    the canvas aspect passes through untouched (as it would to ``Cosmos3OmniPipeline(video=...)``)."""
+    """The pipeline resizes onto the canvas itself, so a clip already at the canvas aspect passes through untouched."""
     if not frames:
         return frames
     src_w, src_h = frames[0].size

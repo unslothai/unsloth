@@ -335,7 +335,6 @@ class VideoFamily:
     unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
-    # Video continuation: the pipeline keeps frames from one end of an uploaded clip and generates on (``video=``).
     supports_video_continuation: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
@@ -1690,8 +1689,6 @@ def validate_video_keyframe_conditioning(
         )
 
 
-# Which end of an uploaded clip a continuation keeps. "last" continues the clip; "first" re-imagines what follows its
-# opening frames (the pipeline's own default).
 VIDEO_CONTINUATION_KEEP = ("last", "first")
 DEFAULT_VIDEO_CONTINUATION_KEEP = "last"
 # Pixel frames the pipeline keeps clean: latent indexes (0, 1) under the Wan2.2 VAE's 4x temporal compression.
@@ -1707,8 +1704,7 @@ def validate_video_continuation(
     has_references: bool = False,
     num_frames: Optional[int] = None,
 ) -> None:
-    """Raise ``ValueError`` for a continuation the family cannot serve. Pure, like the keyframe check, so the route
-    can judge an auto-switch target before evicting anything."""
+    """Pure, so the route can judge an auto-switch target before evicting anything."""
     if not has_video:
         if keep is not None:
             raise ValueError("continuation_keep needs a continuation_video.")

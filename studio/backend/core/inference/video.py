@@ -1001,7 +1001,6 @@ def _decode_b64_media(data: Optional[str]) -> bytes:
     return blob
 
 
-# Gallery ``conditioning`` for a continued clip (the other values are MiniMax-H3's task names).
 VIDEO_CONTINUATION_CONDITIONING = "v2v"
 
 
@@ -1601,7 +1600,6 @@ class _VideoResolvedInputs:
     references: Any
     flow_shift: Optional[float]
     audio_flow_shift: Optional[float]
-    # (frames, keep) for a clip continuation, else None.
     continuation: Any = None
 
 
@@ -13433,8 +13431,7 @@ class VideoBackend:
         has_keyframes: bool,
         has_references: bool,
     ) -> tuple[Any, int, int]:
-        """``((frames, keep), width, height)`` for a clip to continue, else ``(None, *canvas)``. Omitting both
-        dimensions takes the preset nearest the clip's aspect, as a first frame does."""
+        """Omitting both dimensions takes the preset nearest the clip's aspect, as a first frame does."""
         validate_video_continuation(
             fam,
             has_video = bool(video),

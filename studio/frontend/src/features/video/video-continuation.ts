@@ -22,7 +22,6 @@ export function supportsVideoContinuation(
   return status?.supports_video_continuation === true;
 }
 
-/** Why a staged clip cannot be continued at this length, or null. */
 export function continuationLengthError(numFrames: number): string | null {
   return numFrames > CONTINUATION_KEPT_FRAMES
     ? null
@@ -35,7 +34,6 @@ export function continuationDurationWarning(durationSeconds: number | undefined)
   return `This clip is ${durationSeconds.toFixed(1)} s; clips to continue can be up to ${CONTINUATION_MAX_SECONDS} s. Trim it first.`;
 }
 
-/** The request fields for a staged clip; nothing when the model cannot take one or none is staged. */
 export function continuationRequest(
   supported: boolean,
   clipDataUrl: string | null | undefined,
