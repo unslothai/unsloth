@@ -14,8 +14,10 @@ import os
 import random
 import re
 import shutil
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Iterable
@@ -1277,15 +1279,74 @@ _UNRESUMABLE_STATUS = {
 }
 
 
+# The run listing asks _fully_loadable for every stopped run on each request, and _assert_loadable
+# reads every state file in full (adapter, EMA, optimizer moments). Its verdict depends only on the
+# bytes of those files, so a pass is kept per bundle while none of them changed. Files changed within
+# the settle window are not kept: a coarse filesystem clock can give a same-size rewrite identical
+# timestamps. The resume preflight calls _assert_loadable directly and never reads this.
+_LOADABLE_VERDICTS: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
+_LOADABLE_VERDICTS_MAX = 512
+_LOADABLE_SETTLE_NS = 2_000_000_000
+_LOADABLE_VERDICTS_LOCK = threading.Lock()
+
+
+def _loadable_key(path: Path, manifest: dict[str, Any]) -> Optional[tuple]:
+    """Identity of every file _assert_loadable reads, or None when one cannot be stat'ed."""
+    files = manifest.get("files")
+    if not isinstance(files, dict):
+        return None
+    entries = []
+    try:
+        for role in sorted(files, key = str):
+            name = files[role]
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                return None
+            st = os.stat(path / name)
+            entries.append(
+                (str(role), name, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            )
+    except (OSError, TypeError):
+        return None
+    return tuple(entries)
+
+
+def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
+    cache_id = str(path)
+    key = _loadable_key(path, manifest)
+    if key is not None:
+        with _LOADABLE_VERDICTS_LOCK:
+            hit = _LOADABLE_VERDICTS.get(cache_id)
+            if hit is not None and hit[0] == key:
+                _LOADABLE_VERDICTS.move_to_end(cache_id)
+                return hit[1]
+    try:
+        _assert_loadable(path, manifest)
+        verdict = True
+    except ResumeError:
+        verdict = False
+    settled = key is not None and all(
+        time.time_ns() - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key
+    )
+    # Only a pass is kept: a refusal can come from a passing condition (out of memory, too many open
+    # files), so it is read again next time. A write during the read changes the stat, so that read is
+    # not kept either.
+    if verdict and settled and _loadable_key(path, manifest) == key:
+        with _LOADABLE_VERDICTS_LOCK:
+            _LOADABLE_VERDICTS[cache_id] = (key, verdict)
+            _LOADABLE_VERDICTS.move_to_end(cache_id)
+            while len(_LOADABLE_VERDICTS) > _LOADABLE_VERDICTS_MAX:
+                _LOADABLE_VERDICTS.popitem(last = False)
+    return verdict
+
+
 def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:
     """Header scan is not enough; the required state and a real torch.load must also succeed."""
     try:
         _assert_required_state(path, manifest)
         _assert_optimizer_buildable(path, manifest)
-        _assert_loadable(path, manifest)
     except ResumeError:
         return False
-    return True
+    return _assert_loadable_cached(path, manifest)
 
 
 def _source_checkpoint_bundle(
