@@ -1223,7 +1223,10 @@ def _load_mlx(checkpoint: Checkpoint):
             _gpu_load = True
         try:
             gpu_arbiter.acquire_for(
-                gpu_arbiter.DECISIONS, allow_evict = False, beside = _placed_beside()
+                gpu_arbiter.DECISIONS,
+                allow_evict = False,
+                beside = _placed_beside(),
+                admit = _beside_admit(checkpoint),
             )
         except gpu_arbiter.GpuOwnerBusyError:
             raise RuntimeError(_GPU_BUSY.format(checkpoint.name)) from None
@@ -1440,7 +1443,10 @@ def _load_native(checkpoint: Checkpoint):
             _gpu_load = True
         try:
             gpu_arbiter.acquire_for(
-                gpu_arbiter.DECISIONS, allow_evict = False, beside = _placed_beside()
+                gpu_arbiter.DECISIONS,
+                allow_evict = False,
+                beside = _placed_beside(),
+                admit = _beside_admit(checkpoint),
             )
         except gpu_arbiter.GpuOwnerBusyError:
             raise NativeError(_GPU_BUSY.format("a decision model through llama.cpp")) from None
@@ -1482,6 +1488,26 @@ _GPU_BUSY = "Unload the resident chat, image or video model before serving {} on
 
 def _placed_beside() -> bool:
     return getattr(_load_generation, "placement", None) == "beside"
+
+
+def _beside_admit(checkpoint):
+    """For a beside load, the arbiter's admission check: the placement was priced before the lock, so
+    another model that started loading since, or memory taken meanwhile, refuses it there."""
+    if not _placed_beside():
+        return None
+
+    def admit() -> None:
+        from core.inference import gpu_arbiter
+        from core.inference.gpu_residency import chat_load_in_flight
+
+        loading = chat_load_in_flight() or any(
+            owner in gpu_arbiter._residents and gpu_arbiter._media_loading(owner)
+            for owner in (gpu_arbiter.DIFFUSION, gpu_arbiter.VIDEO)
+        )
+        if loading or not _fits_beside(checkpoint):
+            raise gpu_arbiter.GpuOwnerBusyError(gpu_arbiter.DECISIONS)
+
+    return admit
 
 
 _build_lock = threading.Lock()
