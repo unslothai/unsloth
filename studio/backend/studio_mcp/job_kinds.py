@@ -86,8 +86,6 @@ def _recipe_cancelling(answer: dict) -> bool:
     return answer.get("status") == "cancelling"
 
 
-
-
 def _video_path(video_id: str, suffix: str = "") -> str:
     return f"/v1/videos/{quote(video_id, safe = '')}{suffix}"
 
@@ -182,7 +180,6 @@ async def _cancel_video(caller: Caller, job_id: Optional[str], save: bool) -> St
     return await _cancel_rendering(caller, job_id, save)
 
 
-
 RECIPE_ROUTES = "/api/data-recipe"
 
 
@@ -242,8 +239,6 @@ async def _read_recipe(
         ),
     )
     return media_result([], status)
-
-
 
 
 def _export_status(job: export_jobs.ExportJob) -> JobStatus:
@@ -318,7 +313,6 @@ async def _cancel_export(caller: Caller, job_id: Optional[str], save: bool) -> S
     if not (isinstance(answer, dict) and _export_stopped(answer)):
         return Stop(False, _message(answer), job_id)
     return Stop(True, EXPORT_STOPPED, job_id)
-
 
 
 # Training phases by job status; any other phase means the run is still going.
@@ -412,8 +406,6 @@ def _start_withdrawn(answer: dict) -> bool:
     return answer.get("state") == "rejected" and answer.get("error_code") == START_CANCELLED
 
 
-
-
 def _load_status(job: loading.LoadJob) -> JobStatus:
     return JobStatus(
         kind = "load",
@@ -441,8 +433,6 @@ async def _read_load(caller: Caller, job_id: Optional[str], **_unused: Any) -> T
     return media_result([], _load_status(loading.LOADS.lookup(caller.account_id, job_id)))
 
 
-
-
 async def _read_download(caller: Caller, job_id: Optional[str], **_unused: Any) -> ToolResult:
     if not job_id:
         raise ToolError('get_job(kind="download") needs id: the id download_model returned.')
@@ -454,7 +444,6 @@ async def _cancel_download(caller: Caller, job_id: Optional[str], save: bool) ->
     if stopped:
         return Stop(True, "Unsloth Studio is stopping the download.", job_id)
     return Stop(False, f"Nothing to stop: the download is {state or 'not found'}.", job_id)
-
 
 
 KEPT_TAKES = "finished takes stay in Audio history."
