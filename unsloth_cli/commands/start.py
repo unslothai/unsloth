@@ -5922,9 +5922,10 @@ def _hermes_mcp_manifest(home: Path) -> tuple:
     try:
         state = json.loads((home / _HERMES_MCP_MANIFEST).read_text(encoding = "utf-8"))
         origin, servers = state.get("origin"), set(state["servers"])
+        owned = set(state.get("env", ()))
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return None, set()
-    return (origin if isinstance(origin, str) else None), servers
+        return None, set(), set()
+    return (origin if isinstance(origin, str) else None), servers, owned
 
 
 def _hermes_mcp_servers(home: Path) -> Optional[dict]:
@@ -5979,42 +5980,48 @@ def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
         config["mcp_servers"] = {**kept, **servers}
     else:
         config.pop("mcp_servers", None)
+    owned = _carry_hermes_mcp_env(home, servers, (source, built), _hermes_mcp_manifest(home)[2])
     (home / _HERMES_MCP_MANIFEST).write_text(
-        json.dumps({"origin": configured, "servers": sorted(servers)}) + "\n",
+        json.dumps({"origin": configured, "servers": sorted(servers), "env": owned}) + "\n",
         encoding = "utf-8",
     )
 
 
-def _hermes_mcp_env(home: Path) -> dict:
-    # Hermes fills ${VAR} in mcp_servers from HERMES_HOME/.env (hermes mcp add --auth bearer stores tokens there); pass only the carried servers' names, never write them to disk.
-    origin, carried = _hermes_mcp_manifest(home)
-    source = _hermes_user_home(origin) if origin is not None else None
-    if not carried or source is None or source.resolve(strict = False) == home.resolve(strict = False):
-        return {}
-    servers = _hermes_mcp_servers(home) or {}
+def _hermes_env_key(line: str) -> str:
+    return line.strip().removeprefix("export ").partition("=")[0].strip()
+
+
+def _carry_hermes_mcp_env(home: Path, servers: dict, sources: tuple, owned: set) -> list:
+    # Hermes fills ${VAR} in mcp_servers from HERMES_HOME/.env (hermes mcp add --auth bearer keeps tokens there): copy only those lines, verbatim, so Hermes parses them itself.
     wanted = set()
-    for name in carried & servers.keys():
-        for ref in re.findall(r"\$\{([^}]+)\}", json.dumps(servers[name])):
-            ref = ref.strip()
-            wanted.add(ref[4:].strip() if ref.startswith("env:") else ref)
-    try:
-        lines = (source / ".env").read_text(encoding = "utf-8").splitlines()
-    except (OSError, ValueError):
-        return {}
-    env = {}
-    for line in lines:
-        key, sep, value = line.strip().removeprefix("export ").partition("=")
-        key, value = key.strip(), value.strip()
-        if not sep or key not in wanted:
+    for ref in re.findall(r"\$\{([^}]+)\}", json.dumps(servers)):
+        ref = ref.strip()
+        wanted.add(ref[4:].strip() if ref.startswith("env:") else ref)
+    carried, found = [], set()
+    for source in sources:
+        if source is None or source.resolve(strict = False) == home.resolve(strict = False):
             continue
-        if len(value) > 1 and value[0] == value[-1] == '"':
-            value = value[1:-1].replace('\\"', '"').replace("\\\\", "\\")
-        elif len(value) > 1 and value[0] == value[-1] == "'":
-            value = value[1:-1]
+        try:
+            lines = (source / ".env").read_text(encoding = "utf-8").splitlines()
+        except (OSError, ValueError):
+            continue
+        keys = {_hermes_env_key(line) for line in lines} & (wanted - found)
+        carried += [line for line in lines if _hermes_env_key(line) in keys]
+        found |= keys
+    path = home / ".env"
+    try:
+        current = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, ValueError):
+        current = []
+    lines = [line for line in current if _hermes_env_key(line) not in owned | found] + carried
+    if lines != current:
+        if lines:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
         else:
-            value = value.split(" #", 1)[0].strip()
-        env[key] = value
-    return env
+            path.unlink(missing_ok = True)
+    return sorted(found)
 
 
 def write_hermes_config(
@@ -8228,9 +8235,6 @@ def hermes(
             keep_mcp_servers = True,
         )
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
-        if launch:
-            # A --no-launch recipe is printed, so its shell keeps supplying these itself.
-            env = {**_hermes_mcp_env(home), **env}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
