@@ -85,6 +85,19 @@ def test_cpu_route_imports_cp_and_attention_modules(statement):
     assert _result(out)["ok"]
 
 
+def test_cpu_route_rl_trainers_get_cp_after_cp_loads():
+    # Loading context_parallel builds Unsloth's DPO / GRPO trainers mid-import; they still get CP.
+    code = _ROUTE + (
+        "import json, trl\n"
+        "import unsloth.context_parallel\n"
+        "print('RESULT ' + json.dumps({name: getattr(trl, name).__dict__.get(\n"
+        "    '__unsloth_context_parallel__', False) for name in ('DPOTrainer', 'GRPOTrainer')}))\n"
+    )
+    out = _run(code)
+    assert out.returncode == 0, out.stderr[-5000:]
+    assert _result(out) == {"DPOTrainer": True, "GRPOTrainer": True}
+
+
 def test_cpu_route_plain_trainer_skips_gpu_stack():
     # No CP asked for: the gate must not load the GPU model stack.
     code = _ROUTE + (

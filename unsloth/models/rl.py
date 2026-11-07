@@ -4137,8 +4137,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
     if trainer_file in ("dpo_trainer", "grpo_trainer"):
         try:
-            from ..context_parallel import patch_rl_trainer
-            patch_rl_trainer(getattr(created_module, f"Unsloth{RLTrainer_name}"), trainer_file)
+            from .. import context_parallel
+            trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
+            if hasattr(context_parallel, "patch_rl_trainer"):
+                context_parallel.patch_rl_trainer(trainer_cls, trainer_file)
+            else:  # CPU route: context_parallel's own imports got here; it patches these once loaded.
+                context_parallel._PENDING_RL_TRAINERS.append((trainer_cls, trainer_file))
         except Exception as e:
             logger.warning(f"Unsloth: Could not add context parallelism to {RLTrainer_name}: {e}")
     if trainer_file == "ppo_trainer":

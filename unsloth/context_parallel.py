@@ -205,6 +205,10 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
 
 
+# DPO / GRPO trainers rl.py builds while the imports below run (CPU route); patched at the bottom.
+_PENDING_RL_TRAINERS = []
+
+
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
@@ -2290,3 +2294,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
     trainer_cls._unsloth_cp_methods = cp_methods
     trainer_cls.__init__ = patched_init
     trainer_cls.__unsloth_context_parallel__ = True
+
+
+for _trainer_cls, _kind in _PENDING_RL_TRAINERS:
+    patch_rl_trainer(_trainer_cls, _kind)
+_PENDING_RL_TRAINERS.clear()
