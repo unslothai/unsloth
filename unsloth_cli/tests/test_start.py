@@ -2850,8 +2850,13 @@ def test_codex_keeps_the_users_instructions_skills_rules_and_prompts(
     assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
     assert (home / "AGENTS.md").read_text() == "Answer in French.\n"
     assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
-    assert "forbidden" in (home / "rules" / "default.rules").read_text()
+    assert "forbidden" in (home / "rules" / "user-default.rules").read_text()
+    assert not (home / "rules").is_symlink()
     assert (home / "prompts" / "summarize.md").read_text() == "Summarize the diff.\n"
+    # Codex persists an approval by appending to $CODEX_HOME/rules/default.rules.
+    with open(home / "rules" / "default.rules", "a") as rules:
+        rules.write('prefix_rule(pattern = ["ls"], decision = "allow")\n')
+    assert "allow" not in (source_home / "rules" / "default.rules").read_text()
 
     (source_home / "AGENTS.md").unlink()
     (source_home / "AGENTS.override.md").write_text("Answer in German.\n")

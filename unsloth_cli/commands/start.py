@@ -3837,6 +3837,9 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
         target = home / name
         if not entry.exists():
             continue
+        if name == "rules" and entry.is_dir() and not os.path.lexists(target):
+            # Codex appends approvals to rules/default.rules: a linked dir would write them into the user's.
+            target.mkdir()
         if not os.path.lexists(target):
             if _link_codex_entry(entry, target):
                 entries.append(name)
@@ -3850,8 +3853,8 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
             for child in entry.iterdir():
                 child_target = target / child.name
                 if name == "rules" and child.is_file():
-                    # Codex skips symlinked *.rules (DirEntry::file_type), and this home's approvals take default.rules.
-                    if os.path.lexists(child_target):
+                    # Codex skips symlinked *.rules (DirEntry::file_type); default.rules stays this home's.
+                    if child.name == "default.rules" or os.path.lexists(child_target):
                         child_target = target / f"user-{child.name}"
                     if os.path.lexists(child_target):
                         continue
