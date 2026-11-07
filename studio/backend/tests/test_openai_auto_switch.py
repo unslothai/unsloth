@@ -4879,6 +4879,8 @@ def test_chat_count_tokens_replays_saved_compaction_without_archive_work(monkeyp
         }
     }
     monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    # The stand-in rows record a fit, so the pre-check must not short-circuit on the empty real DB.
+    monkeypatch.setattr(studio_db, "chat_thread_has_context_truncation", lambda _thread: True)
     payload = _count_request(
         messages,
         thread_id = "compacted-thread",
@@ -4973,6 +4975,8 @@ def test_chat_count_tokens_does_not_replay_studio_compaction_on_passthrough(monk
     backend.count_chat_tokens = count
     monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
     monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    # The stand-in rows record a fit, so the pre-check must not short-circuit on the empty real DB.
+    monkeypatch.setattr(studio_db, "chat_thread_has_context_truncation", lambda _thread: True)
     payload = _count_request(
         messages,
         thread_id = "compacted-thread",
