@@ -2814,7 +2814,7 @@ export const cs = {
         detecting: "Hledání GPU...",
         unreadable: "Hardware tohoto serveru se nepodařilo načíst.",
         noGpu:
-          "Nebylo rozpoznáno žádné viditelné GPU. Výše jsou zobrazeny pouze prostředky CPU.",
+          "Nebyla zjištěna samostatná GPU.",
         noUsableGpu:
           "Na tomto počítači není žádné GPU, které by PyTorch mohl použít.",
         mismatchCpuBuild:
@@ -2904,7 +2904,7 @@ export const cs = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu akcelerátor accelerator předsestavené prebuilt přepnout switch modul engine vlastní custom cesta path složka folder adresář directory llama-server spustitelný soubor executable binary",
       },
       modelMemory: {
-        title: "Paměť modelu",
+        title: "Načítání modelu",
         keepResident: "Ponechat model v paměti GPU",
         keepResidentDescription: "Zůstat ve VRAM mezi prompty.",
         keepResidentHint:
@@ -3178,6 +3178,8 @@ export const cs = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpovědi" },
+        thinkingTools: { title: "Přemýšlení a nástroje" },
         conversations: {
           title: "Konverzace",
         },
@@ -3276,11 +3278,20 @@ export const cs = {
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",
       showReplyTimesKeywords:
         "časové razítko čas hodiny datum kdy dokončeno odpověď zpráva timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Podrobnosti generování",
+      showGenerationDetails: "Podrobné informace o rychlosti a načítání",
       showGenerationDetailsDescription:
-        "Zobrazovat živé rychlosti promptu a odpovědi s počty tokenů a kam se načetly vrstvy modelu.",
+        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů a ukáže, kam se načetly vrstvy modelu.",
       showGenerationDetailsKeywords:
         "podrobné vývojář statistiky rychlost vrstvy verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Statistiky rychlosti a kontextu",
+      generationStatsUpdatesDescription:
+        "Režim V reálném čase počítá tokeny za sekundu a využití kontextu během streamování odpovědi. Po dokončení je aktualizuje, až každá odpověď skončí.",
+      generationStatsUpdatesHint:
+        "V reálném čase obnovuje ukazatel tokenů za sekundu pod odpovědí a lištu kontextu nahoře v chatu několikrát za sekundu, zatímco se odpověď píše. Po dokončení je aktualizuje jednou, až každá odpověď skončí. Režim v reálném čase může způsobit zasekávání nebo nižší výkon, hlavně na starších či vytížených počítačích.",
+      generationStatsUpdatesSettled: "Po dokončení",
+      generationStatsUpdatesRealtime: "V reálném čase",
+      generationStatsUpdatesKeywords:
+        "reálný čas živě aktualizace rychlost kontext statistiky realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",

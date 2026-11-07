@@ -2836,7 +2836,7 @@ export const nl = {
         detecting: "Zoeken naar GPU's...",
         unreadable: "Kan de hardware van deze server niet uitlezen.",
         noGpu:
-          "Geen zichtbare GPU gedetecteerd. Hierboven worden alleen CPU-bronnen getoond.",
+          "Geen aparte GPU gedetecteerd.",
         noUsableGpu:
           "Geen enkele GPU op deze machine is bruikbaar voor PyTorch.",
         mismatchCpuBuild:
@@ -2927,7 +2927,7 @@ export const nl = {
           "llama.cpp backend gguf inferentie inference cuda rocm hip vulkan metal cpu gpu versneller accelerator prebuilt wisselen engine aangepast pad map directory llama-server uitvoerbaar bestand binary",
       },
       modelMemory: {
-        title: "Modelgeheugen",
+        title: "Model laden",
         keepResident: "Model in GPU-geheugen houden",
         keepResidentDescription: "Tussen prompts in VRAM blijven.",
         keepResidentHint:
@@ -3203,6 +3203,8 @@ export const nl = {
     },
     chat: {
       groups: {
+        replies: { title: "Antwoorden" },
+        thinkingTools: { title: "Denken en tools" },
         conversations: {
           title: "Gesprekken",
         },
@@ -3301,11 +3303,20 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Generatiedetails",
+      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
       showGenerationDetailsDescription:
-        "Live prompt- en antwoordsnelheden tonen met aantallen tokens, en waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
       showGenerationDetailsKeywords:
         "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
+      generationStatsUpdates: "Snelheids- en contextstatistieken",
+      generationStatsUpdatesDescription:
+        "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",
+      generationStatsUpdatesHint:
+        "Realtime ververst de weergave van tokens per seconde onder een antwoord en de contextbalk boven in de chat een paar keer per seconde terwijl het antwoord wordt geschreven. Na afloop werkt ze één keer bij, als elk antwoord klaar is. Realtime kan vertraging of tragere prestaties veroorzaken, vooral op oudere of drukke computers.",
+      generationStatsUpdatesSettled: "Na afloop",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live bijwerken snelheid context statistieken realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",

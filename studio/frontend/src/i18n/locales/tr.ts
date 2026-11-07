@@ -2793,7 +2793,7 @@ export const tr = {
         detecting: "GPU'lar denetleniyor...",
         unreadable: "Bu sunucunun donanımı okunamadı.",
         noGpu:
-          "Görünür GPU algılanmadı. Yukarıda yalnızca CPU kaynakları gösteriliyor.",
+          "Ayrı bir GPU algılanmadı.",
         noUsableGpu: "Bu makinede PyTorch'un kullanabileceği bir GPU yok.",
         mismatchCpuBuild:
           "PyTorch yalnızca CPU derlemesi ({version}), bu nedenle aşağıdaki GPU'lar kullanılamaz. GPU desteğini geri getirmek için kurulumu onarın.",
@@ -2883,7 +2883,7 @@ export const tr = {
           "llama.cpp arka uç gguf çıkarım cuda rocm hip vulkan metal cpu gpu hızlandırıcı hazır derleme değiştir geçiş motor özel yol klasör dizin llama-server yürütülebilir ikili dosya backend inference engine",
       },
       modelMemory: {
-        title: "Model belleği",
+        title: "Model yükleme",
         keepResident: "Modeli GPU belleğinde tut",
         keepResidentDescription: "İstemler arasında VRAM'de kalır.",
         keepResidentHint:
@@ -3159,6 +3159,8 @@ export const tr = {
     },
     chat: {
       groups: {
+        replies: { title: "Yanıtlar" },
+        thinkingTools: { title: "Düşünme ve araçlar" },
         conversations: {
           title: "Sohbetler",
         },
@@ -3258,11 +3260,20 @@ export const tr = {
         "Her yanıtın ne zaman tamamlandığını yanıtın altında gösterin.",
       showReplyTimesKeywords:
         "zaman damgası zaman saat tarih ne zaman bitti geldi yanıt cevap mesaj timestamp",
-      showGenerationDetails: "Oluşturma ayrıntıları",
+      showGenerationDetails: "Ayrıntılı hız ve yükleme bilgisi",
       showGenerationDetailsDescription:
-        "Canlı istem ve yanıt hızlarını token sayılarıyla birlikte ve bir modelin katmanlarının nereye yüklendiğini gösterin.",
+        "Canlı göstergelere istem okuma hızını, token sayılarını ve taslak kabulünü ekler ve modelin katmanlarının nereye yüklendiğini gösterir.",
       showGenerationDetailsKeywords:
         "ayrıntılı geliştirici istatistik hız tok/s prefill decode katmanlar aktarım offload vram uzmanlar experts",
+      generationStatsUpdates: "Hız ve bağlam istatistikleri",
+      generationStatsUpdatesDescription:
+        "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",
+      generationStatsUpdatesHint:
+        "Gerçek zamanlı, yanıt yazılırken yanıtın altındaki saniye başına token göstergesini ve sohbetin üstündeki bağlam çubuğunu saniyede birkaç kez yeniler. Bitince, her yanıt tamamlandığında bunları bir kez günceller. Gerçek zamanlı mod, özellikle eski veya yoğun makinelerde takılmaya ya da daha düşük performansa yol açabilir.",
+      generationStatsUpdatesSettled: "Bitince",
+      generationStatsUpdatesRealtime: "Gerçek zamanlı",
+      generationStatsUpdatesKeywords:
+        "gerçek zamanlı canlı güncelle hız bağlam istatistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",

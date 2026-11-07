@@ -2831,7 +2831,7 @@ export const pl = {
         detecting: "Wyszukiwanie procesorów GPU...",
         unreadable: "Nie udało się odczytać sprzętu tego serwera.",
         noGpu:
-          "Nie wykryto widocznego GPU. Powyżej pokazano zasoby samego CPU.",
+          "Nie wykryto osobnej karty GPU.",
         noUsableGpu:
           "Żaden GPU na tym komputerze nie może być używany przez PyTorch.",
         mismatchCpuBuild:
@@ -2922,7 +2922,7 @@ export const pl = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary wnioskowanie akcelerator przełącz silnik ścieżka katalog plik wykonywalny",
       },
       modelMemory: {
-        title: "Pamięć modelu",
+        title: "Ładowanie modelu",
         keepResident: "Utrzymuj model w pamięci GPU",
         keepResidentDescription: "Pozostaje w VRAM między promptami.",
         keepResidentHint:
@@ -3198,6 +3198,8 @@ export const pl = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpowiedzi" },
+        thinkingTools: { title: "Myślenie i narzędzia" },
         conversations: {
           title: "Rozmowy",
         },
@@ -3296,11 +3298,20 @@ export const pl = {
         "Pokazuj pod odpowiedzią, kiedy się zakończyła.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message znacznik czasu godzina data odpowiedź wiadomość",
-      showGenerationDetails: "Szczegóły generowania",
+      showGenerationDetails: "Szczegółowe informacje o szybkości i ładowaniu",
       showGenerationDetailsDescription:
-        "Pokazuj na żywo szybkość przetwarzania promptu i odpowiedzi z liczbą tokenów oraz miejsce wczytania warstw modelu.",
+        "Dodaje do odczytów na żywo szybkość czytania promptu, liczbę tokenów i akceptację szkiców oraz pokazuje, gdzie załadowano warstwy modelu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
+      generationStatsUpdates: "Statystyki szybkości i kontekstu",
+      generationStatsUpdatesDescription:
+        "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",
+      generationStatsUpdatesHint:
+        "Na bieżąco odświeża wskaźnik tokenów na sekundę pod odpowiedzią i pasek kontekstu u góry czatu kilka razy na sekundę, gdy odpowiedź jest pisana. Po zakończeniu aktualizuje je raz, gdy każda odpowiedź się skończy. Tryb na bieżąco może powodować opóźnienia lub spadek wydajności, zwłaszcza na starszych lub obciążonych komputerach.",
+      generationStatsUpdatesSettled: "Po zakończeniu",
+      generationStatsUpdatesRealtime: "Na bieżąco",
+      generationStatsUpdatesKeywords:
+        "na bieżąco na żywo aktualizacja szybkość kontekst statystyki realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
