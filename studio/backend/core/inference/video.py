@@ -3448,9 +3448,8 @@ def _start_cache_writes(
 
 
 class _HeldCacheWrites:
-    """A first load's cache writes (cast, native, resident int8), held until its first render ends or the backend
-    sits idle for ``idle_s``: run beside that render they compete with its compile and denoise for CPU, disk and
-    host RAM (Wan2.2-5B, L4: the first denoise took 270 s while the native write ran, 45 s after)."""
+    """A first load's cache writes, held until its first render ends or ``idle_s`` idle: beside that render they
+    contend for CPU/disk/RAM (Wan2.2-5B, L4: first denoise 270 s with the native write, 45 s without)."""
 
     def __init__(self, pipe: Any, writes: tuple, busy: Callable[[], bool], idle_s: float):
         import weakref
@@ -3498,7 +3497,6 @@ class _HeldCacheWrites:
             logger.warning("diffusion.prequant_cache: held cache writes skipped (%s)", exc)
 
     def discard(self) -> None:
-        """Teardown before they started: none of them begins (the next load in this home writes them)."""
         writes = self._take()
         for write in writes or ():
             if write is None:
@@ -14457,7 +14455,7 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
-            # Held writes never begin; then a cast cache write still reads the components the teardown frees.
+            # Cast writes still read the components the teardown frees.
             _discard_held_cache_writes(getattr(state, "pipe", None))
             _finish_cast_writes(getattr(state, "pipe", None))
             _finish_native_writes(getattr(state, "pipe", None))
