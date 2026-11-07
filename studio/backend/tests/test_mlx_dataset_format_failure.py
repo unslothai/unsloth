@@ -149,6 +149,11 @@ def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.metal = types.SimpleNamespace(is_available = lambda: False)
     mlx.core = mlx_core
+    mlx_utils = types.ModuleType("mlx.utils")
+    mlx_utils.tree_flatten = lambda tree: []
+    mlx.utils = mlx_utils
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.iter_mlx_lora_modules = lambda model: iter(())
     loader = types.ModuleType("unsloth_zoo.mlx.loader")
     loader.FastMLXModel = _FastMLXModel
     trainer = types.ModuleType("unsloth_zoo.mlx.trainer")
@@ -163,6 +168,8 @@ def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
     for name, module in {
         "mlx": mlx,
         "mlx.core": mlx_core,
+        "mlx.utils": mlx_utils,
+        "unsloth_zoo.mlx.utils": zoo_utils,
         "unsloth_zoo.mlx.loader": loader,
         "unsloth_zoo.mlx.trainer": trainer,
         "core.training.s3_dataset": s3_dataset,

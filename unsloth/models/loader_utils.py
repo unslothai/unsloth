@@ -2375,6 +2375,50 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
+def backfill_fp8_modules_to_convert(
+    config,
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """List per-tensor fp8 tables (`.weight_scale`) a config leaves out of `modules_to_convert` (Qwen3.8-Flash-Next-FP8)."""
+    quant = getattr(config, "quantization_config", None)
+    if (
+        not isinstance(quant, dict)
+        or quant.get("quant_method") != "fp8"
+        or quant.get("modules_to_convert")
+    ):
+        return None
+    try:
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
+        )
+    except Exception:
+        return None
+    skip = set(quant.get("modules_to_not_convert") or [])
+    modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
+    # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
+    if found:
+        quant["modules_to_convert"] = found
+        print(
+            f"Unsloth: {model_name} ships fp8 scales for {found} without listing them in modules_to_convert; added."
+        )
+    return found or None
+
+
 def _load_fp8_weight_map(
     model_name,
     local_files_only,
@@ -2383,8 +2427,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2429,7 +2475,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None

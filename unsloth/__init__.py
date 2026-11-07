@@ -1680,6 +1680,10 @@ if _IS_MLX:
             )
         return _train_on_responses_only(*args, **kwargs)
 
+    def check_dataset(*args, **kwargs):
+        from .chat_templates import check_dataset as _check_dataset
+        return _check_dataset(*args, **kwargs)
+
     def PatchDPOTrainer():
         """No-op on MLX: trl's preference trainers already resolve to the MLX ones."""
 

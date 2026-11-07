@@ -93,7 +93,7 @@ def test_unsupported_formats_are_refused_by_name(tmp_path, fmt):
 
 def test_header_quantization_metadata_is_read_and_refused(tmp_path):
     """Comfy-Org files declare formats only in the header, with no per-layer tensors."""
-    meta = {cq.QUANT_METADATA_KEY: json.dumps({"layers": {"a": {"format": "convrot_w4a4"}}})}
+    meta = {cq.QUANT_METADATA_KEY: json.dumps({"layers": {"a": {"format": "asym_w4a8_int8"}}})}
     path = _save(
         tmp_path / "m.safetensors",
         {
@@ -106,7 +106,7 @@ def test_header_quantization_metadata_is_read_and_refused(tmp_path):
     )
     scan = cq.scan_comfy_quant(path)
     assert scan is not None and not scan.layers
-    with pytest.raises(ValueError, match = "'convrot_w4a4'"):
+    with pytest.raises(ValueError, match = "'asym_w4a8_int8'"):
         cq.refuse_comfy_quant(path)
 
 

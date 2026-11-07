@@ -766,7 +766,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         # The sentinel, not the caller's token: this worker serves whoever exports next.
         apply_token_to_child_env(os.environ, False)
 
-    with _offline_window_if_unreachable(step = "activating transformers"):
+    from utils.transformers_version import remote_lora_base_scope
+
+    # One adapter_config.json answer serves activation, the preflight gates and SSM provisioning.
+    with _offline_window_if_unreachable(step = "activating transformers"), remote_lora_base_scope():
         try:
             # Plain token: _load_config_json refuses the hub cache for the sentinel, so offline a cached model falls to the default sidecar
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
@@ -889,17 +892,18 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
                 # Offline window covers this load's Hub preflights (re-probed per load). The
                 # security gates run before any SSM kernel is provisioned for the checkpoint.
                 with _offline_window_if_unreachable():
-                    if not _preflight_security_gates(cmd, resp_queue):
-                        continue
-                    if not _provision_ssm_kernels(
-                        cmd["checkpoint_path"],
-                        cmd.get("base_model") or None,
-                        cmd.get("hf_token"),
-                        resp_queue,
-                        config.get("device_backend"),
-                        trust_remote_code = cmd.get("trust_remote_code"),
-                    ):
-                        continue
+                    with remote_lora_base_scope():
+                        if not _preflight_security_gates(cmd, resp_queue):
+                            continue
+                        if not _provision_ssm_kernels(
+                            cmd["checkpoint_path"],
+                            cmd.get("base_model") or None,
+                            cmd.get("hf_token"),
+                            resp_queue,
+                            config.get("device_backend"),
+                            trust_remote_code = cmd.get("trust_remote_code"),
+                        ):
+                            continue
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
