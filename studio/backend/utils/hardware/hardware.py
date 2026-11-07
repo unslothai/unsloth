@@ -2602,10 +2602,28 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
     return [hip_to_smi[hip_id] for hip_id in hip_ids]
 
 
+def _rocm_unmasked_inventory_mismatch() -> bool:
+    if not IS_ROCM or _rocm_visibility_mask_active():
+        return False
+    from . import amd
+
+    runtime_count = _torch_get_physical_gpu_count()
+    physical_count = amd.get_physical_gpu_count()
+    if physical_count is None and platform.system() == "Linux":
+        pci_ids = _rocm_kfd_gpu_pci_ids()
+        if pci_ids:
+            physical_count = len(pci_ids)
+    return (
+        runtime_count is not None and physical_count is not None and runtime_count != physical_count
+    )
+
+
 def _smi_visible_utilization(parent_visible_spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """SMI visible-GPU utilization keyed by the parent's ids. amd-smi filters by its own gpu ids, not HIP's, so translate when the mapping is readable."""
     ids = parent_visible_spec["numeric_ids"]
     smi_ids = _amd_smi_ids_for_hip_ids(ids) if IS_ROCM and ids else None
+    if IS_ROCM and ids and smi_ids is None and _rocm_unmasked_inventory_mismatch():
+        return None
     result = _smi_query(
         "get_visible_gpu_utilization",
         ids if smi_ids is None else smi_ids,
@@ -4692,7 +4710,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                     vram_used_gb_aggregate = _win_aggregate,
                 )
 
-        if IS_ROCM and platform.system() == "Linux":
+        if IS_ROCM and platform.system() == "Linux" and not _rocm_unmasked_inventory_mismatch():
             _linux_used, _linux_total = _rocm_linux_sysfs_vram_gb()
             if _linux_used is not None and _linux_total is not None:
                 _linux_util = _rocm_linux_sysfs_gpu_busy_pct()
@@ -5179,6 +5197,43 @@ _ROCM_DISCRETE_ONLY_ARCHES = frozenset(
 )
 
 
+_KFD_TOPOLOGY_NODES = "/sys/class/kfd/kfd/topology/nodes"
+_DRI_DIR = "/dev/dri"
+
+
+def _rocm_kfd_render_nodes_openable() -> bool:
+    """KFD order matches HIP only when every AMD render node opens."""
+    try:
+        entries = sorted((int(e), e) for e in os.listdir(_KFD_TOPOLOGY_NODES) if e.isdigit())
+    except OSError:
+        return False
+    for _node, entry in entries:
+        try:
+            with open(
+                os.path.join(_KFD_TOPOLOGY_NODES, entry, "properties"), encoding = "utf-8"
+            ) as fh:
+                props = fh.read()
+        except (OSError, UnicodeDecodeError):
+            return False
+        simd = re.search(r"\bsimd_count\s+(\d+)\b", props)
+        if simd is None or int(simd.group(1)) <= 0:
+            continue
+        if not re.search(r"\bvendor_id\s+%d\b" % _AMD_PCI_VENDOR_ID, props):
+            continue
+        minor = re.search(r"\bdrm_render_minor\s+(\d+)\b", props)
+        if minor is None or int(minor.group(1)) <= 0:
+            return False
+        try:
+            fd = os.open(
+                os.path.join(_DRI_DIR, f"renderD{int(minor.group(1))}"),
+                os.O_RDWR | getattr(os, "O_CLOEXEC", 0),
+            )
+        except OSError:
+            return False
+        os.close(fd)
+    return True
+
+
 def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
     """Linux ROCm per-device VRAM from KFD topology + DRM sysfs, joined by PCI address, with no torch call. Empty under
     any visibility mask, a KFD reader disagreement, a shared PCI address or a KFD address with no amdgpu device (a
@@ -5199,6 +5254,8 @@ def _rocm_context_free_visible_devices() -> list[Dict[str, Any]]:
         logger.debug("KFD gfx target read failed: %s", e)
         return []
     if targets is None or len(targets) != len(pci_ids):
+        return []
+    if not _rocm_kfd_render_nodes_openable():
         return []
     vram_by_pci = _rocm_linux_sysfs_vram_by_pci_gb()
     devices = []
