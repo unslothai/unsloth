@@ -243,6 +243,7 @@ def test_route_renders_each_cell_and_saves_a_labelled_grid(client):
     grid = body["grid"]
     assert grid["xy_grid"]["cells"] == [c["id"] for c in cells]
     assert grid["xy_grid"]["x"]["labels"] == ["Steps: 2", "Steps: 4", "Steps: 6"]
+    assert (grid["xy_grid"]["cell_width"], grid["xy_grid"]["cell_height"]) == (64, 64)
     assert grid["width"] == 48 + 3 * 64 and grid["height"] > 3 * 64
     gallery = client.get("/api/inference/images/gallery").json()["images"]
     assert len(gallery) == 10
@@ -267,3 +268,37 @@ def test_route_refuses_a_bad_cell_before_rendering(client):
         json = {"prompt": "a sloth", "xy": {"x": {"field": "seed", "values": list(range(65))}}},
     )
     assert over.status_code == 422
+
+
+def test_stop_between_cells_ends_the_grid(client):
+    import core.inference.diffusion as diffusion_module
+    from PIL import Image
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    calls = []
+
+    def _generate(**kwargs):
+        calls.append(kwargs)
+        # The denoise is over, so only the grid can take this Stop.
+        assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": True}
+        return {
+            "images": [Image.new("RGB", (64, 64), "gray")],
+            "seed": kwargs["seed"],
+            "repo_id": "x/z-image",
+            "workflow": "txt2img",
+        }
+
+    backend.generate = _generate
+    backend.cancel_generate = lambda **kw: False
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "xy": {"x": {"field": "steps", "values": [2, 4, 6]}}},
+    )
+    assert resp.status_code == 409, resp.text
+    assert len(calls) == 1
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 1
+    assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}

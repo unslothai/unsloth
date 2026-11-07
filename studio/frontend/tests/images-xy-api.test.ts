@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { availableAxes, MAX_COMPARE_CELLS, type CompareContext } from "../src/features/images/compare/compare-axes.ts";
+import { xyGridCellSize } from "../src/features/images/image-size.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const backend = readFileSync(new URL("../../backend/models/inference.py", import.meta.url), "utf8");
@@ -48,4 +49,11 @@ test("every Images page Compare axis has a server-side xy field, under the same 
     assert.ok(server.has(toServer(axis.id)), axis.id);
   }
   assert.match(backend, new RegExp(`^MAX_XY_CELLS = ${MAX_COMPARE_CELLS}$`, "m"));
+});
+
+test("reusing a server grid's recipe restores the cell size, not the grid's pixels", () => {
+  assert.deepEqual(xyGridCellSize({ xy_grid: { cell_width: 768, cell_height: 512 } }), { width: 768, height: 512 });
+  assert.equal(xyGridCellSize({ xy_grid: null }), null);
+  assert.equal(xyGridCellSize({}), null);
+  assert.match(readSrc("features/images/images-page.tsx"), /hiresBaseSize\(image\) \?\? xyGridCellSize\(image\) \?\?/);
 });

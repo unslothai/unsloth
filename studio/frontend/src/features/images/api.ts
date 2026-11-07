@@ -393,6 +393,8 @@ export interface GalleryImage {
     x: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
     y?: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
     cells: string[];
+    cell_width?: number;
+    cell_height?: number;
   } | null;
   pinned?: boolean;
   archived?: boolean;

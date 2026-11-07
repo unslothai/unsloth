@@ -49460,10 +49460,23 @@ async def generate_diffusion_image(
     return await _generate_diffusion_image_core(request)
 
 
+# A Stop between two cells finds no denoise to land on, so each running grid also takes it here: (account, stopped).
+_xy_grid_stops: list[tuple[Optional[str], threading.Event]] = []
+
+
+def _stop_xy_grids() -> bool:
+    scope = account_access.account_scope()
+    stops = [event for owner, event in _xy_grid_stops if owner == scope]
+    for event in stops:
+        event.set()
+    return bool(stops)
+
+
 async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGenerateResponse:
     """Render every X/Y cell as its own gallery image, then save the labelled grid. A Stop or a failing cell ends the
     grid with that cell's error; the cells before it stay in the gallery."""
     from core.inference import diffusion_xy, image_gallery
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
     from core.inference.diffusion_segment import render_fence
 
     try:
@@ -49474,10 +49487,14 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
     pictures: list[Any] = [None] * len(plan.cells)
     global _diffusion_persist_active
     # Progress stays active between cells and through the grid save, so a reload does not settle the run early.
+    stop = (account_access.account_scope(), threading.Event())
     _diffusion_persist_active += 1
     try:
+        _xy_grid_stops.append(stop)
         with render_fence():
             for index in plan.order:
+                if stop[1].is_set():
+                    raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
                 captured: list[Any] = []
                 result = await _generate_diffusion_image_run(
                     plan.cells[index].request, captured = captured
@@ -49499,6 +49516,9 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                 xy_grid = {
                     **plan.describe([request.xy.x, request.xy.y]),
                     "cells": [r.id for r in records],
+                    # width / height are the grid's pixels; reusing the recipe restores the cell size.
+                    "cell_width": first.width,
+                    "cell_height": first.height,
                 },
                 created_at = time.time(),
             )
@@ -49513,6 +49533,7 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                 detail = "The grid cells are in the gallery, but the grid image could not be saved.",
             )
     finally:
+        _xy_grid_stops.remove(stop)
         _diffusion_persist_active -= 1
     return DiffusionGenerateResponse(images = records, grid = GalleryImage(**grid_record))
 
@@ -50872,13 +50893,14 @@ async def cancel_diffusion_generation(
     saved image connection instead."""
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
+    grids = _stop_xy_grids()
     if account_access.generation_is_foreign("diffusion"):
-        return {"cancelled": False}
+        return {"cancelled": grids}
     mine = account_access.generation_is_mine("diffusion")
     if not mine and (
         account_access.foreign_work_active() or account_access.resident_hidden("diffusion")
     ):
-        return {"cancelled": False}
+        return {"cancelled": grids}
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -50888,7 +50910,7 @@ async def cancel_diffusion_generation(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return {"cancelled": False}
+        return {"cancelled": grids}
 
     # A run still upsampling its prompt has not reached the engine yet.
     from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
@@ -50904,7 +50926,7 @@ async def cancel_diffusion_generation(
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
-    return {"cancelled": bool(cancelled or upsampling or detailing)}
+    return {"cancelled": bool(cancelled or upsampling or detailing or grids)}
 
 
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────
