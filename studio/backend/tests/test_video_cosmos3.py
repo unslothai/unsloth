@@ -840,29 +840,56 @@ def _guardrail_downloads(monkeypatch):
 def test_the_guardrail_download_gets_the_loads_token(cosmos3_runtime, monkeypatch, token, sent):
     _set_guardrail(monkeypatch, "installed")
     inner, seen = _guardrail_downloads(monkeypatch)
-    original = inner.snapshot_download
+    real_from_pretrained = _FakeCosmos3Pipeline.__dict__["from_pretrained"]
 
     def from_pretrained(cls, source, **kwargs):
-        sys.modules["cosmos_guardrail.cosmos_guardrail"].snapshot_download(
-            _GUARDRAIL_REPO, allow_patterns = ["blocklist/*"]
-        )
-        return _real_from_pretrained.__func__(cls, source, **kwargs)
+        inner.snapshot_download(_GUARDRAIL_REPO, allow_patterns = ["blocklist/*"])
+        return real_from_pretrained.__func__(cls, source, **kwargs)
 
-    _real_from_pretrained = _FakeCosmos3Pipeline.__dict__["from_pretrained"]
     monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", classmethod(from_pretrained))
     VideoBackend().load_pipeline(NANO, model_kind = "pipeline", hf_token = token)
-    assert seen == [sent]
-    assert inner.snapshot_download is original
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == [sent, "ambient"]
 
 
-def test_the_guardrail_token_scope_restores_on_a_failed_load(monkeypatch):
-    inner, _ = _guardrail_downloads(monkeypatch)
-    original = inner.snapshot_download
+def test_the_guardrail_token_scope_ends_with_a_failed_load(monkeypatch):
+    inner, seen = _guardrail_downloads(monkeypatch)
     with pytest.raises(RuntimeError):
         with vc3.guardrail_hub_token("hf_x"):
-            assert inner.snapshot_download is not original
+            inner.snapshot_download(_GUARDRAIL_REPO)
             raise RuntimeError("load failed")
-    assert inner.snapshot_download is original
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_x", "ambient"]
+
+
+def test_overlapping_guardrail_loads_keep_their_own_tokens(monkeypatch):
+    """A cancel-and-reload overlaps two loads; exits out of order must not leave either token behind."""
+    import threading
+
+    inner, seen = _guardrail_downloads(monkeypatch)
+    a_in, b_in, a_out = threading.Event(), threading.Event(), threading.Event()
+
+    def load_a():
+        with vc3.guardrail_hub_token("hf_a"):
+            a_in.set()
+            b_in.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+        a_out.set()
+
+    def load_b():
+        a_in.wait(5)
+        with vc3.guardrail_hub_token("hf_b"):
+            b_in.set()
+            a_out.wait(5)
+            inner.snapshot_download(_GUARDRAIL_REPO)
+
+    threads = [threading.Thread(target = load_a), threading.Thread(target = load_b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    inner.snapshot_download(_GUARDRAIL_REPO)
+    assert seen == ["hf_a", "hf_b", "ambient"]
 
 
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):

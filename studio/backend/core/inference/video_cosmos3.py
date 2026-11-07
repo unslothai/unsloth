@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import functools
 import importlib
 import importlib.util
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -126,27 +128,49 @@ def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
     return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
 
 
+_UNSET = object()
+_load_hub_token: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "cosmos3_guardrail_token", default = _UNSET
+)
+_wrap_lock = threading.Lock()
+
+
+def _token_bound(download: Any) -> Any:
+    @functools.wraps(download)
+    def snapshot_download(*args: Any, **kwargs: Any) -> Any:
+        token = _load_hub_token.get()
+        if token is not _UNSET:
+            kwargs.setdefault("token", token)
+        return download(*args, **kwargs)
+
+    snapshot_download._unsloth_load_token = True
+    return snapshot_download
+
+
 @contextlib.contextmanager
 def guardrail_hub_token(token: Any):
     """cosmos_guardrail downloads with no token argument, so it would skip the Settings token and lend a managed
-    account the ambient login; this sends the load's own token (None keeps the ambient login)."""
-    module = None
+    account the ambient login. One permanent wrapper reads this load's token from a context variable, so
+    overlapping loads (cancel and reload) never see each other's; None keeps the ambient login."""
     if isinstance(token, str):
         token = token.strip() or None
+    module = None
     if token is not None:
         try:
             module = importlib.import_module(f"{GUARDRAIL_PACKAGE}.{GUARDRAIL_PACKAGE}")
-            download = module.snapshot_download
+            with _wrap_lock:
+                if not getattr(module.snapshot_download, "_unsloth_load_token", False):
+                    module.snapshot_download = _token_bound(module.snapshot_download)
         except (ImportError, AttributeError):
             module = None
     if module is None:
         yield
         return
-    module.snapshot_download = functools.partial(download, token = token)
+    reset = _load_hub_token.set(token)
     try:
         yield
     finally:
-        module.snapshot_download = download
+        _load_hub_token.reset(reset)
 
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
