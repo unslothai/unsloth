@@ -31,7 +31,10 @@ print(json.dumps(cache.local_cache[1]))
 """
 
 if not hasattr(autotune_cache.AutotuneCache, "_prepare_key"):
-    pytest.skip("this torch has no AutotuneCache._prepare_key", allow_module_level = True)
+    pytest.skip(
+        reason = "this torch has no AutotuneCache._prepare_key: pin_autotune_key returns False, nothing to pin",
+        allow_module_level = True,
+    )
 
 
 @pytest.fixture(autouse = True)
