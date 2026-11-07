@@ -18,8 +18,6 @@ _REAL_RUNTIME_BACKEND = af._runtime_backend
 
 @pytest.fixture(autouse = True)
 def _cuda_audio_runtime(monkeypatch):
-    """Estimates follow the installed audio.cpp backend, so pin it: CUDA, the NVIDIA case these
-    tests describe. Tests about Vulkan or no runtime set it themselves."""
     monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
 
 
@@ -154,10 +152,7 @@ def test_estimate_uses_the_measured_family_profile(monkeypatch):
 
 
 GIB = 1024**3
-# family, package bytes, worst peak on audio.cpp's CUDA build, worst on its Vulkan build (GiB), every
-# variant of every measured family: TTS text past several chunks or to the generation cap with 30 s
-# references (VoxCPM2 clone: 10 s, its limit), music at each workflow's cap. CUDA on an RTX 3090 or
-# RTX 6000 Ada; Vulkan on the 3090 or a Radeon 8060S. A run that stopped at its token cap counts.
+# family, package bytes, worst CUDA peak, worst Vulkan peak (GiB) for every measured variant.
 MEASURED_PEAKS = [
     ("ace_step", 6185468096, 11.19, 11.22),
     ("ace_step", 10090406336, 14.74, 15.31),
@@ -220,13 +215,10 @@ def test_each_runtime_profile_covers_its_measured_peak(
 @pytest.mark.parametrize(
     "family, size_bytes, cuda, vulkan",
     [
-        # #16627: a 10 GB card with about 9.4 GiB free loads YuE2 Q8_0 and Stable Audio Medium F16
-        # on CUDA; Vulkan keeps the higher figure.
+        # #16627's 10 GB card (about 9.4 GiB free) fits these two on CUDA.
         ("yue2", 4531978293, 9.23, 9.51),
         ("stable_audio", 5834365856, 9.32, 10.43),
-        # Qwen3-TTS 0.6B Q8_0: the generic 6.14 fits an 8 GB card, but Vulkan peaks at 9.2 GiB.
         ("qwen3_tts", int(1.854 * GIB), 7.22, 10.91),
-        # Chatterbox peaks lower on Vulkan; an unknown runtime still gets the CUDA figure.
         ("chatterbox", int(1.945 * GIB), 6.08, 5.74),
     ],
 )
@@ -234,7 +226,6 @@ def test_the_runtime_backend_picks_the_profile(monkeypatch, family, size_bytes, 
     monkeypatch.setattr(af, "_may_have_pre_ampere_nvidia_card", lambda: False)
     either = max(cuda, vulkan)
     for backend, expected in (("cuda", cuda), ("vulkan", vulkan), (None, either), ("hip", either)):
-        # Not installed yet, or a build measured on neither: the larger of the two.
         monkeypatch.setattr(af, "_runtime_backend", lambda b = backend: b)
         assert af.estimate_resident_gb(size_bytes, family) == expected, backend
 
@@ -242,10 +233,8 @@ def test_the_runtime_backend_picks_the_profile(monkeypatch, family, size_bytes, 
 @pytest.mark.parametrize(
     "backend, at_3, at_9_5",
     [
-        # CUDA keeps the original fallback; Vulkan's is higher for small packages, lower for large ones.
         ("cuda", 9.0, 25.25),
         ("vulkan", 10.05, 22.07),
-        # Not installed yet, or another build: the larger of the two.
         (None, 10.05, 25.25),
         ("hip", 10.05, 25.25),
     ],
@@ -255,7 +244,6 @@ def test_the_fallback_follows_the_runtime_backend(monkeypatch, backend, at_3, at
     gb = 1024**3
     assert af.estimate_resident_gb(3 * gb, "neutts") == at_3
     assert af.estimate_resident_gb(int(9.5 * gb), "neutts") == at_9_5
-    # VibeVoice's peak keeps growing with the input: the original fallback on every backend.
     assert af.estimate_resident_gb(3 * gb, "vibevoice") == 9.0
     assert af.estimate_resident_gb(int(9.85 * gb), "vibevoice") == 26.12
 
@@ -274,11 +262,10 @@ def test_the_runtime_backend_is_the_installed_servers(monkeypatch):
 
 # YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16.
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
-# Its profile on Vulkan, or with no runtime installed (the larger of the two), and on CUDA.
+# MEASURED is the Vulkan profile, which also wins with no runtime installed.
 MEASURED = (7.73, 9.51, 12.86)
 MEASURED_CUDA = (7.69, 9.23, 12.1)
 GENERIC = (8.33, 12.05, 19.03)
-# The fallback on Vulkan, and with no runtime installed (the larger of the CUDA and Vulkan lines).
 GENERIC_VULKAN = (9.55, 12.31, 17.47)
 GENERIC_EITHER = (9.55, 12.31, 19.03)
 

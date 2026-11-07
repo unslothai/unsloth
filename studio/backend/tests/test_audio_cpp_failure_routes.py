@@ -25,7 +25,6 @@ from .test_audio_cpp_failures import _model
 
 @pytest.fixture(autouse = True)
 def _cuda_audio_runtime(monkeypatch):
-    """Estimates follow the installed audio.cpp backend, so pin it: CUDA unless a test says otherwise."""
     monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
 
 
@@ -203,15 +202,13 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 @pytest.mark.parametrize(
     "backend, capabilities, driver, free_gb, required",
     [
-        # #16627, a 10 GB card with about 9.4 GiB free: YuE2 Q8_0 needs 9.23 GiB on CUDA ...
+        # #16627: a 10 GB card with about 9.4 GiB free.
         ("cuda", {0: (8, 6)}, True, 9.4, 9.23),
         ("cuda", {0: (8, 6)}, True, 9.2, None),
-        # ... 9.51 on Vulkan, and 9.51 with no runtime installed yet (the larger of the two).
         ("vulkan", {0: (8, 6)}, True, 9.6, 9.51),
         ("vulkan", {0: (8, 6)}, True, 9.4, None),
         (None, {}, False, 9.6, 9.51),
         (None, {0: (8, 6)}, True, 9.4, None),
-        # A pre-Ampere card, or an NVIDIA card whose capability is unknown, keeps the generic 12.05.
         ("cuda", {0: (7, 5)}, True, 9.6, None),
         ("cuda", {}, True, 9.6, None),
     ],

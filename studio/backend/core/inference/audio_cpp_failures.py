@@ -134,72 +134,50 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. Generic: the fallback for families not measured yet,
-# per runtime backend. Each was chosen to minimize expected user frustration over common cards, a load
-# that runs out of memory counting as ten refusals, and validated by leaving each measured family out
-# of the fit in turn. On CUDA a lower line adds crashes on held-out families, so it stays; on Vulkan
-# the second line beats it on both crashes and refusals.
+# GiB; resident = weights * per_weight + fixed. The generic lines are per-backend fallbacks for
+# unmeasured families; a lower CUDA line would run a held-out measured family out of memory.
 _GENERIC_PROFILE = (2.5, 1.5)
 _VULKAN_GENERIC_PROFILE = (1.85, 4.5)
-# Peaks that keep growing with the input: no measured line holds, so the original fallback everywhere.
+# Peak keeps growing with the input, so no line fit to peaks holds: the CUDA fallback everywhere.
 _UNBOUNDED_FAMILIES = frozenset({"vibevoice"})
-# family -> (per_weight, fixed, largest package measured): the highest audio.cpp v0.9.3 peak observed
-# on its CUDA build with Studio's default options, plus at least 0.9 GiB, every variant measured.
-# Inputs: TTS text run past several chunks or to the default generation cap, 30 s references; music
-# at each workflow's cap. A raised token cap can grow some caches past these. Families whose peak
-# grows without bound with the input (VibeVoice) stay generic.
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# 0.9 GiB, at default options and each family's generation cap; a raised token cap can exceed it.
 _MEASURED_PROFILES = {
-    # Peak is a 240 s cover (the longest edit), above a 240 s song.
     "ace_step": (0.98, 6.46, 9.4),
-    # Clone; flat in text length from 5,400 to 21,600 characters.
     "breeze_tts": (0.55, 5.18, 6.9),
-    # Clone, or convert of a source up to 30 s; longer sources grow fast (60 s peaks at 12.7 GiB).
+    # Covers convert sources up to 30 s; a 60 s source peaks at 12.7 GiB.
     "chatterbox": (0.05, 5.98, 3.5),
     "cosyvoice3": (0.6, 2.82, 6.6),
-    # Peak is a 240 s song with 20,000 characters of lyrics.
     "heartmula": (2.5, 1.48, 7.2),
-    # Clone at the default 2048-token cap of a text chunk; the cache grows with a higher max_tokens.
+    # Measured at the default 2048-token chunk cap; a higher max_tokens grows the cache.
     "higgs_audio_tts": (1.0, 2.4, 8.0),
     # Also covers the 2.74 GiB #16514 measured for Q8_0 (whole device).
     "kokoro_tts": (0.0, 3.65, 0.9),
-    # Flat in length: 10 s and the 80 s cap peak the same.
     "midashenglm_gen": (1.0, 1.69, 3.2),
-    # Peak is a 240 s song with 20,000 characters of lyrics.
     "minimax_music3": (0.7, 8.49, 12.7),
-    # Flat in text length from 4,800 to 21,600 characters.
     "moss_tts_v15": (0.95, 0.74, 19.2),
-    # Clone run to the generation cap.
     "omnivoice": (0.05, 5.29, 1.6),
-    # Grows with the audio: 8,000 characters run to the 655 s generation cap. Steeper than the
-    # tightest fit so 0.6B Q8_0 stays loadable on an 8 GB card (7.2 GB).
+    # Steeper than the tightest fit so 0.6B Q8_0 (7.2 GB) stays loadable on an 8 GB card.
     "qwen3_tts": (1.5, 4.44, 4.3),
-    # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s).
     "stable_audio": (1.5, 1.17, 5.5),
-    # Kept from #16514, whose peaks (Q8_0 9.66, BF16 13.31 GiB, whole device) are above these runs;
-    # covers Vulkan too.
+    # Kept from #16514 (whole-device peaks above these runs); also covers Vulkan, so no entry there.
     "voxcpm2": (2.2, 4.7, 8.9),
     "voxtral_tts": (1.0, 2.0, 7.5),
-    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap.
     "yue2": (1.03, 4.88, 7.1),
 }
-# The same input on audio.cpp's Vulkan build, which AMD hosts run, measured on an RTX 3090 and a
-# Radeon 8060S (Strix Halo): mostly 0.5 to 4 GiB higher. Used when the installed runtime is not CUDA.
+# The same inputs on audio.cpp's Vulkan build (AMD hosts); a family absent here uses its CUDA line.
 _VULKAN_PROFILES = {
     "ace_step": (1.15, 5.55, 9.4),
-    # Flat: Q8_0 clone at 5,400 characters peaks above BF16.
     "breeze_tts": (0.0, 12.1, 6.9),
     "chatterbox": (0.25, 5.25, 3.5),
     "cosyvoice3": (0.6, 4.38, 6.6),
-    # Above the generic formula.
     "heartmula": (2.5, 2.7, 7.2),
     "higgs_audio_tts": (0.95, 2.94, 8.0),
     "kokoro_tts": (0.1, 3.89, 0.9),
     "midashenglm_gen": (1.0, 2.25, 3.2),
-    # Both quants peak higher on the 8060S than on either NVIDIA card.
     "minimax_music3": (0.7, 9.41, 12.7),
     "moss_tts_v15": (1.0, 2.63, 19.2),
     "omnivoice": (0.05, 7.67, 1.6),
-    # Above the generic formula, which allowed loads that then ran out of memory.
     "qwen3_tts": (1.1, 8.87, 4.3),
     "stable_audio": (1.8, 0.65, 5.5),
     "voxtral_tts": (1.7, -0.64, 7.5),
