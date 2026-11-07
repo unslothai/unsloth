@@ -31585,8 +31585,14 @@ class LlamaCppBackend:
                     if gpu_indices:
                         _crashed = sorted(set(gpu_indices))
                         _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
-                    elif _cache_target_unknown or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip():
-                        # A user --device / --main-gpu (or env twin) numbers cards by the unnarrowed set.
+                    elif (
+                        _cache_target_unknown
+                        or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip()
+                        or _GPU_DEVICE_TOKEN_RE.match(
+                            str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
+                        )
+                    ):
+                        # A user --device / --main-gpu / projector device env numbers cards by the unnarrowed set.
                         _crashed, _remaining = [], []
                     else:
                         # Unpinned (manual split, or unreadable coverage): only the child's "current device" names the card.

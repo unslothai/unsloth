@@ -679,13 +679,14 @@ class TestUnpinnedArchCrashRetryLoad:
         assert retry_env.get("ROCR_VISIBLE_DEVICES", retry_env["CUDA_VISIBLE_DEVICES"]) == "1"
         assert retry_cmd[retry_cmd.index("--spec-draft-device") + 1] == "ROCm0"
 
-    def test_a_user_main_gpu_keeps_its_error(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("env", [{"LLAMA_ARG_MAIN_GPU": "1"}, {"MTMD_BACKEND_DEVICE": "ROCm1"}])
+    def test_a_user_device_env_keeps_its_error(self, monkeypatch, tmp_path, env):
         _backend, launches, loaded = _load_manual_split(
             monkeypatch,
             tmp_path,
             outputs = [_MANUAL_SPLIT_CRASH],
             returncodes = [1],
-            env = {"LLAMA_ARG_MAIN_GPU": "1"},
+            env = env,
         )
         assert not loaded
         assert all(_tensor_split_arg(cmd) == "1,1" for cmd, _env in launches)
