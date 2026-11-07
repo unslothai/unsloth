@@ -177,8 +177,10 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
     showShare || (breakdown && !modelsInVram)
       ? memoryShare(input.ramUsedGb, input.ramTotalGb, unslothRamGb)
       : null;
+  // A loaded model with no size (transformers chat, most embedders) would read as Unsloth holding 0 GiB.
+  const unsized = input.entries.some((entry) => !((entry.residentMib ?? 0) > 0));
   const vramShare =
-    modelsInVram && input.vramUsedGb !== null
+    modelsInVram && !unsized && input.vramUsedGb !== null
       ? memoryShare(input.vramUsedGb, input.vramTotalGb, modelsGb)
       : null;
   return {

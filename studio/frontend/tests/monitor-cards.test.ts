@@ -79,3 +79,8 @@ test("an APU's carve-out keeps its models in the RAM split, in the monitor and i
     assert.match(readSrc(file), /holdsModelsInVram\(vram\.cards\)/, file);
   }
 });
+
+test("card rows use the visible ordinal the detail rows use", () => {
+  const masked = [{ ...r9700(2, 1), visible_ordinal: 0 }, { ...r9700(3, 2), visible_ordinal: 1 }] as GpuDevice[];
+  assert.deepEqual(vramCards(masked, { devices: masked }).rows.map((row) => row.label), ["GPU 0", "GPU 1"]);
+});

@@ -201,3 +201,13 @@ test("one split serves the floating monitor and Settings, models in the pool tha
     assert.match(readSrc(file), /poolSplit\(\{/, file);
   }
 });
+
+test("an unsized loaded model leaves the VRAM bar unsplit rather than claiming Unsloth holds 0 GiB", () => {
+  const split = poolSplit({
+    entries: [{ id: "hf", name: "unsloth/Qwen3-0.6B", source: "chat" }],
+    showShare: true, showBreakdown: false, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 3, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24,
+  });
+  assert.equal(split.vram, null);
+  assert.notEqual(split.ram, null);
+});

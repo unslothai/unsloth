@@ -49,7 +49,8 @@ export function vramCards(
     cards.length > 1
       ? cards.map((card, position) => ({
           key: `${card.index ?? position}`,
-          label: `GPU ${card.index ?? position}`,
+          // The ordinal the detail rows and Settings use, so a masked device keeps one name.
+          label: `GPU ${card.visible_ordinal ?? card.index ?? position}`,
           name: shortCardName(card.name),
           title: card.name ?? "GPU",
           usedGb: Number.isFinite(card.vram_used_gb) ? (card.vram_used_gb as number) : null,
