@@ -189,8 +189,8 @@ _VULKAN_PROFILES = {
     "higgs_audio_tts": (0.95, 2.94, 8.0),
     "kokoro_tts": (0.1, 3.89, 0.9),
     "midashenglm_gen": (1.0, 2.25, 3.2),
-    # Q4_0 peaks higher on the 8060S than on either NVIDIA card.
-    "minimax_music3": (0.45, 11.4, 12.7),
+    # Both quants peak higher on the 8060S than on either NVIDIA card.
+    "minimax_music3": (0.7, 9.41, 12.7),
     "moss_tts_v15": (1.0, 2.63, 19.2),
     "omnivoice": (0.05, 7.67, 1.6),
     # Above the generic formula, which allowed loads that then ran out of memory.

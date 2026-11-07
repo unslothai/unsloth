@@ -177,7 +177,7 @@ MEASURED_PEAKS = [
     ("kokoro_tts", int(0.869 * GIB), 2.41, 3.05),
     ("midashenglm_gen", 3381370752, 3.93, 4.42),
     ("minimax_music3", int(7.866 * GIB), 13.08, 14.0),
-    ("minimax_music3", int(12.609 * GIB), 16.35, 16.16),
+    ("minimax_music3", int(12.609 * GIB), 16.35, 17.26),
     ("moss_tts_v15", int(8.622 * GIB), 7.79, 10.34),
     ("moss_tts_v15", int(12.279 * GIB), 11.25, 12.6),
     ("moss_tts_v15", int(19.134 * GIB), 18.0, 20.58),
