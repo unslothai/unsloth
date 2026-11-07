@@ -722,14 +722,14 @@ def _caller_padding_rows(
         if length <= 0 or length >= total:
             rows.append(out[row])
             continue
-        # An explicit (all-zero) mask: no causal alignment between the padding queries and real keys.
-        mask = torch.zeros(1, 1, total - length, length, device = query.device, dtype = query.dtype)
+        # Every real key precedes the padding queries: no mask and is_causal = False, so no
+        # [pad, real] mask is materialised (sdpa and eager both honour the explicit flag).
         pad, _ = attention_fn(
             shard,
             query[row : row + 1, :, length:],
             key[row : row + 1, :, :length],
             value[row : row + 1, :, :length],
-            mask,
+            None,
             **{**kwargs, "is_causal": False},
         )
         pad = pad.reshape(total - length, out.shape[2], -1)
