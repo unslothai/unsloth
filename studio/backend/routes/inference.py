@@ -50767,10 +50767,15 @@ _QUEUE_MODEL_CHANGED_MSG = (
 
 
 def _resident_load(status: dict):
+    """(load identity, checkpoint file): a GGUF swapped for another quant of the same repo is a different model."""
     from core.inference.diffusion_families import load_identity
+
     if not status.get("loaded"):
         return None
-    return load_identity(status.get("repo_id"), status.get("base_repo"), status.get("family"))
+    return (
+        load_identity(status.get("repo_id"), status.get("base_repo"), status.get("family")),
+        status.get("gguf_filename"),
+    )
 
 
 async def _wait_for_direct_image_runs() -> None:
@@ -50805,7 +50810,7 @@ async def _run_queued_image_job(job) -> list[str]:
         try:
             account_access.require_live_account()
             with generation_ticket(job.ticket):
-                response = await _generate_diffusion_image_core(job.request, job.load)
+                response = await _generate_diffusion_image_core(job.request, job.load[0])
         except HTTPException as exc:
             if exc.status_code == 409 and exc.detail == DIFFUSION_CANCELLED_MSG:
                 raise JobCancelled() from exc

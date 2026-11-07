@@ -3645,6 +3645,12 @@ export function ImagesPage({
     if (busy === null) followingJob.current = null;
   }, [busy]);
   useEffect(() => {
+    // The queue moved on inside one progress window: keep following, now the next job.
+    if (queueRunningId && busy !== null && followingJob.current && followingJob.current !== queueRunningId) {
+      followedJob.current = queueRunningId;
+      followingJob.current = queueRunningId;
+      return;
+    }
     if (!queueRunningId || busy !== null || followedJob.current === queueRunningId) return;
     let cancelled = false;
     void (async () => {

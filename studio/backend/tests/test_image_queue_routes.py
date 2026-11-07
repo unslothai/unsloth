@@ -358,3 +358,16 @@ def test_a_queued_job_waits_out_the_gap_between_two_direct_runs(client, monkeypa
         )
         _wait(client, lambda jobs: jobs[0]["status"] == "done")
         assert order == ["direct-1", "direct-2", "queued"]
+
+
+def test_another_quant_of_the_same_repo_fails_the_waiting_job(gated):
+    client, gates, order, backend = gated
+    real_status = backend.status
+    client.post(QUEUE, json = {"prompt": "blocker"})
+    client.post(QUEUE, json = {"prompt": "stale"})
+    _wait(client, lambda jobs: _by_prompt(jobs)["blocker"]["status"] == "running")
+    backend.status = lambda: {**real_status(), "gguf_filename": "z-image-turbo-Q8_0.gguf"}
+    _gate(gates, "blocker").set()
+    jobs = _wait(client, lambda jobs: _by_prompt(jobs)["stale"]["status"] == "failed")
+    assert "model changed" in _by_prompt(jobs)["stale"]["error"]
+    assert order == ["blocker"]
