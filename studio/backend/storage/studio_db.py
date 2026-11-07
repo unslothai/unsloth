@@ -5000,6 +5000,20 @@ def fork_counts_for_thread(thread_id: str) -> dict[str, int]:
         conn.close()
 
 
+def chat_thread_has_context_truncation(thread_id: str) -> bool:
+    """Whether any message in the thread records a context fit (metadata `contextTruncation`), without loading the transcript."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE thread_id = ? "
+            "AND instr(metadata_json, 'contextTruncation') > 0 LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def list_chat_messages(thread_id: str) -> list[dict]:
     conn = get_connection()
     try:
