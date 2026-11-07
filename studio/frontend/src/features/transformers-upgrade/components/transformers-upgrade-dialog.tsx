@@ -123,8 +123,7 @@ export function TransformersUpgradeDialog() {
           {installable ? (
             <>
               {customCode ? (
-                // Kept reachable: installing activates the 16-bit sidecar, so this is the only
-                // way a 4-bit run on this model can start. The remote-code scan runs after it.
+                // Installing forces 16-bit, so this is a 4-bit run's only path; the code scan follows.
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild={true}>
                     <Button variant="outline">

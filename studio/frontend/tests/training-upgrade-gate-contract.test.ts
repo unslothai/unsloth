@@ -126,7 +126,6 @@ test("the consent dialog offers the custom-code way out before an install fails"
 });
 
 test("chat raises the remote-code scan after the upgrade dialog", () => {
-  // "Continue with custom code" only resolves the upgrade dialog; the scan must still follow it.
   for (const file of [
     "../src/features/chat/shared-composer.tsx",
     "../src/features/chat/hooks/use-chat-model-runtime.ts",
