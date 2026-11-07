@@ -1471,13 +1471,11 @@ def _start_studio_server(
 ) -> tuple:
     """Spawn `unsloth run` for `model`, wait until it is fully ready, and return (base, server)."""
     global _auto_served_server
-    # Windows goes through this interpreter, not the launcher on PATH: shutil.which resolves `unsloth` to the denied unsloth.exe, since PATHEXT puts .EXE ahead of the .cmd shim (#8490). Without this, a user who reached the CLI through unsloth.cmd would still fail here. sys.executable is the interpreter already running this command, so the child inherits the same environment.
-    if sys.platform == "win32":
-        # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
-        from unsloth_cli.commands.studio import _managed_cli_argv
-        launch_head = _managed_cli_argv(Path(sys.executable))
-    else:
-        launch_head = [shutil.which("unsloth") or "unsloth"]
+    # This interpreter, not the `unsloth` on PATH: that can be missing, another install, or on Windows the denied unsloth.exe (#8490).
+    # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
+    from unsloth_cli.commands.studio import _managed_cli_argv
+
+    launch_head = _managed_cli_argv(Path(sys.executable))
     parsed = urlparse(base)
     # Tools default off means passthrough mode (relay the agent's own tools); --no-cloudflare means loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging travel via the child env below (version-agnostic) rather than new run flags that an older re-exec'd run could mistake for llama-server args.
     command = [
