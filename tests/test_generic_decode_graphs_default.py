@@ -284,3 +284,34 @@ def test_block_mask_contract_round_trip(host):
 def test_block_mask_without_the_contract_is_refused(host):
     with pytest.raises(GG._Refuse, match = "argument BlockMask"):
         GG._spec(_block_mask(torch.tensor(3), contract = False), [], None)
+
+
+def test_placeholder_masking_models_embed_outside_the_graph():
+    """Muse-Glimmer / Muse-Spark / Kimi-K2.5 zero placeholder ids with ids[mask] = 0 (a boolean index_put_, a
+    host sync): their decode step gets the same embeddings computed before the graph, from the same ops."""
+
+    class Model(torch.nn.Module):
+        def __init__(self, model_type):
+            super().__init__()
+            self.config = types.SimpleNamespace(
+                model_type = model_type, image_token_id = 5, video_token_id = 6
+            )
+            self.embed = torch.nn.Embedding(10, 4)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+    ids = torch.tensor([[5], [3], [6]])
+    model = Model("muse_glimmer")
+    out = GG._placeholder_embeds(
+        model, {"input_ids": ids, "inputs_embeds": None, "use_cache": True}
+    )
+    llm = ids.clone()
+    llm[(ids == 5) | (ids == 6)] = 0  # what the model's forward does
+    assert out["input_ids"] is None and out["use_cache"] is True
+    assert torch.equal(out["inputs_embeds"], model.embed(llm))
+    # Other models, media steps and an explicit inputs_embeds are left alone.
+    kwargs = {"input_ids": ids}
+    assert GG._placeholder_embeds(Model("gemma4"), kwargs) is kwargs
+    media = {"input_ids": ids, "pixel_values": torch.ones(1)}
+    assert GG._placeholder_embeds(model, media) is media

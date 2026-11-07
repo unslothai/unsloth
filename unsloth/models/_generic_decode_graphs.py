@@ -914,6 +914,44 @@ def _mrope_positions(model, kwargs):
     return {**kwargs, "position_ids": position_ids}
 
 
+# Multimodal decoders whose forward zeroes placeholder ids with a boolean index (`ids[mask] = 0`, a host sync a
+# capture cannot hold): the decode step's embeddings are looked up outside the graph instead, with the same ops on
+# the same ids, so the graph and the eager step see identical inputs_embeds. Model type -> placeholder token ids.
+_PLACEHOLDER_EMBED_MODEL_TYPES = {
+    "muse_glimmer": ("image_token_id", "video_token_id"),
+    "muse_spark": ("image_token_id", "video_token_id", "audio_token_id"),
+    "kimi_k25": ("image_token_id", "video_token_id"),
+}
+
+
+def _placeholder_embeds(model, kwargs):
+    """kwargs with input_ids replaced by the inputs_embeds the model's forward would compute from them (a
+    one-token text decode step: no media); unchanged when this does not apply."""
+    config = getattr(model, "config", None)
+    names = _PLACEHOLDER_EMBED_MODEL_TYPES.get(getattr(config, "model_type", None))
+    ids = kwargs.get("input_ids")
+    if (
+        names is None
+        or not isinstance(ids, torch.Tensor)
+        or kwargs.get("inputs_embeds") is not None
+    ):
+        return kwargs
+    if any(
+        kwargs.get(k) is not None
+        for k in kwargs
+        if k.startswith(("pixel_values", "mm_encoder", "input_features"))
+    ):
+        return kwargs
+    tokens = [getattr(config, name, None) for name in names]
+    embed = getattr(model, "get_input_embeddings", None)
+    if any(type(t) is not int for t in tokens) or embed is None:
+        return kwargs
+    mask = ids == tokens[0]
+    for token in tokens[1:]:
+        mask = mask | (ids == token)
+    return {**kwargs, "input_ids": None, "inputs_embeds": embed()(ids.masked_fill(mask, 0))}
+
+
 def decode_step(
     model,
     forward,
@@ -974,7 +1012,7 @@ def decode_step(
     elif state.fingerprint is None:
         return _refusal(state, "not one CUDA device / adapters")
 
-    kwargs = _mrope_positions(model, kwargs)
+    kwargs = _placeholder_embeds(model, _mrope_positions(model, kwargs))
     leaves = []
     try:
         spec = tuple((k, _spec(v, leaves, cache)) for k, v in kwargs.items())
