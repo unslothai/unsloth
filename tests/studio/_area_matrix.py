@@ -65,21 +65,20 @@ CPU_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_BASE_FLOOR_MS", 
 RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 # At most this many mode pages are measured again (each loads only its failing areas).
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
-# Costs main already has (origin/main 42489f20e2: highest settled reading of 3 Colab runs pinned
-# to 4 CPUs and 7 runs on a loaded 36-core host), as `mode:area=ratio`, `mode:*=ratio`,
-# `length:area=ratio` or `count:area=elements` (elements restyled at LONG turns, replacing the length
-# ratio for that area). Each ceiling is about 1.2-1.3x the highest reading, so these may not get
-# worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: CPU raster of the
-# backdrop-filter on every repaint (Settings scrolling 7.7-12.2x, thread scrolling and the API
-# monitor up to 5.8x). No area restyles the whole thread on open any more, so none needs a count
-# ceiling. Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN="" holds main to
-# the plain limits.
+# Costs main already has, as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or
+# `count:area=elements` (elements restyled at LONG turns, replacing the length ratio for that area).
+# Set from the GitHub runners this gate runs on: one PR's identical code read 6.2-8.3x (other
+# areas) and 9.3-13.8x (Settings scrolling) across its runs, so a ceiling must clear that spread,
+# not one host's best reading. Highest of 25 runs (2026-11-07): other areas 8.3x on Glass, Settings
+# scrolling 14.0x, transparent 4.2x and macos 3.9x against the 4.0 MAX_RATIO. Glass: CPU raster of
+# the backdrop-filter on every repaint. No area restyles the whole thread on open any more, so none
+# needs a count ceiling. Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN=""
+# holds main to the plain limits.
+GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
-    [f"{m}:*={r}" for m, r in (("frosted", 7), ("blurred", 7), ("liquid", 7), (GLASS, 7))]
-    + [
-        f"{m}:settings_scroll={r}"
-        for m, r in (("frosted", 12), ("blurred", 15), ("liquid", 13), (GLASS, 12))
-    ]
+    [f"{m}:*=10" for m in GLASS_MODES]
+    + [f"{m}:settings_scroll=18" for m in GLASS_MODES]
+    + [f"{m}:*=5" for m in ("transparent", "macos")]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
