@@ -17,13 +17,11 @@ _BUILT_IN_READS = frozenset({"view_image"})
 # Unsloth's own tools whose answer changes while a job runs: generate_video says to keep calling get_job.
 _STUDIO_POLLS = frozenset({"get_job"})
 _mcp_polls: set[str] = set()
-# MCP functions their server marked readOnlyHint. Trusting the hint only makes deduplication
-# stricter: a read never counts as the new work that lets an identical call run again.
+# readOnlyHint MCP functions; trusting the hint only makes deduplication stricter.
 _mcp_reads: set[str] = set()
 
 
-# A tool result carrying one of these tags is blocked until the user acts, so a reply that tells
-# the user what to do is the answer, not a stall to push past.
+# Results blocked until the user acts: telling the user what to do is the answer, not a stall.
 AWAITS_USER = ("[needs_user_load",)
 # Blocked on the user only when the hint says so: an agent with load_model or unload_model can act on it itself.
 AWAITS_USER_WHEN_ASKED = ("[not_loaded", "[multi_model_always")

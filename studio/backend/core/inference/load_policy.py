@@ -26,11 +26,8 @@ def policy_for_credential(*, internal: bool, key_name: object) -> LoadPolicy:
 
 
 def owner_chat_loads_beside() -> bool:
-    """The owner's own chat may load a model beside its own without "Switch model by request".
-
-    That switch keeps API clients from swapping the served model; this credential can never unload
-    the chat model, and only a signed-in owner session mints it: a chat an API key started does not
-    get this pass. A managed account still needs it."""
+    """The owner's own chat may load beside its model without "Switch model by request": this key
+    can never unload the chat model, and only a signed-in owner session (not an API key) mints it."""
     from utils.account_context import current_account, is_owner_context
     return (
         current_load_policy() is LoadPolicy.BESIDE_ONLY

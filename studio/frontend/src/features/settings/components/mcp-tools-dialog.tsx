@@ -245,7 +245,6 @@ export function McpToolsDialog({
   error: string | null;
   /** Receives the tools to change, by name; the server merges them into its list. */
   onSave: (states: Record<string, boolean>) => void;
-  /** muted line under the groups */
   footnote?: string | null;
 }): ReactElement {
   const t = useT();

@@ -10,17 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Collection, Mapping
 
-# Loads or unloads models, so it can evict the model serving a chat.
 SWAPS_MODELS = "swaps_models"
-# Only previews what a model swap would do.
 PREVIEWS_SWAPS = "previews_swaps"
-# Runs a chat turn, so a chat calling it would re-enter itself.
 REENTERS_CHAT = "reenters_chat"
-# Stops running work by kind, including the chat that calls it.
 STOPS_WORK = "stops_work"
-# Keeps working with the caller's key after the call returns.
 OUTLIVES_CALL = "outlives_call"
-# Can send host env credentials and host files to an endpoint its input names.
 SENDS_HOST_SECRETS = "sends_host_secrets"
 
 REASONS = {
@@ -42,7 +36,6 @@ class CallerProfile:
     call_scoped: bool = False
     # Host file paths may be read when the request itself comes from this computer.
     host_files: bool = True
-    # The MCP prompts (guided workflows) are listed.
     prompts: bool = True
 
     def withheld(self, facts: Mapping[str, Collection[str]]) -> dict[str, str]:
@@ -57,9 +50,7 @@ class CallerProfile:
         return frozenset(names) - set(self.withheld(facts))
 
 
-# An agent on /mcp: every tool the owner left on.
 AGENT = CallerProfile("agent")
-# A chat turn calling Unsloth Studio's own tools in process.
 CHAT = CallerProfile(
     "chat",
     refused = frozenset(REASONS),

@@ -86,7 +86,6 @@ def _recipe_cancelling(answer: dict) -> bool:
     return answer.get("status") == "cancelling"
 
 
-# Video.
 
 
 def _video_path(video_id: str, suffix: str = "") -> str:
@@ -183,7 +182,6 @@ async def _cancel_video(caller: Caller, job_id: Optional[str], save: bool) -> St
     return await _cancel_rendering(caller, job_id, save)
 
 
-# Data recipes.
 
 RECIPE_ROUTES = "/api/data-recipe"
 
@@ -246,7 +244,6 @@ async def _read_recipe(
     return media_result([], status)
 
 
-# Exports.
 
 
 def _export_status(job: export_jobs.ExportJob) -> JobStatus:
@@ -323,7 +320,6 @@ async def _cancel_export(caller: Caller, job_id: Optional[str], save: bool) -> S
     return Stop(True, EXPORT_STOPPED, job_id)
 
 
-# Training runs.
 
 # Training phases by job status; any other phase means the run is still going.
 TRAINING_STATUS = {
@@ -356,7 +352,6 @@ async def _read_training(
             update = {
                 "run_folder": run,
                 "checkpoints": [c.name for c in found if run and c.run == run],
-                # list_training_runs reads LLM runs only.
                 "loss_history": (
                     f'list_training_runs(run_id="{slot.job_id}")'
                     if kind == "training" and slot.job_id
@@ -417,7 +412,6 @@ def _start_withdrawn(answer: dict) -> bool:
     return answer.get("state") == "rejected" and answer.get("error_code") == START_CANCELLED
 
 
-# Model loads.
 
 
 def _load_status(job: loading.LoadJob) -> JobStatus:
@@ -447,7 +441,6 @@ async def _read_load(caller: Caller, job_id: Optional[str], **_unused: Any) -> T
     return media_result([], _load_status(loading.LOADS.lookup(caller.account_id, job_id)))
 
 
-# Model downloads.
 
 
 async def _read_download(caller: Caller, job_id: Optional[str], **_unused: Any) -> ToolResult:
@@ -463,7 +456,6 @@ async def _cancel_download(caller: Caller, job_id: Optional[str], save: bool) ->
     return Stop(False, f"Nothing to stop: the download is {state or 'not found'}.", job_id)
 
 
-# generate_audio runs.
 
 KEPT_TAKES = "finished takes stay in Audio history."
 _cancel_take = _route_cancel("/api/inference/audio/cancel", "cancel_id", _cancelled)
