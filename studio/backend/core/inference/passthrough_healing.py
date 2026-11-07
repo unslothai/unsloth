@@ -201,7 +201,6 @@ class NativeToolFormat(NamedTuple):
 
     open: str
     close: str
-    # Opens each call in a block.
     call: re.Pattern
     parse: Callable[..., list]
     # GLM shares <tool_call> with Hermes; its own blocks have this shape.
@@ -279,7 +278,7 @@ def _parse_glm_block(
     )
 
 
-# (template marker, format), most specific first.
+# Most specific marker first.
 _NATIVE_TOOL_FORMATS = (
     (
         "<minimax:tool_call>",
@@ -347,7 +346,6 @@ def _native_block_calls(
         calls = fmt.parse(block, id_offset = 0, allow_incomplete = allow_incomplete)
         leaves = [leaf for call in calls for leaf in _string_leaves(_loaded_arguments(call))]
     except RecursionError:
-        # Arguments nested past the interpreter's depth stay text.
         return None
 
     # Markers inside a parsed argument are that argument's data; the rest must be one envelope.
@@ -371,7 +369,6 @@ def _native_block(
 ) -> Optional[tuple]:
     close = text.find(fmt.close, begin + len(fmt.open))
     if close < 0:
-        # Cut off by the end of the generation.
         calls = _native_block_calls(fmt, text[begin:], True) if allow_incomplete else None
         return None if calls is None else (begin, len(text), calls)
     for _attempt in range(_MAX_NATIVE_CLOSERS):
@@ -797,7 +794,6 @@ class StreamToolCallHealer:
                 self._buffer = self._buffer[cut:]
             self._holding = start >= 0
         if self._holding and len(self._buffer) > _MAX_HOLD_CHARS:
-            # Too long to hold: it and the rest of the reply are relayed as text.
             events.append(("text", self._buffer))
             self._buffer, self._holding, self._relayed = "", False, None
         return events

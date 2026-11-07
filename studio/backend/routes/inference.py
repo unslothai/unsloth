@@ -34829,8 +34829,7 @@ async def produce_openai_chat_completions(
         if _sf_client_tools
         else None
     )
-    # The model's own call markup: llama-server parses it natively, here the healer has to. The
-    # load-time template counts too, since the model writes its trained format under a mapped one.
+    # llama-server parses the model's own call markup; here the healer must. The load-time template counts: a mapped template does not change what the model writes.
     _sf_native_tools = (
         native_tool_format(
             _sf_image_tpl,
