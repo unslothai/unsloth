@@ -284,6 +284,12 @@ function ToolResultLimitRow() {
 }
 
 export function ChatTab() {
+  const rightToLeftLayout = useChatPreferencesStore(
+    (state) => state.rightToLeftLayout,
+  );
+  const setRightToLeftLayout = useChatPreferencesStore(
+    (state) => state.setRightToLeftLayout,
+  );
   const isOwner = useIsAccountOwner();
   const t = useT();
   const pillId = useId();
@@ -780,6 +786,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.showResponseModel")}
             checked={showResponseModel}
             onCheckedChange={setShowResponseModel}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.rightToLeftLayout")}
+          description={t("settings.chat.rightToLeftLayoutDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.rightToLeftLayout")}
+            checked={rightToLeftLayout}
+            onCheckedChange={setRightToLeftLayout}
           />
         </SettingsRow>
         <SettingsRow

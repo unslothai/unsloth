@@ -2880,6 +2880,7 @@ const ThreadWelcome: FC<{
                 />
               )}
               <h1
+                dir="auto"
                 className={cn(
                   "aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200",
                   customText && "min-w-0 text-balance text-center [overflow-wrap:anywhere]",
@@ -2894,7 +2895,7 @@ const ThreadWelcome: FC<{
             </div>
           )}
           {incognito && (
-            <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
+            <p dir="auto" className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
               {t("welcome.temporaryChatDescription")}
             </p>
           )}

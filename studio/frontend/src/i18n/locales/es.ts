@@ -3039,6 +3039,8 @@ export const es = {
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
+      rightToLeftLayout: "Diseño del chat de derecha a izquierda",
+      rightToLeftLayoutDescription: "Invertir el diseño del chat de derecha a izquierda.",
       showReplyTimes: "Hora de las respuestas",
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:

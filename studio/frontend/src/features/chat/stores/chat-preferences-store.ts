@@ -21,6 +21,8 @@ import {
 } from "../utils/display-visibility.ts";
 
 export interface ChatPreferencesState {
+  rightToLeftLayout: boolean;
+  setRightToLeftLayout: (value: boolean) => void;
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
   showContextWindowUsage: boolean;
@@ -87,6 +89,8 @@ function normalisePastedTextMinChars(value: unknown): number {
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
+      rightToLeftLayout: false,
+      setRightToLeftLayout: (rightToLeftLayout) => set({ rightToLeftLayout }),
       ...normalizeComposerPreferences(null),
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
@@ -158,6 +162,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           | undefined;
         return {
           ...current,
+          rightToLeftLayout: saved?.rightToLeftLayout === true,
           ...normalizeComposerPreferences(saved),
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,

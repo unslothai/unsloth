@@ -3296,6 +3296,8 @@ export const nl = {
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",
+      rightToLeftLayout: "Chatindeling van rechts naar links",
+      rightToLeftLayoutDescription: "Spiegel de chatindeling van rechts naar links.",
       showReplyTimes: "Antwoordtijden",
       showReplyTimesDescription:
         "Onder elk antwoord tonen wanneer het klaar was.",
