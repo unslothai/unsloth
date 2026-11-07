@@ -11406,7 +11406,8 @@ class DiffusionBackend:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.
-                        stop_background_pins(pipe)
+                        # Until they exit: one may have started during the streaming apply.
+                        stop_background_pins(pipe, timeout = None)
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
                         if load_bg_compile is not None:
                             load_bg_compile.close()
@@ -14222,7 +14223,9 @@ class DiffusionBackend:
                 self._state_device_target(state)
                 apply_cpu_render_threads(state.device)
                 # Encoder pins the load left running finish first: a render racing a pinner runs slower.
-                finish_encoder_pins_before_render(state.pipe, cancel, logger)
+                if finish_encoder_pins_before_render(state.pipe, cancel, logger) > 0.0:
+                    # load-side setup, not render time: the background compile sizes its slices from this sample
+                    render_t0 = time.perf_counter()
                 if cancel.is_set():
                     raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Local `state` keeps the pipe alive past unload() nulling _state; resolve (prompt, seed) jobs first.
@@ -15668,8 +15671,9 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
-        # A pinner still copying would hold its host copies past release_pinned_host_memory().
-        stop_background_pins(getattr(state, "pipe", None))
+        # A pinner still copying would hold its host copies past release_pinned_host_memory(); encoder pinners can
+        # outlive the load, so wait for the exit (stop ends it after the copies in flight).
+        stop_background_pins(getattr(state, "pipe", None), timeout = None)
         # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:
             try:

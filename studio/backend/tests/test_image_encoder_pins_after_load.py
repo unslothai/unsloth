@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image load returns while its encoder pins finish; streamed encoders pin beside the transformer's pin; the first
+"""An image load returns while its encoder pins finish; streamed encoders pin while the transformer is placed; the first
 render waits for them. ``UNSLOTH_DIFFUSION_ENCODER_PINS_AFTER_LOAD=0`` keeps the old order and the load-time wait."""
 
 import ast
@@ -71,6 +71,8 @@ def test_the_load_waits_for_the_encoder_pins_only_under_the_kill_switch(monkeypa
     monkeypatch.setattr(dm, "start_background_pins", lambda pipe: calls.append("start") or 1)
     monkeypatch.setattr(dm, "finish_background_pins", lambda pipe: calls.append("finish") or 3.0)
     pipe = types.SimpleNamespace()
+    # a pinner still copying when the load ends
+    setattr(pipe, dm._PENDING_PINS_ATTR, [types.SimpleNamespace(join = lambda timeout = None: False)])
     waited = dm.finish_encoder_pins_at_load(pipe, _Log())
     if env == "0":
         assert calls == ["start", "finish"] and waited == 3.0
@@ -139,10 +141,21 @@ def streaming(monkeypatch, fake_pin):
     monkeypatch.delenv(dm.GROUP_OFFLOAD_PIN_ENV, raising = False)
     pipe = types.SimpleNamespace()
     pipe.transformer = torch.nn.Linear(64, 64)
-    pipe.text_encoder = torch.nn.Sequential(torch.nn.Linear(64, 64), torch.nn.Linear(64, 64))
+    # 4 MiB of fp32 weight per Linear, one group per parameter
+    pipe.text_encoder = torch.nn.Sequential(
+        torch.nn.Linear(1024, 1024), torch.nn.Linear(1024, 1024)
+    )
     pipe.components = {"transformer": pipe.transformer, "text_encoder": pipe.text_encoder}
     groups = {id(m): _groups(m) for m in (pipe.transformer, pipe.text_encoder)}
-    applied = []
+    seen = types.SimpleNamespace(applied = [], checks = [], tops = [])
+
+    def encoder_pinner():
+        pending = getattr(pipe, dm._PENDING_PINS_ATTR, None) or ()
+        return next((p for p in pending if p.module is pipe.text_encoder), None)
+
+    def started():
+        encoder = encoder_pinner()
+        return bool(encoder is not None and encoder._started)
 
     def apply_group_offloading(
         module,
@@ -157,20 +170,35 @@ def streaming(monkeypatch, fake_pin):
     ):
         raise AssertionError("routed through _apply_group_offloading_packed")
 
+    def torchao_kwargs(
+        module,
+        kwargs,
+        pinned_mib = None,
+    ):
+        if module is pipe.transformer:
+            seen.checks.append(started())  # the transformer's pin decision
+        return kwargs
+
     def packed(_apply, module, kwargs, logger):
-        encoder = next(
-            (
-                p
-                for p in getattr(pipe, dm._PENDING_PINS_ATTR, None) or ()
-                if p.module is pipe.text_encoder
-            ),
-            None,
-        )
         name = "transformer" if module is pipe.transformer else "text_encoder"
-        applied.append((name, bool(encoder is not None and encoder._started)))
+        seen.applied.append((name, started()))
+        if name == "transformer" and started():
+            encoder_pinner().join(
+                10
+            )  # the slab pin outlasts the encoder's: all of it is placed by the top check
+
+    def top_level(
+        module,
+        logger = None,
+        pinned_mib = None,
+        device = None,
+    ):
+        seen.tops.append(pinned_mib[0])
+        return True
 
     monkeypatch.setattr(diffusers_hooks, "apply_group_offloading", apply_group_offloading)
     monkeypatch.setattr(dm, "_apply_group_offloading_packed", packed)
+    monkeypatch.setattr(dm, "_torchao_group_offload_kwargs", torchao_kwargs)
     monkeypatch.setattr(dm, "_offload_groups", lambda module: groups.get(id(module), []))
     for name in (
         "install_group_offload_buffer_restore",
@@ -179,13 +207,14 @@ def streaming(monkeypatch, fake_pin):
     ):
         monkeypatch.setattr(dm, name, lambda *a, **k: True)
     monkeypatch.setattr(dm, "install_group_prefetch", lambda *a, **k: None)
-    monkeypatch.setattr(dm, "_pin_top_level_group", lambda *a, **k: True)
+    monkeypatch.setattr(dm, "_pin_top_level_group", top_level)
     monkeypatch.setattr(dm, "host_pinning_allowed", lambda *a, **k: True)
     monkeypatch.setattr(dm, "_streaming_prefetch_enabled", lambda: True)
     monkeypatch.setattr(dm, "_encoder_background_pin_wanted", lambda *a, **k: True)
     monkeypatch.setattr(dm, "_streamed_pin_plan", lambda *a, **k: (True, True))
     monkeypatch.setattr(dm, "_streamed_pin_leftover_mib", lambda *a, **k: 0)
-    return types.SimpleNamespace(pipe = pipe, applied = applied, monkeypatch = monkeypatch)
+    seen.pipe, seen.monkeypatch = pipe, monkeypatch
+    return seen
 
 
 def _encoder_pinner(pipe):
@@ -196,11 +225,15 @@ def test_a_whole_pin_encoder_starts_pinning_before_the_transformer_pins(streamin
     log = _Log()
     dm._apply_streaming_offload(streaming.pipe, "cuda", log)
     assert streaming.applied == [("text_encoder", False), ("transformer", True)]
+    # the transformer decides its pin on the live budget before any encoder byte is placed, as before
+    assert streaming.checks == [False]
     pinner = _encoder_pinner(streaming.pipe)
-    assert pinner.join(10) and pinner.pinned == sum(
-        p.nbytes for p in streaming.pipe.text_encoder.parameters()
-    )
-    assert any("beside the transformer's pin" in line for line in log.lines)
+    assert pinner.join(10)
+    assert pinner.pinned == sum(p.nbytes for p in streaming.pipe.text_encoder.parameters())
+    # the top-level check is credited the placed encoder bytes, which the live budget already lost
+    reserved = dm._module_registered_mib(streaming.pipe.text_encoder)
+    assert reserved >= 8 and streaming.tops == [reserved - (pinner.pinned >> 20)]
+    assert any("while the transformer is placed" in line for line in log.lines)
     # the load's start is then a no-op restart of a running (here finished) pinner
     assert dm.start_background_pins(streaming.pipe) == 1
 
@@ -216,9 +249,10 @@ def test_the_old_order_under_the_kill_switch_or_a_prefix_pin(streaming, case):
     log = _Log()
     dm._apply_streaming_offload(streaming.pipe, "cuda", log)
     assert streaming.applied == [("transformer", False), ("text_encoder", False)]
+    assert streaming.checks == [False]
     pinner = _encoder_pinner(streaming.pipe)
     assert not pinner._started
-    assert not any("beside the transformer's pin" in line for line in log.lines)
+    assert not any("while the transformer is placed" in line for line in log.lines)
     dm.start_background_pins(streaming.pipe)
     assert pinner.join(10)
 
@@ -254,4 +288,44 @@ def test_generate_waits_for_the_pins_before_loras_and_checks_cancel():
         and n.lineno > waits[0].lineno
         and "cancel.is_set" in ast.unparse(n.test)
     ]
-    assert cancel_checks and min(n.lineno for n in cancel_checks) <= waits[0].lineno + 2
+    assert cancel_checks and min(n.lineno for n in cancel_checks) <= waits[0].lineno + 4
+
+
+def test_generate_restarts_the_render_timer_after_a_pin_wait():
+    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8"))
+    generate = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"
+    )
+    wait = _calls(generate, "finish_encoder_pins_before_render")[0]
+    resets = [
+        n
+        for n in ast.walk(generate)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "render_t0" for t in n.targets)
+        and n.lineno > wait.lineno
+    ]
+    notes = _calls(generate, "_note_eager_render")
+    assert resets and notes and min(n.lineno for n in resets) < min(n.lineno for n in notes)
+
+
+def test_unload_and_an_uncommitted_load_wait_for_the_pinners_to_exit():
+    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8"))
+    stops = _calls(tree, "stop_background_pins")
+    assert len(stops) >= 2
+    for call in stops:
+        timeout = {k.arg: k.value for k in call.keywords}.get("timeout")
+        assert isinstance(timeout, ast.Constant) and timeout.value is None, ast.unparse(call)
+
+
+def test_pins_already_done_at_the_load_settle_there(monkeypatch):
+    monkeypatch.delenv(dm.ENCODER_PINS_AFTER_LOAD_ENV, raising = False)
+    trims = []
+    monkeypatch.setattr(dm, "trim_host_heap_after_load", lambda logger = None: trims.append(1))
+    monkeypatch.setattr(dm, "start_background_pins", lambda pipe: 1)
+    pipe = types.SimpleNamespace()
+    setattr(pipe, dm._PENDING_PINS_ATTR, [types.SimpleNamespace(join = lambda timeout = None: True)])
+    log = _Log()
+    assert dm.finish_encoder_pins_at_load(pipe, log) == 0.0
+    assert getattr(pipe, dm._PINS_SETTLED_ATTR) and not log.lines
+    # the first render neither waits nor trims a second time
+    assert dm.finish_encoder_pins_before_render(pipe, threading.Event()) == 0.0 and trims == []

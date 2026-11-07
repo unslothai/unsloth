@@ -6713,12 +6713,20 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
     A cold encoder file kept Qwen-Image's 8 GiB load waiting 24-28 s here. Under the kill switch the load waits."""
     if pipe is None:
         return 0.0
-    started = start_background_pins(pipe)
+    start_background_pins(pipe)
     if _encoder_pins_after_load():
-        if started and logger is not None:
+        running = sum(
+            1
+            for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+            if not pinner.join(0)
+        )
+        if not running:
+            # all done already (warm page cache): the load's own heap trim covers their sources
+            _mark_pins_settled(pipe)
+        elif logger is not None:
             logger.info(
                 "diffusion.memory: the load returns while %d encoder pinner(s) finish; the first render waits for them",
-                started,
+                running,
             )
         return 0.0
     waited = finish_background_pins(pipe)
@@ -7458,6 +7466,19 @@ def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
             pinner.stop(timeout)
         except Exception:  # noqa: BLE001 - teardown is best effort
             pass
+
+
+def _pinners_placed_mib(pipe: Any, modules: list) -> int:
+    """MiB the deferred pinners of ``modules`` have already copied into registered memory (read before any budget
+    sample, so later progress stays reserved)."""
+    if not modules:
+        return 0
+    ids = {id(m) for m in modules}
+    placed = 0
+    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+        if id(pinner.module) in ids:
+            placed += max(int(pinner.copied), int(pinner.pinned))
+    return placed >> 20
 
 
 def _start_deferred_pinning(pipe: Any, module: Any) -> bool:
@@ -8738,9 +8759,16 @@ def _apply_streaming_offload(
         def _pins_early(name: Any, module: Any, offload_type: str) -> bool:
             return early_pins and _encoder_defers(name, module, offload_type)
 
-        # Whole-pin deferred encoders first, their pinner started at once: a cold encoder file then reads beside the
-        # transformer's slab pin, not after it. Within the plan's budget, which already priced both pins.
+        # Whole-pin deferred encoders first; their pinners start once the first denoiser has made its pin decision,
+        # so a cold encoder file reads beside the transformer's slab pin, not after it. Within the plan's budget.
         order = sorted(streamed.items(), key = lambda kv: not _pins_early(kv[0], *kv[1]))
+        early_waiting: list = []
+        early_started: list = []
+
+        def _early_credit_mib() -> int:
+            # bytes the started encoder pinners already placed: the live budget has them, pinned_mib reserved them
+            return _pinners_placed_mib(pipe, early_started)
+
         for comp_name, (module, offload_type) in order:
             kwargs: dict[str, Any] = {
                 "onload_device": onload,
@@ -8761,7 +8789,21 @@ def _apply_streaming_offload(
             )
             if use_stream and "low_cpu_mem_usage" in params:
                 kwargs["low_cpu_mem_usage"] = not (pin and not defer and not enc_defer)
-            kwargs = _torchao_group_offload_kwargs(module, kwargs, pinned_mib)
+            credit = _early_credit_mib()
+            pinned_mib[0] -= credit
+            try:
+                kwargs = _torchao_group_offload_kwargs(module, kwargs, pinned_mib)
+            finally:
+                pinned_mib[0] += credit
+            if offload_type == "block_level" and early_waiting:
+                for early in early_waiting:
+                    if _start_deferred_pinning(pipe, early) and logger is not None:
+                        logger.info(
+                            "diffusion.memory: %s pins in the background while the transformer is placed",
+                            type(early).__name__,
+                        )
+                early_started.extend(early_waiting)
+                early_waiting.clear()
             _apply_group_offloading_packed(apply_group_offloading, module, kwargs, logger)
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
@@ -8788,24 +8830,21 @@ def _apply_streaming_offload(
                 if not pin:
                     encoder_left_mib = max(0, encoder_left_mib - _module_registered_mib(module))
             installed += 1
-            if (
-                use_stream
-                and offload_type == "block_level"
-                and not _pin_top_level_group(module, logger, pinned_mib, device = onload)
-            ):
-                _skip_top_level_copy_back(module, logger)
+            if use_stream and offload_type == "block_level":
+                credit = _early_credit_mib()
+                pinned_mib[0] -= credit
+                try:
+                    top_pinned = _pin_top_level_group(module, logger, pinned_mib, device = onload)
+                finally:
+                    pinned_mib[0] += credit
+                if not top_pinned:
+                    _skip_top_level_copy_back(module, logger)
             if use_stream and prefetch and offload_type == "block_level":
                 install_group_prefetch(module, onload, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
-            if _pins_early(comp_name, module, offload_type) and _start_deferred_pinning(
-                pipe, module
-            ):
-                if logger is not None:
-                    logger.info(
-                        "diffusion.memory: %s pins in the background beside the transformer's pin",
-                        type(module).__name__,
-                    )
+            if _pins_early(comp_name, module, offload_type):
+                early_waiting.append(module)
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module, offload_type in streamed.values():
