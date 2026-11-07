@@ -302,7 +302,16 @@ def test_generate_batch_seeds_and_progress(env):
         return runtime_generate(*a, **k)
 
     runtime.generate = _spy
-    result = backend.generate(prompt = "a fox", width = 280, height = 270, steps = 3, seed = 7, batch_size = 2)
+    result = backend.generate(
+        prompt = "a fox",
+        width = 280,
+        height = 270,
+        steps = 3,
+        seed = 7,
+        batch_size = 2,
+        sampler = "default",
+        schedule_type = "automatic",
+    )
     assert result["seeds"] == [7, 8] and result["seed"] == 7
     assert len(result["images"]) == 2
     assert result["images"][0].size == (272, 256)  # rounded down to multiples of 16
@@ -318,6 +327,18 @@ def test_generate_batch_seeds_and_progress(env):
     assert runtime.generates[0]["guidance"] is None
     assert backend.last_timings["images"][0]["s_per_step"] >= 0
     assert mb.generation_in_flight() is False
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"sampler": "euler"}, {"schedule_type": "karras"}],
+)
+def test_generate_refuses_unsupported_sampler_choices(env, kwargs):
+    """MLX must not silently generate with a sampler or schedule it cannot apply."""
+    backend, runtime, _calls = env
+    with pytest.raises(ValueError, match = "sampler.*not supported on the MLX engine"):
+        backend.generate(prompt = "x", **kwargs)
+    assert runtime.generates == []
 
 
 @pytest.mark.parametrize(

@@ -885,6 +885,52 @@ def test_generate_qwen_passes_sampling_args():
     assert "--flow-shift" in (kw.get("extra_args") or [])
 
 
+@pytest.mark.parametrize(
+    "sampler,native_method",
+    [
+        ("euler", "euler"),
+        ("euler_a", "euler_a"),
+        ("dpmpp_2m", "dpm++2m"),
+        ("dpmpp_2m_sde", "dpm++2m_sde"),
+    ],
+)
+def test_native_sampler_choice_reaches_oneshot_without_changing_load_defaults(
+    sampler, native_method
+):
+    """Route-accepted choices must reach sd-cli while the next default request keeps its load settings."""
+    from routes.inference import _sampler_kwargs
+
+    engine = _FakeEngine()
+    backend = _loaded_backend(engine = engine)
+    original_method = backend._state.sampling_method
+    result = backend.generate(
+        prompt = "a fox",
+        steps = 1,
+        seed = 1,
+        **_sampler_kwargs(backend.generate, sampler, "karras"),
+    )
+
+    params = engine.calls[-1][1]
+    assert params.sampling_method == native_method
+    assert params.scheduler == "karras"
+    assert result["sampler"] == sampler
+    assert result["schedule_type"] == "karras"
+    assert backend._state.sampling_method == original_method
+
+    backend.generate(prompt = "another fox", steps = 1, seed = 2)
+    assert engine.calls[-1][1].sampling_method == original_method
+    assert engine.calls[-1][1].scheduler is None
+
+
+def test_native_status_offers_samplers_and_schedules_the_engine_accepts():
+    """The Images selector is driven by native status, using the existing public sampler IDs."""
+    options = {option["id"]: option for option in _loaded_backend().status()["samplers"]}
+    assert set(options) == {"default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"}
+    assert options["dpmpp_2m"]["label"] == "DPM++ 2M"
+    for option in options.values():
+        assert option["schedule_types"] == ["automatic", "uniform", "karras", "exponential"]
+
+
 def test_generate_refuses_a_snapshot_naming_another_model():
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
@@ -1635,6 +1681,37 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     assert servers[0].payloads[0]["batch_count"] == 3
     assert out["seed"] == 7 and out["seeds"] == [7, 8, 9]
     assert b._gen is None
+
+
+@pytest.mark.parametrize(
+    "sampler,native_method,schedule,native_schedule",
+    [
+        ("euler_a", "euler_a", "uniform", "discrete"),
+        ("dpmpp_2m", "dpm++2m", "automatic", "karras"),
+        ("dpmpp_2m_sde", "dpm++2m_sde", "automatic", "exponential"),
+    ],
+)
+def test_native_sampler_choice_reaches_server_request(
+    monkeypatch, sampler, native_method, schedule, native_schedule
+):
+    """The resident server must receive the same request-local sampler/schedule as the CLI path."""
+    from routes.inference import _sampler_kwargs
+
+    backend = SdCppDiffusionBackend()
+    servers = []
+    _run_server_load(monkeypatch, backend, servers)
+    original_method = backend._state.sampling_method
+    backend.generate(
+        prompt = "a fox",
+        steps = 1,
+        seed = 1,
+        **_sampler_kwargs(backend.generate, sampler, schedule),
+    )
+
+    params = servers[-1].payloads[-1]["sample_params"]
+    assert params["sample_method"] == native_method
+    assert params["scheduler"] == native_schedule
+    assert backend._state.sampling_method == original_method
 
 
 _GGML_ABORT = (
