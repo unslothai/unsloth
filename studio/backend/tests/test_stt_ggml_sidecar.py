@@ -1290,3 +1290,25 @@ def test_both_unload_callables_accept_the_arguments_the_route_passes(monkeypatch
 
     for unload in (registry_unload, orchestrator_unload):
         inspect.signature(unload).bind(["whisper"], expected_model = "whisper-small")
+
+
+def test_keep_alive_rearms_the_timer_only_for_a_live_server():
+    """Voice typing heartbeats this; it must never spawn a server of its own."""
+
+    class _AliveProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+    sidecar = GgmlSttSidecar(keep_alive_seconds = 300)
+    try:
+        assert sidecar.keep_alive() is False, "nothing was resident to hold"
+        sidecar._process = _AliveProcess()
+        assert sidecar.keep_alive() is True
+        assert sidecar._idle_timer is not None, "the idle unload was not pushed back"
+    finally:
+        with sidecar._lock:
+            sidecar._cancel_idle_unload_locked()
+        sidecar._process = None

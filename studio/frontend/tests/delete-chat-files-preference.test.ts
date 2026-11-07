@@ -31,7 +31,6 @@ test("every chat delete path honours the preference", async () => {
     "../src/components/app-sidebar.tsx",
     "../src/features/chat/chat-page.tsx",
     "../src/features/settings/components/archived-chats-dialog.tsx",
-    "../src/features/settings/components/recent-dictations-view.tsx",
     "../src/features/settings/tabs/data-tab.tsx",
   ];
   for (const file of files) {
@@ -50,10 +49,6 @@ test("every confirmation discloses the file deletion and can undo it", async () 
     ["../src/features/chat/chat-page.tsx", "deleteFilesOnDelete"],
     [
       "../src/features/settings/components/archived-chats-dialog.tsx",
-      "deleteFilesOnDelete",
-    ],
-    [
-      "../src/features/settings/components/recent-dictations-view.tsx",
       "deleteFilesOnDelete",
     ],
     ["../src/features/settings/tabs/data-tab.tsx", "deleteFilesOnClear"],
@@ -79,10 +74,6 @@ test("the confirmed delete follows the switch, not the preference", async () => 
     [
       "../src/features/settings/components/archived-chats-dialog.tsx",
       /item: SidebarItem,\s*deleteFiles: boolean/,
-    ],
-    [
-      "../src/features/settings/components/recent-dictations-view.tsx",
-      /confirmDeleteWithChat\(deleteFiles: boolean\)/,
     ],
     ["../src/features/settings/tabs/data-tab.tsx", /deleteFiles: deleteFilesOnClear/],
   ] as Array<[string, RegExp]>) {

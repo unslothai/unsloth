@@ -206,6 +206,10 @@ pub fn old_webkit_warning(
 }
 
 /// WebView2 arguments for the main window: None keeps today's (wry's defaults).
+///
+/// Must stay `None` unless GPU rendering is off: WebView2 rejects a second
+/// webview whose environment was created with different browser arguments, and
+/// that broke the voice-typing overlay (HRESULT 0x8007139F).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn windows_main_browser_args(setting: GpuRendering) -> Option<String> {
     (setting == GpuRendering::Off)

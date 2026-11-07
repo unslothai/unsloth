@@ -85,6 +85,14 @@ def load_whisper(
     import torch
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
+    if device == "cuda":
+        try:
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        except Exception:  # noqa: BLE001 - optional accelerator flags
+            pass
+
     dtype = getattr(torch, dtype_name, None) or torch.float32
     processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
     _raise_if_cancelled(cancel_event)

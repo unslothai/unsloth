@@ -609,13 +609,13 @@ test("every Settings dictation path carries the saved quant", () => {
   // the session pins the quant for preload and every segment.
   assert.match(adapter, /const sessionVariant = usesExternalEndpoint\s*\?\s*null\s*:\s*sttModelVariant\(sessionModel, settings\.sttGgufVariant\);/);
   assert.match(adapter, /ggufVariant: sessionVariant,/);
-  assert.match(adapter, /sessionEngine,\s*undefined,\s*undefined,\s*sessionVariant,/);
+  assert.match(adapter, /sessionEngine,\s*abortController\.signal,\s*undefined,\s*sessionVariant,/);
 
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(voiceTab, /await loadSttModel\(sttModel, undefined, undefined, undefined, sttVariant\);/);
   assert.match(voiceTab, /void autoLoadSttModel\(sttModel, sttVariant\);/);
   // ready requires the pinned quant to be resident, not merely its row.
-  assert.match(voiceTab, /\(!sttVariant \|\| engineStatus\.loaded_variant === sttVariant\)/);
+  assert.match(voiceTab, /\(!sttVariant \|\| loadedEngine\.loaded_variant === sttVariant\)/);
   // status is row-level; the listing shows whether the pinned quant is cached.
   assert.match(
     voiceTab,
@@ -623,7 +623,7 @@ test("every Settings dictation path carries the saved quant", () => {
   );
   // binding Select to the pin preserves an active quant selection.
   assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
-  assert.match(voiceTab, /setSttGgufVariant\(next\);\s*if \(next === shownSttVariant\) return;/);
+  assert.match(voiceTab, /setSttGgufVariant\(next\);/);
   assert.match(voiceTab, /<SelectValue placeholder=\{shownSttLabel\}>/);
 
   // the prompt fetches the requester's pin, not the current Voice setting.

@@ -50,6 +50,17 @@ def test_the_serving_engine_then_falls_back_to_transformers(monkeypatch):
     assert inference_routes._resolve_serving_stt_engine("gguf") == "transformers"
 
 
+def test_a_transformers_only_snapshot_is_not_loaded_through_gguf(monkeypatch):
+    from routes import inference as inference_routes
+    from core.inference import stt_sidecar
+
+    monkeypatch.setattr(stt_ggml_sidecar, "_cached_model_path", lambda model: None)
+    monkeypatch.setattr(stt_sidecar, "is_model_downloaded", lambda model: model == "tiny")
+    assert inference_routes._prefer_downloaded_stt_engine("gguf", "tiny") == "transformers"
+    assert inference_routes._prefer_downloaded_stt_engine("gguf", "small") == "gguf"
+    assert inference_routes._prefer_downloaded_stt_engine("transformers", "tiny") == "transformers"
+
+
 def test_a_cancelled_transcription_does_not_disable_the_engine():
     """A cancel closes the socket deliberately. Treating that as a broken runtime would
     disable whisper.cpp for the rest of the session every time someone stops a recording."""
