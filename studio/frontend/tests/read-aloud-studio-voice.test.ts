@@ -9,6 +9,8 @@ import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import test from "node:test";
 
+import * as speechText from "../src/features/chat/voice/speech-text.ts";
+import * as ttsChunkPlan from "../src/features/chat/voice/tts-chunk-plan.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 import * as modelCatalog from "../src/features/settings/api/openai-model-catalog.ts";
@@ -70,6 +72,8 @@ function load(
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
+      "../voice/speech-text": speechText,
+      "../voice/tts-chunk-plan": ttsChunkPlan,
       "../utils/speech-text": {
         markdownToSpeechText: (text: string) => text,
       },

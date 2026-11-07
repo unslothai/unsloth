@@ -2528,7 +2528,7 @@ UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
 UNIFIED_OVERSIZE_REQUEST_FIELD = "allow_oversized_load"
 # Must match the Settings switch label and location in frontend unified-memory-load-refusal.ts.
 UNIFIED_OVERSIZE_SETTING_LABEL = "Allow oversized model loads"
-UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model memory"
+UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model loading"
 UNIFIED_OVERSIZE_REFUSAL_CODE = "unified-memory-load"
 
 # Unlike the env var, the per-load flag does NOT lift the MPS allocator cap: that cap is process-wide and set once,

@@ -91,8 +91,7 @@ export function readGenerationProgress(
   return null;
 }
 
-/** "9,216 / 23,700 tokens · 1,326 tok/s" for the Generation details setting, counted past the
- *  cached prefix like the percent. */
+/** Counted past the cached prefix, like the percent. */
 export function formatPrefillDetails(
   prefill: LivePrefillProgress,
   t: Translate,

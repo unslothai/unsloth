@@ -25,6 +25,7 @@ import {
 
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -624,10 +625,12 @@ function StartupSurface({ children }: { children: ReactNode }) {
  */
 export function ClosingScreen() {
   useDocumentFlag("data-blocking-screen-open", true);
+  const blockingScreenRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   return (
     // pointer-events-auto: Radix parks pointer-events:none on <body> while a modal is open, which
     // would make this overlay click-through onto the hidden dialog.
     <div
+      ref={blockingScreenRef}
       data-blocking-screen=""
       className="pointer-events-auto modal-pe-live fixed inset-0 z-[9999]"
     >

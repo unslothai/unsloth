@@ -4,26 +4,47 @@
 // Relative with .ts: the node tests import this file and cannot resolve @/.
 import { accountDatabaseName } from "../../../lib/account-transition.ts";
 
-export type Pending = { scale: boolean; browser: boolean };
+export const PENDING_SECTIONS = [
+  "scale",
+  "browser",
+  "chat",
+  "plusMenu",
+  "timeFormat",
+  "spellcheck",
+] as const;
+
+export type PendingSection = (typeof PENDING_SECTIONS)[number];
+export type Pending = Record<PendingSection, boolean>;
 
 const pendingKey = () => accountDatabaseName("unsloth_client_prefs_pending");
 
 export function readPending(): Pending {
+  let saved: Record<string, unknown> | null = null;
   try {
-    const saved = JSON.parse(localStorage.getItem(pendingKey()) ?? "{}");
-    return { scale: saved?.scale === true, browser: saved?.browser === true };
+    saved = JSON.parse(localStorage.getItem(pendingKey()) ?? "{}");
   } catch {
-    return { scale: false, browser: false };
+    // nothing pending
   }
+  return Object.fromEntries(
+    PENDING_SECTIONS.map((section) => [section, saved?.[section] === true]),
+  ) as Pending;
 }
 
 export function writePending(pending: Pending): void {
   try {
-    if (pending.scale || pending.browser) {
+    if (Object.values(pending).some(Boolean)) {
       localStorage.setItem(pendingKey(), JSON.stringify(pending));
     } else {
       localStorage.removeItem(pendingKey());
     }
   } catch {
+    // storage unavailable
   }
+}
+
+// Re-read first: other tabs of this account share the marker.
+export function markPending(sections: readonly PendingSection[], value: boolean): void {
+  const pending = readPending();
+  for (const section of sections) pending[section] = value;
+  writePending(pending);
 }

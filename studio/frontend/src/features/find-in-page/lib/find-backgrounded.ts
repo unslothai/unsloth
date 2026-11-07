@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isSurfaceBackgrounded } from "@/features/settings/hooks/use-shortcut";
+import { hasTrackedSurface, MODAL_SURFACE } from "@/lib/surface-registry";
 import { FIND_SCOPE_ATTRIBUTE } from "./find-attributes.ts";
 
 export const MODAL_BACKDROP_SELECTOR = [
@@ -16,7 +17,7 @@ export const MODAL_BACKDROP_SELECTOR = [
 export function isFindScopeBackgrounded(): boolean {
   if (typeof document === "undefined") return false;
   return (
-    document.querySelector(MODAL_BACKDROP_SELECTOR) !== null ||
+    hasTrackedSurface(MODAL_SURFACE, MODAL_BACKDROP_SELECTOR) ||
     isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)
   );
 }

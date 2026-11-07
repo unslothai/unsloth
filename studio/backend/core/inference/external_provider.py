@@ -19,7 +19,7 @@ import uuid
 import weakref
 import wave
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -190,8 +190,10 @@ def _merge_concatenated_wav_segments(
 def _append_provider_path(base_url: str, endpoint: str) -> str:
     """Append an API path without moving it behind a base URL's query string."""
     parts = urlsplit(base_url)
-    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    endpoint_path, _, endpoint_query = endpoint.partition("?")
+    path = f"{parts.path.rstrip('/')}/{endpoint_path.lstrip('/')}"
+    query = "&".join(q for q in (parts.query, endpoint_query) if q)
+    return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
 
 
 def caches_at_the_last_block(
@@ -1156,6 +1158,8 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 # cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_anthropic_output_caps: dict[tuple[str, str, str], Optional[int]] = {}
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 32000
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -1982,7 +1986,7 @@ class ExternalProviderClient:
         if response_format is not None:
             body["response_format"] = response_format
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
             url,
@@ -2225,7 +2229,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Two requests: first is internal; second echoes tool args verbatim as the server runs the search."""
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -2559,6 +2563,30 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _anthropic_output_cap(self, model: str) -> Optional[int]:
+        key = (self.base_url, self._credential_digest(), model)
+        if key not in _anthropic_output_caps:
+            try:
+                response = await _client().get(
+                    _append_provider_path(self.base_url, f"/models/{quote(model, safe = '')}"),
+                    headers = self._auth_headers(),
+                    timeout = 10,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    return None
+                cap = response.json().get("max_tokens") if response.is_success else None
+            except httpx.HTTPError:
+                return None
+            except (ValueError, AttributeError):
+                cap = None
+            # The full cap (up to 128k) plus a long prompt can exceed the context window, which Claude rejects.
+            _anthropic_output_caps[key] = (
+                min(cap, _ANTHROPIC_DEFAULT_MAX_TOKENS)
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
+            )
+        return _anthropic_output_caps[key]
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -2884,7 +2912,7 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
-            "max_tokens": max_tokens or 1024,  # required by Anthropic
+            "max_tokens": max_tokens or await self._anthropic_output_cap(model) or 1024,
             "stream": True,
         }
         if not sampling_removed:
@@ -3148,7 +3176,7 @@ class ExternalProviderClient:
         if fast_mode_active:
             body["speed"] = "fast"
 
-        url = f"{self.base_url}/messages"
+        url = _append_provider_path(self.base_url, "/messages")
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
         # Log outgoing config keys (not messages) to prove which thinking / effort fields reached the wire.
@@ -4863,7 +4891,7 @@ class ExternalProviderClient:
             body["cachedContent"] = enable_prompt_caching
 
         # Model id is validated at the top of _stream_gemini, so the URL path cannot be traversed.
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = _append_provider_path(self.base_url, f"/models/{model}:streamGenerateContent?alt=sse")
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
         logger.info(
@@ -5668,14 +5696,10 @@ class ExternalProviderClient:
                         if _pt == "text" and _part.get("text"):
                             _asst_parts.append(
                                 {
-                                    "type": "input_text",
+                                    "type": "output_text",
                                     "text": _part.get("text", ""),
                                 }
                             )
-                        elif _pt == "image_url":
-                            _u = _part.get("image_url", {}).get("url", "")
-                            if _u:
-                                _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
                         _turn_items.append({"role": "assistant", "content": _asst_parts})
 
@@ -5741,9 +5765,12 @@ class ExternalProviderClient:
                     part_type = part.get("type")
                     if part_type == "text":
                         translated_parts.append(
-                            {"type": "input_text", "text": part.get("text", "")}
+                            {
+                                "type": "output_text" if role == "assistant" else "input_text",
+                                "text": part.get("text", ""),
+                            }
                         )
-                    elif part_type == "image_url":
+                    elif part_type == "image_url" and role != "assistant":
                         url = part.get("image_url", {}).get("url", "")
                         if url:
                             # Responses takes image_url as a flat string (https:// and data: URLs both accepted).
@@ -7222,7 +7249,7 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         headers = self._chat_headers(None)
         response = await _client().post(
             url,
@@ -7352,7 +7379,7 @@ class ExternalProviderClient:
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _client().post(
-            f"{self.base_url}/audio/transcriptions",
+            _append_provider_path(self.base_url, "/audio/transcriptions"),
             headers = headers,
             files = {"file": (filename, audio, content_type)},
             data = data,
@@ -7443,7 +7470,7 @@ class ExternalProviderClient:
                 return cached[1]
             try:
                 response = await _client().get(
-                    f"{self.base_url}/models",
+                    _append_provider_path(self.base_url, "/models"),
                     headers = self._auth_headers(),
                     timeout = self._timeout,
                 )
@@ -7469,7 +7496,7 @@ class ExternalProviderClient:
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
-            f"{self.base_url}/models",
+            _append_provider_path(self.base_url, "/models"),
             # Anthropic pages 20 models and native Gemini 50 by default; both cap a page at 1000. A Gemini
             # connection through a proxy gets no native parameter it may reject.
             params = (
@@ -7506,7 +7533,7 @@ class ExternalProviderClient:
                 break
             seen.add(token)
             response = await _client().get(
-                f"{self.base_url}/models",
+                _append_provider_path(self.base_url, "/models"),
                 params = params.set("pageToken", token),
                 headers = self._auth_headers(),
                 timeout = timeout,
@@ -7739,7 +7766,7 @@ class ExternalProviderClient:
         """Confirm GET /models returns 200 without buffering the full response body. Used for
         providers with enormous catalogs (e.g. OpenRouter, Hugging Face router) where downloading
         the full JSON would be prohibitive."""
-        url = f"{self.base_url}/models"
+        url = _append_provider_path(self.base_url, "/models")
         try:
             async with _client().stream(
                 "GET",
@@ -7764,7 +7791,7 @@ class ExternalProviderClient:
         router answer /models without one, so that check alone passes any key. Errors other than
         401/403 count as not rejected."""
         if self.provider_type == "openrouter":
-            url = f"{self.base_url}/key"
+            url = _append_provider_path(self.base_url, "/key")
         elif (
             self.provider_type == "huggingface"
             and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"
@@ -7793,7 +7820,7 @@ class ExternalProviderClient:
         them). Only valid against api.openai.com (caller guards is_openai_cloud).
         """
         response = await _client().get(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             headers = self._container_headers(),
             timeout = self._timeout,
         )
@@ -7819,7 +7846,7 @@ class ExternalProviderClient:
             },
         }
         response = await _client().post(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             json = body,
             headers = self._container_headers(),
             timeout = self._timeout,
@@ -7829,7 +7856,7 @@ class ExternalProviderClient:
 
     async def delete_openai_container(self, container_id: str) -> None:
         """Fresh client, since shared-pool DELETEs left containers alive; body must report deleted:true."""
-        url = f"{self.base_url}/containers/{container_id}"
+        url = _append_provider_path(self.base_url, f"/containers/{container_id}")
         headers = self._container_headers()
         logger.info(
             "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",
