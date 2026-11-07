@@ -155,6 +155,10 @@ export function startClientPreferencesSync(): () => void {
     markPending([section], true);
   };
 
+  const account = localStorage.getItem(BROWSER_ACCOUNT_KEY);
+  // Another tab's switch clears these keys and a queued request outlives this one's: neither is this account's.
+  const switched = () => accountTransitionPending() || !sameBrowserAccount(account);
+
   let saving: Promise<void> = Promise.resolve();
   const pushAll = () => {
     clearTimeout(timer);
@@ -163,13 +167,13 @@ export function startClientPreferencesSync(): () => void {
         .then(async () => {
           const sent = edits;
           const edited = PENDING_SECTIONS.filter((section) => touched[section]);
-          if (edited.length === 0) return;
+          if (edited.length === 0 || switched()) return;
           await saveClientPreferences(
             Object.fromEntries(
               edited.map((section) => [all[section].field, all[section].read()]),
             ),
           );
-          if (edits === sent) {
+          if (edits === sent && !switched()) {
             for (const section of edited) touched[section] = false;
             markPending(edited, false);
           }
@@ -178,15 +182,13 @@ export function startClientPreferencesSync(): () => void {
     }, PUSH_DEBOUNCE_MS);
   };
 
-  const account = localStorage.getItem(BROWSER_ACCOUNT_KEY);
   const last = {} as Record<keyof Pending, unknown>;
   const stops = PENDING_SECTIONS.map((section) => {
     last[section] = all[section].read();
     return all[section].subscribe(() => {
       const next = all[section].read();
       if (applying || same(next, last[section])) return;
-      // Another tab's account switch clears these keys; that is not an edit.
-      if (accountTransitionPending() || !sameBrowserAccount(account)) return;
+      if (switched()) return;
       last[section] = next;
       touch(section);
       if (loaded) pushAll();
@@ -195,7 +197,7 @@ export function startClientPreferencesSync(): () => void {
 
   void loadClientPreferences()
     .then((remote) => {
-      if (cancelled) return;
+      if (cancelled || switched()) return;
       loaded = true;
       applying = true;
       for (const section of PENDING_SECTIONS) {

@@ -189,3 +189,38 @@ test("a field the account record lacks keeps this browser's value", async () => 
   assert.equal(chat.sendShortcut, "mod-enter");
   assert.equal(chat.generationStatsUpdates, "realtime");
 });
+
+test("a load that lands after this tab switched accounts applies nothing", async () => {
+  freshBrowser();
+  store.set(BROWSER_ACCOUNT_KEY, "account:u1:alice");
+  account = { ...empty, saved: true, chat: { sendShortcut: "mod-enter" }, timeFormat: "24h" };
+  const realFetch = globalThis.fetch;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    await gate;
+    return realFetch(input, init);
+  }) as typeof fetch;
+  const stop = startClientPreferencesSync();
+  store.set(BROWSER_ACCOUNT_KEY, "account:u2:bob");
+  release();
+  await settle();
+  stop();
+  globalThis.fetch = realFetch;
+  assert.equal(useChatPreferencesStore.getState().sendShortcut, "enter");
+  assert.equal(getTimeFormat(), "system");
+  assert.deepEqual(puts, []);
+});
+
+test("an edit still queued when this tab switches accounts is not sent as the next one", async () => {
+  freshBrowser();
+  store.set(BROWSER_ACCOUNT_KEY, "account:u1:alice");
+  account = { ...empty, saved: true, timeFormat: "12h" };
+  const stop = startClientPreferencesSync();
+  await settle();
+  setTimeFormat("24h");
+  store.set(BROWSER_ACCOUNT_KEY, "account:u2:bob");
+  await settle();
+  stop();
+  assert.deepEqual(puts, []);
+});
