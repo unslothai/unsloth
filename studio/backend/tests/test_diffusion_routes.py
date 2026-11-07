@@ -690,7 +690,6 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
 
 
 def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monkeypatch):
-    # sd-server's image job error is generic; the OOM is only in the log tail the message now carries
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
 
@@ -710,7 +709,6 @@ def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monk
 
 
 def test_generate_native_render_short_of_device_memory_names_the_shortfall(client, monkeypatch):
-    # The failure a render printed when VRAM taken after the load left too little for one DiT segment.
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True
 

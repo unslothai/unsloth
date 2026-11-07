@@ -232,8 +232,6 @@ def test_img_gen_failed_job_raises(patched):
 
 
 def test_img_gen_failure_carries_the_log_cause(patched):
-    # sd-server's own job error is generic; the cause is only in its output, and the route can only name
-    # the failure class (out of memory, abort) when the message carries it.
     s = _server_with(
         _FakePopen(),
         _FakeClient(

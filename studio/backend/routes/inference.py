@@ -49055,8 +49055,7 @@ def _generate_failure_detail(message: str) -> str:
 
 
 def _failure_text_mentions(text: str, needle: str) -> bool:
-    """``needle`` in ``text``; the bare ``oom`` only as a word, since a native renderer's log tail can echo the
-    prompt ("a cozy room") next to the real cause."""
+    """Bare ``oom`` only as a word: a native renderer's log tail can echo the prompt ("a cozy room")."""
     if needle == "oom":
         return re.search(r"(?<![a-z0-9])oom(?![a-z0-9])", text) is not None
     return needle in text

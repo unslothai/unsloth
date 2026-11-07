@@ -634,8 +634,7 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    # The job error is generic ("generate_image returned no results"); the cause (a device OOM,
-                    # an abort) is only in the log, for images as much as video.
+                    # The job error is generic; the cause (OOM, abort) is only in the log.
                     tail = _diagnostic_tail(self._tail)
                     if tail:
                         message += "\nLast output:\n" + tail[:1500]
