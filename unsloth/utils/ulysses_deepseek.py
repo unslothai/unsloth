@@ -20,6 +20,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from ..device_type import DEVICE_TYPE_TORCH
 from .ulysses import _AllToAll
 
 __all__ = [
@@ -30,6 +31,20 @@ __all__ = [
 ]
 
 DEEPSEEK_ULYSSES_ATTENTION_CLASSES = ("DeepseekV32Attention", "DeepseekV4Attention")
+# model_type -> attention class, for configs whose model is not built yet (SFT given a model ID).
+DEEPSEEK_ULYSSES_MODEL_TYPES = {
+    "deepseek_v32": "DeepseekV32Attention",
+    "deepseek_v4": "DeepseekV4Attention",
+}
+
+# torch.amp.custom_fwd(device_type =) is 2.4+; older torch only has torch.cuda.amp (kernels/utils.py).
+_AMP_DEVICE = DEVICE_TYPE_TORCH if DEVICE_TYPE_TORCH in ("xpu", "npu") else "cuda"
+if hasattr(torch.amp, "custom_fwd") and hasattr(torch.amp, "custom_bwd"):
+    _custom_fwd = torch.amp.custom_fwd(device_type = _AMP_DEVICE)
+    _custom_bwd = torch.amp.custom_bwd(device_type = _AMP_DEVICE)
+else:
+    _custom_fwd = torch.cuda.amp.custom_fwd
+    _custom_bwd = torch.cuda.amp.custom_bwd
 
 
 def _apply_rotary_fn(mod):
@@ -138,7 +153,7 @@ class _ChunkedSinkAttention(torch.autograd.Function):
     checkpointing of the whole layer; custom_fwd / custom_bwd replay the forward's autocast state."""
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type = "cuda")
+    @_custom_fwd
     def forward(ctx, q, kv, sinks, block_bias, window, scaling, chunk):
         ctx.save_for_backward(q, kv, sinks, block_bias)
         ctx.window, ctx.scaling, ctx.chunk = window, scaling, chunk
@@ -162,7 +177,7 @@ class _ChunkedSinkAttention(torch.autograd.Function):
         return torch.cat(outs, dim = 1)
 
     @staticmethod
-    @torch.amp.custom_bwd(device_type = "cuda")
+    @_custom_bwd
     def backward(ctx, grad_out):
         q, kv, sinks, block_bias = ctx.saved_tensors
         full_seq = q.shape[2]
@@ -368,7 +383,7 @@ class _ChunkedSparseMLA(torch.autograd.Function):
     """Indexer-masked MLA attention over query chunks, recomputed per chunk in backward."""
 
     @staticmethod
-    @torch.amp.custom_fwd(device_type = "cuda")
+    @_custom_fwd
     def forward(ctx, q, k, v, topk, scaling, chunk):
         ctx.save_for_backward(q, k, v, topk)
         ctx.scaling, ctx.chunk = scaling, chunk
@@ -383,7 +398,7 @@ class _ChunkedSparseMLA(torch.autograd.Function):
         return torch.cat(outs, dim = 1)
 
     @staticmethod
-    @torch.amp.custom_bwd(device_type = "cuda")
+    @_custom_bwd
     def backward(ctx, grad_out):
         q, k, v, topk = ctx.saved_tensors
 

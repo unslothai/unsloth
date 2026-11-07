@@ -1940,9 +1940,13 @@ def _patch_sft_trainer_auto_packing(trl_module):
             is_ring_context_parallel = cp_backend == "ring"
             # Kimi delta, Lightning and DeepSeek V3.2 / V4 Ulysses forwards refuse packed batches: an
             # automatic padding-free choice would fail the first CP step.
-            if cp_backend == "ulysses" and not _packing_gate_deferred:
+            # A deferred (string) model is classified by its resolved config's model types.
+            if cp_backend == "ulysses":
                 from .context_parallel import ulysses_packing_blocker as _ulysses_packing_blocker
-                ulysses_packing_blocker = _ulysses_packing_blocker(model)
+                ulysses_packing_blocker = _ulysses_packing_blocker(
+                    None if _packing_gate_deferred else model,
+                    model_types if _packing_gate_deferred else (),
+                )
         boundary_blocker = packing_boundary_blocker(model, model_types)
         # Read before __init__: the compiled trainer ends it with model.for_inference(), which sets the flag.
         eval_logits_wanted = os.environ.get(

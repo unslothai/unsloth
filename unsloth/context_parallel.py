@@ -123,13 +123,20 @@ _ULYSSES_OWN_MASK_LAYER_TYPES = {
 }
 
 
-def ulysses_packing_blocker(model) -> Optional[str]:
+def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
     """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
-    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them."""
-    from .utils.ulysses_deepseek import DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them.
+    A model ID string (TRL builds it later) is classified by its config's model types instead."""
+    from .utils.ulysses_deepseek import (
+        DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+        DEEPSEEK_ULYSSES_MODEL_TYPES,
+    )
     from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
 
     if not isinstance(model, torch.nn.Module):
+        for model_type in model_types or ():
+            if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
+                return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
@@ -157,12 +164,9 @@ def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
 
 
 def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
-    # The DeepSeek Ulysses forward runs eager inside the decoder layer's compiled region (a graph
-    # break), so dynamo compiles the rest of the layer as one resume function shared by every layer
-    # of the class. When a later layer fails to compile it (fp32 MoE: torch._grouped_mm on fake
-    # tensors), dynamo skips that code for all layers, and an earlier checkpointed layer that ran it
-    # compiled recomputes it eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
-    # A raised failure re-runs the layer after its first half already saved tensors, failing alike.
+    # The eager Ulysses forward is a graph break; the resume function is shared by all layers, so one
+    # layer failing to compile it (fp32 MoE grouped_mm) makes earlier checkpointed layers recompute it
+    # eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
     parent = attn_name.rpartition(".")[0]
     if not parent:
         return
