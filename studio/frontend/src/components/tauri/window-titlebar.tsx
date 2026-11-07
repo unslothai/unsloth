@@ -503,7 +503,7 @@ export function WindowTitlebar({
       )}
       <header
         className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
         data-titlebar-live-width-scope=""
@@ -578,38 +578,38 @@ export function WindowTitlebar({
         <>
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 top-0 h-1 cursor-n-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("North")}
           />
           {/* resize grips stay above dialogs and notifications. */}
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-x-2 bottom-0 h-1 cursor-s-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("South")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 left-0 w-1 cursor-w-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("West")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
+            className="modal-pe-live pointer-events-auto fixed inset-y-2 right-0 w-1 cursor-e-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("East")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
+            className="modal-pe-live pointer-events-auto fixed left-0 top-0 size-3 cursor-nw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("NorthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
+            className="modal-pe-live pointer-events-auto fixed right-0 top-0 size-3 cursor-ne-resize"
             style={{
               zIndex: Z_LAYER.WINDOW_RESIZE_EDGE,
               // keep the resize corner outside the close button.
@@ -620,13 +620,13 @@ export function WindowTitlebar({
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 left-0 size-3 cursor-sw-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthWest")}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
+            className="modal-pe-live pointer-events-auto fixed bottom-0 right-0 size-3 cursor-se-resize"
             style={{ zIndex: Z_LAYER.WINDOW_RESIZE_EDGE }}
             onPointerDown={handleResizePointerDown("SouthEast")}
           />
