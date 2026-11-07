@@ -128,8 +128,7 @@ def test_a_hub_base_is_read_at_the_loaded_commit(tmp_path, monkeypatch):
 
 
 def test_a_reloaded_merged_checkpoint_still_exports(tmp_path):
-    # merge_and_overwrite_lora writes the Transformers layout; the merged folder carries the release one,
-    # so a later GGUF export of that folder (loaded with no PEFT base to look up) finds it.
+    # The merged folder carries the release layout: a later GGUF export of it has no PEFT base to read.
     base = _write(tmp_path / "base", RELEASE)
     merged = _write(tmp_path / "merged", {**SAVED, "dtype": "float32"})
     assert save_mod._release_layout_for_merged_save(_peft_model(base), str(merged), "merged_16bit")
