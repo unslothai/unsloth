@@ -144,8 +144,7 @@ def _triton_at_least(major: int, minor: int) -> bool:
 
 
 def _triton38_sm8x(cap: tuple) -> bool:
-    """Stock unless forced: Triton >= 3.8 spills every sm8x tile holding 128 int32 accumulators per thread (incl.
-    ``_FALLBACK_CONFIG``; triton-lang/triton#12486), and its spill-free tiles still trail cuBLAS on A100 / L4."""
+    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486); even spill-free ones trail cuBLAS."""
     return cap[0] == 8 and _triton_at_least(3, 8)
 
 

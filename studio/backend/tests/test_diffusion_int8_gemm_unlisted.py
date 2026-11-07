@@ -39,7 +39,7 @@ def _reset():
 def _clean(monkeypatch):
     for name in _ENVS:
         monkeypatch.delenv(name, raising = False)
-    # the gate as it runs before Triton 3.8 (from 3.8 every sm8x is stock: test_diffusion_int8_gemm.py)
+    # pre-Triton-3.8 gate; 3.8+ is in test_diffusion_int8_gemm.py
     monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: False)
     _reset()
     yield
