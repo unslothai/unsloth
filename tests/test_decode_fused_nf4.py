@@ -491,8 +491,8 @@ def test_every_segment_must_share_the_launch_device(monkeypatch):
                 absmax = torch.empty(4, device = device),
                 code = torch.empty(16),
             )
-            parts.append((torch.empty(64, 1, dtype = torch.uint8, device = device), qs, 8, None))
-    monkeypatch.setattr(D, "_proj_parts", lambda proj, K: parts.pop(0))
+            parts.append((torch.empty(64, 1, dtype = torch.uint8, device = device), qs, 8, None, None))
+    monkeypatch.setattr(D, "_proj_parts", lambda proj, K, *args: parts.pop(0))
     assert (
         D._site(types.SimpleNamespace(), (0, "qkv"), "qkv", [object(), object()], 16)
         == "several devices"
@@ -733,14 +733,21 @@ def _family_plan(
                 attn.q_norm = norm(32, 2)
             elif qk_state == "wrong_shape":
                 attn.q_norm = norm(16)
+            elif qk_state == "no_eps":
+                attn.q_norm = types.SimpleNamespace(weight = attn.q_norm.weight)
         layer = types.SimpleNamespace(
             self_attn = attn,
             mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object()),
             input_layernorm = norm(64),
             post_attention_layernorm = norm(64),
         )
+        layers = [layer]
+        if qk_state == "second_head_dim":
+            other = types.SimpleNamespace(**vars(attn))
+            other.head_dim = 64
+            layers.append(types.SimpleNamespace(**dict(vars(layer), self_attn = other)))
         model = types.SimpleNamespace(
-            config = config, model = types.SimpleNamespace(layers = [layer], norm = norm(64))
+            config = config, model = types.SimpleNamespace(layers = layers, norm = norm(64))
         )
         packed = torch.empty(1, device = device, dtype = torch.uint8)
         bounds = {"qkv": [64, 96, 128], "o": [64], "gate_up": [128, 256], "down": [64]}
@@ -1532,3 +1539,76 @@ def test_requantized_weights_at_reused_addresses_rebuild_the_plan(changed):
     other = plan(new)
     other.signature = ("other",)
     assert not D._reusable(plan(tables), other)
+
+
+def test_mixed_qkv_bias_dtypes_are_refused(monkeypatch):
+    # The kernel selects each segment's bias pointer from one typed vector: fp32 next to fp16 crashes.
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    with FakeTensorMode():
+        device = torch.device("cuda", 0)
+        parts = []
+        for dtype in (torch.float32, torch.float16, torch.float16):
+            qs = types.SimpleNamespace(
+                state2 = None,
+                blocksize = 64,
+                absmax = torch.empty(4, device = device),
+                code = torch.empty(16),
+            )
+            parts.append(
+                (
+                    torch.empty(64, 1, dtype = torch.uint8, device = device),
+                    qs,
+                    8,
+                    None,
+                    torch.empty(8, device = device, dtype = dtype),
+                )
+            )
+    monkeypatch.setattr(D, "_proj_parts", lambda proj, K, *args: parts.pop(0))
+    site = D._site(types.SimpleNamespace(), (0, "qkv"), "qkv", [object()] * 3, 16, True)
+    assert site == "bias dtypes differ"
+
+
+def test_a_bias_added_later_makes_the_plan_stale(monkeypatch):
+    D = _driver()
+    projs = [types.SimpleNamespace(bias = None) for _ in range(3)]
+    bindings = D._bias_bindings(projs, [None] * 3)
+    plan = types.SimpleNamespace(watch = [], adapter_state = (), tensor_bindings = bindings)
+    assert not D._plan_stale(plan)
+    projs[1].bias = torch.zeros(4)
+    assert D._plan_stale(plan)
+
+
+def test_qwen3_qk_norm_eps_changes_make_the_plan_stale(monkeypatch):
+    D, plan, model, _ = _family_plan(monkeypatch, "qwen3")
+    assert isinstance(plan, D._Plan) and not D._plan_stale(plan)
+    model.model.layers[0].self_attn.k_norm.variance_epsilon = 1e-3
+    assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize(
+    "qk_state,reason",
+    [("no_eps", "q / k norm eps"), ("second_head_dim", "head dim differs across layers")],
+)
+def test_qwen3_plans_refuse_unknown_eps_and_per_layer_head_dims(monkeypatch, qk_state, reason):
+    D, plan, _, _ = _family_plan(monkeypatch, "qwen3", qk_state = qk_state)
+    assert plan == reason
+
+
+def test_rope_tables_must_share_device_and_dtype():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    D = _driver()
+    with FakeTensorMode():
+        device = torch.device("cuda", 0)
+        cos = torch.empty(16, 32, device = device, dtype = torch.float16)
+        assert D._rope_ok(cos, torch.empty(16, 32, device = device, dtype = torch.float16), 32, device)
+        assert not D._rope_ok(
+            cos,
+            torch.empty(16, 32, device = torch.device("cuda", 1), dtype = torch.float16),
+            32,
+            device,
+        )
+        assert not D._rope_ok(
+            cos, torch.empty(16, 32, device = device, dtype = torch.float32), 32, device
+        )

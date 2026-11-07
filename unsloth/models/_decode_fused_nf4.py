@@ -177,6 +177,7 @@ def _plan_stale(plan):
             getattr(module, name, None) is not tensor
             for module, name, tensor in getattr(plan, "tensor_bindings", ())
         )
+        or any(_norm_eps(module) != eps for module, eps in getattr(plan, "eps_bindings", ()))
     )
 
 
@@ -302,6 +303,13 @@ def _proj_parts(
     return W, qs, N, lora, bias
 
 
+def _bias_bindings(projs, biases):
+    # Absent biases are bound too: a bias added later must rebuild the plan, not be skipped.
+    return tuple(
+        (getattr(proj, "base_layer", proj), "bias", bias) for proj, bias in zip(projs, biases)
+    )
+
+
 def _site(
     model,
     key,
@@ -318,6 +326,9 @@ def _site(
     biases = [part[4] for part in parts]
     if any(b is None for b in biases) != all(b is None for b in biases):
         return "bias on some projections only"
+    if biases[0] is not None and len({b.dtype for b in biases}) != 1:
+        # The kernel picks each segment's bias pointer from one typed vector.
+        return "bias dtypes differ"
     Ws = [part[0] for part in parts]
     states = [part[1] for part in parts]
     loras = [part[3] for part in parts]
@@ -394,11 +405,7 @@ def _site(
     )
     site.tensor_bindings = tuple(
         (getattr(proj, "base_layer", proj), "weight", W) for proj, W in zip(projs, Ws)
-    ) + tuple(
-        (getattr(proj, "base_layer", proj), "bias", bias)
-        for proj, bias in zip(projs, biases)
-        if bias is not None
-    )
+    ) + _bias_bindings(projs, biases)
     return site if batch_size == 1 else F.BatchSite(site, batch_size)
 
 
@@ -445,7 +452,7 @@ def _build(model, X):
     plan.device = device
     plan.dtype = X.dtype
     plan.capability = capability
-    watch, bindings, tensor_bindings = [], [], []
+    watch, bindings, tensor_bindings, eps_bindings = [], [], [], []
     norm = model.model.norm
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
@@ -492,6 +499,9 @@ def _build(model, X):
         if qk_norm:
             if head_dim & (head_dim - 1) or head_dim < 32:
                 return "head dim"
+            if plan.layers and head_dim != plan.layers[0].head_dim:
+                # One raw q|k|v workspace serves every layer.
+                return "head dim differs across layers"
             norms = (attn.q_norm, attn.k_norm)
             for name, module in zip(("q_norm", "k_norm"), norms):
                 bindings.append((attn, name, module))
@@ -504,12 +514,11 @@ def _build(model, X):
                     or w.dtype != norms[0].weight.dtype
                 ):  # fmt: skip
                     return "q / k norm weight"
-            entry.qk_norm = (
-                norms[0].weight,
-                norms[1].weight,
-                _norm_eps(norms[0]),
-                _norm_eps(norms[1]),
-            )
+            qk_eps = (_norm_eps(norms[0]), _norm_eps(norms[1]))
+            if any(not isinstance(e, (int, float)) for e in qk_eps):
+                return "q / k norm eps"
+            eps_bindings.extend(zip(norms, qk_eps))
+            entry.qk_norm = (norms[0].weight, norms[1].weight, *qk_eps)
         sites = {}
         for kind, owner, names, K in (
             ("qkv", attn, ("q_proj", "k_proj", "v_proj"), hidden),
@@ -567,6 +576,7 @@ def _build(model, X):
     plan.watch = watch
     plan.bindings = tuple(bindings)
     plan.tensor_bindings = tuple(tensor_bindings)
+    plan.eps_bindings = tuple(eps_bindings)
     plan.adapter_state = _adapter_state(watch)
     plan.eps = float(eps)
     plan.final_norm = norm.weight
@@ -623,6 +633,15 @@ def _build(model, X):
     _track_moves(model)
     STATS["plans"] += 1
     return plan
+
+
+def _rope_ok(cos, sin, head_dim, device):
+    # The qkv kernels read both tables with cos's layout on the launch device.
+    return (
+        cos.dim() == 2 and cos.shape == sin.shape and cos.shape[-1] == head_dim
+        and cos.stride(-1) == 1 and sin.stride() == cos.stride()
+        and cos.device == device and sin.device == device and sin.dtype == cos.dtype
+    )  # fmt: skip
 
 
 def decode_forward(model, X, *args):
@@ -688,6 +707,7 @@ def _decode_forward(
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 plan.bindings = built.bindings
                 plan.tensor_bindings = built.tensor_bindings
+                plan.eps_bindings = built.eps_bindings
                 built = plan
         if built is not plan:
             if plan is not None:
@@ -708,10 +728,7 @@ def _decode_forward(
         if id(rope) not in ropes:
             rope.extend_rope_embedding(X, rotary_seq_len + 1)
             cos, sin = rope.get_cached(rotary_seq_len, device.index or 0)
-            if (
-                cos.dim() != 2 or cos.shape != sin.shape or cos.shape[-1] != entry.head_dim
-                or cos.stride(-1) != 1 or sin.stride() != cos.stride() or cos.device != device
-            ):  # fmt: skip
+            if not _rope_ok(cos, sin, entry.head_dim, device):
                 return None
             ropes[id(rope)] = (cos, sin)
 
