@@ -522,8 +522,21 @@ def test_kimi_gates():
     cp._check_stateful_mixers(model, "ulysses", 2)
     with pytest.raises(ValueError, match = "num_heads"):
         cp._check_stateful_mixers(model, "ulysses", 8)
-    # An unknown attention class next to the delta layers still blocks CP.
-    model.model.layers[1].self_attn.__class__ = type("OtherAttention", (KimiMLAAttention,), {})
+    # MLA runs main's generic Ulysses route: its forward calls ALL_ATTENTION_FUNCTIONS.
+    assert uh.is_hf_registry_attention(model.model.layers[1].self_attn)
+
+    # An attention class next to the delta layers that bypasses the registry still blocks CP.
+    def own_kernel(
+        self,
+        hidden_states,
+        attention_mask = None,
+        **kwargs,
+    ):
+        return hidden_states
+
+    model.model.layers[1].self_attn.__class__ = type(
+        "OtherAttention", (KimiMLAAttention,), {"forward": own_kernel}
+    )
     assert not cp._supports_context_parallel(model, "ulysses")
 
 
@@ -582,4 +595,3 @@ def test_shimmed_remote_moe_is_not_blocked():
     assert "sparse MoE" in cp._hybrid_config_blocker(model)
     Block.forward = _moe_forward_with_training_path(Block.forward)
     assert cp._hybrid_config_blocker(model) is None
-

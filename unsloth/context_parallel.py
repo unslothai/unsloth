@@ -209,7 +209,7 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
-    HYBRID_ATTENTION_CLASSES,
+    GATED_DELTA_ATTENTION_CLASSES,
     check_ulysses_mixer_heads,
     install_hf_attention_wrapper,
     is_hf_registry_attention,
@@ -395,9 +395,9 @@ def _supports_context_parallel(
     mixers = _stateful_mixers(model)
     if mixers:
         # Hybrids: the family-specific linear attention forwards, and their HF full attention layers.
-        # Kimi-Linear names its delta attention layers self_attn too.
+        # Kimi-Linear names its delta attention layers self_attn too; its MLA layers are generic HF attention.
         return all(is_ulysses_mixer(m) for m, _ in mixers) and all(
-            type(m).__name__ in HYBRID_ATTENTION_CLASSES
+            type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES or is_hf_registry_attention(m)
             for m in _attention_modules(model)
             if not is_ulysses_mixer(m)
         )
@@ -493,7 +493,7 @@ class ContextParallelManager:
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules():
                 if name.endswith("self_attn") and (
-                    type(module).__name__ in HYBRID_ATTENTION_CLASSES
+                    type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
                     or (generic and is_hf_registry_attention(module))
                 ):
                     install_hf_attention_wrapper(

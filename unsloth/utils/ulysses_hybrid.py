@@ -17,8 +17,6 @@ from .ulysses import _AllToAll
 
 __all__ = [
     "GATED_DELTA_ATTENTION_CLASSES",
-    "KIMI_DELTA_ATTENTION_CLASSES",
-    "HYBRID_ATTENTION_CLASSES",
     "is_ulysses_gated_delta",
     "is_ulysses_kimi_delta",
     "is_ulysses_mixer",
@@ -39,9 +37,6 @@ GATED_DELTA_ATTENTION_CLASSES = (
     "Qwen3_5Attention",
     "Qwen3_5MoeAttention",
 )
-# Kimi-Linear's full attention layers are MLA; value heads are narrower than query / key heads.
-KIMI_DELTA_ATTENTION_CLASSES = ("KimiMLAAttention",)
-HYBRID_ATTENTION_CLASSES = GATED_DELTA_ATTENTION_CLASSES + KIMI_DELTA_ATTENTION_CLASSES
 
 
 def is_ulysses_gated_delta(module) -> bool:
@@ -433,7 +428,6 @@ def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
     if is_ulysses_kimi_delta(module):
         return _wrap_ulysses_forward(module, get_cp_manager, "ulysses_kimi_delta_forward")
     return wrap_gated_delta_forward(module, get_cp_manager)
-
 
 
 # Keyword arguments that describe the local sequence shard: rebuilt for the whole sequence after the exchange.
