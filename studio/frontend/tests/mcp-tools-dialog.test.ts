@@ -205,26 +205,15 @@ test("tool changes flip at once, and a late reply can't undo a newer change", ()
   assert.match(save, /const request = \+\+saveRequest\.current;/);
   assert.match(save, /if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/);
   assert.doesNotMatch(SECTION, /toolsSaving|saving=\{/);
-  // Saves are queued, so two quick flips of one tool reach the server in click order.
-  assert.match(save, /await enqueueSave\(\(\) => updateMcpTools\(states\)\)/);
-  assert.match(
-    SECTION,
-    /const save = saveQueue\.then\(run\);\s+saveQueue = save\.catch\(\(\) => undefined\);/,
-  );
+  // The API client queues every request (mcp-access-api.test.ts), so no second queue here.
+  assert.match(save, /await updateMcpTools\(states\)/);
+  assert.doesNotMatch(SECTION, /enqueueSave|saveQueue/);
 });
 
-test("the save queue outlives a remount, and a fresh mount reads only after pending saves", () => {
-  // A ref would start a new queue on remount while the old mount's PUT is still in flight.
-  const queue = SECTION.indexOf("let saveQueue: Promise<unknown> = Promise.resolve();");
-  assert.ok(queue >= 0 && queue < SECTION.indexOf("export function McpAccessSection("));
-  assert.doesNotMatch(SECTION, /useRef<Promise/);
-  assert.match(SECTION, /enqueueSave\(loadMcpAccess\)\.then\(/);
-});
-
-test("the MCP switch shares the tool saves' queue, so neither full-snapshot reply can undo the other", () => {
+test("the MCP switch reply and the tool replies are guarded alike, so neither full snapshot undoes the other", () => {
   const apply = SECTION.slice(SECTION.indexOf("const apply = async"), SECTION.indexOf("// Settings > API links here"));
   assert.match(apply, /const request = \+\+saveRequest\.current;/);
-  assert.match(apply, /await enqueueSave\(\(\) => updateMcpAccess\(enabled\)\)/);
+  assert.match(apply, /await updateMcpAccess\(enabled\)/);
   assert.equal(apply.match(/if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/g)?.length, 2);
   assert.doesNotMatch(apply, /setSettings\(await/);
 });

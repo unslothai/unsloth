@@ -60,17 +60,6 @@ function errorMessage(error: unknown): string | null {
   return error instanceof Error ? error.message : null;
 }
 
-// Saves go one at a time, across remounts too: the server may finish two in-flight writes in either order.
-let saveQueue: Promise<unknown> = Promise.resolve();
-
-function enqueueSave(
-  run: () => Promise<McpAccessSettings>,
-): Promise<McpAccessSettings> {
-  const save = saveQueue.then(run);
-  saveQueue = save.catch(() => undefined);
-  return save;
-}
-
 export function McpAccessSection({
   apiKey = null,
 }: {
@@ -111,7 +100,7 @@ export function McpAccessSection({
 
   useEffect(() => {
     let live = true;
-    enqueueSave(loadMcpAccess).then(
+    loadMcpAccess().then(
       (next) => live && setSettings(next),
       (err) =>
         live &&
@@ -129,7 +118,7 @@ export function McpAccessSection({
     setBusy(true);
     setError(null);
     try {
-      const next = await enqueueSave(() => updateMcpAccess(enabled));
+      const next = await updateMcpAccess(enabled);
       if (request === saveRequest.current) {
         setSettings(next);
       }
@@ -179,7 +168,7 @@ export function McpAccessSection({
         : current,
     );
     try {
-      const next = await enqueueSave(() => updateMcpTools(states));
+      const next = await updateMcpTools(states);
       if (request === saveRequest.current) {
         setSettings(next);
       }

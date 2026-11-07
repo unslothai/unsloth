@@ -49,15 +49,23 @@ export function mcpAccessFromApi(
   };
 }
 
-async function request(
+// One request at a time, page-wide: the server may finish two in-flight writes in either order,
+// and a read sent during a write can answer with the value before it.
+let queue: Promise<unknown> = Promise.resolve();
+
+function request(
   fallback: string,
   init?: RequestInit,
 ): Promise<McpAccessSettings> {
-  const res = await authFetch(MCP_ACCESS_PATH, init);
-  if (!res.ok) {
-    throw new Error(await readFastApiError(res, fallback));
-  }
-  return mcpAccessFromApi(await res.json());
+  const run = queue.then(async () => {
+    const res = await authFetch(MCP_ACCESS_PATH, init);
+    if (!res.ok) {
+      throw new Error(await readFastApiError(res, fallback));
+    }
+    return mcpAccessFromApi(await res.json());
+  });
+  queue = run.catch(() => undefined);
+  return run;
 }
 
 export function loadMcpAccess(): Promise<McpAccessSettings> {

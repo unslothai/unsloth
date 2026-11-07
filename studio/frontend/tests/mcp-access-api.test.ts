@@ -129,6 +129,43 @@ test("a body without a detail falls back to a status line", async () => {
   );
 });
 
+test("requests run one at a time, in call order, and a failure does not stall the next", async () => {
+  // A read sent during a write (Settings > API mounting while Agents saves) must see the write.
+  const started: string[] = [];
+  const pending: (() => void)[] = [];
+  const api = loadWithStubs<typeof McpAccessApi>(
+    new URL("../src/features/settings/api/mcp-access.ts", import.meta.url),
+    {
+      "@/features/auth": {
+        authFetch: (_path: string, init?: RequestInit) => {
+          started.push(init?.method ?? "GET");
+          return new Promise<Response>((resolve) =>
+            pending.push(() =>
+              resolve(
+                started.length === 1
+                  ? new Response("down", { status: 502 })
+                  : Response.json(BODY),
+              ),
+            ),
+          );
+        },
+      },
+      "@/lib/format-fastapi-error": formatFastApiError,
+    },
+  );
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const write = api.updateMcpTools({ cancel: false });
+  const read = api.loadMcpAccess();
+  await tick();
+  assert.deepEqual(started, ["PUT"]);
+  pending.shift()?.();
+  await assert.rejects(write, /Failed to update agent access tools \(502\)/);
+  await tick();
+  assert.deepEqual(started, ["PUT", "GET"]);
+  pending.shift()?.();
+  assert.equal((await read).enabled, true);
+});
+
 test("the client is built on authFetch and readFastApiError", () => {
   assert.match(API, /import \{ authFetch \} from "@\/features\/auth";/);
   assert.match(API, /readFastApiError\(res, /);
