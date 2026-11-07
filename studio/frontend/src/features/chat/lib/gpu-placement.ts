@@ -6,6 +6,23 @@
 // Manual-mode gpu_layers sentinel: -1 = Auto, letting llama.cpp --fit size layers and context.
 export const GPU_LAYERS_AUTO = -1;
 
+/** --n-cpu-moe moves experts off the GPU; with no GPU layers they already run on the CPU. */
+export function moeCpuOffloadApplies(gpuLayers: number): boolean {
+  return gpuLayers > 0;
+}
+
+/** A Manual GPU Layers edit. Auto drops the positional split, and 0 drops the moot MoE CPU count
+ *  so it is neither shown nor sent. */
+export function gpuLayersPatch(gpuLayers: number): {
+  gpuLayers: number;
+  tensorSplit?: null;
+  nCpuMoe?: undefined;
+} {
+  if (gpuLayers < 0) return { gpuLayers, tensorSplit: null };
+  if (!moeCpuOffloadApplies(gpuLayers)) return { gpuLayers, nCpuMoe: undefined };
+  return { gpuLayers };
+}
+
 /** Why an automatic GGUF load runs on the CPU (`cpu_fallback_reason`); every reason is the same
  *  CPU replay. Here, not in types/api.ts, because this module stays import-free for node:test. */
 export const CPU_FALLBACK_REASONS = [
