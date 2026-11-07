@@ -3,6 +3,7 @@
 
 """diffusion_decode_segments: expandable allocator segments for the span of an image VAE decode (CPU, fake torch)."""
 
+import sys
 import types
 
 import pytest
@@ -239,3 +240,52 @@ def test_oom_scope_wraps_the_whole_decode(fresh):
     assert vae.during == [["expandable_segments:True"]]
     assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
     O.uninstall(vae)
+
+
+_real_gpu = torch.cuda.is_available() and sys.platform.startswith("linux")
+
+
+@pytest.mark.skipif(
+    not (_real_gpu and getattr(torch.version, "hip", None)), reason = "ROCm device only"
+)
+def test_rocm_device_never_engages(monkeypatch):
+    monkeypatch.setattr(D, "_usable", None)
+    monkeypatch.setattr(D, "_depth", 0)
+    monkeypatch.setattr(D, "STATS", {"engaged": 0, "skipped": 0})
+    vae = _Vae()
+    D.enable(vae)
+    z = torch.zeros(1, device = "cuda")
+    with D.expandable_decode(vae, z):
+        torch.empty(64 << 20, dtype = torch.uint8, device = "cuda")
+    assert D._usable is False and D.STATS["engaged"] == 0
+
+
+@pytest.mark.skipif(
+    not (_real_gpu and not getattr(torch.version, "hip", None))
+    or not D._platform_ok()
+    or D._allocator_configured(),
+    reason = "Linux CUDA device with the default allocator only",
+)
+def test_cuda_device_maps_the_decode_into_an_expandable_segment(monkeypatch):
+    monkeypatch.setattr(D, "_usable", None)
+    monkeypatch.setattr(D, "_depth", 0)
+    torch.cuda.init()
+    if any(seg.get("is_expandable") for seg in torch.cuda.memory_snapshot()):
+        pytest.skip("expandable segments already on in this process")
+    vae = _Vae()
+    D.enable(vae)
+    z = torch.zeros(1, device = "cuda")
+
+    def expandable(t):
+        ptr = t.data_ptr()
+        for seg in torch.cuda.memory_snapshot():
+            if seg["address"] <= ptr < seg["address"] + seg["total_size"]:
+                return bool(seg.get("is_expandable"))
+        raise AssertionError("tensor not in any segment")
+
+    with D.expandable_decode(vae, z):
+        inside = torch.empty(96 << 20, dtype = torch.uint8, device = "cuda")
+        assert expandable(inside)
+    after = torch.empty(80 << 20, dtype = torch.uint8, device = "cuda")
+    assert not expandable(after)
+    del inside, after
