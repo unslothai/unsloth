@@ -518,7 +518,8 @@ class FastDiffusionModel:
         lora_dropout = 0.0,
         bias = "none",
         use_gradient_checkpointing = True,
-        random_state = 3407,
+        # None keeps the caller's RNG (#14327); pass an int for a fixed LoRA init.
+        random_state = None,
         task_type = None,
         **kwargs,
     ):
