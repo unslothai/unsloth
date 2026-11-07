@@ -199,10 +199,8 @@ export function useIntentAwareAutoScroll(): {
       const atBottomStrict = (): boolean =>
         distanceFromBottom() <= AT_BOTTOM_THRESHOLD_PX;
 
-      // The follow flag sits on the viewport itself and index.css matches it as the subject. A
-      // selector that reached the viewport through the hidden portal host (`host[flag] + root
-      // .viewport`) made WebKit restyle the whole thread on each flip (twice per follow window:
-      // 40-70 ms each at 150 turns), since it invalidates every descendant of the host's siblings.
+      // On the viewport itself, matched as the subject: reaching it through the hidden host made
+      // WebKit restyle the whole thread on every flip (40-70 ms each at 150 turns).
       const setFollowing = (on: boolean): void => {
         el.toggleAttribute("data-aui-following", on);
       };
