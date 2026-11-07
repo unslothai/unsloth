@@ -777,7 +777,7 @@ _GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
 
 
 def _gated_load(repo):
-    """The guardrail's 401 as diffusers raises it, a GatedRepoError naming the resolve URL, under an OSError."""
+    """The guardrail's real 401 text, wrapped in an OSError."""
     from huggingface_hub.errors import GatedRepoError
 
     class _Gated(GatedRepoError):
@@ -810,14 +810,13 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
     ):
         assert part in message, part
     assert "401 Client Error" not in message and "pip install" not in message
-    # Another repo's gate keeps its own error.
     monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load("nvidia/Cosmos3-Nano"))
     with pytest.raises(OSError, match = "safety checker"):
         _loaded(NANO)
 
 
 def _guardrail_downloads(monkeypatch):
-    """A cosmos_guardrail whose module-level snapshot_download, as the real package calls it, records each token."""
+    """Records the token each guardrail snapshot_download sends."""
     seen = []
 
     def snapshot_download(
