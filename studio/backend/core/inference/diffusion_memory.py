@@ -6691,8 +6691,7 @@ def request_background_encoder_pins(pipe: Any) -> None:
         pass
 
 
-# "0": the image load waits for its encoder pins before it returns, and streamed encoders pin after the
-# transformer's up-front pin (the old order).
+# "0": the old order (load waits for encoder pins; they pin after the transformer's).
 ENCODER_PINS_AFTER_LOAD_ENV = "UNSLOTH_DIFFUSION_ENCODER_PINS_AFTER_LOAD"
 _PINS_SETTLED_ATTR = "_unsloth_encoder_pins_settled"
 
@@ -6709,8 +6708,8 @@ def _mark_pins_settled(pipe: Any) -> None:
 
 
 def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
-    """Start the encoder pins and return; the first render waits for them (finish_encoder_pins_before_render).
-    A cold encoder file kept Qwen-Image's 8 GiB load waiting 24-28 s here. Under the kill switch the load waits."""
+    """Start the encoder pins and return; the first render waits for them. A cold encoder file kept Qwen-Image's
+    8 GiB load waiting 24-28 s here."""
     if pipe is None:
         return 0.0
     start_background_pins(pipe)
@@ -6721,7 +6720,6 @@ def finish_encoder_pins_at_load(pipe: Any, logger: Any = None) -> float:
             if not pinner.join(0)
         )
         if not running:
-            # all done already (warm page cache): the load's own heap trim covers their sources
             _mark_pins_settled(pipe)
         elif logger is not None:
             logger.info(
@@ -6741,8 +6739,7 @@ def finish_encoder_pins_before_render(
     cancel: Any = None,
     logger: Any = None,
 ) -> float:
-    """Wait (cancellable) for the encoder pins a load left running, so a render never races them; once they are
-    done, return the heap their sources freed. A no-op once settled."""
+    """Cancellable wait for the encoder pins a load left running, then trim the heap their sources freed."""
     if pipe is None or getattr(pipe, _PINS_SETTLED_ATTR, False):
         return 0.0
     if not getattr(pipe, _PENDING_PINS_ATTR, None):
@@ -7469,8 +7466,7 @@ def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
 
 
 def _pinners_placed_mib(pipe: Any, modules: list) -> int:
-    """MiB the deferred pinners of ``modules`` have already copied into registered memory (read before any budget
-    sample, so later progress stays reserved)."""
+    # Read before any budget sample, so later progress stays reserved.
     if not modules:
         return 0
     ids = {id(m) for m in modules}
@@ -7482,7 +7478,6 @@ def _pinners_placed_mib(pipe: Any, modules: list) -> int:
 
 
 def _start_deferred_pinning(pipe: Any, module: Any) -> bool:
-    """Start ``module``'s deferred pinner now; False when it has none."""
     for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
         if pinner.module is module:
             pinner.start()
@@ -8759,14 +8754,14 @@ def _apply_streaming_offload(
         def _pins_early(name: Any, module: Any, offload_type: str) -> bool:
             return early_pins and _encoder_defers(name, module, offload_type)
 
-        # Whole-pin deferred encoders first; their pinners start once the first denoiser has made its pin decision,
-        # so a cold encoder file reads beside the transformer's slab pin, not after it. Within the plan's budget.
+        # Deferred encoders first; their pinners start after the first denoiser's pin decision, so a cold encoder
+        # file reads beside the transformer's slab pin, not after it.
         order = sorted(streamed.items(), key = lambda kv: not _pins_early(kv[0], *kv[1]))
         early_waiting: list = []
         early_started: list = []
 
         def _early_credit_mib() -> int:
-            # bytes the started encoder pinners already placed: the live budget has them, pinned_mib reserved them
+            # placed encoder bytes are in both the live budget and pinned_mib: credit them once
             return _pinners_placed_mib(pipe, early_started)
 
         for comp_name, (module, offload_type) in order:
