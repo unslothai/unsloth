@@ -182,7 +182,13 @@ def _model_heads(model):
     if not isinstance(getattr(text, "num_attention_heads", None), int):
         return []
     counts = set()
-    for layer in getattr(text, "per_layer_config", None) or [text]:
+    try:
+        # transformers >= 5.15 gives every config a per-layer view; its len() reads num_hidden_layers,
+        # which configs such as remote-code ChatGLM (num_layers) do not define.
+        layers = list(getattr(text, "per_layer_config", None) or ())
+    except (AttributeError, TypeError):
+        layers = []
+    for layer in layers or [text]:
         heads = getattr(layer, "num_attention_heads", None)
         heads = heads if isinstance(heads, int) else text.num_attention_heads
         kv = getattr(layer, "num_key_value_heads", None)
