@@ -6172,8 +6172,7 @@ def _unsloth_gkd_layout(source):
 
 
 def _unsloth_global_module_hooks():
-    # torch.nn.modules.module.register_module_forward_(pre_)hook and
-    # register_module_full_backward_(pre_)hook apply to every module, the head included.
+    # torch's register_module_*_hook globals apply to every module, the head included.
     from torch.nn.modules import module as _module
     return bool(
         getattr(_module, "_global_forward_hooks", None)
@@ -6433,8 +6432,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
-    # The JSD reads both heads' weights directly, so forward / backward hooks on a head (its own or torch's
-    # global module hooks) would never fire. Accelerate's _hf_hook is fine: the loss moves to the head device.
+    # The JSD bypasses head calls, so head / global hooks would not fire; accelerate's _hf_hook is fine.
     if _unsloth_global_module_hooks() or any(
         _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
     ):
