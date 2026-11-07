@@ -239,7 +239,7 @@ test("the rule that closes the trace goes on the last thing before the answer", 
   const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
   const toolGroup = readSrc("components/assistant-ui/tool-group.tsx");
   assert.equal(
-    reasoning.match(/closesTrace && <ReasoningEndRule \/>/g)?.length,
+    reasoning.match(/closesTrace && <ReasoningEndRule capped=\{(?:capped|false)\} \/>/g)?.length,
     2,
   );
   assert.match(
@@ -281,7 +281,7 @@ test("the header row keeps its height when Copy appears", () => {
   // A bare span would take the paragraph line-height and push the label down when opened.
   assert.match(
     reasoning,
-    /<span className="ml-auto flex items-center leading-none">\n\s*<ReasoningCopyButton/,
+    /<span className="ml-auto flex items-center gap-1 leading-none">/,
   );
 });
 

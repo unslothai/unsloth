@@ -773,11 +773,26 @@ def _memory_stats(device: str) -> dict:
     except Exception:  # noqa: BLE001 -- stats are best-effort
         pass
     try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        stats["host_rss_mib"] = info.rss >> 20
+        if getattr(info, "peak_wset", None):  # Windows has no getrusage
+            stats["host_peak_rss_mib"] = info.peak_wset >> 20
+    except Exception:  # noqa: BLE001 -- stats are best-effort
+        pass
+    try:
         import resource
-        stats["host_peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss >> 10
-        with open("/proc/self/statm", encoding = "ascii") as fh:
-            stats["host_rss_mib"] = (int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")) >> 20
-    except Exception:  # noqa: BLE001 -- not Linux
+
+        # ru_maxrss is KiB on Linux but bytes on macOS.
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        stats["host_peak_rss_mib"] = peak >> (20 if sys.platform == "darwin" else 10)
+        if "host_rss_mib" not in stats:
+            with open("/proc/self/statm", encoding = "ascii") as fh:
+                stats["host_rss_mib"] = (
+                    int(fh.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+                ) >> 20
+    except Exception:  # noqa: BLE001 -- Windows, or no /proc
         pass
     return stats
 

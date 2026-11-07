@@ -8115,26 +8115,113 @@ def _owner_chosen_launch(
         )
         sources.append(override.get("llama_extra_args"))
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
-        if (
-            intent is not None
-            # A snapshot path and its repo id are one model; other paths compare as before.
-            and _same_loaded_identifier(
-                _snapshot_repo_or_self(
-                    getattr(intent, "model_identifier", None), require_cache = True
-                ),
-                _snapshot_repo_or_self(identifier, require_cache = True),
-            )
-            # No variant named: the load resolves the same quant the resident one did.
-            and (
-                variant is None
-                or (getattr(intent, "hf_variant", None) or "").casefold() == variant.casefold()
-            )
+        if intent is not None and _same_launch_target(
+            getattr(intent, "model_identifier", None),
+            getattr(intent, "hf_variant", None),
+            identifier,
+            variant,
         ):
             sources.append(getattr(intent, "extra_args", None))
+        # The idle-freed launch passed this check when it loaded, as the resident one did.
+        from core.inference.llama_keepwarm import get_last_unloaded_intent, get_last_unloaded_model
+
+        last = get_last_unloaded_model()
+        launch = get_last_unloaded_intent(last) if last else None
+        if launch and _same_launch_target(last[0], last[1], identifier, variant):
+            sources.append(launch["kwargs"].get("llama_extra_args"))
     pairs: set[tuple[str, str]] = set()
     for args in sources:
         pairs.update(owner_only_path_args(args))
     return pairs
+
+
+def _same_launch_target(loaded_id, loaded_variant, identifier, variant) -> bool:
+    # A snapshot path and its repo id are one model; no variant named resolves the same quant.
+    return _same_loaded_identifier(
+        _snapshot_repo_or_self(loaded_id, require_cache = True),
+        _snapshot_repo_or_self(identifier, require_cache = True),
+    ) and (variant is None or (loaded_variant or "").casefold() == variant.casefold())
+
+
+_REPLAY_LOAD_FIELDS = frozenset(
+    {
+        "max_seq_length",
+        "max_seq_length_auto_derived",
+        "chat_template_override",
+        "cache_type_kv",
+        "gpu_ids",
+        "speculative_type",
+        "spec_draft_n_max",
+        "n_parallel",
+        "n_batch",
+        "n_ubatch",
+        "load_mode",
+        "spec_draft_cache_type",
+        "ctx_checkpoints",
+        "cache_ram",
+        "tensor_parallel",
+        "disable_vision",
+        "gpu_memory_mode",
+        "gpu_layers",
+        "n_cpu_moe",
+        "tensor_split",
+        "llama_extra_args",
+        "reasoning_budget",
+        "reasoning_budget_message",
+    }
+)
+_PLACEMENT_FIELDS = (
+    "gpu_memory_mode",
+    "gpu_layers",
+    "n_cpu_moe",
+    "gpu_ids",
+    "tensor_split",
+    "tensor_parallel",
+)
+
+
+def _note_replay_launch(llama_backend, request: LoadRequest) -> None:
+    from utils.openai_auto_switch_settings import (
+        model_override_load_kwargs,
+        resolve_override_for_load,
+    )
+
+    # Saved settings are re-read on reload, so a reset one must not come back from here.
+    _, override = resolve_override_for_load(
+        request.model_path,
+        request._override_alias_id
+        or request._advertised_id
+        or _snapshot_repo_or_self(request.model_path, require_cache = True),
+        request.gguf_variant,
+    )
+    owned = model_override_load_kwargs(override, is_gguf = True)
+    fields = (request.model_fields_set & _REPLAY_LOAD_FIELDS) - owned.keys()
+    llama_backend.replay_launch = request.model_dump(include = fields)
+
+
+def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
+    kwargs = dict(launch["kwargs"])
+    # A CPU fallback is per launch: reload with automatic placement.
+    if launch.get("cpu_fallback"):
+        for name in _PLACEMENT_FIELDS:
+            kwargs.pop(name, None)
+    if "gpu_ids" in override_kwargs:
+        kwargs.pop("tensor_split", None)
+    if "max_seq_length" in override_kwargs:
+        kwargs.pop("max_seq_length_auto_derived", None)
+    if "gpu_memory_mode" in override_kwargs:
+        kwargs.pop("gpu_layers", None)
+    if kwargs.get("llama_extra_args") and "llama_extra_args" not in override_kwargs:
+        from utils.openai_auto_switch_settings import strip_args_shadowed_by
+        kwargs["llama_extra_args"] = strip_args_shadowed_by(
+            kwargs["llama_extra_args"],
+            override_kwargs,
+            strip_offload = override_kwargs.get("gpu_memory_mode") == "manual",
+            strip_tensor_split = "gpu_ids" in override_kwargs,
+            strip_load_mode = "load_mode" in override_kwargs,
+            strip_load_mode_aliases = "load_mode" in override_kwargs,
+        )
+    return kwargs
 
 
 def _snapshot_repo_or_self(model_id, require_cache = False):
@@ -11177,6 +11264,7 @@ async def _maybe_auto_switch_model(
     )
     from utils.security.remote_code_approvals import approved_local_fingerprint
     from core.inference.llama_keepwarm import (
+        get_last_unloaded_intent,
         get_last_unloaded_model,
         inference_lifecycle_gate,
         model_load_gate,
@@ -11319,6 +11407,7 @@ async def _maybe_auto_switch_model(
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         stashed_mlx = False
+        stashed_intent = None
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -11376,6 +11465,7 @@ async def _maybe_auto_switch_model(
                 target_id, variant = last
                 override_id = target_id
             stashed_mlx = stash_is_mlx(last)
+            stashed_intent = get_last_unloaded_intent(last)
             # Held-back keyless callers may restore only the model they named; check before loading.
             if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
@@ -11397,6 +11487,10 @@ async def _maybe_auto_switch_model(
                     requested_base,
                     (override_id, public_model_id(override_id)),
                 )
+            # A request naming the idle-freed model reloads it as it was launched too.
+            last = get_last_unloaded_model()
+            if last and _same_launch_target(last[0], last[1], target_id, variant):
+                stashed_intent = get_last_unloaded_intent(last)
         # Not inferred from the quant; audio.cpp GGUFs are read only by audiocpp_server.
         from core.inference.audio_cpp_models import looks_like_audio_cpp
 
@@ -11773,9 +11867,12 @@ async def _maybe_auto_switch_model(
                                     ),
                                 )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        load_kwargs.update(
-                            model_override_load_kwargs(override, is_gguf = target_is_gguf)
+                        override_kwargs = model_override_load_kwargs(
+                            override, is_gguf = target_is_gguf
                         )
+                        if stashed_intent is not None and target_is_gguf:
+                            load_kwargs.update(_replay_load_kwargs(stashed_intent, override_kwargs))
+                        load_kwargs.update(override_kwargs)
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
                         if remote_code_fingerprint:
@@ -11787,7 +11884,11 @@ async def _maybe_auto_switch_model(
                             load_kwargs["alongside"] = True
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
-                            saved_gpu_ids, stored_gpu_index_kind(override)
+                            saved_gpu_ids,
+                            # A replayed pin was sent in this process's index space.
+                            stored_gpu_index_kind(override)
+                            if "gpu_ids" in override_kwargs
+                            else None,
                         ):
                             # Stale pin (GPU removed, another host, or a backend change
                             # renumbering these ids): drop it rather than 400 the load.
@@ -15533,7 +15634,7 @@ async def _validate_reasoning_budget_preflight(
 
 
 async def _override_gpu_ids_still_resolve(
-    gpu_ids: List[int], stored_index_kind: str = "physical"
+    gpu_ids: List[int], stored_index_kind: Optional[str] = "physical"
 ) -> bool:
     """Checks the pin's stored index space first: Vulkan ordinals and CUDA ids name different devices."""
     try:
@@ -15553,7 +15654,7 @@ async def _override_gpu_ids_still_resolve(
         from utils.hardware.hardware import current_gpu_index_kind
 
         current_kind = await asyncio.to_thread(current_gpu_index_kind, is_vulkan)
-        if stored_index_kind != current_kind:
+        if stored_index_kind is not None and stored_index_kind != current_kind:
             return False
         if device == DeviceType.XPU and not is_vulkan:
             # Rejected outright on XPU.
@@ -19007,7 +19108,11 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request):
+        from hub.utils.mlx_variants import is_precision_folder
+
+        if not is_direct_gguf_request and (
+            not request.gguf_variant or is_precision_folder(request.gguf_variant)
+        ):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             await asyncio.to_thread(reap_dead_worker, backend)
             if (
@@ -19029,9 +19134,11 @@ async def _load_model_impl(
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
                 == request.engine
-                # A resident precision folder (6-bit/) is not the root checkpoint a variantless request names.
-                and not (backend.models.get(backend.active_model_name) or {}).get(
-                    "precision_folder"
+                # Folder names are case-sensitive, so 6-BIT is not the resident 6-bit/.
+                and (request.gguf_variant or "").strip()
+                == str(
+                    (backend.models.get(backend.active_model_name) or {}).get("precision_folder")
+                    or ""
                 )
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
@@ -19657,6 +19764,7 @@ async def _load_model_impl(
 
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
+            _note_replay_launch(llama_backend, request)
             if replacing:
                 await asyncio.to_thread(note_model_loaded, llama_backend)
             # Else None, or the catalog id a /models/load named: only those loads have an alias to keep.
@@ -46349,11 +46457,15 @@ def _flatten_content_parts_for_local_template(messages: list[dict]) -> list[dict
 
 
 def _structured_tool_history_for_local_template(messages: list[dict]) -> list[dict]:
-    """Local templates only: tool_calls arguments parsed to mappings; HTTP unchanged; unparseable as-is."""
+    """Local templates only: tool_calls arguments parsed to mappings; HTTP unchanged; unparseable as-is.
+    A call-only turn gets empty content: llama-server accepts it absent, but templates such as
+    Qwen3's read message.content and raise."""
     out = []
     for msg in messages:
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
+            if msg.get("content") is None:
+                msg = {**msg, "content": ""}
             new_calls = []
             for tc in tool_calls:
                 fn = tc.get("function") if isinstance(tc, dict) else None
@@ -48537,18 +48649,18 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
-        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
-        # unless that build has failed here and the ladder runs the CPU one instead.
-        # A retained managed Vulkan build also renders on the card, whatever this load requested.
-        vulkan_on_cpu_torch = (
+        # So does a GPU sd.cpp build a CPU torch is routed to (Vulkan beside AMD / Arc, CUDA beside
+        # NVIDIA) or retains, unless the ladder has moved it to the CPU build.
+        gpu_build_on_cpu_torch = (
             device == "cpu"
             and off_torch is None
             and await asyncio.to_thread(
-                lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
-                or managed_sd_cpp_accelerator() == "vulkan"
+                lambda: preferred_accelerator(image_install_accelerator("cpu"), None)
+                in ("vulkan", "cuda")
+                or managed_sd_cpp_accelerator() in ("vulkan", "cuda")
             )
         )
-        if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
+        if pending_name == ENGINE_SD_CPP and gpu_build_on_cpu_torch:
             needs_gpu = True
 
         # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
@@ -48726,10 +48838,10 @@ async def load_diffusion_model_gated(
                 _guard_diffusion_load_against_training()
         if device == "cpu" and off_torch is None:
             # Re-settled on what selection activated and installed: a CPU diffusers fallback, or a
-            # retained CPU bundle after a failed Vulkan install, takes no GPU.
+            # retained CPU bundle after a failed Vulkan or CUDA install, takes no GPU.
             needs_gpu = (
                 activated == ENGINE_SD_CPP
-                and vulkan_on_cpu_torch
+                and gpu_build_on_cpu_torch
                 and not await asyncio.to_thread(sd_cpp_binaries_all_cpu)
             )
         if activated == ENGINE_MLX:
@@ -49037,7 +49149,8 @@ _GENERATE_FAILURE_FALLBACK = "Image generation failed."
 # Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
-        ("out of memory", "outofmemory", "oom"),
+        # The last one is stable-diffusion.cpp's model manager: classified here only for a render that failed.
+        ("out of memory", "outofmemory", "oom", "cannot make enough memory available"),
         "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
     ),
     (
@@ -49062,9 +49175,16 @@ def _generate_failure_detail(message: str) -> str:
     the engine's text, which can carry local paths and argv."""
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
-        if any(n in text for n in needles):
+        if any(_failure_text_mentions(text, n) for n in needles):
             return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
     return _GENERATE_FAILURE_FALLBACK
+
+
+def _failure_text_mentions(text: str, needle: str) -> bool:
+    """Bare ``oom`` only as a word: a native renderer's log tail can echo the prompt ("a cozy room")."""
+    if needle == "oom":
+        return re.search(r"(?<![a-z0-9])oom(?![a-z0-9])", text) is not None
+    return needle in text
 
 
 # Keyed by account id, not account_scope(): the scope moves when the first managed account appears.

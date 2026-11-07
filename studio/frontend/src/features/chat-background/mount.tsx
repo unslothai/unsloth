@@ -1,17 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { lazy, Suspense } from "react";
-import type { BackgroundScope } from "./model";
-import { useMaterialStore } from "./material";
+import { useAppliedMaterial } from "./material";
+import { inScope } from "./model";
 import { useChatBackground } from "./storage";
 import { useChatWelcomeShown } from "./welcome";
-function inScope(
-	scope: BackgroundScope,
-	route: "newChat" | "chat" | "page",
-): boolean {
-	if (scope === "all") return true;
-	if (scope === "chats") return route !== "page";
-	return route === "newChat";
-}
 const Renderer = lazy(() =>
 	import("./background").then((module) => ({ default: module.ChatBackground })),
 );
@@ -31,15 +23,15 @@ export function ChatBackground({
 }) {
 	const { value, ready } = useChatBackground();
 	const welcome = useChatWelcomeShown();
-	const material = useMaterialStore((s) => s.material);
+	const material = useAppliedMaterial();
 	if (!active) return null;
 	const shown =
 		value &&
 		image &&
 		(!route || inScope(value.scope, route === "chat" && welcome ? "newChat" : route));
 	if (!shown)
-		// Glass on the chat routes still needs a ready canvas when no image shows there.
-		return backdrop && ready && material !== "solid" && material !== "macos" && route !== "page" ? (
+		// Glass still needs a ready canvas on any route where no image shows.
+		return backdrop && ready && material !== "solid" && material !== "macos" ? (
 			<Suspense fallback={null}>
 				<Backdrop />
 			</Suspense>
