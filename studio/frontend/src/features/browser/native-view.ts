@@ -767,7 +767,13 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
-  return !layered && coveredNow(rect) ? { ...shown, covered: true } : shown;
+  // A layered page trails a dragged window by a frame: it waits under its snapshot instead.
+  const covered = layered ? movingWindow() : coveredNow(rect);
+  return covered ? { ...shown, covered: true } : shown;
+}
+
+function movingWindow(): boolean {
+  return document.querySelector?.('[data-floating-gesture="move"]') != null;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -991,6 +997,7 @@ async function coverView(tabId: string, zoom: number, bounds: Bounds): Promise<v
       retryCover();
       return;
     }
+    closeHole();
     await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
     parkedView = tabId;
     staleSnapshot = null;
@@ -1031,7 +1038,8 @@ export function refreshCoveredPage(tabId: string): void {
 
 async function applyView(desired: Desired): Promise<void> {
   if (!desired || "covered" in desired) {
-    closeHole();
+    // Cut open until the snapshot is up (coverView), or the window flashes blank.
+    if (!(layered && desired && parkable(desired.tabId))) closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
     // Another tab under a lasting cover (the find bar): show it first so it can be captured, not left blank.
@@ -1154,8 +1162,8 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
-    // A page on top waits out a floating drag under its snapshot, not a capture per frame.
-    if (!layered && parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
+    // A parked page waits out a floating drag under its snapshot, not a capture per frame.
+    if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
