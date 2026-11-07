@@ -76,7 +76,9 @@ export const THEME_SWITCHING_CLASS = "theme-switching";
 function reducedMotionActive(el: HTMLElement): boolean {
   if (el.classList.contains("force-reduced-motion")) return true;
   if (el.classList.contains("force-motion")) return false;
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
 }
 
 // Reduce motion's 0.01ms `all` transition starts one per element per colour on a flip; otherwise the extra restyle costs WebKit more.
