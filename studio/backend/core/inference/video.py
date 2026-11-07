@@ -4850,10 +4850,13 @@ _NATIVE_CRASH_NEEDLES = (
 
 
 _FAILURE_REASON_MAX_CHARS = 200
-# Absolute POSIX, ~, drive, UNC or file:// paths; a URL is kept for redact_log_text to scrub.
+_PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
+# Absolute POSIX, ~, drive, UNC or file:// paths; a quoted one may hold spaces ("C:\\Users\\Jo Ann").
+# A URL is kept for redact_log_text to scrub.
 _FAILURE_PATH_RE = re.compile(
     r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
-    r"|(?<![\w/~])(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+"
+    rf"|(?P<q>['\"`]){_PATH_START}[^'\"`\n]*(?P=q)"
+    rf"|(?<![\w/~]){_PATH_START}[^\s\"'`,;]+"
 )
 
 
@@ -4863,7 +4866,7 @@ def _failure_reason(exc: BaseException) -> str:
 
     lines = str(exc).strip().splitlines()
     text = redact_log_text(lines[0] if lines else "")
-    text = _FAILURE_PATH_RE.sub(lambda m: m.group("url") or "<path>", text)
+    text = _FAILURE_PATH_RE.sub(lambda m: m["url"] or f"{m['q'] or ''}<path>{m['q'] or ''}", text)
     text = " ".join(text.split())
     reason = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
     if len(reason) > _FAILURE_REASON_MAX_CHARS:
@@ -12300,8 +12303,8 @@ class VideoBackend:
         video_id: Optional[str] = None,
         **gen_kwargs: Any,
     ) -> None:
-        """Worker for begin_generate; unexpected errors are logged, the client gets only a generic
-        message."""
+        """Worker for begin_generate; unexpected errors are logged in full, the client gets
+        video_failure_detail's redacted reason."""
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
