@@ -7,6 +7,7 @@ import * as zustand from "zustand";
 import * as zustandMiddleware from "zustand/middleware";
 
 import * as audioCppCatalog from "../src/features/audio/audio-cpp-catalog.ts";
+import * as sttContext from "../src/features/settings/stores/stt-context.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
@@ -24,6 +25,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     zustand,
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
+    "./stt-context": sttContext,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
   },
 );
