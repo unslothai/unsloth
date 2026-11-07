@@ -266,7 +266,9 @@ def test_the_runtime_backend_is_the_installed_servers(monkeypatch):
     monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: None)
     assert _REAL_RUNTIME_BACKEND() is None
     monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: "/opt/audiocpp_server")
-    monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: f"vulkan:{binary}:{force_cpu}")
+    monkeypatch.setattr(
+        srv, "select_backend", lambda binary, force_cpu: f"vulkan:{binary}:{force_cpu}"
+    )
     assert _REAL_RUNTIME_BACKEND() == "vulkan:/opt/audiocpp_server:False"
 
 
@@ -311,7 +313,11 @@ def _yue2():
 )
 @pytest.mark.parametrize(
     "backend, measured, generic",
-    [(None, MEASURED, GENERIC_EITHER), ("vulkan", MEASURED, GENERIC_VULKAN), ("cuda", MEASURED_CUDA, GENERIC)],
+    [
+        (None, MEASURED, GENERIC_EITHER),
+        ("vulkan", MEASURED, GENERIC_VULKAN),
+        ("cuda", MEASURED_CUDA, GENERIC),
+    ],
 )
 def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
     monkeypatch, capabilities, driver, profiled, backend, measured, generic
