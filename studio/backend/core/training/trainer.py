@@ -3780,6 +3780,7 @@ class UnslothTrainer:
                 is_vlm = self.is_vlm,
                 format_type = format_type,
                 dataset_name = dataset_source,
+                dataset_revision = dataset_revision,
                 custom_format_mapping = custom_format_mapping,
                 progress_callback = self._update_progress,
             )
@@ -3818,6 +3819,7 @@ class UnslothTrainer:
                     is_vlm = self.is_vlm,
                     format_type = format_type,
                     dataset_name = dataset_source,
+                    dataset_revision = dataset_revision,
                     custom_format_mapping = custom_format_mapping,
                 )
                 if not eval_info.get("success", True):
