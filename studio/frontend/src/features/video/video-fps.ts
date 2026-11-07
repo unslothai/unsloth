@@ -66,12 +66,28 @@ export function restoredClipDuration(
   frames: number,
   fps: number,
 ): { frames: number; seconds: number } | null {
-  const exact = options.find((o) => o.frames === frames);
-  if (exact) return exact;
-  const seconds = frames / fps;
+  return options.find((o) => o.frames === frames) ?? nearestDuration(options, frames / fps);
+}
+
+function nearestDuration(
+  options: Array<{ frames: number; seconds: number }>,
+  seconds: number,
+): { frames: number; seconds: number } | null {
   let best: { frames: number; seconds: number } | null = null;
   for (const o of options) {
     if (best == null || Math.abs(o.seconds - seconds) < Math.abs(best.seconds - seconds)) best = o;
   }
   return best;
+}
+
+/** The frame count to keep when the duration options change. After a new family or frame rate it is the option
+ *  nearest the length the user picked: the same count at another rate is another length. */
+export function keptNumFrames(
+  options: Array<{ frames: number; seconds: number }>,
+  current: number,
+  intentSeconds: number,
+  reseat: boolean,
+): number {
+  if (!reseat && options.some((o) => o.frames === current)) return current;
+  return nearestDuration(options, intentSeconds)?.frames ?? current;
 }
