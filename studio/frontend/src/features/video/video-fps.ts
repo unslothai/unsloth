@@ -20,6 +20,15 @@ export function videoFpsOptions(
   return null;
 }
 
+export interface FpsPick {
+  family: string | null;
+  fps: number;
+}
+
+export function pickedFpsFor(pick: FpsPick | null, family: string | null): number | null {
+  return pick != null && pick.family === family ? pick.fps : null;
+}
+
 export function resolveVideoFps(
   defaults: VideoGenerationDefaults | null | undefined,
   picked: number | null,

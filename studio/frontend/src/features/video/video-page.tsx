@@ -144,7 +144,9 @@ import {
   videoSizeLimits,
 } from "./video-size";
 import {
+  type FpsPick,
   keptNumFrames,
+  pickedFpsFor,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -1273,7 +1275,7 @@ function VideoGenerator({
   const [durationIntentSeconds, setDurationIntentSeconds] = useState(
     numFrames / FALLBACK_FPS,
   );
-  const [pickedFps, setPickedFps] = useState<number | null>(null);
+  const [fpsPick, setFpsPick] = useState<FpsPick | null>(null);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
@@ -1506,7 +1508,13 @@ function VideoGenerator({
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
   const fpsOptions = useMemo(() => videoFpsOptions(status?.defaults), [status?.defaults]);
-  const fps = resolveVideoFps(status?.defaults, pickedFps);
+  const loadedFamily = status?.loaded ? status.family : null;
+  // Scoped to its family in render: a reset effect would land after the next family's defaults are seeded.
+  const fps = resolveVideoFps(status?.defaults, pickedFpsFor(fpsPick, loadedFamily));
+  const setPickedFps = useCallback(
+    (picked: number) => setFpsPick({ family: loadedFamily, fps: picked }),
+    [loadedFamily],
+  );
   const durationTargets =
     status?.defaults?.duration_presets ?? FALLBACK_DURATION_TARGETS;
   const minFrames = status?.defaults?.min_num_frames;
@@ -1730,11 +1738,6 @@ function VideoGenerator({
     setMatchSource(has);
   }, [canvasSource, matchedResolution]);
 
-  const loadedFamily = status?.loaded ? status.family : null;
-  // A picked rate belongs to the family it was picked on.
-  useEffect(() => {
-    setPickedFps(null);
-  }, [loadedFamily]);
   const prevFamilyRef = useRef<string | null>(null);
   const prevFpsRef = useRef(fps);
   useEffect(() => {
@@ -2420,7 +2423,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames],
+    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps],
   );
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
