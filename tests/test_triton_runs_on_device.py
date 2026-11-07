@@ -4,6 +4,7 @@
 """Flex attention is dropped on a ROCm card this Triton cannot build for (gfx101x on Triton 3.9)."""
 
 import sys
+import types
 from unittest import mock
 
 import pytest
@@ -13,7 +14,12 @@ import unsloth.models._utils as U
 
 @pytest.fixture(autouse = True)
 def _fresh_cache():
-    with mock.patch.dict(U._TRITON_RUNS_ON_DEVICE, clear = True):
+    # macOS / Windows runners have no Triton; the probe itself is stubbed per test.
+    triton = sys.modules.get("triton") or types.ModuleType("triton")
+    with (
+        mock.patch.dict(U._TRITON_RUNS_ON_DEVICE, clear = True),
+        mock.patch.dict(sys.modules, {"triton": triton}),
+    ):
         yield
 
 
