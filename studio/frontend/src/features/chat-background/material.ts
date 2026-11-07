@@ -28,6 +28,7 @@ import {
   sanitizeStrength,
   sanitizeStrengths,
 } from "./model";
+import { startGlassMotion } from "./glass-motion";
 import { useChatWelcomeShown } from "./welcome";
 
 export const MATERIAL_STORAGE_KEY = "unsloth_window_material";
@@ -242,6 +243,11 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
       "data-glass-cpu",
       WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
     );
+  }, [material, here]);
+  useEffect(() => {
+    // WebKitGTK already has no live blur outside the sidebar (data-glass-cpu), so nothing to pause there.
+    if (WEBKIT_GTK || material === "solid" || material === "transparent" || !here) return;
+    return startGlassMotion().stop;
   }, [material, here]);
   useEffect(() => {
     const root = document.documentElement;
