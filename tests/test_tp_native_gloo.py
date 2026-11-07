@@ -808,14 +808,15 @@ def _case_trainer(
 
 
 def _case_sharded_lora_init(rank, world, tmp, ckpt):
-    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation."""
+    """Weight-dependent LoRA init (PiSSA) on sharded_loading slices is refused before any mutation;
+    orthogonal init only reads the full in / out features and the dtype, so it is allowed like gaussian."""
     from peft import LoraConfig, get_peft_model
     from torch.distributed.device_mesh import init_device_mesh
     from transformers import AutoModelForCausalLM
 
     mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
     out = {}
-    for init in ("pissa", "gaussian"):
+    for init in ("pissa", "gaussian", "orthogonal"):
         model = tpn.load_tensor_parallel(
             ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, torch_dtype = torch.float32
         )
@@ -824,6 +825,60 @@ def _case_sharded_lora_init(rank, world, tmp, ckpt):
         out[init] = _raised(lambda: tpn.apply_tensor_parallel(model, mesh["tp"]))
         out[init + "_tp"] = tpn.is_tensor_parallel(model)
     return out
+
+
+def _case_sharded_random_lora_init(rank, world, tmp, ckpt, init, sync_trainable, seed_per_rank):
+    """A random LoRA init on sharded_loading slices vs the same init on a full load in one process. Each rank
+    seeds get_peft_model differently when seed_per_rank, so only the tp rank 0 broadcast can make them agree."""
+    from peft import LoraConfig, get_peft_model
+    from torch.distributed.device_mesh import init_device_mesh
+    from transformers import AutoModelForCausalLM
+
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("tp",))
+    kw = dict(torch_dtype = torch.float32, attn_implementation = "eager")
+
+    def peft(model, seed):
+        torch.manual_seed(seed)
+        config = LoraConfig(r = 4, lora_alpha = 8, target_modules = "all-linear", init_lora_weights = init)
+        return get_peft_model(model, config)
+
+    def lora(model):
+        return {
+            n: tpn._full(p.detach(), p).clone() for n, p in model.named_parameters() if "lora_" in n
+        }
+
+    ref = peft(AutoModelForCausalLM.from_pretrained(ckpt, **kw), 7)
+    model = tpn.load_tensor_parallel(
+        ckpt, mesh["tp"], loader = AutoModelForCausalLM.from_pretrained, **kw
+    )
+    model = peft(model, 7 + rank if seed_per_rank else 7)
+    error = _raised(
+        lambda: tpn.apply_tensor_parallel(
+            model, mesh["tp"], config = tpn.TPConfig(sync_trainable = sync_trainable)
+        )
+    )
+    if error is not None:
+        return {"error": error}
+    # Replicated factors hold this rank's own copy: the raw local tensors show any per-rank divergence.
+    local = {
+        n: (p.to_local() if tpn._is_dtensor(p) else p).detach().clone()
+        for n, p in model.named_parameters()
+        if "lora_" in n
+    }
+    init_ref, init_tp = lora(ref), lora(model)
+    ids = _batch(ref)
+    ref_out = _train(ref, ids, 1, torch.nn.utils.clip_grad_norm_)
+    tp_out = _train(model, ids, 1, tpn.tp_clip_grad_norm_)
+    return {
+        "error": None,
+        "local": local,
+        "init_ref": init_ref,
+        "init_tp": init_tp,
+        "ref": ref_out,
+        "tp": tp_out,
+        "step_ref": lora(ref),
+        "step_tp": lora(model),
+    }
 
 
 def _case_sampler(rank, world, tmp, dp, strategy):
@@ -982,6 +1037,7 @@ CASES = {
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
     "trainer": _case_trainer,
+    "sharded_random_lora_init": _case_sharded_random_lora_init,
     "sampler": _case_sampler,
     "sampler_resume": _case_sampler_resume,
 }
@@ -1280,6 +1336,57 @@ def test_sharded_loading_refuses_weight_dependent_lora_init():
         assert "depends on the base weight" in (res["pissa"] or ""), res
         assert not res["pissa_tp"]
         assert res["gaussian"] is None and res["gaussian_tp"], res
+        assert res["orthogonal"] is None and res["orthogonal_tp"], res
+
+
+@pytest.mark.parametrize("init", ["orthogonal", "gaussian", True])
+def test_sharded_loading_random_lora_init_matches_one_process(init):
+    """Random LoRA inits read only the full in / out features, so the sharded factors are full size; tp rank 0's
+    broadcast makes per-rank seeds agree, and one AdamW step matches the unsharded run from the same seed."""
+    with tempfile.TemporaryDirectory() as ckpt:
+        _save_checkpoint("llama", ckpt, None)
+        results = _spawn(
+            "sharded_random_lora_init",
+            2,
+            ckpt = ckpt,
+            init = init,
+            sync_trainable = True,
+            seed_per_rank = True,
+        )
+    r0, r1 = results
+    assert r0["error"] is None and r1["error"] is None, (r0["error"], r1["error"])
+    assert set(r0["local"]) == set(r1["local"]) and r0["local"]
+    for res in results:
+        assert set(res["init_tp"]) == set(res["init_ref"])
+        for name, ref in res["init_ref"].items():
+            # Bit-identical to the one-process init from tp rank 0's seed: full-size factors, no shard-sized draw.
+            assert torch.equal(res["init_tp"][name], ref), name
+        if init == "orthogonal":
+            for name, A in res["init_ref"].items():
+                if ".lora_A." not in name:
+                    continue
+                B = res["init_ref"][name.replace(".lora_A.", ".lora_B.")]
+                # Orthogonal init: both factors non-zero, B @ A == 0 (rows from complementary halves of one Q).
+                assert A.abs().sum() > 0 and B.abs().sum() > 0, name
+                torch.testing.assert_close(
+                    B @ A, torch.zeros_like(B @ A), rtol = 0, atol = 1e-6, msg = name
+                )
+        ref_logits, ref_grads, ref_losses, ref_norms = res["ref"]
+        logits, grads, losses, norms = res["tp"]
+        torch.testing.assert_close(logits, ref_logits, rtol = 1e-5, atol = 1e-5)
+        assert set(grads) == set(ref_grads) and grads
+        for name in ref_grads:
+            torch.testing.assert_close(grads[name], ref_grads[name], rtol = 1e-4, atol = 1e-6, msg = name)
+        assert losses == pytest.approx(ref_losses, rel = 1e-5)
+        assert norms == pytest.approx(ref_norms, rel = 1e-5)
+        for name, ref in res["step_ref"].items():
+            torch.testing.assert_close(res["step_tp"][name], ref, rtol = 1e-4, atol = 1e-6, msg = name)
+    # Every rank's local copy of a replicated factor is the same tensor after the broadcast.
+    for name in r0["local"]:
+        if r0["local"][name].shape == r1["local"][name].shape and name in r0["init_ref"]:
+            full = r0["init_ref"][name]
+            if r0["local"][name].shape == full.shape:
+                assert torch.equal(r0["local"][name], r1["local"][name]), name
 
 
 def test_sharded_loading_refuses_quantized_loads():
