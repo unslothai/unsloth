@@ -65,33 +65,20 @@ CPU_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_BASE_FLOOR_MS", 
 RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 # At most this many mode pages are measured again (each loads only its failing areas).
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
-# Costs main already has (origin/main 3738b40e43, measured on a 36-core host and pinned to 4 CPUs),
-# as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or `count:area=elements` (elements restyled
-# at LONG turns, replacing the length ratio for that area); each ceiling is about 1.2-1.3x the highest
-# reading, so these may not get worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO.
-# Glass: CPU raster of the backdrop-filter on every repaint (Settings scrolling 13-21x, the rest
-# up to 8.7x in single readings). Length: these areas restyle the whole thread when they open (4-7x at 200 vs 40 turns,
-# 24k-37k elements). Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN=""
-# holds main to the plain limits.
+# Costs main already has (origin/main 42489f20e2: highest settled reading of 3 Colab runs pinned
+# to 4 CPUs and 5 runs on a loaded 36-core host), as `mode:area=ratio`, `mode:*=ratio`,
+# `length:area=ratio` or `count:area=elements` (elements restyled at LONG turns, replacing the length
+# ratio for that area). Each ceiling is about 1.2-1.3x the highest reading, so these may not get
+# worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: CPU raster of the
+# backdrop-filter on every repaint (Settings scrolling 7.7-12.2x, thread scrolling and the API
+# monitor up to 5.7x). No area restyles the whole thread on open any more, so none needs a count
+# ceiling. Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN="" holds main to
+# the plain limits.
 KNOWN_DEFAULT = ",".join(
-    [f"{m}:*=10" for m in ("frosted", "blurred", "liquid")]
-    + [f"{GLASS}:*=12"]
-    + [f"{m}:settings_scroll=28" for m in ("frosted", "blurred", "liquid", GLASS)]
-    # Whole-thread restyles on open, held to an absolute count of elements restyled at LONG turns
-    # (about 1.2x today's): non-subject :has() rules (`X:has(...) Y`), which another change is rewriting.
+    [f"{m}:*={r}" for m, r in (("frosted", 6), ("blurred", 7), ("liquid", 7), (GLASS, 7))]
     + [
-        f"count:{a}={n}"
-        for a, n in (
-            ("model_picker", 44000),
-            ("chat_options", 17000),
-            ("browser_pane", 45000),
-            ("account_menu", 30000),
-            ("organize_chats", 30000),
-            ("chat_row_menu", 32000),
-            ("sidebar_sections", 45000),
-            ("sidebar_toggle", 30000),
-            ("run_settings", 45000),
-        )
+        f"{m}:settings_scroll={r}"
+        for m, r in (("frosted", 12), ("blurred", 15), ("liquid", 13), (GLASS, 12))
     ]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
@@ -1317,9 +1304,26 @@ def remeasure(
                         by_page.setdefault((turns, name), set()).add(area)
                 for _ in range(RECHECKS):
                     for (turns, name), areas in sorted(by_page.items()):
-                        page = Page(browser, base, turns, result["modes"][name], [])
+                        # A recheck only ever lowers a reading: one that cannot load or measure leaves
+                        # the first verdict standing instead of ending the gate with a traceback.
+                        try:
+                            page = Page(browser, base, turns, result["modes"][name], [])
+                        except Exception as exc:  # noqa: BLE001
+                            log(
+                                f"  areas: recheck page {turns} turns, {name} did not load: {exc}"[
+                                    :200
+                                ],
+                                flush = True,
+                            )
+                            continue
                         try:
                             cells = page.sweep(with_deps(areas))
+                        except Exception as exc:  # noqa: BLE001
+                            log(
+                                f"  areas: recheck of {turns} turns, {name} failed: {exc}"[:200],
+                                flush = True,
+                            )
+                            continue
                         finally:
                             page.close()
                         row = result["pages"][(turns, name)]["cells"]
