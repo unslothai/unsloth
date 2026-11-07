@@ -22921,7 +22921,13 @@ async def _generate_tts_wav(
         supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES | (
             {"audio_vlm"} if chat_speaks else set()
         )
-        _apply_builtin_voice(payload, voice, model_info.get("audio_options"))
+        _apply_builtin_voice(
+            payload,
+            voice,
+            [{"name": "voice", "values": ["female", "male"]}]
+            if chat_speaks
+            else model_info.get("audio_options"),
+        )
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,

@@ -291,6 +291,8 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
         is_loaded = False
         _is_audio = False
 
+    seen = []
+
     def backend_for(speaks, is_mlx = False):
         class _Orchestrator:
             active_model_name = "LiquidAI/LFM3-Audio-2B"
@@ -303,7 +305,8 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
                 }
             }
 
-            def generate_audio_response(self, **_kwargs):
+            def generate_audio_response(self, **kwargs):
+                seen.append(kwargs)
                 return b"RIFFwav", 24000
 
         return _Orchestrator()
@@ -318,6 +321,9 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
     monkeypatch.setattr(route, "get_inference_backend", lambda: backend_for(True))
     wav, rate, _, audio_type = asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
     assert (wav, rate, audio_type) == (b"RIFFwav", 24000, "audio_vlm")
+    # The speech API's voice field picks LFM3's male or female TTS voice.
+    asyncio.run(route._generate_tts_wav("hello", payload, None, "t", voice = "male"))
+    assert seen[-1]["audio_options"] == {"voice": "male"}
 
     # MLX speaks in chat but has no TTS mode, so read aloud keeps its old refusal there.
     for silent in (backend_for(False), backend_for(True, is_mlx = True)):
