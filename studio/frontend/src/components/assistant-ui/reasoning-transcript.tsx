@@ -1123,7 +1123,20 @@ export function ReasoningTranscript({
             { root: scroll, rootMargin: "100% 0px" },
           );
     proximity?.observe(element);
+    // A capped Thinking box scrolls on its own, which the thread viewport never hears: mount what it reaches.
+    const tail = element.closest<HTMLElement>('[data-slot="reasoning-tail"]');
+    let tailFrame = 0;
+    const onTailScroll = () => {
+      if (tailFrame !== 0) return;
+      tailFrame = requestAnimationFrame(() => {
+        tailFrame = 0;
+        demandNow.current();
+      });
+    };
+    tail?.addEventListener("scroll", onTailScroll, { passive: true });
     return () => {
+      tail?.removeEventListener("scroll", onTailScroll);
+      if (tailFrame !== 0) cancelAnimationFrame(tailFrame);
       commitEdge.current = { before: () => {}, after: () => {} };
       observer.disconnect();
       proximity?.disconnect();

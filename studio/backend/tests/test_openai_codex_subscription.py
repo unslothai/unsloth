@@ -1152,6 +1152,57 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
     assert "secret-refresh" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "status, body, permanent",
+    [
+        (401, {"error": {"code": "refresh_token_reused"}}, True),
+        (400, {"error": {"code": "refresh_token_reused"}}, True),
+        (401, {"error": {"code": "refresh_token_invalidated"}}, True),
+        (401, {"error": {"message": "unknown"}}, True),
+        (400, {"code": "refresh_token_reused"}, True),
+        (400, {"error": "REFRESH_TOKEN_INVALIDATED"}, True),
+        (400, {"error": {"code": "server_error"}}, False),
+        (503, {"error": {"code": "server_error"}}, False),
+    ],
+)
+def test_refresh_rejections_the_codex_cli_treats_as_permanent_ask_to_reconnect(
+    monkeypatch, status, body, permanent
+):
+    bundle = {
+        "access_token": "secret-access",
+        "refresh_token": "secret-refresh",
+        "expires_at": time.time() - 10,
+        "account_id": "secret-account",
+    }
+    saved = []
+
+    class Lock:
+        def acquire(self):
+            return None
+
+        def release(self):
+            return None
+
+    real_client = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda _request: httpx.Response(status, json = body))
+    monkeypatch.setattr(
+        codex_auth.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport = transport, **kwargs),
+    )
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _provider: bundle.copy())
+    monkeypatch.setattr(
+        codex_auth, "save_oauth_bundle", lambda _provider, value: saved.append(value)
+    )
+    monkeypatch.setattr(codex_auth, "FileLock", lambda *_args, **_kwargs: Lock())
+    codex_auth._refresh_locks.clear()
+
+    with pytest.raises(codex_auth.CodexAuthError) as error:
+        asyncio.run(codex_auth.resolve_access("provider"))
+    assert isinstance(error.value, codex_auth.CodexReauthorizationRequired) is permanent
+    assert bool(saved and saved[-1].get("reauthorization_required")) is permanent
+
+
 def test_stale_unauthorized_response_does_not_poison_reconnected_bundle(monkeypatch):
     bundle = {
         "access_token": "new-access",

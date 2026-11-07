@@ -53,6 +53,7 @@ import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-p
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
+import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
 import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
@@ -157,6 +158,7 @@ import {
 } from "@/components/assistant-ui/turn-navigation";
 import {
   IntentAwareScrollProvider,
+  useAdjustForContentInsertedAbove,
   useDetachThreadFromBottom,
   useIntentAwareAutoScroll,
   useIsThreadAtBottom,
@@ -8276,6 +8278,10 @@ const AssistantMessage: FC = () => {
   useEffect(() => {
     if (replyRef.current) return observeReplyPaint(replyRef.current);
   }, [replyRef]);
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (replyRef.current) return observeDistantRow(replyRef.current, adjustAbove);
+  }, [replyRef, adjustAbove]);
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
@@ -9078,6 +9084,11 @@ const ScheduledTaskSource: FC = () => {
 
 const UserMessage: FC = () => {
   const focusReveal = useActionBarFocusReveal();
+  const promptRef = focusReveal.ref;
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  useEffect(() => {
+    if (promptRef.current) return observeDistantRow(promptRef.current, adjustAbove);
+  }, [promptRef, adjustAbove]);
   // Attachments alone (annotations, images) get no empty bubble under them.
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),

@@ -13,36 +13,30 @@ import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
 
-// The open-state gutter rule is more specific than hover, so both must reserve the same.
+// The open-state gutter rule is more specific than hover, so both must reserve the same. The row's
+// parts look at the actions after them (`:has(~ ...)`), not the row at its descendants (group-has-*).
 test("an open row menu reserves the same gutter hover does", () => {
   const pattern =
-    /group-hover\/([a-z-]+):pr-(\d+)[^"]*group-has-\[\.sidebar-row-action\[data-state=open\]\]\/([a-z-]+):pr-(\d+)/g;
+    /group-hover\/([a-z-]+):pr-(\d+)[^"]*\[&:has\(~\.sidebar-row-action\[data-state=open\]\)\]:pr-(\d+)/g;
   const seen: string[] = [];
-  for (const [, hoverGroup, hoverPad, openGroup, openPad] of APP_SIDEBAR.matchAll(
-    pattern,
-  )) {
-    assert.equal(
-      hoverGroup,
-      openGroup,
-      "the hover and open-state gutters are written for different rows",
-    );
+  for (const [, hoverGroup, hoverPad, openPad] of APP_SIDEBAR.matchAll(pattern)) {
     assert.equal(
       openPad,
       hoverPad,
-      `${openGroup} reserves pr-${hoverPad} on hover but pr-${openPad} with its menu open, so the title runs under the actions`,
+      `${hoverGroup} reserves pr-${hoverPad} on hover but pr-${openPad} with its menu open, so the title runs under the actions`,
     );
-    seen.push(`${openGroup}:${openPad}`);
+    seen.push(`${hoverGroup}:${openPad}`);
   }
   // Counts kinds of row, not branches.
   assert.ok(seen.length >= 3, `only ${seen.length} rows carry both gutters`);
 });
 
 test("the quick-action beside an open menu is revealed with it", () => {
-  for (const group of ["project-chat-item", "recent-item"]) {
+  for (const name of ["PROJECT_CHAT", "RECENT"]) {
     const reveal = new RegExp(
-      `group-has-\\[\\.sidebar-row-action\\[data-state=open\\]\\]/${group}:opacity-100 group-has-\\[\\.sidebar-row-action\\[data-state=open\\]\\]/${group}:pointer-events-auto`,
+      `REVEAL_WITH_OPEN_MENU_${name} =\\s*"\\[&:has\\(~\\.sidebar-row-action\\[data-state=open\\]\\)\\]:opacity-100 \\[&:has\\(~\\.sidebar-row-action\\[data-state=open\\]\\)\\]:pointer-events-auto"`,
     );
-    assert.match(APP_SIDEBAR, reveal, `${group} has no open-menu reveal`);
+    assert.match(APP_SIDEBAR, reveal, `${name} has no open-menu reveal`);
   }
   const secondaries = APP_SIDEBAR.match(/is-unpin-action/g) ?? [];
   assert.equal(secondaries.length, 3, "a secondary row action came or went");

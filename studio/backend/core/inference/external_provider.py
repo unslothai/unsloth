@@ -5668,14 +5668,10 @@ class ExternalProviderClient:
                         if _pt == "text" and _part.get("text"):
                             _asst_parts.append(
                                 {
-                                    "type": "input_text",
+                                    "type": "output_text",
                                     "text": _part.get("text", ""),
                                 }
                             )
-                        elif _pt == "image_url":
-                            _u = _part.get("image_url", {}).get("url", "")
-                            if _u:
-                                _asst_parts.append({"type": "input_image", "image_url": _u})
                     if _asst_parts:
                         _turn_items.append({"role": "assistant", "content": _asst_parts})
 
@@ -5741,9 +5737,12 @@ class ExternalProviderClient:
                     part_type = part.get("type")
                     if part_type == "text":
                         translated_parts.append(
-                            {"type": "input_text", "text": part.get("text", "")}
+                            {
+                                "type": "output_text" if role == "assistant" else "input_text",
+                                "text": part.get("text", ""),
+                            }
                         )
-                    elif part_type == "image_url":
+                    elif part_type == "image_url" and role != "assistant":
                         url = part.get("image_url", {}).get("url", "")
                         if url:
                             # Responses takes image_url as a flat string (https:// and data: URLs both accepted).
