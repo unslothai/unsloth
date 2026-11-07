@@ -1893,7 +1893,6 @@ class MaxBodyMiddleware:
                         status_code = 415,
                     )(scope, receive, send)
                     return
-            # Cap the expansion separately: a few KB of zstd can decode to gigabytes.
             limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
             try:
                 body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
