@@ -75,6 +75,6 @@ test("while a render runs the page offers Queue beside Stop, and Generate queues
   assert.match(page, /\{canQueue && compareRun === null && \(\s*<Button[^>]*onClick=\{handleQueue\}/);
   assert.match(page, /onClick=\{queueWaiting && canQueue \? handleQueue : handleGenerateWithRecall\}/);
   // Queue reuses Generate's validation and request, then hands the runs to the server.
-  assert.match(page, /if \(queueOnce\.current && !compare && !external\) \{[\s\S]*?enqueueDiffusionImage\(requestFor\(i\)\)/);
+  assert.match(page, /if \(toQueue && !compare && !external\) \{[\s\S]*?enqueueDiffusionImage\(requestFor\(i\)\)/);
   assert.match(page, /res = await generateDiffusionImage\(requestFor\(i\)\);/);
 });

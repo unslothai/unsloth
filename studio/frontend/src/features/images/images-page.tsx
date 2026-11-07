@@ -1969,8 +1969,8 @@ export function ImagesPage({
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
-  // Set by Queue for one handleGenerate call: its runs go to the server queue instead of running here.
-  const queueOnce = useRef(false);
+  // The queued job this page is following, so Stop ends that job and never the one the queue starts next.
+  const followingJob = useRef<string | null>(null);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -3642,6 +3642,9 @@ export function ImagesPage({
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
   const followedJob = useRef<string | null>(null);
   useEffect(() => {
+    if (busy === null) followingJob.current = null;
+  }, [busy]);
+  useEffect(() => {
     if (!queueRunningId || busy !== null || followedJob.current === queueRunningId) return;
     let cancelled = false;
     void (async () => {
@@ -3650,6 +3653,7 @@ export function ImagesPage({
         // Not denoising yet: the next queue poll (a new jobs array) asks again.
         if (cancelled || !p.active || !isMounted.current) return;
         followedJob.current = queueRunningId;
+        followingJob.current = queueRunningId;
         runTarget.current = undefined;
         setBusy("generating");
         setGenStep(p);
@@ -5212,7 +5216,8 @@ export function ImagesPage({
     </>
   );
 
-  const handleGenerate = useCallback(async () => {
+  // toQueue: the runs go to the server queue instead of running here.
+  const handleGenerate = useCallback(async (toQueue = false) => {
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5437,7 +5442,7 @@ export function ImagesPage({
 
     // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt(`images:${workflow}`, prompt);
-    if (queueOnce.current && !compare && !external) {
+    if (toQueue && !compare && !external) {
       try {
         for (let i = 0; i < runs; i++) await enqueueDiffusionImage(requestFor(i));
       } catch (err) {
@@ -5445,6 +5450,7 @@ export function ImagesPage({
       }
       return;
     }
+    followingJob.current = null;
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5604,9 +5610,12 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = runTarget.current
-        ? await cancelConnectionImageGeneration(abort.signal)
-        : await cancelDiffusionGeneration(abort.signal);
+      const followed = followingJob.current;
+      const { cancelled } = followed
+        ? { cancelled: (await cancelDiffusionQueueJob(followed)).status !== "done" }
+        : runTarget.current
+          ? await cancelConnectionImageGeneration(abort.signal)
+          : await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
@@ -5623,12 +5632,7 @@ export function ImagesPage({
 
   const handleQueue = useCallback(async () => {
     if (!imagePresets.hydrated) return;
-    queueOnce.current = true;
-    try {
-      await handleGenerate();
-    } finally {
-      queueOnce.current = false;
-    }
+    await handleGenerate(true);
     await imageQueue.refresh();
   }, [handleGenerate, imagePresets.hydrated, imageQueue.refresh]);
   const queueAction = useCallback(
