@@ -286,7 +286,6 @@ function useVideoModels(
   );
 }
 
-// Long enough to read a two-line reason; hover pauses it and the close button ends it.
 const FAILURE_WITH_REASON_TOAST_MS = 10_000;
 
 /** False for the user's own Cancel, which is not an error. */

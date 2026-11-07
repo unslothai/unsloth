@@ -6,7 +6,6 @@ const VIDEO_GENERATION_FAILED = "Video generation failed.";
 
 export interface VideoFailureToast {
   title: string;
-  /** Exception class, e.g. "RuntimeError", when the backend named one. */
   errorType: string | null;
   detail: string | null;
 }
@@ -18,10 +17,10 @@ export function videoFailureToast(error: string | null | undefined): VideoFailur
     if (msg.toLowerCase().includes("cancelled")) return null;
     return { title: msg, errorType: null, detail: null };
   }
-  // A logged failure carries the exception's own text, which can say "cancelled" (CancelledError).
+  // Past the prefix it is the exception's own text, which can say "cancelled".
   const reason = msg.slice(VIDEO_GENERATION_FAILED.length).trim();
   if (!reason) return { title: VIDEO_GENERATION_FAILED, errorType: null, detail: null };
-  // "RuntimeError: first line" or a bare "RuntimeError"; fixed backend text has spaces before any colon.
+  // "Type: first line" or a bare "Type"; fixed backend text has a space before any colon.
   const named = /^([A-Za-z_][\w.]*)(?::\s*([\s\S]*))?$/.exec(reason);
   if (named) {
     return { title: VIDEO_GENERATION_FAILED, errorType: named[1], detail: named[2]?.trim() || null };

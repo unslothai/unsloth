@@ -4851,8 +4851,7 @@ _NATIVE_CRASH_NEEDLES = (
 
 _FAILURE_REASON_MAX_CHARS = 120
 _PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
-# Absolute POSIX, ~, drive, UNC or file:// paths; a quoted one may hold spaces ("C:\\Users\\Jo Ann").
-# A URL is kept for redact_log_text to scrub.
+# Absolute paths (quoted ones may hold spaces); URLs are left for redact_log_text.
 _FAILURE_PATH_RE = re.compile(
     r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
     rf"|(?P<q>['\"`]){_PATH_START}[^'\"`\n]*(?P=q)"
