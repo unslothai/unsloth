@@ -1026,12 +1026,15 @@ def _attachment_spans(text: str):
         for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text)
         if _ATTACHMENT_OPEN_RE.match(text, note.end()) or _LABELLED_TEXT_RE.match(text, note.end())
     ]
-    index = 0
+    index, next_close = 0, {}
     while index < len(notes):
         note = notes[index]
         opened = _ATTACHMENT_OPEN_RE.match(text, note.end())
         closing = f"\n</{opened.group('tag')}>" if opened else ""
-        first_close = text.find(closing, opened.end()) if opened else -1
+        first_close = next_close.get(closing, 0) if opened else -1
+        # Cached per tag: notes only move forward, so a miss stays a miss and a later hit is reused.
+        if -1 < first_close < opened.end():
+            first_close = next_close[closing] = text.find(closing, opened.end())
         index += 1
         while index < len(notes) and notes[index].start() < first_close:
             index += 1
