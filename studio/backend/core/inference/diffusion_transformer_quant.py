@@ -2161,15 +2161,21 @@ def _quantize_native(
 
 
 def _hop_device(device: Any) -> Any:
-    """CUDA ``torch.device`` to quantise host-placed Linears on, else None."""
+    """CUDA ``torch.device`` to quantise host-placed Linears on, else None. An unindexed "cuda" resolves to this
+    thread's current card here: the upload thread does not inherit it and would default to cuda:0."""
     if device is None:
         return None
     try:
         import torch
+
         work = torch.device(device)
+        if work.type != "cuda":
+            return None
+        if work.index is None and torch.cuda.is_available():
+            work = torch.device("cuda", torch.cuda.current_device())
     except Exception:  # noqa: BLE001 - an unparsable device quantises in place
         return None
-    return work if work.type == "cuda" else None
+    return work
 
 
 def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:

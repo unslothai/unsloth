@@ -96,3 +96,11 @@ def test_staged_upload_without_cuda_moves_nothing():
     lin = torch.nn.Linear(4, 4)
     assert tq._upload_staged(lin, torch.device("cuda:0")) is False
     assert lin.weight.device.type == "cpu"
+
+
+def test_an_unindexed_cuda_device_resolves_in_the_calling_thread(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 3)
+    assert tq._hop_device("cuda") == torch.device("cuda:3")
+    assert tq._hop_device(torch.device("cuda")) == torch.device("cuda:3")
+    assert tq._hop_device("cuda:1") == torch.device("cuda:1")
