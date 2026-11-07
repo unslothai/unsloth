@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// While an Images or Video load POST is pending, the backend may first save the chat model's
-// context so chat can resume after the swap. That save is the only thing load-progress says
-// about THIS load before the POST answers: every other phase still describes the previous
-// model, so reading "ready" or null here as the end of the load would be wrong.
+// While an Images or Video load POST is pending, load-progress says only that the chat context is
+// saving for this load; other phases describe the previous model, so ready or null is not the end.
 
 export const SAVING_CHAT_CONTEXT = "saving_chat_context";
 

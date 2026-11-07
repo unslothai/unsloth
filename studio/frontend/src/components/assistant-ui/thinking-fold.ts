@@ -27,8 +27,7 @@ function belongsToRun(part: PartLike | undefined): boolean {
   return type === "reasoning" || type === "tool-call" || isBlankTextPart(part);
 }
 
-/** `[start, end)` of the run of thinking, tool calls and blank text around `index`, or null
- *  when `index` is answer text. */
+/** `[start, end)` of the thinking, tool call or blank run around `index`; null on answer text. */
 export function foldRun(
   parts: readonly PartLike[],
   index: number,
@@ -43,8 +42,7 @@ export function foldRun(
   return { start, end };
 }
 
-/** Last part of the first reasoning group in the run around `index`: the block that heads it.
- *  Null when the run has no thinking, or `index` is not in a run. */
+/** Last part of the first reasoning group in the run around `index`; null when there is none. */
 export function leadReasoningEnd(
   parts: readonly PartLike[],
   index: number,

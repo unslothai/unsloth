@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * No descendant-argument `:has()` on an ancestor of the thread: Chromium re-walks the whole
- * thread on every insertion (measured as the entire per-append cost). Child form `has-[>...]`
- * is cheap. Source test only; other ancestors are guarded by the perf ladder.
+ * No descendant-argument :has() on an ancestor of the thread (Chromium re-walks the whole thread
+ * per insertion); child has-[>...] is cheap; other ancestors are guarded by the perf ladder.
  */
 
 import assert from "node:assert/strict";

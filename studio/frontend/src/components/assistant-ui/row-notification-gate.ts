@@ -93,8 +93,7 @@ function scopeState(client: AssistantClient, key: string): unknown {
   return getState.call(methods);
 }
 
-// Rebuilt on every repository write, hidden branches included, but not when only the store rebuilds
-// `thread.messages` (the first keystroke after a run does).
+// Per repository write, hidden branches too; not when only the store rebuilds thread.messages.
 function repositoryRevision(client: AssistantClient): unknown {
   const thread = (client as unknown as Record<string, unknown>).thread;
   if (typeof thread !== "function") return UNKNOWN_REPOSITORY;

@@ -217,9 +217,8 @@ export function gateElement(
   // Enter in a field presses the form's default button: its words count as a click on it would.
   const label = action === "submit" && info.submitter ? info.submitter : info.name;
   const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(label) || LOCALIZED.test(label);
-  // Selecting a checkbox, radio or switch is a click on it.
-  // A select is a click: on a checkbox, its name; on a dropdown, the option chosen (the executor
-  // passes it as the name), since a page can act on the change event.
+  // Selecting a checkbox, radio or switch is a click on it; a select is a click too: on a checkbox
+  // its name, on a dropdown the chosen option (passed as the name), since a page can act on change.
   const clicks = action === "click" || submits || action === "select";
   if (clicks && consequential) {
     return { kind: "ask", ask: "click", host, name: clip(label), prompt: `Click “${clip(label)}” on ${host}?`, detail: describe(info) };

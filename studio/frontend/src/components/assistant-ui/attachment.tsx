@@ -796,8 +796,7 @@ export const ComposerAttachments: FC<{
   );
 };
 
-// Not ComposerPrimitive.Attachments: its index keys remount every card after a removed one,
-// and each remount blanks its preview and decodes the image again.
+// Not ComposerPrimitive.Attachments: its index keys remount every card after a removal.
 const ComposerAttachmentCardList: FC = () => {
   const ids = useAuiState(
     useShallow(({ composer }) =>

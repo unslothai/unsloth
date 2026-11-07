@@ -189,9 +189,8 @@ export function useDocumentVisible(): boolean {
 }
 
 /**
- * Whether a notification that `wanted` to show may show. Opening it in a visible tab
- * records the time, and it stays open until `wanted` drops (dismiss, snooze, update) or
- * the channel is off.
+ * Whether a notification that wanted to show may show; opening it in a visible tab records the
+ * time, and it stays open until wanted drops (dismiss, snooze, update) or the channel is off.
  */
 export function useNotificationGate(
   channel: NotificationChannel,

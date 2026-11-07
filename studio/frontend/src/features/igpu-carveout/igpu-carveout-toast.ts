@@ -13,12 +13,11 @@ export const IGPU_CARVEOUT_NOTICE_DURATION_MS = 12000;
 
 export const IGPU_CARVEOUT_NOTICE_TITLE = "This model could run faster";
 
-/** The action, a neutral wash and right-aligned rather than sonner's filled default.
- *
- * A solid button reads as the thing to do, and the thing to do here is nothing. And
- * the shared toast CSS puts an action at `justify-self: start`, which under six lines
- * of description floats it mid-toast, aligned to neither edge. Overridden here rather
- * than in that shared rule because every other toast's action IS the thing to do. */
+/**
+ * Neutral wash, right-aligned, not sonner's filled default: a solid button reads as the thing to
+ * do, and here that is nothing; shared toast CSS floats actions mid-toast, so it is overridden here
+ * rather than there, because other toasts' actions are the thing to do.
+ */
 export const IGPU_CARVEOUT_ACTION_CLASS =
   "!justify-self-end !h-[calc(26px*var(--ui-space-scale,1))] !border-0 !px-3 !font-medium !text-foreground " +
   "!bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] hover:!bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] dark:!bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:!bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";

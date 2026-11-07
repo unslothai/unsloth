@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat exports read threadScopedDefault for a chat whose snapshot omits the system prompt. While
-// the first chat's read is out, an edit to its prompt is held in the live store, and that edit
-// must not become the default every other snapshot-less chat exports.
+// Chat exports read threadScopedDefault when a snapshot omits the system prompt; an edit held in
+// the live store during that read must not become the default for other snapshot-less chats.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

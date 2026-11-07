@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Highlighting swaps only a fence's own line nodes, so only a selection ending inside a fence
-// needs holding.
+// Highlight swaps only a fence's own lines, so only a selection ending in one needs holding.
 export const selectionInFence = (
   selection: Pick<Selection, "anchorNode" | "focusNode"> | null,
 ): boolean => {

@@ -315,8 +315,7 @@ const ImageGenerationToolUIImpl: ToolCallMessagePartComponent = ({
     (name): name is string => typeof name === "string" && name.length > 0,
   );
   const errorText = toolErrorText(result);
-  // Coerced for the same reason `prompt` is: these reach `.match`,
-  // `.toLowerCase` and `Array.join`, all of which throw on a non-string.
+  // Coerced like `prompt`: .match, .toLowerCase and Array.join throw on a non-string.
   const size = toolArgText(imageResult?.size);
   const quality = toolArgText(imageResult?.quality);
   const imageDimensions = parseImageSize(size);

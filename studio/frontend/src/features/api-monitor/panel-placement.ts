@@ -35,8 +35,7 @@ export const PANEL_GAP = 8;
 export const PANEL_TOP_MARGIN = 64;
 
 /**
- * `clearRank` picks among free spots; `refugeRank` among covered ones, where right-hand corners
- * are worst because both panels keep their close button and resize grip there.
+ * clearRank orders free spots; refugeRank orders covered ones, where right-hand corners rank worst.
  */
 interface Candidate {
   anchor: PanelAnchor;
