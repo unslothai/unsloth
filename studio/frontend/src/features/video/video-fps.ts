@@ -5,7 +5,7 @@ import type { VideoGenerationDefaults } from "./api";
 
 const FALLBACK_FPS = 24;
 
-/** Frame rates the loaded family lets a request pick (validate_video_fps), or null when the rate is fixed. */
+/** Mirrors validate_video_fps; null when the rate is fixed. */
 export function videoFpsOptions(
   defaults: VideoGenerationDefaults | null | undefined,
 ): number[] | null {
@@ -20,7 +20,6 @@ export function videoFpsOptions(
   return null;
 }
 
-/** The rate a run uses: the picked one when the family offers it, else the family default. */
 export function resolveVideoFps(
   defaults: VideoGenerationDefaults | null | undefined,
   picked: number | null,
@@ -30,8 +29,6 @@ export function resolveVideoFps(
   return videoFpsOptions(defaults)?.includes(picked) ? picked : fallback;
 }
 
-/** Frame counts nearest each target length at ``fps``, on the k * step + offset lattice and inside the
- *  family's frame window when the backend sends one, deduped. */
 export function videoDurationOptions(
   targets: number[],
   fps: number,
@@ -59,8 +56,7 @@ export function videoDurationOptions(
   return out;
 }
 
-/** The duration option a restored clip maps to at its own rate: its frame count when the loaded family offers it,
- *  else the option nearest its length, so a clip from another family never sets a count this one refuses. */
+/** Nearest option when the clip's count is outside this family's window, so a restore never sets a refused count. */
 export function restoredClipDuration(
   options: Array<{ frames: number; seconds: number }>,
   frames: number,
@@ -80,8 +76,7 @@ function nearestDuration(
   return best;
 }
 
-/** The frame count to keep when the duration options change. After a new family or frame rate it is the option
- *  nearest the length the user picked: the same count at another rate is another length. */
+/** After a new family or rate, reseat on the picked length: the same count at another rate is another length. */
 export function keptNumFrames(
   options: Array<{ frames: number; seconds: number }>,
   current: number,

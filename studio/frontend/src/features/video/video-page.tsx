@@ -1262,7 +1262,6 @@ function VideoGenerator({
   const [durationIntentSeconds, setDurationIntentSeconds] = useState(
     numFrames / FALLBACK_FPS,
   );
-  // A frame rate picked on a family that offers several; null keeps the family default.
   const [pickedFps, setPickedFps] = useState<number | null>(null);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
@@ -1502,7 +1501,6 @@ function VideoGenerator({
   const minFrames = status?.defaults?.min_num_frames;
   const maxFrames = status?.defaults?.max_num_frames;
 
-  // Frame counts closest to ~1s/2s/3s/5s at the current fps, inside the family's window, deduped.
   const durationOptions = useMemo<Array<{ frames: number; seconds: number }>>(
     () =>
       videoDurationOptions(durationTargets, fps, frameStep, frameOffset, minFrames, maxFrames),
@@ -2378,9 +2376,8 @@ function VideoGenerator({
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
-      // A family with a frame-rate picker takes the clip's rate back; its duration options follow.
+      // Restore the clip's rate too; its count only when this family's window takes it.
       if (fpsOptions?.includes(video.fps)) {
-        // The options at the clip's rate: its count only when this family's window takes it.
         const option = restoredClipDuration(
           videoDurationOptions(durationTargets, video.fps, frameStep, frameOffset, minFrames, maxFrames),
           video.num_frames,
