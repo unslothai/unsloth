@@ -1878,6 +1878,39 @@ def test_repeated_duplicate_final_pass_asks_for_the_answer_not_another_tool(monk
     assert "final answer now" in last["content"]
 
 
+def test_final_pass_notice_ends_with_the_answer_request_in_a_mixed_batch(monkeypatch):
+    def batch(*queries):
+        calls = [
+            {
+                "index": index,
+                "id": f"call_{query}_{index}_{len(queries)}",
+                "type": "function",
+                "function": {"name": "web_search", "arguments": json.dumps({"query": query})},
+            }
+            for index, query in enumerate(queries)
+        ]
+        return [_sse({"tool_calls": calls}), _done()]
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [batch("a", "b"), batch("a"), batch("a", "b"), [_sse({"content": "Answer."}), _done()]],
+        payloads,
+    )
+    _record_tool_calls(monkeypatch, "result")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [{"type": "function", "function": {"name": "web_search"}}],
+        max_tool_iterations = 10,
+    )
+
+    final_pass = payloads[-1]
+    assert final_pass["tool_choice"] == "none"
+    assert "different enabled tool" not in final_pass["messages"][-1]["content"]
+
+
 def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
     same_turn_duplicates = [
         _sse(

@@ -1504,9 +1504,11 @@ class ToolLoopController:
             self._duplicate_noop_counts[decision.key] = duplicate_count
             if duplicate_count >= self._duplicate_noop_limit:
                 self._force_final_answer = True
-                result = _noop_result("duplicate", decision.tool_name, final = True)
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
+        # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
+        if decision.action == "duplicate" and self._force_final_answer:
+            result = _noop_result("duplicate", decision.tool_name, final = True)
         return ToolCallCompletion(
             decision = decision,
             result = result,
