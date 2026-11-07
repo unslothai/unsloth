@@ -3657,6 +3657,18 @@ def _request_used_api_key(request: Any) -> bool:
         return False
 
 
+async def _enforce_token_limit(request: Any, *, external: bool) -> None:
+    state = getattr(request, "state", None)
+    if state is not None and getattr(state, "token_limit_admitted", False):
+        return
+    from core.inference import token_limit
+
+    api = external or _request_used_api_key(request)
+    await asyncio.to_thread(token_limit.enforce, api = api)
+    if state is not None:
+        state.token_limit_admitted = True
+
+
 from state.tool_approvals import (
     resolve_tool_decision,
     tool_decision_grants_host_access,
@@ -3664,7 +3676,7 @@ from state.tool_approvals import (
 )
 
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
-from core.inference.api_monitor import api_monitor
+from core.inference.api_monitor import api_monitor, TemporaryUsage, temporary_usage_scope
 from core.inference.image_orientation import exif_upright
 from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
@@ -7134,6 +7146,7 @@ def _monitor_usage(
             completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
+            context_tokens = usage.get("context_tokens"),
         )
     tok_per_sec = prompt_tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
@@ -22027,6 +22040,7 @@ async def generate_stream(
             headers = {"Retry-After": "1"},
         )
 
+    await _enforce_token_limit(fastapi_request, external = False)
     backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
@@ -22067,6 +22081,9 @@ async def generate_stream(
     async def stream():
         gen = None
         completed = False
+        stats_holder: dict = {}
+        monitor_id = None
+        failure = None
         # Watch for disconnect: the generator only awaits to_thread(next), so it would not notice.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
@@ -22075,6 +22092,17 @@ async def generate_stream(
         _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
         _tracker.__enter__()
         try:
+            via_api_key = _request_used_api_key(fastapi_request)
+            temporary = None if via_api_key else TemporaryUsage(uuid.uuid4().hex, "local")
+            with temporary_usage_scope(temporary):
+                monitor_id = api_monitor.start(
+                    endpoint = "/api/inference/generate/stream",
+                    method = "POST",
+                    model = backend.active_model_name,
+                    prompt = "",
+                    subject = current_subject,
+                    via_api_key = via_api_key,
+                )
             gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
@@ -22087,6 +22115,7 @@ async def generate_stream(
                 repetition_penalty = request.repetition_penalty,
                 presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
             )
             gen_step = ThreadStepper(gen).next
             _DONE = object()
@@ -22107,7 +22136,8 @@ async def generate_stream(
                 if isinstance(chunk, GenStreamError):
                     # In-band backend sentinel under a sent 200: flag failed so the middleware won't claim.
                     mark_response_failed(_gs_scope)
-                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    failure = _friendly_gen_stream_error(chunk)
+                    yield f"data: {json.dumps({'error': failure})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
@@ -22124,7 +22154,8 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             # Already sent 200: flag failure out-of-band so the middleware won't claim the model.
             mark_response_failed(_gs_scope)
-            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            failure = _friendly_error(e)
+            yield f"data: {json.dumps({'error': failure})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
             # Nested so a teardown failure still unregisters; a phantom entry 409s swaps.
@@ -22139,7 +22170,17 @@ async def generate_stream(
                     except (RuntimeError, ValueError):
                         pass
             finally:
-                _tracker.__exit__(None, None, None)
+                try:
+                    stats = stats_holder.get("stats") or {}
+                    _monitor_usage(monitor_id, stats.get("usage"), timings = stats.get("timings"))
+                    if failure is not None:
+                        api_monitor.fail(monitor_id, failure)
+                    elif completed:
+                        api_monitor.finish(monitor_id)
+                    else:
+                        api_monitor.finish(monitor_id, "cancelled")
+                finally:
+                    _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(stream())
 
@@ -30825,12 +30866,41 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
-    response = await produce_openai_chat_completions(
-        payload,
-        request,
-        current_subject,
-        cancel_on_disconnect = True,
-    )
+    await _enforce_token_limit(request, external = bool(payload.provider_id or payload.provider_type))
+    temporary = None
+    internal = _request_is_internal_workflow(request)
+    if (payload.temporary_chat or internal) and not _request_used_api_key(request):
+        thread = (
+            uuid.uuid4().hex
+            if internal
+            else payload.thread_id or payload.cancel_id or uuid.uuid4().hex
+        )
+        temporary = TemporaryUsage(
+            _hashlib.sha256(thread.encode("utf-8")).hexdigest(),
+            "external" if payload.provider_id or payload.provider_type else "local",
+            _hashlib.sha256(f"{thread}\0{payload.temporary_message_id}".encode()).hexdigest()
+            if not internal and payload.temporary_message_id
+            else None,
+            _hashlib.sha256(f"{thread}\0{payload.temporary_parent_id}".encode()).hexdigest()
+            if not internal and payload.temporary_parent_id
+            else (None if internal else payload.temporary_parent_id),
+        )
+    with temporary_usage_scope(temporary):
+        response = await produce_openai_chat_completions(
+            payload,
+            request,
+            current_subject,
+            cancel_on_disconnect = True,
+        )
+    if temporary and isinstance(response, StreamingResponse):
+        iterator = response.body_iterator
+
+        async def tracked():
+            with temporary_usage_scope(temporary):
+                async for chunk in iterator:
+                    yield chunk
+
+        response.body_iterator = tracked()
     if connection is None or not isinstance(response, StreamingResponse):
         return response
     response.body_iterator = _relay_split_thinking(
@@ -37683,6 +37753,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     from utils.hardware import DeviceType, get_device
 
+    await _enforce_token_limit(request, external = False)
     try:
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
@@ -38475,6 +38546,7 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Unsloth's configured embedding model."""
+    await _enforce_token_limit(request, external = False)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -41048,6 +41120,7 @@ async def openai_responses(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request, external = connection is not None)
     for history_param in ("previous_response_id", "conversation"):
         if getattr(payload, history_param, None) is not None:
             raise HTTPException(
@@ -43688,6 +43761,7 @@ async def anthropic_messages(
     """
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
+    await _enforce_token_limit(request, external = connection is not None)
     if connection is not None:
         return await _anthropic_messages_via_connection(
             payload, request, current_subject, *connection

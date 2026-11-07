@@ -1226,6 +1226,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         END
         """
     )
+    from storage.token_usage_ledger import ensure_token_usage_ledger
+
+    ensure_token_usage_ledger(conn)
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -3919,7 +3922,7 @@ def _detach_terminal_generation_for_edit(
     conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     stored = conn.execute(
-        """SELECT parent_id, role, metadata_json, attachments_json
+        """SELECT parent_id, role, metadata_json, attachments_json, created_at
            FROM chat_messages WHERE thread_id = ? AND id = ?""",
         (thread_id, str(message["id"])),
     ).fetchone()
@@ -3933,7 +3936,8 @@ def _detach_terminal_generation_for_edit(
     # id, but create_run stamps created_at itself, so a tab that kept its own Date would
     # fail a createdAt match (#15004). The run row is the authority.
     row = conn.execute(
-        """SELECT id AS run_id, status AS run_status
+        """SELECT id AS run_id, status AS run_status,
+                  json_extract(request_json, '$.api_monitor_via_api_key') AS api_origin
            FROM chat_generation_runs
            WHERE id = ? AND thread_id = ? AND assistant_message_id = ?""",
         (run_id, thread_id, str(message["id"])),
@@ -3958,6 +3962,14 @@ def _detach_terminal_generation_for_edit(
         stored_attachments, sort_keys = True
     ):
         return False
+    if row["api_origin"]:
+        conn.execute(
+            """INSERT INTO token_usage_ledger
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens, total_tokens)
+                VALUES (?, ?, ?, 'api', 0, 0, 0)
+                ON CONFLICT(message_id) DO UPDATE SET source = 'api'""",
+            (str(message["id"]), thread_id, stored["created_at"]),
+        )
     conn.execute("DELETE FROM chat_generation_runs WHERE id = ?", (row["run_id"],))
     return True
 
@@ -4882,6 +4894,31 @@ def fork_chat_thread(
             """,
             fork_messages,
         )
+        conn.executemany(
+            """INSERT OR REPLACE INTO token_usage_ledger
+                (message_id, thread_id, created_at, source, prompt_tokens, completion_tokens,
+                 total_tokens, context_tokens, parent_message_id)
+                SELECT ?, ?, created_at, 'inherited', prompt_tokens, completion_tokens,
+                       total_tokens, context_tokens,
+                       CASE WHEN ? IS NULL THEN NULL ELSE COALESCE((
+                           SELECT parent_id FROM chat_messages WHERE id = ?
+                       ), '') END
+                FROM token_usage_ledger WHERE message_id = ?""",
+            [
+                (
+                    id_map[row["id"]],
+                    new_thread_id,
+                    id_map.get(parents[row["id"]]),
+                    id_map.get(parents[row["id"]]),
+                    row["id"],
+                )
+                for row in ancestry
+            ],
+        )
+        conn.execute(
+            "UPDATE token_usage_ledger SET source = 'inherited' WHERE thread_id = ?",
+            (new_thread_id,),
+        )
         for row in ancestry:
             _replace_chat_attachment_inventory(
                 conn,
@@ -5476,7 +5513,23 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
         conn.close()
 
 
-def get_app_setting(key: str, fallback = None):
+def get_app_setting(
+    key: str,
+    fallback = None,
+    *,
+    reuse_keeper: bool = False,
+):
+    if reuse_keeper:
+        path = studio_db_path()
+        with _wal_keeper_lock:
+            keeper = _wal_keepers.get(path) or _wal_keepers.get(path.resolve())
+            if keeper is not None:
+                cursor = keeper.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,))
+                try:
+                    row = cursor.fetchone()
+                finally:
+                    cursor.close()
+                return _json_loads(row["value_json"], fallback) if row is not None else fallback
     conn = get_connection()
     try:
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()

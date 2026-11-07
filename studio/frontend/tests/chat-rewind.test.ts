@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// /rewind: the command match, the turn ids sent to POST /rewind, and the turn id every
-// completion carries so the backend can key a turn's file checkpoints to its prompt.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
@@ -66,7 +63,6 @@ test("the picker lists prompts newest first on one line", () => {
   ]);
   assert.ok(long[0].preview.length <= 80);
   assert.ok(long[0].preview.endsWith("…"));
-  // The confirm dialog quotes the whole prompt and clamps it by lines instead.
   assert.equal(long[0].text, "x".repeat(200));
 });
 
@@ -81,23 +77,24 @@ test("user_message_id is omitted without a user message", () => {
   assert.deepEqual(userMessageIdRequestField(""), {});
 });
 
-test("the completion payload carries user_message_id on the local and external tool paths", () => {
+test("completion payloads carry turn identity and temporary usage independently of tools", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(
     adapter,
-    /const userMessageIdField = userMessageIdRequestField\(\s*resolvedThreadId && isThreadIncognito\(resolvedThreadId\)\s*\? undefined\s*: generationUserMessage\?\.id,?\s*\);/,
+    /const userMessageIdField = userMessageIdRequestField\(\s*temporaryChat \? undefined : generationUserMessage\?\.id,?\s*\);/,
   );
-  // Local body (also the durable run's requestPayload): beside thread_id.
   assert.match(
     adapter,
-    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.\(useAdapter === undefined/,
+    /\.\.\.\(resolvedThreadId \? \{ thread_id: resolvedThreadId \} : \{\}\),\s*\.\.\.userMessageIdField,\s*\.\.\.temporaryUsageFields,\s*\.\.\.\(useAdapter === undefined/,
   );
-  // External provider with Studio-run tools: beside session_id.
+  assert.match(
+    adapter,
+    /model: externalSelection\.modelId,\s*messages: outboundMessages,\s*\.\.\.temporaryUsageFields,/,
+  );
   assert.match(
     adapter,
     /\? \{ session_id: sandboxSessionId \}\s*: \{\}\),\s*\.\.\.userMessageIdField,/,
   );
-  // The durable run posts the same requestPayload, so the field rides inside it, not beside it.
   assert.match(
     adapter,
     /userMessageId: generationUserMessage!\.id,\s*assistantMessageId: unstable_assistantMessageId!,\s*requestPayload,/,
@@ -121,7 +118,6 @@ test("the composer opens the rewind picker instead of sending /rewind", () => {
 
 test("the dialog lists only options that can run and skips itself for a conversation-only rewind", () => {
   const dialog = readSrc("components/assistant-ui/rewind-dialog.tsx");
-  // No disabled radio rows: the dialog renders only when files changed, so every option can run.
   assert.ok(!dialog.includes("RadioGroupItem"));
   assert.match(dialog, /if \(!hasChanges \|\| result === null\) return null;/);
   assert.match(dialog, /void rewind\("conversation"\);/);
