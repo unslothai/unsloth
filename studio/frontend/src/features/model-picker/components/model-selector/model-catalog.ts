@@ -709,7 +709,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "nvidia/Cosmos3-Nano",
     displayName: "Cosmos3 Nano",
-    description: "Text and image to video 720p · needs cosmos-guardrail",
+    description: "Text and image to video up to 720p · needs cosmos-guardrail",
     scope: "video",
     requires: "cosmos-guardrail",
     artifacts: [bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 })],
