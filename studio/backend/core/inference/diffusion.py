@@ -8608,8 +8608,7 @@ class DiffusionBackend:
                     and kind == "pipeline"
                     and pipeline_seed_scheme is None
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
-                    # Measured compiled: unset / default / max only (eager = no compile), and never when ROCm compile
-                    # is off or its probe failed, since the fused W8A8 linear would compile anyway.
+                    # Compiling tiers only; the fused W8A8 linear compiles regardless.
                     and (
                         speed_mode is None
                         or normalize_speed_mode(speed_mode) in (SPEED_DEFAULT, SPEED_MAX)
@@ -10547,7 +10546,6 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                     ):
-                        # W8A8 with eager blocks trails compiled bf16 on gfx1151.
                         logger.info(
                             "diffusion.speed: speed_mode=default from render 1 (auto int8 W8A8 on RDNA is "
                             "measured compiled)"

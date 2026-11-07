@@ -13278,7 +13278,7 @@ def test_auto_on_amd_stays_bf16(fake_runtime, tmp_path, monkeypatch):
 
 
 def _stub_rdna_w8a8_host(backend, monkeypatch):
-    """The AMD host stub on a ROCm RDNA device whose compiled W8A8 linear runs; records the quantise kwargs."""
+    """AMD host stub on an RDNA device; records the quantise kwargs."""
     from core.inference import diffusion as dmod
     from core.inference import diffusion_native_quant as nq
     from core.inference import diffusion_transformer_quant as tq
