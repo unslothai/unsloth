@@ -147,6 +147,7 @@ export const es419 = {
       scripts: "Ejecutar scripts",
       scriptsDescription:
         "Elige si los modelos pueden ejecutar scripts en las páginas. Verás cada script antes de que se ejecute",
+      scriptsAllowDescription: "Los modelos ejecutan scripts en cualquier página sin preguntar. Un script puede leer y cambiar cualquier cosa de la página",
       cursor: "Mostrar cursor",
       cursorDescription:
         "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
@@ -161,6 +162,7 @@ export const es419 = {
       actions: "Acciones",
       downloads: "Descargas",
       unlabelled: "Clics sin etiqueta",
+      scriptsColumn: "Scripts",
       askNewSites: "Preguntar en sitios nuevos",
       requiresApproval: "Requiere aprobación",
       blocked: "Bloqueado",

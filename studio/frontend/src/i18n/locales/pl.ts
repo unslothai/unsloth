@@ -146,6 +146,7 @@ export const pl = {
       scripts: "Uruchamianie skryptów",
       scriptsDescription:
         "Określ, czy modele mogą uruchamiać skrypty na stronach. Każdy skrypt zobaczysz przed jego uruchomieniem",
+      scriptsAllowDescription: "Modele uruchamiają skrypty na dowolnej stronie bez pytania. Skrypt może odczytać i zmienić wszystko na stronie",
       cursor: "Pokaż kursor",
       cursorDescription:
         "Pokazuj wskaźnik w miejscach, w których modele klikają, piszą i przeciągają na stronie",
@@ -160,6 +161,7 @@ export const pl = {
       actions: "Działania",
       downloads: "Pobieranie plików",
       unlabelled: "Kliknięcia bez etykiety",
+      scriptsColumn: "Skrypty",
       askNewSites: "Pytaj o nowe witryny",
       requiresApproval: "Wymaga zatwierdzenia",
       blocked: "Zablokowane",

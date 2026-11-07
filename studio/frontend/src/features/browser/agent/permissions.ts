@@ -10,13 +10,22 @@ export type ActionsRule = "ask" | "allow";
 export type DownloadsRule = "ask" | "allow" | "block";
 /** Clicks and drags on a target with no role, name or link (a canvas), asked once per site per chat. */
 export type UnlabelledRule = "ask" | "allow";
-export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule; unlabelled: UnlabelledRule };
+/** Scripts the model runs on the site's pages (browser_evaluate). `allow` skips the prompt there; Run scripts set to Never still wins. */
+export type ScriptsRule = "ask" | "allow";
+export type SiteRule = {
+  browsing: BrowsingRule;
+  actions: ActionsRule;
+  downloads: DownloadsRule;
+  unlabelled: UnlabelledRule;
+  scripts: ScriptsRule;
+};
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
-/** No "allow": approving each script is the only check a script passes. */
-export type ScriptAccess = "ask" | "never";
+/** `allow` runs every script without asking, on every site: approving a script is the only check it passes,
+ *  so it is the user's explicit choice. `ask` still lets a site's Scripts rule skip the prompt there. */
+export type ScriptAccess = "ask" | "allow" | "never";
 
-export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask" };
+export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask", scripts: "ask" };
 export const DEFAULT_PERMISSIONS: AgentPermissions = { defaults: DEFAULT_RULE, sites: {} };
 export const MAX_SITE_RULES = 200;
 
@@ -67,10 +76,19 @@ export function ruleFor(url: string, permissions: AgentPermissions): { rule: Sit
   return site ? { rule: site, site: best } : { rule: permissions.defaults, site: null };
 }
 
+/** Whether a script on `url` runs without the prompt: Run scripts is Always allow, or the Scripts rule
+ *  of the site the page is on is. Never refuses everywhere; a page with no host (about:blank) always asks. */
+export function scriptRunsWithoutAsking(access: ScriptAccess, url: string, permissions: AgentPermissions): boolean {
+  if (access === "never") return false;
+  if (access === "allow") return true;
+  return Boolean(hostOf(url)) && ruleFor(url, permissions).rule.scripts === "allow";
+}
+
 const BROWSING = new Set(["allow", "ask", "block"]);
 const ACTIONS = new Set(["ask", "allow"]);
 const DOWNLOADS = new Set(["ask", "allow", "block"]);
 const UNLABELLED = new Set(["ask", "allow"]);
+const SCRIPTS = new Set(["ask", "allow"]);
 
 /** Persisted values, checked: an unknown value falls back to the default rather than to allow. */
 export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): SiteRule {
@@ -80,6 +98,7 @@ export function checkedRule(value: unknown, fallback: SiteRule = DEFAULT_RULE): 
     actions: ACTIONS.has(raw.actions as string) ? (raw.actions as ActionsRule) : fallback.actions,
     downloads: DOWNLOADS.has(raw.downloads as string) ? (raw.downloads as DownloadsRule) : fallback.downloads,
     unlabelled: UNLABELLED.has(raw.unlabelled as string) ? (raw.unlabelled as UnlabelledRule) : fallback.unlabelled,
+    scripts: SCRIPTS.has(raw.scripts as string) ? (raw.scripts as ScriptsRule) : fallback.scripts,
   };
 }
 

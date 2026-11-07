@@ -146,6 +146,7 @@ export const vi = {
       scripts: "Chạy tập lệnh",
       scriptsDescription:
         "Chọn xem mô hình có được chạy tập lệnh trên trang hay không. Bạn sẽ thấy từng tập lệnh trước khi nó chạy",
+      scriptsAllowDescription: "Mô hình chạy tập lệnh trên mọi trang mà không hỏi. Tập lệnh có thể đọc và thay đổi mọi thứ trên trang",
       cursor: "Hiển thị con trỏ",
       cursorDescription:
         "Hiển thị con trỏ tại nơi mô hình nhấp, nhập và kéo trên trang",
@@ -160,6 +161,7 @@ export const vi = {
       actions: "Hành động",
       downloads: "Tải xuống",
       unlabelled: "Nhấp vào vùng không có nhãn",
+      scriptsColumn: "Tập lệnh",
       askNewSites: "Hỏi với trang web mới",
       requiresApproval: "Cần phê duyệt",
       blocked: "Bị chặn",

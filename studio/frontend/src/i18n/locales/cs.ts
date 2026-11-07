@@ -146,6 +146,7 @@ export const cs = {
       scripts: "Spouštět skripty",
       scriptsDescription:
         "Zvolte, zda mohou modely na stránkách spouštět skripty. Každý skript uvidíte před jeho spuštěním",
+      scriptsAllowDescription: "Modely spouštějí skripty na libovolné stránce bez ptaní. Skript může na stránce cokoli číst i měnit",
       cursor: "Zobrazovat kurzor",
       cursorDescription:
         "Zobrazovat ukazatel v místech, kde modely na stránce klikají, píší a přetahují",
@@ -160,6 +161,7 @@ export const cs = {
       actions: "Akce",
       downloads: "Stahování",
       unlabelled: "Kliknutí bez popisku",
+      scriptsColumn: "Skripty",
       askNewSites: "Ptát se u nových webů",
       requiresApproval: "Vyžaduje schválení",
       blocked: "Blokováno",
