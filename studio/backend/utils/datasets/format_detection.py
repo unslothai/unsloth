@@ -801,7 +801,17 @@ _VIDEO_TEXT_KEYWORDS = (
     "response",
     "label",
 )
-_VIDEO_QUESTION_KEYWORDS = ("question", "prompt", "instruction", "query", "input")
+# Same aliases as generate_smart_vlm_instruction.
+_VIDEO_QUESTION_KEYWORDS = (
+    "question",
+    "query",
+    "prompt",
+    "instruction",
+    "user_prompt",
+    "problem",
+    "input",
+    "inputs",
+)
 
 
 def encoded_video(value):

@@ -2465,6 +2465,12 @@ def _resize_mlx_vlm_images(
     return _resize_mlx_vlm_image(value, resize, image_layout = image_layout)
 
 
+_MLX_VIDEO_UNSUPPORTED = (
+    "Training on video is not supported on Apple Silicon (MLX) yet. "
+    "Train this dataset on an NVIDIA or AMD GPU, or drop the video column."
+)
+
+
 def _adapt_for_mlx_vlm(
     items,
     resize = None,
@@ -2481,10 +2487,7 @@ def _adapt_for_mlx_vlm(
                 new_content = []
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "video":
-                        raise ValueError(
-                            "Training on video is not supported on Apple Silicon (MLX) yet. "
-                            "Train this dataset on an NVIDIA or AMD GPU, or drop the video column."
-                        )
+                        raise ValueError(_MLX_VIDEO_UNSUPPORTED)
                     if isinstance(part, dict) and part.get("type") == "image":
                         img = part.get("image")
                         if img is not None:
@@ -3340,6 +3343,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
             _send("status", status_message = status_message)
 
         if is_vlm:
+            from utils.datasets.format_detection import detect_video_columns, video_sample
+
+            # Before formatting: conversion would fetch every Hub clip only to be refused.
+            first_row = next(iter(dataset), None)
+            if isinstance(first_row, dict) and detect_video_columns(
+                video_sample(dataset, first_row)
+            ):
+                raise ValueError(_MLX_VIDEO_UNSUPPORTED)
             _send("status", status_message = "Formatting VLM dataset...")
             vlm_info = format_and_template_dataset(
                 dataset,

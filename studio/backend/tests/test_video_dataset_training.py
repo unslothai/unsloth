@@ -121,13 +121,14 @@ def _mlx_adapter():
     source = (Path(__file__).parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
-    node = next(
+    nodes = [
         n
         for n in ast.parse(source).body
-        if isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm"
-    )
+        if (isinstance(n, ast.FunctionDef) and n.name == "_adapt_for_mlx_vlm")
+        or (isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "_MLX_VIDEO_UNSUPPORTED")
+    ]
     namespace = {"_resize_mlx_vlm_image": lambda image, *a, **k: image}
-    exec(compile(ast.Module([node], []), "worker.py", "exec"), namespace)
+    exec(compile(ast.Module(nodes, []), "worker.py", "exec"), namespace)
     return namespace["_adapt_for_mlx_vlm"]
 
 
@@ -563,3 +564,39 @@ def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
     from utils.datasets.format_detection import detect_video_columns
     cell = {"path": "clip.mp4", "array": [0.0], "sampling_rate": 16000}
     assert detect_video_columns({"audio": cell, "text": "hi"}) == []
+
+
+def test_mlx_refuses_video_before_formatting_fetches_clips():
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    run = next(
+        n
+        for n in ast.parse(source).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
+    )
+    calls = [
+        node.func.id
+        for node in ast.walk(run)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    lines = {
+        name: min(
+            n.lineno
+            for n in ast.walk(run)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+        )
+        for name in ("detect_video_columns", "format_and_template_dataset")
+        if name in calls
+    }
+    assert lines["detect_video_columns"] < lines["format_and_template_dataset"]
+
+
+@pytest.mark.parametrize("name", ["user_prompt", "problem", "inputs"])
+def test_vlm_question_aliases_are_video_questions(name):
+    ds = Dataset.from_dict({"video": CLIPS, name: [QUESTION] * 2, "answer": ANSWERS})
+    for row in _format(ds):
+        assert row["messages"][0]["content"][-1] == {"type": "text", "text": QUESTION}
