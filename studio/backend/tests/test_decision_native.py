@@ -1529,7 +1529,9 @@ def test_a_laya_export_joins_a_resident_chat_model_when_it_fits(home, client, st
     assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
 
 
-def test_a_beside_load_rechecks_its_room_when_the_arbiter_admits_it(home, client, stub, monkeypatch):
+def test_a_beside_load_rechecks_its_room_when_the_arbiter_admits_it(
+    home, client, stub, monkeypatch
+):
     _torch_laya(monkeypatch)
     _laya_fine_tune(home.outputs, "laya_beside_race")
     _put(client, enabled = True, model = "laya-ft:laya_beside_race", backend = "llama.cpp")
