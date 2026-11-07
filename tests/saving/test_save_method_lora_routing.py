@@ -346,6 +346,35 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
 
 
 @pytest.mark.parametrize(
+    "spelling, canonical",
+    [
+        ("Merged_16bit", "merged_16bit"),
+        ("merged 16bit", "merged_16bit"),
+        ("merged-16bit", "merged_16bit"),
+        (" merged_16bit ", "merged_16bit"),
+        ("Merged_4bit_Forced", "merged_4bit"),
+    ],
+)
+def test_a_respelled_merge_method_reaches_the_merge_canonically(
+    monkeypatch, tmp_path, spelling, canonical
+):
+    """The merge writes config.json only for the exact string, so a respelling saved no config."""
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert [c["save_method"] for c in calls["merge"]] == [canonical]
+
+
+@pytest.mark.parametrize("spelling", ["Merged_4bit", "merged-4bit", " MERGED 4BIT "])
+def test_a_respelled_merged_4bit_still_hits_the_accuracy_guard(monkeypatch, tmp_path, spelling):
+    model = _PeftModel()
+    generic_save, calls = _routing_environment(monkeypatch, model)
+    with pytest.raises(RuntimeError, match = "merged_4bit_forced"):
+        generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
+    assert calls["merge"] == []
+
+
+@pytest.mark.parametrize(
     "save_method, from_modelscope", [("merged_16bit", True), ("merged_4bit_forced", False)]
 )
 def test_modelscope_base_is_fetched_only_when_the_merge_reads_one(
