@@ -1649,12 +1649,25 @@ function VideoGenerator({
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const presetRepoId = status?.repo_id ?? "";
   const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
-  // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed.
+  const statusKnown = status?.defaults != null;
+  // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed. Kept as
+  // stored until status names the family, or a reload racing the first status read would drop it.
   const presetFps = useCallback(
     (stored: number | null | undefined) =>
-      fpsOptions ? (presetVideoFps(fpsOptions, stored) ?? familyFps) : null,
-    [familyFps, fpsOptions],
+      !statusKnown
+        ? (stored ?? null)
+        : fpsOptions
+          ? (presetVideoFps(fpsOptions, stored) ?? familyFps)
+          : null,
+    [familyFps, fpsOptions, statusKnown],
   );
+  const pendingPresetFps = useRef<number | null>(null);
+  useEffect(() => {
+    if (!statusKnown || pendingPresetFps.current == null) return;
+    const rate = presetVideoFps(fpsOptions, pendingPresetFps.current);
+    pendingPresetFps.current = null;
+    if (rate != null) setPickedFps(rate);
+  }, [fpsOptions, setPickedFps, statusKnown]);
   const presetDurationOptions = useCallback(
     (rate: number | null) =>
       rate == null || rate === fps
@@ -1669,9 +1682,10 @@ function VideoGenerator({
       (defaultSteps != null && defaultGuidance != null
         ? { steps: defaultSteps, guidance: defaultGuidance }
         : defaultsFor(presetRepoId));
+    const defaultOptions = presetDurationOptions(fpsOptions ? familyFps : null);
     const defaultDuration = familyDefaultFrames
-      ? durationOptions[
-          closestDurationIndex(durationOptions, familyDefaultFrames / fps)
+      ? defaultOptions[
+          closestDurationIndex(defaultOptions, familyDefaultFrames / (fpsOptions ? familyFps : fps))
         ]?.seconds
       : status?.loaded
         ? durationOptions[2]?.seconds ?? durationOptions[0]?.seconds ?? 3
@@ -1687,7 +1701,7 @@ function VideoGenerator({
       audioFlowShift: defaultAudioFlowShift,
       fps: presetFps(null),
     };
-  }, [presetFps, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, presetDurationOptions, familyFps, fpsOptions, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
@@ -1695,7 +1709,8 @@ function VideoGenerator({
       const options = presetDurationOptions(rate);
       const durationIndex = closestDurationIndex(options, params.durationSeconds);
       const durationFrames = options[durationIndex]?.frames ?? options[0]?.frames ?? numFrames;
-      if (rate != null) setPickedFps(rate);
+      if (!statusKnown) pendingPresetFps.current = rate;
+      else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
       setAspect(matched.key);
@@ -1712,7 +1727,7 @@ function VideoGenerator({
       setAudioFlowShift(params.audioFlowShift);
       return { ...params, fps: rate };
     },
-    [numFrames, presetDurationOptions, presetFps, setPickedFps, sizeLimits],
+    [numFrames, presetDurationOptions, presetFps, setPickedFps, sizeLimits, statusKnown],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
