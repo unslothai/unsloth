@@ -17,7 +17,12 @@ from typing import Any, Callable, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
-from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
+from .diffusion_native_quant import (
+    int8_act_disabled,
+    int8_act_requested,
+    is_native_linear,
+    rocm_rdna_w8a8_ready,
+)
 from .diffusion_nvfp4_flag import (
     nvfp4_blocked,
     nvfp4_diffusion_enabled,
@@ -1218,6 +1223,28 @@ def native_int8_act(target: Any) -> bool:
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
+
+
+def _rocm_cuda(target: Any) -> bool:
+    return getattr(target, "device", None) == "cuda" and torch_is_rocm()
+
+
+_FAMILY_RDNA_AUTO_W8A8: dict[str, str] = _profile_table("rdna_auto_w8a8", quant = True)
+
+
+def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO picks W8A8 for ``family`` on ROCm RDNA, else None. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
+    if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    # Linux only: Windows ROCm has no compile tier.
+    if not _sys.platform.startswith("linux"):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready():
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    return reason
 
 
 def select_transformer_quant_scheme(

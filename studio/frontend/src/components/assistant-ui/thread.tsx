@@ -433,6 +433,7 @@ import {
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
 import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -3245,6 +3246,7 @@ const Composer: FC<{
       : null;
   // Expand only once the input wraps, latched so it cannot flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, inputRef);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
@@ -5819,7 +5821,7 @@ const Composer: FC<{
                 placeholder={
                   overlay ? "Type your edits for your image" : "Ask anything"
                 }
-                ref={inputRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
