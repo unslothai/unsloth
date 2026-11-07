@@ -243,7 +243,6 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
-from ..kernels.bnb_dequant import install_bnb_nf4_dequant as _install_bnb_nf4_dequant
 from ..kernels.rope_embedding import register_split_model
 from ._utils import (
     __version__,
@@ -5306,7 +5305,6 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
-        _install_bnb_nf4_dequant()
         # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
         # Lazy: the kernel module defines Triton autotuners, which need a driver at import.
         from ..kernels.large_head_attention import (

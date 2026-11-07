@@ -161,7 +161,6 @@ from ..kernels import fast_lora as _fast_lora
 from . import _decode_graphs
 from . import _decode_fused_nf4
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
-from ..kernels.bnb_dequant import install_bnb_nf4_dequant as _install_bnb_nf4_dequant
 from ..tokenizer_utils import *
 from ..context_parallel import get_cp_manager
 from .vision import FastBaseModel, _is_text_seq2seq_config
@@ -4676,7 +4675,6 @@ class FastLlamaModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
-        _install_bnb_nf4_dequant()
         return model, tokenizer
 
     @staticmethod
