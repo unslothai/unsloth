@@ -35,7 +35,6 @@ _RUNTIME_NOTE_TOOLS = (
     "Your only tools are Unsloth Studio's, named mcp__studio__*; Studio may ask the user "
     "before one runs. Mention this only when asked.</runtime_info>"
 )
-# Claude Code features Studio does not show or control.
 _ISOLATION_ENV = {
     "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",

@@ -30,7 +30,6 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** Owner-only: experimental CPU video generation and the Claude Agent connection. */
 export function DeveloperModeSection() {
   const t = useT();
   const [settings, setSettings] = useState<DeveloperModeSettings | null>(null);
@@ -70,7 +69,6 @@ export function DeveloperModeSection() {
         usePlatformStore.setState({ videoCpuOptIn: next.videoCpu });
         void refreshHardwareInfo();
       }
-      // Saved Claude Agent connections leave or rejoin the pickers.
       if (patch.claudeAgent !== undefined) void bootstrapPersistedCredentials();
     } catch (err) {
       setError(
