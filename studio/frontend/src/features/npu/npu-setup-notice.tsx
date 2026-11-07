@@ -3,9 +3,30 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { npuRuntimeLabel } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
+
+export function NpuRuntimeVersions({
+  catalog,
+  className,
+}: {
+  catalog: NpuCatalog;
+  className?: string;
+}) {
+  const label = catalog.ready ? npuRuntimeLabel(catalog.status.versions) : null;
+  if (!label) return null;
+  return (
+    <p
+      data-testid="npu-runtime-versions"
+      className={cn("text-ui-11 text-muted-foreground/70", className)}
+    >
+      {label}
+    </p>
+  );
+}
 
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   const { status, ready, models, listError } = catalog;

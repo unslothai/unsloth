@@ -158,6 +158,13 @@ def _bind_assistant_locked(
         "serverManaged": True,
     }
     if message is None:
+        # An empty placeholder adds no attachment entries; keep a clean inventory clean (#14217).
+        inventory_was_clean = (
+            conn.execute(
+                "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
+            ).fetchone()
+            is not None
+        )
         conn.execute(
             """INSERT INTO chat_messages
                (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
@@ -170,6 +177,8 @@ def _bind_assistant_locked(
                 created,
             ),
         )
+        if inventory_was_clean:
+            conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         conn.execute(
             "UPDATE chat_threads SET updated_at=MAX(COALESCE(updated_at, created_at), ?) WHERE id=?",
             (created, thread_id),

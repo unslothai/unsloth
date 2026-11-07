@@ -13,6 +13,7 @@ _DEEPSEEK_HARNESS_HELP_MARKER = "DeepSeek Harness"
 _DEEPSEEK_HARNESS_FILE_MARKERS = (
     b"deepseek harness",
     b"@deepseek-ai/dsh",
+    b"@deepseek-ai\\dsh",
     b"@deepseek-ai+dsh",
 )
 

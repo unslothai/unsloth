@@ -95,6 +95,7 @@ import {
   DOWNLOAD_DIR_STORAGE_KEY,
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
+import { DownloadSpeedLimitRow } from "../components/download-speed-limit-row";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { MlWarmupSection } from "../components/ml-warmup-section";
@@ -766,6 +767,7 @@ export function GeneralTab() {
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
+        <DownloadSpeedLimitRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>

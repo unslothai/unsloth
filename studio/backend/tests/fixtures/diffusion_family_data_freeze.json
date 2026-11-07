@@ -1017,7 +1017,7 @@
     "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -4443,6 +4443,7 @@
    "wan2.2-ti2v-5b"
   ],
   "family_auto_bf16_when_resident": {
+   "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
    "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -4531,8 +4532,6 @@
   },
   "family_scheme_deny": {
    "chroma": [
-    "fp8",
-    "int8",
     "mxfp8",
     "nvfp4"
    ],
