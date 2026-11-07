@@ -275,6 +275,17 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+def _release_idle_restyle_server() -> None:
+    # The restyle sd-server (~30 GB) belongs to no owner, so no eviction would ever free it.
+    module = sys.modules.get("core.inference.video_restyle")
+    if module is None:
+        return
+    try:
+        module.runner.unload_if_idle()
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the idle restyle sd-server: %s", exc)
+
+
 def _release_idle_decision_worker() -> None:
     module = sys.modules.get("core.systemone.laya_runtime")
     if module is None:
@@ -741,6 +752,7 @@ def acquire_for(
                 _EVICTORS[name]()
                 note_evictions(unloading, sink)
                 _drop_resident(name)
+        _release_idle_restyle_server()
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")

@@ -546,3 +546,34 @@ def test_frames_from_video_fits_only_kept_frames(monkeypatch):
     frames = vr.frames_from_video(_clip(120, 40))
     # 40 frames at 120 fps is a third of a second: 10 frames at 30 fps, each fitted once.
     assert abs(len(frames) - 10) <= 1 and len(calls) == len(frames)
+
+
+@pytest.mark.parametrize("owner", ["chat", "diffusion", "video"])
+def test_gpu_acquire_releases_an_idle_restyle_server(weights, monkeypatch, owner):
+    import core.inference.gpu_arbiter as arb
+
+    stopped = []
+
+    class _Server(_FakeServer):
+        def stop(self):
+            stopped.append(True)
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Server(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_release_idle_video_servers", lambda reason: None)
+    arb.acquire_for(owner)
+    assert stopped == [True] and runner._server is None
+
+
+def test_gpu_acquire_keeps_a_running_restyle_server(weights, monkeypatch):
+    import core.inference.gpu_arbiter as arb
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    server = runner._ensure_server(vr.model_files())
+    runner.start(prompt = "x", frames = _frames(5))
+    monkeypatch.setattr(vr, "runner", runner)
+    monkeypatch.setattr(arb, "_owner", None)
+    arb.acquire_for(arb.CHAT)
+    assert runner._server is server
