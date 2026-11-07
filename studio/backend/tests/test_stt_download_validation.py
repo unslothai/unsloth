@@ -120,8 +120,7 @@ def test_resolve_serving_stt_engine_falls_back_when_whisper_server_absent(monkey
 
 
 def test_gguf_download_falls_back_to_transformers_when_server_absent(monkeypatch):
-    """Selecting the default curated model on a host without whisper-server must
-    download through the Transformers engine, not 501/dead-end on GGUF."""
+    """Without whisper-server, the default downloads via Transformers, not a GGUF dead end."""
     gguf_started: list = []
     tf_started: list = []
 

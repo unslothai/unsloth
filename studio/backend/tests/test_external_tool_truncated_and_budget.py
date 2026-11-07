@@ -243,9 +243,8 @@ def test_truncated_structured_call_relays_nothing_extra(executed):
 
 
 def test_a_truncated_call_never_streamed_gets_no_card(executed):
-    """A call recovered from text was never announced to the client, and the
-    healer's released span is what tells the user about that one. Opening a card
-    for it as well would report the same attempt twice."""
+    """A call recovered from text was never streamed, so the healer's released span already tells
+    the user; a card would report it twice."""
     turn = [
         _sse({"content": '<tool_call>{"name": "web_search", "arg'}),
         _sse(finish = "length"),
@@ -408,8 +407,7 @@ def test_budget_exhausted_mcp_card_carries_server_display_name(tmp_path, monkeyp
 
 
 def test_an_unrun_card_shows_the_id_the_call_named():
-    """This loop builds its own tool_start instead of going through the controller, so the
-    exact-text guarantee has to be covered here too."""
+    """The loop builds its own tool_start, so the exact-text guarantee is checked here too."""
     import json as _json
 
     from core.inference.studio_tool_loop import _unrun_call_card

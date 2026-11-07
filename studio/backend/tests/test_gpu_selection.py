@@ -503,8 +503,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         self.assertAlmostEqual(result["devices"][1]["memory_total_gb"], 29.3, places = 1)
 
     def test_uuid_parent_visibility_falls_back_to_torch(self):
-        """UUID/MIG masks fall through nvidia to the torch fallback and
-        still report visible devices using relative ordinals."""
+        """UUID/MIG masks fall through to the torch fallback, which reports relative ordinals."""
         fake_torch_devices = [
             {
                 "index": 0,
@@ -1330,9 +1329,7 @@ _ARBITER_STATE = ("_owner", "_owner_epoch", "_owner_account", "_prior_account")
 
 class TestRouteErrors(unittest.TestCase):
     def setUp(self):
-        # These tests drive the real load routes, which claim the GPU in the process-wide arbiter before the
-        # stubbed backend refuses the load. Put the arbiter back, or the next test on this worker inherits a
-        # CHAT owner that nothing holds (it made the FLUX.3 prompt upsampler tests refuse to start).
+        # Restore the arbiter, or FLUX.3 upsampler tests inherit a CHAT owner that nothing holds.
         import core.inference.gpu_arbiter as arb
         saved = {name: getattr(arb, name) for name in _ARBITER_STATE}
         self.addCleanup(lambda: [setattr(arb, name, value) for name, value in saved.items()])
@@ -2653,9 +2650,7 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
                     self.assertTrue(self._probe()())
 
     def test_a_hybrid_host_that_selected_cuda_keeps_bitsandbytes(self):
-        """An Intel iGPU beside an NVIDIA card reports torch.xpu.is_available() True while
-        detection selects CUDA. Keying on presence would drop 8-bit on a CUDA run and make
-        restore_resume_state refuse every existing AdamW8bit checkpoint."""
+        """Keying on torch.xpu presence would drop 8-bit on a CUDA run and refuse AdamW8bit checkpoints."""
         import torch
         with (
             patch.object(torch, "xpu", SimpleNamespace(is_available = lambda: True)),
@@ -2679,8 +2674,7 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
         import core.training.diffusion_train_common as common_mod
 
         class _Bnb8bitMarker(torch.optim.AdamW):
-            """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
-            exactly as the Intel Triton SYCL assertion does."""
+            """Stands in for bnb AdamW8bit: builds, then dies at step one like Intel SYCL."""
 
             def step(self, *args, **kwargs):
                 raise AssertionError("sycl headers not found")

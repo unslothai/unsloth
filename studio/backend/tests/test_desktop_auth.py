@@ -1090,8 +1090,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """Router stub is derived from main.py; check it against __all__, since a reshaped import
-    shortens it."""
+    """Router stub is parsed from main.py, so a reshaped import shrinks it; check __all__."""
     import re
     from pathlib import Path
 
@@ -1198,8 +1197,7 @@ def test_the_shipped_desktop_probes_never_consume_the_login_budget(probe):
 
 
 def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
-    """Shape-check probes before reading the lockout bucket, so a real lockout still answers 401,
-    not 429."""
+    """Shape checks come before the lockout bucket, so a real lockout answers 401, not 429."""
     seed_user(must_change_password = False)
     auth_route = auth_route_module()
     client = auth_client(auth_route)
@@ -1215,8 +1213,7 @@ def test_the_shipped_desktop_probe_is_answered_during_a_real_lockout():
 
 
 def test_a_malformed_desktop_secret_never_reaches_the_kdf(monkeypatch):
-    """Reject malformed secrets before the KDF: the route is unauthenticated, so attackers could
-    spend it."""
+    """Malformed secrets fail before the KDF, so unauthenticated callers cannot burn KDF time."""
     seed_user(must_change_password = False)
     auth_route = auth_route_module()
     client = auth_client(auth_route)
@@ -1328,8 +1325,7 @@ def test_a_password_spray_does_not_lock_the_desktop_shell_out():
 
 
 def test_a_desktop_exchange_does_not_reset_the_shared_password_throttle():
-    """The desktop secret must not reset /login's per-IP throttle, or each NAT account gets fresh
-    guesses."""
+    """Desktop exchange must not reset /login's per-IP throttle; NAT users get fresh guesses."""
     seed_user(must_change_password = False)
     raw = storage.create_desktop_secret()
     auth_route = auth_route_module()

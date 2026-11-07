@@ -95,8 +95,7 @@ def test_duplicate_ranking_honors_current_companion_readiness(cache_locations):
 
 
 def test_the_merged_default_prefers_a_ready_row(cache_locations):
-    """An offline merge that offers a complete Q8_0 must not recommend a torn remembered
-    quant just because that quant ranks higher."""
+    """An offline merge must not recommend a torn remembered quant merely for ranking higher."""
     repo_id, expected = cache_locations
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     active_repo = next(repo for repo, _ in expected.values() if repo.parent == active)
@@ -117,9 +116,7 @@ def test_the_merged_default_prefers_a_ready_row(cache_locations):
 
 
 def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeypatch):
-    """A remembered partial's resume affordance has to describe the root a resume will really
-    continue in. A download lands in the ACTIVE cache, so judging the row against the folder it
-    happens to sit in would promise a byte-for-byte restart the continuation cannot honour."""
+    """Resume metadata must describe the ACTIVE cache where downloads land, not a partial's folder."""
     from hub.utils import download_manifest
 
     repo_id, expected = cache_locations
@@ -184,9 +181,7 @@ def test_a_remembered_partial_keeps_its_resume_metadata(cache_locations, monkeyp
 
 
 def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations, monkeypatch):
-    """A quant the current revision no longer lists has no scoped answer to consult, so the
-    merge has to fall back to the copy's own per-snapshot verdict instead of trusting the
-    synthesized row and advertising a cancelled download as loadable."""
+    """Unlisted quant: no scoped answer, so its own snapshot verdict decides, or a cancel shows loadable."""
     from hub.utils import gguf_sources
     from hub.utils.gguf import GgufVariantInfo
 
@@ -218,9 +213,7 @@ def test_a_cached_only_quant_is_judged_by_its_own_partial_state(cache_locations,
 
 
 def test_the_delete_preview_follows_the_copy_the_row_carries(cache_locations, cache_client):
-    """The listing hands each row the copy it resolved, and the confirm dialog must preview
-    that same copy: without the reference the preview measures the active duplicate and
-    describes a delete the user did not ask for."""
+    """The delete preview must measure the copy the row resolved, not the active duplicate."""
     repo_id, expected = cache_locations
     active = hf_cache_settings.get_hf_cache_paths().hub_cache
     quant = "Q4_K_M"

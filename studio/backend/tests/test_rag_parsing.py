@@ -81,9 +81,7 @@ def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
 
 
 def test_pdf_markdown_does_not_render_scanned_pages(tmp_path, monkeypatch):
-    # pymupdf4llm's background-colour probe renders page corners; under a full-page scan that
-    # decodes the whole image while holding the GIL, which starved the event loop until the
-    # desktop watchdog killed the backend (#13094). Text pages keep the probe.
+    # Scanned pages skip pymupdf4llm's background probe, which starved the event loop (issue 13094).
     pytest.importorskip("pymupdf4llm")
     import pymupdf
 

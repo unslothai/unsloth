@@ -52,8 +52,7 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Stub only if httpx is not installed: a stub without Response breaks later
-# starlette.testclient imports for the whole session.
+# Stub httpx only if missing: one without Response breaks later starlette.testclient imports.
 try:
     import httpx  # noqa: F401
 except ImportError:

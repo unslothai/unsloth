@@ -90,8 +90,7 @@ async def list_unsloth_models(
     return redact_inventory_host_paths(payload, via_api_key = via_api_key)
 
 
-# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
-# of blocking the event loop.
+# Plain def, not async: sync SQLite and filesystem work runs in the thread pool, not the loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(
     current_subject: str = Depends(get_current_subject),

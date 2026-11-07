@@ -22,9 +22,7 @@ class _Q:
 
 
 def _mlx_entry_for(mc):
-    """The entry MLXInferenceBackend.load_model records for a non-vision
-    checkpoint, built from the real classifier rather than a hand-written
-    expectation."""
+    """Expected from the real classifier, not hand-written: what MLXInferenceBackend.load_model records."""
     resolved = _classify_mlx_audio_type(
         SimpleNamespace(),
         None,
@@ -88,9 +86,7 @@ def _mc(audio_type, is_audio, has_audio_input):
 
 @pytest.mark.parametrize("codec", ["snac", "csm", "bicodec", "dac"])
 def test_tts_classification_survives_the_mlx_post_load_mirror(monkeypatch, codec):
-    """A TTS checkpoint is never a vision model, so the audio_vlm probe never
-    ran. Mirroring its silence over the config would drop the TTS redirect and
-    serve raw codec tokens as chat text."""
+    """A TTS checkpoint is never a vision model, so mirroring the probe's silence drops the TTS redirect."""
     info = _drive_handle_load(monkeypatch, _mc(codec, is_audio = True, has_audio_input = False))
 
     assert info["audio_type"] == codec, (

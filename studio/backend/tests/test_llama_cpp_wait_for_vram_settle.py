@@ -21,9 +21,8 @@ if _BACKEND_DIR not in sys.path:
 
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
-# Stub only if absent. find_spec, not import: verify_import_hoist.py flags an unused name,
-# and loggers imports structlog, whose stub is not installed yet. Same except clause as
-# _is_installed() in test_backend_ci_parallel_isolation.py.
+# Stub only if absent: use find_spec, not import; verify_import_hoist.py flags unused names, and
+# importing loggers pulls in structlog, which has no stub yet.
 try:
     _real_loggers = _importlib_util.find_spec("loggers") is not None
 except (ImportError, ValueError):
@@ -198,8 +197,7 @@ def test_first_probe_raises_returns_without_polling():
 
 
 def test_two_consecutive_samples_within_tolerance_settles():
-    """Reclaim ramp 10000 → 11500 → 11550: third sample within 256 MiB of
-    the second, so the helper returns after exactly three probes."""
+    """Ramp 10000 to 11500 to 11550 settles: the third sample is within 256 MiB of the second."""
     ctx, state = _patch_probe(
         [
             [(0, 10000)],
@@ -264,8 +262,7 @@ def test_max_wait_respected_when_probe_is_slow():
 
 
 def test_gpu_index_set_change_returns():
-    """Driver re-enumeration mid-wait: helper stops and lets the caller
-    re-probe in the main GPU-selection block."""
+    """Driver re-enumeration mid-wait: the helper returns so the caller re-probes GPUs."""
     ctx, state = _patch_probe(
         [
             [(0, 10000), (1, 8000)],
@@ -388,8 +385,7 @@ _NO_PROCFS = "/unsloth-test-no-such-proc-root"
 
 
 def test_kill_orphaned_servers_returns_count():
-    """The reaper reports how many owned orphans it killed, so __init__ can
-    arm the settle wait. Only Unsloth-owned llama-server procs count."""
+    """Count only Unsloth-owned orphans: __init__ arms the settle wait from this count."""
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -434,9 +430,7 @@ def test_kill_orphaned_servers_returns_count():
 
 
 def test_kill_orphaned_servers_spares_live_parent():
-    """An Unsloth-owned llama-server whose parent is still running is not an
-    orphan (a live Unsloth or the user's shell owns it) and must never be
-    killed; only the true orphan (parent gone) is reaped."""
+    """An Unsloth-owned llama-server with a live parent is not an orphan and is never killed."""
     mypid = os.getpid()
     fake_path = "/tmp/unsloth-test-llama/llama-server"
     killed: list[int] = []
@@ -526,8 +520,7 @@ def test_kill_process_clears_pidfile(tmp_path):
 
 
 def test_reap_recorded_pid_kills_recorded_server(tmp_path):
-    """An orphaned recorded PID (parent gone) is killed and the pidfile cleared
-    when it is still a llama-server."""
+    """Orphaned recorded PID is killed and its pidfile cleared only if still llama-server."""
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(str(proc.pid))
@@ -553,8 +546,7 @@ def test_reap_recorded_pid_kills_recorded_server(tmp_path):
 
 
 def test_record_then_reap_round_trip_identity_matches(tmp_path):
-    """Full round trip: _record_server_pid writes pid:starttime, and an orphaned
-    reap whose recorded identity still matches DOES kill it."""
+    """Round trip: _record_server_pid writes pid:starttime; a matching identity is reaped."""
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     try:
@@ -641,8 +633,7 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
 
 
 def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
-    """An orphaned PID whose recorded start-time identity no longer matches has been
-    recycled; it must NOT be killed even if it now looks like a llama-server."""
+    """Starttime mismatch: a recycled PID, never killed even if it looks like llama-server."""
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     pidfile = tmp_path / "llama-server.pid"
     pidfile.write_text(f"{proc.pid}:0.0")
@@ -662,8 +653,7 @@ def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
 
 
 def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
-    """On Windows signal.SIGKILL is undefined; the reaper must fall back to SIGTERM
-    (os.kill -> TerminateProcess) instead of crashing and leaving the orphan."""
+    """No signal.SIGKILL on Windows: the reaper falls back to SIGTERM instead of crashing."""
     import os as _os
     import signal as _signal
 
@@ -722,8 +712,7 @@ def _write_fake_procfs(tmp_path, entries):
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
-    """The Linux /proc sweep must select exactly what the psutil sweep selects:
-    the Unsloth-owned orphan, never a foreign llama-server or another program."""
+    """procfs sweep must match psutil: only the Unsloth-owned orphan, never a foreign server."""
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -827,9 +816,7 @@ def test_kill_orphaned_servers_procfs_handles_a_deleted_binary(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
-    """psutil.Process.kill() refuses to signal a PID that has been reused. The
-    procfs sweep must do the same, or an orphan that exits between the scan and
-    the signal takes an unrelated replacement process with it."""
+    """procfs must refuse a reused PID as psutil.Process.kill() does, or an unrelated replacement dies."""
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()
@@ -864,8 +851,7 @@ def test_kill_orphaned_servers_procfs_refuses_a_reused_pid(tmp_path):
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the procfs scan only runs on Linux")
 def test_kill_orphaned_servers_procfs_still_kills_the_same_process(tmp_path):
-    """Control for the test above: an unchanged starttime is still reaped, so
-    the identity check is not simply refusing everything."""
+    """Control: unchanged starttime is still reaped, so the check does not refuse everything."""
     mypid = os.getpid()
     owned_dir = tmp_path / "unsloth-test-llama"
     owned_dir.mkdir()

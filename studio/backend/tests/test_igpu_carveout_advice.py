@@ -257,8 +257,7 @@ class TestPropertiesOverEveryPlausibleMachine:
 
 
 class TestASmallAutomaticAllocation:
-    """An APU left on its automatic setting reports a few hundred megabytes, not
-    a round number of GB. The DirectX record really does read that way."""
+    """An APU left on automatic reports a few hundred MB, not a round GB, as the DirectX record does."""
 
     def test_it_is_described_rather_than_rounded_to_zero(self):
         result = _advice(gb(12), gb(0.5), gb(31.5), is_igpu = True)
@@ -297,8 +296,7 @@ class TestTheSmallAllocationsTheLadderMustOffer:
 
 
 class TestTheLadderTerminates:
-    """It is a `while` loop on the model-load path, and the caller's try/except
-    cannot rescue a hang."""
+    """The ladder is a `while` loop on the model-load path, where try/except cannot rescue a hang."""
 
     @pytest.mark.parametrize("cap", [float("inf"), float("-inf"), float("nan"), 0, -5, 2**60])
     def test_it_returns_promptly_for_any_cap(self, cap):

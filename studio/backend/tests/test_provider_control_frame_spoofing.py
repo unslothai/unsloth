@@ -62,11 +62,7 @@ def test_every_studio_private_key_is_stripped(key):
 
 
 def test_an_ordinary_chunk_is_relayed_byte_for_byte():
-    """The common case must not pay a re-encode, and must not be re-ordered.
-
-    Rewriting every chunk would also normalise key order and separators, which
-    silently changes bytes the client and the API monitor both parse.
-    """
+    """Ordinary chunks are relayed byte for byte, since clients and monitors parse the exact bytes."""
     line = 'data: {"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}]}'
 
     assert sanitize_provider_sse_line(line) is line

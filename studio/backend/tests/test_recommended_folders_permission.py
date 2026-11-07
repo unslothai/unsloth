@@ -15,8 +15,7 @@ _models_src = _backend_root / "routes" / "models.py"
 
 
 def _load_safe_is_dir():
-    """Return the real ``_safe_is_dir`` from routes/models.py without
-    importing the dependency-laden module."""
+    """Extracts the real _safe_is_dir from routes/models.py without importing its dependencies."""
     tree = ast.parse(_models_src.read_text(encoding = "utf-8"))
     fn = next(
         node
@@ -90,8 +89,7 @@ def test_path_under_unreadable_parent_returns_false_not_raises(tmp_path):
     reason = "is_dir() only propagates PermissionError on Python >= 3.12",
 )
 def test_demonstrates_the_underlying_stdlib_regression(tmp_path):
-    """Documents *why* _safe_is_dir exists: the old bare pattern raises on
-    the interpreters Unsloth ships on (3.12+)."""
+    """Bare is_dir() raises PermissionError on Python 3.12+, which _safe_is_dir guards against."""
     parent = tmp_path / "ollama"
     parent.mkdir()
     os.chmod(parent, 0o000)

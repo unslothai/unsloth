@@ -85,8 +85,7 @@ def test_an_administrator_policy_block_is_not_sent_to_smart_app_control():
 
 
 def test_an_invalid_image_hash_does_not_deny_corruption():
-    """0xC0000428 / winerror 577 are a hash mismatch, which Windows reports for a
-    damaged file too, so the message must not rule out a reinstall."""
+    """0xC0000428 / winerror 577 also fire on damaged files, so do not rule out a reinstall."""
     for error in (0xC0000428, 0xC0000428 - (1 << 32), _WinError(577)):
         reason = code_integrity_block_reason(error)
         assert reason is not None
@@ -102,8 +101,7 @@ def test_an_invalid_image_hash_does_not_deny_corruption():
 
 
 def test_bad_image_without_a_status_is_not_called_a_policy_block():
-    """Windows prints the same sentence for a corrupt or wrong-architecture DLL,
-    which does need the reinstall this module rules out."""
+    """Windows prints the same text for a corrupt or wrong-architecture DLL, which needs a reinstall."""
     corrupt = (
         r"C:\Users\x\.unsloth\llama.cpp\build\bin\Release\ggml-base.dll is either not "
         r"designed to run on Windows or it contains an error."

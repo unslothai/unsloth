@@ -91,9 +91,8 @@ def test_post_warm_work_has_no_rag_warm_kill_switch_branch():
 
 
 def test_post_warm_thread_is_started_by_the_lifespan():
-    """The lifespan must still put the thread up, now through a helper. The old inline Thread
-    was untracked, so a shutdown landing while it was parked in the warm join could not stop
-    it and a second lifespan stacked another. Follow the indirection, not the inline form."""
+    """The lifespan must start the post-warm thread through a helper: an inline untracked Thread
+    could not be stopped at shutdown, and a second lifespan stacked another."""
     referenced = _names_called(_lifespan_body())
     assert "_start_post_warm_thread" in referenced or (
         "_post_warm_background_work" in referenced

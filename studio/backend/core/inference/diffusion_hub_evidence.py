@@ -68,9 +68,8 @@ def _verdict(key: tuple[str, str]) -> tuple[bool, Optional[str]]:
 
 
 def cached_family(repo_id: Optional[str], filename: Optional[str] = None) -> Optional[str]:
-    """The family a Hub single-file pick's header declares, from memory or disk only; None when
-    nothing is known. A header read off the Hub by this request's prefetch outranks a cached copy,
-    which may be an older revision of the file the load will fetch."""
+    """The family a Hub single-file header declares, from memory or disk only (None if unknown); a
+    prefetch read off the Hub outranks a cached copy, which may be an older revision."""
     if not is_hub_id(repo_id) or not _is_single_file(filename):
         return None
     repo_id = str(repo_id).strip()
@@ -94,11 +93,9 @@ def prefetch_for_pick(
     hf_token: Any,
     allow_network: bool = True,
 ) -> None:
-    """The route hook: read the picked single file's header off the Hub (a range read, no weights,
-    nothing cached) when neither the name, a local path nor the content answered. ``allow_network=
-    False`` (an automatic, cache-only load) does nothing. ``hf_token`` passes through as given apart
-    from trimming a string: ``False`` (a managed account with no token of its own) stays anonymous.
-    Fails open: offline, gated or odd keeps the previous verdict, if any."""
+    """Reads a picked single file's header off the Hub (range read, nothing cached) when name, path
+    and content gave no verdict; allow_network=False does nothing; hf_token passes through, False
+    stays anonymous; fails open."""
     if (
         not allow_network
         or family_override

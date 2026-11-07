@@ -142,8 +142,7 @@ def krea2_original(sd: dict) -> dict:
 
 
 def hy_original(sd: dict, hidden: int, comfy_names: bool) -> dict:
-    """Reference-repo naming (Comfy-Org's bf16 file) or ComfyUI naming under ``model.model.`` (its fp8 and
-    distilled files)."""
+    """Reference-repo names, or ComfyUI names under model.model. for fp8 and distilled files."""
     out: dict = {}
 
     def put(name, value):

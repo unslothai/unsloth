@@ -274,8 +274,7 @@ def refresh_job_owner(service) -> None:
 
 
 def owned_job(*, continuation: bool = False):
-    """Hold ownership across validation/spawn and while work is live. Skipped when no managed
-    account ever existed."""
+    """Holds ownership through validation, spawn and live work; skipped if no managed account."""
 
     def decorate(fn):
         @wraps(fn)

@@ -19,8 +19,7 @@ from auth import terminal_prompt as tp  # noqa: E402
 
 
 def _fake_getch(keys):
-    """Scripted keystroke source: yields one item per _getch() call. Items may
-    be multi-char strings to simulate a paste burst arriving in one read."""
+    """Yields one key per _getch() call; a multi-char item is a paste burst in one read."""
     it = iter(keys)
 
     def getch():

@@ -162,8 +162,7 @@ _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
 
 def _model_wait_budget(run: dict) -> float:
-    """Share of the request budget one model wait may spend, clamped so an unlimited or
-    oversized budget still leaves the poll loop bounded."""
+    """One model wait's share of the request budget, clamped so the poll loop stays bounded."""
     timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
     capped = min(timeout or _DEFAULT_MODEL_TIMEOUT_SECONDS, _MAX_MODEL_WAIT_BUDGET_SECONDS)
     return capped / (_MAX_MODEL_WAITS + 1)
@@ -190,9 +189,8 @@ _NATURAL_FINISH_REASONS = frozenset({"stop"})
 
 
 def _auto_scrape_default() -> int:
-    """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
-    ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
-    explicit count clamped to ``[0, _AUTO_SCRAPE_TOP_K]``)."""
+    """Default maxAutoScrape is 0 unless UNSLOTH_RESEARCH_AUTO_SCRAPE is 1/true (top-K) or an
+    explicit count clamped to [0, _AUTO_SCRAPE_TOP_K]."""
     raw = os.environ.get("UNSLOTH_RESEARCH_AUTO_SCRAPE", "").strip().lower()
     if not raw:
         return 0
@@ -666,9 +664,7 @@ def _stream_rate_limit_delay(head: str | None) -> float | None:
 
 
 async def _with_head(head: str | None, rest: AsyncIterator[str]) -> AsyncIterator[str]:
-    """``rest`` with the line already read off it put back in front.
-
-    Explicitly against None, not truthiness: a blank SSE separator line is a line."""
+    """Yields ``head`` (if not None) then ``rest``; a blank SSE separator line is still a line."""
     if head is not None:
         yield head
     async for line in rest:
@@ -1309,9 +1305,8 @@ class ResearchSupervisor:
     async def _finish_terminal(
         self, run_id: str, status: str, error: str | None, report: str
     ) -> str | None:
-        """Commit the terminal status, waiting a bounded while for a writer lock held elsewhere.
-        Gives up by raising, not by standing in a lease-expired row that would discard the run's
-        report and its real error; the run stays claimable once its lease runs out."""
+        """Commits terminal status with a bounded lock wait; raises rather than overwrite an expired
+        lease."""
         deadline = time.monotonic() + _TERMINAL_WRITE_DEADLINE_SECONDS
         while True:
             try:

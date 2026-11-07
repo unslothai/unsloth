@@ -118,8 +118,7 @@ class TestFailuresAreNeverSuppressed:
         )
 
     def test_the_chat_list_401_exemption_is_only_pre_auth(self, monkeypatch):
-        """Chat-list 401s are suppressed only before the first token refresh; after that a 401 must
-        still log."""
+        """Chat-list 401s are silenced only before the first token refresh, not after."""
         from loggers.handlers import LoggingMiddleware
         import asyncio
 
@@ -158,8 +157,7 @@ class TestFailuresAreNeverSuppressed:
         )
 
     def test_the_excluded_set_is_exactly_what_was_reviewed(self):
-        """Excluded paths log nothing at all, including 5xx, since the check runs before the status
-        is known."""
+        """Excluded paths log nothing, even 5xx: the check runs before the status is known."""
         reviewed = {
             "/api/system",
             "/api/train/hardware",
@@ -272,8 +270,7 @@ class TestSlowSuccessIsNotYetSignal:
         )
 
     def test_the_harness_can_tell_a_slow_request_from_a_fast_one(self, monkeypatch):
-        """Proves duration_ms reaches the middleware clock, so the slow-request tests cannot pass
-        vacuously."""
+        """Proves duration_ms reaches the clock, so slow-request tests cannot pass vacuously."""
         path = "/api/models/list"
         capture = _drive(
             monkeypatch,

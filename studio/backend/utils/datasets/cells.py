@@ -30,15 +30,8 @@ def _finite(value):
 
 
 def cell_text(value):
-    """The text to train on for a single Alpaca-style dataset cell.
-
-    A blank cell is a missing value to every loader we use, so it arrives as
-    None, and a column holding numbers arrives typed, so a cell typed as 1
-    arrives as 1.0. Untreated, the first trains the word None and the second
-    raises on .strip(). NaN counts as blank too: Arrow normalises a blank
-    numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
-    """
+    """Blank cells (None or NaN) become empty text, since None would train the word None; numeric
+    cells arrive as floats, which fail on .strip(); dict/list cells train as JSON."""
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():

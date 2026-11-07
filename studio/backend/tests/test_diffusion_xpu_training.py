@@ -65,8 +65,7 @@ def test_a_host_without_a_usable_xpu_stays_on_cpu(host, xpu):
 
 
 def test_an_uninitialised_xpu_driver_falls_through_instead_of_killing_the_run(host):
-    """A raising probe must degrade to CPU, as dit_accelerator_missing_reason does: unguarded, an
-    uninitialised driver crashed the run."""
+    """A raising probe must degrade to CPU like dit_accelerator_missing_reason, not crash."""
 
     def _boom():
         raise RuntimeError("driver not initialised")
@@ -300,9 +299,8 @@ def test_an_emulation_only_xpu_is_refused_before_the_route_evicts_anything(host)
 
 
 def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
-    """The preflight runs before teardown on a host whose XPU may not be interrogable at all, so an
-    undeterminable capability must fail OPEN. Collapsing it to "unsupported" refused nf4 on every
-    such host (caught by test_training_precision_preflight_error)."""
+    """An undeterminable XPU capability must fail open: collapsing it to unsupported refused nf4 on
+    every such host."""
     from core.training.diffusion_train_common import (
         bf16_unsupported_reason,
         native_bf16_supported_xpu,

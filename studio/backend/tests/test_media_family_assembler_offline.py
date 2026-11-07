@@ -82,9 +82,8 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
 
 
 def test_the_h3_conditioner_is_opened_from_the_cache_on_a_load_nobody_asked_for(monkeypatch):
-    """The artifact is ~27 GB and the staging fetch already accepted it, so the loader may only
-    look it up -- through the SAME both-roots rule the stager used, or a moved cache folder makes
-    it re-pull what the load was cleared on."""
+    """The ~27 GB artifact was already accepted by staging, so the loader may only look it up,
+    through the same both-roots rule the stager used, or a moved cache re-pulls it."""
     seen = _drive_h3_conditioner(monkeypatch, local_files_only = True)
     repo, filename, kwargs = seen["download"]
     te_mod = _h3_te_module()
@@ -149,8 +148,7 @@ def test_reopening_the_image_checkpoint_is_a_cache_lookup_offline(monkeypatch, c
 
 @pytest.mark.parametrize("cached_here", [True, False])
 def test_a_user_initiated_image_load_still_revalidates_the_checkpoint(monkeypatch, cached_here):
-    """Unchanged for the UI load: it still goes to the Hub, which is how a republished GGUF is
-    picked up."""
+    """The UI load still goes to the Hub, so a republished GGUF is picked up."""
     for kwargs in _drive_resolve_gguf(monkeypatch, cached_here = cached_here, local_files_only = False):
         assert kwargs["local_files_only"] is False
 
@@ -354,9 +352,8 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
 
 
 def test_the_ltx23_assembler_opens_every_component_from_the_cache_offline(monkeypatch):
-    """The base model_index, the scheduler, the tokenizer, the dense Gemma3 encoder (~50 GB) and
-    every companion loader: none of them sees the guarded pipe_kwargs, and there is no staged
-    snapshot to fall back on, so each resolves the hub id itself."""
+    """Base model_index, scheduler, tokenizer and Gemma3 encoder never see the guarded pipe_kwargs,
+    and no staged snapshot exists, so each resolves its hub id."""
     seen = _drive_ltx23(monkeypatch, local_files_only = True)
     assert seen["load_config"]["local_files_only"] is True
     for name in ("scheduler", "tokenizer", "text_encoder"):

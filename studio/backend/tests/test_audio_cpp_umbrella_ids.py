@@ -230,8 +230,7 @@ def test_a_compound_scope_does_not_name_a_larger_sibling(hub):
 
 
 def test_a_timestamped_asr_holds_the_forced_aligner_it_opened(monkeypatch):
-    # Qwen3-ASR attaches the aligner only for Timestamps and reports ASR as loaded, so the
-    # folder-scoped guard let a live aligner be deleted.
+    # Timestamped ASR holds the aligner, which a folder-scoped guard missed, so it was deleted.
     from core.inference import stt_audiocpp_sidecar
     from hub.services.models import deletion
 

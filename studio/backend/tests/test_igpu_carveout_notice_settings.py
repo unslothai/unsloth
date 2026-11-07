@@ -71,9 +71,7 @@ class TestCorruptRows:
 
 
 class TestAHostileDismissalValue:
-    """`current_gb` arrives in a client-controlled POST body, and Python's json accepts
-    `Infinity`, so a value no machine will ever exceed really can reach this -- and
-    storing it would silence the notice permanently."""
+    """current_gb is client-controlled and json accepts Infinity; storing that would silence the notice."""
 
     @pytest.mark.parametrize(
         "value",

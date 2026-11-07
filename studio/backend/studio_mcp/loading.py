@@ -830,9 +830,8 @@ class _MediaToken:
     answered: Optional[int] = None
 
 
-# Media load tokens this process posted, per (account, slot), whose load may still be in flight or
-# resident. Each leaves only on a definitive outcome: a token unload's answer, a 4xx refusal of its
-# POST (no load registered), or a newer load of the slot shown ready after its POST had answered.
+# Media load tokens this process posted per (account, slot); each drops only on a definitive
+# outcome.
 _MEDIA_TOKENS: dict[tuple[str, str], dict[str, _MediaToken]] = {}
 _MEDIA_ORDER = itertools.count(1)
 # Unload POSTs this process sent per slot and not answered yet: a load posts only after them.

@@ -36,9 +36,8 @@ class _DiscreteProps:
 
 @pytest.fixture(autouse = True)
 def _forget_the_last_machine(monkeypatch):
-    """The integrated classification is cached for the life of the process, which is
-    right for one machine and wrong for a file that describes several. Each case starts
-    with an empty cache so it cannot inherit the hardware the previous one invented."""
+    """The integrated classification is cached per process: right for one machine, wrong for a file
+    describing several; reset _INTEGRATED_CUDA_IDS per case."""
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
 
 
@@ -199,8 +198,7 @@ def test_a_discrete_cuda_host_reaches_no_unified_preflight(monkeypatch):
 
 
 def test_the_preflight_never_probes_a_device_itself(monkeypatch):
-    """The preflight must never probe a device itself: get_device_properties pins a CUDA context per
-    card."""
+    """Preflight must not call get_device_properties, which pins a CUDA context per card."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
@@ -234,8 +232,7 @@ def test_a_different_mask_is_a_different_question(monkeypatch):
 
 
 def test_a_failed_probe_is_not_remembered(monkeypatch):
-    """A torch that raised says nothing about the hardware, so caching its empty answer
-    would make the miss permanent for the life of the process."""
+    """A raising torch probe says nothing about hardware; its empty result must not be cached."""
     import sys as _sys
 
     from core.inference.llama_cpp import LlamaCppBackend
@@ -365,9 +362,8 @@ def test_an_unconstrained_row_keeps_its_total(monkeypatch):
 
 
 def test_the_preflight_needs_every_credited_device_to_share_the_pool(monkeypatch):
-    """The guard charges the WHOLE model against system RAM, and layers placed on a
-    discrete card never touch the shared pool. Answering for ANY integrated device in a
-    mixed selection calls an otherwise fitting load oversized."""
+    """The guard charges the whole model to system RAM, so every credited device must share the
+    pool, or a mixed selection looks oversized."""
     import sys as _sys
 
     from core.inference.llama_cpp import LlamaCppBackend

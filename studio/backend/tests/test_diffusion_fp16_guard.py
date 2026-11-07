@@ -327,8 +327,7 @@ class _LoRALinear(nn.Module):
 
 @needs_fp16
 def test_guard_holds_through_a_lora_injected_after_install():
-    """LoRA wrappers replace the Linear children after the guard is installed; the rescale lives on the parents, so the
-    adapted branch is scaled as a whole."""
+    """LoRA wrappers replace Linear children after the guard; the rescale lives on the parents."""
     targets = ["w1", "w2", "w3", "to_q", "to_k", "to_v", "to_out.0"]
 
     def adapted(model):

@@ -129,9 +129,7 @@ def _string_arg_key_from_schema(schema: Any) -> Optional[str]:
 def _coerce_promoted_arguments(
     raw_args: Any, tool_name: str, tool_schemas: Optional[dict]
 ) -> Optional[dict]:
-    """Promoted arguments, typed against the client's declared schema: the call was TEXT a
-    moment ago, so its XML parameters arrive as raw strings and closing a truncated container
-    is this healer's own job rather than something to gate."""
+    """Promoted args are typed to the schema; XML arrives as raw strings and truncation is healed here."""
     parameters = (tool_schemas or {}).get(tool_name)
     properties = parameters.get("properties") if isinstance(parameters, Mapping) else None
     parsed = raw_args

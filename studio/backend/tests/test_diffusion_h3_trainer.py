@@ -400,8 +400,7 @@ def test_h3_targets_cover_attention_and_the_feed_forward_and_nothing_else():
 
 
 def test_the_nf4_skip_list_covers_every_dtype_reading_module():
-    # Params4bit reports uint8 and the model casts activations to some weights' dtype,
-    # so these three stay unquantized (the rest are in _keep_in_fp32_modules).
+    # Params4bit reports uint8 and activations are cast to a weight's dtype, so these skip NF4.
     from core.training.diffusion_h3_trainer import _H3_NF4_SKIP_MODULES
     assert set(_H3_NF4_SKIP_MODULES) == {"context_embedder", "adaln_proj", "norm_out"}
 
@@ -416,8 +415,7 @@ def test_minimax_h3_routes_to_its_own_trainer():
 
 
 def test_minimax_h3_does_not_route_to_the_dit_trainer():
-    # Its objective is a two-schedule joint loss over one packed sequence, which the DiT
-    # loop's single sigma and single target cannot express.
+    # Two schedules in one joint loss on a packed sequence; DiT has one sigma and one target.
     from core.training import diffusion_dit_trainer
     assert get_trainer("minimax-h3") is not diffusion_dit_trainer.run_dit_lora_training
 
@@ -657,8 +655,7 @@ def test_one_base_u_drives_both_sigmas():
 
 
 def test_the_conditioning_phase_never_names_the_transformer():
-    # Naming it in load_components would put the 66 GB denoiser on the device alongside the
-    # 63 GiB conditioner, which is the whole point of the phased load.
+    # Naming it in load_components puts the 66 GB denoiser beside the 63 GiB conditioner.
     from core.training.diffusion_h3_trainer import _H3_CONDITIONING_COMPONENTS
 
     assert "transformer" not in _H3_CONDITIONING_COMPONENTS
@@ -747,16 +744,14 @@ def _h3_cfg(**kw):
 
 
 def test_resume_is_refused_rather_than_silently_starting_over():
-    """The dangerous half: run_h3_lora_training neither writes a resume bundle nor restores one,
-    so a caller handing one over got a FRESH optimization that then overwrote the outputs it was
-    meant to continue -- discovered only after an expensive run."""
+    """run_h3_lora_training neither writes nor restores a resume bundle, so resume starts a fresh
+    optimization that overwrites the outputs it was meant to continue"""
     with pytest.raises(ValueError, match = "resume_from_checkpoint is not supported"):
         _h3_cfg(resume_from_checkpoint = "/tmp/o/checkpoint-100").normalized()
 
 
 def test_save_steps_is_refused_rather_than_silently_ignored():
-    """The quieter half: periodic saves were accepted and never happened, so a stopped run had
-    nothing to go back to."""
+    """Periodic saves were accepted but never happened, so a stopped run had nothing to resume."""
     with pytest.raises(ValueError, match = "save_steps is not supported"):
         _h3_cfg(save_steps = 50).normalized()
 
@@ -805,8 +800,7 @@ def test_int8_training_applies_h3s_small_m_guards():
 
 
 def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
-    # The behavioural half: the helper must call the padding pass, with the family, AFTER
-    # quantize_ (which is what reparents the Linears the pass wraps).
+    # Padding pass with the family must run AFTER quantize_, which reparents the Linears.
     import torch.nn as nn
 
     from core.training import diffusion_dit_trainer as dit
@@ -942,8 +936,7 @@ def test_a_soundtrack_that_is_silent_throughout_is_refused(tmp_path):
         return np.zeros((n * clips.H3_AUDIO_CHANNELS,), dtype = "float32")
 
     def dithered(n):
-        # Not exact zeros: an encode/decode round trip leaves rounding dust on digital silence,
-        # and a threshold that only caught 0.0 would wave that through.
+        # Digital silence is not exact zeros after a round trip, so a 0.0 check would miss it.
         return (silent(n) + 1e-7).astype("float32")
 
     def one_real_sound(n):
@@ -1009,10 +1002,7 @@ def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
 
 
 def test_the_augmentation_knobs_record_what_h3_actually_does():
-    """Every frame goes through the same centre cover-crop and nothing is flipped, but a request
-    can say otherwise (center_crop defaults to False, random_flip can be turned on), so the run
-    record described augmentation that never happened. Normalised rather than refused: a
-    refusal would 422 every default request."""
+    """Run record must report only the augmentation that happens; refusing would 422 defaults."""
     from dataclasses import replace as _replace
 
     from core.training import diffusion_h3_trainer as h3
@@ -1047,9 +1037,7 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
 
 
 def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypatch):
-    """The window is the clip's FIRST num_frames and the latents are cached once for the run, so
-    a longer source trains only its opening while its caption describes the whole scene. That is
-    the dataset contract, but it was silent, which is how the mismatch went unnoticed."""
+    """A longer clip trains only its first num_frames, latents cached once per run; the run must say so."""
     import numpy as np
 
     from core.training import diffusion_h3_clips as clips
@@ -1137,9 +1125,8 @@ def test_the_precision_recorded_for_h3_is_the_one_its_loop_runs_in():
 
 
 def test_an_h3_run_can_never_record_a_precision_it_did_not_use():
-    """The three gates that keep the identity honest today, so a change to any of them fails here
-    rather than in a resume refusal: fp16 is refused in validation, any other non-bf16 value is
-    refused by the shared start preflight, and the family writes no checkpoint to record into."""
+    """fp16 is refused in validation, other non-bf16 by the start preflight; no checkpoint to record
+    into."""
     from dataclasses import replace as _replace
 
     from core.training.diffusion_train_common import h3_train_unsupported_reason
@@ -1600,9 +1587,7 @@ def _write_rotated_clip(
 
 
 def test_a_rotated_clip_reports_its_display_rotation(tmp_path):
-    """PyAV hands back the CODED frame: unlike the ffmpeg CLI it does not apply the display
-    matrix. A portrait phone clip is stored landscape with a 90 degree matrix, so the rotation
-    has to be read off the frame or every target trains sideways."""
+    """PyAV yields coded frames with no display matrix applied, so read rotation or clips train sideways."""
     av = pytest.importorskip("av")
     from core.training.diffusion_h3_clips import display_rotation_degrees
 
@@ -1689,9 +1674,7 @@ def test_a_real_gguf_path_without_a_pipeline_is_still_refused(tmp_path):
 
 
 def test_the_advertised_h3_vram_floor_covers_the_measured_run_peak():
-    """The field's own contract is the WHOLE-RUN peak, because that is what a card has to hold.
-    A real run on this branch peaked at 77.76 GB, so the advertised floor may not sit under it:
-    the chip is what a user sizes a host from."""
+    """Advertised qlora_vram_gb must cover the whole-run peak (77.76 GB measured); cards must hold it."""
     from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
     assert _FAMILY_TRAIN_SPECS["minimax-h3"]["qlora_vram_gb"] >= 78
 

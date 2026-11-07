@@ -983,8 +983,7 @@ def test_generate_rejects_sizes_beyond_the_family_limits(env):
 
 
 def test_a_failed_generation_does_not_pin_the_model(env):
-    # Any error raised inside the render holds the model in its frames; a caller or logger that
-    # keeps the exception must not keep the model alive past unload().
+    # Render errors hold the model in its frames; a kept exception must not outlive unload().
     import gc
     import weakref
 
@@ -1133,9 +1132,8 @@ def test_base_fetch_is_cancellable_between_files(monkeypatch):
 
 @pytest.mark.parametrize("predicted", ["mlx", None])
 def test_the_load_route_takes_the_gpu_arbiter_for_mlx_on_a_cpu_torch_host(monkeypatch, predicted):
-    # torch can resolve "cpu" on an Apple-Silicon Mac, but MLX still drives the Apple GPU: the route
-    # must evict / own the GPU through the arbiter instead of releasing it. Also when the prediction
-    # failed and only the activation says MLX.
+    # torch may resolve cpu on Apple Silicon, but MLX drives the GPU: take the arbiter rather than
+    # release it, even when prediction failed and only activation says MLX
     import asyncio
     import types
     from unittest.mock import create_autospec

@@ -248,9 +248,7 @@ def _rebuild_standins(ckpt: Any, standins: dict, api: tuple) -> Any:
 
 
 def convert_legacy_int8_weights(module: Any) -> int:
-    """Rebuild a loaded module's v1 int8 weights as pinnable ``Int8Tensor`` in place (torchao <= 0.17).
-
-    All or nothing: any weight failing validation leaves the module unchanged and returns 0."""
+    """Rebuilds v1 int8 weights as pinnable Int8Tensor in place (torchao <= 0.17); all or nothing."""
     import torch
 
     api = _int8_tensor_api()

@@ -82,9 +82,8 @@ def test_the_viewer_only_ever_returns_content_it_did_not_write(session_log, clie
 
 @pytest.mark.parametrize("path", POLL_PATHS)
 def test_verbose_does_not_lift_the_suppression_for_these_two(path, monkeypatch):
-    """--verbose turning the suppressor off is fine everywhere else, because
-    everywhere else the extra lines only go to a file. These come back at the
-    reader, and --verbose is what someone debugging turns on."""
+    """The --verbose flag must not lift the suppression for these two paths: their lines come back
+    at the reader, unlike file-only logs."""
     monkeypatch.setattr("loggers.handlers._VERBOSE_ACCESS_LOG", True)
     assert _is_quiet_success("GET", path, 200, False) is True
 

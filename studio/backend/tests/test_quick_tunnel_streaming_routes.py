@@ -50,8 +50,7 @@ def test_both_verbs_carry_the_same_dependencies(
 
 
 def test_only_post_reaches_the_schema() -> None:
-    """One api_route for both verbs would give them one operationId; two registrations
-    with GET hidden keeps the ids unique and the public contract single."""
+    """One api_route would give GET and POST one operationId; hiding GET keeps ids unique."""
     import main
 
     schema = main.app.openapi()

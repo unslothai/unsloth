@@ -180,8 +180,7 @@ def stub_runtime(monkeypatch):
 
 @pytest.fixture
 def backend(stub_runtime):
-    """A backend that is unloaded afterwards, so a committed load's process-wide state does not
-    outlive the test that created it."""
+    """Unloads afterwards so a committed load's process-wide state can't outlive its test."""
     instance = DiffusionBackend()
     try:
         yield instance
@@ -232,8 +231,7 @@ def test_a_declined_quant_request_is_not_reported_as_engaged(
 def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
     backend, stub_runtime, tmp_path, monkeypatch
 ):
-    """The request said fp8; the resolver picked int8 for this GPU. int8 is what ran, so
-    int8 is what the recipe has to record."""
+    """The recipe records the engaged scheme (int8), not the fp8 that was requested."""
     requested, engaged = "fp8", "int8"
 
     @classmethod
@@ -267,8 +265,7 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
 
 
 class _EngagedBackend:
-    """A backend that accepts one precision and engages another, so the route cannot
-    satisfy the assertions by reading the load request."""
+    """Accepts one precision, engages another; the route cannot pass by reading the request."""
 
     requested = "fp8"
     engaged = "int8"

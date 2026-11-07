@@ -21,8 +21,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub external deps only when missing, so a stub never shadows the real package
-# for later tests in the same process.
+# Stub deps only when missing, so a stub never shadows the real package in later tests.
 try:
     import structlog  # noqa: F401
 except ImportError:
@@ -181,8 +180,7 @@ def test_every_tp_drop_is_logged_not_silent():
 
 
 def test_tensor_split_gate_is_self_healing_not_blanket():
-    """Skip is conditional on a recorded (binary, model) abort, not a blanket
-    is_vision disable (the #6416 regression)."""
+    """Skip only on a recorded (binary, model) abort, not a blanket is_vision disable."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "self._tensor_split_aborts(" in src
     # Since llama.cpp#23792 a tensor abort can be cache-type specific, so key by the pair.
@@ -206,8 +204,7 @@ def test_tensor_split_abort_recorded_early_on_first_spawn():
     src = inspect.getsource(LlamaCppBackend.load_model)
     idx = src.find("LlamaCppBackend._record_tensor_split_abort(")
     assert idx != -1, "load_model must record a (binary, model) tensor-split abort"
-    # 900, not 600: the block now also explains why the pre-b9455 quantized-KV
-    # refusal is latched here rather than by the signal-crash helper below it.
+    # 900, not 600: the block explains why the pre-b9455 quantized-KV refusal is latched here.
     guard = src[max(0, idx - 900) : idx]
     assert "self._tensor_parallel" in guard
     assert (
@@ -237,8 +234,7 @@ def test_tensor_attempted_by_default_for_unknown_binary():
 
 
 def test_recorded_tensor_abort_is_per_model():
-    """A recorded (binary, model) abort trips the gate for that model only -- a
-    different model on the same binary still attempts tensor (oobabooga, #6659)."""
+    """A recorded (binary, model) abort gates only that model, not the whole binary."""
     b = f"/tmp/llama-server-{id(object())}"
     try:
         assert LlamaCppBackend._tensor_split_aborts(b, "model-a") is False
@@ -253,8 +249,7 @@ def test_recorded_tensor_abort_is_per_model():
 
 
 def test_select_gpus_collapses_to_single_gpu_when_model_fits():
-    """Default (min_gpus=1): a 39 GB model on four 183 GB GPUs pins ONE GPU -- the
-    'single GPU' symptom once TP drops, and why the downgrade needs min_gpus."""
+    """A 39 GB model on four 183 GB GPUs pins one GPU at min_gpus=1: the single-GPU symptom."""
     gpus = [(0, 180000), (1, 180000), (2, 180000), (3, 180000)]  # (idx, free MiB)
     gpu_indices, _use_fit = LlamaCppBackend._select_gpus(int(39 * _GB), gpus)
     assert gpu_indices is not None and len(gpu_indices) == 1
@@ -299,8 +294,7 @@ def test_select_gpus_min_gpus_excludes_unusable_gpu():
 
 
 def test_tensor_abort_cache_invalidated_on_binary_mtime_change(tmp_path):
-    """Cache keys on (path, mtime, model), so a binary swapped in place (in-app
-    update, no restart) is re-probed instead of inheriting the old abort (#6659)."""
+    """Cache keys on (path, mtime, model): a binary swapped in place is re-probed."""
     binp = tmp_path / "llama-server"
     binp.write_text("v1")
     p = str(binp)
@@ -460,9 +454,7 @@ def test_fallback_hint_uses_effective_tensor_request_not_just_toggle():
 
 
 def test_carry_preserved_tensor_intent_truth_table():
-    """Behavioral check of the carry-forward decision: carried only for the SAME
-    model, preserved, and not an explicit drop. Catches a `not` inversion (ctx-only
-    collapse) and a missing same-model guard (cross-model leak) (#6659)."""
+    """Carry the preserved tensor intent only for the same model and not an explicit drop."""
     inference_routes = _load_inference_routes_module()
     f = inference_routes._carry_preserved_tensor_intent
     assert f(preserved = True, same_model = True, explicit_drop = False) is True
@@ -472,9 +464,7 @@ def test_carry_preserved_tensor_intent_truth_table():
 
 
 def test_preserved_fallback_carried_across_non_drop_reload():
-    """The hint carries the preserved fallback via _carry_preserved_tensor_intent,
-    gated on the same model loaded, so a ctx-only reload keeps multi-GPU but a model
-    switch / explicit drop doesn't inherit it (#6659)."""
+    """A ctx-only reload keeps the preserved fallback, but a model switch or drop must not."""
     route = Path(_BACKEND_DIR) / "routes" / "inference.py"
     src = route.read_text(encoding = "utf-8")
     idx = src.find("_effective_tensor = _effective_tensor_parallel(")
@@ -508,8 +498,7 @@ def test_diffusion_load_clears_preserved_tensor_flag():
 
 
 def test_is_tensor_split_assert_marker():
-    """Matches the specific #6415 split-axis assert, not any ggml assert/abort, so
-    an unrelated invariant a corrupt GGUF/projector trips isn't cached (#6659)."""
+    """Only the split-axis assert counts; unrelated ggml asserts are not cached."""
     f = LlamaCppBackend._is_tensor_split_assert
     # the real #6415 warmup assert (split-axis enum, in ggml-backend-meta)
     assert (
@@ -520,8 +509,7 @@ def test_is_tensor_split_assert_marker():
         is True
     )
     assert f("GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_1) failed") is True
-    # UNRELATED asserts must NOT match -- including a different invariant from the
-    # same multi-assert source file (matched on the token, not the file name).
+    # Unrelated asserts must not match, even in the same file: the token alone decides.
     assert f("ggml-backend-meta.cpp:99: GGML_ASSERT(buf != NULL) failed") is False
     assert f("/x/ggml.c:1234: GGML_ASSERT(ne == 1) failed") is False
     assert f("ggml_abort: something else entirely") is False
@@ -531,16 +519,14 @@ def test_is_tensor_split_assert_marker():
 
 
 def test_layer_preserve_hint_replayed_on_respawn():
-    """The preserve hint is in the immutable replay intent, so a
-    respawn keeps the downgraded model multi-GPU (Codex review on #6659)."""
+    """The preserve hint is in the immutable replay intent, so respawn keeps multi-GPU."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer" in src
     assert "self._last_load_intent = replace(intent" in src
 
 
 def test_should_record_tensor_split_abort_decision():
-    """Behavioral check of marker AND (signal crash OR Windows abort), so an
-    or->and typo or caching a generic crash fails here, not just the source pins."""
+    """Only marker AND (signal crash OR Windows abort) records; an or/and typo must fail here."""
     f = LlamaCppBackend._should_record_tensor_split_abort
     marker = "ggml-backend-meta.cpp:541: GGML_ASSERT(x.axis != GGML_BACKEND_SPLIT_AXIS_0) failed"
     # marker + a hard crash records, across every platform's abort encoding
@@ -598,8 +584,7 @@ class _NoopProcess:
 
 
 def _fallback_loaded_backend(layer_preserves_tensor_intent: bool) -> LlamaCppBackend:
-    """A loaded backend in the tensor->layer fallback state (tensor off, --split-mode
-    layer stored), differing only in the preserved-multi-GPU flag."""
+    """A tensor-to-layer fallback backend, differing only in the preserved-multi-GPU flag."""
     b = LlamaCppBackend()
     b._model_identifier = "owner/repo"
     b._requested_n_ctx = 0

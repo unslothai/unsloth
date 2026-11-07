@@ -212,9 +212,8 @@ def _escape_link_destination(url: str) -> str:
 
 
 def _shield_untrusted(text: str) -> str:
-    """Escape prompt-delimiter tags and the report boundary marker in untrusted evidence, so
-    gathered content cannot close a wrapper block to inject model instructions, nor move the
-    boundary that selects the published report."""
+    """Escapes delimiter tags and the report boundary marker in untrusted evidence so it cannot
+    close a wrapper block to inject model instructions or move the report boundary."""
     if not text:
         return text
 

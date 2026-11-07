@@ -72,8 +72,7 @@ def _call_route(
     caps: dict | None = None,
     **overrides,
 ):
-    """All passed explicitly: called in process an omitted one arrives as its ``Query``
-    object rather than the None FastAPI would have resolved."""
+    """Pass all arguments: called in-process, an omitted one arrives as a Query object, not None."""
     monkeypatch.setattr(
         models_routes,
         "_resolve_quant_gguf",
@@ -166,8 +165,7 @@ class TestTheOtherTwoLayoutKnobs:
         assert full_attn > compact_attn
 
     def test_swa_full_drops_the_checkpoint_share(self, monkeypatch, ragged):
-        """No sliding window left to snapshot, so any reported share is memory nobody
-        reserves."""
+        """With no sliding window to snapshot, any reported checkpoint share is memory nobody reserves."""
         compact = _call_route(monkeypatch, path = ragged, ctx_checkpoints = 8)
         full = _call_route(monkeypatch, path = ragged, ctx_checkpoints = 8, swa_full = True)
         assert compact["kv_checkpoint_bytes"]

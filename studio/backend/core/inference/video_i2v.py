@@ -42,9 +42,8 @@ def i2v_pipeline_available(name: Optional[str]) -> bool:
         import diffusers
     except Exception:  # noqa: BLE001
         return False
-    # Keyed by name and checked by identity, not by id(diffusers): once a replaced module is collected
-    # its id can be handed to the next one, and a stale answer for a module that lacked the class
-    # would then hide one that has it.
+    # Keyed by name, checked by module identity: a collected module's id() can be reused by a new
+    # one.
     entry = _AVAILABLE.get(name)
     if entry is not None and entry[0] is diffusers:
         return entry[1]

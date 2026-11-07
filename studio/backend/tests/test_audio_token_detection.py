@@ -189,9 +189,8 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
 
 
 def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
-    """/loras probes every checkpoint and its base. Neither answers offline, and a
-    non-definitive result is never cached, so the walk repeated on every poll: with 50
-    checkpoints that measured 6ms -> 26ms per call, on the event loop."""
+    """/loras probes each checkpoint and its base, and neither answers offline; a non-definitive
+    result is never cached, so the walk repeated on every poll on the event loop."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -211,8 +210,7 @@ def test_an_offline_miss_is_not_reprobed_on_every_poll(monkeypatch, tmp_path):
 
 
 def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
-    """Bounded, not permanent: the base may be downloaded, or a training run may finish
-    writing the tokenizer it was missing, and neither restarts Unsloth."""
+    """Bounded, not permanent: a later download or finished training run can add the tokenizer."""
     from utils.models import model_config
 
     monkeypatch.setattr(model_config, "_audio_detection_cache", {})
@@ -252,9 +250,8 @@ def test_an_online_transient_failure_still_retries_immediately(monkeypatch):
 
 
 def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
-    """The marker list is what lets a large text tokenizer_config be settled without
-    parsing it. It cannot be derived from the patterns, which are lambdas, so a codec
-    added there without a marker here would silently stop being detected."""
+    """The marker list lets a large text tokenizer_config skip parsing; markers cannot be derived
+    from the lambda patterns, so a codec needs a marker or goes undetected."""
     from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
     assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
@@ -279,8 +276,7 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
 
 
 def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
-    """The saving, pinned: an ordinary checkpoint's tokenizer_config is read but never
-    handed to json.loads, which was the bulk of a cold /loras scan."""
+    """Ordinary tokenizer_configs are never json.loads-parsed, the bulk of a cold /loras scan."""
     import json as json_module
 
     from utils.models import model_config
@@ -312,9 +308,8 @@ def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
 
 
 def test_a_half_written_tokenizer_stays_unknown(tmp_path):
-    """The skip-the-parse path must not turn a training run's part-written tokenizer into
-    a definitive "not audio", which would be cached for the life of the process. It stays
-    unknown, exactly as it did when json.loads raised on the truncated text."""
+    """The skip-the-parse path must not cache a part-written tokenizer as a definitive 'not audio'
+    for the process; it stays unknown."""
     from utils.models import model_config
 
     checkpoint = tmp_path / "mid_write"
@@ -455,9 +450,8 @@ def test_a_snapshot_that_is_not_the_current_commit_still_asks_the_hub(monkeypatc
 
 
 def test_an_older_snapshot_beside_the_current_one_cannot_answer_negatively(monkeypatch, tmp_path):
-    """Either may be read first, but only the current commit may answer negatively: the
-    older one predates the markers, and a negative here is cached for the process. A
-    positive match from any snapshot still stands, as it did before."""
+    """Only the current commit may answer negatively, since an older snapshot predates the markers
+    and a negative is cached; any positive still stands."""
     repo_dir, _ = _cached_snapshot(
         tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}, sha = "old"
     )
@@ -561,8 +555,7 @@ def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tm
 
 
 def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch, tmp_path):
-    """``siblings`` is optional on the hub's model, so absent is a shape a response takes
-    and not only an empty list."""
+    """A missing siblings key is a valid hub response shape, distinct from an empty list."""
     import types as _types
 
     from utils.models import model_config as mc

@@ -81,9 +81,7 @@ def test_a_running_repair_is_in_flight(apple_silicon, monkeypatch):
 
 
 def test_a_finished_repair_is_not_in_flight(apple_silicon, monkeypatch):
-    """The worker exits only after it has published whatever it is going to publish: a
-    successful re-detect, or nothing at all on a failed install. Either way the verdict
-    standing when it exits is final, so a chat-only Mac gets its greyed rows and tooltip."""
+    """The repair worker exits only after publishing its result, so the verdict it leaves is final."""
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = False), raising = False)
     assert mlx_repair.mlx_repair_in_flight() is False
@@ -97,16 +95,14 @@ def test_a_repair_that_has_not_started_yet_is_in_flight(apple_silicon):
 
 
 def test_a_worker_that_could_not_be_started_settles_the_verdict(apple_silicon, monkeypatch):
-    """The latch is claimed before the thread exists, so a start() that raises must read as
-    finished rather than as forever pending."""
+    """Latch is claimed before the thread exists, so a raising start() must read as finished."""
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", None, raising = False)
     assert mlx_repair.mlx_repair_in_flight() is False
 
 
 def test_the_opt_out_settles_the_verdict_immediately(apple_silicon, monkeypatch):
-    """UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 means no repair is coming, so holding the verdict
-    back would spin Train and Video for the rest of the session."""
+    """UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 means no repair comes, so the verdict settles at once."""
     monkeypatch.setenv(mlx_repair.DISABLE_ENV_VAR, "1")
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)
@@ -148,8 +144,7 @@ def test_the_worker_is_published_together_with_the_latch(apple_silicon, monkeypa
 
 
 def test_started_splits_the_two_halves_of_in_flight(apple_silicon, monkeypatch):
-    """The distinction the pre-start window is built on: both halves are in flight, but
-    only one of them has a worker to wait for."""
+    """Both halves count as in flight, but only the started half has a worker to wait for."""
     assert mlx_repair.mlx_repair_in_flight() is True
     assert mlx_repair.mlx_repair_started() is False
 
@@ -213,8 +208,7 @@ def test_a_repair_that_has_not_started_holds_the_verdict_while_the_warm_runs(
 
 
 def test_the_handoff_grace_covers_the_gap_after_the_warm(apple_silicon, clock, monkeypatch):
-    """start_mlx_autorepair_if_needed() is the next statement after join_background_warm(),
-    so the verdict must not settle in the instant between the two."""
+    """The verdict must not settle in the gap before start_mlx_autorepair_if_needed() runs."""
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = True) is True
@@ -308,8 +302,7 @@ def test_a_worker_inside_its_budget_is_never_cut_short(apple_silicon, monkeypatc
 
 
 def test_a_worker_that_starts_late_takes_over_an_expired_window(apple_silicon, clock, monkeypatch):
-    """The windows bound the promise, not the repair. A scheduler that arrives after the
-    grace still gets the verdict held for as long as it is installing."""
+    """Windows bound the promise, not the repair: a late worker still holds the verdict."""
     assert _superseded(monkeypatch, warming = True) is True
     _spend_the_handoff_grace(monkeypatch, clock)
     assert _superseded(monkeypatch, warming = False) is False
@@ -331,8 +324,7 @@ def test_a_re_detected_verdict_gets_its_own_window(apple_silicon, clock, monkeyp
 
 
 def test_a_spent_window_does_not_revive_a_settled_host(apple_silicon, clock, monkeypatch):
-    """The windows only ever settle a verdict earlier; they must not hold one the opt-out,
-    an Intel Mac or a non-Mac had already settled."""
+    """The windows only settle earlier, so a spent one must not revive a host already settled."""
     import main as main_mod
 
     monkeypatch.setenv(mlx_repair.DISABLE_ENV_VAR, "1")
@@ -417,9 +409,7 @@ def _health(monkeypatch, *, chat_only: bool, reason: str | None) -> dict:
 
 
 def test_health_replies_provisionally_while_the_repair_runs(apple_silicon, monkeypatch):
-    """The fix. config/env.ts keys `fetched` on device_type, so omitting it keeps
-    capabilitiesUnknown() true and resolveNavRowState spins the rows instead of greying
-    them behind a tooltip the reinstall is about to make wrong."""
+    """config/env.ts keys fetched on device_type, so omitting it keeps capabilitiesUnknown() true."""
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)
 
@@ -474,9 +464,7 @@ def test_a_training_capable_verdict_still_settles(apple_silicon, monkeypatch):
 
 
 def test_a_held_back_verdict_is_not_reported_as_deferred(apple_silicon, monkeypatch):
-    """The torch-warm kill switch does not disable the MLX self-heal, so the two can be on
-    at once. "Deferred" tells env.ts nothing will ever settle, and it answers by storing the
-    conservative chat_only -- which greys the rows, the outcome this change exists to stop."""
+    """Report a held verdict, not Deferred, which makes env.ts store chat_only and grey the rows."""
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", "1")
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
     monkeypatch.setattr(mlx_repair, "_repair_thread", _Worker(alive = True), raising = False)

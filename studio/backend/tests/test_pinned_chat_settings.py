@@ -539,8 +539,7 @@ def test_explicit_unpin_before_thread_import_blocks_legacy_resurrection():
     _seed("late-thread")
     assert _migrate(["late-thread"]) == {"pinnedIds": []}
 
-    # A deliberate new pin can undo the unpin. Replaying the old acknowledgement
-    # cannot add its tombstone again or undo the later explicit choice.
+    # Replaying an old acknowledgement must not re-add its tombstone or undo a later pin.
     assert _save_if_current(
         {"pinnedChatIds": []}, ["late-thread"], operation_id = "repin-later"
     ).applied

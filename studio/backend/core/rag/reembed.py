@@ -62,8 +62,7 @@ class _Job:
 
 
 def _stale_documents(conn, identity: str) -> list[dict]:
-    """Completed, searchable documents whose vectors another embedder wrote; files before
-    archived conversation turns, newest first."""
+    """Completed documents with chunks whose vectors another embedder wrote, newest first."""
     # Chunks, not num_chunks, which archived conversation turns leave at 0.
     rows = conn.execute(
         "SELECT id, scope, embedding_model FROM documents d WHERE status='completed' "

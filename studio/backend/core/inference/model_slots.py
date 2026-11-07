@@ -126,9 +126,7 @@ async def route(requested: Optional[str], satisfies) -> Optional[ExtraSlot]:
 
 
 def reserve(slot: ExtraSlot) -> bool:
-    """Hold ``slot`` against eviction until the current task ends; False once it is gone.
-    The task, not the request: a durable chat run inherits the POST that queued it, which has
-    already answered 202 by the time the run routes."""
+    """Holds the slot until the task ends, not the request: a chat run outlives the POST that queued it."""
     with lock:
         if slot not in slots:
             return False
@@ -149,9 +147,8 @@ def eviction_victims(
     gpu_indices = None,
     discrete: bool = False,
 ) -> list[ExtraSlot]:
-    """Least recently used idle slots, as many as it takes to free ``short_mib`` on ``gpu_indices``;
-    one at a time when a footprint is unknown, since the retry prices the rest. A slot still
-    answering is never a victim."""
+    """LRU idle slots freeing short_mib on gpu_indices, one at a time when a footprint is unknown
+    since the retry prices the rest; a slot still answering is never a victim."""
     candidates = [s for s in visible() if s is not exclude and in_use(s)]
     victims, freed = [], 0
     for slot in sorted(candidates, key = lambda s: s.last_used):

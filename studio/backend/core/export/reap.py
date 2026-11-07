@@ -102,9 +102,7 @@ class MoeProbeError(RuntimeError):
 
 
 def _cached_hub_file(repo: str, filename: str, offline: bool) -> Optional[bool]:
-    """What the local Hub cache knows: True when the file is cached, False when its absence is
-    recorded (or, offline, when the repo's snapshot is cached without it, so the loader could not
-    fetch it either), else None."""
+    """True if cached, False if recorded absent (offline: snapshot cached without it), else None."""
     try:
         from huggingface_hub import try_to_load_from_cache
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -130,10 +128,7 @@ def hub_file_exists(
     filename: str,
     hf_token = None,
 ) -> bool:
-    """Whether a Hub repo has ``filename``. file_exists answers False only for a definite absence
-    (repo, file or revision not found). Offline, or when the request fails, the local cache answers
-    if it knows; anything still unknown (timeout, auth, gated) raises ``MoeProbeError``, so a file
-    that would make REAP fail after the load is never assumed away."""
+    """False only for a definite absence; anything unknown (timeout, auth, gated) raises MoeProbeError."""
     error = None
     try:
         from huggingface_hub import HfApi, constants
@@ -149,10 +144,8 @@ def hub_file_exists(
 
 
 def _export_runs_transformers_4(model: str, hf_token = None) -> bool:
-    """Whether Studio would load ``model`` for export under transformers 4.x (the 4.57 tier, or the
-    default tier where the default is 4.57, e.g. Python 3.9). Core prunes only transformers 5's
-    fused experts; 4.x keeps a ModuleList, which it refuses after the full load. If the tier
-    cannot be resolved, the option stays (Core still refuses clearly, never exporting unpruned)."""
+    """Whether Studio loads it under transformers 4.x (4.57 tier); if unresolved the option stays,
+    and Core refuses clearly, never exporting unpruned."""
     try:
         from utils.transformers_version import (
             TRANSFORMERS_DEFAULT_VERSION,
@@ -352,8 +345,7 @@ def apply_reap(
     staging_parent,
     hf_token = None,
 ) -> Tuple[bool, str]:
-    """Prune the loaded model once per load; a multi-format export reuses the pruned model.
-    ``hf_token`` opens a private or gated calibration dataset."""
+    """Prune once per load (multi-format reuses it); hf_token opens gated calibration data."""
     if not options:
         return True, ""
     key = _options_key(options)
@@ -470,8 +462,7 @@ def write_reap_report(
     name: str = REPORT_NAME,
     files: Optional[List[str]] = None,
 ) -> None:
-    """The report (kept expert ids per layer and the settings) next to the export; ``files`` names
-    the artifacts it describes when the folder can hold others."""
+    """Kept expert ids per layer, beside the export; files names the artifacts it describes."""
     model = getattr(backend, "current_model", None)
     report = getattr(model, "_unsloth_reap_report", None)
     key = current_reap_key(backend)
@@ -507,9 +498,7 @@ def discard_reap_staging(backend: Any) -> None:
 
 
 def reap_staging_parent(save_directory: Optional[str]) -> Path:
-    """Where the pruned copy may stage: the chosen save folder's filesystem (an absolute path on
-    another drive is allowed), else the exports root. ``_staging_dir`` then takes whichever of
-    this and the temp dir has more room."""
+    """Stages on the save folder's filesystem, else the exports root; _staging_dir picks the roomier one."""
     from utils.paths.storage_roots import resolve_export_dir, resolve_export_write_dir
 
     try:

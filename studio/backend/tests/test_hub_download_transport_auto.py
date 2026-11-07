@@ -44,8 +44,7 @@ def test_explicit_modes_are_honoured(monkeypatch):
 
 
 def test_explicit_xet_beats_an_unhealthy_verdict(monkeypatch):
-    """An explicit choice is not overruled by the health verdict; it still gets the memory caps and
-    the stall fallback."""
+    """An explicit Xet choice beats an unhealthy verdict, keeping the caps and stall fallback."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda **kw: (False, "demoted"))
     assert dl.resolve_requested_use_xet("xet", True)[0] is True
@@ -82,8 +81,7 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
 
 
 def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
-    """The card labels a partial from this. huggingface_hub >= 1.18 refetches an interrupted file
-    from zero, so a byte-resume must not be offered there."""
+    """Partials are not resumable on huggingface_hub >= 1.18, which refetches from zero."""
     monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: False)
     assert download_registry.get_download_transport_capabilities().partials_resumable is False
     monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda _root = None: True)
@@ -91,8 +89,7 @@ def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
 
 
 def test_auto_is_not_a_real_transport():
-    """ "auto" is a request preference: the .transport marker must keep naming the writer that
-    produced a partial, or a resume picks the wrong strategy."""
+    """auto is a preference, not a transport; the .transport marker must name the real writer."""
     assert download_registry.TRANSPORT_AUTO not in download_registry.VALID_TRANSPORTS
     assert download_registry.TRANSPORT_AUTO in download_registry.VALID_TRANSPORT_MODES
 
@@ -192,8 +189,7 @@ def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch)
 
 
 def test_the_legacy_opt_in_still_works_without_the_tuning_module(monkeypatch):
-    """Newer zoos honour the flag on their own, but this is the escape hatch on installs that
-    cannot, so it has to keep working there."""
+    """Installs whose zoo cannot honour the flag need the legacy opt-in as the escape hatch."""
     monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
@@ -365,9 +361,7 @@ def test_capabilities_stay_optimistic_when_health_raises(monkeypatch):
 
 
 def test_optional_loader_retries_with_gpu_init_disabled(monkeypatch):
-    """unsloth_zoo.__init__ runs torch accelerator detection and raises on a CPU-only host, which is
-    exactly the small machine these caps protect, so without the retry they switch off where they
-    are needed."""
+    """Zoo import raises on CPU-only hosts, so without a GPU-init-disabled retry the caps switch off."""
     attempts: list[str | None] = []
     sentinel = _types.ModuleType("fake_zoo_module")
 
@@ -505,8 +499,7 @@ def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
 
 
 def test_auto_picks_http_when_free_ram_is_below_the_xet_floor(monkeypatch):
-    """The zoo already refuses Xet under MIN_XET_RAM_BYTES, but asks TOTAL RAM, which cannot see a
-    loaded 27B GGUF. Same rule, asked of free RAM."""
+    """MIN_XET_RAM_BYTES reads total RAM, blind to a loaded GGUF; free RAM must be checked."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
@@ -592,8 +585,7 @@ def test_a_browse_poll_never_reads_free_ram(monkeypatch):
 
 
 def test_the_probe_does_not_override_a_health_demotion(monkeypatch):
-    """Health already said HTTP; the free-RAM read is skipped and its reason does not replace one the
-    user is better served by."""
+    """Health's demotion stands: the free-RAM reason must not replace it."""
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(
         use_xet = False, reason = "Xet failed 2 times in a row on this machine"
@@ -661,8 +653,7 @@ def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
 
 
 def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
-    """Registry mirror of the above: the RAM read sits outside the health try, so a raising health
-    module cannot take the free-RAM verdict down with it."""
+    """The RAM read sits outside the health try, so a raising health module cannot block it."""
 
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.cached_xet_health = _boom
@@ -782,9 +773,8 @@ def test_the_ram_gate_can_be_asked_for_without_the_probe(monkeypatch):
 
 
 def test_the_ram_gate_loads_health_instead_of_reading_an_empty_cache(monkeypatch):
-    """A fresh backend has no cached verdict, so the cache reads as the optimistic Xet while the
-    next download loads a persisted unhealthy one and picks HTTP. The settings row states what
-    that download will do, so it has to load the same verdict -- without the live probe."""
+    """The settings row must load the same persisted verdict the download uses, not an empty cache,
+    and without the live probe."""
     seen: list[tuple[str, bool]] = []
 
     class _Health:

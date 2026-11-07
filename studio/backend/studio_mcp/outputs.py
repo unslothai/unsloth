@@ -508,8 +508,7 @@ class TranscriptResult(ToolOutput):
     language: Optional[RouteText] = None
     model: Optional[RouteText] = None
     segments: Optional[list[TranscriptSegment]] = None
-    # 1 - word error rate against expected_text, from 0 to 1; None without expected_text or when
-    # the texts are too long to align.
+    # Score is 1 minus word error rate vs expected_text; None if no expected text or too long.
     match_score: Optional[float] = None
     saved_to_history: bool = False
 

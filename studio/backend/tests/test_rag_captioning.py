@@ -252,8 +252,7 @@ def test_captioned_text_is_searchable(rag_home, stub_embeddings, monkeypatch):
 
 
 def _figure_pdf(path):
-    """A born-digital PDF: a page with real text (so it is not treated as scanned)
-    plus a vector drawing region that figure detection picks up as a figure."""
+    """A born-digital PDF: real text (not scanned) plus a vector drawing detected as a figure."""
     import pymupdf
 
     doc = pymupdf.open()

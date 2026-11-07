@@ -53,8 +53,7 @@ def _trainer(
     eval_dataset = True,
     **args,
 ):
-    # Training pulls w toward +1 and evaluation scores it against eval_target, so with -1 every step makes
-    # eval loss worse and with +1 every step makes it better.
+    # Training pulls w to +1; eval_target -1 makes eval loss worsen each step, +1 improves it.
     config = dict(
         output_dir = str(tmp_path),
         per_device_train_batch_size = 2,

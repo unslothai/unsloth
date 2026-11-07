@@ -41,9 +41,7 @@ def _build_app() -> FastAPI:
     app = FastAPI()
 
     def agentic_gen(session_id, cancel_event):
-        # Same shape as the real loops: register the approval slot, announce
-        # the call (echoing approval_id), gate on the decision, then either
-        # execute or feed back the rejection.
+        # Mirrors the real loops: the approval slot is registered before the call is announced.
         approval_id = new_approval_id()
         slot = begin_tool_decision(session_id, approval_id)
         yield {

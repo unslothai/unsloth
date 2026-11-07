@@ -71,8 +71,7 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
 
 
 def test_an_audio_only_projector_does_not_flag_vision(in_tmp_cwd):
-    """The picker badge reads this flag, and ultravox / Voxtral / Qwen3-ASR ship a
-    projector for audio input only."""
+    """Audio-only projectors (ultravox, Voxtral, Qwen3-ASR) must not flag vision."""
     import struct
 
     (in_tmp_cwd / "config.json").write_text("{}")
@@ -579,8 +578,7 @@ def test_zero_byte_direct_gguf_is_partial(in_tmp_cwd):
 
 
 def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, monkeypatch):
-    # Existing dirs resolve before the HF cache, so add no rows from a same-named cache:
-    # the attach gate treats any row as a GGUF model.
+    # Existing dirs win over a same-named HF cache: any cache row would read as a GGUF model.
     from types import SimpleNamespace
 
     hub_cache = in_tmp_cwd / "hub"

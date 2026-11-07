@@ -64,8 +64,7 @@ _FLM_TIMINGS = {
 }
 
 
-# The end of a reply whose reasoning filled the loaded context, captured on Strix Halo: FastFlowLM
-# says "stop" with the KV cache full.
+# Strix Halo capture: reasoning filled the context and FastFlowLM still says stop.
 _FULL_USAGE = {
     "prompt_tokens": 45,
     "completion_tokens": 8147,

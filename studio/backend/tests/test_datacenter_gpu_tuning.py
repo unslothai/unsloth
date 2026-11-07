@@ -452,8 +452,7 @@ def test_p2p_checks_the_selected_pair_on_a_partially_linked_box(monkeypatch):
 
 
 def test_apply_env_rtx_6000_ada_gets_fp32_but_not_p2p(monkeypatch):
-    """#10613 exactly: 2x RTX 6000 Ada keeps FP32 accum, harmless per the reporter's
-    own isolation, and loses the P2P that garbled every model."""
+    """10613: FP32 accum is harmless on 2x RTX 6000 Ada, but the P2P garbled every model."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
@@ -615,8 +614,7 @@ def test_apply_env_does_not_leave_a_falsy_value_present_when_called_directly(mon
 
 
 def test_shared_llama_server_env_builder_sanitizes_p2p(monkeypatch, tmp_path):
-    """The STT sidecar and the embedding probe build from this, so stripping here
-    covers every llama-server child, not just chat."""
+    """STT sidecar and embedding probe build from this, so stripping here covers every child."""
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
     binary = tmp_path / "llama-server"
     binary.write_text("", encoding = "utf-8")
@@ -634,8 +632,7 @@ def test_stt_sidecar_env_sanitizes_p2p(monkeypatch, tmp_path):
 
 
 def test_embedding_server_env_sanitizes_p2p(monkeypatch, tmp_path):
-    """Bypasses the shared builder, and a corrupt embedding degrades retrieval with
-    no garbled text to notice."""
+    """Bypasses the shared builder, and a corrupt embedding would degrade retrieval silently."""
     from core.rag.embed_llama_server import LlamaServerBackend
 
     monkeypatch.setenv("GGML_CUDA_P2P", "0")
@@ -681,8 +678,7 @@ def test_selection_is_not_remapped_out_of_the_nvidia_smi_index_space(monkeypatch
 
 
 def test_name_gate_veto_still_names_the_iommu(monkeypatch):
-    """The reporter's host fails the NAME gate first, so without this the one
-    actionable diagnosis never reaches them (#10613)."""
+    """The NAME gate vetoes first, so the IOMMU diagnosis would never reach them (#10613)."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: True))
     LlamaCppBackend._IOMMU_CACHE = None
@@ -721,8 +717,7 @@ def test_iommu_scan_is_cached_across_loads(monkeypatch):
 
 
 def _capture_warnings(monkeypatch):
-    """Collect logger.warning calls: caplog does not see structlog here, so asserting
-    on it would pass vacuously."""
+    """caplog does not see structlog here, so this collects logger.warning calls instead."""
     from core.inference import llama_cpp as _mod
 
     seen: list[str] = []
@@ -736,8 +731,7 @@ def _capture_warnings(monkeypatch):
 
 
 def test_no_pcie_warning_when_the_user_opts_in_on_a_verified_fabric(monkeypatch):
-    """A deliberate GGML_CUDA_P2P=1 on a confirmed NV# pair is the benchmarked
-    configuration, so warning there would push users off a working optimisation."""
+    """Deliberate GGML_CUDA_P2P=1 on a confirmed NV# pair is benchmarked, so it must not warn."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
@@ -820,8 +814,7 @@ def test_auto_fit_launch_does_not_rewrite_an_inherited_device_order(monkeypatch)
 
 
 def test_datacenter_box_warns_once_not_twice(monkeypatch):
-    """The call-site warning is for hosts that never reach _apply_datacenter_env; a
-    datacenter box does, and its veto branch warns about the same variable."""
+    """Datacenter boxes reach _apply_datacenter_env and warn once from its veto branch."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA RTX 6000 Ada Generation"] * 2))
     _use_topo(monkeypatch, TOPO_PCIE_2X)
@@ -833,9 +826,8 @@ def test_datacenter_box_warns_once_not_twice(monkeypatch):
 
 
 def test_uniform_nvlink_box_keeps_p2p_without_a_pinned_order(monkeypatch):
-    """The NVSwitch case PR #6098 benchmarked. When every pair on the box is NV# the
-    index mapping is irrelevant, since whichever cards the child resolves are linked,
-    and requiring a pinned order would strip P2P from every DGX/HGX auto-fit load."""
+    """The NVSwitch case PR #6098 benchmarked: with every pair NV#, index mapping is irrelevant as
+    any resolved cards are linked; pinning would strip P2P from every DGX/HGX auto-fit load."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
     _use_topo(monkeypatch, TOPO_NVLINK_8X)
     monkeypatch.delenv("CUDA_DEVICE_ORDER")
@@ -863,8 +855,7 @@ def test_unmasked_auto_fit_keeps_p2p(monkeypatch):
 
 
 def test_p2p_opt_out_skips_the_topology_probe(monkeypatch):
-    """A user who turned P2P off should not pay the nvidia-smi probe, up to a 10s
-    timeout, to decide something they already decided."""
+    """A user who turned P2P off should not pay the nvidia-smi probe, up to a 10s timeout."""
     monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     probed = []
@@ -905,9 +896,8 @@ def test_complete_matrix_is_still_accepted(monkeypatch):
 
 
 def test_pin_requires_ids_to_be_pci_indices(monkeypatch):
-    """When the nvidia-smi query fails, _get_gpu_memory falls back to torch CUDA
-    ordinals, and pinning PCI order re-emits those numbers as a different set of
-    cards, so Auto could run on GPUs other than the ones it measured."""
+    """When the nvidia-smi query fails, _get_gpu_memory falls back to torch CUDA ordinals, and
+    pinning PCI order re-emits them as other cards, so Auto could run on unmeasured GPUs."""
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
@@ -947,8 +937,7 @@ _NVML_ERROR = 999
 
 
 class _FakeNvml:
-    """Stand-in for libnvidia-ml.so.1 with the real calling convention: rc out,
-    values written through byref pointers."""
+    """Stand-in for libnvidia-ml.so.1 with real calling convention: rc out, values via byref."""
 
     def __init__(
         self,
@@ -1107,15 +1096,13 @@ def _use_topo_after_nvml(monkeypatch, fake, text):
 
 
 def test_nvml_partial_walk_is_not_a_partial_matrix(monkeypatch):
-    """A failure mid-walk must discard the successes, not approve the pairs that
-    happened to answer first."""
+    """A mid-walk failure must discard the successes, not keep a partial matrix."""
     _use_nvml(monkeypatch, _FakeNvml(count = 4, fail_status_after = 3))
     assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
 
 
 def test_nvml_positive_without_active_links_is_a_contradiction(monkeypatch):
-    """Guard for hardware not available here: an OK on a box with no live NVLinks is
-    unknown, not a green light."""
+    """An OK on a box with no live NVLinks is unknown, not a green light."""
     _use_nvml(monkeypatch, _FakeNvml(count = 2, active_links = [0, 0]))
     assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
 
@@ -1172,9 +1159,8 @@ def test_crosscheck_prefers_topo_on_disagreement(monkeypatch):
 
 
 def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
-    """UNKNOWN (6), or a status from a newer driver, is not evidence of no NVLink:
-    recording it as NO-NVLINK would deny topo -m the chance to confirm a real
-    fabric."""
+    """NVML UNKNOWN (6) or a status from a newer driver is not evidence of no NVLink; recording
+    NO-NVLINK would deny topo -m the chance to confirm a real fabric."""
     for status in (6, 42):
         _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
         assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
@@ -1185,8 +1171,7 @@ def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
 
 
 def test_a_failed_prime_does_not_poison_the_cache(monkeypatch):
-    """The prime runs early, possibly mid driver init. A miss cached there would keep
-    P2P off for the whole process even once the topology is readable."""
+    """The prime runs early, possibly mid driver init, so a cached miss would keep P2P off."""
     monkeypatch.setattr(
         LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
     )
@@ -1209,8 +1194,7 @@ def test_a_successful_prime_is_still_cached(monkeypatch):
 
 
 def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
-    """A driver install can leave nvml.dll in NVSMI rather than a DLL search path,
-    as it does nvidia-smi.exe."""
+    """nvml.dll may sit in NVSMI rather than a DLL search path, as nvidia-smi.exe does."""
     tried = []
     monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(_REAL_NVML_LIBRARY))
     monkeypatch.setattr(os, "name", "nt")
@@ -1246,8 +1230,7 @@ def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
 
 
 def test_a_stalled_nvml_call_cannot_hang_the_load(monkeypatch):
-    """ctypes has no timeout and the shell-out it replaced had one, so a wedged
-    driver must cost a fallback rather than the load."""
+    """ctypes has no timeout, unlike the old shell-out; a wedged driver must cost a fallback."""
     import threading as _threading
 
     release = _threading.Event()
@@ -1268,8 +1251,7 @@ def test_a_stalled_nvml_call_cannot_hang_the_load(monkeypatch):
 
 
 def test_a_racing_failure_does_not_erase_a_published_matrix(monkeypatch):
-    """The prime publishes a good matrix; a load whose own probe fails transiently
-    must not overwrite it with a miss and disable P2P for every later load."""
+    """A failed probe in one load must not overwrite the prime's good matrix, or P2P stays off."""
     good = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     monkeypatch.setattr(
@@ -1316,9 +1298,8 @@ def test_the_prime_skips_work_the_opt_outs_make_useless(monkeypatch):
 
 
 def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
-    """The probe can spend its NVML bound plus the shell-out timeout. A warm stage
-    that waits that long delays every stage behind it, and on a loaded CI worker that
-    is enough to tip unrelated timing-sensitive tests over."""
+    """The probe can spend its NVML bound plus the shell-out timeout, which would delay every warm
+    stage behind it and tip timing tests on a loaded CI worker."""
     from utils import torch_warmup
     import threading as _threading
     import time as _time
@@ -1344,9 +1325,8 @@ def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
 
 
 def test_a_uniform_fabric_does_not_need_pci_provenance(monkeypatch):
-    """On a box where every pair is NVLinked, which ids name which cards cannot
-    change the verdict, so torch-ordinal provenance must not veto. Same argument the
-    ordering check above already makes for an unpinned device order."""
+    """Where every pair is NVLinked, which ids name which cards cannot change the verdict, so
+    torch-ordinal provenance must not veto, as for an unpinned device order."""
     _use_nvml(monkeypatch, _FakeNvml(count = 4))
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
@@ -1362,8 +1342,7 @@ def test_a_uniform_fabric_does_not_need_pci_provenance(monkeypatch):
 
 
 def test_ids_outside_a_uniform_matrix_still_veto(monkeypatch):
-    """The uniform escape must not become a blanket pass: ids the matrix does not
-    cover are still unknown."""
+    """The uniform escape must not be a blanket pass: uncovered ids stay unknown."""
     _use_nvml(monkeypatch, _FakeNvml(count = 2))
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
@@ -1442,9 +1421,8 @@ def test_the_prime_does_not_retire_the_cross_check(monkeypatch):
 
 
 def test_cross_check_survives_the_full_warm_then_load_sequence(monkeypatch):
-    """End to end in the order Studio actually runs: warm stage primes on its own
-    thread, then a load hits the gate. Before the prime learned about the variable
-    this spawned zero nvidia-smi and reported the NVML verdict unchallenged."""
+    """Warm stage primes on its own thread, then a load hits the gate; before the prime read
+    UNSLOTH_P2P_TOPO_CROSSCHECK, zero nvidia-smi ran and NVML went unchallenged."""
     from utils import torch_warmup
 
     monkeypatch.setenv("UNSLOTH_P2P_TOPO_CROSSCHECK", "1")

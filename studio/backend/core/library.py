@@ -324,9 +324,7 @@ _swept_at: dict[str, float] = {}
 
 
 def _sweep_leftovers() -> None:
-    """Clear what a crash left in the uploads folder, at most once an hour per account. A delete
-    that stopped between setting its file aside and dropping the row put the file back instead:
-    the row still lists it."""
+    """Clears crash leftovers in uploads, at most once an hour; a delete cut short puts its file back."""
     directory = uploads_dir()
     now = time.time()
     if now - _swept_at.get(str(directory), 0) < _LEFTOVER_AGE_SECONDS:
@@ -389,8 +387,7 @@ def _upload_items() -> list[dict]:
 
 
 def _attachment_id(message_id: str, attachment_id: str) -> str:
-    """The item id of a chat attachment. A message id can be any string, so it is encoded: the
-    attachment id is what follows its first colon."""
+    """Message ids are quoted, so an attachment id is whatever follows the first colon."""
     return f"attachment:{quote(message_id, safe = '')}:{attachment_id}"
 
 
@@ -620,8 +617,7 @@ MODEL_CONTENT_TYPE = "application/x-unsloth-model"
 
 
 def _tree_stats(path: Path) -> tuple[int, float, os.stat_result]:
-    """(total bytes, newest mtime, the path's own stat) of a model file or directory, symlinks
-    not followed."""
+    """(total bytes, newest mtime, own stat) of a model file or dir; symlinks not followed."""
     info = path.stat()
     if stat.S_ISREG(info.st_mode):
         return info.st_size, info.st_mtime, info
@@ -843,8 +839,7 @@ def _sandbox_session_eligible(session_id: str) -> bool:
 
 
 def _sandbox_names(directory: str) -> frozenset:
-    """The files one sandbox's listing holds, remembered with the listing, so a grid of cards walks
-    a sandbox once rather than once a card."""
+    """File names of one sandbox listing, cached so a grid of cards walks each sandbox once."""
     from routes.inference import _sandbox_listing_names
     return _LISTING.get(
         ("names", directory),
@@ -854,9 +849,7 @@ def _sandbox_names(directory: str) -> frozenset:
 
 
 def _sandbox_path(ref: str) -> str:
-    """The file a ``sandbox:`` id names, by the listing walk's rules: an eligible session, servable
-    segments, no dotfile, not too deep, no link on the way, and within the walk's cap. Checked for
-    this one file, so a card never lists every chat. LookupError otherwise."""
+    """Resolves a sandbox: id by the listing walk's rules, for this one file only; else LookupError."""
     from core.inference.tools import (
         _MAX_SANDBOX_PATH_SEGMENTS,
         _servable_segment,
@@ -914,8 +907,7 @@ def _open_regular(path: str) -> BinaryIO:
 
 
 def _open_sandbox_file(ref: str) -> tuple[BinaryIO, str]:
-    """(open file, path) for a ``sandbox:`` id, opened once and checked by its descriptor: tool
-    code runs here."""
+    """Opens a sandbox: id's file once and checks it by descriptor, since tool code runs here."""
     path = _sandbox_path(ref)
     try:
         return _open_regular(path), path
@@ -1160,8 +1152,7 @@ invalidate_listing = _LISTING.forget
 
 
 def _model_stamp() -> tuple:
-    """The mtimes of the fine-tune roots and the folders in them: a run added, removed or renamed
-    changes one."""
+    """Fine-tune root and folder mtimes; adding, removing or renaming a run changes one."""
     from utils.paths.storage_roots import exports_root, outputs_root
 
     stamp = []
@@ -1361,9 +1352,7 @@ class ItemFile:
 
 
 def _gallery_file(kind: str, ref: str) -> tuple[Path, str]:
-    """(path, prompt) of a gallery item Studio made, by the gallery's own ownership test (a file
-    with a readable recipe); LookupError otherwise. An image's recipe sits in its PNG, which Pillow
-    decodes whole."""
+    """(path, prompt) of a gallery item Studio made, if its file has a readable recipe; else LookupError."""
     gallery = _gallery(kind)
     path = gallery.resolve(ref)
     if path is not None:
@@ -1410,9 +1399,8 @@ def open_item(item_id: str) -> ItemFile:
 
 
 def project_item(item_id: str) -> ItemFile:
-    """What ``open_item`` gives a project copy, and also a chat attachment's image or clip, held in
-    its message rather than a file of its own: copied out to a temporary file first. LookupError
-    when the attachment is gone or holds no image or clip."""
+    """Like open_item, plus a chat attachment's image or clip, copied to a temp file; LookupError if
+    gone."""
     kind, _, ref = item_id.partition(":")
     if kind != "attachment":
         return open_item(item_id)
@@ -1821,8 +1809,7 @@ def _readable_size(size: int) -> str:
 
 
 def _refuse_short_space(current: Path, target: Path) -> None:
-    """Across disks every byte is copied before the originals go: refuse up front when the target
-    disk cannot hold them all, rather than fill it and undo."""
+    """Cross-disk moves copy first, so refuse up front when the target cannot hold them all."""
     if _device(current) == _device(target):
         return
     try:
@@ -2035,9 +2022,8 @@ def _settle(
     wait: bool,
     only = None,
 ) -> None:
-    """Pick up what landed in `source` after the switch: saves that were already writing there.
-    Repeats until a pass finds nothing new and, with `wait`, nothing is still being written, for
-    at most _SETTLE_SECONDS."""
+    """Rescans source for late saves until a pass finds nothing new; with wait, also until nothing
+    is still being written; capped at _SETTLE_SECONDS."""
     deadline = time.monotonic() + _SETTLE_SECONDS
     while True:
         log = _MoveLog()
@@ -2129,9 +2115,7 @@ def _refuse_while_waiting(key: str) -> None:
 
 
 def _settle_waiting_move(key: str, current: Path) -> Optional[str]:
-    """The folder in use chosen again. While it stands in for a chosen folder whose drive is gone,
-    that is a choice to stay: the move waiting for the drive is dropped, and the folder whose files
-    are left on it returned."""
+    """Choosing the in-use folder while the chosen drive is missing means staying: the move is dropped."""
     if relocations.moving_from(key) is None or relocations.chosen_available(key):
         return None
     waiting = relocations.chosen(key)
@@ -2205,8 +2189,7 @@ _overlay_lock = threading.Lock()
 
 
 def mark_opened(item_id: str) -> bool:
-    """Record that the item was just opened, kept for the file it is now. False when it is not
-    there, or is a path whose file is gone."""
+    """Records an open against the file now at the item's path; False if the item is gone."""
     with _overlay_lock, overlay_write():
         found = fingerprint(item_id)
         if found is None and (path_derived(item_id) or not item_exists(item_id)):
@@ -2216,9 +2199,7 @@ def mark_opened(item_id: str) -> bool:
 
 
 def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
-    """Delete an item from its source. Returns False when the source no longer has it. With the
-    `fingerprint` it was listed with, a path-derived item is only deleted while it is that file;
-    ItemChanged otherwise."""
+    """False if gone; a path-derived item needs its listed fingerprint to still match, else ItemChanged."""
     with _overlay_lock:
         deleted = _delete_item(item_id, fingerprint)
     if deleted and item_id.startswith("attachment:"):

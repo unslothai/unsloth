@@ -206,8 +206,7 @@ def test_load_model_commits_requested_from_intent():
     # n_parallel may be reduced before commit; read the immutable pre-reduction intent.
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
-    # Health must be published first so a failed start cannot poison the next inheritance check.
-    # Matched without the argument list on purpose.
+    # Publish health first so a failed start cannot poison the next inheritance check.
     healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
     snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
@@ -279,8 +278,7 @@ def _route_source() -> str:
 
 
 def _load_impl_source() -> str:
-    """Body of _load_model_impl only, so positional assertions can't be
-    satisfied by a later function in the module."""
+    """Only the _load_model_impl body, so an assertion cannot match a later function."""
     src = _route_source()
     body = src[src.index("async def _load_model_impl") :]
     return body[: body.index("\n@router.")]
@@ -363,9 +361,7 @@ def test_clamp_sits_between_the_echo_and_the_fit():
 
 
 def _write_swa_gguf(path: Path) -> str:
-    """Smallest DiffusionGemma-shaped header the KV estimator can size: the
-    canvas marker routing it to the diffusion runner, plus the sliding-window
-    dims that make llama.cpp's SWA cache slot-scaled."""
+    """A DiffusionGemma header: a canvas marker routes it to diffusion, SWA dims make the KV slot-scaled."""
 
     def _kv_str(key: str, value: str) -> bytes:
         kb, vb = key.encode(), value.encode()

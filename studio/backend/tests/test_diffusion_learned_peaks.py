@@ -60,8 +60,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mp, "current_device_name", lambda: "NVIDIA L4", raising = False
     )  # the planner's card
-    # Video keys read the card per device; without this a host with a real GPU records under None (stubbed torch)
-    # and reads under its own card name.
+    # Video keys read the card per device; without this, stubbed torch records under None.
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     return path
 

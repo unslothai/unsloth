@@ -19,8 +19,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub only on import failure (unconditional stubs shadow real modules for sibling
-# tests); try-import, since find_spec can succeed where the import raises.
+# Stub only on failure (unconditional stubs shadow sibling tests); try-import, not find_spec.
 import importlib as _importlib  # noqa: E402
 
 
@@ -162,8 +161,7 @@ def _mock_nvidia_smi_run(fake_output: str, returncode: int = 0) -> "mock._patch"
 
 
 class TestWindowsGpuDetectionAfter5106Fix:
-    """End-to-end #5106 fix on a synthetic Windows layout. nvidia-smi
-    mocked; resolver, PATH builder, and install layout run live."""
+    """End-to-end #5106 fix on a synthetic Windows layout; only nvidia-smi is mocked."""
 
     def test_nvidia_smi_probe_reports_synthetic_gpu(self, monkeypatch):
         """Probe parses CSV output and returns (index, free_mib)."""
@@ -183,9 +181,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
         assert gpus == [(1, 24576)], gpus
 
     def test_get_gpu_memory_parses_three_and_two_column(self, monkeypatch):
-        """Total is parsed when present; a legacy two-column line or a non-integer
-        total ("N/A") yields total 0 (back-compat) rather than dropping the GPU,
-        which would silently spill to CPU."""
+        """Total is parsed when present; a legacy two-column line or non-integer total (N/A) gives
+        total 0 for back-compat instead of dropping the GPU, which would spill to CPU."""
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         with _mock_nvidia_smi_run("0, 22805, 24576\n"):
             assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 24576)]
@@ -197,8 +194,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
             assert LlamaCppBackend._get_gpu_memory() == [(1, 22805, 24576)]
 
     def test_windows_install_dir_has_all_three_cudart_dlls(self, tmp_path):
-        """All three bundle DLLs must land in install_dir/build/bin/
-        Release; any missing one breaks ggml-cuda.dll's PE import chain."""
+        """All three DLLs must be in install_dir/build/bin/Release, or ggml-cuda.dll breaks."""
         install = tmp_path / "studio_install"
         _populate_studio_install(install, runtime = "13.1")
         rel = install / "build" / "bin" / "Release"
@@ -208,8 +204,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         assert (rel / "ggml-cuda.dll").exists()
 
     def test_resolver_finds_real_pypi_wheel_layouts(self, tmp_path):
-        """Resolver must pick up every wheel layout: nvidia/<pkg>/bin,
-        nvidia/<pkg>/bin/x86_64, torch/lib."""
+        """Resolver must find nvidia/<pkg>/bin, nvidia/<pkg>/bin/x86_64 and torch/lib layouts."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         out = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
@@ -224,9 +219,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
             assert str(expected) in out, f"resolver missed {expected.relative_to(prefix)}: {out}"
 
     def test_path_assembly_makes_cudart_reachable_without_toolkit(self, tmp_path):
-        """The #5106 scenario: GPU detected, pip nvidia wheels present,
-        no system CUDA toolkit. cudart must be reachable from PATH via
-        BOTH binary_dir (#5322) and a pip nvidia dir (#5324)."""
+        """The #5106 scenario (GPU detected, pip nvidia wheels, no system CUDA toolkit): cudart must
+        be reachable from PATH via both binary_dir (#5322) and a pip nvidia dir (#5324)."""
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
         _populate_studio_venv(prefix)
@@ -252,8 +246,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
         ), f"#5324's pip nvidia dir not contributing cudart: {cudart_locations}"
 
     def test_cublas_and_cublasLt_also_reachable(self, tmp_path):
-        """ggml-cuda imports cublas64, which imports cublasLt64. All
-        three must resolve or LoadLibrary returns NULL."""
+        """ggml-cuda chains cublas64 to cublasLt64; all 3 must resolve or LoadLibrary fails."""
         prefix = tmp_path / "studio_venv"
         install = tmp_path / "studio_install"
         _populate_studio_venv(prefix)
@@ -267,8 +260,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
             )
 
     def test_no_pip_nvidia_wheels_still_works_via_install_dir(self, tmp_path):
-        """No pip nvidia wheels (CPU-only torch / standalone unsloth):
-        cudart still resolves via #5322's binary_dir drop."""
+        """No pip nvidia wheels (CPU-only torch): cudart still resolves via #5322's binary_dir."""
         prefix = tmp_path / "bare_venv"
         prefix.mkdir()
         install = tmp_path / "studio_install"
@@ -282,8 +274,7 @@ class TestWindowsGpuDetectionAfter5106Fix:
             ).exists(), f"{required} missing from binary_dir on bare venv install"
 
     def test_no_install_dir_still_works_via_pip_wheels(self, tmp_path):
-        """Pre-#5322 install (binary_dir lacks cudart): #5324's pip
-        wheel dirs on PATH still resolve cudart."""
+        """Pre-#5322 binary_dir lacks cudart; #5324's pip wheel dirs on PATH still resolve it."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         install = tmp_path / "studio_install_pre5322"
@@ -312,9 +303,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
         assert cublas_reachable, "cublas unreachable on cudart-less install"
 
     def test_pre_pr_scenario_would_have_failed(self, tmp_path):
-        """Negative control: pre-#5322 + pre-#5324 leaves cudart
-        unreachable -- the original failure mode. Confirms the test
-        catches a regression."""
+        """Negative control: pre-#5322 and pre-#5324 leave cudart unreachable, the original failure
+        mode; confirms the test catches regressions."""
         prefix = tmp_path / "studio_venv"
         _populate_studio_venv(prefix)
         install = tmp_path / "pre_pr_install"
@@ -334,9 +324,8 @@ class TestWindowsGpuDetectionAfter5106Fix:
 
 
 class TestWindowsSysPlatformMocked:
-    """Confirm we test the win32 branch in start_llama_server, not the
-    linux fallback. Patches sys.platform and re-runs the branch-selecting
-    helper."""
+    """Tests the win32 branch of start_llama_server, not the linux fallback, by patching
+    sys.platform and re-running the branch-selecting helper."""
 
     def test_sys_platform_win32_uses_pip_nvidia_resolver(self, monkeypatch, tmp_path):
         monkeypatch.setattr(sys, "platform", "win32")

@@ -23,9 +23,8 @@ STDIO_URL = "npx fake-stateful-server"
 
 
 class _FakeProactorLoop(asyncio.SelectorEventLoop):
-    """Stands in for the loop Linux cannot construct. Only its identity matters:
-    the assertion is that the win32 branch asked for a Proactor, not that this
-    object behaves like one."""
+    """Stands in for the Proactor loop Linux cannot construct; only its identity matters, since the
+    win32 branch must ask for a Proactor."""
 
 
 @pytest.fixture
@@ -43,8 +42,7 @@ def posix(monkeypatch):
 
 
 def test_windows_sessions_get_a_proactor_loop(win32):
-    """A SelectorEventLoop cannot spawn subprocesses on Windows, so an stdio MCP
-    server would fail outright if this branch regressed."""
+    """Windows needs a Proactor loop; a SelectorEventLoop cannot spawn stdio subprocesses."""
     session = mcp_client._McpSession(STDIO_URL, None)
     try:
         assert isinstance(session.loop, _FakeProactorLoop)
@@ -62,8 +60,7 @@ def test_posix_sessions_get_the_default_loop(posix):
 
 
 def test_the_loop_choice_does_not_depend_on_the_transport(win32):
-    """HTTP sessions take the same branch; nothing about the fix made the loop
-    choice transport-specific."""
+    """HTTP sessions take the same branch: the loop choice must not depend on transport."""
     session = mcp_client._McpSession(HTTP_URL, None)
     try:
         assert isinstance(session.loop, _FakeProactorLoop)
@@ -83,8 +80,7 @@ def test_sessions_start_and_stop_cleanly_on_every_platform_branch(monkeypatch, p
 
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
 def test_call_serialization_policy_is_platform_independent(monkeypatch, platform):
-    """stdio serializes, HTTP does not, on every platform. A platform-dependent
-    answer here would mean parallel tool calls behaved differently per OS."""
+    """Stdio serializes and HTTP does not, on every platform: the policy must not vary by OS."""
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(asyncio, "ProactorEventLoop", _FakeProactorLoop, raising = False)
     stdio = mcp_client._McpSession(STDIO_URL, None)
@@ -108,11 +104,9 @@ def test_connect_window_policy_is_platform_independent(monkeypatch, platform):
 
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX fork semantics")
 def test_a_forked_child_does_not_inherit_a_usable_session():
-    """Only the forking thread survives a fork, so an inherited session's loop
-    thread is gone. The child must not believe the cache is usable.
-
-    Asserted from the child by exit code: a child that touches the dead loop
-    would hang, and the parent would not see a clean 0."""
+    """Only the forking thread survives a fork, so an inherited session's loop thread is gone and
+    the child must not treat the cache as usable; touching the dead loop would hang, so the
+    parent asserts a clean exit 0."""
     import multiprocessing
 
     ctx = multiprocessing.get_context("fork")

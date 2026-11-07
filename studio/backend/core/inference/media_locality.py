@@ -208,11 +208,7 @@ def planned_gpu_ordinal() -> tuple[bool, Optional[int]]:
 
 
 def plan_gpu_ordinal() -> Optional[int]:
-    """The card the load route will rank for itself, so the plan sizes the same file set.
-
-    Automatic precision is chosen per card, and a different card can select a different hosted
-    pre-quantized artifact, which a plan plotted against the default device would omit.
-    """
+    """The card the load route ranks for itself, since automatic precision can differ per card."""
     pinned, ordinal = planned_gpu_ordinal()
     if pinned:
         return ordinal
@@ -265,9 +261,8 @@ def _pipeline_components_present(root: Path) -> bool:
         if not isinstance(index, dict):
             return False
         if name == "modular_model_index.json" and _is_flux3_manifest(index):
-            # FLUX.3 loads a fixed set of components from fixed folders of this root and never follows a spec's
-            # source, so judge it on exactly those: the optional prompt upsampler the manifests list since
-            # 2026-10-16 lives in another (~19 GB) repo an image load never reads.
+            # FLUX.3 loads only fixed folders, so judge those; its optional upsampler sits in
+            # another repo.
             from core.inference.diffusion_families import local_pipeline_components_are_complete
             from core.inference.diffusion_flux3 import FLUX3_COMPONENT_FOLDERS
 
@@ -294,11 +289,9 @@ def _pipeline_components_present(root: Path) -> bool:
 
 
 def flux3_seeded_cache_repo(path: Any) -> Optional[str]:
-    """The Hub repo id of a FLUX.3 snapshot in the HF cache (the one refs/main names) whose only gaps are the dense
-    transformer and text-encoder weights (what a download planned around a hosted pre-quantized seed leaves: the int8
-    ConvRot encoder is the default, so a normally staged snapshot holds no dense encoder shards either), or None.
-    Everything else the loader opens, both configs and the tokenizer included, must be there; whether the seeds or
-    the dense shards the load will open are cached is the download planner's question, asked of the repo id."""
+    """Hub repo id of a FLUX.3 snapshot whose only gaps are dense transformer and text-encoder
+    weights, or None; everything else the loader opens, configs and tokenizer included, must be
+    there"""
     import json
     try:
         snapshot = Path(path)

@@ -273,9 +273,7 @@ def _checkpoint_stamp(checkpoint_path: Path | str) -> Optional[tuple]:
 
 
 def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
-    """True when the checkpoint carries the 9-row LTX-2.3 modulation tables (2.0 has 6-row
-    per-block scale/shift tables; 2.3 widens them to 9). An unreadable header returns False so the
-    caller falls back to the stock 2.0 path."""
+    """True for 9-row LTX-2.3 modulation tables (2.0 has 6 rows); an unreadable header gives False."""
     stamp = _checkpoint_stamp(checkpoint_path)
     if stamp is not None:
         with _LTX23_VERDICTS_LOCK:
@@ -342,9 +340,7 @@ def _to_plain_dtype(state: dict[str, Any], torch_dtype: Any) -> dict[str, Any]:
 
 
 def _split_checkpoint(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Partition a combined LTX checkpoint into per-component state dicts. Handles both layouts: the
-    official combined single file (``vae.*`` / ``audio_vae.*`` / ``vocoder.*`` / DiT + projections)
-    and transformer-only GGUFs (bare DiT + connector keys)."""
+    """Splits a combined LTX file (vae.*, audio_vae.*, vocoder.* keys) or a bare-DiT GGUF by key prefix."""
     groups: dict[str, dict[str, Any]] = {
         "dit": {},
         "connectors": {},
@@ -709,9 +705,8 @@ def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]
 
 
 def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
-    """``"distilled"`` / ``"dev"`` from the checkpoint's CONTENT (a 128-value bias fingerprint), or None when the file
-    is not on disk, unreadable, or not a known LTX-2.3 release (a finetune): callers then fall back to the name. Reads
-    the header plus 256 bytes; cached on (path, size, mtime)."""
+    """Distilled or dev from the checkpoint content (128-value bias fingerprint); None if
+    unreadable, missing or a finetune, and callers then fall back to the name"""
     if not checkpoint_path:
         return None
     path = str(checkpoint_path)

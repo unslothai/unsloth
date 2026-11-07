@@ -23,8 +23,7 @@ def _no_whisper_piggyback(monkeypatch):
 
 
 def _make_link(link: Path, target: Path) -> None:
-    """Create a directory junction (Windows) / symlink (POSIX); neither needs
-    elevation."""
+    """Create a directory junction (Windows) or symlink (POSIX); neither needs elevation."""
     target.mkdir(parents = True, exist_ok = True)
     if os.name == "nt":
         subprocess.run(
@@ -96,8 +95,7 @@ def test_a_link_into_the_studio_app_tree_is_not_a_local_link(tmp_path: Path, mon
 
 
 def test_without_the_studio_app_tree_every_link_stays_external(tmp_path: Path, monkeypatch) -> None:
-    """Outside the Docker image nothing sets the variable, so the contract is unchanged.
-    An empty value counts as unset: only a real tree may exempt a link."""
+    """An empty value counts as unset, so only a real app tree may exempt a link."""
     app = tmp_path / "app"
     link = tmp_path / "home" / "llama.cpp"
     link.parent.mkdir()

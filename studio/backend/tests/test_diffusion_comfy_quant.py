@@ -1298,8 +1298,7 @@ def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monk
 
 @pytest.mark.parametrize("budget, store", [(2000, True), (4000, False)])
 def test_mps_stores_fp8_only_past_the_resident_margin(monkeypatch, tmp_path, budget, store):
-    """MPS never offloads: the widened DiT (2000) keeps its fp8 codes (1000) only when it overruns 0.85 of
-    the budget, else it widens, which runs faster."""
+    """MPS never offloads; fp8 codes are kept only if the widened DiT overruns 0.85 of budget."""
 
     def comfy_mib(
         path,

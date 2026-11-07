@@ -37,8 +37,7 @@ _PROGRESS = (
     'data: {"choices":[{"index":0,"delta":{}}],'
     '"prompt_progress":{"total":8,"cache":0,"processed":0,"time_ms":0}}\n\n'
 )
-# What llama-server sends when the loss happens after the 200 (Studio asks for
-# return_progress, so the headers and a progress event go out before the decode).
+# Device loss after the 200, as sent with return_progress: headers and progress go out first.
 SSE_DEVICE_LOST = _PROGRESS + f"data: {DEVICE_LOST_BODY}\n\n"
 SSE_KV_STARVATION = (
     _PROGRESS + 'data: {"error":{"code":500,"message":"Context size has been exceeded.",'
@@ -286,8 +285,7 @@ def _logging_child(line: str):
     ids = ["server_error", "info_line", "unprefixed_request_dump"],
 )
 def test_a_device_loss_in_the_server_log_retires_the_server(monkeypatch, line, retired):
-    # The passthrough endpoints forward llama-server's error untouched, so the
-    # server's own error log is what retires the server for them.
+    # Passthrough endpoints forward llama-server's error, so its own error log must retire it.
     import core.inference.llama_cpp as llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_DEVICE_LOST_LOG_GRACE_S", 0.0)

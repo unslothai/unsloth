@@ -416,8 +416,7 @@ def test_video_backends_follow_studio_rules(monkeypatch):
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
-    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
-    # and stays stored as fp8, widened per layer
+    # Offloaded: int8 takes the torchao-free twin; fp8 has no GEMM, so it stays stored as fp8.
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
@@ -888,9 +887,8 @@ def test_a_stock_converter_row_reorder_of_kept_codes_is_checked(h3like_file, mon
 def test_a_host_ram_refusal_in_the_narrow_pass_is_not_retried_at_full_width(
     h3like_file, monkeypatch
 ):
-    """The narrow-tag conversion pass retries at full width on any failure it cannot prove, but a host RAM
-    refusal is final: the full-width float64 tags (and a converter's unchecked joins over them) would only
-    allocate more."""
+    """The narrow-tag pass retries at full width on unprovable failures, but a host RAM refusal is
+    final: full-width float64 tags and unchecked converter joins would only allocate more."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -992,9 +990,8 @@ def test_the_up_front_estimate_skips_tensors_the_key_filter_never_reads(tmp_path
 def test_a_full_width_tag_retry_that_does_not_fit_is_refused_before_converting(
     h3like_file, monkeypatch
 ):
-    """The narrow-tag pass failing for an ordinary reason retries at full float64 width, which a converter
-    can materialize at 8 bytes per weight element before any checked helper runs: that peak is checked
-    first, and a retry that does not fit is refused without calling the converter again."""
+    """A narrow-tag failure retries at full float64 width, which a converter can materialize at 8
+    bytes per element, so that peak is checked first; a retry that does not fit is refused."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 

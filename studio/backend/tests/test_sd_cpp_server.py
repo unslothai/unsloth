@@ -27,9 +27,7 @@ def _png_b64(shade: int) -> str:
 
 
 class _FakePopen:
-    """Minimal Popen stand-in. stdout yields the scripted lines then BLOCKS until the
-    process is terminated/killed/exited -- mirroring a real child that holds its pipe
-    open for its lifetime (so the owner/drain thread stays alive, as in production)."""
+    """Popen stand-in: stdout yields scripted lines, then blocks until exit so the drain thread lives."""
 
     def __init__(
         self,

@@ -77,8 +77,7 @@ def _cell_backend(tmp_path, monkeypatch, platform, accelerator):
         staticmethod(lambda: apple_budget),
     )
     backend, gguf = _backend(tmp_path, vulkan = vulkan, memory = list(memory))
-    # A session latch from another cell would silently turn a tensor cell into a
-    # layer cell and the assertion below would still pass for the wrong reason.
+    # A latch from another cell makes a tensor cell layer-split; the assert passes wrongly.
     backend._tensor_split_aborts = lambda *args, **kwargs: False
     return backend, gguf
 

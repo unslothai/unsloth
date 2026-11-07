@@ -145,8 +145,7 @@ def test_curated_tts_repo_ids_cover_the_gguf_companion():
 
 
 def test_a_curated_tts_repo_row_is_not_chat_loadable(tmp_path):
-    """can_chat is what auto-load filters on, and a GGUF row's capabilities come from
-    the file format alone."""
+    """can_chat drives auto-load; GGUF rows get capabilities from the file format alone."""
     from hub.services.models.cache_inventory import _cache_inventory_fields
 
     fields = _cache_inventory_fields(
@@ -168,8 +167,7 @@ def test_an_ordinary_gguf_repo_row_still_chats(tmp_path):
 
 
 def test_a_lora_over_a_speech_base_is_not_chattable(tmp_path):
-    """Studio trains Orpheus LoRAs, and an adapter resolves its base to decide this, so
-    without the probe every voice fine-tune became chat-loadable too."""
+    """Adapters resolve their base; without the probe, voice LoRAs became chat-loadable."""
     from hub.services.models.common import _local_path_can_chat
 
     base = _model_dir(tmp_path, "orpheus-base", ["LlamaForCausalLM"], _snac_tokens())

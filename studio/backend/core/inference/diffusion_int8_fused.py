@@ -1786,11 +1786,9 @@ _OFF_TREE_RECORDS = (
 
 
 def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
-    """A layer split moved blocks to other cards after their fused records were built on one card. Each off-tree
-    fused Linear (which shared its parts' storage there) is rebuilt on its parts' new card, freeing the stale copy, or
-    its record is dropped (the module then runs its stock path). Regions on a card whose fused kernels fail the probe
-    get their stock forward back. Returns counts; idempotent. Must run before the first forward (the regional compile
-    traces what it finds)."""
+    """After a layer split, off-tree fused Linears are rebuilt on their parts' new card or dropped
+    to the stock path, and cards failing the probe get stock forwards back; idempotent, must run
+    before the first forward."""
     from .diffusion_zimage_fused import _fuse_linears, _share_storage
 
     out = {"rebuilt": 0, "dropped": 0, "restored": 0}

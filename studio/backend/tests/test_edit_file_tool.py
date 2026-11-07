@@ -534,11 +534,8 @@ class TestFullAccessEscapesTheWorkdir:
 
 @pytest.mark.skipif(os.name != "posix", reason = "RLIMIT_FSIZE is POSIX-only")
 class TestCreationLeavesNothingBehindWhenTheWriteFails:
-    """A create that runs out of space must not strand a truncated file.
-
-    RLIMIT_FSIZE is a real kernel write failure shaped like ENOSPC or a quota:
-    the bytes that fit are on disk and the rest fail.
-    """
+    """A create that runs out of space must not strand a truncated file; RLIMIT_FSIZE is a real
+    kernel write failure like ENOSPC."""
 
     @staticmethod
     def _capped(limit):

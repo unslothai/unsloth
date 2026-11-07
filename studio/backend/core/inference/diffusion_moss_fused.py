@@ -336,9 +336,8 @@ def qk_rope_op() -> Any:
 
 @functools.lru_cache(maxsize = 8)
 def qk_rope_device_ok(index: int) -> bool:
-    """The kernel runs and matches the port's eager ops on this device: every element within two bf16 ulps of its
-    rotated pair's magnitude, and at
-    most 0.5% of them off at all (the reduction order of the sum of squares), over ragged lengths and big values."""
+    """Kernel matches eager ops: every element within two bf16 ulps of its rotated pair magnitude,
+    at most 0.5% off at all, over ragged lengths and big values."""
     try:
         import torch
 

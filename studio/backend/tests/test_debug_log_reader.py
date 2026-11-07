@@ -127,8 +127,7 @@ def test_an_idle_poll_is_empty_and_not_an_error(tmp_path):
 
 
 def test_repeated_polls_never_resend(tmp_path):
-    """A poll loop that resends the tail every tick would look fine in a single
-    assertion and be unusable in the UI, so this walks 200 rounds."""
+    """A tail resent on every poll passes a single assertion, so this walks 200 polls."""
     path = tmp_path / "a.log"
     path.write_text("0\n")
     cursor = read_tail(path).cursor
@@ -209,9 +208,8 @@ def test_the_reader_redacts_so_a_caller_cannot_forget(tmp_path):
 
 
 def test_a_burst_larger_than_one_response_is_delivered_not_dropped(tmp_path):
-    """The response used to keep the NEWEST 2000 lines while advancing the
-    cursor past all of them, so a model load that logged more than that between
-    two polls lost the head of its own failure, and said dropped_bytes = 0."""
+    """Bursts over one response must not lose their head: the old code kept the newest 2000 lines
+    and advanced the cursor past them, reporting dropped_bytes = 0."""
     path = tmp_path / "a.log"
     path.write_text("x\n")
     cursor = read_tail(path).cursor
@@ -265,8 +263,7 @@ def test_an_oversized_append_with_no_newline_is_not_swallowed(tmp_path):
 
 
 def test_a_colorized_credential_is_masked_before_it_reaches_the_viewer(tmp_path):
-    """The pane strips ANSI before rendering, so an escape between the key and
-    its value used to defeat the redaction anchors and show a clean token."""
+    """Strip ANSI before matching, or an escape between key and value hides the secret."""
     path = tmp_path / "a.log"
     path.write_text(
         "\x1b[36mhf_token\x1b[0m=\x1b[35mhf_AbCdEfGhIjKlMnOpQrStUvWxYz012345\x1b[0m\n",

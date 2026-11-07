@@ -47,9 +47,7 @@ def test_prefill_boundary_stamps_once_so_decode_steps_do_not_move_it():
 
 
 def test_both_stamps_wait_for_the_accelerator(monkeypatch):
-    """A queued forward pass has not run yet, so stamping on the callback alone times
-    dispatch, not prefill. Measured on an RTX 3080: a 2048-token prefill reads as 28ms
-    unsynchronized against 77ms synchronized, a 2.7x overstated prompt speed."""
+    """Stamps must sync the accelerator, or a still-queued forward pass times dispatch, not prefill."""
     synced = []
     monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: synced.append(device))
 
@@ -63,9 +61,7 @@ def test_both_stamps_wait_for_the_accelerator(monkeypatch):
 
 
 def test_a_faulting_device_wait_still_produces_timings(monkeypatch):
-    """An async CUDA fault surfaces at the next synchronize, which is inside the stamp. The call
-    sites stamp in a finally and only then end the streamer, so a raise here would strand the
-    stream and kill the worker thread on a traceback that belongs to generate()."""
+    """An async CUDA fault raised in the stamp must not strand the streamer or kill the worker thread."""
 
     def _boom(device = None):
         raise RuntimeError("CUDA error: device-side assert triggered")
@@ -163,9 +159,7 @@ def test_processor_stamps_the_boundary_and_keeps_the_penalty_processor():
 
 
 def test_boundary_lands_after_the_prompt_forward_pass_in_a_real_generate():
-    """The whole split rests on transformers calling the processor once per step,
-    the first time with the prompt still unextended. Pinned against a real
-    ``generate`` so a change in that contract fails here, not in a wrong tok/s."""
+    """The split assumes transformers calls the processor once per step, first on the unextended prompt."""
     from transformers import GPT2Config, GPT2LMHeadModel
 
     torch.manual_seed(0)

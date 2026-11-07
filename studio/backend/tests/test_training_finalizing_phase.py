@@ -142,8 +142,7 @@ def test_completion_still_comes_only_from_is_completed():
 
 
 def test_frontend_phase_union_covers_the_backend_literal():
-    """phaseColors/phaseLabelKeys are Record<TrainingPhase, ...>, so a backend
-    phase missing from the union is a compile error the frontend never sees."""
+    """A backend phase missing from the union is a compile error the frontend never sees."""
     runtime_ts = (
         _BACKEND_DIR.parent / "frontend" / "src" / "features" / "training" / "types" / "runtime.ts"
     )

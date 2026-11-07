@@ -50,8 +50,7 @@ def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
 
 
 def test_message_removal_paths_sweep_chat_originals(monkeypatch):
-    """A removed or rewritten message can drop the last reference to a kept original, so every
-    path sweeps."""
+    """Removal or rewrite can drop the last reference to a kept original, so all paths sweep."""
     for handler in (
         chat_history.clear_history,
         chat_history.delete_project,
@@ -421,8 +420,7 @@ def test_chat_settings_payload_carries_per_model_params():
 
 
 def test_chat_settings_payload_rejects_junk_per_model_params():
-    """Provider-qualified ids are opaque keys, but the values are still real
-    inference settings -- an unknown field must 400 rather than reach the DB."""
+    """Model keys are opaque, but the values are real settings, so unknown fields must 400."""
     with pytest.raises(ValidationError):
         chat_history.ChatSettingsPayload.model_validate(
             {"inferenceParamsByModel": {"openai:gpt-x": {"notAParam": 1}}}
@@ -1103,8 +1101,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
 
 
 def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
-    """Of concurrent retries of one operationId, only the winner clears; replay comes from the
-    transaction."""
+    """Of concurrent retries, only the winner clears; replay bit is set in its transaction."""
     from core.inference import search_images
     from storage import studio_db
 
@@ -1197,8 +1194,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
 
     late_image_id = "beefbeefbeef"
     hops = {"n": 0}
-    # The route imports it inside the handler, so the patch has to land on the module it
-    # imports FROM, not on routes.chat_history.
+    # Imported inside the handler, so patch the source module, not routes.chat_history.
     import starlette.concurrency
 
     real_run_in_threadpool = starlette.concurrency.run_in_threadpool
@@ -1407,9 +1403,8 @@ def test_the_two_conflicts_are_distinguishable_on_the_wire(monkeypatch, error, k
 
 
 def test_compare_and_set_rejects_a_non_finite_number_renderably(monkeypatch):
-    # json.loads accepts a bare NaN, so it reaches validation; echoing it back
-    # would then hit Starlette's allow_nan = False and turn a refused request
-    # into a 500 during rendering.
+    # json.loads accepts a bare NaN so it reaches validation; echoing it back would hit Starlette's
+    # allow_nan = False and turn a refused request into a 500.
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 

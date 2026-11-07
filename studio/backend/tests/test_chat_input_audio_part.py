@@ -254,11 +254,8 @@ def test_a_string_content_message_passes_through_the_lift_untouched():
 
 
 def test_the_completion_route_takes_the_documented_audio_part():
-    """The defect itself: the part used to be refused at body validation, before any model ran.
-
-    What happens after validation depends on which models the host has, so this pins the only
-    part that is about the union: the request is no longer rejected as an unknown tag.
-    """
+    """The documented audio part must no longer be refused as an unknown tag at body validation;
+    later steps depend on the host's models, so only that is pinned."""
     with _route_client("/v1") as client:
         response = client.post(
             "/v1/chat/completions",
@@ -336,8 +333,7 @@ def test_the_external_path_refuses_an_unmodelled_part_rather_than_dropping_it():
 
 
 def test_a_recording_carried_on_an_earlier_turn_is_refused():
-    """audio_base64 cannot say which turn a recording belongs to, so an earlier-turn clip must be
-    refused."""
+    """audio_base64 cannot name its turn, so a recording on an earlier turn must be refused."""
     payload = _request(
         _audio_message(text = "transcribe this"),
         {"role": "assistant", "content": "It says hello."},

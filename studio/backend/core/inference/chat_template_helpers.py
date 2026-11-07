@@ -241,9 +241,7 @@ _ALIAS_SEPARATORS = "(?:\u2581|\\\\?_| )"
 
 @functools.lru_cache(maxsize = 1)
 def _deepseek_opener_pattern():
-    """The tool-call-parser's own DeepSeek opener alternation, or None if unavailable. Single source
-    of truth: tool_call_parser keeps the five spellings llama.cpp accepts, and a profile that
-    breaks only the one spelling a vocabulary happens to hold leaves the other four live (#7066)."""
+    """The DeepSeek opener alternation from tool_call_parser: all five llama.cpp spellings, or None."""
     try:
         from core.inference.tool_call_parser import (
             _DEEPSEEK_OPEN_RE_SRC,
@@ -454,9 +452,7 @@ def neutralize_turn_boundary_markup(text: str, markup: "ModelMarkup" = None) -> 
 
 
 def neutralize_tts_prompt_text(text: str, audio_type = None) -> str:
-    """Break the active codec's own delimiters in a TTS prompt (#7066). Scoped to *audio_type*: this
-    text is spoken, so anything that is not structure in THIS codec's prompt has to survive
-    byte-exact."""
+    """Breaks only the active codec's delimiters in the TTS prompt; spoken text must survive byte-exact."""
     return _spaced_out(_TTS_MARKUP_BY_CODEC.get(audio_type, _TTS_MARKUP_DEFAULT), text)
 
 
@@ -651,17 +647,15 @@ def _neutralize_content_parts(
             continue
         # Keep each carrier's own text: Llama-3.1 serializes the list in order.
         run = [texts[index] for index in carriers]
-        # First choice: migrate an opener only between carriers that really are adjacent, so nothing crosses an image
-        # or a JSON part sitting between them.
+        # Opener moves only between truly adjacent carriers, not across an image or JSON part.
         redistributed = _redistribute_swept(
             run,
             rewrite,
             [carriers[i + 1] == carriers[i] + 1 for i in range(len(carriers) - 1)],
         )
         if redistributed is None:
-            # The split straddles a non-text part and a trimming renderer would re-form the marker. Moving the opener
-            # across that part is a smaller harm than the collapse below: one marker character changes side, rather
-            # than every carrier's text being pulled into the first one (#7066).
+            # A split across a non-text part: moving the opener is smaller harm than collapsing all
+            # text.
             redistributed = _redistribute_swept(run, rewrite)
         if redistributed is None:
             # Last resort, unreachable for every known marker; kept because collapsing is safer than a marker surviving a renderer that trims parts.
@@ -675,9 +669,7 @@ def _neutralize_content_parts(
 
 
 def _differs(new, old) -> bool:
-    """True when the rewrite changed *old* into *new*. The client picks the nesting depth and ``==``
-    recurses in C, so an overflowing comparison must not 500 the request. It counts as changed,
-    keeping the neutralized copy: the safe direction (#7066)."""
+    """RecursionError counts as changed so the request cannot 500; client picks depth (issue 7066)"""
     try:
         return new != old
     except RecursionError:
@@ -711,8 +703,7 @@ def _neutralized_arguments(arguments, markup = None):
                 return json.dumps(safe, ensure_ascii = True)
             return None
     new_arguments = _neutralize_argument_leaves(arguments, markup)
-    # Same guard for arguments that arrived already decoded, which never passed through json.loads and so were never
-    # depth-limited by it.
+    # Same guard for pre-decoded arguments, which skip json.loads, so never depth-limited.
     return new_arguments if _differs(new_arguments, arguments) else None
 
 
@@ -1067,9 +1058,8 @@ _SCHEMA_VALUED_IDENTIFIERS = frozenset(
         # contentEncoding and contentMediaType are machine-valued strings a validator decodes against; contentSchema stays out since the scan reads it.
         "contentEncoding",
         "contentMediaType",
-        # An OpenAPI discriminator holds only "propertyName" and a "mapping" whose keys and targets are identifiers,
-        # with no prose field to protect, so every leaf under it is machine-valued: the server resolves the original
-        # while the model sees the rewrite.
+        # OpenAPI discriminator leaves are machine-valued identifiers, so the server resolves the
+        # original.
         "discriminator",
         # Same shape: an OpenAPI xml object is "name" / "namespace" / "prefix" plus two booleans, all serialization
         # identifiers and no prose, so a rewrite would advertise element names the server does not produce.
@@ -1203,9 +1193,8 @@ def catalog_tool_names(tools) -> set:
         if not isinstance(tool, dict):
             continue
         function = tool.get("function")
-        # Both spellings: an entry may carry an empty "function" mapping beside the flat name that actually
-        # dispatches, and reading only the nested level made a dropped tool look as though it had never been in the
-        # caller's catalog -- so a forced tool_choice for it was forwarded unchanged (#7066).
+        # Names are read from both function.name and the flat name, else a dropped tool escapes the
+        # catalog.
         nested = function.get("name") if isinstance(function, dict) else None
         for name in (nested, tool.get("name")):
             if isinstance(name, str):
@@ -1545,9 +1534,8 @@ def renderable_tool_catalog(
         return safe if active_renders_tools else _unadvertised()
     if not active_renders_tools and not _template_reads_tools(native_tpl, tools):
         return _unadvertised()
-    # With the special tokens too: the native render profiles through markup_for_tokenizer and so resolves "{{
-    # bos_token }}", and a catalog built without them kept a tool whose schema carries that value while the render
-    # dropped it (#7066).
+    # Include special tokens too: native render resolves bos_token; else a dropped tool stays
+    # listed.
     native = model_markup(
         native_tpl,
         _vocabulary_of(tokenizer),
@@ -1771,8 +1759,7 @@ def _atem_partial_framing_len(text: str) -> int:
 
 
 def _split_partial_atem_boundary(text: str) -> tuple[str, str]:
-    """Between blocks either a header or a block terminator may follow, and both are consumed there,
-    so a partial of either has to be held for the next chunk."""
+    """Header or block terminator may follow; a partial of either is held for the next chunk."""
     stable, held = _split_partial_atem_header(text)
     candidate, tail = _split_partial_atem_block_end(text)
     return (candidate, tail) if len(tail) > len(held) else (stable, held)
@@ -1819,9 +1806,7 @@ def _atem_unfinished_tag(text: str) -> int:
 
 
 def _atem_surrounding_text(segment: str, *, complete: bool = True) -> str:
-    """Text around calls, minus the envelope; whitespace alone is framing. ``complete`` is False for
-    the tail of a block the stream cut short, where a trailing fragment of markup the model had
-    not finished writing is framing too."""
+    """Text around calls minus the envelope; whitespace is framing, and so is unfinished tail markup."""
     for tag in _ATEM_CALLS_ENVELOPE:
         segment = segment.replace(tag, "")
     if not complete:
@@ -1888,8 +1873,7 @@ class ReasoningChannelNormalizer:
         self._buffer = ""
         self._in_reasoning = in_reasoning
         self._reasoning_done = False
-        # Only a generated opener carries the protocol newline; from the prompt it is already consumed, so a streamed
-        # newline is content.
+        # Only a generated opener's newline is protocol; after a prompt opener it is content.
         self._skip_opening_newline = False
         # A prompt-supplied opener never reaches the stream, so <think> is owed to the first delta carrying text.
         self._pending_open = in_reasoning
@@ -1934,9 +1918,7 @@ class ReasoningChannelNormalizer:
         return "".join(output)
 
     def finish(self) -> str:
-        """Flush a stream that ended and close an open think block. Ended, not merely finished
-        generating: a stop sequence ends a turn as a stop token does, and the block it cut inside
-        is still owed its close."""
+        """Flush and close an open think block, including when a stop sequence cut the turn inside it."""
         output = self.drain()
         if self._in_reasoning:
             # Nothing generated: no block at all, rather than a close with no opener.
@@ -1979,8 +1961,7 @@ class RecipientChannelNormalizer:
         self._passthrough = False
         self._skip_opening_newline = False
         self._between_blocks = True
-        # How much of a held tool block has already been searched for a terminator, so a long argument is scanned once
-        # rather than once per delta.
+        # Held tool block already searched for a terminator; each delta scans only new text.
         self._tool_scanned = 0
 
     def feed(self, text: str) -> str:
@@ -2014,8 +1995,7 @@ class RecipientChannelNormalizer:
                 continue
 
             if self._in_reply:
-                # The reply is content, but the turn can continue after it, so follow it to its close rather than
-                # giving up on the rest.
+                # Reply is content, and the turn may go on after it; follow it to its close.
                 index, length = _find_atem_block_end(self._buffer)
                 if index < 0:
                     stable, self._buffer = _split_partial_atem_block_end(self._buffer)
@@ -2102,17 +2082,14 @@ class RecipientChannelNormalizer:
         return output
 
     def drain(self) -> str:
-        """Flush buffered text without completing anything the model left open. Text held back
-        survives; a call held back does not, so cancelling a turn can never be the thing that
-        starts a tool running."""
+        """Flush buffered text without completing anything; a held-back tool call is dropped, never run."""
         return self._flush(keep_calls = False)
 
     def _flush(self, *, keep_calls: bool) -> str:
         output = self._buffer
         self._buffer = ""
         if self._tool_header is not None:
-            # No terminator arrived, so unlike feed() there is no complete block to hand on: keep the text the model
-            # had written and drop the rest.
+            # Unterminated: nothing complete to hand on; keep the model's text, drop the rest.
             pieces = _atem_block_pieces(output, complete = False)
             if pieces is None:
                 output = _atem_surrounding_text(output, complete = False)
@@ -2120,8 +2097,7 @@ class RecipientChannelNormalizer:
                 output = "".join(t for is_call, t in pieces if keep_calls or not is_call)
             self._tool_header = None
         elif output:
-            # feed() held this back because it could still become framing. The stream ended before it did, so drop it
-            # rather than show the control markup.
+            # Held as possible framing; the stream ended, so drop it rather than show markup.
             held = _atem_partial_framing_len(output)
             output = output[: len(output) - held] if held else output
         if not self._in_reasoning:
@@ -2162,9 +2138,8 @@ def normalize_reasoning_snapshots(
     continued: bool = False,
     ended = None,
 ):
-    """Normalize a prefix-monotonic cumulative text stream when supported. ``ended`` is read after
-    the stream: a turn a stop sequence ended still owes its open block a close, even if a cancel
-    landed on the same step."""
+    """Normalize prefix-monotonic cumulative streams; read ended after, so a stop-ended turn still
+    closes."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is None:
         yield from stream
@@ -2258,8 +2233,7 @@ def _take_tool_result(pending: list, call_id) -> Optional[dict]:
 
 
 def _split_parallel_tool_calls(messages: list) -> list:
-    """Llama 3.x templates render one call per message, so split parallel calls into consecutive
-    single-call messages, each followed by its own result."""
+    """Llama 3.x renders one call per message; split parallel calls into single-call messages."""
     if not any(isinstance(m, dict) and len(m.get("tool_calls") or ()) > 1 for m in messages):
         return messages
 
@@ -2368,9 +2342,7 @@ def markup_for_tokenizer(
     tools = None,
     template = None,
 ) -> Optional[ModelMarkup]:
-    """Profile the loaded tokenizer's own structural markers, cached per tokenizer. Returns None
-    when the template and vocabulary cannot be read, which falls back to the curated patterns: an
-    unreadable model stays fully swept rather than unprotected."""
+    """Profile tokenizer markers, cached per tokenizer; None when unreadable, so curated patterns apply."""
     if tokenizer is None:
         return None
     try:
@@ -2379,17 +2351,14 @@ def markup_for_tokenizer(
         cached = None
     # Vision models: chat_template on the processor, vocabulary on the inner tokenizer.
     inner = getattr(tokenizer, "tokenizer", tokenizer)
-    # An explicit *template* is the one this request will actually render with: the generate-time mapper installs its
-    # template later, so profiling the load-time one left the authorization catalog a step behind the prompt it was
-    # gating (#7066).
+    # An explicit template is what this request renders with; load-time profiling lagged it (#7066).
     if not template:
         template = getattr(tokenizer, "chat_template", None)
     if not template:
         template = getattr(inner, "chat_template", None)
     # Keyed on template too (a mapped template lands on the same object at generate time) and on tools presence, since named dicts emit different literals.
     is_processor = _is_processor(tokenizer)
-    # A processor always renders "default", so its profile does not vary with tools and the cache must not key two
-    # identical entries under different selectors.
+    # A processor always renders default, so tools do not change its profile or the cache key.
     selector = bool(tools) and not is_processor
     # A named-template dict is unhashable, so the key is a stable serialization of it; without this the cache write
     # raised TypeError and every call rebuilt the profile.
@@ -2431,8 +2400,7 @@ def markup_for_tokenizer(
 
 
 def trailing_assistant_text(messages: list) -> Optional[str]:
-    """Plain text of a trailing assistant turn, else None. Only plain text resumes: tool calls and
-    image parts have no resume point."""
+    """Plain text of a trailing assistant turn, else None; tool calls and images cannot resume."""
     if not messages:
         return None
     last = messages[-1]
@@ -2535,8 +2503,7 @@ def prompt_serializes_structured_media(prompt, messages) -> bool:
 
 
 def vlm_prompt_issue(prompt, messages) -> Optional[str]:
-    """Name the way a VLM render came back unusable, else None. Shared by both backends so a defect
-    one of them refuses stays refused by the other."""
+    """Name why a VLM render is unusable, else None; both backends share this check."""
     if not isinstance(prompt, str) or not prompt.strip():
         return "an empty prompt"
     if prompt_serializes_structured_media(prompt, messages):

@@ -70,8 +70,7 @@ TEMPLATE = (
 
 
 def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
-    """Asserted against the logger itself: structlog bypasses caplog, so a caplog test
-    would pass while the lines still went to info."""
+    """Assert on the logger: structlog bypasses caplog, so a caplog test would miss the level."""
     seen: list[tuple[str, str]] = []
     for level in ("info", "debug"):
         monkeypatch.setattr(
@@ -97,8 +96,7 @@ def test_debug_level_moves_the_capability_lines_off_info(monkeypatch):
 
 
 def test_the_level_does_not_change_what_is_detected():
-    """A capability that disappears when the line is demoted would be a regression
-    hiding behind a quieter log."""
+    """Demoting the line must not drop a detected capability, which would hide a regression."""
     loud = llama_cpp.detect_reasoning_flags(TEMPLATE, "qwen3.8", log_source = "GGUF metadata")
     quiet = llama_cpp.detect_reasoning_flags(
         TEMPLATE, "qwen3.8", log_source = "GGUF metadata", log_level = "debug"

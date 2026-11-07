@@ -30,8 +30,7 @@ def test_live_view_fetches_the_active_run_config():
 
 
 def test_live_view_fetches_as_soon_as_the_job_id_exists():
-    # The run row is inserted before the pump consumes events, so job id is the whole
-    # readiness condition; no step/phase gate.
+    # The run row is inserted before events are pumped, so the job id alone gates readiness.
     src = _read("live-training-view.tsx")
     assert "if (!runtime.jobId) {" in src
     assert "[runtime.jobId, fetchedRunConfig, fetchAttempt]" in src

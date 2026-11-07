@@ -228,9 +228,8 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
         first_text = texts[0]
     else:
-        # Formatting may set a template on the tokenizer it is given; training formats with a throwaway
-        # tokenizer too, and masks with the one the model load returns. The whole pool is formatted so a
-        # raw-text column and the BOS rule are chosen from the dataset's head, as training does.
+        # Format a deep copy: templates mutate the tokenizer; the whole pool decides raw-text and
+        # BOS rules.
         texts, final_format = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )

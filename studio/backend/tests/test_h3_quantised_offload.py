@@ -367,9 +367,7 @@ def test_a_streamed_torchao_denoiser_matches_the_resident_one_bit_for_bit(monkey
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_a_hosted_denoiser_left_trainable_by_its_load_still_streams(monkeypatch):
-    """The hosted checkpoint loads through load_state_dict(assign=True), which leaves every weight
-    requiring grad; quantize_ does not, so the test above never saw it. The real H3 load failed its
-    first onload with Int8Tensor's unimplemented aten.view."""
+    """load_state_dict(assign=True) leaves weights trainable; Int8Tensor lacks aten.view."""
     pytest.importorskip("diffusers")
     pytest.importorskip("torchao")
     monkeypatch.undo()

@@ -87,8 +87,7 @@ def test_a_bare_payload_with_no_header_is_passed_through_untouched():
 
 
 def test_a_build_too_old_to_declare_modalities_reports_no_video():
-    """The key backwards-compat case: llama.cpp only grew `modalities` in /props
-    recently, and every older build simply omits the key."""
+    """Older llama.cpp builds omit /props modalities, so a missing key must read as no video."""
     b = _props_backend({"default_generation_settings": {"n_ctx": 4096}})
     assert b._query_server_n_ctx() == 4096
     assert b._has_video_input is False
@@ -121,8 +120,7 @@ def test_only_a_real_json_true_turns_the_capability_on():
 
 
 def test_a_swap_to_a_model_without_video_does_not_inherit_the_old_answer():
-    """A stale True here would offer video on a model that cannot take it, and
-    llama-server would refuse the completion after the upload."""
+    """A stale True offers video on a model that cannot take it; the completion then fails."""
     b = _props_backend(
         {"modalities": {"video": True}, "default_generation_settings": {"n_ctx": 8192}}
     )
@@ -195,8 +193,7 @@ def _live_backend(api_key = None):
 
 @pytest.mark.parametrize("junk", [[1, 2], "props", 7, None, 3.5])
 def test_a_props_body_that_is_not_an_object_is_rejected_not_crashed(monkeypatch, junk):
-    """A proxy or a future build could answer with a list; the readback must
-    degrade to "cannot tell", not raise into the load path."""
+    """A proxy or future build may answer with a list; the readback must give None, not raise."""
     b = _live_backend()
     _stub_props_http(monkeypatch, _Resp(200, junk))
     assert b._query_server_props() is None
@@ -225,9 +222,8 @@ def test_a_dead_server_is_swallowed(monkeypatch):
 
 
 def test_the_props_request_carries_the_child_api_key_when_direct_stream_set_one(monkeypatch):
-    """llama-server's api-key middleware protects /props (it is not in the
-    public_endpoints set), so an unauthenticated read 401s and the capability
-    silently reads False under UNSLOTH_DIRECT_STREAM=1."""
+    """llama-server api-key middleware 401s keyless /props; under UNSLOTH_DIRECT_STREAM=1 the child
+    key must be sent, else the video capability silently reads False."""
     record: dict = {}
     b = _live_backend(api_key = "secret-token")
     _stub_props_http(monkeypatch, _Resp(200, {"modalities": {"video": True}}), record = record)
@@ -244,8 +240,7 @@ def test_the_props_request_sends_no_auth_header_when_there_is_no_child_key(monke
 
 
 def test_the_runtime_field_is_declared_and_defaults_off_for_every_non_gguf_model():
-    """A transformers or MLX model never sets it, so the composer must read
-    False and refuse video rather than offering it."""
+    """Non-GGUF models never set has_video_input, so it must default to False and refuse video."""
     assert "has_video_input" in _InferenceRuntimeFields.model_fields
     assert InferenceStatusResponse().has_video_input is False
 
@@ -283,9 +278,7 @@ def test_an_old_client_that_sends_no_video_field_is_unaffected():
 
 
 def test_an_old_backend_would_ignore_the_new_field_rather_than_422():
-    """`extra: allow`, so a newer desktop app talking to an older backend loses
-    the clip silently instead of breaking every message. Worth knowing; not
-    something this PR can fix from the new side."""
+    """ChatCompletionRequest uses extra: allow, so an older backend silently drops a newer app's clip."""
     assert ChatCompletionRequest.model_config["extra"] == "allow"
 
 

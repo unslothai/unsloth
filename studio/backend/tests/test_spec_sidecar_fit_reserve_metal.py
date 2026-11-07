@@ -23,8 +23,7 @@ def _embd(
     value,
     default = False,
 ):
-    """Stub the pageable-embedding discount; excluded NextN blocks forfeit it while the
-    drafter may engage."""
+    """Excluded NextN blocks forfeit the pageable-embedding discount; the drafter may engage."""
     calls = []
 
     def embd(
@@ -125,8 +124,7 @@ def test_a_discount_the_drop_unlocks_is_logged(tmp_path, monkeypatch):
 
 
 def test_the_draft_free_probe_waits_for_a_drafter_that_does_not_fit(tmp_path, monkeypatch):
-    """16 GiB holds both, so the draft-free discount (a cold llama-fit-params run) is never
-    needed."""
+    """16 GiB holds both, so the draft-free discount (a cold llama-fit-params run) is skipped."""
     calls = _embd(monkeypatch, lambda mtp: 0)
     cmd, _backend, _ = metal_cmd(tmp_path, monkeypatch, "auto", budget_gib = 16)
     assert "--model-draft" in cmd
@@ -134,8 +132,7 @@ def test_the_draft_free_probe_waits_for_a_drafter_that_does_not_fit(tmp_path, mo
 
 
 def test_metal_auto_keeps_a_user_owned_bare_model_draft(tmp_path, monkeypatch):
-    """A bare --model-draft in the extras still loads (has_dft()), so Auto must not release
-    its reserve while the child loads it anyway."""
+    """A bare user --model-draft still loads (has_dft()), so Auto must keep the reserve."""
     custom = tmp_path / "custom-dspark-Q8_0.gguf"
     custom.write_bytes(b"draft")
     cmd, backend, _ = metal_cmd(
@@ -204,8 +201,7 @@ def test_metal_auto_keeps_a_sidecar_an_explicit_context_holds(tmp_path, monkeypa
 
 
 def test_metal_auto_keeps_the_sidecar_when_kv_cannot_be_estimated(tmp_path, monkeypatch):
-    """With no KV estimate the target alone is not known to fit either (the discrete drop's
-    own guard)."""
+    """With no KV estimate the target alone is unproven to fit (the discrete drop's guard)."""
     cmd, backend, _ = metal_cmd(tmp_path, monkeypatch, "auto", budget_gib = 10, can_estimate_kv = False)
     assert "--model-draft" in cmd
     assert backend.spec_fallback_reason != "drafter_no_vram"

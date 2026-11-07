@@ -16,8 +16,7 @@ BASE = ["llama-server", "-m", "model.gguf", "--parallel", "4", "--kv-unified"]
 
 class TestTheArgvIsWhatDecides:
     def test_a_modern_binary_clears_by_default(self):
-        """--cache-ram defaults to 8192 MiB and Studio rarely emits the flag, so an
-        absent flag is the common case and means ON."""
+        """An absent --cache-ram flag is the common case, and it means ON since the default is 8192 MiB."""
         assert active(BASE, supports_cache_ram = True) is True
 
     def test_a_binary_without_cache_ram_never_clears(self):

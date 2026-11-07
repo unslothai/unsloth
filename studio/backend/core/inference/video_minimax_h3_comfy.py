@@ -107,8 +107,7 @@ def h3_comfy_keep_dtype(key: str, pruned: bool = True) -> Optional[Any]:
 
 
 def h3_comfy_curve_metadata(path: str) -> Optional[dict]:
-    """``apply_h3_adaln_curve`` metadata for a pruned (curve-form) ComfyUI H3 file, from its header; None for a
-    dense one (no ``adaln_t_table``)."""
+    """Curve-form apply_h3_adaln_curve metadata from a pruned file's header; None if dense."""
     from .diffusion_comfy_quant import _read_header
 
     header, _ = _read_header(path)

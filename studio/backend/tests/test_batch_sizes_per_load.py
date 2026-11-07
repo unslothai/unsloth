@@ -356,16 +356,14 @@ def test_batch_bounds_stay_standard_json_schema():
     ],
 )
 def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expected):
-    """Measured against the bundled binary: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load,
-    b4/p8 aborts, b8/p8 loads, b32/p64 aborts, b64/p64 loads. So the floor is
-    max(slots, 2). The per-field bounds cannot express it, so the loader raises instead."""
+    """The n_batch floor is max(slots, 2) on the bundled llama-server; per-field bounds cannot
+    express it, so the loader raises instead."""
     assert _emitted_n_batch(n_batch, n_parallel) == expected
     assert _emitted_n_batch(None, n_parallel) is None
 
 
 def test_budgets_use_the_raised_batch_not_the_requested_one():
-    """Budget the micro-batch after the loader raises batch size to max(slots, 2).
-    A batch of 1 with 64 slots and ubatch 64 must be priced at ubatch 64."""
+    """Budget the micro-batch from the raised batch size, not the requested one."""
     from unittest.mock import patch
 
     from routes import inference as route
@@ -528,9 +526,8 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
 
 
 def test_embedding_guard_prices_the_slots_that_will_launch():
-    """The loader clamps embedding slots to a smaller physical micro-batch.
-    The training coexistence guard must not 409 that reduced process by pricing
-    the original slot request."""
+    """The loader clamps embedding slots to a smaller micro-batch, so the coexistence guard must
+    price the clamped slots, not the original request."""
     from unittest.mock import patch
 
     from routes import inference as route
@@ -543,8 +540,7 @@ def test_embedding_guard_prices_the_slots_that_will_launch():
 
 
 def test_embedding_guard_uses_identifier_when_pooling_is_missing():
-    """An embedding name must clamp the admission estimate even when the cached
-    filename and GGUF architecture are generic."""
+    """Embedding identifier must clamp admission when filename and GGUF arch are generic."""
     from unittest.mock import patch
 
     from routes import inference as route
@@ -588,11 +584,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # sizing pass, embedding slot clamp, candidate split pricing, fit-time reduction, the
-    # MoE expert-spill raise, the post-launch record, the drafter probe's four
-    # (per-slot compute buffer, candidate footprint, one-slot trim, slot commit; #8872)
-    # the slot restore when GPU selection abandons that cut, and the plan repriced when a
-    # drafterless retry restores it
+    # Twelve re-derivations: sizing, embedding slot clamp, split pricing, fit-time reduction, MoE
+    # expert-spill raise, post-launch record, four drafter-probe steps (per-slot compute buffer,
+    # candidate footprint, one-slot trim, slot commit; ref 8872), slot restore on GPU abandon, plan
+    # repriced on a drafterless retry.
     assert len(calls) == 12, f"expected twelve re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
@@ -622,8 +617,7 @@ def test_the_guard_prices_the_output_rows_of_the_build_it_launches():
 
 
 def test_the_remote_guard_charges_the_flat_output_buffer():
-    """Unknown headers still need an activation reserve beyond the KQ mask.
-    Activations scale with ubatch; extra slots add output rows."""
+    """Activations scale with ubatch; slots add output rows; unknown headers need a reserve."""
     from types import SimpleNamespace
     from unittest.mock import patch
 

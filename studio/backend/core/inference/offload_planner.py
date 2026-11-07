@@ -110,9 +110,8 @@ class Plan:
 
 
 def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
-    """Total creditable VRAM: every device pays the fixed per-device overhead,
-    the split pays for each device AFTER the first, then the pool pays once for
-    whatever sits on a card outside the layout."""
+    """Total VRAM: each device pays overhead; a split pays per device after the first; the pool pays
+    once."""
     pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
     split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
     return pooled - split - max(0, opts.extra_resident_bytes)
@@ -215,8 +214,7 @@ def all_resident_bytes(
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
 ) -> int:
-    """VRAM needed with nothing spilled. token_embd is excluded: it is never
-    GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
+    """VRAM needed if nothing spills; token_embd excluded as llama.cpp pins it to the CPU."""
     return (
         resident_floor_bytes(
             layout,

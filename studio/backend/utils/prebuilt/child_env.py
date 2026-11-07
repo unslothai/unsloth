@@ -116,8 +116,7 @@ def isolate_home(env: dict[str, str], scratch_dir: str) -> dict[str, str]:
 
 
 def wsl_system_rocm_lib_dirs() -> list[str]:
-    """System ROCm lib dir(s) to load before a bundle's HIP on WSL2. Strict no-op
-    off WSL (needs /dev/dxg, a "microsoft" /proc/version, and a librocdxg)."""
+    """ROCm lib dirs to load before a bundle's HIP on WSL2; no-op off WSL (needs /dev/dxg)."""
     try:
         if not os.path.exists("/dev/dxg"):
             return []

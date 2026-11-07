@@ -123,8 +123,7 @@ def _version_is_rocm_tagged() -> Optional[bool]:
 
 
 def _hip_field_is_set() -> Optional[bool]:
-    """Whether torch/version.py's ``hip`` field names a ROCm version, None if unreadable.
-    find_spec resolves the path without executing torch."""
+    """Whether torch/version.py's hip field is set; None if unreadable. Never imports torch."""
     try:
         spec = importlib.util.find_spec("torch")
         origin = getattr(spec, "origin", None) if spec is not None else None
@@ -299,9 +298,8 @@ def _transformers_torchao_min() -> Optional[str]:
 
 
 def torchao_too_old_for_export() -> Optional[str]:
-    """The installed torchao version when the installed transformers' TorchAoConfig refuses it (below
-    0.15 on transformers 5.5, which then reports torchao as not installed at all), else None. Reads
-    metadata and source only: never imports torchao or transformers, so it is safe at server startup."""
+    """Installed torchao version if TorchAoConfig refuses it (below 0.15 on transformers 5.5), else
+    None; never imports torchao or transformers, so it is safe at startup."""
     try:
         version = importlib.metadata.version("torchao")
     except Exception:  # noqa: BLE001 -- absent or unreadable: nothing to name

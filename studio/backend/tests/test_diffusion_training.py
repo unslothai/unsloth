@@ -1094,9 +1094,8 @@ def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeyp
 
 
 def test_route_start_refuses_a_dataset_holding_clips(client, monkeypatch, tmp_path):
-    """No trainer reads clips. This fixture stubs discovery to SUCCEED, which is exactly the
-    mixed-folder case: without the route's own check the run starts and trains on the still
-    images alone while the picker counted the clips as trainable items."""
+    """No trainer reads clips; without the route's own check a mixed folder starts and trains on
+    stills alone while the picker counted clips."""
     import utils.paths as up
 
     ds_root = tmp_path / "assets" / "datasets"

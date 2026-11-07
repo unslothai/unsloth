@@ -272,9 +272,7 @@ def flattened_rgb(image, background = None):
     """Composites alpha onto white (black for light ink), since convert('RGB') keeps the colour under it."""
     from PIL import Image, ImageChops, ImageStat
 
-    # Scale declared I;16 values to 8-bit before RGB conversion clips them; plain
-    # "I" and "F" declare no range, so they convert as-is. I;16B/I;16L must pass
-    # through "I" because they reject point().
+    # Scale I;16 to 8-bit before RGB, which clips; I;16B/I;16L go via I since point() rejects them.
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":
             image = image.convert("I")
@@ -334,8 +332,7 @@ def _png_data_url(data: str) -> str | None:
 
 
 def png_payloads(images: Sequence[dict]) -> list[str]:
-    """Normalized PNG base64, for backends that take images as objects rather
-    than as data URLs inside the prompt."""
+    """Normalized PNG base64 for backends taking image objects, not data URLs in the prompt."""
     return [url.split(",", 1)[1] for url in _decoded_urls(images)]
 
 
@@ -346,8 +343,7 @@ def _turn_text(
 ) -> str:
     # The note counts every image the tool returned, so a turn carrying fewer must say so.
     if total > shown:
-        # Report counts: batches keep newest results and trims remove oldest parts,
-        # so a positional label could identify images the model never saw.
+        # Report counts, not positions: a label could identify images the model never saw.
         return f"{lead} ({shown} of {total})"
     return lead
 
@@ -413,8 +409,7 @@ def _note_total(text, original: int) -> int:
 
 
 def _is_image_turn_note(text) -> bool:
-    """Either lead the placeholder turn can carry, so a turn whose last picture went
-    is recognised as having nothing left to say on both paths."""
+    """Matches either placeholder lead, so a turn that lost its last picture counts as empty."""
     value = str(text or "")
     return value.startswith(IMAGE_TURN_TEXT) or value.startswith(DETACHED_IMAGE_TURN_TEXT)
 
@@ -822,9 +817,8 @@ def promote_history_local(
     decode_cache: "dict | None" = None,
     caller_images: Sequence = (),
 ) -> tuple[list[dict], list[str]]:
-    """The same, for backends that take the pixels beside the prompt: the turns
-    carry markers and the payloads come back with them. ``caller_images`` supplies
-    the pixels for existing markers, which retain their positions and survive trimming."""
+    """For backends taking pixels beside the prompt; caller_images supplies pixels for existing
+    markers, which keep their positions and survive trimming"""
     out, payloads, _promoted = _promote(
         messages, vision, local = True, decode_cache = decode_cache, caller_images = caller_images
     )
@@ -858,8 +852,7 @@ def resolve_tool_names(messages: Sequence) -> dict:
 
 
 def _returned_count(images: Sequence[dict]) -> int:
-    """How many the tool returned. An upstream bound may already have shortened the
-    array; it leaves the original length on the first entry when it does."""
+    """Returned count, kept on the first entry when an upstream bound shortens the array."""
     first = images[0] if images else None
     stated = first.get("returned") if isinstance(first, dict) else None
     if isinstance(stated, int) and stated >= len(images):

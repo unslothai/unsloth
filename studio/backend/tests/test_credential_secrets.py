@@ -73,8 +73,7 @@ def test_upsert_and_delete_are_idempotent():
 
 
 def test_one_read_reports_the_value_and_whether_a_row_is_there(isolated_databases):
-    """Absent and unreadable must stay distinct: an undecryptable credential reading as none would
-    authorize."""
+    """Unreadable must not read as absent, or an undecryptable credential would authorize."""
     assert credential_secrets.get_hf_token_with_presence() == (None, False)
 
     credential_secrets.save_hf_token("hf_saved")

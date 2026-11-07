@@ -398,8 +398,7 @@ def _speaker(raw: Any, labels: dict[str, Any]) -> Optional[str]:
 
 
 async def _scored(result: TranscriptResult, expected: Optional[str]) -> TranscriptResult:
-    """``result`` with match_score against ``expected``, when given; scored off the event loop,
-    which this server shares with every other request."""
+    """Result with match_score vs expected; scored off the event loop the server shares."""
     if expected is None:
         return result
     from core.inference.audio_metrics import match_score

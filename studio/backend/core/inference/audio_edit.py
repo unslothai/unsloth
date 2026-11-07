@@ -209,9 +209,8 @@ def save_source_clip(
     reference_text: Optional[str],
     created: Optional[list[str]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Keep an uploaded recording in history beside its edit, so A/B outlives the upload. Reuses a
-    source clip of the same audio; None for a history clip or an upload with no record. The id of
-    a clip it had to save is appended to ``created``."""
+    """Keeps an upload in history beside its edit, so A/B outlives it; reuses a same-audio source
+    clip; None for a history clip; saved ids appended to created."""
     import wave
 
     from core.inference import audio_gallery, audio_inputs

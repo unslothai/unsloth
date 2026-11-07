@@ -84,11 +84,7 @@ def _options_for(scheduler_cls: type) -> tuple[tuple[str, str, tuple[str, ...]],
 
 
 def sampler_options(scheduler: Any) -> list[dict[str, Any]]:
-    """Samplers the resident scheduler can be swapped for, each with the schedule types it takes.
-
-    Empty when the scheduler lists no compatible classes (every flow-matching model), so the
-    control is absent there rather than offering choices that cannot run. Read on every status poll,
-    hence cached per class."""
+    """Empty for flow models with no compatible scheduler classes, hiding the control; cached per class."""
     config = getattr(scheduler, "config", None) or {}
     # A DPM / UniPC scheduler driving a flow model lists the epsilon samplers as compatible too.
     if (

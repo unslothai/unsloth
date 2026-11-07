@@ -108,9 +108,7 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
 
 
 def _wsl_networking_mode() -> Optional[str]:
-    """The active WSL networking mode, or ``None`` outside WSL. An older WSL without ``wslinfo`` is
-    treated as unknown and therefore not advertised. Older releases use NAT, so failing closed
-    avoids handing a phone an address that only the Windows host can route to."""
+    """Older WSL without wslinfo is unknown and not advertised, since older releases use NAT."""
     global _wsl_mode_cache
 
     if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
@@ -155,9 +153,7 @@ def _is_host_only_interface(name: str) -> bool:
 
 
 def _interface_addresses(ip_version: int = 4) -> list[str]:
-    """Addresses for one IP version on every interface that is up. Falls back to resolving the hostname
-    where psutil is unavailable. That fallback is not an enumeration: a Linux host mapping its name
-    to 127.0.1.1 reports nothing, which is why it is the last resort rather than the source."""
+    """Without psutil, hostname lookup is a last resort: it misses hosts whose name maps to 127.0.1.1."""
     try:
         import psutil
     except ImportError:
@@ -356,9 +352,8 @@ def start_lan_listener(
 
 
 def _sync_lan_trust() -> None:
-    """Publish the beyond-loopback flag from the authoritative state. Derived rather than assigned by
-    callers: a repeated stop, or a start racing a stop in another worker thread, otherwise cleared a
-    flag that a live listener or a still-draining one owned. The caller holds ``_lock``."""
+    """Derive the beyond-loopback flag from server and drain state rather than caller assignment;
+    caller must hold _lock; racing stops cannot clear it early"""
     set_lan_connector_active(_server is not None or _pending_drains > 0)
 
 
@@ -396,9 +391,7 @@ def _arm_drain_watcher(server) -> None:
 
 
 def _clear_trust_after_drain(server) -> None:
-    """Hold the beyond-loopback flag until the stopped listener's requests finish. Closing the
-    listening sockets stops new connections, but uvicorn then drains the accepted ones, and a
-    request that started on the LAN is still a remote caller for its whole life."""
+    """Keep LAN trust until drained requests finish: a LAN request stays a remote caller its whole life."""
     global _pending_drains
 
     state = getattr(server, "server_state", None)
@@ -484,9 +477,8 @@ def clear_lan_listener_error() -> None:
 
 
 def request_on_lan_listener(scope) -> bool:
-    """True when this request arrived on a LAN listener socket, not on loopback. ``scope["server"]`` is
-    the accepting socket's own address, so it identifies the listener a connection came in on
-    without trusting any client header."""
+    """True if the request came in on a LAN listener rather than loopback; judged from the accepting
+    socket address in scope, never a client header"""
     addresses = _bound_addresses
     if not addresses:
         return False

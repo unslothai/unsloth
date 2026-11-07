@@ -101,11 +101,7 @@ def _builds_tls_server(tree) -> bool:
 
 
 def test_backend_serves_no_tls_in_process():
-    """truststore's injection is client-side: a context built after it cannot serve TLS.
-
-    Any in-process HTTPS listener must go through utils/studio_tls.py, or it
-    fails at handshake wherever activation is default-on.
-    """
+    """In-process HTTPS listeners must use utils/studio_tls.py; truststore only affects clients."""
     offenders = []
     for path in _BACKEND.rglob("*.py"):
         if "tests" in path.parts or "vendor" in path.parts:

@@ -61,8 +61,7 @@ def test_hugging_face_false_spellings_are_honored(monkeypatch):
 
 
 def test_the_hub_is_not_imported_just_to_quiet_it():
-    # Workers call setup_logging before adding their transformers sidecar to sys.path;
-    # importing the Hub here would cache the base environment's copy.
+    # Importing the Hub just to quiet it would cache the base env's copy, not the sidecar's.
     code = (
         "import sys; sys.path.insert(0, %r)\n"
         "import os\n"
@@ -180,8 +179,7 @@ def test_setup_time_is_never_reported_as_throughput():
 
 
 def test_the_early_dataset_branches_are_covered():
-    # The raw-text and audio-VLM branches run their own filter/map and return before
-    # the chat-template path, so the suppression has to come before them.
+    # Raw-text and audio-VLM branches return early, so the suppression must come before them.
     text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
     quiet_at = text.index("quiet_third_party_progress_bars()")
     assert quiet_at < text.index("# ========== AUDIO MODELS: custom preprocessing ==========")
@@ -286,8 +284,7 @@ def test_evaluation_hands_the_status_back_to_training():
 
 
 def test_the_training_worker_keeps_its_bars_countable():
-    # The poller reads tqdm._instances (disabled bars never register), and huggingface_hub
-    # reads the env var once, so this must precede setup_logging.
+    # Precede setup_logging: the Hub reads its env var once, and disabled bars never register.
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     assert text.index("keep_progress_bars_countable()") < text.index(
         'service_name = "unsloth-studio-training-worker"'
@@ -338,8 +335,7 @@ def test_an_operator_who_turned_bars_off_keeps_them_off(monkeypatch):
 
 
 def test_the_shared_dataset_loader_quiets_the_bars_it_just_imported():
-    # The server never imports datasets at boot, so setup_logging cannot patch the bar
-    # class; this shared entry point is the first place it exists.
+    # datasets is never imported at boot, so only this shared loader can patch its bar class.
     text = (_BACKEND / "utils/datasets/cache_safe.py").read_text(encoding = "utf-8")
     body = text[text.index("def load_dataset_cache_safe") :]
     assert body.index("from datasets import load_dataset") < body.index(

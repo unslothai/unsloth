@@ -95,8 +95,7 @@ def test_the_owner_reaches_auto_download_for_an_uncached_private_repo(downloads)
 def test_a_managed_caller_with_a_token_reaches_auto_download_for_an_uncached_private_repo(
     downloads,
 ):
-    """The pre-check must not 404 an unresolved Hub reference before the caller's own
-    token can authorize the download."""
+    """Pre-check must not 404 an unresolved Hub repo before a caller's token can authorize it."""
     asyncio.run(
         arun_as(ALICE, inference._maybe_auto_switch_model("org/private", _request(), "alice"))
     )

@@ -218,8 +218,7 @@ def test_a_thread_that_fits_is_untouched():
 
 
 def test_an_irreducible_request_returns_the_original_messages():
-    """Same contract as the rolling fit: the request is refused either way, so dropping
-    turns off a doomed request loses them for nothing."""
+    """Irreducible requests fail either way, so dropping turns would lose them for nothing."""
     messages = [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "x" * 40_000},
@@ -251,8 +250,7 @@ def _exchange(index, result):
 
 
 def _mid_turn(*results):
-    """A thread that overflows inside a tool loop: older history, the newest user message,
-    then one terminal exchange per result."""
+    """Mid-tool-loop thread: older history, newest user message, one exchange per result."""
     messages = _thread() + [{"role": "user", "content": "Read main.py and apply your changes."}]
     for index, result in enumerate(results):
         messages += _exchange(index, result)
@@ -293,8 +291,7 @@ def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
 
 
 def test_a_reset_inside_a_tool_loop_leaves_room_for_the_next_tool_call():
-    """Held to the brim, the turn in progress reset again on every later tool call and was
-    prefilled again each time."""
+    """At the brim, a tool loop resets again on every later call and re-prefills each time."""
     messages = _mid_turn("A" * 1200, "B" * 1200, "C" * 400)
 
     brim, _ = _fit(messages, headroom_ratio = 0.0)
@@ -479,9 +476,8 @@ def test_the_policy_is_on_by_default():
 
 @pytest.mark.parametrize("supports_tools", [True, False])
 def test_a_reset_needs_both_an_archive_and_a_tool_capable_model(monkeypatch, supports_tools):
-    """Both refusals are about not lying: a reset with no archive makes history
-    unreachable while the notice says it is searchable, and a model that cannot take tools
-    would be offered a memory it can never reach."""
+    """A reset needs an archive, or history is unreachable while the notice says it is searchable; a
+    model that cannot take tools would be offered a memory it can never reach."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
@@ -521,9 +517,8 @@ def test_the_fit_falls_back_to_rolling_when_the_request_may_not_reset(monkeypatc
 
 
 def test_a_short_instruction_is_carried_when_it_is_all_there_is():
-    """The 80-character floor used to drop this, on the reasoning that a paragraph is
-    what an instruction looks like. A real session says otherwise, so the floor now only
-    decides which pass finds an item, never whether the block is empty."""
+    """The 80-character floor only decides which pass finds an item, never whether the block is
+    empty, so a short instruction is carried when it is all there is."""
     short = {"role": "user", "content": "Always answer in French."}
 
     assert carried_forward_items([short], max_tokens = 4096) == ["Always answer in French."]
@@ -573,9 +568,8 @@ def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
 
 
 def test_at_most_max_items_instructions_are_carried():
-    """An epoch that dropped two hundred turns must not produce a system prompt of forty
-    instructions the user moved past long ago. Newest wins, since the budget should be
-    spent on what the user most recently said."""
+    """An epoch that dropped two hundred turns must not carry forty stale instructions; newest wins,
+    as the budget belongs to what the user said last."""
     messages = [
         {
             "role": "user",
@@ -826,9 +820,8 @@ def test_the_count_request_declares_the_studio_tool_history_marker():
 
 
 def test_can_reset_false_replays_an_epoch_but_never_starts_one():
-    """The second lock on the same door: `_fit_context` already routes a request that may
-    not reset to the rolling window, so reaching here with False means something upstream
-    changed its mind mid-conversation."""
+    """The second lock: _fit_context already routes a request that may not reset to the rolling
+    window, so reaching here with False means upstream changed its mind mid-conversation."""
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
     fitted, truncation = _fit(messages, can_reset = False)
@@ -993,9 +986,8 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
 
 
 def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(monkeypatch):
-    """A request that NAMED its tools is the live case, on either surface: both paths
-    return the caller's list verbatim, so such a request would reset an epoch behind a tool
-    absent on every turn."""
+    """A request that NAMED its tools is the live case: both paths return the caller's list
+    verbatim, so such a request would reset an epoch behind a tool absent on every turn."""
     from core.inference import llama_cpp
 
     monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: True)
@@ -1300,8 +1292,7 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
     ],
 )
 def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, monkeypatch):
-    """The three values the API accepts, plus unset. Only one of them reaches a fit that
-    can compact, which is what the loop gate and the nudge both key off."""
+    """Only truncate_oldest can reset; the loop gate and the nudge both key off it."""
     import types
 
     import routes.inference as routes_mod
@@ -2303,9 +2294,8 @@ def test_the_reachability_probe_closes_the_connection_it_opens():
                 pass
         return found
 
-    # The first open also starts rag_db's WAL keeper, which holds rag.db and its -wal / -shm
-    # sidecars for the life of the process (#15719); count from after it, so only a leaked
-    # probe connection can grow the number.
+    # Count from after the first open starts the rag_db WAL keeper, which holds rag.db and its -wal
+    # and -shm sidecars for the process (issue 15719); only a leaked probe can grow the count.
     conversation_archive.reachable()
     before = _open_archive_handles()
     for _ in range(50):
@@ -2684,9 +2674,7 @@ def test_a_restated_instruction_keeps_its_newest_position():
 
 
 def test_the_plain_walk_still_keeps_one_copy_of_a_repeated_rule():
-    """The dedupe's original purpose: one rule restated many times must not spend every
-    slot. Unchanged by keeping the newest position, since the newest-first walk already
-    sees the newest copy first."""
+    """The dedupe keeps one copy of a rule restated many times, so repeats cannot spend every slot."""
     messages = []
     for _ in range(5):
         messages.append({"role": "user", "content": INSTRUCTION})
@@ -2751,8 +2739,7 @@ def test_an_oversized_newest_turn_does_not_hand_the_budget_to_the_opening_task()
 
 
 def test_the_opening_task_still_survives_a_run_of_short_increments():
-    """The reason reserve_oldest exists: newest-first alone spends every slot on the
-    increments nearest the end and evicts the statement of the task itself."""
+    """reserve_oldest keeps the task statement that newest-first alone evicts from a long run."""
     messages = [
         {"role": "user", "content": "Build a Flappy Bird game"},
         {"role": "assistant", "content": "ok"},
@@ -2835,9 +2822,8 @@ def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
 
 
 def test_the_opening_task_survives_a_long_run_of_increments_with_no_correction():
-    """The case the reservation was added for, which the pair must not regress: a real
-    session states the task once at the front and then says nothing but increments, so a
-    plain newest-first walk carries eight ways to change a game it never names."""
+    """reserve_oldest covers a session that states the task once then sends only increments; the
+    pair must not regress, since newest-first alone carries no task statement."""
     messages = _user_turns(
         "Build a Flappy Bird game",
         *[f"increment {index}" for index in range(1, 20)],

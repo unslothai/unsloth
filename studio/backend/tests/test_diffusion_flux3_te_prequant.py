@@ -328,8 +328,7 @@ def test_an_invisible_repo_falls_back_to_the_dense_encoder(tmp_path, monkeypatch
 
 
 def test_both_flux3_families_default_to_the_hosted_int8_convrot_encoder():
-    # BFL's ComfyUI templates load qwen3vl_4b_int8_convrot, so an unset request gets the hosted int8 file; "none"
-    # still reaches the released bf16 encoder.
+    # BFL's templates load qwen3vl_4b_int8_convrot, so unset gets int8; none reaches bf16.
     from core.inference.diffusion_families import _FAMILIES as FAMILIES
     from core.inference.diffusion_precision import resolve_te_quant_request
     for name in ("flux.3-klein", "flux.3-klein-base"):

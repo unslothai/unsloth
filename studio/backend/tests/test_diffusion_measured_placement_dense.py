@@ -304,9 +304,7 @@ def test_small_host_int8_seed_kill_switch_and_scope(klein_pipe, monkeypatch):
 
 
 # ------------------------------------------------------------------- learned-only placement (bf16 / packed denoisers)
-# The dense eager table was measured on fp16 / fp32 unpacked weights, so a bf16 denoiser (every Ampere+ card) and a
-# GGUF / int8 packed one used to return before the learned-peak lookup: their renders recorded peaks no load ever read.
-# They now place from the learned peak alone (no static seed); without one the flat plan stands.
+# bf16 and packed denoisers place from the learned peak alone; without one the flat plan stands.
 
 
 @pytest.fixture

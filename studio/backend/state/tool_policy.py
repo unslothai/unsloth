@@ -207,9 +207,7 @@ def get_tool_policy() -> Optional[bool]:
 
 
 def get_tool_policy_default() -> Optional[bool]:
-    """Fallback for a request that omits `enable_tools`; None unless `unsloth
-    studio run` installed one (every other launcher, embedder and library caller
-    keeps the omitted-is-off read)."""
+    """Fallback for an omitted `enable_tools`: None unless `unsloth studio run` installed one, else off."""
     if _force_disabled.get():
         return False
     return _tool_policy_default

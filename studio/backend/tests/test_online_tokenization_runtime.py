@@ -156,8 +156,7 @@ def test_a_shuffled_pass_after_prewarming_still_covers_every_row():
 
 
 def test_train_uses_the_loader_the_barrier_filled():
-    """Without the memo the barrier forks workers, fills them, and train()
-    throws them away and forks a second set."""
+    """Reuse the memo or the barrier's filled workers are discarded and forked a second time."""
     trainer = _FakeTrainer(_view())
     memoize_train_dataloader(trainer)
     first = trainer.get_train_dataloader()
@@ -170,8 +169,7 @@ def test_train_uses_the_loader_the_barrier_filled():
 
 
 def test_the_workers_are_gone_once_training_is_over():
-    """Persistent workers survive train() by design, so something has to end
-    them; otherwise Unsloth merges, quantizes and exports alongside them."""
+    """Persistent workers outlive train(), so release must end them before merge/export."""
     before = len(multiprocessing.active_children())
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
@@ -187,8 +185,7 @@ def test_the_workers_are_gone_once_training_is_over():
 
 
 def test_releasing_puts_the_real_getter_back_and_is_idempotent():
-    """It is called from a finally that two paths reach twice, and a trainer
-    reused afterwards must rebuild rather than be handed a dead loader."""
+    """Called twice from a finally; a reused trainer must rebuild, not receive a dead loader."""
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
 

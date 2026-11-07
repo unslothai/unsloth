@@ -50,15 +50,13 @@ def test_an_auto_gguf_audio_load_on_a_cpu_only_runtime_counts_as_cpu(monkeypatch
 
 
 def test_a_chat_model_cannot_skip_the_guards_by_sending_audio_device():
-    """audio_device is documented as ignored off the audio path. If it were not
-    gated here, any load could set it and walk past the training guard."""
+    """Ungated, any load could set audio_device and skip the training guard."""
     assert not ri._native_audio_cpu_load(_audio(audio_type = None), _request("cpu"))
     assert not ri._native_audio_cpu_load(_audio(audio_type = "whisper"), _request("cpu"))
 
 
 def test_a_cpu_audio_load_is_not_refused_while_training_runs(monkeypatch):
-    """The guard 409s an unsized load, and refuses everything outright during
-    diffusion training. Neither applies to weights that never reach the card."""
+    """Neither the 409 for unsized loads nor the training refusal applies to CPU weights."""
     monkeypatch.setattr(ri, "_diffusion_training_active", lambda: True)
 
     assert (
@@ -105,8 +103,7 @@ def test_a_gpu_audio_load_is_still_refused_during_diffusion_training(monkeypatch
 
 
 def test_a_cpu_load_skips_the_vram_preflight_entirely(monkeypatch):
-    """Sizing it would refuse the load on a full GPU, which is the case the
-    option exists for. The probe must not even be reached."""
+    """Sizing would refuse a full-GPU load, the case the option is for; the probe must not run."""
 
     def _never():
         raise AssertionError("a CPU load must not size GPU memory")
@@ -119,8 +116,7 @@ def test_a_cpu_load_skips_the_vram_preflight_entirely(monkeypatch):
 
 
 def test_minimax_on_cpu_is_refused_before_the_resident_model_is_evicted():
-    """Its runtime needs CUDA. Failing later in the worker would cost the user
-    the model they already had, since the switch evicts before the load runs."""
+    """Its runtime needs CUDA; refusing late would evict the resident model before failing."""
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
             ri._preflight_native_audio_placement(
@@ -250,8 +246,7 @@ def test_anything_that_might_hold_vram_is_still_evicted():
 
 
 def test_the_shortcut_reads_the_resident_model_not_the_requested_config():
-    """It runs ahead of config resolution, so reading a config there raised
-    UnboundLocalError and turned every repeat safetensors load into a 500."""
+    """Runs before config resolution; reading a config there gave UnboundLocalError and 500s."""
     import inspect
     assert list(inspect.signature(ri._resident_audio_placement_matches).parameters) == [
         "backend",
@@ -289,8 +284,7 @@ def test_the_already_loaded_branch_guards_its_acquire():
 
 
 def test_the_post_load_ownership_check_is_gated_like_the_gguf_one():
-    """Ungated, it unloads the CPU audio model it just loaded and returns 409:
-    the load skips acquire_for, so on a clean server the owner is None."""
+    """Ungated, the CPU load unloads its model and returns 409, since acquire_for is skipped."""
     src = _inference_source()
     assert "if chat_load_needs_gpu and not holds(CHAT):" in src
     assert "\n        if not holds(CHAT):" not in src
@@ -317,8 +311,7 @@ def test_an_inherited_rocr_mask_is_left_alone():
 
 
 def test_the_mask_runs_before_hardware_detection():
-    """detect_hardware() calls get_device_properties, which creates the context
-    this load is supposed not to hold, so masking after it is too late."""
+    """get_device_properties creates the context, so the mask must precede detection."""
     import pathlib
     from core.inference import worker
 
@@ -341,16 +334,14 @@ def test_a_zero_gpu_standard_load_drops_the_stale_chat_claim():
 
 
 def test_the_release_is_gated_on_the_same_flag_as_the_409():
-    """Two `if not` sites plus the callback's own inline gate, which spells the
-    flag the same way."""
+    """Two if-not sites plus the callback's inline gate, which spells the flag the same way."""
     src = _inference_source()
     assert src.count("if replacing and not chat_load_needs_gpu:") == 2
     assert src.count("if replacing and not chat_load_needs_gpu else None") == 1
 
 
 def test_every_http_device_field_pins_the_three_canonical_values():
-    """A misspelled "cpu" that fell through to auto would put the model back on
-    the GPU without saying so. 422 is the honest answer at the boundary."""
+    """A misspelled cpu would fall to auto and silently move to the GPU; 422 rejects it."""
     import inspect
     import typing
 
@@ -402,9 +393,8 @@ def test_whisper_cpp_still_exempts_a_server_started_with_no_gpu():
 
 
 def test_a_forced_cpu_native_audio_load_selects_no_gpu():
-    """Selection returns every card needed to hold the checkpoint, and the worker
-    forwards that list to a backend that rejects more than one. Its required_gb also
-    becomes expected_free_gb, whose settle wait raises when Images holds the card."""
+    """Selection returns every needed card, which the backend rejects when more than one;
+    required_gb also feeds expected_free_gb, whose settle wait raises if Images holds a card."""
     import inspect
 
     from core.inference.orchestrator import InferenceOrchestrator
@@ -416,8 +406,7 @@ def test_a_forced_cpu_native_audio_load_selects_no_gpu():
 
 
 def test_the_stale_chat_claim_is_dropped_before_the_load_not_only_after():
-    """A download and load can run for minutes. Held across that window the claim
-    makes an Images acquire run the chat evictor, which cancels this load."""
+    """A chat claim held across a download and load makes an Images acquire cancel that load."""
     import inspect
 
     src = inspect.getsource(ri._load_model_impl)
@@ -469,9 +458,8 @@ def test_a_codec_with_no_recorded_placement_still_honours_the_caller():
 
 
 def test_a_cpu_load_leaves_a_running_export_alone():
-    """The export teardown exists to free VRAM for the incoming model. A load that
-    masks the accelerators wants none of it, so killing the user's export buys
-    nothing and costs them the job."""
+    """The export teardown frees VRAM for the incoming model; a load that masks the accelerators
+    needs none of it, so killing the export only costs the user the job."""
     import inspect
 
     src = inspect.getsource(ri._load_model_impl)

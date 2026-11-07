@@ -54,9 +54,8 @@ def _sidecar(
 
 
 def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypatch):
-    """pip or uv exiting nonzero after copying part of tiktoken: the sidecar is still
-    accepted (the package is optional), but nothing of the package may stay, or the
-    half-copied tree ahead of site-packages shadows the ambient one at tokenization."""
+    """A failed optional tiktoken install still accepts the sidecar, but leaves no payload: a
+    half-copied tree would shadow site-packages."""
     root = tmp_path / ".venv_t5_550"
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     optional = [p for p in tv._VENV_T5_550_PACKAGES if p.startswith("tiktoken")]
@@ -172,9 +171,8 @@ def test_a_runtime_repair_survives_a_tiktoken_that_will_not_install(tmp_path, mo
 
 
 def test_a_rebuild_records_the_optional_install_it_could_not_do(tmp_path, monkeypatch):
-    """The sidecar reads as valid from here on, so the next activation runs the top-up. Left
-    unrecorded, the outage that just failed this install would be met again by that top-up and
-    by every worker a job spawns, each sitting through the same doomed network retries."""
+    """A rebuild must record the optional install it could not do, or the next top-up and every
+    worker meet the outage again."""
     root = tmp_path / ".venv_t5_550"
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: not pkg.startswith("tiktoken"))
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
@@ -220,9 +218,8 @@ def test_a_remnant_that_will_not_go_fails_the_build_instead_of_shadowing(tmp_pat
 
 
 def test_a_present_tiktoken_is_held_to_its_record_like_any_other(tmp_path, monkeypatch):
-    """Absence is what is optional. A tiktoken that is present but whose RECORD names a
-    file that is not there (an interrupted install, a native extension left from an
-    older interpreter) is a tokenizer that fails at import, and the scan says so."""
+    """Only absence is optional: a present tiktoken whose RECORD names a missing file (interrupted
+    install, stale native extension) fails at import and must be reported."""
     root = tmp_path / ".venv_t5_550"
     _sidecar(
         root,
@@ -278,9 +275,8 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
 
 
 def test_a_failed_top_up_is_remembered_across_processes_and_retried_later(tmp_path, monkeypatch):
-    """Each job spawns its own workers, and every one of them used to run the same
-    doomed install: the failure is written beside the sidecar, read by the next process,
-    and forgotten after a while in case it was the network."""
+    """Each worker would rerun the same doomed install, so a failed top-up is recorded beside the
+    sidecar, read by later processes, and retried after a while."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     packages = tv._VENV_T5_550_PACKAGES
@@ -309,9 +305,8 @@ def test_a_failed_top_up_is_remembered_across_processes_and_retried_later(tmp_pa
 
 
 def test_a_partial_live_tree_goes_when_the_top_up_install_itself_fails(tmp_path, monkeypatch):
-    """An earlier top-up moved tiktoken/ in and was interrupted before its dist-info; the
-    next one finds the package "absent", and its install fails (no network). The partial
-    payload must not stay ahead of site-packages for the six-hour backoff."""
+    """An interrupted top-up leaves tiktoken/ without its dist-info; if the next install fails
+    offline, the partial payload must not stay ahead of site-packages during backoff."""
     root = tmp_path / ".venv_t5_550"
     (root / "tiktoken").mkdir(parents = True)
     (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
@@ -333,9 +328,8 @@ def _partial_tiktoken(root):
 
 
 def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
-    """A worker killed after the payload moved in and before its dist-info left tiktoken/
-    ahead of site-packages. Offline there is no install, but the partial tree still goes,
-    or the otherwise valid sidecar would be activated with it shadowing the ambient copy."""
+    """A worker killed before its dist-info landed leaves tiktoken/ ahead of site-packages; offline,
+    the partial tree must still go, or the sidecar shadows it."""
     root = tmp_path / ".venv_t5_550"
     _partial_tiktoken(root)
     monkeypatch.setenv("UV_OFFLINE", "1")
@@ -353,9 +347,8 @@ def test_offline_still_clears_a_partial_optional_payload(tmp_path, monkeypatch):
 
 
 def test_a_partial_payload_behind_an_unobtainable_lock_withholds_the_sidecar(tmp_path, monkeypatch):
-    """The lock could not be taken (held too long, or the file cannot be opened) and a
-    payload without its RECORD is there: nothing is touched, and the sidecar is not
-    activated with that payload shadowing the ambient copy. Nothing there: usable."""
+    """If the lock is unobtainable and a payload lacks its RECORD, nothing is touched and the
+    sidecar is withheld so the payload cannot shadow the ambient copy; an empty dir is usable."""
     import contextlib
 
     root = tmp_path / ".venv_t5_550"
@@ -410,9 +403,8 @@ def test_a_sidecar_whose_top_up_remnants_will_not_go_is_not_activated(tmp_path, 
 
 
 def test_an_interrupted_top_up_is_finished_by_the_next_one(tmp_path, monkeypatch):
-    """A process killed between moving tiktoken/ in and its dist-info left a payload no
-    scan could judge and no activation would complete: a package counts as present only
-    once its dist-info has landed, and the next top-up replaces the partial entries."""
+    """A package counts as present only once its dist-info has landed, so a process killed mid-move
+    leaves a partial payload that the next top-up replaces."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     (root / "tiktoken").mkdir()
@@ -439,9 +431,8 @@ def test_an_interrupted_top_up_is_finished_by_the_next_one(tmp_path, monkeypatch
 
 
 def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypatch):
-    """Model activation goes through _ensure_venv_t5_latest_exists, not the provisioning
-    path; a healthy latest sidecar without tiktoken has to get its top-up there too, or a
-    latest-tier Qwen model keeps failing to tokenize after a transient install failure."""
+    """Activation goes through _ensure_venv_t5_latest_exists, not provisioning, so a healthy latest
+    sidecar missing tiktoken must get its top-up there or Qwen models fail to tokenize."""
     latest = tmp_path / ".venv_t5_latest"
     latest.mkdir()
     packages = ("transformers==9.9.9", "huggingface_hub==1.8.0", "hf_xet==1.4.2", "tiktoken")
@@ -458,9 +449,8 @@ def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypa
 
 
 def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, monkeypatch):
-    """Workers activate tiers on their own: offline, none of them should sit through
-    network retries for a best-effort package, and two finding it absent at once must
-    not both write into the shared sidecar."""
+    """Workers activate tiers themselves: offline, a best-effort package must not cost network
+    retries, and concurrent top-ups must not both write the shared sidecar."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     packages = tv._VENV_T5_550_PACKAGES
@@ -559,8 +549,7 @@ def test_the_top_up_removes_the_recordless_dist_info_an_interrupted_install_left
 def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_up(
     tmp_path, monkeypatch
 ):
-    """A retry that succeeded after an interrupted install leaves both; the package is
-    present, so no top-up runs, and the stale metadata must still go."""
+    """A retry leaves a stale RECORD beside a present package; remove it without a top-up."""
     root = tmp_path / ".venv_t5_550"
     (root / "tiktoken").mkdir(parents = True)
     (root / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
@@ -640,9 +629,8 @@ def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, 
 
 
 def test_an_empty_directory_is_still_built_offline_from_the_cache(tmp_path, monkeypatch):
-    """The offline rule protects a tree that may still serve. The latest sidecar's staging
-    directory and a first install have nothing to lose, and uv installs from a warm cache
-    without the network, so they are attempted; only the pip fallback stays out."""
+    """The offline rule protects only a tree that may still serve: staging dirs and first installs
+    are attempted, since uv installs from a warm cache offline; pip fallback stays out."""
     root = tmp_path / ".venv_t5_latest.staging"
     root.mkdir()
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
@@ -711,8 +699,7 @@ def test_an_unreadable_sidecar_counts_as_content(tmp_path, monkeypatch):
 
 
 def test_a_sibling_that_vanishes_while_sorting_does_not_abort_the_repair(tmp_path, monkeypatch):
-    """Another worker removing an old staging tree between the listing and the mtime
-    read used to raise out of _ensure_venv_dir and abort the activation."""
+    """A sibling vanishing between listing and mtime read must not abort _ensure_venv_dir."""
     root = tmp_path / ".venv_t5_550"
     ghost = tmp_path / ".venv_t5_550.offline-old-1"
     ghost.mkdir()
@@ -731,9 +718,8 @@ def test_a_sibling_that_vanishes_while_sorting_does_not_abort_the_repair(tmp_pat
 
 
 def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, monkeypatch):
-    """Killed between the swap's two renames, the live path is empty and the preserved
-    tree sits under the retired name; the next call puts it back before it decides
-    anything, rather than reading the empty path as a first install."""
+    """Killed between the swap's two renames, the live path is empty and the tree sits under the
+    retired name; the next call restores it before deciding, not as a first install."""
     root = tmp_path / ".venv_t5_550"
     retired = tmp_path / ".venv_t5_550.offline-old-4242"
     retired.mkdir()
@@ -818,9 +804,8 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
 
 
 def test_the_offline_repair_runs_under_the_tiers_lock_too(tmp_path, monkeypatch):
-    """Two workers activating one damaged tier offline would each build a staging tree
-    and race the two-rename swap. The offline repair now waits on the same tier lock as
-    the online rebuild, and a lock not obtained defers rather than swaps."""
+    """Two workers repairing one tier offline would race the two-rename swap, so the offline repair
+    takes the same tier lock as the online rebuild and defers if not obtained."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     (root / "keep.txt").write_text("", encoding = "utf-8")
@@ -905,9 +890,8 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
 
 
 def test_the_wheelhouse_is_read_from_pip_config_files_too(tmp_path, monkeypatch):
-    """An air-gapped host sets no-index and find-links in pip.conf as often as in the
-    environment; the guard asks pip for its effective configuration, with pip's own
-    precedence (environment over [install] over [global])."""
+    """An air-gapped host sets no-index and find-links in pip.conf as often as in the environment,
+    so the guard reads pip's effective config (environment over [install] over [global])."""
     monkeypatch.delenv("PIP_NO_INDEX", raising = False)
     monkeypatch.delenv("PIP_FIND_LINKS", raising = False)
     settings = {"global.no-index": "true", "global.find-links": f"\n{tmp_path}"}
@@ -951,8 +935,7 @@ def test_pip_config_list_is_parsed_as_pip_prints_it(tmp_path, monkeypatch):
 
 
 def test_a_failed_install_keeps_a_tree_another_process_completed_meanwhile(tmp_path, monkeypatch):
-    """Two workers repairing one tier: the late cleanup of the failing one must not
-    delete the complete tree the other just finished."""
+    """A failed install's late cleanup must not delete a tree another process just completed."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     verdicts = iter([False, True])
@@ -964,9 +947,8 @@ def test_a_failed_install_keeps_a_tree_another_process_completed_meanwhile(tmp_p
 
 
 def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_path, monkeypatch):
-    """The owned marker lands before the first package; a first install that then fails
-    must not leave a marker-only or partial tree that the next offline call reads as a
-    tree worth keeping and never asks the cache for again."""
+    """The owned marker is written before the first package, so a failed first install must not
+    leave a marker-only or partial tree the offline guard would keep."""
     root = tmp_path / ".venv_t5_550"
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
@@ -986,8 +968,7 @@ def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_
 
 
 def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> None:
-    """A mount that cannot lock answers at once. Retrying it spent the whole 120 second
-    bound asleep inside a model activation, to arrive at the same answer."""
+    """An unlockable filesystem must fail at once, not sleep out the 120 second bound."""
     import errno
     import fcntl
     import time as _time

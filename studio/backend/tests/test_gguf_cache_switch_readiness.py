@@ -109,9 +109,7 @@ def test_pin_listing_needs_explicit_token_when_ambient_is_denied(
 def test_incomplete_remembered_copy_is_not_advertised_complete(
     cache_locations, monkeypatch, entrypoint
 ):
-    """An offline/local answer has no Hub check to fall back on, so the remembered copy is
-    judged by its own manifest: a quant whose companion never finished is not a complete
-    copy the picker may offer to load, even though every main shard is on disk."""
+    """Offline, a remembered copy is judged by its own manifest; an unfinished companion is incomplete."""
     from hub.utils import download_manifest
     from hub.utils.gguf_sources import cached_gguf_source_partial, cached_gguf_sources
 
@@ -162,9 +160,7 @@ def test_incomplete_remembered_copy_is_not_advertised_complete(
 
 
 def test_a_healthy_duplicate_is_preferred_over_a_cancelled_copy(cache_locations):
-    """A copy its own snapshot state marks partial -- here a cancel marker -- must not shadow a
-    healthy duplicate of the same quant: the merge would report the quant as unusable and offer
-    a retry for a copy that is already loadable from the other remembered folder."""
+    """A copy its own snapshot marks partial must not shadow a healthy duplicate of the same quant."""
     from hub.utils import download_manifest
     from hub.utils.gguf_sources import cached_gguf_source_partial, cached_gguf_sources
 

@@ -26,8 +26,7 @@ def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> st
 
 
 def anthropic_tool_use_id(upstream_id = None, prefix = "toolu_") -> str:
-    """Return an Anthropic tool id: the upstream id if it already starts with
-    ``prefix``, else a fresh '<prefix><24 hex>'."""
+    """Upstream tool id if it starts with prefix, else a fresh prefix plus 24 hex digits."""
     if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith(prefix):
         return upstream_id
     return f"{prefix}{uuid.uuid4().hex[:24]}"

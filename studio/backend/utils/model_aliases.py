@@ -15,8 +15,7 @@ MAX_MODEL_ALIASES = 100
 MAX_ALIAS_TARGET_LENGTH = 512
 _ALIAS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ALIAS_PATH_PREFIXES = ("/v1", "/api/inference")
-# Chat-model routes only: media, lifecycle and Decision API routes use their own model ids
-# (an STT "small" selector, "clef"), which an alias must never rewrite.
+# Chat routes only: media, lifecycle and Decision API ids (e.g. STT small) are never rewritten.
 _ALIAS_ROUTES = frozenset(
     (
         "/chat/completions",

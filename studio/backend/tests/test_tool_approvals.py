@@ -189,8 +189,7 @@ def test_timeout_returns_deny():
 
 
 def test_two_pending_calls_same_session_are_independent():
-    """Keying on approval_id, not session, keeps concurrent calls distinct; each call waits on its
-    own id."""
+    """Key on approval_id, not session, so concurrent calls in one session stay distinct."""
     a1, a2 = new_approval_id(), new_approval_id()
     w1 = _Waiter("sess", a1).start()
     w2 = _Waiter("sess", a2).start()
@@ -220,8 +219,7 @@ def test_rejected_message_is_user_facing_text():
     assert TOOL_REJECTED_MESSAGE.strip()
 
 
-# Durable runs never set cancel_event on disconnect, so a pending approval parks;
-# an explicit Stop still denies.
+# Disconnect never sets cancel_event on durable runs, so approvals park; explicit Stop denies.
 
 
 def test_durable_approval_parks_past_timeout():
@@ -327,9 +325,7 @@ def test_a_returning_session_past_the_ceiling_cannot_resolve_its_own_approval(mo
 
 
 def test_a_pending_approval_reports_pending_and_a_decided_one_does_not():
-    """A reopened tab cannot tell a parked call from one the user already answered: both are saved
-    as a card with no result and an approval id, because the result only lands with tool_end. This
-    is the durable signal that separates them."""
+    """Cards look alike when reopened, so the pending check on the approval id is the durable signal."""
     approval_id = tool_approvals.new_approval_id()
     slot = tool_approvals.begin_tool_decision("sess-a", approval_id)
     assert tool_approvals.tool_decision_is_pending(approval_id, "sess-a") is True
@@ -353,8 +349,7 @@ def test_the_pending_check_is_session_scoped_and_unguessable():
     assert tool_approvals.tool_decision_is_pending("not-a-real-id", "sess-a") is False
 
 
-# The park ceiling counts time with nobody watching: every tool turn is durable, so the
-# gate re-arms while state.run_subscribers has a follower attached.
+# Unwatched time counts toward the park ceiling unless run_subscribers has a follower.
 
 
 @pytest.fixture(autouse = True)
@@ -398,8 +393,7 @@ def test_a_park_expires_once_its_followers_go(monkeypatch):
 
 
 def test_an_unattended_park_is_unchanged_without_a_run_id(monkeypatch):
-    """A durable event carrying no run id keeps the plain park behaviour, so nothing regresses
-    for a producer that never registered one."""
+    """No run id means the plain park: producers that never registered one are unchanged."""
     monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
     cancel = threading.Event()
     cancel.durable = True
@@ -472,9 +466,7 @@ def test_the_expiry_message_does_not_claim_the_user_decided():
 
 
 def test_the_waiter_keeps_its_name_signature_and_bare_verdict(monkeypatch):
-    """The reason rides on the slot precisely so this stays true: the three tool loops are
-    monkeypatched by name (core.inference.llama_cpp.wait_tool_decision and friends), and a fake
-    that returns a bare string and never touches slot["reason"] must keep working."""
+    """The reason rides on the slot so fakes that return a bare verdict string keep working."""
     monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
@@ -505,8 +497,7 @@ def test_a_departing_follower_drops_its_stamp_promptly():
     assert run_subscribers.is_attended("run-c") is False
 
 
-# Two followers on one run (two tabs, or a reconnect): one's cleanup must not clear the
-# other's stamp, which is only refreshed every 15s.
+# Cleanup by one follower must not clear another's stamp, which refreshes only every 15s.
 
 
 def test_one_tab_closing_leaves_another_tabs_attendance_intact():
@@ -553,8 +544,7 @@ def test_a_follower_only_clears_its_own_stamp_not_the_run():
     assert run_subscribers.is_attended("run-solo") is False
 
 
-# Parking makes no progress, so without renewing the run lease the sweeper cancels
-# an attended park at _LEASE_TIMEOUT_SECONDS.
+# Parking makes no progress, so renew the run lease before _LEASE_TIMEOUT_SECONDS or be swept.
 
 
 def test_an_attended_park_renews_the_runs_lease(monkeypatch):
@@ -654,8 +644,7 @@ def test_a_departure_only_clears_its_own_accounts_stamp():
 
 
 def test_another_accounts_follower_cannot_hold_this_park_open(monkeypatch):
-    """The reachable consequence: account B watching its own run must not keep account A's
-    approval alive, nor keep renewing A's lease."""
+    """Another account's follower on its own run must not hold this park or renew its lease."""
     monkeypatch.setattr(tool_approvals, "_PARK_TIMEOUT_S", 0.2)
     monkeypatch.setattr(tool_approvals, "_LEASE_RENEW_EVERY_S", 0.0)
     renewals = []

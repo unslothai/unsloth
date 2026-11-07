@@ -389,9 +389,8 @@ def _inject_local_providers(
     request: Request,
     expect_gen: Optional[str] = None,
 ) -> Optional[int]:
-    """Mutate recipe in-place: point is_local providers at this server and mint a short-lived internal
-    sk-unsloth-* key for workflow auth. Returns the minted key's row id (for the caller to revoke on
-    completion), or ``None`` when no local provider is reachable from an LLM column."""
+    """Points is_local providers at this server and mints a short-lived sk-unsloth-* key; returns
+    its row id (caller revokes on completion) or None if no local provider."""
     providers = recipe.get("model_providers")
     if not providers:
         return None
@@ -487,18 +486,9 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
-    """Fill in the HF endpoint for a backend-executed seed fetch, in place.
-
-    Data Designer fetches the seed in this process, so the endpoint must be the
-    one THIS machine can reach. A client that sends none (the normal case) gets
-    HF_ENDPOINT resolved here, which matters for a remote browser: /api/health
-    reports the public default to it for a loopback mirror, and shipping that
-    back would bypass the mirror on the deployments that need it most. An
-    endpoint the user typed into the seed node is left alone, except that a managed
-    account may only use this server's own endpoint: the fetch runs in this process,
-    outside the recipe worker's egress guard, and follows redirects, so checking the
-    typed address alone would not keep it off loopback, LAN or metadata services.
-    """
+    """Seed fetch runs in this process: no client endpoint means HF_ENDPOINT here; typed endpoints
+    stay, but managed accounts may only use this server endpoint, since redirects could reach
+    loopback, LAN or metadata."""
     seed_config = recipe.get("seed_config")
     if not isinstance(seed_config, dict):
         return

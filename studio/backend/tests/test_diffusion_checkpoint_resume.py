@@ -45,9 +45,8 @@ def _identity(**overrides) -> dc.CheckpointIdentity:
 
 
 class _Run:
-    """A minimal stand-in for a trainer: one trainable tensor, a real optimizer, a real LR
-    schedule and the shared permutation sampler, wired exactly as both trainers wire them so
-    the resume helpers are exercised on the real objects rather than mocks."""
+    """Stand-in trainer: one trainable tensor, a real optimizer, LR schedule and permutation
+    sampler, wired as both trainers wire them, not mocked."""
 
     def __init__(
         self,
@@ -114,8 +113,7 @@ def _healthy_diffusers(healthy_diffusers):
 
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
-    """A run output directory inside the (per-test) Unsloth outputs root, since the resume
-    path resolver refuses anything outside it."""
+    """Must lie under the outputs root; the resume path resolver refuses anything outside it."""
     from utils.paths import outputs_root
 
     d = outputs_root() / "my-lora-run"
@@ -166,8 +164,7 @@ def _cosine_schedule(
 
 
 def _STREAMS() -> dict:
-    """The two random.Random streams both trainers own. A bundle without them cannot restore the
-    crop/flip and variant draws, and the preflight refuses it."""
+    """Loop and variant random.Random streams; without them a bundle cannot restore the draws."""
     import random as _random
     return {"loop": _random.Random(0), "variant": _random.Random(1)}
 
@@ -200,9 +197,8 @@ def test_a_failed_promotion_puts_the_old_checkpoint_back(run_dir, monkeypatch):
 
 
 def test_a_kill_between_the_swap_and_the_rename_does_not_lose_the_checkpoint(run_dir, monkeypatch):
-    """Same window, harder ending: the process dies after the old bundle is moved aside. The
-    orphan is the run's last resumable state, so the next save must hand it back rather than
-    sweep it up as abandoned staging."""
+    """A kill after the old bundle is moved aside leaves an orphan that is the last resumable state,
+    so the next save hands it back instead of sweeping it as staging."""
     run = _Run(run_dir)
     first, error = run.save(4)
     assert error is None and first is not None
@@ -1346,8 +1342,7 @@ def test_an_image_replaced_in_place_changes_the_dataset_fingerprint(tmp_path):
 
 
 def test_the_fingerprint_probe_does_not_read_whole_images(tmp_path):
-    """It runs on the route thread before the resident model is evicted, so it must not scale
-    with the dataset. Head and tail only, whatever the file size."""
+    """On the route thread before eviction: reads only head and tail, never whole images."""
     import time
 
     small = tmp_path / "small.png"
@@ -1455,8 +1450,7 @@ def test_a_partial_ema_shadow_is_refused_rather_than_half_restored():
 
 
 def test_a_resume_refuses_a_checkpoint_whose_ema_is_incomplete(run_dir):
-    """The end of the same fence, on the real restore path: the run stops with a reason
-    rather than continuing on a half-restored average."""
+    """An incomplete EMA stops the run with a reason, not a half-restored average."""
     from core.training.diffusion_checkpoint import ResumeError
     from core.training.diffusion_train_extras import LoRAEMA
     from safetensors.torch import save_file
@@ -1498,8 +1492,7 @@ def test_the_sdxl_trainer_binds_its_output_dir_before_scanning_checkpoints():
 
     source = inspect.getsource(diffusion_lora_trainer).splitlines()
     scan = next(i for i, line in enumerate(source) if "snapshot_checkpoints(out_dir)" in line)
-    # The binding that covers it has to be at the loop's own indentation -- one nested inside an
-    # `if` that returns does not run on the normal path.
+    # The binding must sit at the loop's own indent, not inside an if that returns early.
     scan_indent = len(source[scan]) - len(source[scan].lstrip())
     bound = [
         i
@@ -1595,9 +1588,8 @@ def test_a_shortened_or_repeating_permutation_is_refused(run_dir):
 
 
 def test_optimizer_moments_with_no_class_beside_them_are_refused(run_dir):
-    """This writer records the class whenever it writes moments, so an optimizer file with
-    none is hand-edited -- and foreign moments load cleanly (shapes and counts match) then
-    die on the first step, in the child, after the route has evicted the resident models."""
+    """The writer always records the optimizer class with its moments, so one without it is
+    hand-edited; foreign moments load cleanly, then die on the first step after eviction."""
     from core.training.diffusion_checkpoint import ResumeError
 
     run = _Run(run_dir)
@@ -1614,9 +1606,8 @@ def test_optimizer_moments_with_no_class_beside_them_are_refused(run_dir):
 
 
 def test_a_bundle_with_no_sampler_or_rng_state_is_refused_before_teardown(run_dir):
-    """Both are mandatory for an image run and both were checked only in the child: the
-    sampler by restore_resume_state, the RNG not at all (restore_rng_state silently leaves
-    the generator at its fresh seed, and every latent, noise and timestep comes from it)."""
+    """Both are mandatory for image runs and refused before teardown: restore_resume_state checks
+    the sampler, but restore_rng_state silently leaves the RNG at its fresh seed."""
     from core.training.diffusion_checkpoint import ResumeError
     for drop, expected in (
         ("sampler", "dataset sampler position"),
@@ -1677,9 +1668,8 @@ def test_the_identity_covers_cfg_dropout(run_dir):
 
 
 def test_the_identity_covers_the_trajectory_knobs(run_dir):
-    """Each of these is read from the INCOMING config while the moments and the scheduler
-    position come from the bundle, so changing one continues a run whose objective or
-    learning-rate curve is no longer the one those moments were produced under."""
+    """These fields come from the incoming config while moments and scheduler position come from the
+    bundle, so changing one continues a run under a different objective or LR curve."""
     base = _Run(run_dir)
     for field, value, label in (
         ("flow_shift", 3.0, "timestep shift"),
@@ -1721,15 +1711,13 @@ def test_disabling_min_snr_is_a_mismatch_not_an_unknown(run_dir):
 
 
 def test_the_identity_covers_the_input_stream(run_dir):
-    """Both trainers build the latent cache and the crop/flip variant plan from these BEFORE
-    restore_resume_state puts the RNG back, so changing one continues the old optimizer and
-    sampler against a different sequence of images."""
+    """Both trainers build the latent cache and crop/flip variant plan from these before
+    restore_resume_state restores the RNG, so changing one pairs old state with new images."""
     import dataclasses
 
     base = _Run(run_dir)
     for field, value, label in (
-        # seed goes through dataclasses.replace: _Run takes its own seed argument for
-        # torch.manual_seed and does not forward it to the config.
+        # seed goes through dataclasses.replace; _Run takes its own seed arg, not the config.
         ("seed", 1234, "random seed"),
         ("cache_latents", False, "latent caching"),
         ("cache_variants", 8, "cached crop variants"),
@@ -1832,10 +1820,8 @@ def test_a_first_periodic_save_does_not_spend_the_previous_runs_bundles(run_dir)
 
 
 def test_both_trainers_honour_the_fp32_optimizer_override(run_dir, monkeypatch):
-    """The preflight refuses 8-bit moments when the override is set, which is only sound if
-    every trainer actually obeys it -- otherwise DiT checkpoints written on this host become
-    unresumable on the same host. Asked of the factories themselves, including for a resume of
-    an 8-bit bundle, which is the one case that otherwise builds AdamW8bit."""
+    """The preflight refuses 8-bit moments under UNSLOTH_DIFFUSION_FP32_OPTIM, which only holds if
+    every trainer obeys it; factories are checked, including an 8-bit bundle resume."""
     import core.training.diffusion_dit_trainer as dit
     import core.training.diffusion_lora_trainer as sdxl
 
@@ -1849,9 +1835,8 @@ def test_both_trainers_honour_the_fp32_optimizer_override(run_dir, monkeypatch):
 
 
 def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
-    """The last iteration deliberately writes no bundle, so with save_steps on the newest
-    thing left is the run's own checkpoint-400 of a run that finished at 500. The preflight
-    cannot see the run status, so a later resume rolled everything back and retrained 401-500."""
+    """The last iteration writes no bundle, so with save_steps the newest left is checkpoint-400 of
+    a 500-step run; a resume then rolled back and retrained 401-500."""
     earlier = _Run(run_dir)
     kept, error = earlier.save(3)
     assert error is None and kept is not None
@@ -1925,8 +1910,7 @@ def test_eight_bit_moments_are_refused_when_the_host_cannot_build_them(run_dir, 
 
 
 def test_the_identity_covers_lora_dropout(run_dir):
-    """Both trainers pass lora_dropout to the LoRA constructor, so it changes the stochastic
-    forward the restored moments were produced against."""
+    """lora_dropout changes the stochastic forward the restored moments were built against."""
     run = _Run(run_dir, lora_dropout = 0.0)
     path, error = run.save(5)
     assert error is None
@@ -1943,9 +1927,8 @@ def test_the_identity_covers_lora_dropout(run_dir):
 
 
 def test_the_resumed_event_seeds_the_live_counters(runs_dir):
-    """Until the first post-resume progress event, step and total_steps stayed at their idle
-    values: the UI showed 0/0 after restoring step 400 of 500, and an OOM on the first step
-    persisted an errored run with both recorded as zero. The event carries them."""
+    """The resumed event must carry step and total_steps: until the first progress event they stayed
+    idle, showing 0/0 after restoring step 400 of 500; an OOM then persisted zeros."""
     from core.training.diffusion_training_service import DiffusionTrainingService
 
     service = DiffusionTrainingService()
@@ -1988,9 +1971,8 @@ def test_a_resume_into_a_new_folder_that_died_first_is_still_resumable(run_dir, 
 
 
 def test_a_checkpoint_with_no_sampler_state_is_refused(run_dir):
-    """The RNG is restored to a point AFTER the saved permutation was drawn, so a fresh sampler
-    generates a different order: images silently skipped or repeated under a resume that
-    reported success. Every bundle this format writes carries sampler state."""
+    """The RNG is restored past the saved permutation draw, so a fresh sampler reorders images,
+    silently skipping or repeating them; every bundle carries sampler state."""
     run = _Run(run_dir)
     run.step_once(0.1)
     run.save(3)
@@ -2019,9 +2001,8 @@ def test_the_sampler_reports_whether_it_restored():
 
 
 def test_the_identity_records_the_precision_the_run_will_actually_use(monkeypatch, run_dir):
-    """A pre-Ampere card resolves a bf16 request to fp16. Recording the REQUEST let an fp16
-    bundle resume in bf16 on a newer card, continuing restored moments under different
-    frozen-base numerics and calling it a clean resume."""
+    """A pre-Ampere card resolves bf16 to fp16, so the identity must record the precision actually
+    used; recording the request let an fp16 bundle resume as bf16 on a newer card."""
     from core.training import diffusion_train_common as dtc
 
     cfg = _Run(run_dir).cfg
@@ -2108,8 +2089,7 @@ def test_a_mirror_backed_run_pairs_the_revision_with_the_repo_it_came_from(monke
 
 
 def test_both_trainers_pin_the_revision_after_the_load():
-    """Source-ordered: the loop needs a GPU, so this asserts the call sits after the load event
-    and before the restore that validates against it."""
+    """Source-ordered, as the loop needs a GPU: the pin must follow load and precede restore."""
     for name in ("diffusion_lora_trainer", "diffusion_dit_trainer"):
         src = (Path(dc.__file__).resolve().parent / f"{name}.py").read_text(encoding = "utf-8")
         pin = src.index("identity = with_resolved_revision(")
@@ -2354,9 +2334,8 @@ def test_a_stopped_retrain_fences_the_older_runs_checkpoints(run_dir):
 
 
 def test_the_fencing_keeps_a_bundle_this_run_wrote_over_an_old_one(run_dir):
-    """Identity, not pathname. A retrain that saves at a step an earlier run already used owns
-    the bundle now sitting there, and deleting it by name would throw away the stop checkpoint
-    the user asked for."""
+    """Fence by identity, not pathname: a retrain saving at a step an earlier run used owns the
+    bundle there, so deleting by name would discard the user's stop checkpoint."""
     earlier = _Run(run_dir, save_total_limit = 0)
     earlier.step_once(0.5)
     earlier.save(5)
@@ -2456,9 +2435,8 @@ def test_a_source_fallback_bundle_is_held_to_the_same_load_gate(run_dir):
 
 
 def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
-    """The DiT trainer never reads mixed_precision: weight_dtype is bf16 on CUDA. Recording the
-    REQUEST put fp16 or "no" in the identity of a run that executed in bf16, and a later bf16
-    resume of it was rejected as a precision mismatch between two runs that ran identically."""
+    """The DiT trainer never reads mixed_precision and runs bf16 on CUDA; recording the request put
+    fp16 or no into the identity, so a bf16 resume was wrongly rejected."""
     import dataclasses
 
     import torch
@@ -2562,9 +2540,8 @@ def test_a_read_does_not_undo_a_promotion_in_flight(run_dir):
 
 
 def test_read_side_recovery_restores_the_newest_stacked_bundle(run_dir):
-    """Filesystem order would restore whichever hidden bundle appeared first. With otherwise
-    identical identities the resume scan then accepts an older branch's adapter, optimizer,
-    scheduler and RNG instead of the one that was in the slot immediately before the crash."""
+    """Filesystem order must not pick the bundle: with identical identities the scan would accept an
+    older branch's state instead of the newest one left before the crash."""
     run = _Run(run_dir, save_total_limit = 0)
     run.save(6)
     older = run_dir / f"{dc._STAGING_PREFIX}replaced-6-aaaaaaaa"
@@ -2645,9 +2622,8 @@ def test_the_resume_action_names_a_bundle_that_actually_loads(run_dir):
 
 
 def test_a_displaced_bundle_is_stamped_when_it_is_moved_aside(run_dir):
-    """os.replace does NOT restamp the directory -- the inode keeps the mtime the bundle was
-    written with. An old checkpoint moved aside therefore looked long-abandoned the instant it
-    arrived, and a concurrent read handed it back into the slot the writer was about to fill."""
+    """os.replace does not restamp the directory, so a bundle moved aside keeps its old mtime and
+    looks abandoned; a concurrent read could hand it back."""
     run = _Run(run_dir, save_total_limit = 0)
     written, error = run.save(4)
     assert error is None and written is not None

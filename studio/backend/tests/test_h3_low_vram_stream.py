@@ -277,9 +277,7 @@ def _tiny_qwen3_vl():
 
 
 def test_an_image_prompt_encodes_through_the_streamed_conditioner(monkeypatch):
-    """Keyframe / reference prompts run the Qwen3-VL vision tower inside the streamed conditioner. Its position
-    interpolation reads the offloaded embedding's device (CPU under group offload; transformers 5.5), which raised a
-    cuda / cpu device mismatch. The streamed encode must match the whole-module one."""
+    """Qwen3-VL's vision tower reads the offloaded device; streamed encode must match whole-module."""
     import copy
     import inspect
 

@@ -53,11 +53,9 @@ def _reclaimable_file_bytes(
     v1: bool,
     credit_mapped: bool = False,
 ) -> int:
-    """Droppable page cache in bytes: inactive_file + (active_file - mapped - dirty - writeback, conservative).
-
-    shmem/tmpfs is on the anon LRU, never counted. Not crediting active_file counted twice-read models as used.
-    ``credit_mapped``: count clean mapped pages too, as MemAvailable does; without it the reading flips as MGLRU
-    moves the same mapped pages between the lists."""
+    """Droppable page cache bytes: inactive_file + active_file minus mapped, dirty and writeback
+    (conservative); shmem/tmpfs is never counted; credit_mapped also counts clean mapped pages as
+    MemAvailable does, else MGLRU flips the reading."""
     values: dict[str, int] = {}
     try:
         with open(path, "r", encoding = "utf-8") as f:
@@ -265,9 +263,8 @@ def cgroup_swap_allowance_bytes(
 def cgroup_v1_memsw_headroom_bytes(
     cgroup_root: Optional[str] = None, proc_self_cgroup: Optional[str] = None
 ) -> Optional[int]:
-    """The tightest cgroup v1 RAM+swap (``memsw``) headroom on this cgroup and its ancestors, the most RAM and swap
-    together this process can still charge; None without a finite memsw limit. Unreadable membership is read as
-    the namespace root; a finite limit whose usage cannot be read yields 0."""
+    """Tightest cgroup v1 memsw headroom (RAM plus swap) up the cgroup chain; None without a finite
+    limit, 0 if its usage is unreadable; unreadable membership uses the root."""
     cgroup_root = CGROUP_ROOT if cgroup_root is None else cgroup_root
     proc_self_cgroup = PROC_SELF_CGROUP if proc_self_cgroup is None else proc_self_cgroup
     try:

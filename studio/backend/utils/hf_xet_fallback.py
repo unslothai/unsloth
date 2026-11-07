@@ -431,8 +431,7 @@ def _live_reserved_locked() -> int:
 
 
 def _reserve_worker_budget(nbytes: int) -> None:
-    """Hold *nbytes* against this thread's imminent spawn, replacing any reservation it still owns
-    (a retried sizing must not stack)."""
+    """Holds nbytes for this thread's spawn; replaces its old hold so a retry does not stack."""
     global _budget_token_seq
     with _budget_lock:
         stale = getattr(_pending_reservation, "token", None)
@@ -445,9 +444,8 @@ def _reserve_worker_budget(nbytes: int) -> None:
 
 
 def bind_worker_budget(pid: "Optional[int]") -> None:
-    """Attach the reservation this thread just made to *pid*, so it frees when the worker exits.
-
-    ``None`` drops it, for a spawn that never produced a process."""
+    """Attaches this thread's reservation to pid so it frees when the worker exits; None drops it
+    for a spawn that never produced a process."""
     token = getattr(_pending_reservation, "token", None)
     _pending_reservation.token = None
     if token is None:
@@ -821,9 +819,8 @@ def _studio_prepare_for_http(
     *,
     cache_dir: Optional[str] = None,
 ) -> None:
-    """Unsloth's marker-aware purge before an HTTP resume, keeping the download manager's ``.transport``
-    accounting consistent (vs unsloth_zoo's generic default). Guarded: a purge failure is logged,
-    not fatal to the retry."""
+    """Unsloth's marker-aware cache purge before an HTTP resume, keeping .transport accounting
+    consistent (unlike unsloth_zoo's generic default); a failed purge is logged, not fatal."""
     try:
         from hub.utils.download_registry import prepare_cache_for_transport
         prepare_cache_for_transport(

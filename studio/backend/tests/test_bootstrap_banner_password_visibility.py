@@ -59,9 +59,8 @@ def _banner_guard():
 
 
 def test_the_banner_guard_does_not_key_only_on_this_call_creating_the_admin():
-    """run_server's pre-bind gate calls ensure_default_admin() before the lifespan on a
-    tunnel launch, so its return value is False there and a guard keyed on it alone skips
-    the banner on exactly the launch that has no autofill to fall back on."""
+    """On a tunnel launch run_server's pre-bind gate calls ensure_default_admin() before the
+    lifespan, so its return is False; a banner keyed on it alone is skipped there."""
     guard = _banner_guard()
 
     assert "admin_created_this_process" in guard

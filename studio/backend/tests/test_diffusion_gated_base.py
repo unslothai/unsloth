@@ -601,8 +601,7 @@ def test_a_deleted_or_renamed_base_still_raises_even_when_cached(monkeypatch):
 
 
 def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
-    """A hub version that attaches no response leaves the status unreadable: neither 401 nor 404
-    can be proven, so the cache escape is not granted. Fail safe."""
+    """No response means no readable status, so the cache escape is not granted; fail safe."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     # Built via __new__: hub 1.x requires `response` and __init__ dereferences it unguarded.
@@ -653,9 +652,7 @@ def _native_backend_ready(monkeypatch):
 
 
 def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
-    """The plan alone is not enough: images-page.tsx wraps getDiffusionDownloadPlan in a try/catch
-    and calls /images/load regardless, so the plan's 400 is swallowed and the load would run with
-    no preflight. The diffusers backend checks in both places; the native one must too."""
+    """images-page.tsx swallows the plan's 400 and still calls /images/load; native must preflight too."""
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
@@ -787,9 +784,7 @@ def _stub_shared_download(
 
 
 def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
-    """The preflight clears a base found under EITHER cache root, but the companion downloads are
-    pinned to the live one, so after a cache-folder change the load re-fetches every cached asset
-    and, with no valid token for a gated base, 401s outright."""
+    """Companion downloads pin to the live cache root, so after a folder change a gated base can 401."""
     seen = _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = {"ae.safetensors"})
     DiffusionBackend()._prefetch_files(
         "unsloth/FLUX.1-dev-GGUF",
@@ -843,9 +838,7 @@ def test_a_prefetch_split_across_roots_hands_back_no_snapshot(monkeypatch):
 
 
 def test_a_prefetch_wholly_in_one_root_still_hands_back_that_snapshot(monkeypatch):
-    """The other side, so the guard above cannot be satisfied by never returning a snapshot: when
-    every prefetched file does live in the manifest's snapshot, the loader is still handed it. A
-    subfolder entry resolves to the same root as a top-level one."""
+    """A prefetch wholly in one root still returns its snapshot; subfolder files resolve there too."""
     root = "/old-hub/models--bfl--base/snapshots/" + "a" * 40
     _stub_split_download(
         monkeypatch,

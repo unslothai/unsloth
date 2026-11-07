@@ -50,8 +50,7 @@ def moe_expert_pair(filename: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 def moe_pick_pairs(fam: Any, *names: Optional[str]) -> bool:
-    """Whether a single-file / GGUF pick of ``fam`` is loadable: any single-DiT family, or a dual-expert
-    one whose name pairs its partner expert."""
+    """Single-file or GGUF pick: loadable for single-DiT, or MoE whose name pairs its partner."""
     if not getattr(fam, "is_moe", False):
         return True
     return any(moe_partner_filename(Path(str(n)).name if n else None) for n in names if n)

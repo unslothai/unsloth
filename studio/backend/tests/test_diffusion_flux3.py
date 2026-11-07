@@ -580,8 +580,7 @@ def test_nvfp4_is_denied_for_flux3_only():
 
 
 def _mx_linear(torch):
-    """A Linear whose weight class is named like torchao's MXTensor and whose forward asserts a contiguous input,
-    the way ``to_mx`` does."""
+    """Linear named like torchao's MXTensor, asserting contiguous input as to_mx does."""
 
     class MXTensor(torch.Tensor):
         pass
@@ -1196,8 +1195,7 @@ def _official_manifest(variant, with_upsampler):
 
 
 def _official_layout(tmp_path, variant, with_upsampler):
-    """A local copy of the official repo: the three component folders and the manifest, no upsampler (it lives in
-    another repo)."""
+    """Official repo copy: three component folders and manifest; upsampler lives elsewhere."""
     root = tmp_path / f"{variant}-{with_upsampler}"
     for component in ("text_encoder", "transformer", "vae"):
         folder = root / component
@@ -2108,10 +2106,9 @@ def test_flux3_reference_edits_use_the_measured_activations(monkeypatch):
 
 @pytest.mark.parametrize("with_upsampler", [False, True])
 def test_the_block_graph_drops_the_prompt_upsampler_step(monkeypatch, with_upsampler):
-    # diffusers#15058 puts a prompt upsampler step first in both auto block graphs; its text-to-image branch has no
-    # trigger input, so it would run on every call and need the ~19 GB upsampler Studio never loads.
-    # flux3_blocks only looks the class up on the diffusers module, so a stub module stands in for it and the
-    # check runs on installs without diffusers too.
+    # diffusers 15058 puts a prompt upsampler step first in both auto graphs; its text-to-image
+    # branch has no trigger, so it runs every call (~19 GB Studio never loads); a stub diffusers
+    # module lets the check run without diffusers
     from core.inference.diffusion_flux3 import FLUX3_DISTILLED_BLOCKS, flux3_blocks
 
     diffusers = types.ModuleType("diffusers")

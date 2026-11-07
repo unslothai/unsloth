@@ -1259,8 +1259,7 @@ def test_both_loaders_apply_the_row_bound():
         assert "row_bound_for_resume" in calls[loader]
         assert "record_row_bound" in calls[loader]
 
-    # Both pass the detected branch rather than defaulting: the client-supplied
-    # dataset flags cannot stand in for it.
+    # Both pass the detected branch, never a default: client dataset flags cannot stand in.
     assert worker_src.count("branch_never_packs = ") >= 2
     assert worker_src.index("_pre_detect_training_model(\n") < worker_src.index(
         "branch_never_packs = bool("

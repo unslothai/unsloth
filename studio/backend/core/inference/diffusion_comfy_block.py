@@ -116,12 +116,7 @@ _DEQUANT_CHUNK_BYTES = 16 << 20
 
 
 def _dequant_temp_bytes_per_row(fmt: str, cols: int, pre_quant: bool) -> int:
-    """Peak bytes of intermediates one row of ``_dequant_block_rows`` holds at once (``cols`` logical columns).
-
-    nvfp4: int32 codes (2 per packed byte: 2 * cols), two masked int32 index tensors and two float32 gathers
-    of cols / 2 each (8 * cols), the stacked float32 values (4 * cols), the scaled float32 product (4 * cols);
-    the masks and gathers are freed before the product, so the peak is codes + gathers + stack. mxfp8: float32
-    codes and their product (8 * cols). A pre-quant scale adds one float32 product."""
+    """Peak temp bytes per row: 14 per column for nvfp4, 8 for mxfp8, plus 4 with a pre-quant scale."""
     peak = 14 * cols if fmt == NVFP4 else 8 * cols
     return peak + (4 * cols if pre_quant else 0)
 

@@ -517,8 +517,7 @@ def test_cancelled_start_does_not_retry(monkeypatch):
 
 
 def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):
-    # A server switching task mid-request (Vevo2 Clone <-> Edit) failed the request when the old
-    # process outlived the SIGKILL wait in GPU teardown.
+    # A mid-request task switch failed when the old server outlived the SIGKILL wait.
     class Stuck:
         pid = 999999999
         waits: list = []

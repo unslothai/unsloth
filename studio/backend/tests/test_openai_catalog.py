@@ -284,8 +284,7 @@ def test_retrieve_loaded_model_skips_catalog_scan(monkeypatch):
 
 
 def test_cached_local_catalog_offloads_and_caches(monkeypatch):
-    # The filesystem scan must run off the event loop (asyncio.to_thread) and be
-    # cached, so a burst of /v1/models calls does not re-scan or block.
+    # Scan off the loop via asyncio.to_thread and cache it, so bursts do not re-scan.
     calls = {"scan": 0, "threaded": 0}
 
     def _fake_collect(_root, **_kwargs):
@@ -402,8 +401,7 @@ def test_a_standalone_gguf_does_not_advertise_a_quant_that_stops_resolving(monke
     llama.model_identifier = "org/Foo"
     assert inf._openai_model_objects()[0]["quant"] == "Q4_K_M"
 
-    # A cold index cannot prove the reference either, and publishing on no proof is
-    # exactly what hands out the pin that later fails to resolve.
+    # A cold index cannot prove a reference; publishing unproven pins hands out ones that fail.
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     # Stub the walk: a real multi-root scan can exceed the cold-wait budget and 503 under load.
     monkeypatch.setattr(resolver, "_build_index", lambda: {})
@@ -448,8 +446,7 @@ def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
 
     assert inf._resolves_to_resident("/models/A/sub/B") is True
     assert inf._resolves_to_resident("/models/A") is False
-    # With nothing indexed there is no nesting to tell apart, so the directory-to-file
-    # match this exists for must still hold.
+    # Empty index: no nesting to tell apart, so the directory-to-file match must still hold.
     monkeypatch.setitem(inf._CATALOG_CACHE, "models", [])
     assert inf._resolves_to_resident("/models/A") is True
 
@@ -773,8 +770,7 @@ def test_list_builds_the_index_for_quant_pins_only_when_it_never_was(monkeypatch
     monkeypatch.setattr(resolver, "_index", lambda: pytest.fail("listing rebuilt the index"))
     assert "publisher/Qwen3:Q4_K_M" in [m["id"] for m in _listed()]
 
-    # Never built (first listing after start): build it, or a client that reads the list once
-    # at connect never sees a pin.
+    # Build the index when unbuilt, or a client that lists once at connect never sees a pin.
     built = resolver._scan[1]
     monkeypatch.setattr(resolver, "_scan", (0.0, {}))
     monkeypatch.setattr(resolver, "_index", lambda: built)

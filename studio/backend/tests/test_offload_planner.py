@@ -157,8 +157,7 @@ def test_partial_spill_takes_only_what_is_needed():
 
 
 def test_a_load_that_cannot_fit_keeps_mmap_and_says_so():
-    """Below the resident floor, -ot has nothing left to give. mmap must stay:
-    it is the only thing that makes an over-commit pageable instead of killed."""
+    """mmap must stay when -ot is exhausted: it is what keeps an over-commit pageable."""
     plan = plan_placement(q4_layout(), [4 * GIB], 64 * GIB, 131072)
     assert plan.insufficient is True
     assert plan.changed is False
@@ -192,8 +191,7 @@ def test_token_embd_is_never_charged_to_vram():
 
 
 def test_load_mode_none_is_withheld_when_host_ram_cannot_hold_the_spill():
-    """Turning mmap off on a host that cannot hold the spill turns a pageable
-    load into an OOM kill."""
+    """Disabling mmap without host RAM for the spill turns a pageable load into an OOM kill."""
     layout = q4_layout()
     roomy = plan_placement(layout, [12 * GIB], 64 * GIB, 8192)
     cramped = plan_placement(layout, [12 * GIB], 3 * GIB, 8192)
@@ -232,8 +230,7 @@ def test_the_dense_pattern_does_not_catch_the_router():
 
 
 def test_the_moe_pattern_spills_experts_but_not_shared_experts():
-    """Shared experts run on EVERY token, like a dense FFN, for 0.6% of the
-    model. Spilling them buys nothing and costs dense-like bandwidth."""
+    """Shared experts hit every token like a dense FFN; spilling them only costs bandwidth."""
     moe = _uniform_layout(
         n_blocks = 40,
         spillable_total = 19_671_285_760,
@@ -274,8 +271,7 @@ def test_plan_to_args_shape():
 
 
 def test_largest_first_minimises_overshoot():
-    """Best-fit-decreasing: cover a small residual with a small block, not by
-    dragging a 400 MiB block across the bus on every token."""
+    """Cover a small residual with a small block, not a big one crossed on every token."""
     layout = uneven_layout()
     floor = resident_floor_bytes(layout, 4096)
     budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB
@@ -508,9 +504,8 @@ def test_a_full_spill_abstains_when_the_cache_layout_is_unknown():
 
 
 def test_the_row_split_matches_llama_cpp():
-    """_device_slots is a transcription of llama-model.cpp:1439-1457, so pin the
-    two properties that matter: contiguous ranges, and sizes in proportion to
-    free VRAM with the remainder landing on the EARLIER device."""
+    """_device_slots mirrors llama-model.cpp:1439-1457: contiguous ranges sized in proportion to
+    free VRAM, with the remainder rows landing on the earlier GPU."""
     assert [len(r) for r in _device_slots(65, [8 * GIB, 8 * GIB])] == [33, 32]
     assert [len(r) for r in _device_slots(65, [24 * GIB, 8 * GIB])] == [49, 16]
     assert [len(r) for r in _device_slots(65, [8 * GIB, 8 * GIB, 8 * GIB])] == [22, 22, 21]
@@ -733,9 +728,7 @@ def test_kv_quantisation_is_off_by_default():
 
 
 def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
-    """9 GiB with 64K of context: the f16 cache alone puts the resident floor
-    at 9.73 GiB against 8 GiB usable, so no rung of the ladder fits. Halving the
-    cache brings the floor to 7.73 and it does."""
+    """The f16 KV cache alone overshoots 8 GiB usable at 64K; halving it makes the load fit."""
     layout = q4_layout()
     without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536)
     assert without.insufficient is True
@@ -838,8 +831,7 @@ def test_layout_matches_the_measured_buckets(
 
 @needs_gguf
 def test_the_hybrid_cache_is_priced_on_attention_layers_only():
-    """qwen35 is 1-in-4 attention, so a naive all-layers cache would be 4x too
-    big and would refuse fits that are really there."""
+    """qwen35 is 1-in-4 attention; an all-layers cache would be 4x too big and refuse fits."""
     layout = layout_from_gguf(Q4_PATH)
     assert layout.n_layers == 64
     assert layout.n_attention_layers == 16
@@ -1006,9 +998,7 @@ def _dense_q4() -> ModelLayout:
 
 
 def test_a_unified_memory_host_never_spills():
-    """Apple Silicon, an AMD APU and a Vulkan iGPU all report host RAM as VRAM,
-    so moving a tensor to "host" frees nothing on the device. The planner must
-    abstain rather than emit -ot flags that buy no memory and cost real speed."""
+    """Unified-memory hosts report RAM as VRAM, so a spill frees nothing on the device; abstain."""
     plan = plan_placement(
         _dense_q4(),
         [8 * GIB],
@@ -1030,9 +1020,8 @@ def test_a_spilling_plan_reports_what_it_will_cost():
 
 
 def test_a_small_host_is_predicted_to_suffer_more_for_the_same_spill():
-    """Spilled decode runs on the CPU backend (ggml migrates an op only at
-    batch >= 32, and decode is batch 1), so the penalty tracks core count. A
-    desktop must not be told a server's story."""
+    """Spilled decode runs on the CPU at batch 1 (ggml migrates an op only at batch >= 32), so the
+    penalty tracks core count; a desktop must not be told the server story."""
     layout, vram, ram, ctx = _dense_q4(), [8 * GIB], 64 * GIB, 32768
     big = plan_placement(
         layout,
@@ -1072,14 +1061,8 @@ def test_routed_experts_are_charged_less_than_a_dense_ffn_of_equal_size():
 
 @needs_gguf
 def test_the_mtp_block_is_not_counted_as_spillable():
-    """blk.<nextn> is not part of the target model and llama.cpp does not load it
-    unless a draft is engaged, so an -ot pattern naming it moves nothing.
-
-    Measured against the real binary: spilling ONLY that block leaves the host
-    buffer at exactly token_embd (682.03 MiB) and the device buffer unchanged at
-    15718.48 MiB. Counting it would credit the plan 209 MiB it can never free,
-    which is the optimistic direction that claims a fit that is not there.
-    """
+    """blk.<nextn> is not loaded without a draft, so an -ot pattern naming it frees nothing; do not
+    count it as spillable, which would credit 209 MiB it can never free."""
     layout = layout_from_gguf(Q4_PATH)
     assert layout.n_layers == 64
     assert [b.index for b in layout.blocks] == list(range(64)), "no nextn block"
@@ -1186,8 +1169,7 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
 
 
 def test_a_gguf_without_excluded_blocks_keeps_the_compact_pattern():
-    """The bound is only paid where it buys something: with nothing excluded the
-    global form is still used, which is the shape the benchmarks measured."""
+    """Bounded pattern only when blocks are excluded; else keep the compact global form."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(plan.spilled_blocks) == len(layout.blocks)
@@ -1195,9 +1177,7 @@ def test_a_gguf_without_excluded_blocks_keeps_the_compact_pattern():
 
 
 def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
-    """GPU-resident bytes outside the layout -- a vision projector, an MTP draft
-    reserve -- have to shrink the budget, or the deficit comes out too small on
-    a load the caller already judged not to fit."""
+    """GPU-resident bytes outside the layout (projector, MTP draft reserve) must shrink the budget."""
     layout = q4_layout()
     base = PlanOptions(overhead_bytes_per_device = GIB)
     charged = PlanOptions(overhead_bytes_per_device = GIB, extra_resident_bytes = 3 * GIB)
@@ -1295,9 +1275,8 @@ def test_every_expert_spelling_is_spillable(label, names, expect_mib):
 
 
 def test_routed_latent_projections_are_never_spilled():
-    """kimi-k3's ffn_routed_up/down read like experts and are not: no expert axis
-    and plain GGML_OP_MUL_MAT, so every token crosses them. Spilling one puts a
-    hot tensor on the host at the rate the cost model reserves for cold ones."""
+    """kimi-k3 ffn_routed_up/down look like experts but have no expert axis and plain
+    GGML_OP_MUL_MAT, so every token hits them; never spill them."""
     layout = _layout_from_reader(_moe_reader(["ffn_routed_up", "ffn_routed_down"]))
     assert layout.blocks[0].spillable_bytes == 0
     pattern = spill_pattern_for(layout, None)
@@ -1306,16 +1285,14 @@ def test_routed_latent_projections_are_never_spilled():
 
 
 def _swa_layout(n_blocks = 64):
-    """Every layer is attention AND the cache is per-layer uneven -- the shape
-    n_attention_layers cannot describe."""
+    """Every layer attends with an uneven per-layer cache n_attention_layers cannot express."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(n_blocks))))
     return replace(layout, has_swa = True)
 
 
 def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
-    """Gemma3 interleaves 5:1, so a window layer's cache is a fraction of a
-    full-context one. Without a vector the planner would have to spread the cache
-    evenly, so it refuses; with one it knows where the big caches land."""
+    """Gemma3 window layers cache a fraction of full context; without a per-layer vector the planner
+    spreads cache evenly and refuses, with one it sees where the big caches land."""
     layout = _swa_layout()
     half = _ALL_SPILL_VRAM // 2
     spilled = {b.index for b in layout.blocks}
@@ -1348,8 +1325,7 @@ def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
 
 
 def test_the_vector_places_the_cache_it_does_not_resize_it():
-    """Scaled to the total the caller already priced, so changing only its SHAPE
-    moves the cache between devices without changing how much cache there is."""
+    """Vector scaled to the priced total; only its shape moves cache between devices."""
     layout = _swa_layout()
     spilled = {b.index for b in layout.blocks}
     n = layout.n_layers

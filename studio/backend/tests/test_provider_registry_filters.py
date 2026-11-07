@@ -71,8 +71,7 @@ def test_openai_drops_families_that_are_not_on_the_responses_endpoint():
 
 
 def test_openai_drops_deep_research_models():
-    # Deep research rejects a request with no data source; a default Studio
-    # turn sends no tools.
+    # Deep research rejects a request with no data source; default Studio turns send no tools.
     dropped = _apply(
         "openai",
         ["o3-deep-research", "o4-mini-deep-research", "gpt-6-deep-research"],

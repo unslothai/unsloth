@@ -62,9 +62,8 @@ _CUSTOM_PROMPT_TEMPLATE_ERROR = (
 
 
 def _map_with_pickle_fallback(dataset, function, map_kwargs):
-    """dataset.map, retried in one process when the worker processes cannot receive the function: a
-    remote-code tokenizer class is pickled by value and can drag in unpicklable module state (an HTTP
-    client's SSLContext), which fails the whole multi-process map."""
+    """Retries dataset.map in one process when workers cannot pickle the function: a remote-code
+    tokenizer pickled by value can drag in unpicklable state, e.g. an SSLContext."""
     try:
         return dataset.map(function, **map_kwargs)
     except Exception as exc:
@@ -213,9 +212,8 @@ def _row_tools(tools):
 
 
 def _sharegpt_tool_turns(conversation, content = "", probe = False,):
-    """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
-    markers ``probe`` put in place of each call's arguments and each result; the conversation
-    itself when it has neither role."""
+    """Maps ShareGPT function_call/observation turns to OpenAI tool turns; with probe, arguments and
+    results become markers. Returns the conversation as is without either role."""
     if not any(
         isinstance(message, dict) and message.get("role") in ("observation", "function_call")
         for message in conversation

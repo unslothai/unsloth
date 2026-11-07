@@ -194,8 +194,7 @@ def test_processor_that_overrides_postprocess_is_left_alone():
 
 
 def test_generate_installs_it_on_the_render_pipe():
-    """The call sits in generate's chunk loop, ahead of the pipe call, so every workflow pipe (from_pipe builds its own
-    image processor) is covered."""
+    """Called in generate's chunk loop before the pipe call, so every workflow pipe is covered."""
     src = Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
     tree = ast.parse(src.read_text(encoding = "utf-8"))
     gen = next(

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Streamed denoiser: each block runs both guidance branches while its weights are on the card, so a step uploads
-them once instead of once per branch. Every block call keeps its plain inputs and shapes, so outputs are
-bit-identical. UNSLOTH_DIFFUSION_CFG_PAIR=0 streams each branch on its own."""
+"""Both CFG branches per resident block, bit-identical outputs; UNSLOTH_DIFFUSION_CFG_PAIR=0 disables"""
 
 from __future__ import annotations
 

@@ -674,8 +674,7 @@ def test_every_local_exit_without_a_tool_loop_refuses_the_image():
         "_refuse_unused_mcp_image(_mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None)",
     ):
         assert guard in statements
-    # The NPU switch check, NPU, both speech models, audio input and the GGUF passthrough
-    # return before either loop.
+    # NPU switch, speech models, audio input and GGUF passthrough return before either loop.
     calls = [
         node
         for node in ast.walk(ast.parse(src))

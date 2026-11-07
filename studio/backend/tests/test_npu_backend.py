@@ -794,10 +794,8 @@ def test_stop_ends_the_process(npu):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux")
 def test_lemond_dies_with_a_killed_owner_even_if_it_ignores_sigterm(tmp_path):
-    """A SIGKILLed Unsloth must not leave lemond (and the model FastFlowLM holds) behind.
-
-    The death signal is SIGKILL, not SIGTERM: this lemond ignores SIGTERM outright, and the real one
-    took about 9 s over it with a model loaded."""
+    """A SIGKILLed Unsloth must not leave lemond behind; lemond ignores SIGTERM, so the signal is
+    SIGKILL."""
     import signal
     import subprocess
     import time

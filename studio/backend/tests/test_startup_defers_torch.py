@@ -106,8 +106,7 @@ def _module_scope_imports(tree: ast.Module) -> list[ast.stmt]:
     [("routes/data_recipe/seed.py", "data_designer_unstructured_seed")],
 )
 def test_module_scope_does_not_import_the_seed_plugin(rel_path: str, banned: str):
-    """The runtime guards above pass vacuously wherever the plugin is not installed,
-    which is most CI jobs. This one reads the source, so it holds either way."""
+    """Runtime guards pass vacuously without the plugin, so this check reads the source."""
     tree = ast.parse((_BACKEND_DIR / rel_path).read_text(encoding = "utf-8"))
     offenders = [
         node.lineno
@@ -342,9 +341,8 @@ def test_first_paint_routes_do_not_block_the_event_loop(rel_path, func_name, cal
 
 
 def test_a_failed_detection_degrades_instead_of_raising():
-    """A torch that raises must not leave DEVICE unset. The warm swallows stage failures, so a
-    raising detection would leave DEVICE None, and then every get_device() retries the same
-    broken import while /api/health, which waits on this, answers 500."""
+    """A raising torch must not leave DEVICE None: the warm swallows the failure, every get_device()
+    retries the broken import, and /api/health (which waits on it) answers 500."""
     from utils.hardware import hardware as hw
 
     saved_device, saved_impl = hw.DEVICE, hw._detect_hardware_locked
@@ -416,9 +414,8 @@ def test_purge_partial_import_clears_the_zombie_and_leaves_live_ones():
 
 
 def test_purge_declines_when_a_compiled_submodule_is_loaded():
-    """Evicting a loaded C extension is worse than the zombie it would fix. Re-importing one
-    re-runs its module init, and pybind11 calls std::terminate on a second registration of
-    the same type."""
+    """Evicting a loaded C extension is worse than the zombie: re-importing re-runs its module init,
+    and pybind11 calls std::terminate on a second registration of the same type."""
     import sys
     from importlib.machinery import EXTENSION_SUFFIXES
     from types import ModuleType
@@ -439,9 +436,8 @@ def test_purge_declines_when_a_compiled_submodule_is_loaded():
 
 
 def test_a_broken_torch_purges_its_own_zombie(monkeypatch):
-    """_has_torch() must clean up after the import it just watched fail. Restores the real
-    torch entries exactly: leaving `torch` in sys.modules with its submodules evicted aborts
-    the pytest process the next time anything imports one."""
+    """_has_torch() must clean up its failed import: restore the real torch entries exactly, since
+    leaving torch with submodules evicted aborts pytest."""
     import builtins
     import sys
     from types import ModuleType
@@ -489,8 +485,7 @@ def test_one_detection_pass_probes_torch_once(monkeypatch):
     def fake_import(name, *args, **kwargs):
         if name == "torch":
             attempts.append(name)
-            # A loaded compiled submodule makes the purge decline, so a retry re-runs
-            # torch/__init__ in full.
+            # Loaded compiled submodules block the purge, so retries re-run torch/__init__.
             ext = ModuleType("torch._C")
             ext.__file__ = "/nonexistent/torch/_C.cpython-313-x86_64-linux-gnu.so"
             sys.modules["torch._C"] = ext

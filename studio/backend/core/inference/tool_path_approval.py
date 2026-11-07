@@ -141,8 +141,7 @@ _USER_STORAGE_MOUNTS = tuple(
 )
 
 
-# Pseudo-devices a command legitimately writes to (`2> /dev/null`); the rest of /dev is read-silent but not
-# write-silent.
+# Pseudo-devices commands write to (`2> /dev/null`); the rest of /dev is read-silent only.
 _WRITE_SILENT_DEVICE_NODES = (
     "/dev/null",
     "/dev/zero",
@@ -213,9 +212,7 @@ def _excluding_ancestors_of_studio_home(roots) -> "tuple[str, ...]":
 
 
 def _build_silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
-    """(read-silent, write-silent) roots. Write-silent is the narrower set: where tool output
-    ordinarily lands. Read-silent adds installed software and the model libraries the user pointed
-    Studio at, which a tool reads all the time and which carry no user documents."""
+    """Write-silent roots are where tool output lands; read-silent adds software and model libraries."""
     from utils.paths.storage_roots import (
         cache_root,
         project_workspaces_root,
@@ -372,9 +369,8 @@ def _silent_roots() -> "tuple[tuple[str, ...], tuple[str, ...]]":
 
 
 def _looks_absolute(text: str) -> bool:
-    """True for a path that reaches the real filesystem rather than the session workdir: POSIX
-    absolute, `~`-rooted, a Windows drive path, or a UNC share. Windows spellings count on every
-    platform, since misjudging one only costs a prompt."""
+    """True for a path reaching the real filesystem: POSIX absolute, tilde-rooted, Windows drive or
+    UNC share; Windows spellings count on every platform, as a misjudgment only costs a prompt"""
     if not text:
         return False
     if text[0] == "/":
@@ -422,9 +418,8 @@ def _uncovered_runtime_subtree(path: str, roots) -> bool:
 
 
 def _follows_its_own_root_link(candidate: str, resolved: str, roots) -> bool:
-    """*candidate* sits under a root that is itself a link INTO a runtime subtree (`/dev/stdout` ->
-    `/dev/fd/1`), and *resolved* stays inside that link's target. A root linking to a broad directory
-    (`/var/run` -> `/run`) exempts nothing, or it would cover every runtime subtree under it."""
+    """A root linking INTO a runtime subtree exempts only candidates under it that resolve inside
+    that target; a broad root (/var/run -> /run) exempts nothing"""
     for root in roots:
         if not _contained_in(candidate, (root,)):
             continue
@@ -760,8 +755,7 @@ _TEST_FILE_BINARY_OPS = frozenset({"-nt", "-ot", "-ef"})
 
 
 def _test_command_operands(args) -> "list[str]":
-    """The tokens `test`/`[` actually stat: the operand of a unary file test and both sides of
-    `-nt`/`-ot`/`-ef`."""
+    """Operands `test`/`[` stat: a unary file test's operand and both sides of -nt/-ot/-ef."""
     paths: "list[str]" = []
     for index, arg in enumerate(args):
         if arg in _TEST_FILE_UNARY_FLAGS:
@@ -1224,11 +1218,8 @@ def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
     are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
-    # Every operand this can report is absolute in some spelling, and each of those spellings needs
-    # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
-    # drive letter. A redirection keeps its target in the same token (`>/abs/x`), so the character
-    # is present there too. No such character anywhere means no operand, and the segment machinery
-    # can be skipped outright -- which is the case for almost every ordinary command.
+    # Absolute operands need a root, tilde, backslash or drive colon; with none, skip the segment
+    # scan.
     if not any(_PATH_HINT_RE.search(t) for t in tokens):
         return []
     # shlex does not split on < and >, so `echo X>/media/x` is one token.
@@ -2541,8 +2532,7 @@ _REBOUND_PATHS_KEY = "\x00__rebound__"
 _MAX_REBOUND_ALTERNATES = 8
 
 
-# Rebound names substituted into one compound expression, bounding the work on a snippet that
-# assembles a path from many variables each bound several times.
+# Caps how many rebound names are substituted into one expression, bounding the work.
 _MAX_REBOUND_NAMES = 3
 
 

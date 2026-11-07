@@ -230,9 +230,7 @@ def test_a_ui_session_that_saved_a_token_still_reads_its_own_cache(monkeypatch):
 
 
 def test_the_ambient_marker_is_a_string_everywhere_it_is_used_as_a_value(monkeypatch):
-    """Value transparent, entitlement not. Every consumer wanting the token VALUE sees a
-    plain token; cache IDENTITY is the deliberate exception, pinned by the caller-class
-    test below (this test once asserted the opposite, which was the bug)."""
+    """The ambient marker is a plain string as a value; only cache identity deliberately differs."""
     ui = hf_token_arg("hf_saved", allow_ambient_token = True)
 
     assert isinstance(ui, str)
@@ -282,8 +280,7 @@ def test_the_shared_gate_refuses_only_where_a_cache_could_answer(
 
 
 def test_the_shared_gate_asks_the_cache_before_the_hub(monkeypatch):
-    """``is_cached`` is local and the probe is a round trip, so nothing on disk must mean no
-    probe at all."""
+    """is_cached is local but the probe is a round trip, so nothing cached means no probe."""
     probes = _counting_probe(monkeypatch, False, offline = False)
 
     assert (
@@ -435,8 +432,7 @@ def test_could_not_ask_is_told_apart_from_told_no(exc_factory, is_timeout):
     ],
 )
 def test_the_probe_url_is_built_safely(monkeypatch, endpoint, repo_id, expected_url):
-    """The probe hand-builds the auth-check URL, so id quoting and endpoint normalization are
-    its own responsibility."""
+    """The probe hand-builds the URL, so it must quote the repo id and normalize HF_ENDPOINT."""
     _hub_reachable(monkeypatch)
     if endpoint is not None:
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
@@ -488,9 +484,8 @@ def test_an_unreachable_probe_takes_the_short_ttl_and_spans_the_next_request(mon
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
 def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_type):
-    """auth_check 401s; serving the host cache would bypass the gate. This is also why the
-    probe is auth_check and not repo_info: repo_info succeeds on a gated repo's public
-    metadata for an invalid token, so its success authorizes nothing."""
+    """Invalid token must deny cache reads: auth_check 401s and serving host cache would bypass the
+    gate; probe auth_check, not repo_info, whose public-metadata success authorizes nothing."""
     _hub_reachable(monkeypatch)
     seen = {}
 
@@ -521,9 +516,7 @@ def test_a_token_that_is_not_a_string_is_denied_rather_than_read_as_ambient(valu
     ["/home/u/models/foo", "C:\\models\\foo", "\\\\srv\\share\\foo", "./rel/model", "~/m/foo"],
 )
 def test_a_local_path_is_not_probed_against_the_hub(monkeypatch, path):
-    """auth_check interpolates its argument into the URL without validating it, so a local
-    path went to huggingface.co with the caller's bearer token attached, for a round trip
-    whose only answer is no."""
+    """A local path must never reach auth_check, which would send the bearer token to the Hub."""
     _hub_reachable(monkeypatch)
     probes = []
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *a, **k: probes.append(a) or True)
@@ -1391,8 +1384,7 @@ def test_the_prefer_local_scan_branch_carries_the_anonymous_guard():
     ],
 )
 def test_the_offline_anonymous_rule_is_stated_once(hf_token, offline, denied, monkeypatch):
-    """One shared rule for anonymous offline reads; six separate per-reader fixes each moved the
-    boundary."""
+    """Anonymous offline reads share one rule; per-reader fixes each moved the boundary."""
     import utils.utils as utils_module
 
     monkeypatch.setattr(utils_module, "hf_env_offline", lambda: offline)
@@ -1804,9 +1796,7 @@ def test_a_cache_only_caller_is_never_put_on_the_wire(monkeypatch):
 def test_an_anonymous_caller_keeps_a_public_cached_dataset_and_loses_a_private_one(
     monkeypatch, public, refused
 ):
-    """Refused only under a declared offline env, which missed the case that matters: an
-    unreachable Hub is not a Hub declared absent, and `datasets` takes its prepared cache
-    either way. It cannot authorize itself, so ask whether the repo is public at all."""
+    """An unreachable Hub is not declared absent, so ask whether the repo is public at all."""
     # Asking /api/models/<dataset id>/auth-check 404s, which would read as private.
     monkeypatch.setattr(
         hf_tokens,
@@ -1845,8 +1835,7 @@ def test_the_public_probe_does_not_borrow_the_operators_login(monkeypatch):
 
 
 def test_the_public_verdict_takes_its_own_memo_key(monkeypatch):
-    """A public repo answers 200 for every token, so sharing one key would let any string
-    read back the anonymous verdict as its own authorization."""
+    """Public repos answer 200 to any token, so a shared key would authorize any string."""
     verdicts = iter([True, False])
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: next(verdicts))
     _hub_reachable(monkeypatch)
@@ -1856,9 +1845,7 @@ def test_the_public_verdict_takes_its_own_memo_key(monkeypatch):
 
 
 def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
-    """One decision from the base covered lookups answering with a DIFFERENT repo: an alias
-    or a derived `-GGUF` conversion. /auth-check returns 200 for any string on a public base,
-    so that decision is nearly free and hands back a cached private conversion."""
+    """An alias or -GGUF conversion needs its own probe: base auth-check accepts any string when public."""
     reachable = {"acme/base"}
     monkeypatch.setattr(
         hf_tokens,
@@ -1881,9 +1868,7 @@ def test_a_cached_alias_repo_is_authorized_in_its_own_right(monkeypatch):
 
 
 def test_the_gguf_listing_withholds_local_readiness_from_a_denied_caller(monkeypatch, tmp_path):
-    """A gated repo can serve file metadata publicly, so the lister succeeding is not
-    authorization. The cache-only and exception paths refuse that caller; the success path
-    walked the snapshots anyway and reported `downloaded`, which is the same fact."""
+    """Public file metadata of a gated repo is no authorization, so the listing must withhold readiness."""
     _one_cached_quant(monkeypatch, tmp_path)
     _hub_reachable(monkeypatch)
 
@@ -1900,9 +1885,7 @@ def test_the_gguf_listing_withholds_local_readiness_from_a_denied_caller(monkeyp
 
 
 def test_the_context_length_lookup_honours_the_listings_refusal(monkeypatch):
-    """With no directory named the route falls back to the bare repo id, and reading that
-    walks every local cache. The one local fact the service cannot suppress, so the answer
-    carries the verdict out to it."""
+    """Without a directory, the lookup uses the bare repo id and walks local caches; refusal must carry."""
     from models.models import GgufVariantsResponse as ServiceResponse
 
     reads: list = []
@@ -1933,9 +1916,8 @@ def test_the_context_length_lookup_honours_the_listings_refusal(monkeypatch):
 
 
 def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
-    """The scan expands to the adapter's base, native-audio dependencies and auto_map repos
-    and downloads each with the same token, falling back to their cached configs and Python
-    files. Refused, not dropped: an unscanned base would under-report has_remote_code."""
+    """Scan targets (base, native-audio deps, auto_map repos) use the same token; each must be
+    authorized and refused, not dropped, or has_remote_code under-reports."""
     reachable = {"acme/adapter"}
     monkeypatch.setattr(
         hf_tokens,
@@ -1954,9 +1936,8 @@ def test_every_scan_target_is_authorized_not_only_the_one_named(monkeypatch):
 
 
 def test_the_embedding_resolver_gates_the_base_repo_too(monkeypatch):
-    """The per-candidate check answers for an alias or a derived conversion, and defers to
-    the base decision when the cache answered under the requested id itself. That leg is the
-    one the base decision still owns, so it needs its own row."""
+    """A cache hit under the requested id defers to the base decision; that leg is the one needing
+    its own test row."""
     _counting_probe(monkeypatch, False, offline = False)
     _st_resolver(monkeypatch, _cached_st_source = lambda m: (m, Path("/cache/snap")))
 
@@ -1996,9 +1977,7 @@ def test_the_backend_probe_is_asked_with_the_callers_token(monkeypatch):
 
 
 def test_the_scan_is_refused_before_it_expands_its_targets(monkeypatch):
-    """The per-target check inside the loop cannot stand in for this one. Target expansion
-    resolves the adapter's base and its native-audio dependencies, which reads the cache and
-    talks to the Hub with the caller's token, so the primary has to be refused ahead of it."""
+    """Expansion reads the cache and calls the Hub with the caller's token, so refuse the primary first."""
     _counting_probe(monkeypatch, False, offline = False)
     monkeypatch.setattr(models_routes, "_repo_in_any_hf_cache", lambda *_a, **_k: True)
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda **_k: "/cache/config.json")
@@ -2028,9 +2007,7 @@ def test_local_only_audio_detection_refuses_without_asking(monkeypatch):
 
 @pytest.mark.parametrize("public", [True, False])
 def test_an_anonymous_caller_keeps_a_cached_public_gguf(monkeypatch, tmp_path, public):
-    """The same rule the chat template needed, at the site that still asked the raw
-    question. The sentinel can never authorize itself, so a downloaded public quant was
-    reported as absent and a cache-only listing fell through to the network."""
+    """The sentinel can never authorize itself, so a downloaded public quant was reported absent."""
     _one_cached_quant(monkeypatch, tmp_path)
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: public)
     _hub_reachable(monkeypatch)
@@ -2042,9 +2019,7 @@ def test_an_anonymous_caller_keeps_a_cached_public_gguf(monkeypatch, tmp_path, p
 
 
 def test_the_safetensors_fallback_authorizes_the_repo_it_found(monkeypatch):
-    """The GGUF branch was gated and this one was not: after the remote probes come back
-    empty, the plan reads the operator's snapshot and reports the repo it is filed under as
-    cached, which is how a denied caller discovers and then force-saves private weights."""
+    """Like the GGUF branch, the safetensors fallback must authorize the repo it reports as cached."""
     _counting_probe(monkeypatch, False, offline = False)
     _gguf_resolver(monkeypatch)
     monkeypatch.setattr(settings_routes, "_remote_embedding_gguf_plan", lambda *_a, **_k: None)
@@ -2068,9 +2043,7 @@ def test_the_safetensors_fallback_authorizes_the_repo_it_found(monkeypatch):
 
 
 def test_the_config_memo_is_rechecked_before_it_is_served(monkeypatch):
-    """The memo is untimed and was read before the authorization check, so a token revoked
-    after one successful online fetch kept its answer for the life of the process, outliving
-    the TTL that exists to end exactly that."""
+    """The config memo is untimed and was read before the auth check, so a revoked token kept its answer."""
     _hub_reachable(monkeypatch)
     key = transformers_version._token_cache_key("acme/private", "hf_dummy")
     monkeypatch.setitem(transformers_version._config_json_cache, key, {"model_type": "llama"})
@@ -2089,9 +2062,7 @@ def test_the_config_memo_is_rechecked_before_it_is_served(monkeypatch):
 
 
 def test_the_inner_preview_gate_does_not_veto_the_outer_one(monkeypatch):
-    """Two gates on the same request, and only the outer one was public-aware, so the
-    anonymous sentinel cleared the guard and was then refused by the reader behind it:
-    a prefer-local request answered local-cache-miss for a public dataset on disk."""
+    """The inner preview gate lacked the public check, so a prefer-local request missed a public dataset."""
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
     _hub_reachable(monkeypatch)
     monkeypatch.setattr(formatting, "_load_cached_hf_preview_slice", lambda *_a, **_k: ("ROWS", 3))
@@ -2104,9 +2075,7 @@ def test_the_inner_preview_gate_does_not_veto_the_outer_one(monkeypatch):
 
 
 def test_the_gguf_partial_state_is_withheld_with_the_rest(monkeypatch, tmp_path):
-    """The snapshot walk was gated and the partial-download accounting beside it was not,
-    so a caller who can list a gated repo's public metadata still learned the operator had
-    an interrupted download: `partial`, its transport, and the bytes left to fetch."""
+    """Partial-download state is gated with the snapshot walk; a denied caller must not learn of it."""
     reads: list = []
     _one_cached_quant(monkeypatch, tmp_path, complete = False)
     monkeypatch.setattr(
@@ -2160,9 +2129,7 @@ def test_a_repo_directory_is_not_a_cached_template(monkeypatch):
 
 
 def test_the_transformers_cache_key_separates_the_caller_classes():
-    """The qualifier reached three fingerprints and missed this one. The tokenizer and
-    config-tier caches keyed here return before any authorization check, so a UI session
-    populating one handed its verdict to an API caller with the same token text."""
+    """Tokenizer and config caches return before auth, so UI and API callers need distinct keys."""
     ui = hf_token_arg("hf_saved", allow_ambient_token = True)
     api = hf_token_arg("hf_saved", allow_ambient_token = False)
 
@@ -2173,9 +2140,8 @@ def test_the_transformers_cache_key_separates_the_caller_classes():
 
 
 def test_a_resolved_gguf_plan_does_not_report_an_unauthorized_cache(monkeypatch):
-    """A gated repo can publish its filenames, so a plan coming back is not permission to
-    report the operator's copy of it, and the repo the plan names need not be the one the
-    caller asked about."""
+    """A gated repo can publish its filenames, and the plan may name a different repo; neither is
+    permission to report the operator's cached copy."""
     _counting_probe(monkeypatch, False, offline = False)
     _gguf_resolver(monkeypatch)
     monkeypatch.setattr(
@@ -2225,9 +2191,7 @@ def test_a_weights_only_cache_does_not_block_the_scan(monkeypatch):
 
 
 def test_an_external_auto_map_repo_is_authorized_before_it_is_scanned(monkeypatch):
-    """auto_map repos are read out of the primary's config, so they are discovered after the
-    target loop has authorized what it knew. The preflight downloads and scans each one with
-    the same token, and its cached Python files reach the response as source snippets."""
+    """auto_map repos are found after the loop, so each must be authorized before its files are scanned."""
     reachable = {"acme/adapter"}
     monkeypatch.setattr(
         hf_tokens, "_probe_repo_access", lambda repo_id, *_a, **_k: repo_id in reachable
@@ -2304,8 +2268,7 @@ def test_the_cached_alias_is_looked_up_before_the_literal_name_is_judged(monkeyp
     ],
 )
 def test_the_probe_compares_targets_not_spellings(monkeypatch, endpoint, final_url, authorized):
-    """A 200 only counts when it came from the repo that was asked about, and the client
-    is free to rewrite the parts of a URL that carry no meaning."""
+    """A 200 counts only from the repo asked about; clients may rewrite URL parts that carry no meaning."""
     _hub_reachable(monkeypatch)
     monkeypatch.setenv("HF_ENDPOINT", endpoint)
     _patch_auth_check_get(
@@ -2319,8 +2282,7 @@ def test_the_probe_compares_targets_not_spellings(monkeypatch, endpoint, final_u
 
 
 def test_a_recorded_redirect_is_refused_whatever_the_final_url(monkeypatch):
-    """The direct signal, for the clients that keep it: any hop at all means the answer
-    came from somewhere other than the endpoint the memo is keyed on."""
+    """Any recorded redirect hop means the answer came from elsewhere than the memo's endpoint key."""
     _hub_reachable(monkeypatch)
     _patch_auth_check_get(
         monkeypatch,
@@ -2443,8 +2405,7 @@ def test_a_slow_denial_is_still_a_denial(monkeypatch):
     assert allowed is False
     assert expiry - time.monotonic() > hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S
 
-    # A denial is only remembered for held credentials on cached repos; the caller still gets no.
-    # Remembering is pinned in test_offline_local_cache_discovery.py.
+    # A denial is remembered only for held credentials on cached repos; the caller still gets no.
     hf_tokens._repo_access_cache.clear()
     _counting_probe(monkeypatch, None, offline = False)
     assert hf_tokens.cache_reads_authorized("hf_revoked", repo_id = "org/private") is False

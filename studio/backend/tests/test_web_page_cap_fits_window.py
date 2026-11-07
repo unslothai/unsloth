@@ -39,9 +39,8 @@ def _window(monkeypatch, ctx):
 
 
 def test_a_small_window_gets_a_page_it_can_hold(monkeypatch):
-    """The case that failed. 4,864 tokens leaves 3,648 for the prompt, and the page that
-    broke it was 12,295 characters, roughly 3,073 tokens: 84% of the budget for one
-    search, before the system turn, the question or room to answer."""
+    """The failing case: a 4,864-token window leaves 3,648 for the prompt, and a 12,295-character
+    page (about 3,073 tokens) took 84% of it."""
     _window(monkeypatch, 4864)
 
     budget = tools._page_char_budget()
@@ -59,15 +58,13 @@ def test_a_large_window_is_left_exactly_as_it_was(monkeypatch):
 
 
 def test_an_unknown_window_keeps_the_old_constant():
-    """Not knowing the window must never shrink a fetch: that would silently degrade
-    every provider path where the local backend is not the one answering."""
+    """An unknown window keeps _MAX_PAGE_CHARS: shrinking would degrade non-local providers."""
     assert tools._page_char_budget() == tools._MAX_PAGE_CHARS
 
 
 def test_a_tiny_window_still_returns_a_readable_page(monkeypatch):
-    """A floor, not a proportion all the way down. Below it the fetch would return a
-    fragment too clipped to answer from, which is worse than a truncated page: the model
-    cannot tell a short page from a cut one without the notice."""
+    """A floor, not a proportion all the way down: below it the fetch returns a fragment too clipped
+    to answer from, worse than a truncated page with its notice."""
     _window(monkeypatch, 512)
 
     assert tools._page_char_budget() == tools._MIN_PAGE_CHARS
@@ -97,8 +94,7 @@ def test_an_unreadable_backend_is_unknown_rather_than_an_error(monkeypatch):
 
 
 def test_the_caller_can_still_pin_a_size(monkeypatch):
-    """An explicit `max_chars` wins over the window, so callers that size their own budget
-    and the extraction tests that pin exact output are unaffected."""
+    """An explicit max_chars beats the window: callers pinning a size keep exact output."""
     _window(monkeypatch, 4864)
     captured = {}
 
@@ -246,8 +242,7 @@ class TestADenseResultIsSizedByWhatItCosts:
         assert tools._dense_prefix_chars(flat, 4864 * tools._PAGE_CONTEXT_SHARE) < len(flat)
 
     def test_an_english_page_is_left_exactly_as_it_was(self, monkeypatch):
-        """The blast radius: text that really does run four characters per token keeps
-        every character the character budget gave it."""
+        """Real English at four characters per token keeps every character the budget gave it."""
         _window(monkeypatch, 4864)
         budget = tools._page_char_budget()
 
@@ -326,8 +321,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         assert tools._dense_prefix_chars(text, 5120 * tools._PAGE_CONTEXT_SHARE) > kept
 
     def test_a_dense_result_no_longer_outweighs_the_window(self, monkeypatch):
-        """The refusal itself: 7,168 characters of base64 is 105% of a 5,120-token
-        window, so the request cannot be made to fit by dropping anything."""
+        """7,168 chars of base64 is 105% of a 5,120-token window: no trimming can fit it."""
         _window(monkeypatch, 5120)
         self._serving(monkeypatch, 5120)
         text = "0123456789abcdef" * 2000
@@ -337,8 +331,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         assert len(out) / self._RATE < 5120
 
     def test_english_keeps_every_character_the_cap_gave_it(self, monkeypatch):
-        """The blast radius: at a real English rate the exact count agrees with the
-        estimate, so nothing that already fitted is shrunk."""
+        """At real English rates exact counts match the estimate; nothing that fits is shrunk."""
         _window(monkeypatch, 5120)
         self._serving(monkeypatch, 5120, rate = 4.2)
         text = (
@@ -350,8 +343,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         assert tools._dense_char_limit(text, budget) == budget
 
     def test_a_resident_gguf_does_not_price_another_model_s_request(self, monkeypatch):
-        """A 262k GGUF sitting in memory must not tokenize for the 5,120-token native
-        model actually answering: different tokenizer, different text."""
+        """A resident GGUF's different tokenizer must not price another model's request."""
         _window(monkeypatch, 5120)
         self._serving(monkeypatch, 262_144)
 
@@ -381,8 +373,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
 
     def test_a_dense_prefix_with_a_prose_tail_is_measured_not_assumed(self, monkeypatch):
-        """A proportional shrink overshoots base64 followed by prose, so the returned prefix must be
-        counted."""
+        """A proportional shrink overshoots base64 plus prose; measure the returned prefix."""
         _window(monkeypatch, 5120)
         dense_chars = 2500
 
@@ -412,8 +403,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         assert kept > tools._MIN_PAGE_CHARS
 
     def test_a_template_that_drops_tool_messages_is_still_measured(self, monkeypatch):
-        """The probe must render a prompt that contains the chunk: Gemma-4 templates skip tool-role
-        messages."""
+        """The probe prompt must contain the chunk: Gemma-4 templates skip tool-role messages."""
         _window(monkeypatch, 5120)
         seen = []
 
@@ -471,8 +461,7 @@ class TestAConfiguredCapIsNeverRaised:
         assert tools._tool_result_char_budget() == 500
 
     def test_it_survives_a_tiny_window_too(self, monkeypatch):
-        """The window-derived share is 1,433 characters here, so the floor is the only
-        thing that could have raised 500."""
+        """Window-derived share is 1,433 chars here, so only the floor could have raised 500."""
         monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 500)
         _window(monkeypatch, 1024)
 
@@ -534,8 +523,7 @@ class TestTheProbeIsNotPaidForTwice:
         return calls, backend
 
     def test_an_estimate_at_the_floor_is_not_measured_at_all(self, monkeypatch):
-        """An estimate under the 2,000-char floor is clamped up whatever the count, so it is never
-        measured."""
+        """An estimate under the 2,000-char floor is clamped up, so it is never measured."""
         _window(monkeypatch, 1024)
         calls, _ = self._serving(monkeypatch, 1024)
 
@@ -545,9 +533,8 @@ class TestTheProbeIsNotPaidForTwice:
         assert calls == []
 
     def test_a_result_that_fits_does_not_price_the_framing_baseline(self, monkeypatch):
-        """English is the common case and it fits on its first count. The baseline only
-        ever decides whether a count that came in OVER budget is a real measurement, so
-        for this result it is bought and never read: 2 counter calls where 1 answers."""
+        """English fits on its first count; the baseline only vets over-budget counts, so for a
+        fitting result it is bought and never read: 2 counter calls where 1 answers."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
         text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
@@ -590,8 +577,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert calls == []
 
     def test_a_different_model_never_reads_the_previous_one_s_counts(self, monkeypatch):
-        """Same window, different tokenizer. The cache key carries the model's identity,
-        so a reload cannot be answered from the model it replaced."""
+        """Cache key holds model identity: a reload must not read the replaced model's counts."""
         _window(monkeypatch, 5120)
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
@@ -740,8 +726,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert sparse > dense, "and priced by the template actually rendering"
 
     def test_the_extra_args_alone_are_enough_to_miss(self, monkeypatch):
-        """Belt to the process id's braces: even holding the pid fixed, counts are not
-        shared across a different command line."""
+        """Even with the pid fixed, counts are not shared across a different command line."""
         _window(monkeypatch, 5120)
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
@@ -791,8 +776,7 @@ class TestTheProbeIsNotPaidForTwice:
         rate = None,
         fallback_rate = None,
     ):
-        """/apply-template down: count_chat_tokens(strict = False) counts plain text, dropping role
-        markers."""
+        """/apply-template down: count_chat_tokens(strict = False) counts plain text, no roles."""
         rate = self._RATE if rate is None else rate
         calls = []
 
@@ -817,8 +801,7 @@ class TestTheProbeIsNotPaidForTwice:
         return calls
 
     def test_a_plain_text_fallback_count_is_used_but_never_retained(self, monkeypatch):
-        """A plain-text fallback count is used for this call but never cached: it prices a prompt
-        never sent."""
+        """Plain-text fallback count is used once, never cached: it prices a prompt never sent."""
         _window(monkeypatch, 5120)
         calls = self._template_down(monkeypatch, 5120)
         text = "0123456789abcdef" * 2000
@@ -833,9 +816,8 @@ class TestTheProbeIsNotPaidForTwice:
         assert calls
 
     def test_the_strict_attempt_is_made_once_per_result_not_once_per_probe(self, monkeypatch):
-        """A template that will not render is not going to start mid-result, so asking
-        again would spend round trips on a settled question. One extra attempt for the
-        first probe, not one for every probe."""
+        """A template that will not render will not start mid-result, so asking again wastes round
+        trips: one strict attempt per result, not per probe."""
         _window(monkeypatch, 5120)
         calls = self._template_down(monkeypatch, 5120)
 
@@ -845,8 +827,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert len(calls) > 2, "and the result really did take several passes"
 
     def test_a_healthy_template_pays_nothing_for_the_strict_check(self, monkeypatch):
-        """Strict costs the same two llama-server calls as non-strict when the template
-        renders, so verification is free in the case that matters."""
+        """With a healthy template, strict costs two calls, same as non-strict, so it is free."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120, rate = 4.2)
         text = ("The build finished and the archive was uploaded to the release bucket. ") * 400
@@ -856,9 +837,8 @@ class TestTheProbeIsNotPaidForTwice:
         assert len(calls) == 1
 
     def test_a_full_cache_evicts_rather_than_refusing_every_later_result(self, monkeypatch):
-        """Refusing new entries once full was worse than not caching at all: most tool
-        results are one-offs, so the first 64 distinct prefixes froze the cache on text
-        nothing would ask about again."""
+        """Refusing new entries once full was worse than no cache: most tool results are one-offs,
+        so the first 64 distinct prefixes froze the cache."""
         _window(monkeypatch, 5120)
         calls, _ = self._serving(monkeypatch, 5120)
         budget = tools._tool_result_char_budget()
@@ -873,8 +853,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert calls == [], "a recently measured result is still answered from the cache"
 
     def test_the_baseline_survives_a_cache_full_of_one_off_results(self, monkeypatch):
-        """Price the framing baseline even when earlier results fit, or every dense result pays for
-        it again."""
+        """Framing baseline is priced even when earlier results fit, or dense results repay it."""
         _window(monkeypatch, 5120)
         budget = tools._tool_result_char_budget()
 
@@ -898,8 +877,7 @@ class TestTheProbeIsNotPaidForTwice:
         assert tools._PROBE_BASELINE in held, "and pinned against eviction"
 
     def test_concurrent_chats_do_not_corrupt_or_crash_on_the_shared_cache(self, monkeypatch):
-        """LRU touch and eviction are read-then-mutate, so the shared cache needs a lock, not just
-        the GIL."""
+        """LRU touch and eviction are read-then-mutate, so the cache needs a lock, not the GIL."""
         import threading
 
         _window(monkeypatch, 5120)

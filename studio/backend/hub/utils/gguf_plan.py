@@ -265,9 +265,7 @@ def dflash_plan_files(
 
 
 def _audio_cpp_package_plans(siblings: Sequence) -> Optional[dict[str, GgufVariantPlan]]:
-    """Plans for an audio.cpp package repo (MiniMax Music 3, YuE2): each variant is a component mix
-    plus the config, tokenizer and sidecar files the package loads with. Files every mix shares
-    are companions, so deleting one mix never counts them as its own weights."""
+    """Shared files of every mix are companions, so deleting one mix never counts them as its weights."""
     try:
         from core.inference.audio_cpp_models import package_variant_files
     except Exception:

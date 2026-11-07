@@ -77,8 +77,7 @@ def _backend(
     drafter_bytes: int = 0,
     native_ctx: int = NATIVE_CTX,
 ):
-    """A GGUF vision load with pinned fit inputs; drafter tests lower native_ctx so draft KV can't
-    decide."""
+    """Pinned fit inputs; drafter tests lower native_ctx so draft KV can't decide."""
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf")
@@ -161,8 +160,7 @@ def _launch(backend, gguf, **load_kwargs):
 
 
 def test_projector_stays_on_gpu_when_it_fits_at_the_floor(tmp_path):
-    """Context shrinks rather than spilling layers, so pinning would buy nothing and cost ~8.8x per
-    image."""
+    """Shrinking context beats spilling layers; pinning the projector costs ~8.8x per image."""
     backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -218,9 +216,8 @@ def test_vision_switched_off_loads_no_projector_anywhere(tmp_path, monkeypatch):
     ],
 )
 def test_shared_memory_pools_are_not_charged_as_discrete(tmp_path, memory, label):
-    """Apple Silicon enumerates no GPU and an APU / iGPU reports free SYSTEM RAM
-    as its free VRAM with a total of 0. Moving the encoder inside one pool frees
-    nothing, so the same shortfall that pins a discrete card must not pin here."""
+    """Apple Silicon enumerates no GPU, and an APU or iGPU reports system RAM as free VRAM with
+    total 0; moving the encoder within one pool frees nothing, so these must not pin."""
     backend, gguf = _backend(tmp_path, memory = memory)
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -260,9 +257,8 @@ def test_the_projector_is_pinned_before_the_drafter_is_dropped(tmp_path):
 
 
 def test_both_are_given_up_when_pinning_alone_is_not_enough(tmp_path):
-    """Step 3: the drafter goes too, but only after the projector has moved and
-    the load still does not fit. Budget 8200 MiB against about 9250 for model +
-    drafter with the projector already pinned."""
+    """The drafter is dropped only after the projector is pinned and the load still does not fit:
+    8200 MiB budget against about 9250 for model plus drafter."""
     backend, gguf = _drafter_backend(tmp_path, [(0, 8_692, 16_384)])
 
     cmd = _launch_with_drafter(backend, gguf, tmp_path)
@@ -316,9 +312,8 @@ def test_load_and_status_both_report_the_vision_toggle(
 
 
 def test_the_training_guard_does_not_charge_a_projector_the_load_will_not_open(tmp_path):
-    """The switch is used on constrained machines, which is exactly where this
-    guard bites: charging VRAM the load provably never takes would refuse a chat
-    load for the memory the user just freed."""
+    """Used on constrained machines, where this guard bites: charging VRAM the load never takes
+    would refuse a chat load over memory the user just freed."""
     model = tmp_path / "model.gguf"
     model.write_bytes(b"\x00" * (4 * MIB))
     mmproj = tmp_path / "mmproj-F16.gguf"
@@ -405,8 +400,7 @@ def test_the_vision_switch_does_not_take_audio_only_projectors_away(
     assert ("--mmproj" in cmd) is projector_expected, label
 
 
-# The pin reads only probe outputs, no platform flag. 7600 MiB free pins on a discrete card,
-# so a "no pin" cell means shared memory, not room.
+# No platform flag: 7600 MiB free pins a discrete card, so a no-pin cell means shared memory.
 _TOPOLOGIES = [
     ([(0, 7_600, 8_192)], True, "linux_nvidia_discrete"),
     ([(0, 7_600, 8_192)], True, "windows_nvidia_discrete"),
@@ -429,9 +423,8 @@ _TOPOLOGIES = [
 def test_the_platform_and_gpu_matrix_pins_only_where_memory_is_discrete(
     tmp_path, memory, expect_pin, label
 ):
-    """Moving the encoder out of a shared pool frees nothing, so only a card with
-    its own memory may be charged for the projector. An APU, an iGPU and a
-    virtualised Metal device all report free SYSTEM RAM as free VRAM."""
+    """Moving the encoder out of a shared pool frees nothing, so only discrete memory is charged;
+    APUs, iGPUs and virtualised Metal report system RAM as VRAM."""
     backend, gguf = _backend(tmp_path, memory = memory)
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -448,9 +441,8 @@ def test_the_platform_and_gpu_matrix_pins_only_where_memory_is_discrete(
     ],
 )
 def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path, memory, label):
-    """Enumeration order must not decide placement: the same two cards in either
-    order have to reach the same answer, or the pin is reading the device list
-    rather than the memory on it."""
+    """Enumeration order must not decide placement: the same two cards in either order must give the
+    same answer, or the pin reads the device list, not memory."""
     backend, gguf = _backend(tmp_path, memory = memory)
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -589,8 +581,7 @@ def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
 
 
 def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):
-    """llama.cpp folds the pair into one option and takes the last occurrence, so a
-    list ending in the disable form must budget as disabled however it starts."""
+    """llama.cpp keeps the last of the pair, so a list ending in disable budgets as disabled."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
     cmd = _launch(
@@ -805,8 +796,7 @@ def test_the_vision_switch_keeps_an_inherited_audio_only_encoder(tmp_path, monke
 
 
 def test_an_inherited_projector_that_reads_images_still_goes(tmp_path, monkeypatch):
-    """The asymmetry is deliberate: only a readable audio-only declaration is kept.
-    An image-capable one is exactly what the switch is for."""
+    """Keep only readable audio-only projectors; image-capable ones are what the switch drops."""
     backend, gguf = _ambient_mmproj(tmp_path, monkeypatch)
 
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (False, True)):
@@ -914,9 +904,8 @@ def test_an_environment_pinned_projector_is_not_charged_against_vram(tmp_path, m
 
 
 def test_the_negative_environment_spelling_pins_on_presence_alone(tmp_path, monkeypatch):
-    """get_value_from_env checks the LLAMA_ARG_NO_ compatibility spelling first and
-    forces falsey on getenv returning non-null, so an empty value still pins. Read
-    any other way this charges VRAM the child never allocates."""
+    """get_value_from_env checks LLAMA_ARG_NO_ first and forces falsey on any non-null getenv, so an
+    empty value still pins; other reads charge VRAM the child never allocates."""
     monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "")
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
@@ -944,16 +933,14 @@ def test_the_negative_environment_spelling_pins_on_presence_alone(tmp_path, monk
     ],
 )
 def test_the_resolved_placement_follows_arg_cpps_own_precedence(extras, env, expected):
-    """Environment first, argv on top, the negative spelling short-circuiting on
-    presence. Anything else and Unsloth budgets for a placement the child does not
-    run."""
+    """Environment is read first and argv overrides it; the negative spelling short-circuits on
+    presence. Otherwise Unsloth budgets for a placement the child does not run."""
     assert _resolved_mmproj_offload(extras, env) is expected
 
 
 def test_an_unparseable_environment_value_is_still_the_callers_placement(tmp_path, monkeypatch):
-    """No side to budget for, but the variable is set, so Unsloth must not append its
-    own spelling on top: common_params_parse throws on the value and the load fails
-    naming the caller's variable, not an Unsloth flag they never chose."""
+    """No side to budget, but the variable is set, so Unsloth must not add its own flag:
+    common_params_parse throws and the load fails naming the caller's variable."""
     monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "yes")
     backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
 
@@ -988,8 +975,7 @@ def _split_rate_backend(tmp_path, *, memory, **kwargs):
 
 
 def test_the_probe_prices_an_explicit_context_the_way_the_split_placement_does(tmp_path):
-    """On two cards, an explicit context must price the compute buffer per device, as split
-    placement does."""
+    """Explicit context prices the compute buffer per device across two cards, as split does."""
     backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 7_200, 8_200), (1, 7_200, 8_200)])
 
     cmd = _launch(backend, gguf, n_ctx = 65536)["cmd"]
@@ -1014,8 +1000,7 @@ def test_a_single_card_explicit_load_is_untouched_by_the_split_rate(tmp_path):
 
 
 def test_auto_is_priced_at_the_split_rate_too_but_still_at_the_floor(tmp_path):
-    """Auto is priced at the split rate; what keeps it honest is the floor, which shrinking cannot
-    rescue."""
+    """Auto uses the split rate too; the floor keeps it honest, which shrinking cannot rescue."""
     backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 4_900, 5_900), (1, 4_900, 5_900)])
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -1025,9 +1010,8 @@ def test_auto_is_priced_at_the_split_rate_too_but_still_at_the_floor(tmp_path):
 
 
 def test_auto_still_leaves_a_roomy_split_alone(tmp_path):
-    """The floor is what stops the split rate from turning into a blanket pin: on cards
-    with room at 4096 the projector stays on the GPU and Auto pays for the native
-    context in context, exactly as it does on one card."""
+    """The floor stops the split rate becoming a blanket pin: with room at 4096 the projector stays
+    on GPU and Auto pays for the native context in context, as on one card."""
     backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 12_000, 16_000), (1, 12_000, 16_000)])
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -1119,9 +1103,8 @@ def test_a_shared_device_beside_a_discrete_one_does_not_veto_the_pin(tmp_path):
 
 
 def test_a_host_that_is_only_shared_memory_still_never_pins(tmp_path):
-    """The rule that survives: with no budgeted device anywhere, moving the projector
-    shuffles bytes inside one pool and frees nothing, so the 8.8x image-encode cost
-    buys exactly nothing. Unchanged by the mixed-host relaxation above."""
+    """With no budgeted device anywhere, moving the projector frees nothing yet costs 8.8x per
+    image; this holds after the mixed-host relaxation."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 0), (1, 7_600, 0)])
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -1194,9 +1177,8 @@ def test_the_guard_charges_a_projector_only_the_environment_names(tmp_path, monk
 
 
 def test_studios_own_projector_outranks_the_inherited_one_in_the_estimate(tmp_path, monkeypatch):
-    """argv beats the environment (arg.cpp applies set_env first), so exactly one
-    projector loads. Charging both billed a single file twice and refused loads
-    that fit."""
+    """argv beats the environment (arg.cpp applies set_env first), so exactly one projector loads;
+    charging both billed one file twice and refused loads that fit."""
     model = tmp_path / "model.gguf"
     model.write_bytes(b"\x00" * (4 * MIB))
     resolved = tmp_path / "mmproj-F16.gguf"
@@ -1357,9 +1339,8 @@ def test_a_cpu_recovery_records_the_vision_state_it_launched_with(tmp_path):
 
 
 def test_both_cpu_recovery_call_sites_pass_the_vision_state(tmp_path):
-    """Two call sites reach that helper and only one is on the common path, so a
-    keyword added to one and not the other is a silent half-fix. Checked at the source
-    because the second site needs a crash inside a replay this harness cannot stage."""
+    """Two call sites reach the helper, one on the common path, so a keyword on only one is a silent
+    half-fix; source-checked since the other needs a replay crash."""
     source = inspect.getsource(LlamaCppBackend.load_model)
     calls = source.count("self._apply_cpu_fallback_state(")
     assert calls == 2, f"expected 2 recovery call sites, found {calls}"

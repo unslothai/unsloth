@@ -483,9 +483,7 @@ def test_the_same_prompt_twice_is_two_renders():
 def test_stopping_a_queued_call_never_cancels_the_render_ahead_of_it(
     engine, server_loop, keepwarm, monkeypatch, tmp_path
 ):
-    # Same account, two surfaces: a render already holds the engine (still before step 0, so
-    # progress reads idle) when the chat call arrives and queues behind it. Stop on the chat must
-    # leave that render alone and drop only its own queued run.
+    # A render holds the engine first, so stopping the chat must cancel only its own queued run.
     _alice_loaded(monkeypatch)
     lock = threading.Lock()
     other_cancel = threading.Event()

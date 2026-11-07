@@ -40,8 +40,7 @@ def _route_begin_load_keywords() -> list[str]:
 
 
 def test_the_route_still_passes_local_files_only():
-    # Guards the guard: if the route stopped passing it, every assertion below would still hold
-    # while the offline promise had quietly gone.
+    # Without this, the assertions below still pass if the route drops local_files_only.
     assert "local_files_only" in _route_begin_load_keywords()
 
 
@@ -50,8 +49,7 @@ def test_both_engines_accept_every_keyword_the_route_passes(engine):
     """``inspect.signature().bind`` is the exact check the interpreter makes at call time."""
     keywords = _route_begin_load_keywords()
     signature = inspect.signature(engine.begin_load)
-    # Bound against the UNBOUND function, so ``self`` is just the first positional and no engine
-    # has to be constructed. bind checks names and arity, never values.
+    # Unbound function needs no engine; bind checks names and arity, never values.
     signature.bind(
         None,
         "unsloth/FLUX.1-dev-GGUF",
@@ -280,9 +278,8 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
 
 
 def test_an_uncached_vision_projector_does_not_fail_an_offline_load(monkeypatch, tmp_path):
-    """Text-to-image never reads --llm_vision, so a Qwen-Image-2.1 GGUF cached before the projector
-    was listed must still restore offline. Only the projector is optional: the encoder it sits
-    beside still fails loudly."""
+    """Text-to-image never reads --llm_vision, so an uncached projector must not fail an offline
+    restore; only the projector is optional, and the encoder still fails loudly"""
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     import utils.hf_xet_fallback as xet

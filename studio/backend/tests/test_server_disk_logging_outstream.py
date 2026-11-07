@@ -118,8 +118,7 @@ class TestHardenConsoleClose:
             stream.close()
 
     def test_swallowed_across_attributeerror_message_shapes(self):
-        # Python 3.12 appends a "Did you mean" tail; the match must survive it,
-        # and pre-3.10 AttributeErrors carry no ``name``, only the message.
+        # The match must survive 3.12's Did-you-mean tail; pre-3.10 errors carry no name.
         class _Suggesting:
             def close(self):
                 raise AttributeError(

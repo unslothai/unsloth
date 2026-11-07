@@ -274,9 +274,8 @@ def test_cuda_preview_leaves_the_latent_bit_identical(monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_snapshots_are_planned_by_step_and_publishing_keeps_only_the_newest(monkeypatch):
-    """With CUDA graphs the host enqueues every step long before the GPU runs them, so a host clock cannot
-    pace snapshots: they are spread by step, each in its own slot, and the worker publishes only the
-    newest one the GPU has finished."""
+    """With CUDA graphs the host queues steps far ahead of the GPU, so snapshots are paced by step
+    and only the newest finished one is published."""
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     got = []
     prev = DP.LatentPreviewer.create(

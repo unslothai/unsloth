@@ -320,8 +320,7 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    # Replaying the identical edit is a block repeating itself; a non-idempotent call
-    # would land twice.
+    # Identical replays are duplicates: a non-idempotent edit would otherwise land twice.
     assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
 
@@ -542,9 +541,7 @@ def test_a_large_source_map_is_still_taken_off_the_result():
 
 
 def test_a_large_plot_is_still_taken_off_the_result():
-    """The image payload has no length bound on purpose: a figure Gemini renders at high
-    DPI is a data URI of whatever size it chose, and leaving it in for being large is the
-    base64 leak this stripper exists to prevent."""
+    """No length bound on images on purpose: keeping a large data URI would leak base64 to the model."""
     big = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * (12 << 20) + '"]'
     assert len(big) > 8 << 20
     assert strip_result_for_model(big, "code_execution") == "output"
@@ -756,8 +753,7 @@ def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
 
 
 def test_a_declared_type_nested_in_a_container_is_read_too():
-    """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
-    and text that spells a boolean must survive as text."""
+    """Nested replace_all inside edits.items is read; boolean-spelled text stays text."""
     edits = (
         '[{"old_string":"a","new_string":"b","replace_all":"false"},'
         '{"old_string":"false","new_string":"null","replace_all":"true"}]'

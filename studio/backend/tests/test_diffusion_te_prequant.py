@@ -719,9 +719,8 @@ def test_assemble_pipe_injects_precast_te(monkeypatch):
 
 
 def test_cast_fp8_is_idempotent_on_precast_encoder():
-    """A pre-cast encoder arrives with the layerwise hooks installed; the runtime re-apply in
-    quantize_text_encoders must be a no-op (re-registering the hook name raises, which made
-    the engaged cast report as failed and status show no TE quant)."""
+    """Re-applying the cast to a pre-cast encoder must be a no-op: re-registering the hook name
+    raises and reports the cast as failed."""
     import torch
 
     pytest.importorskip("diffusers")  # _cast_fp8 installs diffusers' layerwise hooks
@@ -744,9 +743,8 @@ def test_cast_fp8_is_idempotent_on_precast_encoder():
 
 
 def test_builder_metadata_survives_weights_only_load(tmp_path):
-    """The builder's checkpoint must load with torch.load(weights_only=True): version
-    metadata has to be plain str (a pickled TorchVersion object gets the whole artifact
-    rejected and the loader would silently fall back to the dense download)."""
+    """Metadata must be plain str so torch.load(weights_only=True) accepts it; a pickled
+    TorchVersion silently falls back to dense."""
     import sys
 
     import torch
@@ -874,9 +872,8 @@ def test_a_sibling_release_keeps_the_pre_cast_encoder(monkeypatch):
 
 
 def test_an_unrelated_custom_base_still_loses_it(monkeypatch):
-    """The other half of the same gate: a base nobody has compared keeps the strict
-    refusal, because the hosted artifact would otherwise download before its metadata
-    could reject it."""
+    """An unrelated custom base keeps the strict refusal, since the hosted artifact would download
+    before its metadata could reject it."""
     import core.inference.diffusion_precision as precision
     from core.inference.diffusion_families import detect_family_for_pick
 
@@ -933,9 +930,8 @@ def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
 
 
 def test_the_te_capability_question_is_not_the_transformers_one():
-    """A pre-cast encoder pickle is plain tensors read under a bare ``weights_only`` load, so it
-    needs no constructor allowlist. Asking the DiT's question would refuse a ``.pt`` encoder on
-    every install whose torchao lacks some DiT scheme's constructors."""
+    """A pre-cast encoder .pt is plain tensors under a bare weights_only load, so it needs no
+    constructor allowlist, unlike the DiT question."""
     assert tpq.te_candidate_is_readable("X-text_encoder-FP8.pt") is True
     assert tpq.te_candidate_is_readable(None) is False
 
