@@ -10,11 +10,13 @@ const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(sour
 const STUBS = {
   "../page-frame":
     "export const requestFrameAgent = (tabId, op, code, timeoutMs = 5000) => globalThis.__frameAgent(tabId, op, code, timeoutMs);" +
-    " export const sendFrameCommand = (tabId, command) => globalThis.__frameCommand?.(tabId, command) ?? false;",
-  "../capture": "export const screenshotPage = async () => null; export const captureHiddenPage = async () => null;",
+    " export const sendFrameCommand = (tabId, command) => globalThis.__frameCommand?.(tabId, command) ?? false;" +
+    " export const whenWebPageReady = async (tabId, signal) => globalThis.__webReady ? globalThis.__webReady(tabId, signal) : true;",
+  "../capture": "export const screenshotPage = async (...args) => globalThis.__screenshotPage?.(...args) ?? null; export const captureHiddenPage = async (...args) => globalThis.__captureHiddenPage?.(...args) ?? null;",
   // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
   "../native-view":
     "export const hasNativeView = () => globalThis.__native === true; export const nativeAction = () => {};" +
+    " export const nativeViewShown = (tabId) => globalThis.__shownNative === tabId;" +
     " export const keepInBackground = (tabId) => globalThis.__keep?.(tabId);" +
     " export const releaseBackground = (tabId) => void (globalThis.__released ??= []).push(tabId);" +
     " export const whenViewOpen = async () => true;",
@@ -31,7 +33,7 @@ const STUBS = {
 };
 
 export function resolve(specifier, context, next) {
-  if (context.parentURL?.includes("/src/features/browser/agent/executor.ts") && specifier in STUBS) {
+  if ((context.parentURL?.includes("/src/features/browser/agent/executor.ts") || context.parentURL?.includes("/src/features/browser/agent/tab-sharing.ts")) && specifier in STUBS) {
     return stub(STUBS[specifier]);
   }
   if (specifier.startsWith("../") && context.parentURL?.includes("/src/features/browser/agent/") && !/\.\w+$/.test(specifier)) {

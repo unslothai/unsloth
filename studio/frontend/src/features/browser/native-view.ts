@@ -783,7 +783,7 @@ function pruneViews(shown: string | null): void {
       resume.delete(tabId);
     }
   }
-  while (views.size - background.length > MAX_VIEWS) {
+  while ([...views.keys()].filter((id) => !background.includes(id)).length > MAX_VIEWS) {
     const oldest = recency.find((id) => id !== shown && views.has(id) && !background.includes(id));
     if (!oldest) break;
     closeView(oldest);
@@ -800,9 +800,13 @@ function setShownView(tabId: string | null): void {
   for (const wake of [...shownWaiters]) wake();
 }
 
+export function nativeViewShown(tabId: string): boolean {
+  return shownView === tabId;
+}
+
 /** Resolves true once `tabId`'s view is on screen (a menu over it has closed), false on timeout. */
 export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<boolean> {
-  if (shownView === tabId) return Promise.resolve(true);
+  if (nativeViewShown(tabId)) return Promise.resolve(true);
   return new Promise((resolve) => {
     const finish = (shown: boolean) => {
       shownWaiters.delete(wake);
@@ -820,22 +824,24 @@ let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null
 let shownBounds: Bounds | null = null;
 const viewBounds = new Map<string, Bounds>();
 
-// Pages kept open while their chat is off screen: the agent at work in another chat. Newest last;
-// past the cap the oldest closes (and reopens where it got to, like any pruned view).
-const MAX_BACKGROUND = 3;
+// Pages kept open while their chat is off screen, excluded from the idle-view cap.
 let background: string[] = [];
 const openingInBackground = new Set<string>();
+const viewOperations = new Map<string, Promise<void>>();
 let watchingBackground = false;
 // A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
 let panelUp = false;
 
-/** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
+function withNativeView(tabId: string, operation: () => Promise<void>): Promise<void> {
+  const next = (viewOperations.get(tabId) ?? Promise.resolve()).then(operation);
+  const settled = next.then(() => undefined, () => undefined);
+  viewOperations.set(tabId, settled);
+  void settled.then(() => { if (viewOperations.get(tabId) === settled) viewOperations.delete(tabId); });
+  return next;
+}
+
 export function keepInBackground(tabId: string): void {
   background = [...background.filter((id) => id !== tabId), tabId];
-  while (background.length > MAX_BACKGROUND) {
-    const oldest = background.shift();
-    if (oldest && oldest !== shownView && oldest !== parkedView && views.has(oldest)) closeView(oldest);
-  }
   listenOnce();
   if (!watchingBackground) {
     watchingBackground = true;
@@ -844,13 +850,11 @@ export function keepInBackground(tabId: string): void {
   syncBackground();
 }
 
-/** The page can close with the panel again; with no panel up, it closes now. */
 export function releaseBackground(tabId: string): void {
   background = background.filter((id) => id !== tabId);
   if (!panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
 }
 
-/** Opens or moves each kept page its tab no longer matches; the panel owns the one it shows. */
 function syncBackground(): void {
   if (background.length === 0) return;
   const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
@@ -870,23 +874,26 @@ function syncBackground(): void {
 
 async function openInBackground(tabId: string, url: string, key: number): Promise<void> {
   openingInBackground.add(tabId);
-  const resumed = resume.get(tabId);
   try {
-    if (views.has(tabId)) {
-      await call("browser_view_navigate", { tabId, url });
-      zooms.delete(tabId);
-    } else {
-      const bounds = viewBounds.get(tabId) ??
-        shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
-      openedTabs.add(tabId);
-      await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
-      viewBounds.set(tabId, bounds);
-      recency = [...recency.filter((id) => id !== tabId), tabId];
-    }
-    views.set(tabId, key);
-    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
-      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
-    }
+    await withNativeView(tabId, async () => {
+      if (!background.includes(tabId) || views.get(tabId) === key) return;
+      const resumed = resume.get(tabId);
+      if (views.has(tabId)) {
+        await call("browser_view_navigate", { tabId, url });
+        zooms.delete(tabId);
+      } else {
+        const bounds = viewBounds.get(tabId) ??
+          shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
+        openedTabs.add(tabId);
+        await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
+        viewBounds.set(tabId, bounds);
+        recency = [...recency.filter((id) => id !== tabId), tabId];
+      }
+      views.set(tabId, key);
+      if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+        useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+      }
+    });
   } catch (cause) {
     useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
     // Not retried here: the agent's next action asks again.
@@ -894,12 +901,10 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   } finally {
     openingInBackground.delete(tabId);
   }
-  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
   if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
   syncBackground();
 }
 
-/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
 export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
   const until = Date.now() + timeoutMs;
   while (!views.has(tabId) || openingInBackground.has(tabId)) {
@@ -1040,48 +1045,51 @@ async function applyView(desired: Desired): Promise<void> {
     return;
   }
   const { tabId, url, entry, zoom, bounds } = desired;
-  const existed = views.has(tabId);
-  const loaded = views.get(tabId);
-  const resumed = resume.get(tabId);
   const started = generation;
-  const stale = () => {
-    if (started === generation) return false;
-    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
-    return true;
-  };
-  try {
-    openedTabs.add(tabId);
-    await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
-    if (stale()) return;
-    parkedView = null;
-    staleSnapshot = null;
-    coverFails = 0;
-    clearSnapshot();
-    // After the move, so hole and page update together.
-    if (layered) openHole(tabId, bounds);
-    shownBounds = bounds;
-    viewBounds.set(tabId, bounds);
-    setShownView(tabId);
-    // record the entry after navigation succeeds so failures remain retryable.
-    if (existed && loaded !== entry) {
-      await call("browser_view_navigate", { tabId, url });
-      zooms.delete(tabId);
+  await withNativeView(tabId, async () => {
+    if (started !== generation) return;
+    const existed = views.has(tabId);
+    const loaded = views.get(tabId);
+    const resumed = resume.get(tabId);
+    const stale = () => {
+      if (started === generation) return false;
+      void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
+      return true;
+    };
+    try {
+      openedTabs.add(tabId);
+      await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
       if (stale()) return;
-    }
-    views.set(tabId, entry);
-    if ((zooms.get(tabId) ?? 1) !== zoom) {
-      zooms.set(tabId, zoom);
-      await call("browser_view_zoom", { tabId, zoom });
+      parkedView = null;
+      staleSnapshot = null;
+      coverFails = 0;
+      clearSnapshot();
+      // After the move, so hole and page update together.
+      if (layered) openHole(tabId, bounds);
+      shownBounds = bounds;
+      viewBounds.set(tabId, bounds);
+      setShownView(tabId);
+      // record the entry after navigation succeeds so failures remain retryable.
+      if (existed && loaded !== entry) {
+        await call("browser_view_navigate", { tabId, url });
+        zooms.delete(tabId);
+        if (stale()) return;
+      }
+      views.set(tabId, entry);
+      if ((zooms.get(tabId) ?? 1) !== zoom) {
+        zooms.set(tabId, zoom);
+        await call("browser_view_zoom", { tabId, zoom });
+        if (stale()) return;
+      }
+    } catch (cause) {
       if (stale()) return;
+      useBrowserStore.getState().updateTab(tabId, {
+        loading: false,
+        nativeError: nativeErrorText(error(cause)),
+      });
     }
-  } catch (cause) {
-    if (stale()) return;
-    useBrowserStore.getState().updateTab(tabId, {
-      loading: false,
-      nativeError: nativeErrorText(error(cause)),
-    });
-  }
-  recency = [...recency.filter((id) => id !== tabId), tabId];
+    recency = [...recency.filter((id) => id !== tabId), tabId];
+  });
 }
 
 // One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
@@ -1220,8 +1228,7 @@ export function startNativeViews(): () => void {
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;
-    // close pages because hidden native views keep scripts and media running; a page at work
-    // in the background is only hidden.
+    // Owned targets keep their documents when the panel closes.
     generation += 1;
     pending = null;
     parkedView = null;

@@ -124,6 +124,14 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    observer: {
+      menu: "Andere Chats",
+      otherChat: "Anderer Chat",
+      label: "Browser von {owner} nur ansehen",
+      back: "Zurück zu deinem Browser",
+      preview: "Schreibgeschützte Browservorschau",
+      unavailable: "Diese Seite kann derzeit nicht angezeigt werden.",
+    },
     drafts: {
       title: "Seite mit eingegebenem Text entladen?",
       description: "Damit der Chat reaktionsschnell bleibt, laufen nur drei ausgeblendete Seiten mit eingegebenem Text weiter. Beim Fortfahren wird {pages} entladen. Nicht gespeicherter Text kann verloren gehen. Abbrechen kehrt zum vorherigen Tab zurück.",
@@ -165,6 +173,7 @@ export const de = {
       siteInvalid: "Gib eine Website wie example.com oder *.example.com ein.",
     },
     agent: {
+      sharedTarget: "Mit Unsloth geteilt: {title}",
       working: "Unsloth surft in diesem Tab",
       waiting: "Unsloth braucht im Browser deine Antwort für {chat}",
       otherChat: "einen anderen Chat",
@@ -229,6 +238,8 @@ export const de = {
       remove: "Aus Vorschlägen entfernen",
     },
     tabMenu: {
+      shareAgent: "Tab mit diesem Chat teilen",
+      stopSharing: "Tab nicht mehr teilen",
       duplicate: "Tab duplizieren",
       closeOthers: "Andere Tabs schließen",
       pin: "An Seitenleiste anheften",

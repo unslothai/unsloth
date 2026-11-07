@@ -8,8 +8,8 @@ import { readSrc } from "./helpers/kit.ts";
 const PAGE = readSrc("features/browser/new-tab-page.tsx");
 
 test("the new tab page's Browser use switch drives the composer's store", () => {
-  assert.match(PAGE, /const enabled = useBrowserAgentStore\(\(state\) => state\.enabled\);/);
-  assert.match(PAGE, /onCheckedChange=\{\(on\) => useBrowserAgentStore\.getState\(\)\.setEnabled\(on\)\}/);
+  assert.match(PAGE, /state\.chats\[chat\]\?\.enabled \?\? state\.enabled/);
+  assert.match(PAGE, /onCheckedChange=\{\(on\) => setBrowserAgentEnabled\(chat, on\)\}/);
   // Same rule as the composer: off and disabled where the composer's item is.
   assert.match(PAGE, /const disabled = useBrowserAgentDisabled\(\);/);
   assert.match(PAGE, /checked=\{enabled && !disabled\}\s*disabled=\{disabled\}/);

@@ -124,6 +124,14 @@ export const fa = {
     removeFromMessage: "برداشتن از پیام",
   },
   browser: {
+    observer: {
+      menu: "گفتگوهای دیگر",
+      otherChat: "گفتگویی دیگر",
+      label: "نمای فقط‌خواندنی مرورگر {owner}",
+      back: "بازگشت به مرورگر شما",
+      preview: "پیش‌نمایش فقط‌خواندنی مرورگر",
+      unavailable: "در حال حاضر پیش‌نمایش این صفحه ممکن نیست.",
+    },
     drafts: {
       title: "صفحه‌ای با متن واردشده تخلیه شود؟",
       description:
@@ -172,6 +180,7 @@ export const fa = {
       siteInvalid: "سایتی مانند example.com یا *.example.com وارد کنید.",
     },
     agent: {
+      sharedTarget: "هم‌رسانی با Unsloth: {title}",
       working: "Unsloth در حال مرور در این زبانه است",
       waiting: "Unsloth در مرورگر منتظر پاسخ شما برای {chat} است",
       otherChat: "گفتگوی دیگر",
@@ -238,6 +247,8 @@ export const fa = {
       remove: "برداشتن از پیشنهادها",
     },
     tabMenu: {
+      shareAgent: "هم‌رسانی زبانه با این گفتگو",
+      stopSharing: "توقف هم‌رسانی زبانه",
       duplicate: "تکثیر",
       closeOthers: "بستن زبانه‌های دیگر",
       pin: "سنجاق به نوار کناری",

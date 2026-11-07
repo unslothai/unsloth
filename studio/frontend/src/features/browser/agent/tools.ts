@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
-import { browserPanelAvailable } from "../panel-availability";
-import { useBrowserAgentStore } from "./agent-store";
+import { shownBrowserChat } from "../panel-availability";
+import { browserAgentEnabled, useBrowserAgentStore } from "./agent-store";
 
 /** The browser tools (core/inference/browser_agent.py). This tab runs them, so a turn that offers
  *  them must keep its stream to this tab. */
@@ -30,10 +30,9 @@ export const BROWSER_HISTORY_TOOL = "browser_history";
 
 export const BROWSER_SCRIPT_TOOL = "browser_evaluate";
 
-/** The browser tools to offer this turn: none unless the Browser tool is on and the panel can show. */
-export function browserAgentToolsForTurn(): string[] {
-  const { enabled, historyAccess, scriptAccess } = useBrowserAgentStore.getState();
-  if (!enabled || !browserPanelAvailable()) return [];
+export function browserAgentToolsForTurn(chat = shownBrowserChat()): string[] {
+  const { historyAccess, scriptAccess } = useBrowserAgentStore.getState();
+  if (!browserAgentEnabled(chat)) return [];
   return [
     ...BROWSER_AGENT_TOOLS,
     ...(isTauri ? [BROWSER_SCREENSHOT_TOOL] : []),

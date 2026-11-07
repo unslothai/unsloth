@@ -123,6 +123,14 @@ export const zhTW = {
     removeFromMessage: "從訊息中移除",
   },
   browser: {
+    observer: {
+      menu: "其他聊天",
+      otherChat: "其他聊天",
+      label: "{owner} 瀏覽器的唯讀檢視",
+      back: "返回你的瀏覽器",
+      preview: "唯讀瀏覽器預覽",
+      unavailable: "目前無法預覽此頁面。",
+    },
     drafts: {
       title: "要卸載含有已輸入文字的頁面嗎？",
       description:
@@ -169,6 +177,7 @@ export const zhTW = {
       siteInvalid: "請輸入網站，例如 example.com 或 *.example.com。",
     },
     agent: {
+      sharedTarget: "已與 Unsloth 共用：{title}",
       working: "Unsloth 正在這個分頁中瀏覽",
       waiting: "Unsloth 需要您在瀏覽器中回覆「{chat}」",
       otherChat: "另一個聊天",
@@ -233,6 +242,8 @@ export const zhTW = {
       remove: "從建議中移除",
     },
     tabMenu: {
+      shareAgent: "與此對話共用分頁",
+      stopSharing: "停止共用分頁",
       duplicate: "建立副本",
       closeOthers: "關閉其他分頁",
       pin: "釘選到側邊欄",

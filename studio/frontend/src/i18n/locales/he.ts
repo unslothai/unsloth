@@ -125,6 +125,14 @@ export const he = {
     removeFromMessage: "הסר מההודעה",
   },
   browser: {
+    observer: {
+      menu: "שיחות אחרות",
+      otherChat: "שיחה אחרת",
+      label: "תצוגה לקריאה בלבד של הדפדפן של {owner}",
+      back: "חזרה לדפדפן שלך",
+      preview: "תצוגה מקדימה של הדפדפן לקריאה בלבד",
+      unavailable: "לא ניתן להציג תצוגה מקדימה של הדף כרגע.",
+    },
     drafts: {
       title: "לפרוק דף עם טקסט שהוזן?",
       description: "כדי לשמור על תגובתיות הצ׳אט, רק שלושה דפים מוסתרים עם טקסט שהוזן ממשיכים לפעול. המשך יפרוק את {pages}, וטקסט שלא נשמר עלול ללכת לאיבוד. ביטול מחזיר לכרטיסייה הקודמת.",
@@ -166,6 +174,7 @@ export const he = {
       siteInvalid: "יש להזין אתר כמו example.com או *.example.com.",
     },
     agent: {
+      sharedTarget: "משותף עם Unsloth: {title}",
       working: "Unsloth גולש בכרטיסייה הזו",
       waiting: "Unsloth צריך את התשובה שלך בדפדפן עבור {chat}",
       otherChat: "צ׳אט אחר",
@@ -230,6 +239,8 @@ export const he = {
       remove: "הסר מהמוצעים",
     },
     tabMenu: {
+      shareAgent: "שיתוף הכרטיסייה עם השיחה הזו",
+      stopSharing: "הפסקת שיתוף הכרטיסייה",
       duplicate: "שכפול",
       closeOthers: "סגור כרטיסיות אחרות",
       pin: "הצמד לסרגל הצד",

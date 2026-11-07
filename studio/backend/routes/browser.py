@@ -399,6 +399,17 @@ _FRAME_HTML = r"""<!doctype html>
   <body>
     <script>
       const boot = (cfg) => {
+        let interactive = cfg.interactive === true;
+        for (const proto of [HTMLElement.prototype, SVGElement.prototype, Window.prototype]) {
+          const focus = proto.focus;
+          if (typeof focus !== "function") continue;
+          try {
+            Object.defineProperty(proto, "focus", {
+              configurable: true, writable: true,
+              value: function (...args) { if (interactive) return Reflect.apply(focus, this, args); },
+            });
+          } catch {}
+        }
         const inputChannel = new MessageChannel();
         const edited = inputChannel.port1.postMessage.bind(inputChannel.port1);
         parent.postMessage({ source: "unsloth-browser-input" }, "*", [inputChannel.port2]);
@@ -1082,7 +1093,8 @@ _FRAME_HTML = r"""<!doctype html>
           if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:browser-command") return;
-          if (data.command === "annotateInstall") install(data.code);
+          if (data.command === "interactive") { if (event.isTrusted) interactive = data.on === true; }
+          else if (data.command === "annotateInstall") install(data.code);
           else if (data.command === "annotate") {
             if (!annotation) wanted = { on: data.on === true, color: data.color };
             else if (data.on === true) annotation.start(data.color);
@@ -1125,6 +1137,7 @@ _FRAME_HTML = r"""<!doctype html>
       const FOLLOW_CLICK_MS = 3000;
       const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
       let page = null;
+      let interactive = null;
       let inputPort = null;
       let lastInput = -Infinity;
       let clicked = null;
@@ -1148,19 +1161,23 @@ _FRAME_HTML = r"""<!doctype html>
         }
         if (event.source !== parent) return;
         const data = event.data;
+        if (data?.type === "unsloth:browser-command" && data.command === "interactive" && event.isTrusted) interactive = data.on === true;
         if (page) {
           if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");
           return;
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, interactive: interactive ?? data.interactive === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
         page.setAttribute("allow", "clipboard-write");
         page.setAttribute("allowfullscreen", "");
+        page.addEventListener("load", () => {
+          if (interactive !== null) page.contentWindow.postMessage({ type: "unsloth:browser-command", command: "interactive", on: interactive }, "*");
+        });
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
         // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the

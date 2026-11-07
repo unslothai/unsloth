@@ -18,7 +18,7 @@ import { type ReactNode, useId, useMemo, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { hostOf } from "./address";
-import { useBrowserAgentStore } from "./agent/agent-store";
+import { setBrowserAgentEnabled, useBrowserAgentStore } from "./agent/agent-store";
 import { useBrowserAgentDisabled } from "./agent/composer-toggle";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
@@ -206,7 +206,8 @@ function BrowserUseToggle() {
   const t = useT();
   const id = useId();
   const disabled = useBrowserAgentDisabled();
-  const enabled = useBrowserAgentStore((state) => state.enabled);
+  const chat = useBrowserStore((state) => state.chat);
+  const enabled = useBrowserAgentStore((state) => state.chats[chat]?.enabled ?? state.enabled);
   return (
     <label
       htmlFor={id}
@@ -236,7 +237,7 @@ function BrowserUseToggle() {
         id={id}
         checked={enabled && !disabled}
         disabled={disabled}
-        onCheckedChange={(on) => useBrowserAgentStore.getState().setEnabled(on)}
+        onCheckedChange={(on) => setBrowserAgentEnabled(chat, on)}
       />
     </label>
   );

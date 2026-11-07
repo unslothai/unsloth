@@ -86,6 +86,21 @@ test("a tab opened for a chat off screen waits there; the chat on screen is unto
   assert.equal(useBrowserStore.getState().activeTabId, agentTab);
 });
 
+test("an offscreen popup keeps its owning chat and POST body", () => {
+  const store = useBrowserStore.getState();
+  store.showChat("single:foreground-post");
+  store.openUrl("https://front.example/");
+  const foreground = useBrowserStore.getState().activeTabId;
+  const id = store.openTabIn("single:background-post", "https://post.example/submit", {
+    method: "POST", body: "q=hello", from: "https://post.example/", temporary: true,
+  });
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === id);
+  assert.ok(tab);
+  assert.equal(tab.chat, "single:background-post");
+  assert.deepEqual(currentEntry(tab), { kind: "web", url: "https://post.example/submit", method: "POST", body: "q=hello", from: "https://post.example/", temporary: true });
+  assert.equal(useBrowserStore.getState().activeTabId, foreground);
+});
+
 test("a new chat's tabs follow it to its id on the first save, and moving a tab stays within the chat", () => {
   const store = useBrowserStore.getState();
   store.closePanel();

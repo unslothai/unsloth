@@ -124,6 +124,14 @@ export const pl = {
     removeFromMessage: "Usuń z wiadomości",
   },
   browser: {
+    observer: {
+      menu: "Inne czaty",
+      otherChat: "Inny czat",
+      label: "Podgląd przeglądarki czatu {owner} tylko do odczytu",
+      back: "Wróć do swojej przeglądarki",
+      preview: "Podgląd przeglądarki tylko do odczytu",
+      unavailable: "Nie można teraz wyświetlić podglądu tej strony.",
+    },
     drafts: {
       title: "Zwolnić stronę z wpisanym tekstem?",
       description:
@@ -172,6 +180,7 @@ export const pl = {
       siteInvalid: "Wpisz witrynę, np. example.com lub *.example.com.",
     },
     agent: {
+      sharedTarget: "Udostępniono Unsloth: {title}",
       working: "Unsloth przegląda strony w tej karcie",
       waiting: "Unsloth czeka na Twoją odpowiedź w przeglądarce (czat: {chat})",
       otherChat: "inny czat",
@@ -238,6 +247,8 @@ export const pl = {
       remove: "Usuń z sugerowanych",
     },
     tabMenu: {
+      shareAgent: "Udostępnij kartę w tym czacie",
+      stopSharing: "Przestań udostępniać kartę",
       duplicate: "Duplikuj",
       closeOthers: "Zamknij inne karty",
       pin: "Przypnij do paska bocznego",

@@ -327,6 +327,23 @@ test("a page at work in a chat off screen opens hidden, follows its tab, and out
   assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
 });
 
+test("four retained background pages survive independently of the idle cache", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:foreground-cap");
+  const tabs = Array.from({ length: 4 }, (_, index) =>
+    store.openTabIn(`single:worker-cap-${index}`, `https://worker${index}.example/`) ?? "",
+  );
+  calls.length = 0;
+  for (const tabId of tabs) keepInBackground(tabId);
+  await settle();
+  assert.deepEqual(calls.filter(({ command }) => command === "browser_view_open_background").map(({ args }) => args?.tabId), tabs);
+  assert.ok(!calls.some(({ command }) => command === "browser_view_close"));
+  releaseBackground(tabs[0]);
+  assert.deepEqual(calls.filter(({ command }) => command === "browser_view_close").map(({ args }) => args?.tabId), [tabs[0]]);
+  for (const tabId of tabs.slice(1)) releaseBackground(tabId);
+});
+
 test("a kept tab that leaves its local origin is closed through the views, so its next page opens a new one", async () => {
   const store = useBrowserStore.getState();
   store.closePanel();

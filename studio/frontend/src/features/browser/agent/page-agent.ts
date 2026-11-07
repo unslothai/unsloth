@@ -121,6 +121,34 @@ export function installPageAgent(): PageAgent {
   const refs = new WeakMap<Element, number>();
   const byRef = new Map<number, WeakRef<Element>>();
   let nextRef = 1;
+  let virtualInput = false;
+  let virtualTarget: HTMLElement | null = null;
+  let virtualRange: Range | null = null;
+  document.addEventListener("focusin", (event) => {
+    if (event.isTrusted && event.target !== virtualTarget) {
+      virtualTarget = null;
+      virtualRange = null;
+    }
+  }, true);
+  const activeTarget = (): Element | null => {
+    if (virtualInput && virtualTarget?.isConnected) return virtualTarget;
+    return document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+  };
+  const focusTarget = (el: HTMLElement | null) => {
+    if (!el) return;
+    if (virtualInput) {
+      if (el.matches(":disabled") || (el.tabIndex < 0 && !el.hasAttribute("tabindex") && !el.isContentEditable)) return;
+      const previous = activeTarget();
+      if (previous !== el) virtualRange = null;
+      virtualTarget = el;
+      if (previous !== el) {
+        if (previous) for (const name of ["blur", "focusout"]) previous.dispatchEvent(new FocusEvent(name, { bubbles: name === "focusout", composed: true, relatedTarget: el }));
+        for (const name of ["focus", "focusin"]) el.dispatchEvent(new FocusEvent(name, { bubbles: name === "focusin", composed: true, relatedTarget: previous }));
+      }
+    } else {
+      el.focus?.({ preventScroll: true });
+    }
+  };
   let lastMutation = performance.now();
   let scrolls = 0;
   addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
@@ -726,7 +754,7 @@ export function installPageAgent(): PageAgent {
   };
 
   const describe = (ref: string, value?: unknown, point?: Point | null): Record<string, unknown> => {
-    const found = point ? elementAt(point) : ref ? lookup(ref) : (document.activeElement ?? document.body);
+    const found = point ? elementAt(point) : ref ? lookup(ref) : (activeTarget() ?? document.body);
     // A click on text inside a button or label reaches that control (a label's being its field or
     // button), which may submit.
     // A point lands on whatever is drawn, often an icon inside a control: gate the control.
@@ -872,7 +900,7 @@ export function installPageAgent(): PageAgent {
       throw new AgentError("the page changed under that point; take a screenshot to see it again.");
     }
     mouse(el, "pointerdown", at, 1);
-    if (mouse(el, "mousedown", at, 1)) (el.closest(FOCUSABLE) as HTMLElement | null)?.focus?.({ preventScroll: true });
+    if (mouse(el, "mousedown", at, 1)) focusTarget(el.closest(FOCUSABLE) as HTMLElement | null);
   };
 
   const clickAt = (at: Point, directLinks: boolean, expect: unknown, sig: unknown): Record<string, unknown> => {
@@ -943,7 +971,7 @@ export function installPageAgent(): PageAgent {
     const html = drag?.html;
     drag = null;
     if (phase === "cancel") {
-      key(document.activeElement ?? document.body, "Escape");
+      key(activeTarget() ?? document.body, "Escape");
       if (html) dragEvent(html.source, "dragend", at, html.data);
       else {
         hoverTo(el, at, 1);
@@ -1055,7 +1083,7 @@ export function installPageAgent(): PageAgent {
     mouse(el, "pointerover");
     mouse(el, "pointerdown");
     mouse(el, "mousedown");
-    (el as HTMLElement).focus?.({ preventScroll: true });
+    focusTarget(el as HTMLElement);
     mouse(el, "pointerup");
     mouse(el, "mouseup");
     if (el instanceof HTMLElement) el.click();
@@ -1069,6 +1097,39 @@ export function installPageAgent(): PageAgent {
     Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value);
     el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: value }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  const editableRange = (el: HTMLElement): Range => {
+    if (virtualRange && el.contains(virtualRange.commonAncestorContainer)) return virtualRange;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    virtualRange = range;
+    return range;
+  };
+  const editVirtual = (el: HTMLElement, operation: "replace" | "insert" | "backward" | "forward", text = ""): boolean => {
+    const range = editableRange(el);
+    if ((operation === "backward" || operation === "forward") && range.collapsed) {
+      // Move by one character within a text node. Cross-node editing needs a real browser selection.
+      const node = range.startContainer;
+      const offset = range.startOffset;
+      if (node.nodeType !== Node.TEXT_NODE) return false;
+      if (operation === "backward" && offset > 0) range.setStart(node, offset - 1);
+      else if (operation === "forward" && offset < (node.textContent?.length ?? 0)) range.setEnd(node, offset + 1);
+      else return false;
+    }
+    if (operation === "replace") range.selectNodeContents(el);
+    const inputType = operation === "backward" ? "deleteContentBackward" : operation === "forward" ? "deleteContentForward" : "insertText";
+    if (!el.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, composed: true, cancelable: true, inputType, data: text || null }))) return true;
+    range.deleteContents();
+    if (text) {
+      const node = document.createTextNode(text);
+      range.insertNode(node);
+      range.setStart(node, node.length);
+    }
+    range.collapse(true);
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType, data: text || null }));
+    return true;
   };
 
   const key = (target: Element, name: string): boolean => {
@@ -1113,7 +1174,7 @@ export function installPageAgent(): PageAgent {
   };
 
   const press = (name: string, on?: Element): Record<string, unknown> => {
-    const active = on ?? (document.activeElement && document.activeElement !== document.body ? document.activeElement : null);
+    const active = on ?? activeTarget();
     const target = active ?? document.body ?? document.documentElement;
     // WebKit acts on a synthetic keypress (implicit submit, a button's click), and so may the page's
     // own key handler: acting again would send the form or click the button twice.
@@ -1153,12 +1214,14 @@ export function installPageAgent(): PageAgent {
         setValue(area, `${area.value.slice(0, start)}\n${area.value.slice(end)}`);
         area.setSelectionRange?.(start + 1, start + 1);
       } else if ((target as HTMLElement).isContentEditable) {
-        if (!document.execCommand("insertParagraph")) document.execCommand("insertText", false, "\n");
+        if (virtualInput) editVirtual(target as HTMLElement, "insert", "\n");
+        else if (!document.execCommand("insertParagraph")) document.execCommand("insertText", false, "\n");
       }
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
     } else if ((name === "Backspace" || name === "Delete") && (tag === "input" || tag === "textarea")) {
       const field = target as HTMLInputElement;
+      if (field.readOnly || field.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
       const end = field.selectionEnd ?? field.value.length;
       const start = field.selectionStart ?? end;
       // A selection goes either way; otherwise one character before (Backspace) or after (Delete).
@@ -1166,7 +1229,9 @@ export function installPageAgent(): PageAgent {
       setValue(field, field.value.slice(0, from) + field.value.slice(to));
       field.setSelectionRange?.(from, from);
     } else if ((name === "Backspace" || name === "Delete") && (target as HTMLElement).isContentEditable) {
-      document.execCommand(name === "Backspace" ? "delete" : "forwardDelete");
+      if (virtualInput) {
+        if (!editVirtual(target as HTMLElement, name === "Backspace" ? "backward" : "forward")) return { ok: false, error: "that key cannot edit this selection in the background." };
+      } else document.execCommand(name === "Backspace" ? "delete" : "forwardDelete");
     } else if (CARET_KEYS.has(name) && (tag === "input" || tag === "textarea")) {
       // A synthetic key doesn't move the caret, so move it as the key would on one line.
       const field = target as HTMLInputElement;
@@ -1177,15 +1242,24 @@ export function installPageAgent(): PageAgent {
       } catch {
         return { ok: false, error: "that key does nothing in this field; click or type instead." };
       }
+    } else if (virtualInput && CARET_KEYS.has(name) && (target as HTMLElement).isContentEditable) {
+      const range = editableRange(target as HTMLElement);
+      const node = range.startContainer;
+      if (node.nodeType !== Node.TEXT_NODE) return { ok: false, error: "that key cannot move this selection in the background." };
+      const offset = range.startOffset;
+      const end = node.textContent?.length ?? 0;
+      const next = name === "Home" ? 0 : name === "End" ? end : Math.max(0, Math.min(end, offset + (name === "ArrowLeft" ? -1 : 1)));
+      range.setStart(node, next);
+      range.collapse(true);
     } else if (active && (EDITABLE_TAGS.has(tag) || (target as HTMLElement).isContentEditable) && name !== "Escape" && name !== "Tab") {
       // Not a field key we can act out: say so rather than report a change that didn't happen.
       return { ok: false, error: "that key does nothing in this field; click or type instead." };
     } else if (name === "Tab") {
       const focusable = Array.from(
-        document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+        document.querySelectorAll<HTMLElement>("a[href], button, input, select, textarea, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"),
       ).filter((el) => !(el as HTMLButtonElement).disabled && el.getClientRects().length > 0);
       const next = focusable[(focusable.indexOf(target as HTMLElement) + 1) % Math.max(1, focusable.length)];
-      next?.focus();
+      focusTarget(next ?? null);
     } else if (!active) {
       const page = scroller();
       const step = window.innerHeight * 0.85;
@@ -1202,7 +1276,7 @@ export function installPageAgent(): PageAgent {
   const type = (ref: string, text: string, submit: boolean): Record<string, unknown> => {
     const el = lookup(ref);
     el.scrollIntoView({ block: "center" });
-    (el as HTMLElement).focus?.({ preventScroll: true });
+    focusTarget(el as HTMLElement);
     const tag = el.tagName.toLowerCase();
     const field = el as HTMLInputElement;
     if ((tag === "textarea" || tag === "input") && (field.matches(":disabled") || field.readOnly)) {
@@ -1221,13 +1295,16 @@ export function installPageAgent(): PageAgent {
       }
       setValue(field, text);
     } else if ((el as HTMLElement).isContentEditable) {
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      if (!document.execCommand("insertText", false, text)) el.textContent = text;
-      el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      if (virtualInput) editVirtual(el as HTMLElement, "replace", text);
+      else {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        if (!document.execCommand("insertText", false, text)) el.textContent = text;
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      }
     } else {
       return { ok: false, error: `${ref} is not a text field.` };
     }
@@ -1375,6 +1452,20 @@ export function installPageAgent(): PageAgent {
   };
 
   const run = (command: Record<string, unknown>): Record<string, unknown> => {
+    virtualInput = command.virtualInput === true;
+    if (!virtualInput && virtualTarget && (command.op === "press" || (command.op === "describe" && !command.ref))) {
+      virtualTarget.focus?.({ preventScroll: true });
+      if (virtualRange && virtualTarget.isContentEditable) {
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(virtualRange);
+      }
+      virtualTarget = null;
+      virtualRange = null;
+    } else if (!virtualInput && (command.op === "type" || command.op === "click" || command.op === "pointer")) {
+      virtualTarget = null;
+      virtualRange = null;
+    }
     cursor.configure(command);
     let aim: Point | null = null;
     try {

@@ -121,6 +121,14 @@ export const en = {
     removeFromMessage: "Remove from message",
   },
   browser: {
+    observer: {
+      menu: "Other chats",
+      otherChat: "Another chat",
+      label: "Read-only view of {owner}'s browser",
+      back: "Back to your browser",
+      preview: "Read-only browser preview",
+      unavailable: "This page cannot be previewed right now.",
+    },
     drafts: {
       title: "Unload a page with entered text?",
       description: "To keep the chat responsive, only three hidden pages with entered text stay running. Continuing will unload {pages}, which may lose unsaved text. Cancel returns to the previous tab.",
@@ -163,6 +171,7 @@ export const en = {
     },
     agent: {
       working: "Unsloth is browsing in this tab",
+      sharedTarget: "Shared with Unsloth: {title}",
       waiting: "Unsloth needs your answer in the browser for {chat}",
       otherChat: "another chat",
       show: "Show",
@@ -226,6 +235,8 @@ export const en = {
       remove: "Remove from suggested",
     },
     tabMenu: {
+      shareAgent: "Share tab with this chat",
+      stopSharing: "Stop sharing tab",
       duplicate: "Duplicate",
       closeOthers: "Close other tabs",
       pin: "Pin to sidebar",

@@ -5,11 +5,9 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 
-// Chats use the browser tools side by side, each in its own tab. A chat off screen works on in the
-// background (native pages), leaving the user's tabs alone, and its questions wait in its own bar.
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction, STOPPED } = await import("../src/features/browser/agent/executor.ts");
-const { agentChat, endBrowserAgentRun, stopBrowserAgent, useBrowserAgentStore } = await import(
+const { agentChat, browserAgentEnabled, endBrowserAgentRun, patchAgentChat, setBrowserAgentEnabled, stopBrowserAgent, useBrowserAgentStore } = await import(
   "../src/features/browser/agent/agent-store.ts"
 );
 const { chatKeyOfThread, chatTabs, currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
@@ -26,12 +24,10 @@ const answer = (op: Record<string, unknown>) =>
   op.op === "status"
     ? { ok: true, quietMs: 1000, doc: "d1" }
     : { ok: true, text: "page", links: [], width: 800, height: 600, doc: "d1" };
-// The page of a native view answers through browser_view_agent; a framed one through the frame.
 globals.__callNative = async (command: string, args: { command: { op: Record<string, unknown> } }) =>
   command === "browser_view_agent" ? { installed: true, result: answer(args.command.op) } : null;
 globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => ({ installed: true, result: answer(op) });
 const kept: string[] = [];
-// A page opened in the background reports its load a beat later.
 globals.__keep = (tabId: string) => {
   kept.push(tabId);
   setTimeout(() => useBrowserStore.getState().updateTab(tabId, { loading: false }), 30);
@@ -60,17 +56,14 @@ test("two chats browse at once, each in its own tab; the one off screen leaves t
   const here = agentChat(chatKeyOfThread("shown")).tabId;
   assert.equal(urlOf(away), "https://away.example/");
   assert.equal(urlOf(here), "https://here.example/");
-  // The chat on screen shows its own agent tab beside the user's; the other chat's tab is not in its strip.
   assert.deepEqual(
     chatTabs(useBrowserStore.getState()).map((tab) => tab.id),
     [mine, here],
   );
   assert.equal(useBrowserStore.getState().activeTabId, here);
-  // The background page stays open while its run lasts, and is let go when it ends.
   assert.ok(kept.includes(away ?? ""));
   endBrowserAgentRun("run-away");
-  assert.ok((globals.__released as string[]).includes(away ?? ""));
-  // Going back to that chat shows its agent tab in an open panel.
+  assert.equal(((globals.__released ?? []) as string[]).includes(away ?? ""), false);
   store.showChat(chatKeyOfThread("away"));
   assert.equal(useBrowserStore.getState().activeTabId, away);
   assert.equal(useBrowserStore.getState().open, true);
@@ -95,7 +88,6 @@ test("a question in a chat off screen waits in that chat, with a toast; Stop the
   assert.equal(agentChat(chatKeyOfThread("shown")).question, null, "the chat on screen isn't asked");
   const toasts = (globals.__toasts ?? []) as { options?: { id?: string } }[];
   assert.ok(toasts.some((toast) => toast.options?.id === `browser-agent-question:${away}`));
-  // Stop in the shown chat's bar leaves the other chat's question open.
   stopBrowserAgent(chatKeyOfThread("shown"));
   assert.equal(agentChat(away).question?.id, question?.id);
   stopBrowserAgent(away);
@@ -103,12 +95,64 @@ test("a question in a chat off screen waits in that chat, with a toast; Stop the
   assert.equal(resultOf("q1")?.error, STOPPED);
 });
 
-test("without native pages a chat off screen is told to wait for its chat", async () => {
+test("without native pages a chat off screen keeps working", async () => {
   globals.__native = false;
+  useBrowserStore.getState().showChat(chatKeyOfThread("elsewhere"));
   await navigate("w1", "elsewhere", "https://elsewhere.example/");
-  assert.equal(resultOf("w1")?.ok, false);
-  assert.match(resultOf("w1")?.error ?? "", /only runs while the chat is open here/);
-  assert.equal(agentChat(chatKeyOfThread("elsewhere")).tabId, null);
+  useBrowserStore.getState().showChat(chatKeyOfThread("shown"));
+  await runBrowserAction({ id: "w2", sessionId: "s", op: "snapshot", policy }, { runKey: "run-elsewhere", scope: "elsewhere", userText: "" });
+  assert.equal(resultOf("w2")?.ok, true, resultOf("w2")?.error);
+});
+
+test("per-chat toggles and delayed actions stay isolated after a switch", async () => {
+  globals.__native = false;
+  const store = useBrowserStore.getState();
+  const a = chatKeyOfThread("overlap-a"), b = chatKeyOfThread("overlap-b");
+  useBrowserAgentStore.setState({ enabled: true });
+  setBrowserAgentEnabled(a, false);
+  assert.equal(browserAgentEnabled(a), false);
+  assert.equal(browserAgentEnabled(b), true);
+  setBrowserAgentEnabled(a, true);
+  store.showChat(a);
+  await navigate("overlap-nav-a", "overlap-a", "https://a.example/");
+  store.showChat(b);
+  await navigate("overlap-nav-b", "overlap-b", "https://b.example/");
+  const tabA = agentChat(a).tabId, tabB = agentChat(b).tabId;
+  assert.ok(tabA && tabB && tabA !== tabB);
+  const started: string[] = [];
+  const release = new Map<string, () => void>();
+  globals.__frameAgent = async (tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "snapshot") {
+      started.push(tabId);
+      await new Promise<void>((resolve) => release.set(tabId, resolve));
+    }
+    return { installed: true, result: answer(op) };
+  };
+  const action = (id: string, scope: string) => runBrowserAction(
+    { id, sessionId: "s", op: "snapshot", policy }, { runKey: `run-${scope}`, scope, userText: "" },
+  );
+  const first = action("overlap-a", "overlap-a"), second = action("overlap-b", "overlap-b");
+  for (let i = 0; started.length < 2 && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(new Set(started), new Set([tabA, tabB]));
+  store.showChat(a);
+  setBrowserAgentEnabled(b, false);
+  endBrowserAgentRun("run-overlap-b");
+  release.get(tabA)?.();
+  release.get(tabB)?.();
+  await Promise.all([first, second]);
+  assert.equal(resultOf("overlap-a")?.ok, true, resultOf("overlap-a")?.error);
+  assert.equal(resultOf("overlap-b")?.error, STOPPED);
+  assert.equal(browserAgentEnabled(a), true);
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => ({ installed: true, result: answer(op) });
+});
+
+test("a forged target belonging to another chat cannot be read", async () => {
+  globals.__native = false;
+  const a = chatKeyOfThread("overlap-a"), b = chatKeyOfThread("overlap-b");
+  patchAgentChat(b, { tabId: agentChat(a).tabId });
+  await runBrowserAction({ id: "forged", sessionId: "s", op: "snapshot", policy }, { runKey: "forged-run", scope: "overlap-b", userText: "" });
+  assert.equal(resultOf("forged")?.ok, false);
+  assert.match(resultOf("forged")?.error ?? "", /No page is open/);
 });
 
 test("a compare pane's run drives its pair's browser, whatever the sidebar shows", async () => {
@@ -135,7 +179,6 @@ test("a new chat's run keeps its page when the chat is saved between actions", a
   store.adoptChat("single:draft", chatKeyOfThread("saved"));
   assert.equal(agentChat(chatKeyOfThread("saved")).tabId, tabId);
   assert.equal("single:draft" in useBrowserAgentStore.getState().chats, false);
-  // The next action names the saved chat and reads the same page, not a second one.
   await runBrowserAction(
     { id: "d2", sessionId: "s", op: "snapshot", direction: "down", policy },
     { runKey: "run-__default", scope: "saved", userText: "" },
@@ -150,7 +193,6 @@ test("a new chat's run stays in it after a switch, and Stop in the saved chat en
   store.closePanel();
   store.showChat("single:draft2");
   store.showChat(chatKeyOfThread("elsewhere2"));
-  // The run started in the new chat, which the user has since left: its page opens there, not here.
   await runBrowserAction(
     { id: "b1", sessionId: "s", op: "navigate", url: "https://bound.example/", direction: "down", policy },
     { runKey: "run-bound", scope: "__default", chat: "single:draft2", userText: "open https://bound.example/" },
@@ -160,7 +202,6 @@ test("a new chat's run stays in it after a switch, and Stop in the saved chat en
   assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.chat, "single:draft2");
   assert.equal(chatTabs(useBrowserStore.getState()).length, 0);
 
-  // Saved while an action waits on the user: Stop there ends it, and its question goes with it.
   useBrowserAgentStore.setState({ scriptAccess: "ask" });
   const pending = runBrowserAction(
     { id: "b2", sessionId: "s", op: "evaluate", script: "return 1;", direction: "down", policy },
@@ -179,14 +220,12 @@ test("a new chat's run stays in it after a switch, and Stop in the saved chat en
 test("a temporary chat's run keeps its pages out of history after a switch to a saved chat", async () => {
   globals.__native = true;
   const store = useBrowserStore.getState();
-  // The saved chat on screen is not temporary: only the run itself says its pages are.
   store.showChat(chatKeyOfThread("saved-shown"));
   const run = (id: string, url: string) =>
     runBrowserAction(
       { id, sessionId: "s", op: "navigate", url, direction: "down", policy },
       { runKey: "run-hidden-temp", scope: "hidden-temp", temporary: true, userText: `open ${url}` },
     );
-  // The first opens the run's tab in its own chat; the second moves that tab on.
   await run("t1", "https://private.example/");
   await run("t2", "https://private.example/next");
   assert.equal(resultOf("t1")?.ok, true, resultOf("t1")?.error);
@@ -236,4 +275,53 @@ test("a run's temporary flag comes from its own thread, not a chat shown later",
     adapter,
     /const browserTemporary = resolvedThreadId\s*\?\s*isThreadIncognito\(resolvedThreadId\) \|\|\s*\(resolvedThreadId === runtime\.activeThreadId && runtime\.incognito\)\s*:\s*runtime\.incognito;/,
   );
+});
+
+test("native background input stays virtual while the selected page keeps normal input", async () => {
+  globals.__native = true;
+  const store = useBrowserStore.getState();
+  const away = chatKeyOfThread("virtual-away");
+  const shown = chatKeyOfThread("virtual-shown");
+  store.showChat(shown);
+  const a = store.openTabIn(away, "https://away.example/")!;
+  const b = store.openTabIn(shown, "https://here.example/")!;
+  store.updateTab(a, { loading: false });
+  store.updateTab(b, { loading: false });
+  patchAgentChat(away, { tabId: a, enabled: true, runKey: null });
+  patchAgentChat(shown, { tabId: b, enabled: true, runKey: null });
+  globals.__shownNative = b;
+  const commands: { tabId: string; command: { op: Record<string, unknown> } }[] = [];
+  const previous = globals.__callNative;
+  globals.__callNative = async (name: string, args: typeof commands[number]) => {
+    if (name !== "browser_view_agent") return null;
+    commands.push(args);
+    return { installed: true, result: answer(args.command.op) };
+  };
+  try {
+    for (const [chat, id] of [[away, a], [shown, b]]) {
+      await runBrowserAction({ id: `virtual-${id}`, sessionId: chat, op: "snapshot", policy }, { runKey: `virtual-${id}`, chat, fullAccess: true, userText: "Read the page" });
+      assert.equal(resultOf(`virtual-${id}`)?.ok, true);
+    }
+    assert.ok(commands.some((call) => call.tabId === a));
+    assert.ok(commands.some((call) => call.tabId === b));
+    assert.ok(commands.filter((call) => call.tabId === a).every((call) => call.command.op.virtualInput === true));
+    assert.ok(commands.filter((call) => call.tabId === b).every((call) => call.command.op.virtualInput !== true));
+    globals.__shownNative = a;
+    commands.length = 0;
+    await runBrowserAction({ id: "virtual-switching", sessionId: away, op: "snapshot", policy }, { runKey: `virtual-${a}`, chat: away, fullAccess: true, userText: "Read while my previous view is being hidden" });
+    assert.equal(resultOf("virtual-switching")?.ok, true);
+    assert.ok(commands.length > 0);
+    assert.ok(commands.every((call) => call.tabId === a && call.command.op.virtualInput === true));
+    globals.__shownNative = null;
+    commands.length = 0;
+    await runBrowserAction({ id: "virtual-observing", sessionId: shown, op: "snapshot", policy }, { runKey: `virtual-${b}`, chat: shown, fullAccess: true, userText: "Read my page while I inspect another chat" });
+    assert.equal(resultOf("virtual-observing")?.ok, true);
+    assert.ok(commands.length > 0);
+    assert.ok(commands.every((call) => call.tabId === b && call.command.op.virtualInput === true));
+  } finally {
+    delete globals.__shownNative;
+    globals.__callNative = previous;
+    endBrowserAgentRun(`virtual-${a}`);
+    endBrowserAgentRun(`virtual-${b}`);
+  }
 });

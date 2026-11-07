@@ -123,6 +123,14 @@ export const th = {
     removeFromMessage: "นำออกจากข้อความ",
   },
   browser: {
+    observer: {
+      menu: "แชตอื่น",
+      otherChat: "แชตอื่น",
+      label: "มุมมองเบราว์เซอร์ของ {owner} แบบอ่านอย่างเดียว",
+      back: "กลับไปยังเบราว์เซอร์ของคุณ",
+      preview: "ตัวอย่างเบราว์เซอร์แบบอ่านอย่างเดียว",
+      unavailable: "ไม่สามารถแสดงตัวอย่างหน้านี้ได้ในขณะนี้",
+    },
     drafts: {
       title: "ยกเลิกการโหลดหน้าที่มีข้อความที่ป้อนไว้หรือไม่",
       description:
@@ -170,6 +178,7 @@ export const th = {
       siteInvalid: "ป้อนไซต์ เช่น example.com หรือ *.example.com",
     },
     agent: {
+      sharedTarget: "แชร์กับ Unsloth แล้ว: {title}",
       working: "Unsloth กำลังเข้าชมเว็บในแท็บนี้",
       waiting: "Unsloth ต้องการคำตอบจากคุณในเบราว์เซอร์สำหรับ {chat}",
       otherChat: "แชทอื่น",
@@ -234,6 +243,8 @@ export const th = {
       remove: "นำออกจากรายการแนะนำ",
     },
     tabMenu: {
+      shareAgent: "แชร์แท็บกับแชตนี้",
+      stopSharing: "หยุดแชร์แท็บ",
       duplicate: "ทำสำเนา",
       closeOthers: "ปิดแท็บอื่น",
       pin: "ปักหมุดที่แถบด้านข้าง",

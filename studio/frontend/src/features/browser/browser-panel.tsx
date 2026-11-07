@@ -36,6 +36,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { AgentBar } from "./agent/agent-bar";
+import { AnnotationPortal } from "./annotation-portal";
+import { browserScopeContains } from "./browser-scope";
+import { useBrowserAgentStore } from "./agent/agent-store";
+import { BrowserObservation } from "./observer";
+import { observedTarget } from "./observer-state";
 import {
   Tooltip,
   TooltipContent,
@@ -46,6 +51,8 @@ import {
   ATTACHMENT_KIND_ICON_CLASS,
   attachmentFileKind,
   useChatRuntimeStore,
+  useChatNavigationStore,
+  visibleChatItems,
 } from "@/features/chat";
 import { startLibraryChat } from "@/features/library";
 import {
@@ -623,9 +630,22 @@ function TabStrip({
   activeTabId,
   active,
   floatable,
-}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean; floatable: boolean }) {
+  observing,
+  onObserve,
+}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean; floatable: boolean; observing: string | null; onObserve: (id: string | null) => void }) {
   const t = useT();
   const tabTitle = useTabTitle();
+  const chat = useBrowserStore((state) => state.chat);
+  const allTabs = useBrowserStore((state) => state.tabs);
+  const agentChats = useBrowserAgentStore((state) => state.chats);
+  const items = useChatNavigationStore(useShallow(visibleChatItems));
+  const others = Object.entries(agentChats).flatMap(([owner, agent]) => {
+    if (owner === chat || !agent.tabId) return [];
+    const tab = allTabs.find((item) => item.id === agent.tabId && item.chat === owner);
+    if (!tab || currentEntry(tab).kind !== "web") return [];
+    const ownerItem = items.find((item) => `${item.type}:${item.id}` === owner);
+    return [{ tab, owner: ownerItem?.title || t("browser.observer.otherChat") }];
+  });
   const fullView = useBrowserStore((state) => state.fullView);
   const renamingTabId = useBrowserStore((state) => state.renamingTabId);
   const { activateTab, closeTab, newTab, closePanel, setFullView } =
@@ -667,7 +687,7 @@ function TabStrip({
         className="browser-tablist flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden"
       >
         {tabs.map((tab) => {
-          const active = tab.id === activeTabId;
+          const active = tab.id === activeTabId && !observing;
           const entry = currentEntry(tab);
           const title = tabTitle(tab, entry);
           const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, entry.url);
@@ -681,14 +701,14 @@ function TabStrip({
                 data-tab-id={tab.id}
                 {...tabDrag.handlers(tab.id)}
                 onClick={() => {
-                  if (!tabDrag.consumeClick()) activateTab(tab.id);
+                  if (!tabDrag.consumeClick()) { onObserve(null); activateTab(tab.id); }
                 }}
                 onAuxClick={(event) => {
                   if (event.button === 1) closeTab(tab.id);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" || event.key === " ")
-                    activateTab(tab.id);
+                    { onObserve(null); activateTab(tab.id); }
                 }}
                 className={cn(
                   "group/tab relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
@@ -748,7 +768,21 @@ function TabStrip({
           );
         })}
       </div>
-      <IconButton label={t("browser.newTab")} onClick={newTab} className={STRIP_BUTTON}>
+      {others.length ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild={true}>
+            <button type="button" className="rounded-lg px-2 py-1 text-ui-13 text-muted-foreground hover:bg-accent" aria-label={t("browser.observer.menu")}>{t("browser.observer.menu")}</button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="browser-menu min-w-52 rounded-lg p-1">
+            {others.map(({ tab, owner }) => (
+              <DropdownMenuItem key={tab.id} onSelect={() => onObserve(tab.id)}>
+                <span className="truncate">{owner}: {tabTitle(tab, currentEntry(tab))}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+      <IconButton label={t("browser.newTab")} onClick={() => { onObserve(null); newTab(); }} className={STRIP_BUTTON}>
         <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
       </IconButton>
       <span aria-hidden={true} className="mx-1 h-4 w-px shrink-0 bg-border" />
@@ -2460,6 +2494,13 @@ export const BrowserPanel = memo(function BrowserPanel({
   const t = useT();
   const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
+  const chat = useBrowserStore((state) => state.chat);
+  const allTabs = useBrowserStore((state) => state.tabs);
+  const agentChats = useBrowserAgentStore((state) => state.chats);
+  const chatItems = useChatNavigationStore(useShallow(visibleChatItems));
+  const [selectionView, setSelectionView] = useState<{ chat: string; tabId: string } | null>(null);
+  const observed = observedTarget(chat, selectionView, allTabs, agentChats);
+  const owner = observed ? chatItems.find((item) => `${item.type}:${item.id}` === observed.chat)?.title || t("browser.observer.otherChat") : "";
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const fileMode = useBrowserStore((state) => state.fileViews[state.activeTabId ?? ""]?.mode) ?? DEFAULT_FILE_VIEW.mode;
@@ -2468,21 +2509,21 @@ export const BrowserPanel = memo(function BrowserPanel({
   const sectionRef = useRef<HTMLElement>(null);
   // Zoom keys, Ctrl+wheel and the View menu zoom the page, not the interface, while focus or the pointer is here.
   useEffect(() => {
-    if (!active) return;
+    if (!active || observed) return;
     return registerZoomScope({
-      contains: (element) => sectionRef.current?.contains(element) ?? false,
+      contains: (element) => browserScopeContains(sectionRef.current, useBrowserStore.getState().activeTabId, element),
       zoom: (direction) => {
         const tabId = useBrowserStore.getState().activeTabId;
         if (tabId) zoomTab(tabId, direction);
       },
       holdsKeys: nativePageHasKeys,
     });
-  }, [active]);
+  }, [active, observed]);
   // Studio's find bar searches the page while focus is in here, or when switched to it.
   useEffect(() => {
-    if (!active) return;
-    return registerBrowserFind((node) => sectionRef.current?.contains(node) ?? false);
-  }, [active]);
+    if (!active || observed) return;
+    return registerBrowserFind((node) => browserScopeContains(sectionRef.current, useBrowserStore.getState().activeTabId, node));
+  }, [active, observed]);
   const native = useNativeBrowser((state) => state.enabled);
   useEffect(() => (native ? startNativeViews() : undefined), [native]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -2514,6 +2555,9 @@ export const BrowserPanel = memo(function BrowserPanel({
   const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
+  const domPage = activeTab && activeEntry?.kind === "web" && !native
+    ? document.querySelector<HTMLElement>(`[data-browser-scope-tab="${CSS.escape(activeTab.id)}"]:not([data-browser-annotation-portal])`) ?? pageElement
+    : pageElement;
   // Only a page native-view.ts shows (its pageRect) is zoomed instead; files and new tabs are DOM.
   const nativeShown = native && activeEntry?.kind === "web" && !activeTab?.nativeError;
 
@@ -2527,7 +2571,7 @@ export const BrowserPanel = memo(function BrowserPanel({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       onKeyDown={(event) => {
         if (
-          (event.metaKey || event.ctrlKey) &&
+          !observed && (event.metaKey || event.ctrlKey) &&
           !event.shiftKey &&
           !event.altKey &&
           event.key.toLowerCase() === "d"
@@ -2567,10 +2611,13 @@ export const BrowserPanel = memo(function BrowserPanel({
       {floating ? (
         <FloatingBar tab={activeTab} active={active} />
       ) : (
-        <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} floatable={floatable} />
+        <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} floatable={floatable} observing={observed?.id ?? null} onObserve={(id) => setSelectionView(id ? { chat, tabId: id } : null)} />
       )}
       {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
       <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
+        {observed ? <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 text-ui-13"><span>{t("browser.observer.label", { owner })}</span><button type="button" className="rounded px-2 py-1 hover:bg-accent" onClick={() => setSelectionView(null)}>{t("browser.observer.back")}</button></div> : null}
+        {observed && active ? <BrowserObservation key={observed.id} tabId={observed.id} /> : null}
+        <div style={observed ? { display: "none" } : undefined} className="flex min-h-0 flex-1 flex-col">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
@@ -2636,7 +2683,7 @@ export const BrowserPanel = memo(function BrowserPanel({
                 <TabView
                   key={tab.id}
                   tab={tab}
-                  active={tab.id === activeTabId}
+                  active={tab.id === activeTabId && !observed}
                 />
               ) : null,
             )}
@@ -2652,6 +2699,7 @@ export const BrowserPanel = memo(function BrowserPanel({
                 tabId={activeTab.id}
                 title={activeEntry.name}
                 page={pageElement}
+                suspended={!active || !!observed}
               />
             ) : (
               <AnnotateLayer
@@ -2659,10 +2707,23 @@ export const BrowserPanel = memo(function BrowserPanel({
                 page={pageElement}
                 fileName={activeEntry.name}
                 zoom={activeTab.zoom}
+                suspended={!active || !!observed}
               />
             )
           ) : null}
-          {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
+          {activeTab && activeEntry && pageAnnotating === "frame" && pageElement ? (
+            <AnnotationPortal page={pageElement} tabId={activeTab.id} hidden={!active || !!observed}>
+              <WebAnnotateLayer
+                key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}:frame`}
+                tabId={activeTab.id}
+                title={activeTab.title}
+                url={webAddress(activeTab) ?? ""}
+                page={pageElement}
+                suspended={!active || !!observed}
+              />
+            </AnnotationPortal>
+          ) : null}
+          {activeTab && activeEntry && pageAnnotating === "native" ? (
             // A new page, a reload or a replacement starts over: its marks were the last page's.
             <WebAnnotateLayer
               key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}:${pageAnnotating}`}
@@ -2670,18 +2731,23 @@ export const BrowserPanel = memo(function BrowserPanel({
               title={activeTab.title}
               url={webAddress(activeTab) ?? ""}
               page={pageElement}
-              native={pageAnnotating === "native"}
+              native={true}
+              suspended={!active || !!observed}
             />
           ) : null}
-          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement ? (
+          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement && domPage ? (
+            <AnnotationPortal page={pageElement} tabId={activeTab.id} hidden={!active || !!observed}>
             <AnnotateLayer
               key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}`}
-              page={pageElement}
+              page={domPage}
               fileName={tabTitle(activeTab, activeEntry)}
               url={webAddress(activeTab) ?? undefined}
               zoom={activeTab.zoom}
+              suspended={!active || !!observed}
             />
+            </AnnotationPortal>
           ) : null}
+        </div>
         </div>
       </div>
       </FloatableContext.Provider>

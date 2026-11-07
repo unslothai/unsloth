@@ -124,6 +124,14 @@ export const cs = {
     removeFromMessage: "Odebrat ze zprávy",
   },
   browser: {
+    observer: {
+      menu: "Ostatní konverzace",
+      otherChat: "Jiná konverzace",
+      label: "Prohlížeč chatu {owner} pouze pro čtení",
+      back: "Zpět do prohlížeče",
+      preview: "Náhled prohlížeče pouze pro čtení",
+      unavailable: "Tuto stránku nyní nelze zobrazit.",
+    },
     drafts: {
       title: "Uvolnit stránku se zadaným textem?",
       description:
@@ -172,6 +180,7 @@ export const cs = {
       siteInvalid: "Zadejte web, například example.com nebo *.example.com.",
     },
     agent: {
+      sharedTarget: "Sdíleno s Unsloth: {title}",
       working: "Unsloth v této kartě prohlíží web",
       waiting: "Unsloth potřebuje vaši odpověď v prohlížeči (chat: {chat})",
       otherChat: "jiný chat",
@@ -238,6 +247,8 @@ export const cs = {
       remove: "Odebrat z navrhovaných",
     },
     tabMenu: {
+      shareAgent: "Sdílet kartu s tímto chatem",
+      stopSharing: "Přestat sdílet kartu",
       duplicate: "Duplikovat",
       closeOthers: "Zavřít ostatní karty",
       pin: "Připnout na postranní panel",

@@ -124,6 +124,14 @@ export const nl = {
     removeFromMessage: "Verwijderen uit bericht",
   },
   browser: {
+    observer: {
+      menu: "Andere chats",
+      otherChat: "Andere chat",
+      label: "Alleen-lezenweergave van de browser van {owner}",
+      back: "Terug naar je browser",
+      preview: "Alleen-lezen browservoorbeeld",
+      unavailable: "Deze pagina kan nu niet worden weergegeven.",
+    },
     drafts: {
       title: "Pagina met ingevoerde tekst ontladen?",
       description:
@@ -172,6 +180,7 @@ export const nl = {
       siteInvalid: "Voer een site in zoals example.com of *.example.com.",
     },
     agent: {
+      sharedTarget: "Gedeeld met Unsloth: {title}",
       working: "Unsloth browst in dit tabblad",
       waiting: "Unsloth heeft je antwoord nodig in de browser voor {chat}",
       otherChat: "een andere chat",
@@ -238,6 +247,8 @@ export const nl = {
       remove: "Verwijderen uit voorstellen",
     },
     tabMenu: {
+      shareAgent: "Tabblad delen met deze chat",
+      stopSharing: "Delen van tabblad stoppen",
       duplicate: "Dupliceren",
       closeOthers: "Andere tabbladen sluiten",
       pin: "Vastzetten in zijbalk",

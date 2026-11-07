@@ -124,6 +124,14 @@ export const vi = {
     removeFromMessage: "Xóa khỏi tin nhắn",
   },
   browser: {
+    observer: {
+      menu: "Các cuộc trò chuyện khác",
+      otherChat: "Cuộc trò chuyện khác",
+      label: "Chế độ xem chỉ đọc trình duyệt của {owner}",
+      back: "Quay lại trình duyệt của bạn",
+      preview: "Bản xem trước trình duyệt chỉ đọc",
+      unavailable: "Không thể xem trước trang này lúc này.",
+    },
     drafts: {
       title: "Gỡ một trang có văn bản đã nhập?",
       description:
@@ -172,6 +180,7 @@ export const vi = {
       siteInvalid: "Nhập một trang web như example.com hoặc *.example.com.",
     },
     agent: {
+      sharedTarget: "Đã chia sẻ với Unsloth: {title}",
       working: "Unsloth đang duyệt web trong thẻ này",
       waiting: "Unsloth cần bạn trả lời trong trình duyệt cho {chat}",
       otherChat: "một cuộc trò chuyện khác",
@@ -238,6 +247,8 @@ export const vi = {
       remove: "Xóa khỏi mục đề xuất",
     },
     tabMenu: {
+      shareAgent: "Chia sẻ thẻ với cuộc trò chuyện này",
+      stopSharing: "Ngừng chia sẻ thẻ",
       duplicate: "Nhân bản",
       closeOthers: "Đóng các thẻ khác",
       pin: "Ghim vào thanh bên",

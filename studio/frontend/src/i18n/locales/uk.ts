@@ -124,6 +124,14 @@ export const uk = {
     removeFromMessage: "Вилучити з повідомлення",
   },
   browser: {
+    observer: {
+      menu: "Інші чати",
+      otherChat: "Інший чат",
+      label: "Перегляд браузера {owner} без можливості керування",
+      back: "Повернутися до свого браузера",
+      preview: "Попередній перегляд браузера лише для перегляду",
+      unavailable: "Зараз неможливо переглянути цю сторінку.",
+    },
     drafts: {
       title: "Вивантажити сторінку з введеним текстом?",
       description:
@@ -172,6 +180,7 @@ export const uk = {
       siteInvalid: "Введіть сайт у форматі example.com або *.example.com.",
     },
     agent: {
+      sharedTarget: "Надано доступ Unsloth: {title}",
       working: "Unsloth переглядає сторінки в цій вкладці",
       waiting: "Unsloth чекає на вашу відповідь у браузері ({chat})",
       otherChat: "інший чат",
@@ -238,6 +247,8 @@ export const uk = {
       remove: "Вилучити з рекомендованих",
     },
     tabMenu: {
+      shareAgent: "Поділитися вкладкою з цим чатом",
+      stopSharing: "Припинити доступ до вкладки",
       duplicate: "Дублювати",
       closeOthers: "Закрити інші вкладки",
       pin: "Закріпити на бічній панелі",

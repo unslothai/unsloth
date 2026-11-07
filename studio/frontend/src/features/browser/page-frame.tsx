@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
-import { type ScrollPosition, useBrowserStore } from "./store";
+import { currentEntry, entryKey, type ScrollPosition, useBrowserStore } from "./store";
 import {
   onPageStorageClear,
   onPageStorageWrite,
@@ -20,11 +20,35 @@ export type { FrameMessage };
 let loadCounter = 0;
 
 const frames = new Map<string, HTMLIFrameElement>();
+const readyFrames = new Map<string, string>();
 const frameListeners = new Set<() => void>();
 const subscribeFrames = (listener: () => void) => {
   frameListeners.add(listener);
   return () => { frameListeners.delete(listener); };
 };
+
+export function whenWebPageReady(tabId: string, signal?: AbortSignal, timeoutMs = 10000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const finish = (ready: boolean) => {
+      clearTimeout(timer);
+      frameListeners.delete(check);
+      signal?.removeEventListener("abort", abort);
+      resolve(ready);
+    };
+    const abort = () => finish(false);
+    const check = () => {
+      const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+      if (!tab || signal?.aborted) return finish(false);
+      const entry = currentEntry(tab);
+      if (entry.kind !== "web") return finish(false);
+      if (readyFrames.get(tabId) === `${entryKey(entry)}:${tab.reloadKey}`) finish(true);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    frameListeners.add(check);
+    signal?.addEventListener("abort", abort, { once: true });
+    check();
+  });
+}
 
 export function useFrameAvailable(tabId: string | null): boolean {
   return useSyncExternalStore(subscribeFrames, () => !!tabId && frames.has(tabId), () => false);
@@ -37,6 +61,7 @@ export type FrameCommand =
   | { command: "go"; delta: -1 | 1 }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
+  | { command: "interactive"; on: boolean }
   | { command: "clearStorage" }
   | {
       command: "storageSync";
@@ -137,9 +162,13 @@ export function frameRect(tabId: string): DOMRect | null {
 }
 
 export function sendFrameCommand(tabId: string, command: FrameCommand): boolean {
-  const target = frames.get(tabId)?.contentWindow;
+  const frame = frames.get(tabId);
+  const target = frame?.contentWindow;
   if (!target) return false;
-  target.postMessage({ type: "unsloth:browser-command", ...command }, "*");
+  const payload = command.command === "agent" && frame?.closest("[inert]")
+    ? { ...command, op: { ...command.op, virtualInput: true } }
+    : command;
+  target.postMessage({ type: "unsloth:browser-command", ...payload }, "*");
   return true;
 }
 
@@ -160,12 +189,14 @@ export function PageFrame({
   refresh,
   title,
   tabId,
+  runtimeKey,
   zoom = 1,
   muted = false,
   scroll,
   onMessage,
 }: {
   tabId: string;
+  runtimeKey: string;
   zoom?: number;
   muted?: boolean;
   scroll?: ScrollPosition;
@@ -248,6 +279,8 @@ export function PageFrame({
       message = userAction(message, userActive(frame, message), performance.now());
       if (!message) return;
       if (message.type === "loaded") {
+        readyFrames.set(tabIdRef.current, runtimeKey);
+        for (const notify of frameListeners) notify();
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;
       } else if ((message.type === "navigate" && !message.newTab) || message.type === "reload") {
@@ -290,7 +323,7 @@ export function PageFrame({
       requests.stop();
       onMessageRef.current({ type: "typed", reset: true });
     };
-  }, [origin]);
+  }, [origin, runtimeKey]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -300,9 +333,21 @@ export function PageFrame({
     return () => {
       if (frames.get(tabId) === frame) {
         frames.delete(tabId);
+        readyFrames.delete(tabId);
         for (const notify of frameListeners) notify();
       }
     };
+  }, [tabId]);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    const container = frame?.parentElement;
+    if (!frame || !container) return;
+    const sync = () => sendFrameCommand(tabId, { command: "interactive", on: !frame.closest("[inert]") });
+    const observer = new MutationObserver(sync);
+    observer.observe(container, { attributes: true, attributeFilter: ["inert"] });
+    sync();
+    return () => observer.disconnect();
   }, [tabId]);
 
   // The first zoom goes with the page; later changes are commands.
@@ -345,6 +390,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            interactive: !frameRef.current?.closest("[inert]"),
             scroll: scroll ?? null,
             storage: origin ? readPageStorage(origin, tabId) : null,
           },

@@ -8,6 +8,7 @@ import { test } from "node:test";
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { patchAgentChat, endBrowserAgentRun } = await import("../src/features/browser/agent/agent-store.ts");
 
 const globals = globalThis as Record<string, unknown>;
 
@@ -53,4 +54,49 @@ test("a page that navigates away while it fills in is not read as the new page",
   });
   assert.equal(result.ok, false);
   assert.equal(result.text, undefined);
+});
+
+test("history navigation and reload recover a page without a ready agent frame", async () => {
+  globals.__native = false;
+  const store = useBrowserStore.getState();
+  const chat = store.chat;
+  const tab = store.openTabIn(chat, "https://example.com/first")!;
+  store.navigate(tab, { url: "https://example.com/second" }, { replace: false });
+  store.updateTab(tab, { loading: false });
+  patchAgentChat(chat, { tabId: tab, shared: true, enabled: true, runKey: null, stoppedRun: null });
+  const posts: Posted[] = [];
+  globals.__authFetch = async (_url: string, init: { body: string }) => {
+    posts.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  };
+  let ready = false;
+  let waits = 0;
+  globals.__webReady = async () => { waits++; return ready; };
+  globals.__frameAgent = async (_tab: string, op: Record<string, unknown>) => ({ installed: true, result: op.op === "status" ? { ok: true, quietMs: 1000, requests: 0 } : { ok: true, text: "recovered", links: [] } });
+  let generation = "";
+  const current = useBrowserStore.getState().tabs.find((item) => item.id === tab)!;
+  generation = `${current.index}:${current.reloadKey}`;
+  const unsubscribe = useBrowserStore.subscribe((state) => {
+    const page = state.tabs.find((item) => item.id === tab)!;
+    const next = `${page.index}:${page.reloadKey}`;
+    if (generation !== next) {
+      generation = next;
+      store.updateTab(tab, { loading: true, pageError: undefined });
+      queueMicrotask(() => { ready = true; store.updateTab(tab, { loading: false, pageError: undefined }); });
+    }
+  });
+  try {
+    for (const op of ["back", "forward", "reload"]) {
+      ready = false;
+      store.updateTab(tab, { pageError: true });
+      await runBrowserAction({ id: `recover-${op}`, sessionId: "s", op, policy: { allowedDomains: [], blockedDomains: [] } }, { runKey: "recovery", chat, userText: "Retry the page at https://example.com" });
+      assert.equal(posts.at(-1)?.result.ok, true, posts.at(-1)?.result.error);
+    }
+    assert.equal(waits, 0);
+    assert.equal(posts.length, 3);
+  } finally {
+    unsubscribe();
+    delete globals.__webReady;
+    endBrowserAgentRun("recovery");
+  }
 });

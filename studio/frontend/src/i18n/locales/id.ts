@@ -124,6 +124,14 @@ export const id = {
     removeFromMessage: "Hapus dari pesan",
   },
   browser: {
+    observer: {
+      menu: "Chat lain",
+      otherChat: "Chat lainnya",
+      label: "Tampilan hanya baca browser {owner}",
+      back: "Kembali ke browser Anda",
+      preview: "Pratinjau browser hanya baca",
+      unavailable: "Halaman ini tidak dapat dipratinjau sekarang.",
+    },
     drafts: {
       title: "Lepas halaman yang berisi teks yang dimasukkan?",
       description:
@@ -172,6 +180,7 @@ export const id = {
       siteInvalid: "Masukkan situs seperti example.com atau *.example.com.",
     },
     agent: {
+      sharedTarget: "Dibagikan dengan Unsloth: {title}",
       working: "Unsloth sedang menjelajah di tab ini",
       waiting: "Unsloth memerlukan jawaban Anda di browser untuk {chat}",
       otherChat: "chat lain",
@@ -238,6 +247,8 @@ export const id = {
       remove: "Hapus dari saran",
     },
     tabMenu: {
+      shareAgent: "Bagikan tab dengan chat ini",
+      stopSharing: "Berhenti membagikan tab",
       duplicate: "Duplikat",
       closeOthers: "Tutup tab lain",
       pin: "Sematkan ke bilah sisi",

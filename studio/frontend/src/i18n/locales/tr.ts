@@ -124,6 +124,14 @@ export const tr = {
     removeFromMessage: "Mesajdan kaldır",
   },
   browser: {
+    observer: {
+      menu: "Diğer sohbetler",
+      otherChat: "Başka bir sohbet",
+      label: "{owner} tarayıcısının salt okunur görünümü",
+      back: "Tarayıcınıza dönün",
+      preview: "Salt okunur tarayıcı önizlemesi",
+      unavailable: "Bu sayfanın önizlemesi şu anda gösterilemiyor.",
+    },
     drafts: {
       title: "Metin girilmiş bir sayfa bellekten kaldırılsın mı?",
       description:
@@ -172,6 +180,7 @@ export const tr = {
       siteInvalid: "example.com veya *.example.com gibi bir site girin.",
     },
     agent: {
+      sharedTarget: "Unsloth ile paylaşılıyor: {title}",
       working: "Unsloth bu sekmede geziniyor",
       waiting: "Unsloth tarayıcıda yanıtınızı bekliyor (sohbet: {chat})",
       otherChat: "başka bir sohbet",
@@ -238,6 +247,8 @@ export const tr = {
       remove: "Önerilenlerden kaldır",
     },
     tabMenu: {
+      shareAgent: "Sekmeyi bu sohbetle paylaş",
+      stopSharing: "Sekme paylaşımını durdur",
       duplicate: "Çoğalt",
       closeOthers: "Diğer sekmeleri kapat",
       pin: "Kenar çubuğuna sabitle",

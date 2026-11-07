@@ -124,6 +124,14 @@ export const hi = {
     removeFromMessage: "मैसेज से हटाएँ",
   },
   browser: {
+    observer: {
+      menu: "अन्य चैट",
+      otherChat: "दूसरी चैट",
+      label: "{owner} के ब्राउज़र का केवल पढ़ने योग्य दृश्य",
+      back: "अपने ब्राउज़र पर वापस जाएँ",
+      preview: "केवल पढ़ने योग्य ब्राउज़र पूर्वावलोकन",
+      unavailable: "इस पेज का पूर्वावलोकन अभी उपलब्ध नहीं है।",
+    },
     drafts: {
       title: "दर्ज किए गए टेक्स्ट वाला पेज अनलोड करें?",
       description: "चैट को तेज़ बनाए रखने के लिए दर्ज किए गए टेक्स्ट वाले केवल तीन छिपे पेज चलते रहते हैं। जारी रखने पर {pages} अनलोड होगा और बिना सहेजा टेक्स्ट खो सकता है। रद्द करने पर पिछले टैब पर लौटेंगे।",
@@ -165,6 +173,7 @@ export const hi = {
       siteInvalid: "example.com या *.example.com जैसी साइट डालें।",
     },
     agent: {
+      sharedTarget: "Unsloth के साथ साझा: {title}",
       working: "Unsloth इस टैब में ब्राउज़ कर रहा है",
       waiting: "Unsloth को {chat} के लिए ब्राउज़र में आपका जवाब चाहिए",
       otherChat: "किसी अन्य चैट",
@@ -229,6 +238,8 @@ export const hi = {
       remove: "सुझावों से हटाएँ",
     },
     tabMenu: {
+      shareAgent: "इस चैट के साथ टैब साझा करें",
+      stopSharing: "टैब साझा करना बंद करें",
       duplicate: "टैब डुप्लिकेट करें",
       closeOthers: "दूसरे टैब बंद करें",
       pin: "साइडबार में पिन करें",

@@ -121,6 +121,14 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    observer: {
+      menu: "Altre chat",
+      otherChat: "Un’altra chat",
+      label: "Vista in sola lettura del browser di {owner}",
+      back: "Torna al tuo browser",
+      preview: "Anteprima del browser in sola lettura",
+      unavailable: "Impossibile visualizzare l’anteprima di questa pagina ora.",
+    },
     drafts: {
       title: "Scaricare una pagina con testo inserito?",
       description: "Per mantenere la chat reattiva, solo tre pagine nascoste con testo inserito restano in esecuzione. Continuando verrà scaricata {pages} e il testo non salvato potrebbe andare perso. Annulla torna alla scheda precedente.",
@@ -162,6 +170,7 @@ export const it = {
       siteInvalid: "Inserisci un sito come example.com o *.example.com.",
     },
     agent: {
+      sharedTarget: "Condivisa con Unsloth: {title}",
       working: "Unsloth sta navigando in questa scheda",
       waiting: "Unsloth ha bisogno della tua risposta nel browser per {chat}",
       otherChat: "un'altra chat",
@@ -226,6 +235,8 @@ export const it = {
       remove: "Rimuovi dai suggeriti",
     },
     tabMenu: {
+      shareAgent: "Condividi scheda con questa chat",
+      stopSharing: "Interrompi condivisione scheda",
       duplicate: "Duplica scheda",
       closeOthers: "Chiudi le altre schede",
       pin: "Fissa nella barra laterale",

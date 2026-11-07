@@ -124,6 +124,14 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    observer: {
+      menu: "다른 채팅",
+      otherChat: "다른 채팅",
+      label: "{owner}의 브라우저 읽기 전용 보기",
+      back: "내 브라우저로 돌아가기",
+      preview: "읽기 전용 브라우저 미리보기",
+      unavailable: "지금은 이 페이지를 미리 볼 수 없습니다.",
+    },
     drafts: {
       title: "입력한 텍스트가 있는 페이지를 종료할까요?",
       description: "채팅의 응답성을 유지하기 위해 입력한 텍스트가 있는 숨겨진 페이지는 세 개까지만 계속 실행됩니다. 계속하면 {pages} 페이지가 종료되며 저장하지 않은 텍스트가 사라질 수 있습니다. 취소하면 이전 탭으로 돌아갑니다.",
@@ -165,6 +173,7 @@ export const ko = {
       siteInvalid: "example.com 또는 *.example.com 같은 사이트를 입력하세요.",
     },
     agent: {
+      sharedTarget: "Unsloth와 공유 중: {title}",
       working: "Unsloth가 이 탭에서 탐색 중입니다",
       waiting: "{chat}의 브라우저에서 Unsloth가 응답을 기다리고 있습니다",
       otherChat: "다른 채팅",
@@ -229,6 +238,8 @@ export const ko = {
       remove: "추천에서 제거",
     },
     tabMenu: {
+      shareAgent: "이 채팅과 탭 공유",
+      stopSharing: "탭 공유 중지",
       duplicate: "탭 복제",
       closeOthers: "다른 탭 닫기",
       pin: "사이드바에 고정",

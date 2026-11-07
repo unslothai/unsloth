@@ -125,6 +125,14 @@ export const ja = {
     removeFromMessage: "メッセージから削除",
   },
   browser: {
+    observer: {
+      menu: "他のチャット",
+      otherChat: "別のチャット",
+      label: "{owner} のブラウザー（閲覧のみ）",
+      back: "自分のブラウザーに戻る",
+      preview: "読み取り専用のブラウザープレビュー",
+      unavailable: "現在、このページをプレビューできません。",
+    },
     drafts: {
       title: "入力したテキストがあるページを終了しますか？",
       description: "チャットの応答性を保つため、入力したテキストがある非表示ページは3つまで実行を続けます。続行すると {pages} を終了し、未保存のテキストが失われる可能性があります。キャンセルすると前のタブに戻ります。",
@@ -166,6 +174,7 @@ export const ja = {
       siteInvalid: "example.com や *.example.com のようにサイトを入力してください。",
     },
     agent: {
+      sharedTarget: "Unsloth と共有中: {title}",
       working: "Unsloth がこのタブで操作しています",
       waiting: "{chat} のブラウザで Unsloth があなたの回答を待っています",
       otherChat: "別のチャット",
@@ -230,6 +239,8 @@ export const ja = {
       remove: "おすすめから削除",
     },
     tabMenu: {
+      shareAgent: "このチャットとタブを共有",
+      stopSharing: "タブの共有を停止",
       duplicate: "タブを複製",
       closeOthers: "他のタブを閉じる",
       pin: "サイドバーにピン留め",

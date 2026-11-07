@@ -122,6 +122,14 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    observer: {
+      menu: "Andra chattar",
+      otherChat: "Annan chatt",
+      label: "Skrivskyddad vy av webbläsaren för {owner}",
+      back: "Tillbaka till din webbläsare",
+      preview: "Skrivskyddad förhandsvisning av webbläsaren",
+      unavailable: "Sidan kan inte förhandsvisas just nu.",
+    },
     drafts: {
       title: "Ladda ur en sida med inmatad text?",
       description: "För att hålla chatten responsiv fortsätter bara tre dolda sidor med inmatad text att köras. Om du fortsätter laddas {pages} ur och osparad text kan gå förlorad. Avbryt återgår till föregående flik.",
@@ -163,6 +171,7 @@ export const sv = {
       siteInvalid: "Ange en webbplats som example.com eller *.example.com.",
     },
     agent: {
+      sharedTarget: "Delas med Unsloth: {title}",
       working: "Unsloth surfar i den här fliken",
       waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
       otherChat: "en annan chatt",
@@ -227,6 +236,8 @@ export const sv = {
       remove: "Ta bort från förslag",
     },
     tabMenu: {
+      shareAgent: "Dela fliken med den här chatten",
+      stopSharing: "Sluta dela fliken",
       duplicate: "Duplicera",
       closeOthers: "Stäng andra flikar",
       pin: "Fäst i sidofältet",

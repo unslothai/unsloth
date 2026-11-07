@@ -113,6 +113,7 @@ function harness(name = "ThreadContextUsageRecount") {
     video: false,
     browser: {
       enabled: false,
+      chats: {} as Record<string, { enabled?: boolean }>,
       historyAccess: "ask" as "ask" | "allow" | "never",
       scriptAccess: "ask" as "ask" | "never",
     },
@@ -142,7 +143,8 @@ function harness(name = "ThreadContextUsageRecount") {
   );
   const browserAgentToolsForTurn = runtimeFunction("browserAgentToolsForTurn", {
     useBrowserAgentStore,
-    browserPanelAvailable: () => true,
+    shownBrowserChat: () => `single:${world.mainThreadId}`,
+    browserAgentEnabled: (chat: string) => world.browser.chats[chat]?.enabled ?? world.browser.enabled,
     isTauri: false,
     BROWSER_AGENT_TOOLS: ["browser_navigate"],
     BROWSER_SCREENSHOT_TOOL: "browser_screenshot",
@@ -345,6 +347,21 @@ for (const setting of ["enabled", "historyAccess", "scriptAccess"] as const) {
     assert.equal(h.world.recounts.length, 2);
   });
 }
+
+test("browser tool selection follows this chat's override, not another chat's", () => {
+  const h = harness();
+  h.world.browser.enabled = true;
+  h.world.browser.chats["single:thread-a"] = { enabled: false };
+  h.world.browser.chats["single:thread-b"] = { enabled: true };
+  h.render();
+  assert.equal(h.world.browserToolSelections.at(-1), "");
+  h.world.browser.chats["single:thread-b"] = { enabled: false };
+  h.render();
+  assert.equal(h.world.browserToolSelections.at(-1), "");
+  h.world.browser.chats["single:thread-a"] = { enabled: true };
+  h.render();
+  assert.match(String(h.world.browserToolSelections.at(-1)), /browser_navigate/);
+});
 
 for (const browserEnabled of [false, true]) {
   test(`unchanged browser tools preserve saved usage when browser is ${browserEnabled ? "enabled" : "disabled"}`, () => {

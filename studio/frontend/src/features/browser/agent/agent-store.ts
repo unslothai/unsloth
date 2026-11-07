@@ -49,8 +49,11 @@ export type AgentStep = {
 
 /** One chat's use of the browser tools; chats run theirs side by side, each in its own tab. */
 export type AgentChat = {
+  enabled?: boolean;
   /** The tab the agent drives in this chat; the model can't reach any other. */
   tabId: string | null;
+  shared: boolean;
+  targetVersion: number;
   working: boolean;
   step: AgentStep | null;
   question: AgentPrompt | null;
@@ -62,7 +65,7 @@ export type AgentChat = {
   endedAt: number;
 };
 
-export const IDLE_AGENT: AgentChat = { tabId: null, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
+export const IDLE_AGENT: AgentChat = { tabId: null, shared: false, targetVersion: 0, working: false, step: null, question: null, runKey: null, stoppedRun: null, endedAt: 0 };
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -146,6 +149,18 @@ export function liveChat(chat: string): string {
 
 export function agentChat(chat: string): AgentChat {
   return useBrowserAgentStore.getState().chats[liveChat(chat)] ?? IDLE_AGENT;
+}
+
+export function browserAgentEnabled(chat: string): boolean {
+  const state = useBrowserAgentStore.getState();
+  return state.chats[liveChat(chat)]?.enabled ?? state.enabled;
+}
+
+export function setBrowserAgentEnabled(chat: string, enabled: boolean): void {
+  if (!enabled && browserAgentEnabled(chat)) {
+    stopBrowserAgent(chat);
+    patchAgentChat(chat, { enabled, targetVersion: agentChat(chat).targetVersion + 1 });
+  } else patchAgentChat(chat, { enabled });
 }
 
 export function patchAgentChat(chat: string, patch: Partial<AgentChat>): void {
@@ -233,6 +248,16 @@ export function agentDownloadRule(tabId: string, site: string, fileUrl: string):
 }
 
 const activeActions = new Map<string, AbortController>();
+const targetListeners = new Set<(chat: string, previous: string | null) => void>();
+
+export function onAgentTargetChange(listener: (chat: string, previous: string | null) => void): () => void {
+  targetListeners.add(listener);
+  return () => targetListeners.delete(listener);
+}
+
+export function notifyAgentTargetChange(chat: string, previous: string | null): void {
+  for (const listener of targetListeners) listener(chat, previous);
+}
 
 export function setActiveAction(chat: string, controller: AbortController | null): void {
   if (controller) activeActions.set(liveChat(chat), controller);
@@ -258,10 +283,9 @@ export function endBrowserAgentRun(runKey: string): void {
   }
 }
 
-/** The agent bar's Stop: the action running now ends too, not just the ones after it. */
 export function stopBrowserAgent(chat: string): void {
-  const { runKey, question } = agentChat(chat);
-  patchAgentChat(chat, { stoppedRun: runKey, working: false, step: null });
+  const { runKey, question, stoppedRun } = agentChat(chat);
+  patchAgentChat(chat, { stoppedRun: runKey ?? stoppedRun, working: false, step: null });
   if (question) answers.get(question.id)?.(false);
   activeActions.get(liveChat(chat))?.abort();
 }

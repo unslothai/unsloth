@@ -145,7 +145,6 @@ import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
   createContext,
   lazy,
@@ -161,6 +160,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
+import { createPortal } from "react-dom";
+import { BROWSER_OVERLAY_ROOT, BROWSER_RUNTIME_ROOT } from "../browser/browser-runtime-root";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
@@ -350,15 +351,15 @@ const FullViewChatButton = lazy(() =>
   })),
 );
 
-// Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 // Only what is on screen: background tabs stay mounted under hidden or aria-hidden wrappers.
-function focusableIn(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+function focusableIn(container: HTMLElement, frames = false): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(frames ? `${FOCUSABLE_SELECTOR},iframe` : FOCUSABLE_SELECTOR)).filter(
     (element) =>
       element.tabIndex !== -1 &&
+      !element.hasAttribute("data-browser-focus-guard") &&
       !element.closest('[aria-hidden="true"], [inert]') &&
       element.getClientRects().length > 0 &&
       getComputedStyle(element).visibility !== "hidden",
@@ -435,19 +436,21 @@ const BrowserOverlaidContext = createContext(false);
 function BrowserOverlay(): ReactElement {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const modalRoot = document.getElementById(BROWSER_RUNTIME_ROOT)!;
   useDocumentFlag("data-browser-overlay-open", true);
   useEffect(() => {
     const previous = document.activeElement;
     const id = window.setTimeout(() => {
       const dialog = dialogRef.current;
-      if (dialog && !dialog.contains(document.activeElement)) (focusableIn(dialog)[0] ?? dialog).focus();
+      if (dialog && !modalRoot.contains(document.activeElement)) (focusableIn(dialog)[0] ?? dialog).focus();
     }, 0);
     return () => {
       window.clearTimeout(id);
       if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
     };
-  }, []);
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  }, [modalRoot]);
+  const onKeyDown = useCallback((event: KeyboardEvent) => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") {
       // Menus, fields and annotating handle their own Escape first.
       const target = event.target as HTMLElement;
@@ -458,12 +461,12 @@ function BrowserOverlay(): ReactElement {
       return;
     }
     if (event.key !== "Tab") return;
-    const focusable = focusableIn(event.currentTarget);
+    const focusable = focusableIn(modalRoot, true);
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
     if (!first || !last) {
       event.preventDefault();
-      event.currentTarget.focus();
+      modalRoot.focus();
     } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
@@ -471,10 +474,33 @@ function BrowserOverlay(): ReactElement {
       event.preventDefault();
       first.focus();
     }
-  };
-  return (
+  }, [modalRoot]);
+  useLayoutEffect(() => {
+    Object.assign(modalRoot.style, { position: "fixed", inset: "0", zIndex: "50", pointerEvents: "none", isolation: "isolate" });
+    modalRoot.setAttribute("role", "dialog");
+    modalRoot.setAttribute("aria-modal", "true");
+    modalRoot.setAttribute("aria-label", t("browser.title"));
+    modalRoot.tabIndex = -1;
+    const guards = [...modalRoot.querySelectorAll<HTMLElement>("[data-browser-focus-guard]")];
+    const focusStart = () => (focusableIn(modalRoot, true).at(-1) ?? modalRoot).focus({ preventScroll: true });
+    const focusEnd = () => (focusableIn(modalRoot, true)[0] ?? modalRoot).focus({ preventScroll: true });
+    guards.forEach((guard) => { guard.hidden = false; });
+    guards[0]?.addEventListener("focus", focusStart);
+    guards[1]?.addEventListener("focus", focusEnd);
+    modalRoot.addEventListener("keydown", onKeyDown);
+    return () => {
+      modalRoot.removeEventListener("keydown", onKeyDown);
+      guards[0]?.removeEventListener("focus", focusStart);
+      guards[1]?.removeEventListener("focus", focusEnd);
+      guards.forEach((guard) => { guard.hidden = true; });
+      for (const name of ["role", "aria-modal", "aria-label", "tabindex"]) modalRoot.removeAttribute(name);
+      for (const name of ["position", "inset", "z-index", "pointer-events", "isolation"]) modalRoot.style.removeProperty(name);
+    };
+  }, [modalRoot, onKeyDown, t]);
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 sm:p-4"
+      className="fixed inset-0 z-0 flex items-center justify-center bg-background/80 sm:p-4"
+      style={{ pointerEvents: "auto" }}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           useBrowserStore.getState().closePanel();
@@ -483,18 +509,14 @@ function BrowserOverlay(): ReactElement {
     >
       <div
         ref={dialogRef}
-        role="dialog"
-        aria-modal={true}
-        aria-label={t("browser.title")}
         tabIndex={-1}
-        onKeyDown={onKeyDown}
         className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-3xl sm:border sm:shadow-xl"
       >
         <Suspense fallback={null}>
           <BrowserPanel active={true} />
         </Suspense>
       </div>
-    </div>
+    </div>, document.getElementById(BROWSER_OVERLAY_ROOT)!,
   );
 }
 
