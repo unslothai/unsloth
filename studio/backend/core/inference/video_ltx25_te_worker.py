@@ -943,7 +943,12 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
 
     resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
-    if not resident and device != "cpu" and "_pinned_bytes" not in config:
+    if (
+        not resident
+        and device != "cpu"
+        and config.get("_pin_host")
+        and "_pinned_bytes" not in config
+    ):
         config["_pinned_bytes"] = _pin_host_copy(model, config)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = (
@@ -1027,6 +1032,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
         if kind != "encode":
             continue
         try:
+            config["_pin_host"] = bool(msg.get("pin_host"))
             embeds, mask, device = _encode_on(
                 tokenizer,
                 model,

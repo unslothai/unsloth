@@ -2349,6 +2349,47 @@ def test_client_sends_the_budget_and_the_servers_share():
     assert v25._server_reserved_mib("cpu") is None
 
 
+def test_the_client_lets_the_worker_pin_only_after_a_render(monkeypatch):
+    """The first render pins the server's own host weights; the encoder's pin must not take that RAM first."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    sent = []
+
+    def fake_put(msg):
+        sent.append(msg)
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = fake_put
+    pipe = SimpleNamespace(
+        _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.float32)
+    )
+    v25.install_remote_encode_prompt(pipe, client)
+    for text in ("a fox", "a hen"):
+        pipe.encode_prompt(prompt = text, do_classifier_free_guidance = False, max_sequence_length = 2)
+    assert [m["pin_host"] for m in sent] == [False, True]
+
+
 @pytest.mark.parametrize("resident", [False, True])
 def test_client_frees_the_servers_cached_blocks_before_a_non_resident_encode(monkeypatch, resident):
     """Only a non-resident cache miss releases the server's cached blocks, before its reservation is sent."""
@@ -2729,6 +2770,10 @@ def test_the_host_copy_is_pinned_once_before_the_first_card_encode(monkeypatch):
     model = _stack_model()
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
     config = {"device": "cuda:0", "resident": False}
+    # Not before the server says its own pins are done.
+    worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert calls == [] and "_pinned_bytes" not in config
+    config["_pin_host"] = True
     for _ in range(2):
         worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
     assert len(calls) == 1 and calls[0][2] is True and calls[0][3] == "cuda:0"

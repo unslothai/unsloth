@@ -1118,6 +1118,8 @@ class Ltx25TextEncoderClient:
         self._cache: list[tuple[tuple, Any]] = []
         self.info: dict[str, Any] = {}
         self.last_encode: dict[str, Any] = {}
+        # encode_prompt calls, one per render: the second means a render (and the server's pins) has finished.
+        self.renders = 0
 
     # process management
     def start(self) -> None:
@@ -1301,6 +1303,9 @@ class Ltx25TextEncoderClient:
                     "prompts": list(prompts),
                     "max_sequence_length": int(max_sequence_length),
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
+                    # The server pins its own host weights during the first render; the encoder's pin waits for that
+                    # so it never takes the host RAM those pins need.
+                    "pin_host": self.renders > 1,
                 }
             )
             self._inflight = seq
@@ -1345,6 +1350,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device: Any = None,
         dtype: Any = None,
     ) -> tuple[Any, Any, Any, Any]:
+        client.renders = int(getattr(client, "renders", 0) or 0) + 1
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
