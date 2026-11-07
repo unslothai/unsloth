@@ -71,7 +71,8 @@ RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: a backdrop-filter is computed again on every
 # frame drawn, and with software compositing every frame redraws the window, so the sidebar's blur
 # costs on any repaint (typing 3.0-5.4x, menus and message controls up to 6.3x). While anything
-# opens, closes or scrolls, glass-motion.ts swaps the blur for a plain fill: on origin/main
+# opens, closes or scrolls, glass-motion.ts swaps the blur for a plain fill (only under software
+# compositing, which the gate's headless browsers always use; these ceilings assume it): on origin/main
 # 3d41bf4af3 (4 runs with it and 3 without, loaded 36-core host) Settings scrolling went from
 # 7.8-13.6x to 1.4-4.5x and thread scrolling from 4.6-5.6x to 1.8-4.0x (Liquid 3D keeps its blurred
 # rim glows on the rest of the dialog, hence its higher ceiling). No area restyles the whole thread
