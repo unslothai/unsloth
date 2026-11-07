@@ -846,6 +846,14 @@ def _module_tensors(module: Any) -> list:
     return out
 
 
+def _hooked(module: Any) -> bool:
+    """An accelerate hook, or a diffusers registry holding any hook (an empty registry moves nothing)."""
+    if getattr(module, "_hf_hook", None) is not None:
+        return True
+    registry = getattr(module, "_diffusers_hook", None)
+    return registry is not None and bool(getattr(registry, "hooks", True))
+
+
 def _parkable_components(pipe: Any, device: Any) -> list:
     """``[(name, module, MiB)]``, largest first: hook-free modules wholly on the card that the encode never runs."""
     import torch
@@ -859,11 +867,7 @@ def _parkable_components(pipe: Any, device: Any) -> list:
             or str(name).startswith("text_encoder")
             # The VAE decode is compiled and keeps fused weight copies, so its storage must not move under it.
             or "vae" in str(name).lower()
-            or any(
-                getattr(sub, "_hf_hook", None) is not None
-                or getattr(sub, "_diffusers_hook", None) is not None
-                for sub in module.modules()
-            )
+            or any(_hooked(sub) for sub in module.modules())
         ):
             continue
         tensors = _module_tensors(module)

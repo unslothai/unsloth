@@ -3081,7 +3081,9 @@ def _park_pipe():
     hooked = torch.nn.Linear(4, 4)
     hooked._hf_hook = object()
     nested = torch.nn.Sequential(torch.nn.Linear(4, 4))
-    nested[0]._diffusers_hook = object()
+    nested[0]._diffusers_hook = SimpleNamespace(hooks = {"group_offloading": object()})
+    # an empty diffusers registry holds no hook: still parkable
+    connectors[0]._diffusers_hook = SimpleNamespace(hooks = {})
     return SimpleNamespace(
         components = {
             "connectors": connectors,
