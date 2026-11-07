@@ -638,6 +638,13 @@ def create_and_bind_terminal_fallback(
             "serverManaged": True,
         }
         created = now_ms()
+        # Text and source parts add no attachment entries; keep a clean inventory clean, as the start placeholder does.
+        inventory_was_clean = (
+            conn.execute(
+                "SELECT 1 FROM chat_attachment_inventory_state WHERE singleton=1 AND dirty=0"
+            ).fetchone()
+            is not None
+        )
         conn.execute(
             """INSERT INTO chat_messages
                (id, thread_id, parent_id, role, content_json, metadata_json, created_at)
@@ -651,6 +658,8 @@ def create_and_bind_terminal_fallback(
                 created,
             ),
         )
+        if inventory_was_clean:
+            conn.execute("UPDATE chat_attachment_inventory_state SET dirty=0 WHERE singleton=1")
         conn.execute(
             "UPDATE research_runs SET assistant_message_id=?, updated_at=? WHERE id=?",
             (message_id, created, run_id),
