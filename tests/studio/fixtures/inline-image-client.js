@@ -47,7 +47,7 @@ function App() {
 	const [status, setStatus] = React.useState("Ready");
 	const [results, setResults] = React.useState([]);
 	async function run() {
-		let loadGraceMs = 30000;
+		let loadGraceMs = 15000;
 		const checks = [];
 		const unsupportedFormats = [];
 		const show = (next) =>
@@ -76,9 +76,10 @@ function App() {
 		}
 		async function loaded(width = 32) {
 			// Firefox on windows-latest has timed out the first non-Latin filename at 5 s while the other browsers
-			// and filenames passed. A slow load may borrow up to 10 s from a 30 s grace shared by the whole run, so a
-			// run where every load fails still reports before the harness stops waiting. On a timeout, say whether
-			// the image was missing, slow or wrong.
+			// and filenames passed. A slow load may borrow up to 10 s from a 15 s grace shared by the whole run, so
+			// one browser adds at most 15 s to a step that takes about 90 s for all five against its 5 minutes. (A run
+			// where every load fails already outlasts the harness's 180 s report wait at 5 s a load.) On a timeout,
+			// say whether the image was missing, slow or wrong.
 			const start = performance.now();
 			await until(
 				() => image()?.complete && image()?.naturalWidth === width,
