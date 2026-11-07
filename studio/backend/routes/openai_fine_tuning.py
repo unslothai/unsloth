@@ -12,6 +12,8 @@ import json
 import os
 import re
 import secrets
+import sqlite3
+import time
 import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -520,9 +522,8 @@ _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
 
 _ALIAS_CREATED: dict[str, int] = {}
-# Creation order within this process, for jobs created in the same second.
-_ALIAS_ORDER: dict[str, int] = {}
-_alias_counter = count()
+# Persisted ns stamp: orders jobs created in the same second, also after a restart.
+_ALIAS_CREATED_NS: dict[str, int] = {}
 
 _aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
@@ -549,6 +550,12 @@ def _alias_db():
         f"CREATE TABLE IF NOT EXISTS {_ALIAS_TABLE} "
         "(alias TEXT PRIMARY KEY, run_id TEXT NOT NULL, account_id TEXT, created_at INTEGER)"
     )
+    if "created_ns" not in {row[1] for row in conn.execute(f"PRAGMA table_info({_ALIAS_TABLE})")}:
+        try:
+            conn.execute(f"ALTER TABLE {_ALIAS_TABLE} ADD COLUMN created_ns INTEGER")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc):
+                raise
     return conn
 
 
@@ -559,12 +566,14 @@ def _load_aliases() -> None:
     conn = _alias_db()
     try:
         rows = conn.execute(
-            f"SELECT alias, run_id, account_id, created_at FROM {_ALIAS_TABLE}"
+            f"SELECT alias, run_id, account_id, created_at, created_ns FROM {_ALIAS_TABLE}"
         ).fetchall()
     finally:
         conn.close()
-    for row in rows:
+    for *row, created_ns in rows:
         _record_alias(*row)
+        if created_ns:
+            _ALIAS_CREATED_NS[row[0]] = created_ns
     _aliases_loaded.add(account_id)
 
 
@@ -582,9 +591,9 @@ def _save_alias(alias: str, run_id: str, account_id: Optional[str], created_at: 
         conn = _alias_db()
         try:
             conn.execute(
-                f"INSERT OR REPLACE INTO {_ALIAS_TABLE} (alias, run_id, account_id, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (alias, run_id, account_id, created_at),
+                f"INSERT OR REPLACE INTO {_ALIAS_TABLE} "
+                "(alias, run_id, account_id, created_at, created_ns) VALUES (?, ?, ?, ?, ?)",
+                (alias, run_id, account_id, created_at, _ALIAS_CREATED_NS.get(alias)),
             )
             conn.commit()
         finally:
@@ -1003,7 +1012,7 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
-    _ALIAS_ORDER[entry.alias] = next(_alias_counter)
+    _ALIAS_CREATED_NS[entry.alias] = time.time_ns()
     _ensure_drainer()
     return entry
 
@@ -1138,11 +1147,12 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Newest created first, same-second ties by public id: a job keeps its place from queue to
-    # history and across restarts. History is newest start first and no job starts before it is
-    # created, so a buffered row created after the current row's start is final.
+    # Newest created first, same-second ties by the persisted ns stamp, then public id: a job
+    # keeps its place from queue to history and across restarts. History is newest start first
+    # and no job starts before it is created, so a buffered row created after the current row's
+    # start is final.
     def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
-        return (-created_at, public_id, seq), row, is_run
+        return (-created_at, -_ALIAS_CREATED_NS.get(public_id, 0), public_id, seq), row, is_run
 
     heap = [
         item(job["created_at"] or 0, job["id"], seq, job, False)
