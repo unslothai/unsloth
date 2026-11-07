@@ -254,6 +254,7 @@ import {
   restorableSize,
   sizeLimitsFrom,
   snapDim,
+  xyGridCellSize,
 } from "./image-size";
 import {
   ANNOTATION_COLORS,
@@ -2964,7 +2965,7 @@ export function ImagesPage({
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     // A Hires fix image records its output size; the Width / Height controls take the base pass.
-    const base = hiresBaseSize(image) ?? { width: image.width, height: image.height };
+    const base = hiresBaseSize(image) ?? xyGridCellSize(image) ?? { width: image.width, height: image.height };
     const restored = restorableSize(base.width, base.height, image.workflow, sizeLimits);
     setHires(resolveRestoredHires(hiresFromRecipe(image), status?.hires));
     setUpscaleModel(image.upscale_model ?? null);

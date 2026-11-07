@@ -1245,8 +1245,10 @@ def _low_precision(model) -> Optional[str]:
         for m in model.modules():
             if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
                 return "fp8"
-            cls = type(m)
-            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+            if any(
+                c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+                for c in type(m).__mro__
+            ):
                 return "fp8"
     except Exception:
         pass

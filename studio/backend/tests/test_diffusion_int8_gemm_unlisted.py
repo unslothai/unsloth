@@ -42,6 +42,8 @@ def _reset():
 def _clean(monkeypatch, tmp_path):
     for name in _ENVS:
         monkeypatch.delenv(name, raising = False)
+    # pre-Triton-3.8 gate; 3.8+ is in test_diffusion_int8_gemm.py
+    monkeypatch.setattr(g8, "_triton_at_least", lambda major, minor: False)
     monkeypatch.setattr(g8, "_race_cache_file", lambda: tmp_path / g8._RACE_CACHE_NAME)
     monkeypatch.setattr(g8, "_race_key", lambda index: f"card{index}")
     _reset()
