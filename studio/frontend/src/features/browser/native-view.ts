@@ -555,6 +555,10 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
+// Inside the floating window a fixed background misses the page (its own layer, a drag's transform),
+// so those cut in their own box instead. Backgrounds only: UI drawn over the page (annotations) stays.
+const LOCAL_ATTRIBUTE = "data-native-hole-local";
+let local: HTMLElement[] = [];
 // The wallpaper is no ancestor of the page, so it is masked instead.
 const MASK_ATTRIBUTE = "data-native-hole-mask";
 let masked: HTMLElement[] = [];
@@ -591,17 +595,20 @@ function placeHole(): void {
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
   const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
   const values = rect.map((value) => value / zoom);
-  for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
-  // No zoom correction: a mask is no fixed background.
-  for (const node of masked) {
+  for (const node of holed) {
+    if (local.includes(node)) continue;
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+  }
+  // No zoom correction: neither a mask nor a box-local cut is a fixed background.
+  for (const node of [...local, ...masked]) {
     const box = node.getBoundingClientRect();
-    // Kept inside the box: a negative length voids the whole mask, uncutting it (a page a drag left behind).
+    // Kept inside the box: a negative length voids the whole cut (a page a drag left behind).
     const x = Math.max(0, rect[0] - box.left);
     const y = Math.max(0, rect[1] - box.top);
     const width = Math.max(0, Math.min(box.width, rect[0] + rect[2] - box.left) - x);
     const height = Math.max(0, Math.min(box.height, rect[1] + rect[3] - box.top) - y);
-    const local = [x, y, width, height];
-    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${local[index]}px`));
+    const cut = [x, y, width, height];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${cut[index]}px`));
   }
 }
 
@@ -623,20 +630,19 @@ function markHole(): boolean {
   if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
-  // A fixed background inside the floating window misses the page (its own layer, a drag's
-  // transform), leaving it white: the window is masked instead, the nodes in it left alone.
   const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
   const colors = chain.map((node) => getComputedStyle(node));
   chain.forEach((node, index) => {
-    if (index <= floating) return;
     const computed = colors[index];
     if (computed.backgroundImage === "none" && !opaque(computed.backgroundColor)) return;
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
+    if (index <= floating) local.push(node);
   });
-  masked = floating >= 0 ? [...layers, chain[floating]] : layers;
+  masked = layers;
   placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of local) node.setAttribute(LOCAL_ATTRIBUTE, "");
   for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
@@ -663,6 +669,8 @@ function unmarkHole(): void {
     for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
   }
   holed = [];
+  for (const node of local) node.removeAttribute(LOCAL_ATTRIBUTE);
+  local = [];
   for (const node of masked) {
     node.removeAttribute(MASK_ATTRIBUTE);
     for (const name of HOLE_VARS) node.style.removeProperty(name);
