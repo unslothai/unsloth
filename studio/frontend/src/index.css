@@ -1727,6 +1727,28 @@ html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-c
 	padding-inline-start: 0;
 	text-indent: 0;
 }
+/* Capped Thinking box: fades only an edge with more past it; the second layer keeps the scrollbar unfaded. */
+[data-slot="reasoning-tail"][data-capped] {
+	--trace-fade-top: 0px;
+	--trace-fade-bottom: 0px;
+	mask-image:
+		linear-gradient(to bottom, transparent, #000 var(--trace-fade-top), #000 calc(100% - var(--trace-fade-bottom)), transparent),
+		linear-gradient(#000, #000);
+	mask-size: 100% 100%, calc(1rem * var(--ui-space-scale, 1)) 100%;
+	mask-position: 0 0, right;
+	mask-repeat: no-repeat;
+}
+[data-slot="reasoning-tail"][data-capped][data-more-above] {
+	--trace-fade-top: 1.25rem;
+}
+[data-slot="reasoning-tail"][data-capped][data-more-below] {
+	--trace-fade-bottom: 1.5rem;
+}
+@media print {
+	[data-slot="reasoning-tail"][data-capped] {
+		mask-image: none;
+	}
+}
 html[data-code-no-ligatures] :is(pre, code, kbd, samp),
 html[data-code-no-ligatures] .aui-reasoning-code-lines {
 	font-variant-ligatures: none;
