@@ -9465,7 +9465,6 @@ _HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\2")
 
 
 def _substitution_end(command: str, i: int) -> int:
-    """Index of the `)` closing a `$(` whose body starts at i, or len(command)."""
     depth, n = 1, len(command)
     while i < n:
         c = command[i]
