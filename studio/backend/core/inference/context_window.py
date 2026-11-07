@@ -1030,17 +1030,20 @@ def _attachment_spans(text: str):
             notes.append(note)
             openers.append(opened)
     # Wrappers pair with closing tags like brackets, so a quoted attachment nests; an unclosed one runs to the next note.
-    events = [(opened.end(), 0, i) for i, opened in enumerate(openers) if opened]
-    tags = {opened.group("tag") for opened in openers if opened}
-    if tags:
-        closings = re.compile("\n</(?P<tag>" + "|".join(map(re.escape, sorted(tags))) + ")>")
-        events += [(closed.start(), 1, closed) for closed in closings.finditer(text)]
-    ends, open_by_tag = {}, {}
-    for _, kind, item in sorted(events, key = lambda event: event[:2]):
-        if kind == 0:
-            open_by_tag.setdefault(openers[item].group("tag"), []).append(item)
-        elif open_by_tag.get(item.group("tag")):
-            ends[open_by_tag[item.group("tag")].pop()] = item.end()
+    pending = [i for i, opened in enumerate(openers) if opened]
+    ends, open_by_tag, nxt = {}, {}, 0
+    tags = {openers[i].group("tag") for i in pending}
+    closings = (
+        re.compile("\n</(?P<tag>" + "|".join(map(re.escape, sorted(tags))) + ")>") if tags else None
+    )
+    for closed in closings.finditer(text) if closings else ():
+        if nxt == len(pending) and not any(open_by_tag.values()):
+            break
+        while nxt < len(pending) and openers[pending[nxt]].end() <= closed.start():
+            open_by_tag.setdefault(openers[pending[nxt]].group("tag"), []).append(pending[nxt])
+            nxt += 1
+        if open_by_tag.get(closed.group("tag")):
+            ends[open_by_tag[closed.group("tag")].pop()] = closed.end()
     index = 0
     while index < len(notes):
         note, opened, extent = notes[index], openers[index], ends.get(index, -1)
