@@ -211,3 +211,14 @@ test("an unsized loaded model leaves the VRAM bar unsplit rather than claiming U
   assert.equal(split.vram, null);
   assert.notEqual(split.ram, null);
 });
+
+test("a model whose pool is unknown (Vulkan) leaves the VRAM bar unsplit; a proven CPU one does not", () => {
+  const base = {
+    showShare: true, showBreakdown: false, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 3, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24,
+  };
+  const vulkan = [{ id: "v", name: "org/V-GGUF", source: "chat", residentMib: 3072 }];
+  assert.equal(poolSplit({ ...base, entries: vulkan }).vram, null);
+  const cpu = [{ ...vulkan[0], residentOnGpu: false }];
+  assert.notEqual(poolSplit({ ...base, entries: cpu }).vram, null);
+});

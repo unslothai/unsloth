@@ -201,6 +201,11 @@ def test_status_says_whether_the_size_is_gpu_buffers_or_unknown(monkeypatch):
         resident_memory_mib = lambda: 3072,
         reclaimable_gpu_memory_gb = lambda: None,
     )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    status = _run_status(monkeypatch, on_cpu)
+    assert (status.resident_mib, status.resident_on_gpu) == (3072, False)
+    # Vulkan buffers are not parsed: the RSS figure says nothing about which pool holds the model.
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     status = _run_status(monkeypatch, on_cpu)
     assert (status.resident_mib, status.resident_on_gpu) == (3072, None)
 

@@ -74,3 +74,9 @@ test("drag, nudge and resize never run at once, and a squeezed monitor grows bac
   }
   assert.match(hook, /widthRef\.current \?\? resizeRef\.current\.defaultWidth\(\)/);
 });
+
+test("a drag never clamps the chosen width of a squeezed resizable panel", () => {
+  const hook = readSrc("hooks/use-floating-panel-layout.ts");
+  const drag = hook.slice(hook.indexOf("function startDrag("), hook.indexOf("dragSessionRef.current = {"));
+  assert.match(drag, /!resizeRef\.current &&\s*Number\.isFinite\(inlineWidth\)/);
+});

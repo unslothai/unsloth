@@ -245,7 +245,7 @@ export function describeInferenceStatus(
         status.is_vision ? "Vision" : null,
       ),
       ...residentMib(status.resident_mib),
-      ...(status.resident_on_gpu === true ? { residentOnGpu: true } : {}),
+      ...(typeof status.resident_on_gpu === "boolean" ? { residentOnGpu: status.resident_on_gpu } : {}),
     });
   }
   // /status reports the whole load, so loads started in another tab still show.
@@ -313,7 +313,7 @@ export function withServingResident(
   return {
     ...entry,
     ...residentMib(status.resident_mib),
-    ...(status.resident_on_gpu === true ? { residentOnGpu: true } : {}),
+    ...(typeof status.resident_on_gpu === "boolean" ? { residentOnGpu: status.resident_on_gpu } : {}),
   };
 }
 
@@ -355,7 +355,7 @@ export function describeDiffusionStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
-      ...(status.device && status.device !== "cpu" ? { residentOnGpu: true } : {}),
+      ...(status.device ? { residentOnGpu: status.device !== "cpu" } : {}),
       detail: joinDetail(
         status.family,
         // Only when the GGUF ran: a dense fast path replaces it with a torchao build.
@@ -383,7 +383,7 @@ export function describeVideoStatus(
       name: status.repo_id,
       ...(status.display_repo_id ? { label: status.display_repo_id } : {}),
       ...residentMib(status.resident_mib),
-      ...(status.device && status.device !== "cpu" ? { residentOnGpu: true } : {}),
+      ...(status.device ? { residentOnGpu: status.device !== "cpu" } : {}),
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" || status.gguf_variant ? "GGUF" : null,

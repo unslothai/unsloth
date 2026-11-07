@@ -686,13 +686,14 @@ test("only a model known to sit on the reported GPUs counts toward VRAM", () => 
       }),
     )[0];
   assert.equal(gguf(true).residentOnGpu, true);
-  // A CPU run, a Vulkan run (buffers not parsed) and an older server all stay unknown.
+  assert.equal(gguf(false).residentOnGpu, false);
+  // A Vulkan run (buffers not parsed) and an older server stay unknown.
   assert.equal(gguf(null).residentOnGpu, undefined);
   assert.equal(gguf(undefined).residentOnGpu, undefined);
   const image = (device: string | null) =>
     describeDiffusionStatus({ loaded: true, repo_id: "a/b", resident_mib: 2048, device } as never)[0];
   assert.equal(image("cuda:0").residentOnGpu, true);
-  assert.equal(image("cpu").residentOnGpu, undefined);
+  assert.equal(image("cpu").residentOnGpu, false);
   assert.equal(image(null).residentOnGpu, undefined);
 });
 

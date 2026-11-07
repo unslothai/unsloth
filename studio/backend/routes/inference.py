@@ -22308,8 +22308,8 @@ async def get_status(current_subject: str, model: Optional[str] = None):
 
 
 def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
-    """The routed slot's llama-server footprint, and True when it is model buffers on the GPUs
-    /api/system reports; None otherwise (a CPU run's RSS, or a Vulkan run whose buffers are not parsed)."""
+    """The routed slot's llama-server footprint, and whether it is model buffers on the GPUs /api/system
+    reports: True (parsed buffers), False (no GPU buffers: a CPU run's RSS), None (Vulkan, not parsed)."""
     try:
         llama = get_llama_cpp_backend()
         if not getattr(llama, "is_loaded", False):
@@ -22319,7 +22319,11 @@ def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
             return None, None
         # resident_memory_mib() reports these buffers when there are any, else falls back to RSS.
         buffers = getattr(llama, "reclaimable_gpu_memory_gb", None)
-        return mib, (True if callable(buffers) and buffers() else None)
+        if callable(buffers) and buffers():
+            return mib, True
+        from core.inference.llama_cpp import LlamaCppBackend as _Llama
+
+        return mib, (None if _Llama._is_vulkan_backend() else False)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
         return None, None
 

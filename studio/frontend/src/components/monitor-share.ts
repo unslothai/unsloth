@@ -177,8 +177,14 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
     showShare || (breakdown && !modelsInVram)
       ? memoryShare(input.ramUsedGb, input.ramTotalGb, unslothRamGb)
       : null;
-  // A loaded model with no size (transformers chat, most embedders) would read as Unsloth holding 0 GiB.
-  const unsized = input.entries.some((entry) => !((entry.residentMib ?? 0) > 0));
+  // A model with no size (transformers chat, most embedders) or an unknown pool (Vulkan) would read as
+  // Unsloth holding 0 GiB of VRAM; a proven CPU model or one on a separate inference GPU is not this pool's.
+  const unsized = input.entries.some(
+    (entry) =>
+      !((entry.residentMib ?? 0) > 0) ||
+      (typeof entry.residentOnGpu !== "boolean" &&
+        !(input.inferenceGpuElsewhere && entry.source === "chat")),
+  );
   const vramShare =
     modelsInVram && !unsized && input.vramUsedGb !== null
       ? memoryShare(input.vramUsedGb, input.vramTotalGb, modelsGb)
