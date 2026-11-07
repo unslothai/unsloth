@@ -128,6 +128,13 @@ def test_unknown_key_formula_is_left_alone(monkeypatch):
     assert autotune_cache.AutotuneCache.__dict__["_prepare_key"] is other
 
 
+def test_torch_that_hands_workers_its_tag_is_left_alone(monkeypatch):
+    raw = autotune_cache.AutotuneCache.__dict__["_prepare_key"]
+    monkeypatch.setattr(aot, "_workers_get_parent_tag", lambda: True)
+    assert aot.pin_autotune_key() is False
+    assert autotune_cache.AutotuneCache.__dict__["_prepare_key"] is raw
+
+
 def _calls(path: Path, func: str) -> set:
     tree = ast.parse(path.read_text())
     for node in ast.walk(tree):

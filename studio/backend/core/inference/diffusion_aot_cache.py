@@ -155,9 +155,31 @@ def _autotune_key(filename: str, tag: str) -> str:
     return hashlib.sha256(f"{os.path.basename(filename)}:{tag}".encode("utf-8")).hexdigest()
 
 
+def _workers_get_parent_tag() -> bool:
+    """Whether this torch hands the parent's ``cache_key_tag`` to its compile workers (none up to 2.14 does); then
+    both sides already agree and the pin would split them again. Reads torch's own sources; unreadable -> False."""
+    try:
+        import importlib.util
+        for name in (
+            "torch._inductor.async_compile",
+            "torch._inductor.runtime.compile_tasks",
+            "torch._inductor.compile_worker.subproc_pool",
+        ):
+            spec = importlib.util.find_spec(name)
+            origin = getattr(spec, "origin", None) if spec is not None else None
+            if origin and os.path.isfile(origin):
+                with open(origin, encoding = "utf-8") as fh:
+                    if "cache_key_tag" in fh.read():
+                        return True
+    except Exception:  # noqa: BLE001 - unreadable sources: assume the stock behaviour
+        return False
+    return False
+
+
 def pin_autotune_key(logger: Any = None) -> bool:
     """Key the parent's autotune cache lookups as the compile workers key their saves (idempotent, process-wide).
-    False when disabled or this torch keys them some other way (probed, not version-gated). Never raises."""
+    False when disabled, when this torch keys them some other way (probed, not version-gated) or already passes its
+    tag to the workers. Never raises."""
     if not autotune_key_pin_enabled():
         return False
     try:
@@ -175,6 +197,8 @@ def pin_autotune_key(logger: Any = None) -> bool:
             tag = getattr(cconfig, "cache_key_tag", None)
             probe = os.path.join("probe", "cunslothprobe.py")
             if not isinstance(tag, str) or stock(probe) != _autotune_key(probe, tag):
+                return False
+            if _workers_get_parent_tag():
                 return False
 
             def _prepare_key(filename: str) -> str:
