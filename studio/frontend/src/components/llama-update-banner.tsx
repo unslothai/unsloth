@@ -3,7 +3,6 @@
 
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
 import { LLAMA_BACKEND_LABELS } from "@/features/settings/lib/llama-backend-labels";
 import {
   llamaUpdateOffered,
@@ -44,6 +43,13 @@ import {
 } from "react";
 import { Download01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+
+// Loaded on use: a static import pulls the chat runtime and chat adapter into the startup bundle.
+const resyncInferenceStatusAfterServerModelChange = (): Promise<void> =>
+  import("@/features/chat/hooks/use-chat-model-runtime").then((runtime) =>
+    runtime.resyncInferenceStatusAfterServerModelChange(),
+  );
+
 // cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
