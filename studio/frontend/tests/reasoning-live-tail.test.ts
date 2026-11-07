@@ -83,7 +83,6 @@ test("the header's expand button lifts the cap for the round and appears only wh
   assert.match(reasoning, /label=\{tailExpanded \? "Collapse thinking" : "Expand thinking"\}/);
   assert.match(reasoning, /icon=\{tailExpanded \? ArrowShrink01Icon : ArrowExpand01Icon\}/);
   assert.match(reasoning, /capped=\{capped && !tailExpanded\}/);
-  // Expanding keeps the capped spacing, so the trace does not shift down when the cap lifts.
   assert.match(reasoning, /expanded=\{capped && tailExpanded\}/);
   assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
   assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);

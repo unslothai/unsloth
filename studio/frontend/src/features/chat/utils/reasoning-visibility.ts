@@ -21,7 +21,6 @@ export function resolveReasoningOpen({
   return resolveOpen(visibility, isStreaming, override);
 }
 
-/** Under `auto` a block shows a bounded box (#11703) that scrolls on its own. */
 export function reasoningTailCapped({
   visibility,
 }: Pick<ReasoningOpenStateInput, "visibility">): boolean {
