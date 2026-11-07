@@ -86,6 +86,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import {
   type LogicalWindowSize,
   PREFERRED_SETUP_WINDOW_SIZE,
@@ -695,6 +696,7 @@ function DesktopChromeVarsEffect({
 
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const blockingScreenRef = useSurfaceRef<HTMLDivElement>(MODAL_SURFACE);
   const {
     status,
     logs,
@@ -1007,6 +1009,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       )}
       {!showApp && (
         <div
+          ref={blockingScreenRef}
           data-blocking-screen=""
           className="fixed inset-0 z-40 bg-background"
         >

@@ -5123,9 +5123,54 @@ class BrowserPrefsPayload(BaseModel):
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
+_DisplayVisibility = Literal["collapsed", "auto", "expanded"]
+
+
+class ChatPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    plainTextComposer: Optional[bool] = None
+    showContextWindowUsage: Optional[bool] = None
+    sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None
+    followUpBehavior: Optional[Literal["queue", "steer"]] = None
+    confirmDeleteChats: Optional[bool] = None
+    alwaysDeleteChatFiles: Optional[bool] = None
+    showResponseModel: Optional[bool] = None
+    showLinkPreviews: Optional[bool] = None
+    showReplyTimes: Optional[bool] = None
+    showGenerationDetails: Optional[bool] = None
+    showInlineEditResponse: Optional[bool] = None
+    thinkingVisibility: Optional[_DisplayVisibility] = None
+    toolVisibility: Optional[_DisplayVisibility] = None
+    foldToolActivityIntoThinking: Optional[bool] = None
+    pastedTextMinChars: Optional[Literal[0, 2000, 4000, 8000, 16000]] = None
+    autoScrollWhileGenerating: Optional[bool] = None
+    newChatComposerPosition: Optional[int] = Field(None, ge = 0, le = 100)
+    showTurnNavigation: Optional[bool] = None
+    richTextPaste: Optional[bool] = None
+    generationStatsUpdates: Optional[Literal["settled", "realtime"]] = None
+
+
+_PlusMenuId = Annotated[str, Field(max_length = 64)]
+_PinnedId = Annotated[str, Field(max_length = 256)]
+
+
+class PlusMenuPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    pins: Optional[dict[_PlusMenuId, bool]] = Field(None, max_length = 64)
+    order: Optional[list[_PlusMenuId]] = Field(None, max_length = 64)
+    pinnedPromptIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+    pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
+    chat: Optional[ChatPrefsPayload] = None
+    plusMenu: Optional[PlusMenuPrefsPayload] = None
+    timeFormat: Optional[Literal["system", "12h", "24h"]] = None
+    spellcheck: Optional[bool] = None
 
 
 class ClientPreferencesResponse(ClientPreferencesPayload):
@@ -5135,7 +5180,7 @@ class ClientPreferencesResponse(ClientPreferencesPayload):
 
 def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
     response = ClientPreferencesResponse.model_validate(
-        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+        {k: stored.get(k) for k in (*ClientPreferencesPayload.model_fields, "updatedAt")}
     )
     response.saved = bool(stored)
     return response

@@ -2576,7 +2576,7 @@ export const ptBR = {
         apiDescription: "Veja o que outros apps enviam para a API deste servidor assim que chega.",
         summary: "Solicitações ativas, erros e uso de tokens",
         status: "{active} ativas · {recent} recentes · {model}",
-        noModelLoaded: "nenhum modelo carregado",
+        noModelLoaded: "Nenhum modelo carregado",
         autoOpen: "Mostrar o monitor flutuante automaticamente",
         autoOpenDescription:
           "Abre um pequeno painel quando chega tráfego da API.",
@@ -2593,11 +2593,25 @@ export const ptBR = {
         gpuUnusableDetail: "Detectada, mas o PyTorch não consegue usá-la",
         detailedView: "Visualização detalhada",
         detailedViewDescription:
-          "Mostra a carga da CPU e a carga, temperatura e consumo de cada GPU na janela flutuante.",
-        cpuLoad: "Carga da CPU",
+          "Mostra a carga, temperatura e consumo de cada GPU na janela flutuante.",
         gpuLoad: "Carga da GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memória",
+        gpuInUse: "Em uso pela GPU",
+        availableForModels: "Disponível para modelos",
+        refreshRate: "Taxa de atualização",
+        refreshRateDescription: "Com que frequência o monitor flutuante lê o uso de memória e GPU enquanto está aberto.",
+        refreshEvery: "A cada {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Outros apps",
+        otherInUse: "Outro uso",
+        freeLabel: "Livre",
+        unslothApp: "App do Unsloth",
+        unslothShare: "Mostrar a parte do Unsloth",
+        unslothShareDescription: "Divide a memória entre o que o Unsloth usa, o que outros apps usam e o que está livre.",
+        modelBreakdown: "Detalhar por modelo",
+        modelBreakdownDescription: "Divide a parte do Unsloth na barra de memória entre cada modelo carregado e o restante do app.",
       },
       gpu: {
         title: "Dispositivos de GPU",
@@ -2609,7 +2623,7 @@ export const ptBR = {
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
-        noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noGpu: "Nenhuma GPU dedicada detectada.",
         noUsableGpu: "Nenhuma GPU desta máquina pode ser usada pelo PyTorch.",
         mismatchCpuBuild:
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
@@ -2685,7 +2699,7 @@ export const ptBR = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
       },
       modelMemory: {
-        title: "Memória do modelo",
+        title: "Carregamento do modelo",
         keepResident: "Manter o modelo na memória da GPU",
         keepResidentDescription: "Permanece na VRAM entre os prompts.",
         keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
@@ -2867,7 +2881,7 @@ export const ptBR = {
       configurationDocs: "documentação",
       configurationFlagsSuffix: "para ver as flags.",
       modelNote:
-        "O Codex exige um modelo GGUF servido pelo llama-server. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
+        "O Claude Code e o Codex exigem um modelo GGUF servido pelo llama-server ou um modelo MLX. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
       subagent: {
         title: "Usar um modelo local como subagente",
         description:
@@ -2944,6 +2958,8 @@ export const ptBR = {
     },
     chat: {
       groups: {
+        replies: { title: "Respostas" },
+        thinkingTools: { title: "Raciocínio e ferramentas" },
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },
@@ -3025,11 +3041,20 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
-      showGenerationDetails: "Detalhes da geração",
+      showGenerationDetails: "Informações detalhadas de velocidade e carregamento",
       showGenerationDetailsDescription:
-        "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
+        "Adiciona às leituras ao vivo a velocidade de leitura do prompt, a contagem de tokens e a aceitação de rascunhos, e mostra onde as camadas do modelo foram carregadas.",
       showGenerationDetailsKeywords:
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estatísticas de velocidade e contexto",
+      generationStatsUpdatesDescription:
+        "Em tempo real conta tokens por segundo e uso do contexto enquanto uma resposta é transmitida. Ao terminar atualiza quando cada resposta termina.",
+      generationStatsUpdatesHint:
+        "Em tempo real atualiza o indicador de tokens por segundo abaixo de uma resposta e a barra de contexto no topo do chat algumas vezes por segundo enquanto a resposta é escrita. Ao terminar atualiza uma vez, quando cada resposta termina. O modo em tempo real pode causar lentidão ou queda de desempenho, principalmente em máquinas antigas ou ocupadas.",
+      generationStatsUpdatesSettled: "Ao terminar",
+      generationStatsUpdatesRealtime: "Em tempo real",
+      generationStatsUpdatesKeywords:
+        "tempo real ao vivo atualizar velocidade contexto estatísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",
@@ -5218,6 +5243,7 @@ export const ptBR = {
     monitor: {
       dragHandleLabel: "Mover o monitor ao vivo. As setas do teclado o deslocam um pouco; clique duplo o redefine.",
       reconnecting: "Reconectando...",
+      resizeHint: "Arraste uma lateral ou um canto para mudar a largura. Clique duas vezes para redefinir.",
     },
   },
   projectsPage: {
