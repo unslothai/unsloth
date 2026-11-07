@@ -694,6 +694,18 @@ def _onloads_whole(model: Any) -> bool:
         return False
 
 
+def _discrete_card(device: Any) -> bool:
+    """A CUDA card with its own memory. On unified memory (Apple, Jetson / GB10, Strix Halo) a kept host copy would
+    hold the encoder twice in the same RAM during the encode, so those keep ``model.to``."""
+    if str(device).split(":", 1)[0] != "cuda":
+        return False
+    try:
+        from core.inference.host_pinning import host_pinning_allowed
+        return bool(host_pinning_allowed(device))
+    except Exception:  # noqa: BLE001 -- unclassifiable: keep ``model.to``
+        return False
+
+
 # "0" keeps the non-resident encoder's host copy pageable.
 PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
 
@@ -934,7 +946,9 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
     if not resident and device != "cpu" and "_pinned_bytes" not in config:
         config["_pinned_bytes"] = _pin_host_copy(model, config)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
-    whole = _Onload(device) if onloaded and _onloads_whole(model) else None
+    whole = (
+        _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
+    )
     if whole is None and onloaded:
         model.to(device)
     try:

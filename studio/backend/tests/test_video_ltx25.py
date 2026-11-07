@@ -2626,6 +2626,7 @@ def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monke
     monkeypatch.setattr(model, "to", lambda *a, **k: moves.append(a) or model)
     # A distinct device string the onload path takes, while the compute stays on the host.
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
+    monkeypatch.setattr(worker, "_discrete_card", lambda device: True)
     host = {id(t): t.data_ptr() for t in list(model.parameters()) + list(model.buffers())}
     seen = []
     handle = model.model.language_model.layers[0].register_forward_pre_hook(
@@ -2648,6 +2649,41 @@ def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monke
             model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
         )
     assert torch.equal(embeds, plain)
+
+
+def test_unified_memory_keeps_moving_the_encoder_with_model_to(monkeypatch):
+    """No kept host copy where the card is host RAM (integrated GPU, any non-CUDA device): one copy, as before."""
+    from core.inference import host_pinning
+    from core.inference import video_ltx25_te_worker as worker
+
+    monkeypatch.setattr(host_pinning, "host_pinning_allowed", lambda device = None: False)
+    assert not worker._discrete_card("cuda:0")
+    assert not worker._discrete_card("mps") and not worker._discrete_card("xpu:0")
+    monkeypatch.setattr(host_pinning, "host_pinning_allowed", lambda device = None: True)
+    assert worker._discrete_card("cuda:0")
+    model = _stack_model()
+    moves = []
+    monkeypatch.setattr(model, "to", lambda *a, **k: moves.append(a) or model)
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("mps", None))
+    config = {"device": "mps", "resident": False}
+    try:
+        worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    except Exception:  # noqa: BLE001 -- no MPS here; the move order is what matters
+        pass
+    assert moves and moves[0] == ("mps",)
+
+
+def test_lend_never_parks_on_unified_memory(monkeypatch):
+    from core.inference import host_pinning
+
+    pipe = SimpleNamespace(transformer = object(), components = {})
+    monkeypatch.setattr(
+        v25, "_parkable_components", lambda pipe, device: [("connectors", None, 6050)]
+    )
+    monkeypatch.setattr(v25, "_park_for_encode", lambda *a: pytest.fail("parked on unified memory"))
+    monkeypatch.setattr(host_pinning, "host_pinning_allowed", lambda device = None: False)
+    _lend_env(monkeypatch, free_mib = 4914, held_mib = 0)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None
 
 
 def test_a_module_with_its_own_apply_onloads_through_model_to(monkeypatch):

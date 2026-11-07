@@ -992,8 +992,13 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         from .video_stream_residency import resident_mib
 
         held = resident_mib(getattr(pipe, "transformer", None))
+        from .host_pinning import host_pinning_allowed
+
         parkable = 0
-        if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() != "0":
+        # On unified memory the host copy and the card are the same RAM: parking frees nothing.
+        if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() != "0" and host_pinning_allowed(
+            config["device"]
+        ):
             parkable = sum(mib for _n, _m, mib in _parkable_components(pipe, config["device"]))
         if held + parkable <= 0:
             return None
