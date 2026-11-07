@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import types
+import weakref
 from typing import Iterator, Optional
 
 import torch
