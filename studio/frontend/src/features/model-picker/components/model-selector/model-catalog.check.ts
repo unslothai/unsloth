@@ -340,7 +340,7 @@ for (const id of [
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
-for (const id of ["nvidia/Cosmos3-Edge"]) {
+for (const id of ["nvidia/Cosmos3-Nano", "nvidia/Cosmos3-Edge"]) {
   const group = groupForRepoId(id, VIDEO_CATALOG);
   assert.ok(group, id);
   assert.equal(groupForRepoId(id.toLowerCase(), VIDEO_CATALOG), group, id);
@@ -348,7 +348,6 @@ for (const id of ["nvidia/Cosmos3-Edge"]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
 for (const id of [
-  "nvidia/Cosmos3-Nano",
   "nvidia/Cosmos3-Nano-Reasoner",
   "nvidia/Cosmos3-Edge-Reasoner",
   "nvidia/Cosmos3-Edge-Policy-DROID",
