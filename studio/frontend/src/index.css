@@ -2086,7 +2086,18 @@ html[data-chat-font] .aui-root {
 		overflow: hidden;
 	}
 
+	/* The modal scroll lock (src/lib/remove-scroll.tsx). Static, not the <style> react-remove-scroll-bar
+	   injected per lock: removing that sheet on close rebuilt every style in WebKit (about 2.7 s at 100
+	   turns). Same declarations, with the 0px gap the page always measured (it never scrolls). */
 	body[data-scroll-locked] {
+		overflow: hidden !important;
+		overscroll-behavior: contain;
+		position: relative !important;
+		padding-left: 0;
+		padding-top: 0;
+		padding-right: 0;
+		margin-left: 0;
+		margin-top: 0;
 		margin-right: 0 !important;
 	}
 	/* The 0px react-remove-scroll sets on modal open. Preset so the lock
@@ -2110,6 +2121,39 @@ html[data-chat-font] .aui-root {
 		inset: 0;
 		z-index: 49;
 		pointer-events: auto;
+	}
+	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
+	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
+	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
+	   listener per open (each add or remove restyles the whole page in WebKit). The pane roots carry a
+	   static class, so the lock toggle only looks at them (an attribute or :is() subject here made
+	   every toggle restyle the thread: 120 ms at 200 turns). Both roots are position: relative;
+	   dialogs and menus portal to <body> at z-50, above the cover. Its own layer: Chromium's
+	   compositor otherwise hit-tests the composited scroller under a paintless cover and scrolls it. */
+	body[style*="pointer-events: none"] .chat-artifact-pop-surface .side-pane-lock-cover::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 49;
+		pointer-events: auto;
+		will-change: transform;
+	}
+	/* pointer-events-auto restorations (rows, toolbars) inside a dialog or menu that a nested modal
+	   menu has made a lower layer (Radix writes pointer-events: none on it) stayed hit-testable, so
+	   wheel over one scrolled the list behind the menu (Skills rows under Skill actions). Popper
+	   content portaled into that dialog (a modal popover, a select) is the top layer, so it is left
+	   alone. Class-keyed: a lock toggle only looks at these elements. */
+	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
+		pointer-events: none !important;
+	}
+	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
+	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
+	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
+	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
+	   overlays that are meant to work over a modal (.modal-pe-live). Sidebar row actions restore it in
+	   CSS (an open disclosure arrow) rather than with the class. Class-keyed like the rule above. */
+	body[style*="pointer-events: none"] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
+		pointer-events: none !important;
 	}
 
 	/* Firefox makes scrollable containers focusable; :where keeps specificity at zero. */
