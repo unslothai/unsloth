@@ -9,14 +9,20 @@ over static attention layers that index the cache on the device. Per graph key: 
 eagerly, then is captured; the first replay must match the eager step bitwise; a host sync, host-state
 change or mismatch refuses the key. The step runs in the eager step's exact state (argument inference-ness
 and strides, ambient autocast + cache flag, compiled regions as eager runs them): Dynamo guards on all of
-these and another compiled variant rounds differently. Graphs are dropped at the end of generate() and on
-parameter / adapter / quant changes. UNSLOTH_DECODE_GENERIC_GRAPHS=0 disables; _VALIDATE_ALL=1 checks every
-replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ (16) decode eagerly."""
+these and another compiled variant rounds differently. Plain generate() runs inside generate_scope(), so
+graphs are on by default there (plan() decides per call: short calls, low free memory and unsupported
+calls decode eagerly; an out-of-memory graphed call is redone once eagerly). After an inference-mode call
+the graph and its StaticCache are kept for the next call of the same batch (keep()); training, a returned
+or caller-owned cache, and parameter / adapter / quant changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
+disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
+(16) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
 
 import collections
 import contextlib
+import copy
 import os
 import traceback
+import weakref
 
 import torch
 
@@ -24,11 +30,16 @@ from . import _decode_graphs as G
 
 __all__ = [
     "wanted",
+    "plan",
+    "ineligible",
     "begin",
     "end",
     "decode_step",
     "release",
     "stats",
+    "keepable",
+    "kept_cache",
+    "redo_eagerly",
 ]
 
 _ATTR = "_unsloth_generic_decode_graphs"
@@ -39,6 +50,20 @@ _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 _MAX_KEYS = 4096
 # Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1, 2.7-4.7x at 16).
 MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
+# Free memory a graphed call needs beyond the eager one: the graph pool (8-16 MiB measured on 1B models),
+# static input buffers and the side stream's workspace. Below it the call decodes eagerly.
+_FREE_MARGIN_BYTES = 256 * 1024 * 1024
+# A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
+_KEEP_MAX_RATIO = 2
+# Per-call plan decisions by reason (tests, benchmarks).
+PLANS = collections.Counter()
+EAGER_REDOS = 0
+_OOM_WARNED = False
+
+try:
+    from torch.nn.attention.flex_attention import BlockMask as _BlockMask
+except Exception:
+    _BlockMask = None
 
 
 class _Refuse(Exception):
@@ -51,8 +76,17 @@ class _Cuda:
     device_type = "cuda"
 
     @staticmethod
+    def available():
+        # NVIDIA CUDA only: HIP replay is not verified against the eager step.
+        return torch.version.hip is None and torch.cuda.is_available()
+
+    @staticmethod
     def current_device():
         return torch.cuda.current_device()
+
+    @staticmethod
+    def free_bytes(device):
+        return G._free_bytes(device)
 
     @staticmethod
     def device(index):
@@ -126,13 +160,131 @@ def wanted(model):
         return False
     if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS", "1") == "0" or not G.enabled():
         return False
-    # NVIDIA CUDA only: HIP replay is not verified against the eager step.
-    if torch.version.hip is not None or not torch.cuda.is_available():
+    if torch.version.hip is not None or not _BACKEND.available():
         return False
     if not _FULL_LAYERS:
         return False
     device = getattr(model, "device", None)
-    return getattr(device, "type", None) == "cuda" and _plain_forward(model)
+    return getattr(device, "type", None) == _BACKEND.device_type and _plain_forward(model)
+
+
+def _plan_len(model, args, kwargs):
+    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan."""
+    try:
+        from .llama import _generation_plan_len
+        return int(_generation_plan_len(model, args, kwargs) or 0)
+    except Exception:
+        return 0
+
+
+def plan(model, args, kwargs, input_ids):
+    """ "graph" or "eager" for this generate() call, decided once before it decodes (inside
+    generate_scope(), so graphs are on by default). Eager: graphs not wanted (wanted()), batch over
+    MAX_BSZ, too few decode steps to win back a capture (unless a kept graph of this batch replays from
+    the first step), or too little free memory for the graph pool. A kept graph / cache that this call
+    cannot reuse is dropped here."""
+    state = model.__dict__.get(_ATTR)
+    if not wanted(model):
+        if state is not None:
+            state.clear()
+        PLANS["not wanted"] += 1
+        return "eager"
+    try:
+        prompt = int(input_ids.shape[1]) if input_ids.dim() >= 2 else 0
+        bsz = G.decode_batch(
+            int(input_ids.shape[0]), kwargs, getattr(model, "generation_config", None)
+        )
+    except Exception:
+        PLANS["unknown shape"] += 1
+        return "eager"
+    max_len = _plan_len(model, args, kwargs)
+    kept = (
+        state is not None
+        and state.kept is not None
+        and state.kept_bsz == bsz
+        and bool(state.graphs)
+    )
+    if kept and max_len:
+        # transformers sizes the cache prompt + new tokens - 1 (the last token is never written back).
+        length = _cache_len(state.kept)
+        kept = length is not None and max_len - 1 <= length <= _KEEP_MAX_RATIO * max_len
+    if state is not None and state.kept is not None and not kept:
+        state.clear()
+    if bsz > MAX_BSZ:
+        PLANS["batch over max"] += 1
+        return "eager"
+    if max_len:
+        left = max_len - prompt - 1
+        # Step 1 is eager + capture, step 2 a validated replay: fewer steps cannot win back a capture.
+        if left < 2 or (left < G.CAPTURE_MIN_STEPS and not kept):
+            PLANS["short call"] += 1
+            return "eager"
+    if not kept:
+        try:
+            free = _BACKEND.free_bytes(input_ids.device)
+        except Exception:
+            free = None
+        if free is not None and free < _FREE_MARGIN_BYTES:
+            PLANS["low free memory"] += 1
+            return "eager"
+    PLANS["graph kept" if kept else "graph"] += 1
+    return "graph"
+
+
+def ineligible(model):
+    """A call that cannot decode through graphs (dynamic cache, compiled decode): eager, and a kept
+    graph / cache goes (it would only hold memory)."""
+    state = model.__dict__.get(_ATTR)
+    if state is not None and state.kept is not None:
+        state.clear()
+    PLANS["ineligible"] += 1
+    return "eager"
+
+
+def replayable(kwargs):
+    """A failed graphed call can be redone eagerly only when no caller object holds its partial state."""
+    return not (
+        kwargs.get("streamer", None) is not None
+        or kwargs.get("past_key_values", None) is not None
+        or kwargs.get("stopping_criteria", None)
+        or kwargs.get("logits_processor", None)
+    )
+
+
+def rng_state(device):
+    """Host + this CUDA device's RNG state, so an eager redo samples as the failed attempt started."""
+    try:
+        cuda = torch.cuda.get_rng_state(device) if getattr(device, "type", None) == "cuda" else None
+    except Exception:
+        cuda = None
+    return torch.get_rng_state(), cuda, device
+
+
+def set_rng_state(saved):
+    host, cuda, device = saved
+    torch.set_rng_state(host)
+    if cuda is not None:
+        torch.cuda.set_rng_state(cuda, device)
+
+
+def redo_eagerly(model):
+    """After an out-of-memory graphed call: free graphs, kept cache and allocator blocks before the redo."""
+    global EAGER_REDOS, _OOM_WARNED
+    release(model)
+    model.__dict__.pop("_unsloth_generic_call_cache", None)
+    try:
+        G._empty_cache()
+    except Exception:
+        pass
+    EAGER_REDOS += 1
+    if not _OOM_WARNED:
+        _OOM_WARNED = True
+        import warnings
+        warnings.warn(
+            "Unsloth: generate() ran out of GPU memory with CUDA-graph decode; freed the decode graphs "
+            "and decoded this call eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=0 always decodes eagerly).",
+            stacklevel = 3,
+        )
 
 
 def _plain_forward(model):
@@ -191,12 +343,20 @@ class _State:
         self.validations = 0
         self.eager_steps = 0
         self.refusals = collections.Counter()
+        # keep(): the StaticCache the kept graphs address, its batch, and the training-forward hook.
+        self.kept = None
+        self.kept_bsz = None
+        self.hook = None
+        self.owner = None
+        self.kept_calls = 0
+        self.active = False
 
     def clear(self):
         self.graphs.clear()
         self.cache_sig = None
         # A pool whose graphs are all freed is released by the allocator: never reuse its handle.
         self.pool = None
+        self.drop_kept()
 
     def invalidate(self):
         """Weights / adapters / quant state changed: graphs and every per-key decision go."""
@@ -205,11 +365,28 @@ class _State:
         self.validated.clear()
         self.refused.clear()
 
+    def drop_kept(self):
+        """Forget the kept cache (and free it when the model still holds it for the next call)."""
+        kept, self.kept, self.kept_bsz = self.kept, None, None
+        if self.hook is not None:
+            self.hook.remove()
+            self.hook = None
+        owner = self.owner() if self.owner is not None else None
+        # Inside a call the cache is that call's (transformers holds it): only forget it.
+        if (
+            not self.active
+            and kept is not None
+            and owner is not None
+            and owner.__dict__.get("_cache") is kept
+        ):
+            del owner.__dict__["_cache"]
+
 
 def _state(model):
     state = model.__dict__.get(_ATTR)
     if state is None:
         state = model.__dict__[_ATTR] = _State()
+        state.owner = weakref.ref(model)
     return state
 
 
@@ -222,16 +399,83 @@ def begin(model):
     state.key_captures.clear()
     state.step = 0
     state.check = _new_check()
+    state.active = True
+    if state.hook is not None:
+        # Only needed between calls: no per-step hook while this call decodes.
+        state.hook.remove()
+        state.hook = None
     if len(state.refused) + len(state.validated) > _MAX_KEYS:
         state.refused.clear()
         state.validated.clear()
 
 
-def end(model):
-    """End of a generate() call: its graphs read this call's cache, so free them."""
+def end(model, keep = False):
+    """End of a generate() call. Its graphs read this call's cache: freed, unless `keep` (keepable()), when
+    the graphs and that cache stay for the next call of the same batch (released by training)."""
     state = model.__dict__.get(_ATTR)
-    if state is not None:
+    if state is None:
+        return
+    state.active = False
+    cache = model.__dict__.get("_unsloth_generic_call_cache")
+    model.__dict__.pop("_unsloth_generic_call_cache", None)
+    if (
+        not keep
+        or not state.graphs
+        or cache is None
+        or state.cache_sig is None
+        or state.cache_sig[0] != id(cache)
+    ):
         state.clear()
+        return
+    state.kept, state.kept_bsz = cache, _cache_batch(cache)
+    state.kept_calls += 1
+    if state.hook is None:
+        state.hook = model.register_forward_pre_hook(_release_if_training)
+
+
+def _release_if_training(module, args):
+    # Training can resume without for_training() (sampling in a trainer callback): free the kept graph and cache.
+    if module.training and torch.is_grad_enabled():
+        release(module)
+
+
+def _cache_batch(cache):
+    """Rows of a StaticCache (4.x: max_batch_size; 5.x layers only carry their tensors)."""
+    try:
+        keys = cache.layers[0].keys
+        if isinstance(keys, torch.Tensor) and keys.dim() >= 1:
+            return int(keys.shape[0])
+    except Exception:
+        pass
+    try:
+        return int(cache.max_batch_size)
+    except Exception:
+        return None
+
+
+def _cache_len(cache):
+    """Slots of a StaticCache's full layers (sliding layers are shorter; 5.x has no cache-level length)."""
+    try:
+        return max(int(layer.max_cache_len) for layer in cache.layers)
+    except Exception:
+        return None
+
+
+def kept_cache(model):
+    state = model.__dict__.get(_ATTR)
+    return state.kept if state is not None else None
+
+
+def keepable(model, kwargs, output):
+    """Whether this inference-mode call's graphs and StaticCache may stay for the next call: not when the
+    caller passed or got back the cache (a later call would overwrite it), nor in training mode."""
+    if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP", "1") == "0":
+        return False
+    if getattr(model, "training", False) or kwargs.get("past_key_values", None) is not None:
+        return False
+    if getattr(output, "past_key_values", None) is not None:
+        return False
+    return True
 
 
 def release(model):
@@ -239,6 +483,84 @@ def release(model):
         state = module.__dict__.get(_ATTR)
         if state is not None:
             state.invalidate()
+
+
+def _kept_compatible(state, batch_size, max_cache_len, offloading):
+    kept = state.kept
+    if kept is None:
+        return False
+    length = _cache_len(kept)
+    if length is None:
+        return False
+    return (
+        state.kept_bsz == batch_size
+        and bool(getattr(kept, "offloading", False)) == bool(offloading)
+        and max_cache_len <= length <= _KEEP_MAX_RATIO * max(int(max_cache_len), 1)
+    )
+
+
+class reuse_kept_cache:
+    """One graphed generate() call: transformers builds this call's StaticCache, unless a compatible kept
+    one exists, which is reset and handed back (same tensors, so the kept graphs replay). 5.x builds a new
+    cache per call in _prepare_static_cache; 4.x reuses model._cache, which _clear_generation_caches keeps
+    while it is the kept cache. The cache the call ends up with is recorded for end(keep=True)."""
+
+    def __init__(self, model):
+        self.model = model
+        self.prepare = None
+
+    def _prepare(self, *args, **kwargs):
+        model = self.model
+        state = _state(model)
+        names = ("cache_implementation", "batch_size", "max_cache_len")
+        values = dict(zip(names, args))
+        values.update({k: v for k, v in kwargs.items() if k in names})
+        cache_implementation = values.get("cache_implementation", "static")
+        batch_size, max_cache_len = values.get("batch_size"), values.get("max_cache_len")
+        prefill_chunk = kwargs.get("prefill_chunk_size", args[3] if len(args) > 3 else None)
+        effective = max_cache_len
+        previous = getattr(model, "_previous_max_cache_length", -1)
+        if type(effective) is int and type(previous) is int:
+            effective = max(effective, previous)
+        if (
+            type(batch_size) is int
+            and type(effective) is int
+            and prefill_chunk is None
+            and not getattr(model.config, "is_encoder_decoder", False)
+            and _kept_compatible(
+                state, batch_size, effective, "offloaded" in str(cache_implementation)
+            )
+        ):
+            cache = state.kept
+            cache.reset()
+            PLANS["reused kept cache"] += 1
+        else:
+            if state.kept is not None:
+                # A new cache: the kept graphs address the old one.
+                state.clear()
+            cache = self.prepare(*args, **kwargs)
+        model.__dict__["_unsloth_generic_call_cache"] = cache
+        return cache
+
+    def __enter__(self):
+        model = self.model
+        if "_prepare_static_cache" in model.__dict__ or not hasattr(model, "_prepare_static_cache"):
+            # 4.x (or a wrapper owns the hook): the call's cache is model._cache, read in end().
+            self.prepare = None
+            return self
+        self.prepare = model._prepare_static_cache
+        model._prepare_static_cache = self._prepare
+        return self
+
+    def __exit__(self, *exc):
+        model = self.model
+        if self.prepare is not None:
+            del model._prepare_static_cache
+        elif "_unsloth_generic_call_cache" not in model.__dict__:
+            cache = model.__dict__.get("_cache")
+            if cache is not None:
+                model.__dict__["_unsloth_generic_call_cache"] = cache
+        return False
 
 
 def stats(model):
@@ -430,7 +752,49 @@ def _spec(value, leaves, cache):
         return (type(value).__name__, tuple(_spec(v, leaves, cache) for v in value))
     if type(value) is dict and all(type(k) is str for k in value):
         return ("D", tuple((k, _spec(v, leaves, cache)) for k, v in value.items()))
+    if _BlockMask is not None and isinstance(value, _BlockMask):
+        return _block_mask_spec(value, leaves, cache)
     raise _Refuse(f"argument {type(value).__name__}")
+
+
+# BlockMask graph contract. A flex BlockMask argument replays only when its builder publishes
+#     block_mask._unsloth_graph_closure = (tensors, rebuild)
+# `tensors`: a tuple of every tensor its mask_mod reads (offsets, padding rows, ...), fixed shapes from
+# step to step; `rebuild(tensors)`: a mask_mod of the same code reading the given tensors instead. The
+# graph keeps static copies of the BlockMask's tensor fields and of `tensors`, refills them each step and
+# captures flex over a BlockMask built from them (mask_mod = rebuild(static copies)). Key: BLOCK_SIZE,
+# seq_lengths, the field layout, mask_mod's code and the closure tensors' layout. Any other BlockMask
+# (a mask_mod closing over tensors the graph cannot see) is refused: "argument BlockMask".
+_BLOCK_MASK_SKIP = ("mask_mod", "_unsloth_graph_closure", "_unsloth_on_device")
+
+
+def _block_mask_fields(value):
+    return sorted((k, v) for k, v in vars(value).items() if k not in _BLOCK_MASK_SKIP)
+
+
+def _block_mask_spec(value, leaves, cache):
+    contract = value.__dict__.get("_unsloth_graph_closure")
+    if (
+        type(contract) is not tuple
+        or len(contract) != 2
+        or type(contract[0]) is not tuple
+        or not all(isinstance(t, torch.Tensor) for t in contract[0])
+        or not callable(contract[1])
+    ):
+        raise _Refuse("argument BlockMask")
+    fields = []
+    for name, field in _block_mask_fields(value):
+        if field is None or isinstance(field, torch.Tensor) or type(field) in _CONSTANTS:
+            fields.append((name, _spec(field, leaves, cache)))
+        elif type(field) is tuple and all(type(x) in _CONSTANTS for x in field):
+            fields.append((name, ("V", field)))
+        else:
+            raise _Refuse("argument BlockMask")
+    code = getattr(value.mask_mod, "__code__", None)
+    if code is None:
+        raise _Refuse("argument BlockMask")
+    closure = tuple(_spec(t, leaves, cache) for t in contract[0])
+    return ("BM", tuple(fields), code, closure)
 
 
 def _build(value, buffers, cache):
@@ -441,6 +805,17 @@ def _build(value, buffers, cache):
         return type(value)(_build(v, buffers, cache) for v in value)
     if type(value) is dict:
         return {k: _build(v, buffers, cache) for k, v in value.items()}
+    if _BlockMask is not None and isinstance(value, _BlockMask):
+        built = copy.copy(value)
+        for name, field in _block_mask_fields(value):
+            if isinstance(field, torch.Tensor):
+                setattr(built, name, next(buffers))
+        tensors, rebuild = value.__dict__["_unsloth_graph_closure"]
+        static = tuple(next(buffers) for _ in tensors)
+        built.mask_mod = rebuild(static)
+        built.__dict__.pop("_unsloth_on_device", None)
+        built._unsloth_graph_closure = (static, rebuild)
+        return built
     return value
 
 
@@ -504,6 +879,7 @@ def _fingerprint(model):
         return None
     items.extend(adapters)
     items.append(K._OPTIMIZER_STEPS)
+    items.append(G.WEIGHTS_EPOCH)
     return tuple(items)
 
 

@@ -642,8 +642,10 @@ def test_generate_routes_only_static_cache_calls():
     import inspect
 
     source = inspect.getsource(vision.unsloth_base_fast_generate)
-    assert "_generic_decode_graphs.wanted(self)" in source
-    i = source.index("_generic_decode_graphs.wanted(self)")
+    # plan() checks wanted() itself; only static-cache, non-compiled-decode calls reach it.
+    call = "_generic_decode_graphs.plan(self, args, kwargs, input_ids)"
+    assert call in source
+    i = source.index(call)
     guard = source[source.rindex("if (", 0, i) : i]
     for clause in (
         'cache_implementation == "static"',

@@ -163,6 +163,46 @@ class eager_scope:
         return False
 
 
+class plan_scope:
+    """Per-thread: the decode plan ("graph" / "eager") Unsloth's generate() chose for the call it runs."""
+
+    __slots__ = ("plan", "_saved")
+
+    def __init__(self, plan):
+        self.plan = plan
+
+    def __enter__(self):
+        self._saved = getattr(_TLS, "plan", None)
+        _TLS.plan = self.plan
+        return self
+
+    def __exit__(self, *exc):
+        _TLS.plan = self._saved
+        return False
+
+
+def call_plan():
+    """ "graph" when the generate() call running on this thread decodes through CUDA graphs, "eager" when
+    it decodes eagerly, None outside Unsloth's generate(). Decided once per call before decoding starts
+    (llama.py / vision.py), so per-call policies (the 16-bit LoRA fold threshold) follow the call's real
+    plan rather than enabled(), which only says graphs are allowed."""
+    if torch.compiler.is_compiling():
+        return None
+    if getattr(_TLS, "eager", 0):
+        return "eager"
+    return getattr(_TLS, "plan", None)
+
+
+# Bumped by code that rewrites weights in place without a version bump (the 16-bit LoRA fold writes
+# W.data): every captured decode graph is fingerprinted with it, so none outlives such a rewrite.
+WEIGHTS_EPOCH = 0
+
+
+def weights_changed():
+    global WEIGHTS_EPOCH
+    WEIGHTS_EPOCH += 1
+
+
 # Need = CALIB_WORK x (KV + prefill work) + CALIB_GRAPH_KV x KV. Calibrated on Qwen3-4B QLoRA bs16 x 2048,
 # T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
 CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
@@ -800,6 +840,7 @@ def _fingerprint(model, layers, rope_len):
         return None
     items.extend(adapters)
     items.append(K._OPTIMIZER_STEPS)
+    items.append(WEIGHTS_EPOCH)
     return tuple(items)
 
 

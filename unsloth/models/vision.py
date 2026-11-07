@@ -292,7 +292,7 @@ from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_cust
 from ._mamba_lora import patch_mamba_fused_lora
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
-from . import _generic_decode_graphs
+from . import _decode_graphs, _generic_decode_graphs
 from .loader_utils import (
     _bnb_bits_requested,
     vlm_gradient_checkpointing_reentrant,
@@ -1560,6 +1560,9 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
         self.eager_regions = self.eager_decodes or (
             os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_EAGER_REGIONS", "0") == "1"
         )
+        # Set by generate() once the call returned: keep the graphs and their cache for the next call.
+        self.keep = False
+        self.caches = _generic_decode_graphs.reuse_kept_cache(model)
 
     def _forward(self, *args, **kwargs):
         if not args and not torch.compiler.is_compiling():
@@ -1580,13 +1583,19 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
 
     def __enter__(self):
         _generic_decode_graphs.begin(self.model)
-        return super().__enter__()
+        self.caches.__enter__()
+        try:
+            return super().__enter__()
+        except BaseException:
+            self.caches.__exit__(None, None, None)
+            raise
 
     def __exit__(self, *exc):
         try:
             return super().__exit__(*exc)
         finally:
-            _generic_decode_graphs.end(self.model)
+            self.caches.__exit__(*exc)
+            _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
 
 
 # One-token decode is slower on flex than SDPA, but prefill must stay on flex (its block mask skips tiles a
@@ -2206,6 +2215,9 @@ def _uses_flash_attention_for_generation(config):
 
 
 def _clear_generation_caches(model):
+    # The StaticCache decode graphs keep for the next call stays. Guarded: tests exec this function alone.
+    graphs = globals().get("_generic_decode_graphs")
+    kept = graphs.kept_cache(model) if graphs is not None else None
     for name, module in model.named_modules():
         if hasattr(module, "_flex_attention_cache"):
             try:
@@ -2213,6 +2225,8 @@ def _clear_generation_caches(model):
             except:
                 pass
         # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'.
+        if kept is not None and module.__dict__.get("_cache") is kept:
+            continue
         if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
             try:
                 del module._cache
@@ -2438,26 +2452,47 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             kwargs["compile_config"] = compile_config
 
     decode_scope = _CompileDecodeOnRepeat(self) if compile_decode else contextlib.nullcontext()
-    if (
-        cache_implementation == "static"
-        and not force_dynamic_cache
-        and not compile_decode
-        and _generic_decode_graphs.wanted(self)
-    ):
-        eager_scope = _GraphDecodeSteps(self)
-    elif _eager_decodes(self):
-        eager_scope = _EagerDecodeSteps(self)
-    else:
-        eager_scope = contextlib.nullcontext()
-    try:
+
+    def _eager_scope():
+        return _EagerDecodeSteps(self) if _eager_decodes(self) else contextlib.nullcontext()
+
+    def _run(scope, plan):
         with (
             _NonFlexGenerate(self),
             decode_scope,
-            eager_scope,
+            scope,
+            _decode_graphs.plan_scope(plan),
             _get_inference_mode_context_manager(self),
             autocaster,
         ):
-            output = self._old_generate(*args, **kwargs)
+            out = self._old_generate(*args, **kwargs)
+            if isinstance(scope, _GraphDecodeSteps):
+                scope.keep = _generic_decode_graphs.keepable(self, kwargs, out)
+            return out
+
+    # Plain generate() decodes through CUDA graphs by default (as the llama path and Studio):
+    # UNSLOTH_DECODE_CUDA_GRAPHS=0 / UNSLOTH_DECODE_GENERIC_GRAPHS=0 keep it eager.
+    try:
+        with _decode_graphs.generate_scope():
+            if cache_implementation == "static" and not force_dynamic_cache and not compile_decode:
+                plan = _generic_decode_graphs.plan(self, args, kwargs, input_ids)
+            else:
+                plan = _generic_decode_graphs.ineligible(self)
+            if plan != "graph":
+                output = _run(_eager_scope(), "eager")
+            else:
+                rng = _generic_decode_graphs.rng_state(input_ids.device)
+                try:
+                    output = _run(_GraphDecodeSteps(self), "graph")
+                except torch.cuda.OutOfMemoryError:
+                    if not _generic_decode_graphs.replayable(kwargs):
+                        raise
+                    # Redo once without the graph wrapper, from the call's starting RNG and a fresh cache.
+                    _generic_decode_graphs.redo_eagerly(self)
+                    _clear_generation_caches(self)
+                    _generic_decode_graphs.set_rng_state(rng)
+                    with _decode_graphs.eager_scope():
+                        output = _run(_eager_scope(), "eager")
     finally:
         _clear_generation_caches(self)
 
@@ -6136,6 +6171,8 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        # Kept decode graphs and their StaticCache (generate() keeps them between inference calls).
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
