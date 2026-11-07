@@ -2145,7 +2145,6 @@ def test_worker_reports_its_own_memory():
 def test_worker_memory_stats_are_mib_on_every_platform(platform, maxrss, has_proc, monkeypatch):
     """getrusage's ru_maxrss is KiB on Linux and bytes on macOS; Windows has neither it nor /proc."""
     import builtins
-    import resource as real_resource
     import sys as real_sys
 
     import psutil
@@ -2158,12 +2157,13 @@ def test_worker_memory_stats_are_mib_on_every_platform(platform, maxrss, has_pro
 
     monkeypatch.setattr(psutil, "Process", lambda: SimpleNamespace(memory_info = lambda: _Info()))
     monkeypatch.setattr(real_sys, "platform", platform)
-    if maxrss is None:
-        monkeypatch.setitem(real_sys.modules, "resource", None)
-    else:
-        monkeypatch.setattr(
-            real_resource, "getrusage", lambda who: SimpleNamespace(ru_maxrss = maxrss)
-        )
+    # A stand-in module either way, so the test runs on Windows, which has no `resource`.
+    fake = (
+        None
+        if maxrss is None
+        else SimpleNamespace(RUSAGE_SELF = 0, getrusage = lambda who: SimpleNamespace(ru_maxrss = maxrss))
+    )
+    monkeypatch.setitem(real_sys.modules, "resource", fake)
     real_open = builtins.open
 
     def _open(path, *a, **k):
