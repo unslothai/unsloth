@@ -232,6 +232,34 @@ def _jsonl_head(path: Path, preview_size: int) -> tuple[list[dict], bytes] | Non
     return [{key: row.get(key) for key in keys} for row in rows], b"".join(window)
 
 
+def _mixed_type_path(rows: list) -> tuple[str, list[str]] | None:
+    """The first field path whose non-null values are objects, lists or plain values in different rows,
+    which no Arrow column can hold, with the kinds seen: ``messages[].tool_calls[].function.arguments``."""
+    kinds: dict[str, set] = {}
+
+    def walk(value, path):
+        if value is None:
+            return
+        kind = (
+            "an object"
+            if isinstance(value, dict)
+            else "a list"
+            if isinstance(value, list)
+            else "a plain value"
+        )
+        kinds.setdefault(path, set()).add(kind)
+        if isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}" if path else key)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item, f"{path}[]")
+
+    for row in rows:
+        walk(row, "")
+    return next(((path, sorted(seen)) for path, seen in kinds.items() if len(seen) > 1), None)
+
+
 def _jsonl_rows_dataset(rows: list[dict], window: bytes):
     import io
 
@@ -249,7 +277,16 @@ def _jsonl_rows_dataset(rows: list[dict], window: bytes):
         try:
             return Dataset.from_list(rows)
         except (TypeError, ValueError, OverflowError):
-            raise error from None
+            mixed = _mixed_type_path(rows)
+            if mixed is None:
+                raise error from None
+            path, seen = mixed
+            # pyarrow only says "cannot mix struct and non-struct": name the field to fix.
+            raise ValueError(
+                f"`{path}` is {' in some rows and '.join(seen)} in others, which a dataset column "
+                "cannot store. Give it one type in every row; for tool calls, write "
+                "`function.arguments` as a JSON string."
+            ) from None
 
 
 def _stream_file_preview_slice(path: Path, preview_size: int, **load_kwargs):
