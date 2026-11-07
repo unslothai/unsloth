@@ -770,8 +770,18 @@ export function DiffusionTrainPanel({
       compileTransformer,
     ],
   );
+  const presetsReadyRef = useRef(false);
   const applyPresetParams = useCallback(
     (params: TrainingPresetParams) => {
+      const userEdited =
+        settingsDirty.current ||
+        lrScheduleDirty.current ||
+        precisionDirty.current ||
+        baseDirty.current;
+      // The stored preset can land seconds after mount; fields edited by then are newer.
+      if (!presetsReadyRef.current && userEdited) {
+        return params;
+      }
       // Default re-seeds from the family as a fresh page does; a named preset owns every field.
       const owned = params !== defaultPresetParams;
       settingsDirty.current = owned;
@@ -821,6 +831,9 @@ export function DiffusionTrainPanel({
     applyParams: applyPresetParams,
     restoreWorkingParams: false,
   });
+  useEffect(() => {
+    presetsReadyRef.current = trainingPresets.presetsReady;
+  }, [trainingPresets.presetsReady]);
 
   const poll = useCallback(async () => {
     try {

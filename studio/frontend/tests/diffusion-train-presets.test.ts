@@ -51,6 +51,17 @@ test("a named preset survives the family re-seed and the loaded-model seed", () 
   );
 });
 
+test("edits made before the stored preset lands are kept", () => {
+  const apply = panel.slice(
+    panel.indexOf("const applyPresetParams = useCallback("),
+    panel.indexOf("const trainingPresets = useMediaGenerationPresets("),
+  );
+  const guard = apply.indexOf("if (!presetsReadyRef.current && userEdited) {");
+  assert.ok(guard > 0, "hydration must not overwrite a form the user already edited");
+  assert.ok(guard < apply.indexOf("setFamilyName(params.familyName);"));
+  assert.match(panel, /presetsReadyRef\.current = trainingPresets\.presetsReady;/);
+});
+
 test("every saved field is applied back to the form", () => {
   const current = panel.slice(
     panel.indexOf("const currentPresetParams = useMemo<TrainingPresetParams>("),
