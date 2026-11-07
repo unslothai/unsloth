@@ -677,8 +677,7 @@ STREAM_ENCODE_ENV = "UNSLOTH_LTX25_TE_STREAM"
 
 
 def _to_device(tensor: Any, device: Any) -> Any:
-    """A device copy of host ``tensor``; asynchronous from page-locked memory (the forward that reads it runs on the
-    same stream, and the host copy is never written)."""
+    """Device copy; non-blocking from pinned memory (same-stream reader, host copy never written)."""
     try:
         pinned = tensor.device.type == "cpu" and tensor.is_pinned()
     except Exception:  # noqa: BLE001 -- unknown: the blocking copy
@@ -695,15 +694,13 @@ def _onloads_whole(model: Any) -> bool:
         return False
 
 
-# "0" keeps the non-resident encoder's host copy pageable (every onload then copies from pageable memory).
+# "0" keeps the non-resident encoder's host copy pageable.
 PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
 
 
 def _pin_host_copy(model: Any, config: dict) -> int:
-    """Page-lock the host copy of a non-resident encoder once, before its first onload, so each new prompt's upload
-    (whole or layer by layer) runs at DMA speed instead of staging 23 GB through pageable memory. Registered,
-    page-granular chunks filled one at a time (no second copy of the encoder), Linux CUDA only, and only under the
-    host-RAM reserve the denoiser pins use; returns the bytes pinned, 0 when skipped. Same bytes, so the same output."""
+    """Pin a non-resident encoder's host copy once (in place, Linux CUDA only, within the host-RAM reserve) so
+    uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
     if config.get("resident") or (os.environ.get(PIN_HOST_ENV) or "").strip() == "0":
         return 0
     device = str(config.get("device") or "")
@@ -905,8 +902,7 @@ def _encode_on(
     except Exception as exc:
         if resident or device == "cpu" or not _is_out_of_memory(exc):
             raise
-        # Planned against a reading another tenant (or the server) has since outgrown: the CPU encode is the same
-        # computation, slower.
+        # Another tenant outgrew the planned room: fall back to the CPU encode.
         print(
             f"video.ltx25_te: out of memory encoding on {device} ({exc}); encoding on the CPU",
             file = sys.stderr,
@@ -937,8 +933,7 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
     onloaded = not resident and device != "cpu" and stream is None
     if not resident and device != "cpu" and "_pinned_bytes" not in config:
         config["_pinned_bytes"] = _pin_host_copy(model, config)
-    # The whole encoder goes up as copies of its host tensors and comes back by pointing at them again: no 23 GB
-    # device-to-host copy into fresh pageable memory per prompt.
+    # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = _Onload(device) if onloaded and _onloads_whole(model) else None
     if whole is None and onloaded:
         model.to(device)

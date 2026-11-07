@@ -824,17 +824,16 @@ def _encode_room_mib(client: Any) -> Optional[int]:
     return worker_room(client.config, _server_reserved_mib(device))
 
 
-# Pipeline modules the prompt encode never runs and that may step off the card for it; the denoisers lend blocks
-# instead, and an in-process text encoder is the encode itself.
+# Never parked: the denoisers lend blocks instead; an in-process text encoder is the encode itself.
 _NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
-# Kept on a parked module between requests: its host copy, refreshed from the card at every park.
+# Host copy kept on a parked module between requests, refreshed from the card at every park.
 _PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
 # "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
 PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
 
 
 def _module_tensors(module: Any) -> list:
-    """``(table, key, tensor)`` per distinct parameter / buffer, each listed once (tied weights share one entry)."""
+    """``(table, key, tensor)`` per distinct parameter / buffer (tied weights listed once)."""
     seen: set = set()
     out = []
     for sub in module.modules():
@@ -848,8 +847,7 @@ def _module_tensors(module: Any) -> list:
 
 
 def _parkable_components(pipe: Any, device: Any) -> list:
-    """``[(name, module, MiB)]``, largest first: plain modules wholly on the encode's card (no offload hooks, plain
-    tensors only), which the encode never runs. The connectors (6 GB) and VAEs stay resident under ``streaming``."""
+    """``[(name, module, MiB)]``, largest first: hook-free modules wholly on the card that the encode never runs."""
     import torch
 
     dev = torch.device(str(device))
@@ -884,8 +882,7 @@ def _parkable_components(pipe: Any, device: Any) -> list:
 
 
 def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
-    """The module's kept host copy (one tensor per entry of ``tensors``), allocated on the first park: registered
-    (page-locked) memory where the host-RAM reserve allows, else pageable; None when the host cannot hold it."""
+    """Kept host copy per tensor, pinned where the host-RAM reserve allows, else pageable; None if it cannot fit."""
     import torch
 
     shapes = [(tuple(t.shape), t.dtype) for _tb, _k, t in tensors]
@@ -923,14 +920,11 @@ def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
 
 
 def _park_for_encode(pipe: Any, device: Any, need_mib: int) -> Optional[Callable[[], None]]:
-    """Move plain-resident companions off the card, largest first, until ``need_mib`` is freed; returns the restore
-    that copies them back (same bytes, so the output is unchanged), or None when nothing moved. A park copies the
-    card's tensors into the kept host copy and points the module at it; the restore uploads that copy again."""
+    """Park companions on their host copy, largest first, until ``need_mib`` is freed; returns the restore or None."""
     if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() == "0" or need_mib <= 0:
         return None
     import torch
 
-    # (table, key, parameter or None, card device, host copy) per tensor of each parked module.
     parked: list = []
 
     def restore() -> None:
@@ -953,7 +947,7 @@ def _park_for_encode(pipe: Any, device: Any, need_mib: int) -> Optional[Callable
                 continue
             for (_table, _key, tensor), host in zip(tensors, hosts):
                 host.copy_(tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor)
-            # Every copy has landed before the card's tensors are dropped.
+            # Copies must land before the card's tensors are dropped.
             if torch.device(str(device)).type == "cuda":
                 torch.cuda.synchronize(torch.device(str(device)))
             entries = []
@@ -982,10 +976,7 @@ def _park_for_encode(pipe: Any, device: Any, need_mib: int) -> Optional[Callable
 
 
 def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
-    """Make room on the card for a non-resident encode (whole if lending makes it fit, else the worker's
-    ``stream_need_mib``): stream resident denoiser blocks again, then, if that is still short, move the plain-resident
-    companions the encode never runs (connectors, VAEs) to the host. Returns the restore that pins and uploads them
-    back, or None when nothing was lent."""
+    """Free card room for a non-resident encode: lend denoiser blocks, then park companions; returns the restore."""
     config = getattr(client, "config", None) or {}
     if (
         not config
@@ -1019,7 +1010,6 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         elif streamed is not None and room < int(streamed) <= room + held + parkable:
             target = int(streamed)
         elif streamed is not None and room < int(streamed) and held > 0:
-            # Short even with everything lent: blocks still go (as before), the companions stay.
             target, parkable = int(streamed), 0
         else:
             return None

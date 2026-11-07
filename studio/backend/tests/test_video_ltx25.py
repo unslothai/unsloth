@@ -2616,8 +2616,7 @@ def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatc
 
 
 def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monkeypatch):
-    """Each new prompt copies the encoder up and points back at the same host tensors after it (no device-to-host
-    copy into fresh memory, no ``model.to``), with the same output as an encode on the host."""
+    """Onload restores the same host tensors (no ``model.to``) and matches a host encode."""
     import torch
 
     from core.inference import video_ltx25_te_worker as worker
@@ -3057,8 +3056,7 @@ def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monke
 
 
 def test_lend_parks_companions_only_when_blocks_alone_leave_the_stream_short(monkeypatch):
-    """The 16 GiB A100 case: 2264 MiB of blocks lent still leaves 4894 MiB against a 6938 MiB stream need, so the
-    connectors step off the card; blocks alone enough or nothing to lend keeps the old behaviour."""
+    """16 GiB A100: lent blocks still leave the stream short, so the connectors park."""
     pipe = SimpleNamespace(transformer = object(), components = {})
     events = []
     monkeypatch.setattr(
