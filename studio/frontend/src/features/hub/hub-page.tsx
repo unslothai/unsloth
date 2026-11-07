@@ -14,6 +14,7 @@ import {
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { AUDIO_DEVICE_KEY } from "@/features/audio/audio-workspace-constants";
 import { audioPickSearch } from "@/features/audio/route-search";
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
@@ -32,8 +33,10 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { useIsCompact } from "@/hooks/use-mobile";
+import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
+import { audioCppCardGb } from "@/lib/gguf-fit";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -419,6 +422,9 @@ export function ModelsPage() {
   // Use the saved VRAM budget so the fit filter matches the badges.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const inferenceGpu = useInferenceGpuInfo();
+  // Audio runs load on the Audio page, so its placement decides how audio.cpp quants are judged.
+  const [audioDevice] = usePersistedChoice(AUDIO_DEVICE_KEY, "auto");
+  const hubAudioCardGb = audioCppCardGb(gpu, audioDevice === "cpu");
   // Judge fit by the runtime that places the row: media repos use the diffusion planner's rule,
   // everything else the GGUF backend's inventory.
   const rowFitsDevice = useCallback(
@@ -1835,6 +1841,7 @@ export function ModelsPage() {
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
+      audioCppCardGb: hubAudioCardGb,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1852,6 +1859,7 @@ export function ModelsPage() {
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
       inferenceGpu.deviceCount,
+      hubAudioCardGb,
       inferenceGpu.systemRamAvailableGb,
       inferenceGpu.unifiedLoadBudgetGb,
       inferenceGpu.unifiedLoadCeilingGb,

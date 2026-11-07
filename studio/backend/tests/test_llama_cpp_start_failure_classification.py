@@ -243,7 +243,7 @@ class TestOllamaAndFallback:
         assert "another quant" in msg
         assert "GGUF file is valid" not in msg
 
-    def test_truncated_gguf_keeps_the_generic_message(self):
+    def test_truncated_gguf_explains_how_to_check_the_download(self):
         # What a cut-off download prints: the header parses, the data does not fit.
         out = (
             "llama_model_load: error loading model: tensor 'output.weight' data is not "
@@ -251,8 +251,9 @@ class TestOllamaAndFallback:
             "llama_model_load_from_file_impl: failed to load model\n"
         )
         msg = _classify(out, "/models/m.gguf", "local/m", 1)
-        assert "GGUF file is valid" in msg
-        assert "cannot read this GGUF" not in msg
+        assert "appears incomplete or damaged" in msg
+        assert "Check that the download finished" in msg
+        assert "GPU memory" not in msg
 
     def test_known_type_with_ragged_rows_keeps_the_generic_message(self):
         # A type this build has, with a row length its blocks do not divide: a damaged file.
@@ -265,9 +266,9 @@ class TestOllamaAndFallback:
         assert "GGUF file is valid" in msg
         assert "cannot read this GGUF" not in msg
 
-    def test_generic_oom_keeps_memory_message(self):
+    def test_gpu_oom_has_actionable_memory_guidance(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big")
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "diffusion" not in msg.lower()
 
     def test_empty_output_is_safe(self):
@@ -547,7 +548,7 @@ class TestMissingSharedLibrary:
 
     def test_a_normal_failure_is_untouched(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "system library" not in msg
 
     def test_a_named_arch_wins_over_exit_127(self):
@@ -821,7 +822,6 @@ class TestANonGgufFile:
 class TestStartupDiagnostics:
     _UNKNOWN_OUT = (
         "build: 9415 (06d26dfd) with Apple clang version 17.0.0 for arm64-apple-darwin24.6.0\n"
-        "ggml_metal_init: error: failed to allocate buffer\n"
         "GGML_ASSERT(ctx->device != nil) failed"
     )
 
@@ -849,7 +849,7 @@ class TestStartupDiagnostics:
         assert "\x1b" not in msg
         assert "done" in msg
 
-    def test_no_output_and_no_log_keeps_the_old_message_exactly(self):
+    def test_no_output_and_no_log_keeps_the_original_message_exactly(self):
         assert _classify("", "/models/x.gguf", "local/x", 1) == (
             "llama-server failed to start. "
             "Check that the GGUF file is valid and you have enough memory."
@@ -1685,7 +1685,7 @@ class TestRejectedArguments:
 
     def test_an_ordinary_failure_is_untouched(self):
         msg = _classify(_OOM_OUT, "/models/big.gguf", "local/big", 1)
-        assert "enough memory" in msg.lower()
+        assert "Couldn't allocate memory" in msg
         assert "argument" not in msg.lower()
 
     def test_the_argument_scan_reads_only_the_tail(self):
@@ -1775,3 +1775,107 @@ class TestTensorSplitQuantizedKvUnsupported:
         which is why it needs its own recording path rather than the #6415 one."""
         assert not LlamaCppBackend._should_record_tensor_split_abort(1, self._OUT)
         assert not LlamaCppBackend._is_tensor_split_assert(self._OUT)
+
+
+class TestActionableStartupFailures:
+    @pytest.mark.parametrize(
+        "output",
+        [
+            _OOM_OUT,
+            "ggml_backend_hip: hipMalloc failed: hipErrorOutOfMemory",
+            "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory "
+            "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+            "ggml_metal_init: error: failed to allocate buffer",
+            "ggml_cuda_host_malloc: failed to allocate pinned memory: out of memory",
+        ],
+    )
+    def test_gpu_allocation_failure_keeps_evidence_and_gives_next_steps(self, output):
+        msg = _classify(output, "/models/big.gguf", "local/big", 1, log_path = "/tmp/llama.log")
+        assert msg.startswith("Couldn't allocate memory.")
+        assert "lowering the context length" in msg
+        assert "choosing a smaller model" in msg
+        assert output in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "ggml_backend_cpu: failed to allocate buffer",
+            "CUDA device 0 ready\nhost: failed to allocate buffer",
+            "CUDA device 0 ready\nunexpected runtime failure",
+        ],
+    )
+    def test_other_failures_do_not_claim_gpu_memory_exhaustion(self, output):
+        msg = _classify(output, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "Couldn't allocate memory" not in msg
+
+    @pytest.mark.parametrize("model_id", ["local/m", "ollama/m"])
+    def test_file_open_failure_names_checks_without_guessing_why(self, model_id):
+        output = (
+            "gguf_init_from_file: failed to open GGUF file '/models/vision.gguf'\n"
+            "llama_model_load_from_file_impl: failed to load model"
+        )
+        msg = _classify(output, "/models/main.gguf", model_id, 1, log_path = "/tmp/llama.log")
+        summary = msg.split("\n\n")[0]
+        assert "Couldn't open a model file" in summary
+        assert "Check it exists" in summary
+        assert "permission to read it" in summary
+        assert "main.gguf" not in summary
+        assert "vision.gguf" in msg
+        assert "Full log: /tmp/llama.log" in msg
+        assert "Couldn't allocate memory" not in msg
+
+    def test_corrupt_companion_does_not_blame_main_model(self):
+        output = (
+            "tensor 'vision.weight' data is not within the file bounds, "
+            "model is corrupted or incomplete"
+        )
+        msg = _classify(output, "/models/main.gguf", "local/m", 1, log_path = "/tmp/llama.log")
+        summary = msg.split("\n\n")[0]
+        assert "appears incomplete or damaged" in summary
+        assert "main.gguf" not in summary
+        assert output in msg
+        assert "Full log: /tmp/llama.log" in msg
+
+    def test_ollama_gpu_oom_is_not_misreported_as_format_incompatibility(self):
+        output = _OOM_OUT + "\nllama_model_load_from_file_impl: failed to load model"
+        msg = _classify(output, "/models/m.gguf", "ollama/m", 1)
+        assert msg.startswith("Couldn't allocate memory.")
+        assert "Some Ollama models" not in msg
+
+    def test_unknown_architecture_does_not_certify_the_file(self):
+        msg = _classify("unknown model architecture: 'custom_llm'", "/models/m.gguf", "local/m")
+        assert "The file is valid" not in msg
+        assert "model card" in msg
+        assert "custom runtime" in msg
+
+    def test_missing_metadata_does_not_assert_a_version_mismatch(self):
+        msg = _classify(
+            "key not found in model: deepseek41.context_length",
+            "/models/m.gguf",
+            "local/m",
+        )
+        assert "adapter selected as a full model" in msg
+        assert "required runtime" in msg
+        assert "The file was made" not in msg
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            _OOM_OUT,
+            "gguf_init_from_file: failed to open GGUF file",
+            "tensor data is not within the file bounds",
+            "unexpected runtime failure",
+        ],
+    )
+    def test_new_guidance_preserves_redacted_bounded_diagnostics(self, output):
+        secret = "hf_" + "a" * 34
+        output += "\n" + "x" * 5000 + "\n" + secret
+        msg = _classify(output, "/models/m.gguf", "local/m", 1, log_path = "/tmp/llama.log")
+        assert secret not in msg
+        assert "***" in msg
+        assert len(msg.split("\n\n")[0]) < 150
+        assert msg.count("llama-server output:") == 1
+        assert msg.count("Full log: /tmp/llama.log") == 1
+        assert len(msg) < 4000

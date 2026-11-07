@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -431,6 +432,7 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
+  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -487,7 +489,8 @@ function RootLayout() {
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
-  const nonChatTopInset = useIsMobileShell()
+  const mobileShell = useIsMobileShell();
+  const nonChatTopInset = mobileShell
     ? "pt-14"
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -690,7 +693,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
-      <WindowMaterialMount />
+      <WindowMaterialMount route={hideNavbar ? undefined : isChatRoute ? "chat" : "page"} />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -716,12 +719,22 @@ function RootLayout() {
           setPinned={setPinned}
           togglePinned={togglePinned}
           data-wallpaper-workspace=""
+          data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
+          {windowsWallpaperPage && (
+            <div
+              data-slot="page-wallpaper-blur"
+              // AppSidebar's data-windows-glass-frame, which sits under this page only off the mobile sheet.
+              data-sidebar-frame={(pinned && !mobileShell) || undefined}
+              aria-hidden="true"
+            />
+          )}
           <SidebarInset
             className={
               isChatLike

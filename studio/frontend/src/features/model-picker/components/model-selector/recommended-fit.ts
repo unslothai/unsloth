@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import {
+  audioCppRowFit,
+  classifyGgufFit,
+} from "../../../../lib/gguf-fit.ts";
 import {
   LOADING_OVERHEAD_GB,
   checkVramFit,
@@ -11,28 +14,21 @@ import {
   audioCppDisplayName,
   isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
-import { matchesRecommended } from "../../../hub/lib/format-filters.ts";
+import {
+  isMlxId,
+  matchesRecommended,
+} from "../../../hub/lib/format-filters.ts";
 import {
   classifyMediaGgufFit,
   type curatedArtifactFit,
 } from "./model-catalog.ts";
 
+export { hasMlxCardTag, isMlxId } from "../../../hub/lib/format-filters.ts";
+
 const GGUF_SUFFIX_RE = /-GGUF(?:$|-)/i;
-// Mirrors the backend's _looks_like_mlx_repo.
-const MLX_RE = /(?:^|[-_.])mlx(?:$|[-_.])/i;
-const MLX_OWNER_PREFIX = "mlx-community/";
-// Callers pass a filesystem path, which may be Windows.
-const PATH_SEP_RE = /[\\/]/;
 
 export function isGgufId(id: string, hintedIsGguf?: boolean): boolean {
   return Boolean(hintedIsGguf) || GGUF_SUFFIX_RE.test(id);
-}
-
-export function isMlxId(id: string): boolean {
-  const trimmed = id.trim();
-  if (trimmed.toLowerCase().startsWith(MLX_OWNER_PREFIX)) return true;
-  const leaf = trimmed.split(PATH_SEP_RE).filter(Boolean).at(-1) ?? trimmed;
-  return MLX_RE.test(leaf);
 }
 
 const MOBILE_RE = /(?:^|[-_/. ])mobile(?:$|[-_/. ])/i;
@@ -74,14 +70,18 @@ export function matchesFormatFilter(
   id: string,
   hintedIsGguf: boolean | undefined,
   filter: FormatFilter,
+  hintedIsMlx?: boolean,
 ): boolean {
+  const gguf = isGgufId(id, hintedIsGguf);
+  // GGUF repos often carry an mlx tag too; the tag never outranks GGUF.
+  const mlx = isMlxId(id, hintedIsMlx && !gguf);
   switch (filter) {
     case "gguf":
-      return isGgufId(id, hintedIsGguf);
+      return gguf;
     case "mlx":
-      return isMlxId(id);
+      return mlx;
     case "safetensors":
-      return !isGgufId(id, hintedIsGguf) && !isMlxId(id);
+      return !gguf && !mlx;
     case "npu":
       return false;
     default:
@@ -237,6 +237,8 @@ export function hfModelFitsDevice(
     id: string;
     totalParams?: number;
     estimatedSizeBytes?: number;
+    estimatedResidentGb?: number;
+    smallestResidentGb?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
     quantMethod?: string;
@@ -253,6 +255,8 @@ export function hfModelFitsDevice(
     gpuCount?: number;
     mediaLoad?: boolean;
     hostPooledMemory?: boolean;
+    /** `audioCppCardGb` of the load; absent means memoryTotalGb is one card. */
+    audioCppCardGb?: number;
   } = {},
 ): boolean {
   if (
@@ -261,6 +265,11 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
+  const resident = audioCppRowFit(
+    model,
+    opts.audioCppCardGb ?? gpu.memoryTotalGb,
+  );
+  if (resident) return resident === "fits";
   const params = model.totalParams ?? paramsFromId(model.id);
   const isGguf = isGgufId(model.id, model.isGguf);
   if (

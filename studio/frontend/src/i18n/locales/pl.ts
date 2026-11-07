@@ -206,12 +206,16 @@ export const pl = {
         history: "Odczyt historii przeglądania",
         move: "Przesuwanie myszy",
         drag: "Przeciąganie",
+        tabs: "Przeglądanie kart",
+        readFile: "Czytanie pliku",
+        editFile: "Edytowanie pliku",
       },
     },
     title: "Przeglądarka",
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -361,6 +365,8 @@ export const pl = {
     askBeforeDownloadingSetting: "Pytaj przed pobraniem",
     askBeforeDownloadingSettingDescription:
       "Potwierdzaj pliki z witryn przed ich zapisaniem.",
+    askBeforeProgramDownloadsSetting: "Pytaj przed pobraniem programów",
+    askBeforeProgramDownloadsSettingDescription: "Potwierdzaj pliki, które mogą uruchamiać programy, takie jak .exe lub .dmg, nawet gdy inne pobrania nie pytają.",
     downloadSitesSetting: "Uprawnienia witryn do pobierania",
     downloadSitesSettingDescription:
       "Witryny, z których pobieranie jest zawsze dozwolone lub zawsze blokowane.",
@@ -369,6 +375,7 @@ export const pl = {
     downloadSitesFor: "Pobieranie z {host}",
     downloadSitesRemove: "Zapomnij {host}",
     downloadSiteAllow: "Zawsze zezwalaj",
+    downloadSiteAllowAll: "Zezwalaj też na programy",
     downloadSiteBlock: "Zawsze blokuj",
     downloadPrompt: {
       title: "Pobrać ten plik?",
@@ -377,6 +384,9 @@ export const pl = {
       dangerous:
         "Takie pliki mogą uruchamiać programy na Twoim komputerze. Pobierz go tylko wtedy, gdy ufasz witrynie {host}.",
       remember: "Zapamiętaj na przyszłość",
+      once: "Zapytaj następnym razem",
+      site: "Zawsze dla {host}",
+      all: "Zawsze pobieraj, z każdej witryny",
       cancel: "Anuluj",
       download: "Pobierz",
       blocked: "Zablokowano pobieranie z {host}.",
@@ -425,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -885,6 +901,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -1207,6 +1226,9 @@ export const pl = {
         "Jeden model w wierszu, np. unsloth/Qwen3-4B-GGUF, lub unsloth/* dla całej organizacji. Pozostaw puste, aby zezwolić na każdy model.",
       modelAccessSave: "Zapisz",
       modelAccessLimited: "Ograniczony dostęp do modeli",
+      rename: "Zmień nazwę",
+      renameTitle: "Zmień nazwę {username}",
+      renameDescription: "Wybierz nazwę, której to konto używa do logowania. Czaty, pliki i klucze API pozostają na koncie. Użytkownik zostanie wylogowany i zaloguje się ponownie nową nazwą oraz obecnym hasłem.",
       empty: "Nie ma jeszcze innych kont",
       setupCode: "Kod konfiguracji",
       setupFor: "Kod konfiguracji dla: {username}",
@@ -2313,6 +2335,12 @@ export const pl = {
           "Opcja Automatycznie używa na tym komputerze metody {transport}.",
         xetMissing:
           "Xet jest niedostępny, ponieważ hf_xet nie jest zainstalowany.",
+        speedLimit: "Limit prędkości pobierania",
+        speedLimitDescription:
+          "Brak limitu, dopóki nie ustawisz wartości. Ograniczone pobieranie używa HTTPS.",
+        speedLimitNoLimit: "Brak limitu",
+        speedLimitInvalid: "Wpisz liczbę w Mbit/s albo zostaw pole puste.",
+        speedLimitUsesHttps: "Gdy ustawiony jest limit prędkości, pobieranie używa HTTPS. Pliki większe niż 50 GB nadal używają Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Przesyłanie",
@@ -2706,6 +2734,10 @@ export const pl = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Obramowanie elementów",
+          description: "Intensywność obramowania przycisków, pól, kart i menu.",
         },
         reduceMotion: {
           label: "Ogranicz ruch",
@@ -3276,9 +3308,8 @@ export const pl = {
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
       turnNavigation: "Nawigacja po turach",
       turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
-      composerAtBottom: "Pole wiadomości na dole",
-      composerAtBottomDescription:
-        "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
+      composerPosition: "Położenie pola wiadomości",
+      composerPositionDescription: "Gdzie znajduje się pole wiadomości po rozpoczęciu nowego czatu, od góry strony aż do dołu.",
       projectAttachments: "Udostępniaj pliki w całym projekcie",
       projectAttachmentsDescription:
         "Udostępniaj nowe załączniki czatu wszystkim czatom w projekcie.",
@@ -4284,8 +4315,6 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
-          appleSilicon:
-            "Strumieniowanie nie jest jeszcze obsługiwane na Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",
@@ -5928,8 +5957,7 @@ export const pl = {
     skippedVersion: "Na razie pominięto {component} {version}",
     skippedUpdate: "Na razie pominięto aktualizację: {component}",
     skippedUpdates: "Na razie pominięto aktualizacje: {components}",
-    vulkanFaster:
-      "Vulkan jest o ponad 10% szybszy niż ROCM. Nie trzeba uruchamiać ponownie",
+    vulkanFaster: "Ponad 10% szybciej",
     noRestart: "Nie trzeba uruchamiać ponownie",
     downloadSize: "Do pobrania: {size}",
     backendChange: "Backend: {change}",
@@ -5938,8 +5966,8 @@ export const pl = {
     installingPhase: "Instalowanie: {component} ({current} z {total})...",
     installingCount: "Instalowanie aktualizacji ({count})...",
     bundleTitle: "Aktualizacje środowiska uruchomieniowego: {count}",
-    newBackend: "Nowy backend: {component}",
-    newUpdate: "Nowa aktualizacja: {component}",
+    newBackend: "Nowy backend środowiska uruchomieniowego",
+    newUpdate: "Nowa aktualizacja środowiska uruchomieniowego",
     hideUpdate: "Ukryj aktualizację {component} do ponownego otwarcia Unsloth",
     hideUpdates:
       "Ukryj aktualizacje {components} do ponownego otwarcia Unsloth",

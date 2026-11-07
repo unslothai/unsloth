@@ -1104,6 +1104,84 @@ def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
         assert cmd.count("--mmap") == 1
 
 
+# ── CPU mmap (repack-aware builds) ──────────────────────────────────────────
+
+_REPACK_HELP = "  --mmap  whether to memory-map model (CPU: weights the CPU repacks are still loaded and repacked)\n"
+_OLD_HELP = "  --mmap  whether to memory-map model\n"
+
+
+def _cpu_install(
+    tmp_path,
+    monkeypatch,
+    help_text,
+    accelerator = "cpu",
+):
+    import json
+
+    import core.inference.sd_cpp_backend as backend
+
+    root = tmp_path / f"sd-{accelerator}-{abs(hash(help_text)) % 10**6}"
+    (root / "bin").mkdir(parents = True)
+    binary = root / "bin" / "sd-cli"
+    binary.write_text("")
+    (root / ".unsloth-sd-cpp-install.json").write_text(
+        json.dumps({"tag": "master-982-0518b34-uaba3a1c", "accelerator": accelerator})
+    )
+    for fn in (
+        _sd_cpp_args_module._installed_sd_cpp_tag,
+        _sd_cpp_args_module._installed_sd_cpp_accelerator,
+        _sd_cpp_args_module._cpu_mmap_repack_in_help,
+    ):
+        fn.cache_clear()
+    monkeypatch.setattr(backend, "_sd_cpp_probe_output", lambda b, *a, **k: help_text)
+    return str(binary)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_cpu_mmap_on_repack_aware_cpu_builds_only(monkeypatch, tmp_path, platform):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", platform)
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    for cmd in _all_builders(new):
+        assert cmd.count("--mmap") == 1
+    # The pinned build maps repackable weights and runs them unrepacked: never sent there.
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert all("--mmap" not in cmd for cmd in _all_builders(old))
+    for accel in ("cuda", "vulkan", "rocm"):
+        gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = accel)
+        assert all("--mmap" not in cmd for cmd in _all_builders(gpu))
+
+
+def test_cpu_mmap_follows_an_explicit_backend(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", "linux")
+    gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = "vulkan")
+    assert mmap_flags(gpu, None, ["--backend", "cpu"]) == ["--mmap"]
+    cpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    assert mmap_flags(cpu, None, ["--backend", "diffusion=vulkan0"]) == []
+    assert mmap_flags(cpu, ["--mmap"], None) == []
+    assert mmap_flags(None, None, None) == []
+    # an unreadable / unprobeable binary fails closed
+    assert (
+        _cpu_install(tmp_path, monkeypatch, None)
+        and mmap_flags(str(tmp_path / "missing" / "sd-cli")) == []
+    )
+
+
+def test_cpu_mmap_env_override(monkeypatch, tmp_path):
+    from core.inference.sd_cpp_args import mmap_flags
+
+    monkeypatch.setattr("sys.platform", "linux")
+    new = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "0")
+    assert mmap_flags(new) == []
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "1")
+    old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
+    assert mmap_flags(old) == ["--mmap"]
+
+
 @pytest.mark.parametrize(
     "ccs,expected",
     [

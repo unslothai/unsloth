@@ -333,3 +333,87 @@ def test_pinning_is_budgeted_on_the_whole_payload_not_one_arena(monkeypatch):
     assert not h3_te_pin_allowed(27 * 2**30)
     monkeypatch.setenv(dm.GROUP_OFFLOAD_PIN_ENV, "1")
     assert h3_te_pin_allowed(27 * 2**30)
+
+
+def test_pinning_in_place_copies_on_a_pool_with_the_same_placement(monkeypatch):
+    """The copies run on a thread pool (a to_thread worker copies on one torch thread), with the serial placement:
+    largest first, first fit, same offsets, same values, ties kept, every owner replaced."""
+    import threading
+
+    from core.inference import video_minimax_h3_te as te
+
+    def make():
+        torch.manual_seed(0)
+        g = torch.Generator().manual_seed(0)
+        m = torch.nn.Sequential(
+            *[torch.nn.Linear(16 + 8 * i, 24, bias = i % 2 == 0) for i in range(6)]
+        )
+        m.register_buffer("q", torch.randint(-128, 127, (40, 8), dtype = torch.int8, generator = g))
+        m.register_buffer("h", torch.randn(33, generator = g).to(torch.bfloat16))
+        m.tied = torch.nn.Linear(24, 32, bias = False)
+        m.tied.weight = m[2].weight
+        m.register_buffer("q_alias", m.q)
+        return m
+
+    def run(m, threads):
+        monkeypatch.setattr(te, "_PIN_COPY_THREADS", threads)
+        arenas = []
+
+        def factory(size):
+            arenas.append(torch.full((size,), 0xA5, dtype = torch.uint8))
+            return arenas[-1]
+
+        names = []
+        real_copy = torch.Tensor.copy_
+
+        def spy(self, *a, **k):
+            names.append(threading.current_thread().name)
+            return real_copy(self, *a, **k)
+
+        monkeypatch.setattr(torch.Tensor, "copy_", spy)
+        try:
+            n = te.pin_module_in_place(m, arena_bytes = 4096, _arena_factory = factory)
+        finally:
+            monkeypatch.setattr(torch.Tensor, "copy_", real_copy)
+        return n, arenas, names
+
+    m_serial, m_pool = make(), make()
+    expect = {k: v.detach().clone() for k, v in m_pool.state_dict().items()}
+    n1, a1, names1 = run(m_serial, 1)
+    n2, a2, names2 = run(m_pool, 8)
+    assert n1 == n2 > 0
+    assert len(names2) == len(names1) > 1
+    assert all(name.startswith("unsloth-h3-te-pin") for name in names2), names2
+    assert not any(name.startswith("unsloth-h3-te-pin") for name in names1)
+    # Same arenas, byte for byte (same offsets, same alignment padding).
+    assert [a.numel() for a in a1] == [a.numel() for a in a2]
+    assert all(torch.equal(x, y) for x, y in zip(a1, a2))
+    for k, v in m_pool.state_dict().items():
+        assert torch.equal(v, expect[k]), k
+        assert v.untyped_storage().data_ptr() in {a.untyped_storage().data_ptr() for a in a2}, k
+    assert m_pool.tied.weight is m_pool[2].weight and m_pool.q_alias is m_pool.q
+    assert isinstance(m_pool[0].weight, torch.nn.Parameter) and not isinstance(
+        m_pool.q, torch.nn.Parameter
+    )
+
+
+def test_pinning_in_place_replaces_nothing_when_a_pooled_copy_fails(monkeypatch):
+    from core.inference import video_minimax_h3_te as te
+
+    m = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 4))
+    before = {k: v for k, v in m.state_dict(keep_vars = True).items()}
+    real_copy = torch.Tensor.copy_
+    calls = []
+
+    def flaky(self, *a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("pinned host RAM refused")
+        return real_copy(self, *a, **k)
+
+    monkeypatch.setattr(torch.Tensor, "copy_", flaky)
+    with pytest.raises(RuntimeError, match = "refused"):
+        te.pin_module_in_place(m, _arena_factory = lambda n: torch.zeros(n, dtype = torch.uint8))
+    monkeypatch.setattr(torch.Tensor, "copy_", real_copy)
+    after = m.state_dict(keep_vars = True)
+    assert all(after[k] is before[k] for k in before)

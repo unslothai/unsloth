@@ -206,12 +206,16 @@ export const fa = {
         history: "در حال خواندن سابقهٔ مرور شما",
         move: "در حال حرکت دادن ماوس",
         drag: "در حال کشیدن",
+        tabs: "در حال بررسی زبانه‌ها",
+        readFile: "در حال خواندن فایل",
+        editFile: "در حال ویرایش فایل",
       },
     },
     title: "مرورگر",
     tabs: "زبانه‌های مرورگر",
     newTab: "زبانهٔ جدید",
     newTabFullView: "زبانهٔ جدید در نمای کامل",
+    newTabFloating: "زبانه جدید در پنجره شناور",
     closeTab: "بستن زبانه",
     close: "بستن مرورگر",
     show: "نمایش مرورگر",
@@ -359,6 +363,8 @@ export const fa = {
     askBeforeDownloadingSetting: "پرسیدن پیش از دانلود",
     askBeforeDownloadingSettingDescription:
       "تأیید فایل‌های وب‌سایت‌ها پیش از ذخیره شدن.",
+    askBeforeProgramDownloadsSetting: "پرسیدن پیش از دانلود برنامه‌ها",
+    askBeforeProgramDownloadsSettingDescription: "تأیید فایل‌هایی که می‌توانند برنامه اجرا کنند، مانند .exe یا .dmg، حتی وقتی دانلودهای دیگر نمی‌پرسند.",
     downloadSitesSetting: "مجوزهای دانلود سایت‌ها",
     downloadSitesSettingDescription:
       "سایت‌هایی که انتخاب کرده‌اید دانلود از آن‌ها همیشه مجاز یا مسدود باشد.",
@@ -367,6 +373,7 @@ export const fa = {
     downloadSitesFor: "دانلودها از {host}",
     downloadSitesRemove: "فراموش کردن {host}",
     downloadSiteAllow: "همیشه اجازه بده",
+    downloadSiteAllowAll: "اجازه به برنامه‌ها هم",
     downloadSiteBlock: "همیشه مسدود کن",
     downloadPrompt: {
       title: "این فایل دانلود شود؟",
@@ -374,6 +381,9 @@ export const fa = {
       dangerous:
         "فایل‌هایی از این نوع می‌توانند برنامه‌هایی را روی رایانهٔ شما اجرا کنند. فقط در صورتی دانلود کنید که به {host} اعتماد دارید.",
       remember: "به خاطر سپردن برای دفعهٔ بعد",
+      once: "دفعهٔ بعد بپرس",
+      site: "همیشه برای {host}",
+      all: "همیشه دانلود کن، از همهٔ سایت‌ها",
       cancel: "لغو",
       download: "دانلود",
       blocked: "یک دانلود از {host} مسدود شد.",
@@ -422,6 +432,12 @@ export const fa = {
       openChat: "باز کردن در نمای کامل",
       moveLeft: "انتقال به قاب چپ",
       moveRight: "انتقال به قاب راست",
+    },
+    floating: {
+      enter: "پنجره شناور",
+      dock: "چسباندن به کنار",
+      close: "بستن پنجره شناور",
+      handle: "جابه‌جایی پنجره. کلیدهای جهت آن را جابه‌جا می‌کنند و Shift همراه کلیدهای جهت اندازه‌اش را تغییر می‌دهد.",
     },
     annotate: {
       countOne: "1 حاشیه‌نویسی",
@@ -875,6 +891,8 @@ export const fa = {
     unifiedTightFit: "جای تنگ",
     unifiedTightFitHint:
       "ممکن است با زمینهٔ کوتاه‌تر بارگذاری شود یا روی این Mac کندتر اجرا شود.",
+    residentToRun: "برای اجرا",
+    residentToRunHint: "حافظه GPU که بررسی بارگذاری هنگام اجرا لازم دارد",
     onDevice: "روی دستگاه",
     huggingFace: "Hugging Face",
     retry: "تلاش دوباره",
@@ -1192,6 +1210,9 @@ export const fa = {
         "در هر خط یک مدل، برای مثال unsloth/Qwen3-4B-GGUF، یا unsloth/* برای یک سازمان کامل. برای مجاز کردن همهٔ مدل‌ها، خالی بگذارید.",
       modelAccessSave: "ذخیره",
       modelAccessLimited: "دسترسی محدود به مدل",
+      rename: "تغییر نام",
+      renameTitle: "تغییر نام {username}",
+      renameDescription: "نامی را که این حساب با آن وارد می‌شود انتخاب کنید. گفتگوها، فایل‌ها و کلیدهای API در همین حساب می‌مانند. کاربر از حساب خارج می‌شود و با نام جدید و گذرواژهٔ فعلی دوباره وارد می‌شود.",
       empty: "هنوز حساب دیگری وجود ندارد",
       setupCode: "کد راه‌اندازی",
       setupFor: "کد راه‌اندازی برای {username}",
@@ -2273,6 +2294,12 @@ export const fa = {
         autoCurrently:
           "حالت خودکار روی این دستگاه از {transport} استفاده می‌کند.",
         xetMissing: "Xet در دسترس نیست، زیرا hf_xet نصب نشده است.",
+        speedLimit: "محدودیت سرعت دانلود",
+        speedLimitDescription:
+          "بدون محدودیت مگر اینکه عددی تعیین شود. دانلود محدودشده از HTTPS استفاده می‌کند.",
+        speedLimitNoLimit: "بدون محدودیت",
+        speedLimitInvalid: "عددی بر حسب Mbit/s وارد کنید یا فیلد را خالی بگذارید.",
+        speedLimitUsesHttps: "تا زمانی که محدودیت سرعت تنظیم شده باشد، دانلودها از HTTPS استفاده می‌کنند. فایل‌های بزرگ‌تر از ۵۰ گیگابایت همچنان بدون محدودیت از Xet استفاده می‌کنند.",
       },
       uploads: {
         sectionTitle: "آپلودها",
@@ -2663,6 +2690,10 @@ export const fa = {
         },
         contrast: {
           label: "کنتراست",
+        },
+        elementOutline: {
+          label: "حاشیهٔ عناصر",
+          description: "شدت حاشیهٔ دکمه‌ها، فیلدها، کارت‌ها و منوها.",
         },
         reduceMotion: {
           label: "کاهش حرکت",
@@ -3227,9 +3258,8 @@ export const fa = {
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
       turnNavigation: "پیمایش نوبت‌ها",
       turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
-      composerAtBottom: "کادر نوشتن در پایین",
-      composerAtBottomDescription:
-        "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
+      composerPosition: "جای کادر نوشتن",
+      composerPositionDescription: "جای کادر نوشتن هنگام شروع گفتگوی تازه، از بالای صفحه تا پایین آن.",
       projectAttachments: "اشتراک فایل‌ها در سراسر پروژه",
       projectAttachmentsDescription:
         "پیوست‌های جدید گفتگو در دسترس همهٔ گفتگوهای پروژه قرار گیرند.",
@@ -4220,8 +4250,6 @@ export const fa = {
             "به نظر می‌رسد این مجموعه‌داده شامل تصویر است که قابل جریان‌دهی نیست.",
           audioDataset:
             "به نظر می‌رسد این مجموعه‌داده شامل صدا است که قابل جریان‌دهی نیست.",
-          appleSilicon:
-            "جریان‌دهی هنوز روی Apple Silicon (MLX) پشتیبانی نمی‌شود.",
         },
         options: {
           trainOnCompletions: "فقط تکمیل‌های دستیار",
@@ -5844,8 +5872,7 @@ export const fa = {
     skippedVersion: "{component} {version} فعلاً رد شد",
     skippedUpdate: "به‌روزرسانی {component} فعلاً رد شد",
     skippedUpdates: "به‌روزرسانی‌های {components} فعلاً رد شدند",
-    vulkanFaster:
-      "Vulkan بیش از 10% سریع‌تر از ROCM است. نیازی به راه‌اندازی دوباره نیست",
+    vulkanFaster: "بیش از ۱۰٪ سریع‌تر",
     noRestart: "نیازی به راه‌اندازی دوباره نیست",
     downloadSize: "دانلود {size}",
     backendChange: "بک‌اند {change}",
@@ -5854,8 +5881,8 @@ export const fa = {
     installingPhase: "در حال نصب {component} ({current} از {total})...",
     installingCount: "در حال نصب {count} به‌روزرسانی...",
     bundleTitle: "{count} به‌روزرسانی محیط اجرا",
-    newBackend: "بک‌اند جدید {component}",
-    newUpdate: "به‌روزرسانی جدید {component}",
+    newBackend: "بک‌اند جدید محیط اجرا",
+    newUpdate: "به‌روزرسانی جدید محیط اجرا",
     hideUpdate: "پنهان کردن به‌روزرسانی {component} تا باز شدن دوبارهٔ Unsloth",
     hideUpdates:
       "پنهان کردن به‌روزرسانی‌های {components} تا باز شدن دوبارهٔ Unsloth",

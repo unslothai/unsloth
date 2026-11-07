@@ -10788,8 +10788,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10797,13 +10797,13 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -10818,8 +10818,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
-    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-NVFP4.safetensors" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors" in staged
     assert not any(
         f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
         for f in staged
@@ -10849,8 +10849,8 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10858,13 +10858,13 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -10884,7 +10884,10 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert "transformer/diffusion_pytorch_model.safetensors" not in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" not in staged
-    assert {"Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"} <= staged
+    assert {
+        "Wan2.2-T2V-A14B-NVFP4.safetensors",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+    } <= staged
 
 
 def test_the_video_status_response_carries_the_nvfp4_backend_label():
@@ -10947,8 +10950,8 @@ def _a14b_plan(monkeypatch):
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10956,13 +10959,13 @@ def _a14b_plan(monkeypatch):
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -11002,8 +11005,8 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
-    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-NVFP4.safetensors" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors" in staged
     assert not any(
         f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
         for f in staged
@@ -11922,7 +11925,9 @@ def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
 
 def test_an_nvfp4_video_repo_missing_a_denoiser_installs_no_flashinfer(fake_runtime, monkeypatch):
     # A14B needs BOTH denoisers.
-    installs, listed, _ = _video_install_probe(monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.pt"])
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.safetensors"]
+    )
     _video_load_to_the_install_gate()
     assert installs == []
     assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
@@ -11943,7 +11948,10 @@ def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
 def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate()
     assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
@@ -11956,7 +11964,10 @@ def test_with_the_nvfp4_switch_off_a_reachable_video_checkpoint_installs_nothing
     monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
     assert installs == []
@@ -11979,7 +11990,10 @@ def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, mon
 
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate(_video_auto_denoiser_planned = DENOISER_SEED_DECLINED)
     assert installs == []
@@ -12040,7 +12054,7 @@ def _stub_h3_nvfp4_checkpoint(monkeypatch):
         return types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/MiniMax-H3-NVFP4",
-            filename = f"MiniMax-H3-{task}-NVFP4.pt",
+            filename = f"MiniMax-H3-{task}-NVFP4.safetensors",
             fallback_filenames = (),
         )
 
@@ -12071,7 +12085,7 @@ def test_the_minimax_h3_modular_path_skips_the_install_for_a_refused_checkpoint(
 
 def test_the_minimax_h3_modular_path_installs_for_a_reachable_checkpoint(fake_runtime, monkeypatch):
     installs, listed, dispatched = _video_install_probe(
-        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.pt"]
+        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.safetensors"]
     )
     _stub_h3_nvfp4_checkpoint(monkeypatch)
     _video_load_to_the_install_gate(

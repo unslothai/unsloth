@@ -102,10 +102,10 @@ def _family_buildable_for_listing(family, *, model_kind: str) -> bool:
     from core.inference.diffusion_engine_router import family_buildable_here
     from utils.hardware import hardware as hw
 
-    # Listing must not run hardware detection; the load re-checks buildability.
-    if not hw.DETECTION_COMPLETE.is_set():
-        return family is not None
-    return family_buildable_here(family, model_kind = model_kind)
+    if hw.DETECTION_COMPLETE.is_set():
+        return family_buildable_here(family, model_kind = model_kind)
+    # Listing must not run hardware detection; the load re-checks the provisional answer.
+    return family_buildable_here(family, model_kind = model_kind, provisional = True)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:

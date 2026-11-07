@@ -119,7 +119,7 @@ def _rope_embedding_QK(
     sin,
     sin_row_stride,
     rope_embedding_indices,
-    seqlen,
+    seqlen,  # runtime, not specialized: varies per call
     n_heads_Q: tl.constexpr,  # 32
     n_heads_K: tl.constexpr,  # 8 (0 without K)
     n_groups_Q: tl.constexpr,  # 1
@@ -224,7 +224,7 @@ def _rope_embedding_QK(
 
 # No triton.heuristics wrapper: the launcher passes real bools, and the wrapper's per-call cost
 # showed up at small (decode / short-sequence) shapes.
-_rope_embedding_QK = triton.jit(_rope_embedding_QK)
+_rope_embedding_QK = triton.jit(_rope_embedding_QK, do_not_specialize = ("seqlen",))
 
 # Elements of one half-head tile a program rotates: several heads per program instead of one
 # program per (row, head) with half its lanes masked off.
