@@ -2854,7 +2854,7 @@ export const ar = {
       configurationDocs: "التوثيق",
       configurationFlagsSuffix: "لمعرفة الخيارات (flags).",
       modelNote:
-        "يتطلب Codex وClaude Code نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
+        "يتطلب Claude Code وCodex نموذج GGUF يقدّمه llama-server أو نموذج MLX. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
         title: "استخدام نموذج محلي كوكيل فرعي",
         description:

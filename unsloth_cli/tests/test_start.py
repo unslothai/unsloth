@@ -37,6 +37,7 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
+_REAL_SERVER_LOADS_MLX = start._server_loads_mlx
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
@@ -1332,6 +1333,18 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
         lambda *args, **kwargs: {"is_gguf": True, "gguf_variant": "Q5_K_M"},
     )
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
+
+
+def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "bf16"},
+    )
+    entry = {"id": "mlx-community/Qwen3-4B"}
+    assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B"
+    assert start._subagent_model_id(BASE, "key", entry, f"{entry['id']}:bf16", None) == entry["id"]
+    assert start._subagent_model_id(BASE, "key", entry, entry["id"], "bf16") == entry["id"]
 
 
 def _kept_model_status(url):
@@ -4968,6 +4981,28 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.parametrize("subcommand", ["claude", "codex"])
+def test_connect_gguf_only_agents_run_on_an_mlx_model(fake_studio, monkeypatch, subcommand):
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.split("?")[0].endswith("/api/inference/status"):
+            return {"is_gguf": False, "is_mlx": True, "model_identifier": "unsloth/Qwen3-0.6B"}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, [subcommand, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "needs a GGUF model" not in result.output
+
+
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.evil.example:8888")
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
@@ -5237,6 +5272,13 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
 def _studio_is_this_machine(monkeypatch):
     # The gate reads the local filesystem only for a confirmed identity; tunnel tests override this.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: True)
+
+
+@pytest.fixture(autouse = True)
+def _gguf_only_host(monkeypatch):
+    # The GGUF gate defers on an MLX host, and this suite also runs on Apple Silicon.
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: False)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
 
 
 @pytest.fixture(autouse = True)
@@ -5900,6 +5942,48 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     assert payloads == [
         {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
     ]
+
+
+@pytest.mark.parametrize("requested", ["mlx-community/Qwen3-4B", None])
+def test_resolve_model_reload_option_keeps_the_resident_mlx_folder(monkeypatch, requested):
+    repo = "mlx-community/Qwen3-4B"
+    models = [{"id": repo, "loaded": True}]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    status = {
+        "is_gguf": False,
+        "is_mlx": True,
+        "gguf_variant": "6-bit",
+        "active_model": repo,
+        "model_identifier": repo,
+    }
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: status)
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(BASE, "key", requested, start.LoadOptions(max_seq_length = 8192))
+
+    assert [p.get("gguf_variant") for p in payloads] == ["6-bit"]
+
+
+def test_an_unchanged_mlx_folder_is_not_a_settings_change():
+    status = {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"}
+    assert not start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-bit"), frozenset({"gguf_variant"})
+    )
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "8bit"), frozenset({"gguf_variant"})
+    )
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-BIT"), frozenset({"gguf_variant"})
+    )
+    assert start._resident_serves_variant(status, "6-bit")
+    assert not start._resident_serves_variant(status, "6-BIT")
+    assert start._resident_serves_variant({"is_gguf": True, "gguf_variant": "Q8_0"}, "q8_0")
 
 
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
@@ -11559,6 +11643,158 @@ def test_require_gguf_for_agent_reads_the_requested_models_slot(monkeypatch, cap
             start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/Qwen3-0.6B"
         )
     assert "Claude Code needs a GGUF model" in capsys.readouterr().err
+
+
+def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "is_gguf": False,
+            "is_mlx": True,
+            "active_model": "mlx-community/Qwen3-4B-4bit",
+        },
+    )
+    for agent in (start._CLAUDE_GGUF_AGENT, start._CODEX_GGUF_AGENT):
+        start._require_gguf_for_agent(agent, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("health", "loads_mlx"),
+    [
+        ({"device_type": "mac", "apple_silicon": True, "chat_only_reason": None}, True),
+        (
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
+            False,
+        ),
+        ({"device_type": "mac", "apple_silicon": False}, False),
+        ({"device_type": "linux", "apple_silicon": False}, False),
+        ({"status": "healthy"}, False),
+        (OSError("down"), False),
+    ],
+)
+def test_server_loads_mlx_reads_the_servers_platform(monkeypatch, health, loads_mlx):
+    urls = _fake_variants(monkeypatch, health)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is loads_mlx
+    assert urls == [f"{BASE}/api/health?detect_hardware=true"]
+
+
+def test_server_loads_mlx_waits_out_hardware_detection(monkeypatch):
+    answers = iter(
+        [
+            {"status": "healthy", "hardware_detecting": True},
+            {"status": "healthy", "hardware_detecting": True},
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": None},
+        ]
+    )
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: next(answers))
+    monkeypatch.setattr(start.time, "sleep", lambda s: None)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is True
+
+
+def test_attach_check_defers_a_non_gguf_repo_on_an_mlx_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    _fake_variants(monkeypatch, {"variants": [], "has_vision": False})
+    start._attach_gguf_check(
+        start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    start._attach_gguf_check(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "loadable": False,
+            "loadable_variants": ["BF16"],
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/Foo-GGUF")
+    _fake_variants(monkeypatch, {"variants": [], "loadable": None, "loadable_variants": None})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit", "Q8_0"
+        )
+    monkeypatch.setattr(start, "_direct_gguf_companion_is_uncertain", lambda repo: True)
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/MTP/model-Q8_0-MTP.gguf"
+        )
+
+
+def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, capsys):
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit:Q8_0")
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(
+            start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit", gguf_variant = "Q8_0"
+        )
+
+
+def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
+    repo = "mlx-community/Qwen3-4B"
+    _fake_hub_listing(monkeypatch, {repo: []})
+    monkeypatch.setattr(
+        start,
+        "_hub_repo_files",
+        lambda repo: ["config.json", "6-bit/config.json", "8bit/config.json"],
+    )
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
+    start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, repo, gguf_variant = "8bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:4bit")
+    assert "has no precision folder 4bit" in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:8BIT")
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    mlx_answer = {
+        "variants": [
+            {"quant": "6-bit", "filename": "6-bit/"},
+            {"quant": "8bit", "filename": "8bit/"},
+        ],
+        "loadable_variants": [],
+        "variant_format": "mlx",
+    }
+    _fake_variants(monkeypatch, mlx_answer)
+    start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", repo)
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    for wanted in ("Q8_0", "4bit", "6-BIT"):
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
+    for answer in (
+        {"variants": [], "loadable": False},
+        {"variants": [], "loadable": None, "loadable_variants": None},
+    ):
+        _fake_variants(monkeypatch, answer)
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    _fake_variants(monkeypatch, mlx_answer)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+
+
+def test_mlx_precision_folder_pattern_matches_the_backend():
+    source = (
+        Path(start.__file__).resolve().parents[2] / "studio/backend/hub/utils/snapshot_filters.py"
+    ).read_text(encoding = "utf-8")
+    namespace = {}
+    exec(source[source.index("PRECISION_FOLDER_SOURCE =") :].split("\n)\n")[0] + "\n)", namespace)
+    assert start._MLX_PRECISION_FOLDER_RE.pattern == namespace["PRECISION_FOLDER_SOURCE"]
 
 
 def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
