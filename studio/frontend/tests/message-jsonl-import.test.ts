@@ -160,6 +160,182 @@ test("assistant text takes precedence over refusal metadata on import", () => {
   assert.deepEqual(conversation.messages[0].content, [{ type: "text", text: "An explanation." }]);
 });
 
+test("Responses API part types import instead of dropping every message", () => {
+  const image = "data:image/png;base64,QUFBQQ==";
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      messages: [
+        { role: "user", content: [{ type: "input_text", text: "Hi" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "output_text", text: "Hello" },
+            { type: "input_image", image_url: image },
+          ],
+        },
+      ],
+    }),
+    "chat.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant"],
+  );
+  assert.deepEqual(conversation.messages[0].content, [{ type: "text", text: "Hi" }]);
+  assert.deepEqual(conversation.messages[1].content, [
+    { type: "text", text: "Hello" },
+    { type: "image", image },
+  ]);
+});
+
+test("a verbatim Responses API object imports its input and output turns", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] },
+      ],
+      output: [
+        { type: "reasoning", summary: [] },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hello" }],
+        },
+      ],
+    }),
+    "response.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant"],
+  );
+  assert.deepEqual(conversation.messages[1].content, [{ type: "text", text: "Hello" }]);
+});
+
+test("a Responses object keeps tool calls and reads created_at seconds", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      object: "response",
+      created_at: 1740000000,
+      output: [
+        {
+          type: "function_call",
+          call_id: "call_1",
+          name: "get_time",
+          arguments: { zone: "utc" },
+        },
+        { type: "function_call_output", call_id: "call_1", output: "noon" },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "It is noon" }],
+        },
+      ],
+    }),
+    "response.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["assistant", "assistant"],
+  );
+  const toolCall = conversation.messages[0].content[0] as {
+    type: string;
+    result?: string;
+    args?: unknown;
+  };
+  assert.equal(toolCall.type, "tool-call");
+  assert.equal(toolCall.result, "noon");
+  assert.deepEqual(toolCall.args, { zone: "utc" });
+  assert.ok(
+    conversation.messages[0].createdAt > 1e12,
+    "created_at seconds must be converted to milliseconds",
+  );
+});
+
+test("mixed input messages and a string output import the answer too", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      input: [{ role: "user", content: "Q" }],
+      output: "A",
+    }),
+    "eval.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant"],
+  );
+});
+
+test("an empty messages array does not shadow a response output", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      messages: [],
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hello" }],
+        },
+      ],
+    }),
+    "response.jsonl",
+  );
+
+  assert.equal(conversation.messages.length, 1);
+  assert.equal(conversation.messages[0].role, "assistant");
+  assert.deepEqual(conversation.messages[0].content, [
+    { type: "text", text: "Hello" },
+  ]);
+});
+
+test("alpaca and prompt-completion records import as user/assistant turns", () => {
+  for (const [record, expectedUser] of [
+    [
+      { instruction: "Say hi", input: "context", output: "Hello" },
+      "Say hi\n\ncontext",
+    ],
+    [{ instruction: "Say hi", output: "Hello" }, "Say hi"],
+    [{ prompt: "Q", completion: "A" }, "Q"],
+  ] as const) {
+    const [conversation] = parseImportText(
+      JSON.stringify(record),
+      "pairs.jsonl",
+    );
+    assert.deepEqual(
+      conversation.messages.map(({ role }) => role),
+      ["user", "assistant"],
+    );
+    assert.deepEqual(conversation.messages[0].content, [
+      { type: "text", text: expectedUser },
+    ]);
+  }
+});
+
+test("ShareGPT import maps input/output roles and ChatML-keyed entries", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      conversations: [
+        { from: "input", value: "Hi" },
+        { from: "output", value: "Hello" },
+        { role: "developer", content: "Be precise" },
+        { role: "user", content: "Again" },
+        { role: "assistant", content: "Sure" },
+      ],
+    }),
+    "sharegpt.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role }) => role),
+    ["user", "assistant", "system", "user", "assistant"],
+  );
+});
+
 test("ShareGPT import maps role aliases regardless of case and whitespace", () => {
   const [conversation] = parseImportText(
     JSON.stringify({
@@ -180,6 +356,41 @@ test("ShareGPT import maps role aliases regardless of case and whitespace", () =
     conversation.messages.map(({ role }) => role),
     ["system", "user", "assistant", "user", "assistant", "user", "assistant"],
   );
+});
+
+test("ShareGPT import prefers non-empty role/content over empty from/value", () => {
+  const [conversation] = parseImportText(
+    JSON.stringify({
+      conversations: [
+        { from: "human", role: "", value: "Hi", content: "" },
+        { from: "", role: "gpt", value: "", content: "Hello" },
+        { role: "tool", content: "tool result" },
+      ],
+    }),
+    "sharegpt.jsonl",
+  );
+
+  assert.deepEqual(
+    conversation.messages.map(({ role, content }) => ({
+      role,
+      text: (content as ReadonlyArray<{ text: string }>)[0]?.text,
+    })),
+    [
+      { role: "user", text: "Hi" },
+      { role: "assistant", text: "Hello" },
+    ],
+  );
+});
+
+test("null entries in an import record are skipped, not fatal", () => {
+  for (const record of [
+    { conversations: [null, { from: "gpt", value: "Hello" }] },
+    { messages: [null, { role: "user", content: "Hi" }] },
+  ]) {
+    const [conversation] = parseImportText(JSON.stringify(record), "chat.jsonl");
+
+    assert.equal(conversation.messages.length, 1);
+  }
 });
 
 function toolCallResults(conversation: ParsedConversation): string[] {

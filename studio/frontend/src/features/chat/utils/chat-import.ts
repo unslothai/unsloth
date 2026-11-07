@@ -116,17 +116,26 @@ function oaiContentToParts(raw: unknown): unknown[] {
   return raw.flatMap((value): unknown[] => {
     if (typeof value !== "object" || value === null) return [];
     const part = value as Record<string, unknown>;
-    if (part.type === "text" && typeof part.text === "string") {
+    // input_text/output_text are the Responses API's names for chat text parts.
+    if (
+      (part.type === "text" ||
+        part.type === "input_text" ||
+        part.type === "output_text") &&
+      typeof part.text === "string"
+    ) {
       return [{ type: "text", text: part.text }];
     }
     if (part.type === "refusal" && typeof part.refusal === "string") {
       return [{ type: "text", text: part.refusal }];
     }
-    if (part.type === "image_url") {
+    if (part.type === "image_url" || part.type === "input_image") {
+      // Chat Completions nests {image_url:{url}}; Responses input_image is a string.
       const imageUrl =
-        typeof part.image_url === "object" && part.image_url !== null
-          ? (part.image_url as Record<string, unknown>).url
-          : undefined;
+        typeof part.image_url === "string"
+          ? part.image_url
+          : typeof part.image_url === "object" && part.image_url !== null
+            ? (part.image_url as Record<string, unknown>).url
+            : undefined;
       return typeof imageUrl === "string" && imageUrl
         ? [{ type: "image", image: imageUrl }]
         : [];
@@ -148,6 +157,7 @@ function oaiMessagesToRecords(
   let idx = 0;
 
   for (const m of oaiMsgs) {
+    if (typeof m !== "object" || m === null) continue;
     const msg = m as Record<string, unknown>;
     const role = msg.role as string;
     if (role === "tool") {
@@ -225,8 +235,11 @@ function oaiMessagesToRecords(
 const SHAREGPT_ROLES = new Map<string, MessageRecord["role"]>([
   ["human", "user"],
   ["user", "user"],
+  ["input", "user"],
   ["gpt", "assistant"],
   ["assistant", "assistant"],
+  ["output", "assistant"],
+  ["developer", "system"],
   ["system", "system"],
 ]);
 
@@ -239,11 +252,26 @@ function sharegptToRecords(
   let prevId: string | null = null;
   let idx = 0;
   for (const c of conversations) {
+    if (typeof c !== "object" || c === null) continue;
     const conv = c as Record<string, unknown>;
-    const from = typeof conv.from === "string" ? conv.from : "";
-    const value = typeof conv.value === "string" ? conv.value : "";
+    // Normalized exports mix in ChatML-keyed entries; a non-empty role/content
+    // wins over from/value. A role-keyed turn whose role we do not map (tool,
+    // function, observation) is skipped rather than mislabeled.
+    const roleKey =
+      typeof conv.role === "string" && conv.role.trim() ? conv.role : "";
+    const from =
+      roleKey || (typeof conv.from === "string" ? conv.from : "");
+    const value =
+      typeof conv.content === "string" && conv.content.trim()
+        ? conv.content
+        : typeof conv.value === "string"
+          ? conv.value
+          : "";
     if (!value.trim()) continue;
-    const role = SHAREGPT_ROLES.get(from.trim().toLowerCase()) ?? "assistant";
+    const role =
+      SHAREGPT_ROLES.get(from.trim().toLowerCase()) ??
+      (roleKey ? null : "assistant");
+    if (role === null) continue;
     const id = crypto.randomUUID();
     records.push({
       id,
@@ -322,6 +350,52 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
   return records;
 }
 
+// Alpaca rows and prompt/completion pairs each hold one user/assistant turn;
+// the backend's dataset formatter renders alpaca input after the instruction.
+function pairToRecords(
+  obj: Record<string, unknown>,
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  const isAlpaca =
+    typeof obj.instruction === "string" && typeof obj.output === "string";
+  const isPair =
+    typeof obj.prompt === "string" && typeof obj.completion === "string";
+  if (!isAlpaca && !isPair) return [];
+  const userText = (
+    isAlpaca
+      ? `${obj.instruction}\n\n${typeof obj.input === "string" ? obj.input : ""}`
+      : (obj.prompt as string)
+  ).trim();
+  const assistantText = (
+    isAlpaca ? obj.output : obj.completion
+  ) as string;
+  if (!userText || !assistantText.trim()) return [];
+  const userId = crypto.randomUUID();
+  return [
+    {
+      id: userId,
+      threadId,
+      parentId: null,
+      role: "user",
+      content: [{ type: "text", text: userText }] as MessageRecord["content"],
+      createdAt: baseTs,
+      metadata: { createdAtEstimated: true },
+    },
+    {
+      id: crypto.randomUUID(),
+      threadId,
+      parentId: userId,
+      role: "assistant",
+      content: [
+        { type: "text", text: assistantText },
+      ] as MessageRecord["content"],
+      createdAt: baseTs + 1,
+      metadata: { createdAtEstimated: true },
+    },
+  ];
+}
+
 export function recordToConversation(
   record: unknown,
   fallbackTitle: string,
@@ -336,13 +410,92 @@ export function recordToConversation(
   // Fresh ID: reusing the exported thread_id would clobber an existing thread.
   const threadId = crypto.randomUUID();
   const title = typeof obj.title === "string" ? obj.title : fallbackTitle;
-  const baseTs = typeof obj.created_at === "number" ? obj.created_at : Date.now();
+  // Saved Response objects stamp created_at in seconds; chats use ms.
+  const createdAt = typeof obj.created_at === "number" ? obj.created_at : NaN;
+  const baseTs = Number.isNaN(createdAt)
+    ? Date.now()
+    : createdAt < 1e12
+      ? createdAt * 1000
+      : createdAt;
 
   let messages: MessageRecord[] = [];
-  if (Array.isArray(obj.messages)) {
+  if (Array.isArray(obj.messages) && obj.messages.length > 0) {
     messages = oaiMessagesToRecords(obj.messages, threadId, baseTs);
-  } else if (Array.isArray(obj.conversations)) {
+  }
+  if (
+    messages.length === 0 &&
+    Array.isArray(obj.conversations) &&
+    obj.conversations.length > 0
+  ) {
     messages = sharegptToRecords(obj.conversations, threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    messages = pairToRecords(obj, threadId, baseTs);
+  }
+  if (messages.length === 0) {
+    // A saved Responses API object carries turns under input/output items.
+    const turns: unknown[] = [];
+    if (typeof obj.input === "string" && obj.input.trim()) {
+      turns.push({ role: "user", content: obj.input });
+    }
+    for (const items of [obj.input, obj.output]) {
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        const entry = item as Record<string, unknown> | null;
+        if (typeof entry?.role === "string") {
+          turns.push(entry);
+        } else if (
+          typeof entry?.type === "string" &&
+          entry.type.endsWith("_call")
+        ) {
+          // function_call plus builtin items like web_search_call carry their
+          // payload under name/arguments or action; outputs join via call_id.
+          const callId =
+            typeof entry.call_id === "string"
+              ? entry.call_id
+              : typeof entry.id === "string"
+                ? entry.id
+                : crypto.randomUUID();
+          turns.push({
+            role: "assistant",
+            content: [],
+            tool_calls: [
+              {
+                id: callId,
+                type: "function",
+                function: {
+                  name:
+                    typeof entry.name === "string"
+                      ? entry.name
+                      : entry.type.replace(/_call$/, ""),
+                  arguments:
+                    typeof entry.arguments === "string"
+                      ? entry.arguments
+                      : JSON.stringify(entry.arguments ?? entry.action ?? {}),
+                },
+              },
+            ],
+          });
+        } else if (
+          typeof entry?.type === "string" &&
+          entry.type.endsWith("_call_output") &&
+          typeof entry.call_id === "string"
+        ) {
+          turns.push({
+            role: "tool",
+            tool_call_id: entry.call_id,
+            content:
+              typeof entry.output === "string"
+                ? entry.output
+                : JSON.stringify(entry.output ?? ""),
+          });
+        }
+      }
+    }
+    if (typeof obj.output === "string" && obj.output.trim()) {
+      turns.push({ role: "assistant", content: obj.output });
+    }
+    messages = oaiMessagesToRecords(turns, threadId, baseTs);
   }
 
   if (messages.length === 0) return null;
