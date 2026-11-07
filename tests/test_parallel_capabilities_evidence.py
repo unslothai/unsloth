@@ -96,14 +96,36 @@ def test_packed_rows_through_query_from_reach_the_eager_cell():
     assert status == "supported" and "packed rows" in cell.name, (status, cell)
 
 
-def test_packed_rows_under_block_compile_stay_unverified_with_the_gap(clean_env):
-    query = _packed(compile = "block")
-    status, detail = caps.cell_status(query)
-    assert status == "unverified"
-    assert "lacks engagement, compile evidence" in detail and "breaks the graph" in detail
-    caps.check(query)  # not gated: runs, as before, outside strict mode
+@pytest.mark.parametrize("family", ["qwen3", "llama"])
+def test_packed_rows_under_block_compile_are_supported_on_torch_2_13(family, clean_env):
+    query = _packed(compile = "block", family = family)
+    status, cell = caps.cell_status(query)
+    assert (
+        status == "supported" and cell.name.endswith("Unsloth block compile") and not cell.missing()
+    )
+    for kind in (cell.parity, cell.engagement, cell.compile):
+        assert "test_block_compile_packed_rows_under_cp_match_one_process" in kind
     clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
-    with pytest.raises(NotImplementedError, match = "breaks the graph"):
+    caps.check(query)
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"torch": (2, 12)},  # the compile test passes on torch >= 2.13 only
+        {"family": "gemma3", "windowed": True, "attention": "eager"},
+        {"family": "llama", "torch": (2, 12)},
+        {"mode": "full"},
+        {"attention": "eager"},
+    ],
+)
+def test_packed_rows_under_block_compile_outside_the_measured_cell_stay_unverified(kw, clean_env):
+    query = _packed(compile = "block", **kw)
+    status, detail = caps.cell_status(query)
+    assert status == "unverified", detail
+    assert "lacks engagement, compile evidence" in detail and "torch >= 2.13 only" in detail, detail
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    with pytest.raises(NotImplementedError):
         caps.check(query)
 
 

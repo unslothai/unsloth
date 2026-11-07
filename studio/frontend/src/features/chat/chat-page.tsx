@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -83,6 +84,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { useMarkChatCompare } from "@/features/chat-background";
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
@@ -619,6 +621,12 @@ function useStoredChatTitle(threadId: string | null): string | undefined {
   return title && title.id === threadId ? title.title : undefined;
 }
 
+// WebKitGTK restyles the long thread when panel constraints re-register, then again
+// for the staged resize. Keep constraints stable and resize in one step on this renderer.
+const IMMEDIATE_CONTEXT_PANEL =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
+
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
 // t3code's default docked width, never more than half the chat or under the panel's 30% minimum.
 const BROWSER_PANEL_DEFAULT_PX = 540;
@@ -715,7 +723,8 @@ const SingleContent = memo(function SingleContent({
   });
   const showContextPanel = showResearchPanel || browserDocked;
 
-  const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
+  const artifactLayoutActive =
+    showContextPanel || (!IMMEDIATE_CONTEXT_PANEL && isArtifactPanelLayoutActive);
   const artifactPanelSettledOpen =
     showContextPanel &&
     isArtifactPanelLayoutActive &&
@@ -729,9 +738,17 @@ const SingleContent = memo(function SingleContent({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
   useEffect(() => {
-    if (!showContextPanel || browserOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
+    if (IMMEDIATE_CONTEXT_PANEL) {
+      panel.resize(
+        showContextPanel
+          ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
+          : "0%",
+      );
+      return;
+    }
+    if (!showContextPanel || browserOpenSequence === 0) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
@@ -739,6 +756,7 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
+    if (IMMEDIATE_CONTEXT_PANEL) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
 
@@ -921,12 +939,14 @@ const SingleContent = memo(function SingleContent({
           defaultSize="100%"
           // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
           // The browser can take most of the row (it opens small); research keeps the chat wider.
+          // On WebKitGTK the open constraints stay registered while closed: the zero-width,
+          // collapsed sibling already lets the chat fill the group.
           minSize={
             browserFullView
               ? "0%"
               : chatOnRight
                 ? "28%"
-                : artifactLayoutActive
+                : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
                   ? showResearchPanel
                     ? "42%"
                     : "30%"
@@ -996,7 +1016,7 @@ const SingleContent = memo(function SingleContent({
           minSize={
             showResearchPanel
               ? "30%"
-              : artifactPanelSettledOpen
+              : (IMMEDIATE_CONTEXT_PANEL || artifactPanelSettledOpen)
                 ? "30%"
                 : "0%"
           }
@@ -1005,11 +1025,11 @@ const SingleContent = memo(function SingleContent({
               ? "72%"
               : showResearchPanel
               ? "58%"
-              : artifactLayoutActive
+              : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
                 ? "70%"
                 : "0%"
           }
-          collapsible={showBrowserPanel}
+          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -1019,7 +1039,9 @@ const SingleContent = memo(function SingleContent({
           <div
             ref={contextSurfaceRef}
             data-artifact-surface-visible={
-              isArtifactSurfaceVisible ? "true" : "false"
+              (IMMEDIATE_CONTEXT_PANEL ? showContextPanel : isArtifactSurfaceVisible)
+                ? "true"
+                : "false"
             }
             {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
@@ -1320,6 +1342,7 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  useMarkChatCompare();
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -2419,7 +2442,7 @@ function ProjectLanding({
                   return (
                     <div
                       key={`${item.type}:${item.id}`}
-                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover"
+                      className="group relative flex min-h-[calc(58px*var(--ui-space-scale,1))] w-full items-center rounded-md transition-colors hover:bg-nav-surface-hover has-[[data-state=open]]:bg-nav-surface-hover has-[[data-state=open]]:[--row-date-opacity:0]"
                     >
                       <button
                         type="button"
@@ -2439,7 +2462,7 @@ function ProjectLanding({
                             {displayTitle}
                           </div>
                         </div>
-                        <span className="shrink-0 text-ui-14 text-muted-foreground transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0 group-has-[[data-state=open]]:opacity-0">
+                        <span className="shrink-0 text-ui-14 text-muted-foreground opacity-[var(--row-date-opacity,1)] transition-opacity max-md:opacity-0 pointer-coarse:opacity-0 group-hover:opacity-0">
                           {preview?.date ??
                             formatProjectChatDate(item.createdAt)}
                         </span>

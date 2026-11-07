@@ -16,9 +16,11 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { flushSync } from "react-dom";
 
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { FENCE_HEIGHT_PROPERTY } from "./code-block-containment-mode";
 import { type FenceMode, resolveFenceMode } from "./code-fence-mode";
@@ -64,6 +66,7 @@ import {
   WINDOW_CAP_LINES,
 } from "./code-fence-window";
 import { planPrintTokenization } from "./code-fence-print";
+import { ROW_DISTANT_ATTRIBUTE } from "./distant-rows";
 import { createFenceSpeculator } from "./fence-speculation";
 import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
 import {
@@ -80,7 +83,35 @@ import {
   normalizeLanguage,
 } from "./code-plugin";
 
-/* One-way: a fence renders as a plain shell until it first nears the viewport, then stays highlighted. */
+// WebKitGTK restyles every retained highlight span when panels open. Keep the
+// Chromium default unchanged: line-window updates can regress fast scrollbar drags there.
+const WINDOW_SETTLED_FENCES = typeof navigator !== "undefined"
+  && isWebKitGTK(navigator.platform, navigator.userAgent);
+
+/* Tokenization is one-way. WebKitGTK can release offscreen highlight spans while keeping the tokens cached. */
+
+// Line windows assume one row per source line; wrapped code breaks that, so settled fences
+// only window themselves while wrapping is off. One shared observer for every fence.
+const wrapListeners = new Set<() => void>();
+let wrapObserver: MutationObserver | null = null;
+const subscribeCodeWrap = (listener: () => void): (() => void) => {
+  wrapListeners.add(listener);
+  if (wrapObserver === null && typeof MutationObserver !== "undefined") {
+    wrapObserver = new MutationObserver(() => {
+      for (const notify of wrapListeners) notify();
+    });
+    wrapObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-code-wrap"] });
+  }
+  return () => {
+    wrapListeners.delete(listener);
+    if (wrapListeners.size === 0) {
+      wrapObserver?.disconnect();
+      wrapObserver = null;
+    }
+  };
+};
+const codeWrapOn = (): boolean => document.documentElement.hasAttribute("data-code-wrap");
+const useCodeWrap = (): boolean => useSyncExternalStore(subscribeCodeWrap, codeWrapOn, () => false);
 
 /* One viewport of lookahead. The percentage resolves against the root's HEIGHT in all engines
  * (spec says width, w3c/IntersectionObserver#391); pf9462_parity.py guards it. */
@@ -378,6 +409,7 @@ const scheduleGrammarWarm = (): void => {
 
 const rankGates = (gates: readonly FenceGate[]): number[] => {
   const boxes = new Map<HTMLElement | null, DOMRect>();
+  const rows = new Map<Element, DOMRect>();
   return gates.map((gate) => {
     let box = boxes.get(gate.outer);
     if (box === undefined) {
@@ -386,7 +418,15 @@ const rankGates = (gates: readonly FenceGate[]): number[] => {
         : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
       boxes.set(gate.outer, box);
     }
-    const rect = gate.node.getBoundingClientRect();
+    // Inside a skipped message row the fence has no box: reading it would lay out that row in
+    // every idle pass (Chromium, one forced update per fence). The row's own box ranks it as well.
+    const row = gate.node.closest(`[${ROW_DISTANT_ATTRIBUTE}]`);
+    let rect = row ? rows.get(row) : undefined;
+    if (row && !rect) {
+      rect = row.getBoundingClientRect();
+      rows.set(row, rect);
+    }
+    rect ??= gate.node.getBoundingClientRect();
     if (rect.bottom < box.top) return box.top - rect.bottom;
     if (rect.top > box.bottom) return rect.top - box.bottom;
     return 0;
@@ -1193,6 +1233,7 @@ function useFenceHighlightLimit(
   code: RefObject<HTMLElement | null>,
   frame: RefObject<HTMLElement | null>,
   surface: RefObject<HTMLElement | null>,
+  parked = false,
 ): { progress: HighlightProgress | null; staged: boolean } {
   const eligible = !(typeof window === "undefined" || windowing || isIncomplete
     || fenceMode() !== "defer"
@@ -1208,20 +1249,27 @@ function useFenceHighlightLimit(
   const [previous, setPrevious] = useState<{
     tokens: typeof tokens;
     progress: HighlightProgress | null;
-  }>(() => ({ tokens, progress: immediate ? null : tokens === null
+    parked: boolean;
+  }>(() => ({ tokens, parked, progress: immediate ? null : tokens === null
     ? EMPTY_HIGHLIGHT_PROGRESS : initialHighlightProgress(tokens) }));
   let current = previous;
   if (staged && previous.tokens !== tokens) {
-    current = { tokens, progress: immediate || tokens === null
+    current = { tokens, parked, progress: immediate || tokens === null
       ? null : retainHighlightProgress(previous.tokens, tokens, previous.progress) };
   } else if (immediate && previous.progress !== null) {
-    current = { tokens, progress: null };
+    current = { tokens, parked, progress: null };
+  }
+  // Parked as plain text, the highlighted lines are unmounted; restart the batches so returning
+  // to the fence does not remount every highlighted span in one commit.
+  if (parked !== current.parked) {
+    current = { tokens, parked, progress: parked && !immediate && tokens !== null
+      ? initialHighlightProgress(tokens) : current.progress };
   }
   if (current !== previous) setPrevious(current);
   const progress = immediate ? null : current.progress;
   const [scrolled, setScrolled] = useState(0);
   useLayoutEffect(() => {
-    if (progress === null || tokens === null) return;
+    if (progress === null || tokens === null || parked) return;
     const body = surface.current;
     // A capped block colours what is in view and stops; scrolling inside it asks for the rest.
     const capped = innerLineWindow(code.current, body);
@@ -1239,7 +1287,7 @@ function useFenceHighlightLimit(
       const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recheck);
       resized?.observe(body);
       body.addEventListener("scroll", recheck, { passive: true });
-      const finish = (): void => setPrevious({ tokens, progress: null });
+      const finish = (): void => setPrevious({ tokens, parked, progress: null });
       pausedFences.add(finish);
       return () => {
         pausedFences.delete(finish);
@@ -1258,14 +1306,14 @@ function useFenceHighlightLimit(
           progress,
           progress.located ? 0 : visibleHighlightLine(code.current, frame.current),
         );
-      setPrevious({ tokens, progress: next });
+      setPrevious({ tokens, parked, progress: next });
       return true;
-    }, () => setPrevious({ tokens, progress: null }), capped !== null);
+    }, () => setPrevious({ tokens, parked, progress: null }), capped !== null);
     return () => {
       cancel();
       unwatchHighlighting();
     };
-  }, [tokens, progress, code, frame, surface, scrolled]);
+  }, [tokens, progress, parked, code, frame, surface, scrolled]);
   return { progress, staged };
 }
 
@@ -1301,8 +1349,9 @@ const onPointerDown = (event: PointerEvent): void => {
   pointerHeld = event.target instanceof Node ? event.target : null;
 };
 
+// Not gated on `pointerHeld`: touch never sets it, and a hold that began before the listeners
+// were attached never did either, yet the offscreen-text skip marks `heldLastFrame` for both.
 const releasePointer = (): void => {
-  if (pointerHeld === null) return;
   pointerHeld = null;
   if (heldLastFrame) scheduleRemeasure();
 };
@@ -1355,7 +1404,7 @@ const watchWindows = (): void => {
   findBarObserver = new MutationObserver(scheduleRemeasure);
   findBarObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: [FIND_BAR_FLAG],
+    attributeFilter: [FIND_BAR_FLAG, "data-code-wrap", "data-code-line-numbers"],
   });
 };
 
@@ -1551,6 +1600,9 @@ function useLineWindow(
       setState({ measured: true, window: null, pins: null });
       return;
     }
+    // A parked message keeps its portal and state, but has no meaningful geometry.
+    // Find/print above still expand it before the body is reconnected.
+    if (!node.isConnected) return;
     let known = geometry.current;
     if (
       known === null
@@ -1725,6 +1777,52 @@ function usePinnedWhileStreaming(
   }, [surface, isIncomplete, tokens]);
 }
 
+// Keep settled, offscreen fences as text instead of retaining every highlighted span.
+// Plain text has the same height only without wrapping or line-number gutters.
+// Reuse the windowing listeners to restore markup for find, print and selection.
+function useOffscreenFenceText(
+  frame: RefObject<HTMLElement | null>,
+  enabled: boolean,
+): boolean {
+  const [plain, setPlain] = useState(false);
+  useLayoutEffect(() => {
+    const node = frame.current;
+    if (!enabled || !node || typeof IntersectionObserver === "undefined") {
+      setPlain(false);
+      return;
+    }
+    let near = true;
+    const update = () => {
+      if (!node.isConnected && !printing && !findBarOpen()) return;
+      const selection = liveSelection();
+      // Never replace selection boundary nodes, or the browser loses the selection.
+      const selected = selection !== null && (node.contains(selection.anchorNode)
+        || node.contains(selection.focusNode));
+      if (selected || inputPointerHeld()) {
+        // Retry on pointer release or selection change, which remeasure only after a held frame.
+        heldLastFrame = true;
+        return;
+      }
+      setPlain(!near && !printing && !findBarOpen()
+        && !document.documentElement.hasAttribute("data-code-wrap")
+        && !document.documentElement.hasAttribute("data-code-line-numbers"));
+    };
+    const observer = new IntersectionObserver(([entry]) => {
+      near = entry.isIntersecting;
+      update();
+    }, { root: node.closest(".aui-thread-viewport"), rootMargin: "1000px 0px" });
+    observer.observe(node);
+    windowedFences.add(update);
+    watchWindows();
+    return () => {
+      observer.disconnect();
+      windowedFences.delete(update);
+      unwatchWindows();
+    };
+  }, [enabled, frame]);
+  return plain && enabled;
+}
+
 /**
  * A fence's body, highlighted, with the spans bounded to what is on screen.
  *
@@ -1746,15 +1844,16 @@ export const FenceBody = memo(function FenceBody({
   source: string;
   windowing: boolean;
 }) {
+  const codeWrap = useCodeWrap();
+  const tokens = result?.tokens ?? null;
+  // Only fences over the cap get a line window; below it the batched highlight path stays on,
+  // so a dense line (minified JSON) still renders in quiet-work batches.
+  windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap
+    && (tokens?.length ?? 0) > WINDOW_CAP_LINES;
   const code = useRef<HTMLElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
-  const tokens = result?.tokens ?? null;
-  const highlight = useFenceHighlightLimit(
-    tokens, isIncomplete, windowing, language, source, code, frame, surface,
-  );
-  usePinnedWhileStreaming(surface, isIncomplete, tokens, language, source);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,
@@ -1764,6 +1863,14 @@ export const FenceBody = memo(function FenceBody({
     windowing,
     !isIncomplete,
   );
+  const offscreenPlain = useOffscreenFenceText(
+    frame,
+    WINDOW_SETTLED_FENCES && !!tokens?.length && !isIncomplete,
+  );
+  const highlight = useFenceHighlightLimit(
+    tokens, isIncomplete, windowing, language, source, code, frame, surface, offscreenPlain,
+  );
+  usePinnedWhileStreaming(surface, isIncomplete, tokens, language, source);
   const languageClass = language === null ? null : `language-${language}`;
 
   const rootStyle = useMemo(() => {
@@ -1803,7 +1910,8 @@ export const FenceBody = memo(function FenceBody({
             ? "true"
             : undefined
         }
-        data-unsloth-fence-windowed={lineWindow === null || !measured ? undefined : "true"}
+        data-unsloth-fence-offscreen={offscreenPlain || undefined}
+        data-unsloth-fence-windowed={offscreenPlain || lineWindow === null || !measured ? undefined : "true"}
         ref={wrapper}
       >
         <div
@@ -1817,7 +1925,7 @@ export const FenceBody = memo(function FenceBody({
         >
           <pre className={joinClasses(languageClass, PRE_CLASS)} style={rootStyle}>
             <code className={CODE_CLASS} ref={code}>
-              {windowing ? tokens.map((line, index) => (
+              {offscreenPlain ? <PlainFenceText source={source} /> : windowing ? tokens.map((line, index) => (
                 <FenceLine
                   key={index}
                   line={line}

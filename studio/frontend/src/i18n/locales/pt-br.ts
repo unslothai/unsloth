@@ -2112,6 +2112,12 @@ export const ptBR = {
           "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
         autoCurrently: "O Auto está usando {transport} nesta máquina.",
         xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
+        speedLimit: "Limite de velocidade de download",
+        speedLimitDescription:
+          "Sem limite até que um valor seja definido. Um download limitado usa HTTPS.",
+        speedLimitNoLimit: "Sem limite",
+        speedLimitInvalid: "Digite um número em Mbit/s ou deixe o campo vazio.",
+        speedLimitUsesHttps: "Os downloads usam HTTPS enquanto houver um limite de velocidade. Arquivos acima de 50 GB continuam usando Xet, sem o limite.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2507,6 +2513,10 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno dos elementos",
+          description: "Intensidade da borda de botões, campos, cartões e menus.",
         },
         reduceMotion: {
           label: "Reduzir movimento",
@@ -5514,7 +5524,7 @@ export const ptBR = {
     skippedVersion: "{component} {version} pulado por enquanto",
     skippedUpdate: "Atualização do {component} pulada por enquanto",
     skippedUpdates: "Atualizações de {components} puladas por enquanto",
-    vulkanFaster: "O Vulkan é mais de 10% mais rápido que o ROCM. Não é preciso reiniciar",
+    vulkanFaster: "Mais de 10% mais rápido",
     noRestart: "Não é preciso reiniciar",
     downloadSize: "Download de {size}",
     backendChange: "Backend {change}",
@@ -5523,8 +5533,8 @@ export const ptBR = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} atualizações...",
     bundleTitle: "{count} atualizações de runtime",
-    newBackend: "Novo backend do {component}",
-    newUpdate: "Nova atualização do {component}",
+    newBackend: "Novo backend do runtime",
+    newUpdate: "Nova atualização do runtime",
     hideUpdate: "Ocultar a atualização do {component} até o Unsloth ser reaberto",
     hideUpdates: "Ocultar as atualizações de {components} até o Unsloth ser reaberto",
     whatsNew: "Novidades",

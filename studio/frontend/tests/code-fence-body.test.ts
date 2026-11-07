@@ -343,6 +343,9 @@ test("paint containment is limited to large completed full-token bodies", () => 
     memo: React.memo,
     useMemo: React.useMemo,
     useRef: React.useRef,
+    WINDOW_SETTLED_FENCES: false,
+    useCodeWrap: () => false,
+    useOffscreenFenceText: () => false,
     useFenceHighlightLimit: () => ({ progress: null, staged: false }),
     FENCE_CHUNK_LINES,
     sameFenceBodyProps,
@@ -405,7 +408,7 @@ test("a capped block colours only what is in view and a streaming one follows it
   const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
   assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
   assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
-  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, progress: null \}\), capped !== null\);/);
+  assert.match(hook, /\}, \(\) => setPrevious\(\{ tokens, parked, progress: null \}\), capped !== null\);/);
   const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
   assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
   assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
@@ -423,7 +426,7 @@ test("Expand code resumes colouring a capped block that had stopped at its view"
 
 test("printing colours capped blocks that paused at their view", () => {
   const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
-  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, progress: null \}\);\s*pausedFences\.add\(finish\);/);
+  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, parked, progress: null \}\);\s*pausedFences\.add\(finish\);/);
   assert.match(hook, /pausedFences\.delete\(finish\);/);
   const print = DEFER.slice(DEFER.indexOf("const setPrinting = "), DEFER.indexOf("const scheduleRemeasure"));
   assert.match(print, /if \(value && pausedFences\.size > 0\) flushSync\(\(\) => \{\s*for \(const finish of \[\.\.\.pausedFences\]\) finish\(\);/);

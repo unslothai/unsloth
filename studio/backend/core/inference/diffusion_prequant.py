@@ -1287,14 +1287,19 @@ _FINGERPRINT_PAYLOAD: dict = {
 }
 
 
-def _packed_bytes(tensor: Any, torch: Any) -> bytes:
-    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+def _packed_view(tensor: Any, torch: Any) -> Any:
+    """``tensor``'s raw bytes as a zero-copy buffer (``view(torch.uint8)``), exact for dtypes numpy cannot represent."""
     t = tensor.detach().contiguous()
     if t.dim() == 0:
         t = t.reshape(1)
     if t.dtype is not torch.uint8:
         t = t.view(torch.uint8)
-    return t.cpu().numpy().tobytes()
+    return memoryview(t.cpu().numpy().reshape(-1))
+
+
+def _packed_bytes(tensor: Any, torch: Any) -> bytes:
+    """``tensor``'s raw bytes via ``view(torch.uint8)``, exact for dtypes numpy cannot represent."""
+    return _packed_view(tensor, torch).tobytes()
 
 
 def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
@@ -1313,7 +1318,7 @@ def _hash_packed_payload(tensor: Any, digest: Any, torch: Any) -> bool:
                 return False
             hashed = True
             continue
-        digest.update(_packed_bytes(value, torch))
+        digest.update(_packed_view(value, torch))
         hashed = True
     return hashed
 
@@ -1324,23 +1329,13 @@ def packed_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
 
     import torch
 
-    modules: dict = {}
-    skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
+    def _digest(tensor: Any) -> Optional[str]:
         digest = hashlib.md5()
-        try:
-            covered = _hash_packed_payload(tensor, digest, torch)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            covered = False
-        if covered:
-            modules[key] = digest.hexdigest()
-        else:
-            skipped.append(key)
+        if not _hash_packed_payload(tensor, digest, torch):
+            return None
+        return digest.hexdigest()
+
+    modules, skipped = _digest_weights(state_dict, select, _digest)
     return {
         "algo": FINGERPRINT_ALGO,
         "count": len(modules),
@@ -1365,7 +1360,26 @@ _CANONICAL_PARTS: dict = {
     "Float8Tensor": (("q", "qdata"), ("scale", "scale")),
     "NVFP4Tensor": (("q", "qdata"), ("scale", "scale"), ("per_tensor_scale", "per_tensor_scale")),
     "MXTensor": (("q", "qdata"), ("scale", "scale")),
+    "HostedInt8Parts": (("q", "qdata"), ("scale", "scale"), ("zero_point", "zero_point")),
 }
+
+
+class HostedInt8Parts:
+    """An Int8Tensor's stored payload read as plain tensors (no torchao), fingerprinted like the Int8Tensor."""
+
+    __slots__ = ("qdata", "scale", "zero_point")
+
+    def __init__(
+        self,
+        qdata: Any,
+        scale: Any,
+        zero_point: Any = None,
+    ):
+        self.qdata = qdata
+        self.scale = scale
+        self.zero_point = zero_point
+
+
 _CANONICAL_ROLE_ORDER = (
     "q",
     "scale",
@@ -1404,19 +1418,25 @@ def _all_zero(value: Any, torch: Any) -> bool:
         return False
 
 
-def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
-    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+def _canonical_parts_of(role: str, value: Any, torch: Any) -> tuple:
+    """(head, zero-copy payload) of ``_canonical_bytes``: hashing them in turn gives the same digest without the copies."""
     t = value.detach()
     if role == "q":
         head = f"q:{str(t.dtype).replace('torch.', '')}:{tuple(t.shape)}".encode("utf-8")
-        return head + _packed_bytes(t, torch)
+        return head, _packed_view(t, torch)
     t = t.reshape(-1)
     if role in _ZERO_POINT_ROLES:
         t = t.to(torch.int64)
     elif t.is_floating_point() and t.dtype is not torch.float64:
         t = t.to(torch.float32)
     head = f"{role}:{str(t.dtype).replace('torch.', '')}:{t.numel()}".encode("utf-8")
-    return head + _packed_bytes(t, torch)
+    return head, _packed_view(t, torch)
+
+
+def _canonical_bytes(role: str, value: Any, torch: Any) -> bytes:
+    """Version-stable bytes: ``q`` as stored; others flattened to float32 (exact for stored scales) / int64 zero point."""
+    head, payload = _canonical_parts_of(role, value, torch)
+    return head + payload.tobytes()
 
 
 def canonical_weight_digest(tensor: Any) -> Optional[str]:
@@ -1433,27 +1453,67 @@ def canonical_weight_digest(tensor: Any) -> Optional[str]:
         value = parts.get(role)
         if value is None or (role in _ZERO_POINT_ROLES and _all_zero(value, torch)):
             continue
-        digest.update(_canonical_bytes(role, value, torch))
+        head, payload = _canonical_parts_of(role, value, torch)
+        digest.update(head)
+        digest.update(payload)
     return digest.hexdigest()
 
 
-def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+# Weights hashed at once by the fingerprint check: md5 (over 2 KiB) and the torch casts release the GIL, so threads
+# scale until memory bandwidth does. ``UNSLOTH_PREQUANT_FINGERPRINT_THREADS`` overrides (1 = serial).
+FINGERPRINT_THREADS_ENV = "UNSLOTH_PREQUANT_FINGERPRINT_THREADS"
+_FINGERPRINT_THREADS_DEFAULT = 8
+
+
+def _fingerprint_threads() -> int:
+    import os
+
+    raw = str(os.environ.get(FINGERPRINT_THREADS_ENV, "")).strip()
+    try:
+        wanted = int(raw) if raw else _FINGERPRINT_THREADS_DEFAULT
+    except ValueError:
+        wanted = _FINGERPRINT_THREADS_DEFAULT
+    return max(1, min(wanted, os.cpu_count() or 1))
+
+
+def _digest_weights(state_dict: Any, select: Any, digest_of: Any) -> tuple:
+    """({fqn: digest}, [uncovered fqns]) over the ``.weight`` entries ``select`` keeps, in state-dict order.
+
+    ``digest_of`` returns None for an uncovered weight; a raise counts as uncovered. Runs on a thread pool."""
+    items = state_dict.items() if hasattr(state_dict, "items") else ()
+    picked = [
+        (key, tensor)
+        for key, tensor in items
+        if (key == "weight" or str(key).endswith(".weight"))
+        and (select is None or select(str(key)))
+    ]
+
+    def _one(tensor: Any) -> Optional[str]:
+        try:
+            return digest_of(tensor)
+        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
+            return None
+
+    tensors = [tensor for _key, tensor in picked]
+    threads = min(_fingerprint_threads(), len(picked))
+    if threads > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers = threads, thread_name_prefix = "prequant-fp") as pool:
+            values = list(pool.map(_one, tensors))
+    else:
+        values = [_one(tensor) for tensor in tensors]
     modules: dict = {}
     skipped: list = []
-    items = state_dict.items() if hasattr(state_dict, "items") else ()
-    for key, tensor in items:
-        if key != "weight" and not str(key).endswith(".weight"):
-            continue
-        if select is not None and not select(str(key)):
-            continue
-        try:
-            value = canonical_weight_digest(tensor)
-        except Exception:  # noqa: BLE001 -- an unreadable payload is uncovered, never a raise
-            value = None
+    for (key, _tensor), value in zip(picked, values):
         if value is None:
             skipped.append(key)
         else:
             modules[key] = value
+    return modules, skipped
+
+
+def canonical_weight_fingerprint(state_dict: Any, *, select: Any = None) -> dict:
+    modules, skipped = _digest_weights(state_dict, select, canonical_weight_digest)
     return {
         "algo": CANONICAL_FINGERPRINT_ALGO,
         "count": len(modules),
