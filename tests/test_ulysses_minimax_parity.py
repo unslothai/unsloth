@@ -313,7 +313,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
     shift = [F.pad(b["labels"], (0, 1), value = -100)[:, 1:] for b in batches]
     count = sum(int(s.ne(-100).sum()) for s in shift)
 
-    # Upstream full-sequence forward, one process, float64.
     ref_logits = []
     ref_loss = 0
     for b, s in zip(batches, shift):
@@ -431,7 +430,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
             assert not grad.any(), f"{name}: zero in the reference, nonzero under CP"
         torch.testing.assert_close(grad, ref_grad, **TOL, msg = lambda m: f"{name}: {m}")
 
-    # One AdamW step with weight decay from the reduced gradients.
     trainable = lambda m: [p for p in m.parameters() if p.requires_grad]
     for m in (model, reference):
         torch.optim.AdamW(trainable(m), lr = 1e-2, weight_decay = 0.1).step()
