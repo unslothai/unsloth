@@ -8,6 +8,8 @@ import { hydratedParams } from "../src/features/generation-presets/preset-policy
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const panel = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
+const images = await readSrcAsync("features/images/images-page.tsx");
+const video = await readSrcAsync("features/video/video-page.tsx");
 const hook = await readSrcAsync(
   "features/generation-presets/use-media-generation-presets.ts",
 );
@@ -32,10 +34,18 @@ test("the training panel uses its own preset kind without working-recipe restore
   assert.match(panel, /<MediaGenerationPresetControl\s+kind="training"/);
 });
 
+test("only the Images Train panel owns the saved presets", () => {
+  // Video keeps its own Train panel mounted; a second hook would race the saved selection.
+  assert.match(panel, /savedPresets = false,/);
+  assert.match(panel, /\{savedPresets \? \(\s+<TrainingPresetControl/);
+  assert.match(images, /savedPresets=\{true\}/);
+  assert.doesNotMatch(video, /savedPresets/);
+});
+
 test("a named preset survives the family re-seed and the loaded-model seed", () => {
   const apply = panel.slice(
     panel.indexOf("const applyPresetParams = useCallback("),
-    panel.indexOf("const trainingPresets = useMediaGenerationPresets("),
+    panel.indexOf("const poll = useCallback("),
   );
   assert.match(apply, /const owned = params !== defaultPresetParams;/);
   for (const ref of ["settingsDirty", "lrScheduleDirty", "precisionDirty"]) {
@@ -54,12 +64,13 @@ test("a named preset survives the family re-seed and the loaded-model seed", () 
 test("edits made before the stored preset lands are kept", () => {
   const apply = panel.slice(
     panel.indexOf("const applyPresetParams = useCallback("),
-    panel.indexOf("const trainingPresets = useMediaGenerationPresets("),
+    panel.indexOf("const poll = useCallback("),
   );
   const guard = apply.indexOf("if (!presetsReadyRef.current && userEdited) {");
   assert.ok(guard > 0, "hydration must not overwrite a form the user already edited");
   assert.ok(guard < apply.indexOf("setFamilyName(params.familyName);"));
-  assert.match(panel, /presetsReadyRef\.current = trainingPresets\.presetsReady;/);
+  assert.match(panel, /readyRef\.current = presets\.presetsReady;/);
+  assert.match(panel, /readyRef=\{presetsReadyRef\}/);
 });
 
 test("a preset family only /info reports is not seeded from the fallback family", () => {

@@ -358,6 +358,41 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
   return merged;
 }
 
+function TrainingPresetControl({
+  defaultParams,
+  currentParams,
+  applyParams,
+  readyRef,
+}: {
+  defaultParams: TrainingPresetParams;
+  currentParams: TrainingPresetParams;
+  applyParams: (params: TrainingPresetParams) => TrainingPresetParams;
+  readyRef: { current: boolean };
+}) {
+  const presets = useMediaGenerationPresets({
+    kind: "training",
+    defaultParams,
+    currentParams,
+    applyParams,
+    restoreWorkingParams: false,
+  });
+  useEffect(() => {
+    readyRef.current = presets.presetsReady;
+  }, [presets.presetsReady, readyRef]);
+  return (
+    <MediaGenerationPresetControl
+      kind="training"
+      presets={presets.presets}
+      activePreset={presets.activePreset}
+      ready={presets.presetsReady}
+      hasUnsavedChanges={presets.hasUnsavedChanges}
+      onSelect={presets.selectPreset}
+      onSave={presets.savePreset}
+      onDelete={presets.deletePreset}
+    />
+  );
+}
+
 // Kept mounted with the page so a long run survives tab switches; polling is gated on `active`.
 export function DiffusionTrainPanel({
   active,
@@ -370,6 +405,7 @@ export function DiffusionTrainPanel({
   baseChoice,
   onBaseChoiceChange,
   onFamiliesChange,
+  savedPresets = false,
 }: {
   active: boolean;
   loadedFamily?: string | null;
@@ -379,6 +415,8 @@ export function DiffusionTrainPanel({
   baseChoice: string;
   onBaseChoiceChange: (repo: string) => void;
   onFamiliesChange?: (families: FamilyPreset[]) => void;
+  // One owner per store: Video keeps its own Train panel mounted, and two would race the saved selection.
+  savedPresets?: boolean;
   onTrainingComplete?: () => void;
   onDeploy?: (args: {
     baseRepo: string;
@@ -827,16 +865,6 @@ export function DiffusionTrainPanel({
     },
     [defaultPresetParams, setFamilyName, setBaseChoice],
   );
-  const trainingPresets = useMediaGenerationPresets({
-    kind: "training",
-    defaultParams: defaultPresetParams,
-    currentParams: currentPresetParams,
-    applyParams: applyPresetParams,
-    restoreWorkingParams: false,
-  });
-  useEffect(() => {
-    presetsReadyRef.current = trainingPresets.presetsReady;
-  }, [trainingPresets.presetsReady]);
 
   const poll = useCallback(async () => {
     try {
@@ -1829,16 +1857,14 @@ export function DiffusionTrainPanel({
                 Teach a model a new style or subject.
               </p>
             </div>
-            <MediaGenerationPresetControl
-              kind="training"
-              presets={trainingPresets.presets}
-              activePreset={trainingPresets.activePreset}
-              ready={trainingPresets.presetsReady}
-              hasUnsavedChanges={trainingPresets.hasUnsavedChanges}
-              onSelect={trainingPresets.selectPreset}
-              onSave={trainingPresets.savePreset}
-              onDelete={trainingPresets.deletePreset}
-            />
+            {savedPresets ? (
+              <TrainingPresetControl
+                defaultParams={defaultPresetParams}
+                currentParams={currentPresetParams}
+                applyParams={applyPresetParams}
+                readyRef={presetsReadyRef}
+              />
+            ) : null}
           </div>
 
           <div className={fieldClass}>
