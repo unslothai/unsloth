@@ -563,6 +563,8 @@ export interface ImageQueueJob {
   finished_at: number | null;
   error: string | null;
   image_ids: string[];
+  /** The run's base seed once done. */
+  seed_used: number | null;
 }
 
 // A server without the queue (older Studio, proxy, test double) answers without a list: no jobs, not a crash.

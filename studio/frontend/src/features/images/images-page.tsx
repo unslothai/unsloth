@@ -1973,6 +1973,8 @@ export function ImagesPage({
   const followingJob = useRef<string | null>(null);
   // This page's own direct Generate is in flight.
   const localRun = useRef(false);
+  // Queue jobs this page submitted.
+  const queuedHere = useRef(new Set<string>());
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -3638,6 +3640,8 @@ export function ImagesPage({
     if (finished.some((job) => job.status === "done")) void loadGallery();
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
+      // A run this page queued is its latest run, as a direct Generate's would be, for Reuse last seed.
+      if (job.status === "done" && queuedHere.current.delete(job.id) && typeof job.seed_used === "number") setSessionSeed(job.seed_used);
     }
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
@@ -5453,7 +5457,7 @@ export function ImagesPage({
     saveLastPrompt(`images:${workflow}`, prompt);
     if (toQueue && !compare && !external) {
       try {
-        for (let i = 0; i < runs; i++) await enqueueDiffusionImage(requestFor(i));
+        for (let i = 0; i < runs; i++) queuedHere.current.add((await enqueueDiffusionImage(requestFor(i))).id);
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Could not queue the generation");
       }

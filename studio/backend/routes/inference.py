@@ -50796,12 +50796,25 @@ def _resident_load(status: dict):
     )
 
 
+def _engine_rendering() -> bool:
+    """Any render on the engine, a chat image included, so a job only reports running once it can render."""
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_keepwarm import engine_if_imported
+
+    progress = getattr(engine_if_imported(DIFFUSION), "generate_progress", None)
+    try:
+        return bool(progress is not None and progress().get("active"))
+    except Exception:  # noqa: BLE001 -- no progress reading: do not hold the queue on it
+        return False
+
+
 async def _wait_for_direct_image_runs() -> None:
     while (
         _direct_image_runs > 0
         or _diffusion_persist_active > 0
         or time.monotonic() - _direct_image_last_end < _DIRECT_RUN_SETTLE_S
         or time.monotonic() < _direct_sequence_until
+        or _engine_rendering()
     ):
         await asyncio.sleep(0.25)
 
@@ -50817,6 +50830,7 @@ async def _run_queued_image_job(job) -> list[str]:
     from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from core.inference.image_queue import JobCancelled
+    from core.inference.llama_keepwarm import InferenceActivityReservation
 
     async def _run() -> list[str]:
         # v1 never reloads: a job runs only on the model that was resident when it was queued.
@@ -50825,8 +50839,16 @@ async def _run_queued_image_job(job) -> list[str]:
             raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG)
         if job.ticket.cancelled():
             raise JobCancelled()
-        # No HTTP request carries a queued job: keep-warm and the account checks never see it otherwise.
-        await media_keepwarm.begin_request(DIFFUSION)
+        # No HTTP request carries a queued job: keep-warm, the training guards and the account checks never see it
+        # otherwise (the video queue reserves the same way).
+        activity = InferenceActivityReservation()
+        activity.reserve()
+        try:
+            await activity.start()
+            await media_keepwarm.begin_request(DIFFUSION)
+        except BaseException:
+            activity.finish()
+            raise
         try:
             account_access.require_live_account()
             with generation_ticket(job.ticket), pin_checkpoint(job.load[1]):
@@ -50842,6 +50864,14 @@ async def _run_queued_image_job(job) -> list[str]:
             raise RuntimeError(str(detail)) from exc
         finally:
             media_keepwarm.end_request(DIFFUSION)
+            activity.finish()
+        job.seed_used = next(
+            (
+                image.batch_seed if image.batch_seed is not None else image.seed
+                for image in response.images
+            ),
+            None,
+        )
         return [image.id for image in response.images]
 
     return await arun_as(job.account, _run())
@@ -50881,6 +50911,7 @@ def _image_queue_job(queue, job) -> ImageQueueJob:
         finished_at = job.finished_at,
         error = job.error,
         image_ids = job.image_ids,
+        seed_used = job.seed_used,
     )
 
 

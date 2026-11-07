@@ -53,6 +53,7 @@ class ImageJob:
     finished_at: Optional[float] = None
     error: Optional[str] = None
     image_ids: list[str] = field(default_factory = list)
+    seed_used: Optional[int] = None
     cancel_requested: bool = False
     # Stops this job's render only, queued behind another or running; never whichever render holds the engine.
     ticket: GenerationTicket = field(default_factory = GenerationTicket)

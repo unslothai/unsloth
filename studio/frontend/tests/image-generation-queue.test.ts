@@ -33,6 +33,7 @@ function job(id: string, status: ImageQueueJob["status"], extra: Partial<ImageQu
     finished_at: null,
     error: null,
     image_ids: [],
+    seed_used: null,
     ...extra,
   };
 }

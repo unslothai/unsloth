@@ -5822,6 +5822,9 @@ class ImageQueueJob(BaseModel):
     image_ids: list[str] = Field(
         default_factory = list, description = "Gallery ids of the finished images"
     )
+    seed_used: Optional[int] = Field(
+        None, description = "The run's base seed once done, for Reuse last seed"
+    )
 
 
 class ImageQueueResponse(BaseModel):

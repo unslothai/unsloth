@@ -543,3 +543,33 @@ def test_a_refused_stop_leaves_another_accounts_sequence_hold(client, monkeypatc
         assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}
     assert inference_routes._direct_stops == 7
     assert inference_routes._direct_sequence_until > time.monotonic()
+
+
+def test_a_running_queued_job_counts_as_inference_for_the_training_guards(gated):
+    from core.inference import llama_keepwarm
+
+    client, gates, order, _ = gated
+    before = llama_keepwarm._inflight
+    client.post(QUEUE, json = {"prompt": "busy"})
+    _wait(client, lambda jobs: jobs[0]["status"] == "running")
+    deadline = time.monotonic() + 5
+    while order != ["busy"] and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert llama_keepwarm._inflight == before + 1
+    _gate(gates, "busy").set()
+    jobs = _wait(client, lambda jobs: jobs[0]["status"] == "done")
+    assert llama_keepwarm._inflight == before
+    assert isinstance(jobs[0]["seed_used"], int)
+
+
+def test_a_job_waits_for_a_render_it_did_not_start(gated, monkeypatch):
+    """A chat image holds the engine: the queued job stays queued, so its Stop never targets that render."""
+    client, gates, order, backend = gated
+    rendering = {"active": True}
+    monkeypatch.setattr(inference_routes, "_engine_rendering", lambda: rendering["active"])
+    client.post(QUEUE, json = {"prompt": "after-chat"})
+    time.sleep(0.8)
+    assert _jobs(client)[0]["status"] == "queued" and order == []
+    rendering["active"] = False
+    _gate(gates, "after-chat").set()
+    _wait(client, lambda jobs: jobs[0]["status"] == "done")
