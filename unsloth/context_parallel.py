@@ -281,27 +281,57 @@ def _runs_every_expert(block) -> bool:
     return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
 
 
+_EXPERT_TOKENS = "_unsloth_cp_expert_tokens"
+_EXPERT_STEPPED = "_unsloth_cp_expert_stepped"
+
+
 def record_expert_tokens(block, token_counts) -> None:
-    # Per-expert routed token counts since the last optimizer step (no host sync). Only forwards
-    # that build a graph count: checkpoint recomputes count twice, which only matters as > 0.
+    # Per-expert routed token counts (no host sync) since each expert's gradient was last None, which
+    # is when the single-process run would hand AdamW a None for it. Only forwards that build a graph
+    # count: checkpoint recomputes count twice, which only matters as > 0.
     if not torch.is_grad_enabled():
         return
-    seen = block.__dict__.get("_unsloth_cp_expert_tokens")
-    block.__dict__["_unsloth_cp_expert_tokens"] = (
+    if block.__dict__.pop(_EXPERT_STEPPED, False):
+        # First forward after an optimizer step (and the zero_grad after it).
+        start_expert_window([block])
+    seen = block.__dict__.get(_EXPERT_TOKENS)
+    block.__dict__[_EXPERT_TOKENS] = (
         token_counts.detach().clone() if seen is None else seen.add_(token_counts)
     )
 
 
+def start_expert_window(blocks) -> None:
+    """A new gradient window starts (before its first forward): forget the counts of experts whose
+    gradients are None now. zero_grad(set_to_none = True) clears them all, also after a step the
+    optimizer skipped (fp16 GradScaler overflow); with set_to_none = False the single-process run
+    keeps a zero gradient, which AdamW steps, so the count carries over."""
+    for block in blocks:
+        seen = block.__dict__.get(_EXPERT_TOKENS)
+        block.__dict__.pop(_EXPERT_STEPPED, None)
+        if seen is None:
+            continue
+        keep = [
+            any(p.grad is not None for p in expert.parameters() if p.requires_grad)
+            for expert in block.experts
+        ]
+        if not any(keep):
+            del block.__dict__[_EXPERT_TOKENS]
+        elif not all(keep):
+            seen.mul_(torch.tensor(keep, dtype = seen.dtype, device = seen.device))
+
+
 def drop_idle_expert_grads(blocks, group = None) -> int:
-    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a token to since
-    the last optimizer step. Under CP they ran on no tokens so DDP sees a gradient, but the
-    single-process run leaves them None, so AdamW must not decay them or advance their state.
+    """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a real token to
+    since their gradient was last None. Under CP they ran on no tokens so DDP sees a gradient, but
+    the single-process run leaves them None, so AdamW must not decay them or advance their state.
     One all-reduce and one host sync for all layers. Returns the number of experts dropped."""
     if not blocks:
         return 0
     counts = []
     for block in blocks:
-        seen = block.__dict__.pop("_unsloth_cp_expert_tokens", None)
+        seen = block.__dict__.get(_EXPERT_TOKENS)
+        # The next forward starts a new window (start_expert_window), after the trainer's zero_grad.
+        block.__dict__[_EXPERT_STEPPED] = True
         if seen is None:
             device = next(block.experts.parameters()).device
             seen = torch.zeros(len(block.experts), dtype = torch.long, device = device)
@@ -327,9 +357,12 @@ def install_idle_expert_grad_hook(
     optimizer,
     model,
     group = None,
+    window = None,
 ) -> bool:
     """Once per optimizer: a step pre-hook running drop_idle_expert_grads over model's every-expert
-    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps."""
+    MoE blocks. It runs after backward (DDP reduction) and all gradient accumulation micro-steps.
+    ``window`` (the trainer's global_step, read per training_step) starts a new count window when it
+    changes: it advances even when GradScaler skips optimizer.step() and with it the pre-hook."""
     while not isinstance(optimizer, torch.optim.Optimizer) or (
         # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
         isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
@@ -337,24 +370,35 @@ def install_idle_expert_grad_hook(
         optimizer = getattr(optimizer, "optimizer", None)
         if optimizer is None:
             return False
-    if optimizer.__dict__.get("_unsloth_idle_expert_hook") is not None:
-        return True
-    if not isinstance(model, torch.nn.Module):
-        return False
-    blocks = [
-        m
-        for m in model.modules()
-        if isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
-    ]
-    if not blocks:
-        return False
-    blocks = [weakref.ref(b) for b in blocks]
+    blocks = optimizer.__dict__.get("_unsloth_idle_expert_blocks")
+    if blocks is None:
+        if not isinstance(model, torch.nn.Module):
+            return False
+        found = [
+            m
+            for m in model.modules()
+            if isinstance(getattr(m, "experts", None), torch.nn.ModuleList)
+            and _runs_every_expert(m)
+        ]
+        if not found:
+            return False
+        blocks = [weakref.ref(b) for b in found]
 
-    def hook(_optimizer, _args, _kwargs):
-        drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
+        def hook(_optimizer, _args, _kwargs):
+            drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
 
-    optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+        optimizer.__dict__["_unsloth_idle_expert_blocks"] = blocks
+        optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+    if window is not None and optimizer.__dict__.get("_unsloth_idle_expert_window") != window:
+        optimizer.__dict__["_unsloth_idle_expert_window"] = window
+        start_expert_window([b for b in (ref() for ref in blocks) if b is not None])
     return True
+
+
+def _optimizer_window(trainer):
+    # Trainer.state.global_step: constant over a step's gradient accumulation micro-batches, advanced
+    # once per optimizer step attempt (also one GradScaler skips).
+    return getattr(getattr(trainer, "state", None), "global_step", None)
 
 
 def _attention_modules(model) -> list:
@@ -591,6 +635,10 @@ class ContextParallelManager:
             labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
+        padded = self.__dict__.get("_padded_input_ids")
+        if not pad and padded is not None and padded[0]() is input_ids:
+            return  # prepared already (prediction_step, then apply): keep the real length
+        self._padded_input_ids = None
         if pad:
             for name in _BUFFER_NAMES:
                 tensor = inputs.get(name)
@@ -601,6 +649,38 @@ class ContextParallelManager:
                     inputs[name] = torch.cat([tensor, extra.to(tensor.dtype)], dim = 1)
                 else:
                     inputs[name] = F.pad(tensor, (0, pad), value = _PAD_VALUES.get(name, 0))
+            # The appended tokens are not in the single-process batch: the MoE must not count their routes.
+            self._padded_input_ids = (weakref.ref(inputs["input_ids"]), seq_len)
+
+    def _real_tokens(self, input_ids) -> Optional[torch.Tensor]:
+        # [batch, padded seq] True on tokens of the caller's batch, None when nothing was appended.
+        padded = self.__dict__.get("_padded_input_ids")
+        if padded is None or padded[0]() is not input_ids:
+            return None
+        positions = torch.arange(input_ids.shape[1], device = input_ids.device)
+        return positions.lt(padded[1]).expand(input_ids.shape[0], -1).contiguous()
+
+    def _note_real_tokens(self, local_ids, local) -> None:
+        # Keyed by the shard's token count, which is all the MoE dispatch sees. Graph-building forwards
+        # of one size are OR-ed (local None = all real): a pad token counted as real only keeps a zero
+        # gradient, while a real token counted as pad would drop a real one.
+        if not isinstance(local_ids, torch.Tensor) or not torch.is_grad_enabled():
+            return
+        masks = self.__dict__.setdefault("_real_token_masks", {})
+        key = local_ids.numel()
+        flat = None if local is None else local.reshape(-1)
+        if key not in masks:
+            masks[key] = flat
+        elif masks[key] is not None:
+            masks[key] = None if flat is None else masks[key] | flat
+
+    def real_token_mask(self, num_tokens: int) -> Optional[torch.Tensor]:
+        """Flat [num_tokens] bool mask of the local shard's tokens that are in the caller's batch (not
+        context parallel padding), or None when all are. Valid through backward, for recompute."""
+        return self.__dict__.get("_real_token_masks", {}).get(num_tokens)
+
+    def _clear_real_tokens(self) -> None:
+        self.__dict__.pop("_real_token_masks", None)
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
@@ -623,11 +703,16 @@ class ContextParallelManager:
     def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
+        real = self._real_tokens(inputs.get("input_ids"))
+        if real is not None:
+            local = real.shape[1] // self.size
+            real = real[:, rank * local : (rank + 1) * local]
         for name in _BUFFER_NAMES:
             tensor = inputs.get(name)
             if isinstance(tensor, torch.Tensor) and tensor.ndim > 1:
                 local = tensor.shape[1] // self.size
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
+        self._note_real_tokens(inputs.get("input_ids"), real)
 
     @contextlib.contextmanager
     def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
@@ -652,6 +737,15 @@ class ContextParallelManager:
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
         self._prepare_inputs(inputs)
+        self._clear_real_tokens()
+        try:
+            with self._apply(inputs):
+                yield
+        finally:
+            self._clear_real_tokens()
+
+    @contextlib.contextmanager
+    def _apply(self, inputs: dict) -> Iterator[None]:
         if self.backend == "ulysses":
             with self._ulysses_scope(inputs):
                 yield
@@ -661,6 +755,9 @@ class ContextParallelManager:
             for name in _BUFFER_NAMES
             if isinstance(inputs.get(name), torch.Tensor) and inputs[name].ndim > 1
         ]
+        real = self._real_tokens(inputs.get("input_ids"))
+        if real is not None:
+            buffers.append(real)  # sharded in place with the batch's load-balanced layout
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
         # torch < 2.13 leaves its CP dispatcher installed when the step raises.
@@ -686,6 +783,7 @@ class ContextParallelManager:
                     no_restore_buffers = set(buffers),
                 ),
             ):
+                self._note_real_tokens(inputs.get("input_ids"), real)
                 yield
         except BaseException:
             raised = True
@@ -1760,7 +1858,9 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
             install_idle_expert_grad_hook(
-                getattr(self, "optimizer", None), getattr(self, "model", None)
+                getattr(self, "optimizer", None),
+                getattr(self, "model", None),
+                window = _optimizer_window(self),
             )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
@@ -2273,10 +2373,16 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             for decoder in _decoders(self.model):
                 decoder._unsloth_cp_rl_stack.clear()
             if name == "training_step":
-                install_idle_expert_grad_hook(getattr(self, "optimizer", None), self.model)
+                install_idle_expert_grad_hook(
+                    getattr(self, "optimizer", None), self.model, window = _optimizer_window(self)
+                )
             # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
-            with _manager_scope(manager if activate_at_step else None):
-                return original(self, *args, **kwargs)
+            manager._clear_real_tokens()
+            try:
+                with _manager_scope(manager if activate_at_step else None):
+                    return original(self, *args, **kwargs)
+            finally:
+                manager._clear_real_tokens()
 
         return wrapped
 

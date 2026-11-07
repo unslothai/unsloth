@@ -209,10 +209,22 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
     # used on a peer: run it on no tokens to give it a zero gradient instead of None, or DDP stalls.
     from ..context_parallel import get_cp_manager, record_expert_tokens
 
-    every_expert = get_cp_manager() is not None
+    manager = get_cp_manager()
+    every_expert = manager is not None
     if every_expert:
-        # So the optimizer step can drop the zero gradients of experts no rank routed to.
-        record_expert_tokens(block, token_counts)
+        # So the optimizer step can drop the zero gradients of experts no rank routed to. Tokens the
+        # manager appended to make the length divide the CP size are not in the single-process batch.
+        real_token_mask = getattr(manager, "real_token_mask", None)
+        real = real_token_mask(num_tokens) if callable(real_token_mask) else None
+        if real is not None:
+            real = real.to(flat_idx.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+            unreal = len(experts)  # pad routes go to an extra bin, dropped below (no host sync)
+            token_counts_real = torch.bincount(
+                flat_idx.masked_fill(~real, unreal), minlength = unreal + 1
+            )[:unreal]
+        else:
+            token_counts_real = token_counts
+        record_expert_tokens(block, token_counts_real)
     outputs = []
     start = 0
     for expert_index, count in enumerate(counts):
