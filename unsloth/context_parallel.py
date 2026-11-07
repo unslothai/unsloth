@@ -286,9 +286,8 @@ _EXPERT_STEPPED = "_unsloth_cp_expert_stepped"
 
 
 def record_expert_tokens(block, token_counts) -> None:
-    # Per-expert routed token counts (no host sync) since each expert's gradient was last None, which
-    # is when the single-process run would hand AdamW a None for it. Only forwards that build a graph
-    # count: checkpoint recomputes count twice, which only matters as > 0.
+    # Per-expert routed token counts (no host sync) since its grad was last None; only graph-building
+    # forwards count (checkpoint recompute double counts, harmless since only > 0 matters).
     if not torch.is_grad_enabled():
         return
     if block.__dict__.pop(_EXPERT_STEPPED, False):
@@ -546,8 +545,7 @@ class ContextParallelManager:
             isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
             for m in model.modules()
         ):
-            # Caller padding routes through the MoE and counts as expert usage in one process: the
-            # Ulysses mixers must give it the single-process activations (caller_pad_lengths).
+            # Caller padding counts as expert usage in one process, so the mixers keep its activations.
             self._match_caller_padding = True
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
@@ -704,8 +702,7 @@ class ContextParallelManager:
         self.__dict__.pop("_caller_pad_lengths", None)
 
     def _note_caller_padding(self, mask) -> None:
-        # Real (right padded, validated) length per row of the caller's mask, keyed by the whole
-        # sequence's shape, which is what the Ulysses mixers see. Kept for the step's recompute.
+        # Real length per row of the caller's mask, keyed by the full sequence shape the mixers see.
         if not getattr(self, "_match_caller_padding", False) or not isinstance(mask, torch.Tensor):
             return
         if mask.ndim != 2:
@@ -718,8 +715,7 @@ class ContextParallelManager:
         store = self.__dict__.setdefault("_caller_pad_lengths", {})
         key = tuple(mask.shape)
         seen = store.get(key)
-        # Two forwards of one shape and different padding in one step (never in a trainer step):
-        # the longer length never treats a real token of either as padding.
+        # Same shape, different padding in one step: the longer length never treats a real token as pad.
         store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
 
     def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:

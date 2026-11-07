@@ -215,10 +215,8 @@ def _moe_train_dispatch(block, x, topk_idx, topk_weight):
         # Without CP an unrouted expert keeps its None gradient: the step must not drop the others.
         forget_expert_tokens(block)
     if every_expert:
-        # So the optimizer step can drop the zero gradients of experts no rank routed to. Tokens the
-        # manager appended to make the length divide the CP size are not in the single-process batch.
-        # Caller padding counts: the Ulysses mixers give it the single-process activations
-        # (caller_pad_lengths), so it routes as there.
+        # Lets the step drop zero grads of experts no rank routed to. CP-appended padding is excluded; caller
+        # padding counts (the Ulysses mixers route it as one process does).
         real_token_mask = getattr(manager, "real_token_mask", None)
         real = real_token_mask(num_tokens) if callable(real_token_mask) else None
         if real is not None:
