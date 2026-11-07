@@ -13,6 +13,7 @@ const {
   PLUS_MENU_PINS_STORAGE_KEY,
   keepSavedSlot,
   normalizePlusMenuOrder,
+  plusMenuAtDefaults,
   splitPlusMenuItems,
   usePlusMenuPrefsStore,
 } = await import("../src/features/chat/stores/plus-menu-prefs-store.ts");
@@ -132,4 +133,11 @@ test("a menu change in another tab applies here, so this tab never sends a stale
   const menu = usePlusMenuPrefsStore.getState();
   assert.equal(menu.pins.mcp, true);
   assert.deepEqual(menu.pinnedPromptIds, ["p9"]);
+});
+
+test("Reset to default greys out only while the menu is at its defaults", () => {
+  const initial = usePlusMenuPrefsStore.getInitialState();
+  assert.equal(plusMenuAtDefaults(initial.pins, initial.order), true);
+  assert.equal(plusMenuAtDefaults({ ...initial.pins, mcp: !initial.pins.mcp }, initial.order), false);
+  assert.equal(plusMenuAtDefaults(initial.pins, [...initial.order].reverse()), false);
 });

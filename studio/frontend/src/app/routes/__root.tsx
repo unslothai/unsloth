@@ -489,7 +489,8 @@ function RootLayout() {
   }
   const shouldMountAudio = isAudioRoute || audioMounted;
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
-  const nonChatTopInset = useIsMobileShell()
+  const mobileShell = useIsMobileShell();
+  const nonChatTopInset = mobileShell
     ? "pt-14"
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
@@ -726,7 +727,14 @@ function RootLayout() {
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
-          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
+          {windowsWallpaperPage && (
+            <div
+              data-slot="page-wallpaper-blur"
+              // AppSidebar's data-windows-glass-frame, which sits under this page only off the mobile sheet.
+              data-sidebar-frame={(pinned && !mobileShell) || undefined}
+              aria-hidden="true"
+            />
+          )}
           <SidebarInset
             className={
               isChatLike

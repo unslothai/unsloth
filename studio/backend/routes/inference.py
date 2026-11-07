@@ -48537,18 +48537,18 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
-        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
-        # unless that build has failed here and the ladder runs the CPU one instead.
-        # A retained managed Vulkan build also renders on the card, whatever this load requested.
-        vulkan_on_cpu_torch = (
+        # So does a GPU sd.cpp build a CPU torch is routed to (Vulkan beside AMD / Arc, CUDA beside
+        # NVIDIA) or retains, unless the ladder has moved it to the CPU build.
+        gpu_build_on_cpu_torch = (
             device == "cpu"
             and off_torch is None
             and await asyncio.to_thread(
-                lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
-                or managed_sd_cpp_accelerator() == "vulkan"
+                lambda: preferred_accelerator(image_install_accelerator("cpu"), None)
+                in ("vulkan", "cuda")
+                or managed_sd_cpp_accelerator() in ("vulkan", "cuda")
             )
         )
-        if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
+        if pending_name == ENGINE_SD_CPP and gpu_build_on_cpu_torch:
             needs_gpu = True
 
         # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
@@ -48726,10 +48726,10 @@ async def load_diffusion_model_gated(
                 _guard_diffusion_load_against_training()
         if device == "cpu" and off_torch is None:
             # Re-settled on what selection activated and installed: a CPU diffusers fallback, or a
-            # retained CPU bundle after a failed Vulkan install, takes no GPU.
+            # retained CPU bundle after a failed Vulkan or CUDA install, takes no GPU.
             needs_gpu = (
                 activated == ENGINE_SD_CPP
-                and vulkan_on_cpu_torch
+                and gpu_build_on_cpu_torch
                 and not await asyncio.to_thread(sd_cpp_binaries_all_cpu)
             )
         if activated == ENGINE_MLX:
@@ -49037,7 +49037,8 @@ _GENERATE_FAILURE_FALLBACK = "Image generation failed."
 # Failure classes worth naming in the UI, as FIXED text: the engine's own message can embed local paths and argv, so only the class is reported.
 _GENERATE_FAILURE_CLASSES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
-        ("out of memory", "outofmemory", "oom"),
+        # The last one is stable-diffusion.cpp's model manager: classified here only for a render that failed.
+        ("out of memory", "outofmemory", "oom", "cannot make enough memory available"),
         "The device ran out of memory. Try a smaller size, fewer steps, or a smaller batch.",
     ),
     (
@@ -49062,9 +49063,16 @@ def _generate_failure_detail(message: str) -> str:
     the engine's text, which can carry local paths and argv."""
     text = str(message or "").lower()
     for needles, detail in _GENERATE_FAILURE_CLASSES:
-        if any(n in text for n in needles):
+        if any(_failure_text_mentions(text, n) for n in needles):
             return f"{_GENERATE_FAILURE_FALLBACK} {detail}"
     return _GENERATE_FAILURE_FALLBACK
+
+
+def _failure_text_mentions(text: str, needle: str) -> bool:
+    """Bare ``oom`` only as a word: a native renderer's log tail can echo the prompt ("a cozy room")."""
+    if needle == "oom":
+        return re.search(r"(?<![a-z0-9])oom(?![a-z0-9])", text) is not None
+    return needle in text
 
 
 # Keyed by account id, not account_scope(): the scope moves when the first managed account appears.
