@@ -952,15 +952,18 @@ const tokenizesOffThread = (body: string, streaming: boolean): boolean =>
 const slowMainThreadRegex =
   typeof window !== "undefined"
   && typeof window.requestIdleCallback !== "function";
-const MAIN_THREAD_TAIL_CHARS = 512;
+// JavaScriptCore interprets lookbehind patterns, so there even a short fence goes to the worker.
+const MAIN_THREAD_TAIL_CHARS = slowMainThreadRegex ? 0 : 512;
 
+// A settled fence is tokenized by the worker on every engine while it answers, so scrolling and
+// opening a chat leave the tokenizer off the main thread; a short uncovered tail stays here.
 const settlesOffThread = (
   body: string,
   streaming: boolean,
   options: ReturnType<typeof fenceHighlightOptions>,
 ): boolean => {
   if (!tokenizesOffThread(body, streaming)) {
-    if (streaming || !slowMainThreadRegex) return false;
+    if (streaming) return false;
     const state = highlightWorkerState();
     if (state === "unavailable" || state === "stalled") return false;
   }
@@ -1102,7 +1105,8 @@ function useFenceTokens(
       }
       show(settled);
     };
-    if (defer()) {
+    // Asking the worker costs the main thread a message, so it does not wait for quiet; its answer does.
+    if (defer() && !settlesOffThread(body, streaming, options)) {
       if (displayed.current !== null
         && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
         show(null);
@@ -1238,13 +1242,15 @@ function FenceBlock({
   const languageToken = language?.trim().split(/\s+/)[0] || null;
 
   /* warm(true) tokenizes now (a sync cache hit for render); warm(false) only loads the grammar. */
+  /* inView: the fence is on screen with no tokens yet, so it is tokenized here rather than painted plain. */
   const warm = useCallback(
-    (tokens: boolean) => {
+    (tokens: boolean, inView = false) => {
       const body = trimTrailingNewlines(source);
       const options = fenceHighlightOptions(body, languageToken);
       const inline =
         tokens
-        && (!settlesOffThread(body, Boolean(isIncomplete), options)
+        && ((inView && !slowMainThreadRegex && !tokenizesOffThread(body, Boolean(isIncomplete)))
+          || !settlesOffThread(body, Boolean(isIncomplete), options)
           || code.cached(options) !== null);
       if (inline && !isIncomplete) code.highlightExact(options, () => {});
       else code.highlight(inline ? options : fenceHighlightOptions("", languageToken), () => {});

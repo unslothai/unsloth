@@ -231,7 +231,7 @@ type FenceGate = {
   outer: HTMLElement | null;
   language: string | null;
   chars: number;
-  warm: (tokens: boolean) => void;
+  warm: (tokens: boolean, inView?: boolean) => void;
   speculate: (settle: (seeded: boolean) => void) => (() => void) | null;
   latch: () => void;
   /** A no-op state write that gives React sync work to do (see latchNow). */
@@ -257,19 +257,28 @@ const gateOpen = (gate: FenceGate): boolean =>
   inBand(gate.node, gate.near)
   && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer));
 
+const gateInView = (gate: FenceGate): boolean =>
+  inBand(gate.node, gate.near, 0)
+  && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer, 0));
+
+// Main-thread tokenizing a latch may spend on fences already on screen; the rest wait for the worker.
+const LATCH_INLINE_MS = 8;
+
 /*
  * Upgrade inside this task so the browser never paints the plain shell. All three steps are needed:
- * warm(true) so render is a cache hit, flushSync(latch), and flushSync(poke) nested in an outer
- * flushSync so React runs the pending passive effect at discrete priority.
+ * warm(true) so render is a cache hit (tokens the worker seeded, or for a fence already on screen
+ * tokenized here), flushSync(latch), and flushSync(poke) nested in an outer flushSync so React runs
+ * the pending passive effect at discrete priority.
  */
 const latchNow = (arrived: readonly FenceGate[]): void => {
   if (arrived.length === 0) return;
+  const started = performance.now();
   for (const gate of arrived) {
     pendingReaches.get(gate)?.();
     pendingReaches.delete(gate);
     unreached.delete(gate);
     fenceSpeculator.remove(gate);
-    gate.warm(true);
+    gate.warm(true, performance.now() - started < LATCH_INLINE_MS && gateInView(gate));
   }
   flushSync(() => {
     flushSync(() => {
@@ -441,9 +450,12 @@ const rankGates = (gates: readonly FenceGate[]): number[] => {
 };
 
 const SPECULATION_IN_FLIGHT = 3;
+const SPECULATION_VIEWPORTS = 3;
 
+// Speculation tokenizes in the worker and only posts and seeds here, so a wheel or touch scroll
+// does not hold it: the fences ahead of the reader are ready by the time they are reached.
 const fenceSpeculator = createFenceSpeculator<FenceGate>({
-  idle: (callback, timeout) => scheduleQuietIdleTask(callback, timeout),
+  idle: (callback, timeout) => scheduleIdleTask(callback, timeout),
   wait: (callback, ms) => {
     const timer = setTimeout(callback, ms);
     return () => clearTimeout(timer);
@@ -451,13 +463,17 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   enabled: () =>
     fenceMode() !== "off" && highlightWorkerState() !== "unavailable",
   busy: () => streamActive() || highlightWorkerState() === "stalled"
-    || inputPointerHeld() || inputQuietIn() > 0,
-  eligible: (gate) => grammarsWarmed.has(grammarOf(gate)),
+    || inputPointerHeld() || nonScrollInputQuietIn() > 0,
+  eligible: (gate) =>
+    highlightWorkerState() === "ready" || grammarsWarmed.has(grammarOf(gate)),
   rank: rankGates,
   maxChars: MAX_HIGHLIGHT_CHARS,
   budgetChars: MAX_CACHED_CHARACTERS / 2,
   budgetFences: MAX_FENCES / 2,
   maxInFlight: SPECULATION_IN_FLIGHT,
+  // Only fences a quick scroll can reach: on a long chat the rest would cost the main thread
+  // ranking and seeding for fences the reader may never open.
+  maxDistance: () => SPECULATION_VIEWPORTS * window.innerHeight,
 });
 
 // One capturing listener flags a code body scrolled off its first line, for the fade under its header.
@@ -544,13 +560,13 @@ const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   return found;
 };
 
-/** Is `node` inside `scroller`'s box grown by one of its own heights, the observer's margin? */
-const inBand = (node: HTMLElement, scroller: HTMLElement | null): boolean => {
+/** Is `node` inside `scroller`'s box grown by `margin` of its own heights (the observer's margin)? */
+const inBand = (node: HTMLElement, scroller: HTMLElement | null, margin = 1): boolean => {
   const bounds = scroller?.getBoundingClientRect();
   const top = bounds ? bounds.top : 0;
   const height = bounds ? bounds.height : window.innerHeight;
   const rect = node.getBoundingClientRect();
-  return rect.bottom > top - height && rect.top < top + height * 2;
+  return rect.bottom > top - height * margin && rect.top < top + height * (1 + margin);
 };
 
 /**
@@ -1099,16 +1115,19 @@ const highlightResize = (): void => {
 };
 
 // Bounded entries ignore wheel and touch scrolling; the rest still wait for the reader to stop.
-// Only where requestIdleCallback exists: without it (WebKit) each mid-scroll step is a timer that
-// lands inside the scroll, and there the tokens come from the worker, so reaching a block mid-scroll
-// swaps its markup without colouring it (84 to 91% of frames stayed plain while scroll cost rose 6x).
-const MID_SCROLL_WORK = typeof window !== "undefined"
-  && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function";
+// Every engine runs them mid-scroll: the worker colours a block before its markup swaps, and each run
+// stays inside HIGHLIGHT_RUN_MS, so the WebKit timer fallback no longer swaps in plain markup.
 const highlightQuietIn = (duringScroll: boolean): number =>
   Math.max(
     duringScroll ? nonScrollInputQuietIn() : inputQuietIn(),
     300 - (performance.now() - highlightResizedAt),
   );
+
+// Without requestIdleCallback the idle fallback is a 100 ms timer, so mid-scroll work runs right after the frame.
+const NO_IDLE_CALLBACK = typeof window !== "undefined"
+  && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback !== "function";
+// One run may finish several queued fences while it stays inside this slice of a frame.
+const HIGHLIGHT_RUN_MS = 6;
 
 const highlightQueue = createFenceHighlightQueue({
   schedule: (run, duringScroll) => {
@@ -1116,7 +1135,8 @@ const highlightQueue = createFenceHighlightQueue({
     let cancelIdle: (() => void) | undefined;
     const timer = setTimeout(() => {
       frame = requestAnimationFrame(() => {
-        cancelIdle = (duringScroll ? scheduleIdleTask : scheduleQuietIdleTask)(run, 100);
+        cancelIdle = (duringScroll ? scheduleIdleTask : scheduleQuietIdleTask)(
+          run, duringScroll && NO_IDLE_CALLBACK ? 0 : 100);
       });
     }, Math.max(0, highlightQuietIn(duringScroll), inputPointerHeld() || selectionInFence(liveSelection()) ? 80 : 0));
     return () => {
@@ -1128,6 +1148,7 @@ const highlightQueue = createFenceHighlightQueue({
   blocked: (duringScroll) =>
     inputPointerHeld() || highlightQuietIn(duringScroll) > 0 || selectionInFence(liveSelection()),
   commit: (run) => flushSync(run),
+  budgetMs: HIGHLIGHT_RUN_MS,
 });
 
 const watchHighlighting = (): void => {
@@ -1171,7 +1192,7 @@ export function queueFenceWork(work: () => void): () => void {
   const remove = highlightQueue.add(() => {
     finish();
     return true;
-  }, finish, MID_SCROLL_WORK);
+  }, finish, true);
   cancel = () => {
     remove();
     unwatchHighlighting();
@@ -1320,7 +1341,7 @@ function useFenceHighlightLimit(
         );
       setPrevious({ tokens, parked, progress: next });
       return true;
-    }, () => setPrevious({ tokens, parked, progress: null }), capped !== null && MID_SCROLL_WORK);
+    }, () => setPrevious({ tokens, parked, progress: null }), capped !== null);
     return () => {
       cancel();
       unwatchHighlighting();

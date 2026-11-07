@@ -26,7 +26,8 @@ test("the exact path never answers with the throttled approximation of a fence t
   const reference = createCodePlugin({ themes: THEMES });
   const base = Array.from({ length: 120 }, (_, i) => `const value${i} = ${i} * 2;`).join("\n") + "\n";
   assert.ok(base.length > 2000);
-  const longer = `${base}export function tail() {\n  return value1 + value2;\n}\n`;
+  // Grown past LIVE_TAIL_CHARS, so the ordinary path throttles; a shorter growth tokenizes at once.
+  const longer = `${base}${Array.from({ length: 60 }, (_, i) => `export function tail${i}() {\n  return value1 + value2;\n}`).join("\n")}\n`;
   await highlighted(plugin, base);
   const approximate = plugin.highlight(options(longer), () => {});
   const exact = plugin.highlightExact(options(longer));
