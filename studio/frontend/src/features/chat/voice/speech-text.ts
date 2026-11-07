@@ -43,14 +43,12 @@ export function splitIntoSentences(text: string): string[] {
       }
       const tail = prev.replace(/["')\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
-      // "3.5", and ".75" / "$.50" / "-.5" with no integer part.
-      const decimal = /(?:\d|(?:^|[\s$€£(+-]))\.$/.test(tail) && !spaced && /^\d/.test(part);
+      // A dot with no space after it ends no sentence: "3.5", ".75", "llama.cpp", ".env", "D.C.".
+      const attached = !spaced && /^[\p{L}\p{N}]/u.test(part);
       // "J. Smith", "John F. Kennedy" are names; "pick option A. Then" is a boundary.
       const nameInitial =
         /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
-      // "llama.cpp", "config.json": a dot with a letter right after it is part of a name.
-      const dotted = /[A-Za-z\d]\.$/.test(tail) && !spaced && /^[A-Za-z]/.test(part);
       const word = lastWord?.toLowerCase();
       // "etc. Then I left": these also end sentences, so only a lowercase word or digit continues one.
       const abbrev =
@@ -61,9 +59,9 @@ export function splitIntoSentences(text: string): string[] {
       const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
       // ", the docs" after "e.g." can't start a sentence.
       const continues = /^[,;:]/.test(part);
-      if (decimal || initial || dotted || abbrev || initialism || continues || nameInitial) {
-        // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
-        out[out.length - 1] = prev + (decimal || (initial && !spaced) || dotted || continues ? "" : " ") + part;
+      if (attached || initial || abbrev || initialism || continues || nameInitial) {
+        // "Dr. Smith" keeps the space it was written with.
+        out[out.length - 1] = prev + (attached || continues ? "" : " ") + part;
         continue;
       }
     }

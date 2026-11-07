@@ -165,12 +165,16 @@ test("an initialism before a lowercase word stays in its sentence", () => {
   ]);
 });
 
-test("a decimal with no integer part stays whole", () => {
+test("a dot with no space after it (.75, .env) stays inside its token", () => {
   assert.deepEqual(speechText.splitIntoSentences("Set the threshold to .75. Then retry."), [
     "Set the threshold to .75.",
     "Then retry.",
   ]);
   assert.deepEqual(speechText.splitIntoSentences("It costs $.50 now. Use -.5 here."), ["It costs $.50 now.", "Use -.5 here."]);
+  assert.deepEqual(speechText.splitIntoSentences("Use .env for the key. Then restart."), [
+    "Use .env for the key.",
+    "Then restart.",
+  ]);
 });
 
 test("a subscriber that cancels on the running notification gets no playback", async () => {
