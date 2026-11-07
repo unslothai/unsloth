@@ -9460,6 +9460,111 @@ def _shell_is_posix() -> bool:
     return sys.platform != "win32" or _windows_bash() is not None
 
 
+# cmd's `>nul` idiom; `<<` is matched first by the heredoc pattern, and `x->nul` / `a=>nul` are not redirects.
+_NUL_REDIRECT_RE = re.compile(
+    r"(?<![-=<>])((?:[0-9]+|&)?(?:>>?|>\||>&)|<)([ \t]*)nul(?=[\s;&|()<>]|$)", re.IGNORECASE
+)
+_HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\2")
+
+
+def _substitution_end(command: str, i: int) -> int:
+    depth, n = 1, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            j = command.find(c, i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
+def _bash_nul_to_dev_null(command: str) -> str:
+    """Git Bash turns `2>nul` into a real file named nul that Explorer cannot delete (#16991).
+    Quoted text and heredoc bodies (a .bat written through cat) keep their spelling."""
+    if "nul" not in command.lower():
+        return command
+    out: list[str] = []
+    heredocs: list[tuple[bool, str]] = []
+    i, n = 0, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            out.append(command[i : i + 2])
+            i += 2
+            continue
+        if c == "'":
+            j = command.find("'", i + 1)
+            j = n if j < 0 else j + 1
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == '"':
+            # A $( ) inside double quotes still runs: `x="$(cmd 2>nul)"`.
+            out.append(c)
+            i += 1
+            while i < n and command[i] != '"':
+                if command.startswith("$(", i):
+                    end = _substitution_end(command, i + 2)
+                    out.append("$(" + _bash_nul_to_dev_null(command[i + 2 : end]))
+                    i = end
+                    continue
+                step = 2 if command[i] == "\\" else 1
+                out.append(command[i : i + step])
+                i += step
+            out.append(command[i : i + 1])
+            i += 1
+            continue
+        if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()"):
+            j = command.find("\n", i)
+            j = n if j < 0 else j
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == "\n" and heredocs:
+            i += 1
+            out.append("\n")
+            for strip_tabs, delim in heredocs:
+                while i < n:
+                    j = command.find("\n", i)
+                    j = n if j < 0 else j + 1
+                    line = command[i:j].rstrip("\n")
+                    out.append(command[i:j])
+                    i = j
+                    if (line.lstrip("\t") if strip_tabs else line) == delim:
+                        break
+            heredocs = []
+            continue
+        if command.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if command.startswith("<<", i):
+            m = _HEREDOC_RE.match(command, i)
+            if m:
+                heredocs.append((m.group(1) == "-", m.group(3)))
+                out.append(m.group(0))
+                i = m.end()
+                continue
+        m = _NUL_REDIRECT_RE.match(command, i)
+        if m:
+            out.append(f"{m.group(1)}{m.group(2)}/dev/null")
+            i = m.end()
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _get_shell_cmd(command: str) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
@@ -22390,6 +22495,8 @@ def _bash_exec(
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
     # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
     profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    if profile == "bash" and sys.platform == "win32":
+        command = _bash_nul_to_dev_null(command)
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
