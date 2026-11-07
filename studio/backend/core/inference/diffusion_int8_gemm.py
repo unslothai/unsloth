@@ -55,9 +55,7 @@ _ARCH_CONFIG = {
     (8, 9): (256, 128, 128, 8, 8, 3),  # L4
     (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# Triton >= 3.8 spills every 128-accumulator-per-thread int8 tile on sm8x (triton-lang/triton#12486), 4-8x slower;
-# its best spill-free tile still trails cuBLAS (A100 284 vs 402 TOPS, L4 88 vs 110), so these stay stock there.
-# sm120 is unmeasured on Triton 3.8 and keeps its tiles.
+# Stock on Triton >= 3.8: its sm8x int8 dot spills (triton-lang/triton#12486) and even spill-free tiles trail cuBLAS.
 _TRITON38_STOCK = ((8, 0), (8, 9))
 # When the arch tile does not fit this part's shared memory, and the unlisted archs' tile (64 KB of stages: fits 99 KB).
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
