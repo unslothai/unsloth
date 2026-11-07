@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator only).
-
-The decode's growing activations and cuDNN workspaces each miss the smaller cached blocks, so fixed segments pile up
-(SDXL 1024^2: 11.3 GiB reserved for a 9.0 GiB live peak; 10.1 GiB with this). Pixels do not change.
+"""Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator): its growing
+activations and cuDNN workspaces otherwise each map a new fixed segment (SDXL 1024^2: 11.3 -> 10.1 GiB reserved).
 UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off."""
 
 from __future__ import annotations
@@ -21,7 +19,6 @@ _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 
 _lock = threading.Lock()
 _depth = 0
-# None = undecided for this process.
 _usable: Optional[bool] = None
 STATS = {"engaged": 0, "skipped": 0}
 
@@ -31,7 +28,6 @@ def _env_off() -> bool:
 
 
 def _conf_keys(value: str) -> dict:
-    """Top-level ``key:value`` pairs of an allocator config (bracketed lists keep their commas)."""
     out, part, depth = {}, "", 0
     for ch in value + ",":
         if ch == "[":
@@ -49,8 +45,7 @@ def _conf_keys(value: str) -> dict:
 
 
 def _allocator_configured() -> bool:
-    """Allocator options a runtime setting would reset. A bare ``expandable_segments:True`` does not count: unsloth_zoo
-    exports it after CUDA init, so the live segments decide."""
+    """Options a runtime setting would reset; a bare ``expandable_segments:True`` (unsloth_zoo, after CUDA init) is not."""
     for name in _ALLOC_CONF_VARS:
         keys = _conf_keys(os.environ.get(name) or "")
         if any(k != "expandable_segments" for k in keys):
@@ -120,7 +115,6 @@ def _busy(torch: Any) -> bool:
 
 @contextlib.contextmanager
 def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
-    """Expandable segments on for the enclosed decode, when ``vae`` opted in and the process allows it."""
     global _depth, _usable
     if not vae.__dict__.get(ENABLED_ATTR, False) or _env_off() or not _cuda_tensor(z):
         yield
@@ -159,7 +153,6 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
 
 
 def enable(vae: Any) -> bool:
-    """Opt an image VAE in; the diffusion_vae_oom decode scope applies it."""
     if vae is None or _env_off():
         return False
     try:
