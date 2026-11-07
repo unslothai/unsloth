@@ -193,8 +193,17 @@ def _model_heads(model):
         heads = heads if isinstance(heads, int) else text.num_attention_heads
         kv = getattr(layer, "num_key_value_heads", None)
         counts.add((heads, kv if isinstance(kv, int) and kv > 0 else heads))
+    # Without a per-layer view (older Gemma 4 configs) the global layers' KV count sits beside the sliding
+    # one; a per-layer view already lists what every layer uses, and a config with no global layer uses none.
     global_kv = getattr(text, "num_global_key_value_heads", None)
-    if isinstance(global_kv, int) and global_kv > 0 and getattr(text, "attention_k_eq_v", False):
+    layer_types = getattr(text, "layer_types", None) or ()
+    if (
+        not layers
+        and isinstance(global_kv, int)
+        and global_kv > 0
+        and getattr(text, "attention_k_eq_v", False)
+        and (not layer_types or "full_attention" in layer_types)
+    ):
         counts.add((text.num_attention_heads, global_kv))
     return sorted(counts)
 

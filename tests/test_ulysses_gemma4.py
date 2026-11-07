@@ -408,6 +408,33 @@ def test_gemma4_global_layer_heads_that_cannot_split_refuse_before_any_collectiv
     assert cp.resolve_cp_backend("auto", 3, model) == "ulysses"
 
 
+def test_gemma4_unused_global_kv_count_does_not_refuse():
+    """A global KV count no layer uses (transformers forces Gemma 4's last layer global, so only hand-built
+    or remote configs get here) must not refuse layers that split."""
+    sliding = types.SimpleNamespace(num_attention_heads = 6, num_key_value_heads = 6)
+    per_layer = types.SimpleNamespace(
+        num_attention_heads = 6,
+        num_key_value_heads = 6,
+        num_global_key_value_heads = 3,
+        attention_k_eq_v = True,
+        per_layer_config = [sliding] * 4,
+    )
+    model = types.SimpleNamespace(config = per_layer)
+    assert cp._model_heads(model) == [(6, 6)]
+    cp._ulysses_head_plans(model, 2)
+    assert cp.resolve_cp_backend("auto", 2, model) == "ulysses"
+    old = types.SimpleNamespace(
+        config = types.SimpleNamespace(
+            num_attention_heads = 6,
+            num_key_value_heads = 6,
+            num_global_key_value_heads = 3,
+            attention_k_eq_v = True,
+            layer_types = ["sliding_attention"] * 4,
+        )
+    )
+    assert cp._model_heads(old) == [(6, 6)]
+
+
 def _check(
     model,
     backend = "ulysses",
