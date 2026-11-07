@@ -695,8 +695,7 @@ def _onloads_whole(model: Any) -> bool:
 
 
 def _discrete_card(device: Any) -> bool:
-    """A CUDA card with its own memory. On unified memory (Apple, Jetson / GB10, Strix Halo) a kept host copy would
-    hold the encoder twice in the same RAM during the encode, so those keep ``model.to``."""
+    """A CUDA card with its own memory; unified memory keeps ``model.to`` (a kept copy would double the RAM)."""
     if str(device).split(":", 1)[0] != "cuda":
         return False
     try:
@@ -711,8 +710,7 @@ PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
 
 
 def _pin_host_copy(model: Any, config: dict) -> int:
-    """Copy a non-resident encoder's host weights into registered (pinned) chunks once, Linux CUDA only and only with
-    room for the transient second copy, so uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
+    """Pin the host copy once (Linux CUDA, room for a transient second copy); bytes pinned, 0 when skipped."""
     if config.get("resident") or (os.environ.get(PIN_HOST_ENV) or "").strip() == "0":
         return 0
     device = str(config.get("device") or "")
@@ -741,13 +739,12 @@ def _pin_host_copy(model: Any, config: dict) -> int:
 
 
 def _own_host_copy(model: Any) -> bool:
-    """Copy the host weights out of the checkpoint's file mapping into process memory, once, before the first card
-    encode. Base did this implicitly (``model.to("cpu")`` after each encode); kept mapped, the pages are page cache the
-    server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
+    """Copy the host weights out of the checkpoint mapping once: kept mapped, the server's pins evict them and
+    each onload re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
     import torch
 
     if not _host_fits(list(model.parameters()) + list(model.buffers()), copies = 1):
-        # Base's streamed and CPU encodes kept the mapping too; a short host keeps it rather than risk the OOM killer.
+        # A short host keeps the mapping, as base did.
         return False
     try:
         # Keyed by identity: a tied tensor is copied once and stays shared.
@@ -773,9 +770,7 @@ def _own_host_copy(model: Any) -> bool:
 
 
 def _pin_fits_twice(tensors: list) -> bool:
-    """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
-    storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
-    without that room the pin pushed the box into reclaim and encodes took 70-80 s instead of 22 s."""
+    """Pinned chunks fill before the mapped copy is freed, so pinning needs room for two copies."""
     return _host_fits(tensors, copies = 2)
 
 
@@ -975,8 +970,7 @@ def _encode_on(
             raise
         oom = str(exc)
     if oom is not None:
-        # Outside the handler, so the failed attempt's card tensors are gone before the CPU encode; then hand the
-        # card back, since the server plans the denoise against it.
+        # Outside the handler, so the failed attempt's card tensors are freed first.
         _empty_accelerator_cache(device)
         print(
             f"video.ltx25_te: out of memory encoding on {device} ({oom}); encoding on the CPU",
@@ -1020,7 +1014,7 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             config["_pinned_bytes"] = _pin_host_copy(model, config)
         if not config.get("_pinned_bytes") and not config.get("_owned_host"):
             config["_owned_host"] = _own_host_copy(model)
-    # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
+    # Restore repoints at the host copy: no device-to-host copy per prompt.
     whole = (
         _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
     )

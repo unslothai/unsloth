@@ -824,9 +824,8 @@ def _encode_room_mib(client: Any) -> Optional[int]:
     return worker_room(client.config, _server_reserved_mib(device))
 
 
-# Never parked: the denoisers lend blocks instead; an in-process text encoder is the encode itself.
+# Denoisers lend blocks instead of parking.
 _NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
-# Host copy kept on a parked module between requests, refreshed from the card at every park.
 _PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
 # "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
 PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
@@ -1023,7 +1022,7 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         weights = int(info.get("weights_mib") or 0)
         whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
         streamed = info.get("stream_need_mib")
-        # Companions are parked only to reach the streamed need: a whole onload is worth only the blocks it frees.
+        # Parking only serves the streamed need; a whole onload counts lent blocks alone.
         if whole is not None and room < whole <= room + held:
             target, parkable = whole, 0
         elif streamed is not None and room < int(streamed) <= room + held + parkable:
@@ -1132,7 +1131,7 @@ class Ltx25TextEncoderClient:
         self._cache: list[tuple[tuple, Any]] = []
         self.info: dict[str, Any] = {}
         self.last_encode: dict[str, Any] = {}
-        # encode_prompt calls, one per render: the second means a render (and the server's pins) has finished.
+        # encode_prompt calls; from the second, the first render (and the server's pins) is done.
         self.renders = 0
 
     # process management
@@ -1317,8 +1316,7 @@ class Ltx25TextEncoderClient:
                     "prompts": list(prompts),
                     "max_sequence_length": int(max_sequence_length),
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
-                    # The server pins its own host weights during the first render; the encoder's pin waits for that
-                    # so it never takes the host RAM those pins need.
+                    # The encoder pins only after the server's own pins, so it never takes their RAM.
                     "pin_host": self.renders > 1,
                 }
             )
