@@ -8,6 +8,8 @@ lazy."""
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import re
@@ -115,6 +117,22 @@ _SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
 _ROCM_PROBE_RETRY_S = 120.0
 _ROCM_PROBE_INCOMPLETE: dict[tuple[str, str], float] = {}
 
+# Set while a card is only being asked about (a layer-split candidate): its answer must not touch the process-wide
+# torch.backends.cuda SDPA switches, which also govern the card the model already runs on.
+_SDPA_PROBE_READ_ONLY: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_sdpa_probe_read_only", default = False
+)
+
+
+@contextlib.contextmanager
+def read_only_sdpa_probe():
+    """Probes inside cache their answer but do not apply the ROCm fused-SDPA guard."""
+    token = _SDPA_PROBE_READ_ONLY.set(True)
+    try:
+        yield
+    finally:
+        _SDPA_PROBE_READ_ONLY.reset(token)
+
 
 def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     import time
@@ -126,8 +144,12 @@ def _probe_rocm_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
     available = _run_rocm_sdpa_children(device, dtype)
     if available:
         _ROCM_PROBE_INCOMPLETE.pop(key, None)
-        # Whichever check completes the probe applies its answer; fp32 never runs fused kernels.
-        if _rocm_guard_allowed() and str(dtype) in ("torch.float16", "torch.bfloat16"):
+        # fp32 never runs fused kernels.
+        if (
+            not _SDPA_PROBE_READ_ONLY.get()
+            and _rocm_guard_allowed()
+            and str(dtype) in ("torch.float16", "torch.bfloat16")
+        ):
             try:
                 _apply_rocm_guard(available)
             except Exception:  # noqa: BLE001 - a diagnostic may never fail a load
@@ -431,6 +453,33 @@ def guard_rocm_fused_sdpa(target: Any, logger: Any = None) -> tuple[str, ...]:
         )
     available = _sdpa_capability(SimpleNamespace(device = device, dtype = dtype))
     return _apply_rocm_guard(available, logger)
+
+
+def guard_rocm_fused_sdpa_cards(
+    devices: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Guard for all layer-split cards: the switches are process-wide, so only kernels that ran on ALL stay on."""
+    from types import SimpleNamespace
+
+    if not _is_cuda_rocm(SimpleNamespace(device = "cuda")) or not _rocm_guard_allowed():
+        return ()
+    if dtype is None:
+        import torch
+        dtype = torch.float16  # the probe's own default (_sdpa_capability)
+    if str(dtype) not in ("torch.float16", "torch.bfloat16"):
+        return ()
+    answers = []
+    with read_only_sdpa_probe():
+        for device in devices:
+            available = _sdpa_capability(SimpleNamespace(device = str(device), dtype = dtype))
+            if available:
+                answers.append(available)
+    if not answers:
+        return ()
+    common = tuple(k for k in answers[0] if all(k in a for a in answers[1:]))
+    return _apply_rocm_guard(common, logger)
 
 
 def _rocm_guard_allowed() -> bool:

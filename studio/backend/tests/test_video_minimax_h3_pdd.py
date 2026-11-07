@@ -743,6 +743,29 @@ def test_the_whole_pdd_denoiser_forward_compiles_fullgraph_without_recompiles():
     )
 
 
+def test_studio_regional_fullgraph_compile_keeps_the_pdd_hook_eager():
+    """Studio compiles a DiT only through ``compile_repeated_blocks`` (or each block's forward below its offload hook):
+    the root keeps an eager ``__call__``, so the pre-hook (whose ``is_inference()`` Dynamo cannot trace) never enters a
+    fullgraph region, and the root-level banks read each step's sigmas."""
+    import torch._dynamo as dynamo
+
+    model = _tiny()
+    eager = _tiny()
+    sigmas = _bound(model)
+    _bound(eager)
+    dynamo.reset()
+    model.compile_repeated_blocks(fullgraph = True, backend = "eager")
+    assert getattr(model, "_compiled_call_impl", None) is None
+    assert any(getattr(m, "_compiled_call_impl", None) is not None for m in model.modules())
+    with torch.no_grad():
+        for i in range(1, 8):
+            kw = _inputs("cpu", 1.0 - float(sigmas[i]), seed = i)
+            out, ref = model(**kw), eager(**kw)
+            assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1]), i
+            assert float(model.proj_out.pdd_state[1]) == float(sigmas[i + 1]), i
+    dynamo.reset()
+
+
 def test_the_denoiser_under_model_cpu_offload_matches_resident():
     _cuda()
     accelerate = pytest.importorskip("accelerate")
