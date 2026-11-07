@@ -29,6 +29,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 
 try:
@@ -82,6 +83,7 @@ def fast_layernorm_inference(
 
 
 # QK norm in Cohere.
+@applies_prefix_seg_info
 def CohereAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,

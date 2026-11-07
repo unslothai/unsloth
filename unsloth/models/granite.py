@@ -23,6 +23,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
     SDPA,
 )
 from .llama import (
@@ -81,6 +82,7 @@ except:
     GraniteFlashAttention2 = GraniteAttention
 
 
+@applies_prefix_seg_info
 def GraniteAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,

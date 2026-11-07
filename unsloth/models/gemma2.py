@@ -31,6 +31,7 @@ from ..utils.attention_dispatch import (
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
     SDPA,
 )
 from .gemma import (
@@ -134,6 +135,7 @@ def _flash_decode_usable(config, hidden_states, attention_mask):
 
 
 # Logit softcapping.
+@applies_prefix_seg_info
 def Gemma2Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,

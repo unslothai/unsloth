@@ -219,17 +219,19 @@ def test_source_patch_still_accepts_the_installed_zoo():
 def test_generated_trainer_embeds_the_patched_gradient_function():
     text = SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text, filename = str(SOURCE_PATH))
+    # The embedded source may pass through further source patches (the PrefixGrouper gate) after this one.
     calls = [
-        node
+        inner
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "append"
         and ast.unparse(node.func.value) == "RL_PRE_ITEMS['grpo_trainer']"
         and node.args
-        and isinstance(node.args[0], ast.Call)
-        and isinstance(node.args[0].func, ast.Name)
-        and node.args[0].func.id == PATCH_HELPER
+        for inner in ast.walk(node.args[0])
+        if isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == PATCH_HELPER
     ]
     assert len(calls) == 1
-    assert ast.unparse(calls[0].args[0].args[0]) == "grpo_accumulated_loss"
+    assert ast.unparse(calls[0].args[0]) == "grpo_accumulated_loss"

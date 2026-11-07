@@ -4007,7 +4007,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
-                        _pg_enabled_fn()
+                        # Given the model, also requires its forward to apply prefix_seg_info (prefix_seg_info_applied).
+                        _pg_enabled_fn(unwrapped_model)
                         and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
                         and pixel_values is None
                         and token_type_ids is None
@@ -4752,6 +4753,22 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
+_GRPO_PREFIX_GROUPER_GATE = re.compile(r"\b_pg_enabled_fn\(\s*\)")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
+    """Engage zoo's gradient PrefixGrouper only when the model's forward applies ``prefix_seg_info``, as the no-grad path does. Zoo decides on ``_pg_enabled_fn()`` (unsloth's ``prefix_grouper_enabled``) and the config alone, so a transformers, generic or compiled forward, which takes ``prefix_seg_info`` through ``**kwargs`` and ignores it, lets every completion attend to the earlier completions of its group, an error that passes the 0.7-nat self-verify. Passing the model makes ``prefix_grouper_enabled`` check ``prefix_seg_info_applied``. A zoo without the gradient PrefixGrouper is returned unchanged; one that has it but no longer gates it this way fails at trainer generation instead of engaging unchecked."""
+    if "prefix_seg_info" not in source:
+        return source
+    source, replacements = _GRPO_PREFIX_GROUPER_GATE.subn("_pg_enabled_fn(unwrapped_model)", source)
+    if replacements == 0 and "_pg_enabled_fn(unwrapped_model)" not in source:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient PrefixGrouper gate in this "
+            "unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    return source
+
+
 def grpo_update_SamplingParams(
     SamplingParams,
     generation_kwargs,
@@ -5084,7 +5101,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    )
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))

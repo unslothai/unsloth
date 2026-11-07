@@ -27,6 +27,7 @@ from ..utils.attention_dispatch import (
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from .llama import (
     LlamaRotaryEmbedding,
@@ -62,6 +63,7 @@ except:
 from unsloth_zoo.utils import Version
 
 
+@applies_prefix_seg_info
 def MistralAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
