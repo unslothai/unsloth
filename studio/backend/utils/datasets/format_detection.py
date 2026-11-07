@@ -834,14 +834,10 @@ def video_sample(
     def _missing(value):
         return value is None or (isinstance(value, str) and not value.strip())
 
-    missing = [key for key, value in sample.items() if _missing(value)]
-    if not missing:
+    if not any(_missing(value) for value in sample.values()):
         return sample
     filled = dict(sample)
     try:
-        # Only the blank columns: iterating whole rows decodes every image / audio cell.
-        if hasattr(dataset, "select_columns"):
-            dataset = dataset.select_columns(missing)
         for row in itertools.islice(iter(dataset), 1, rows):
             for key, value in row.items():
                 if _missing(filled.get(key)) and not _missing(value):

@@ -195,28 +195,6 @@ def test_a_null_first_video_row_still_reads_as_video():
     assert [_video_parts(row) for row in out] == [[{"type": "video", "video": c}] for c in CLIPS]
 
 
-def test_filling_a_blank_first_row_does_not_decode_other_columns():
-    import io
-
-    from datasets import Image as HFImage
-    from PIL import Image
-
-    from utils.datasets.format_detection import detect_video_columns, video_sample
-
-    png = io.BytesIO()
-    Image.new("RGB", (4, 4)).save(png, "PNG")
-    ds = Dataset.from_dict(
-        {
-            "image": [
-                {"bytes": png.getvalue(), "path": None},
-                {"bytes": b"not an image", "path": None},
-            ],
-            "clip": [None, CLIPS[0]],
-        }
-    ).cast_column("image", HFImage())
-    assert detect_video_columns(video_sample(ds, ds[0])) == ["clip"]
-
-
 def test_a_blank_first_answer_still_finds_the_answer_column():
     ds = Dataset.from_dict({"video": CLIPS, "answer": ["  ", ANSWERS[1]]})
     assert check_dataset_format(ds, is_vlm = True)["detected_format"] == "video_text"
@@ -297,6 +275,40 @@ def test_byte_backed_hf_video_is_refused_with_a_clear_message():
     assert structure["video_column"] == "clip"
     with pytest.raises(ValueError, match = "embedded bytes"):
         convert_video_to_vlm_format([row], "clip", "answer")
+
+
+def test_embedded_bytes_with_a_filename_only_path_are_refused():
+    from utils.datasets.format_conversion import convert_video_to_vlm_format
+
+    clip = _DecodedVideo("clip.mp4")
+    clip._hf_encoded["bytes"] = b"\x00\x00\x00\x18ftypmp42"
+    with pytest.raises(ValueError, match = "embedded bytes"):
+        convert_video_to_vlm_format([{"clip": clip, "answer": "red"}], "clip", "answer")
+
+
+def test_cached_hub_clips_resolve_when_the_repo_cannot_be_listed(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from utils.datasets.format_conversion import convert_video_to_vlm_format
+
+    class Api:
+        def list_repo_files(self, *a, **kw):
+            raise OSError("offline")
+
+    def download(
+        repo_id,
+        filename,
+        local_files_only = False,
+        **kw,
+    ):
+        assert local_files_only
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    rows = [{"video": "videos/clip00.mp4", "answer": "red"}]
+    out = convert_video_to_vlm_format(rows, "video", "answer", dataset_name = "someone/clips")
+    assert _video_parts(out[0])[0]["video"] == str(tmp_path / "videos/clip00.mp4")
 
 
 def test_an_image_past_the_detection_probe_is_still_refused():

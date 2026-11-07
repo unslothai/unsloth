@@ -851,7 +851,7 @@ class _HubClips:
         dataset_name,
         revision = None,
     ):
-        self.repo, self.revision, self.files = dataset_name, revision, None
+        self.repo, self.revision, self.files, self.listed = dataset_name, revision, None, False
         if (
             not isinstance(dataset_name, str)
             or dataset_name.count("/") != 1
@@ -872,6 +872,7 @@ class _HubClips:
                 repo_files = HfApi().list_repo_files(
                     self.repo, repo_type = "dataset", revision = self.revision
                 )
+                self.listed = True
             except Exception as e:  # noqa: BLE001 -- not a Hub repo or offline: paths stay local
                 logger.info(f"Could not list {self.repo} to resolve video filenames: {e}")
                 repo_files = []
@@ -884,17 +885,30 @@ class _HubClips:
                     # A name in several folders resolves to its list, refused below: one copy is a guess.
                     self.files.setdefault(name, f if len(ambiguous[name]) == 1 else ambiguous[name])
                     self.files[f] = f
+        from huggingface_hub import hf_hub_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
         if path not in self.files:
-            return None
+            if self.listed:
+                return None
+            # Offline: an exact repo path may still be in the cache.
+            try:
+                return hf_hub_download(
+                    self.repo,
+                    path,
+                    repo_type = "dataset",
+                    revision = self.revision,
+                    cache_dir = active_hf_hub_cache(),
+                    local_files_only = True,
+                )
+            except Exception:  # noqa: BLE001 -- not cached: the path stays local
+                return None
         if isinstance(self.files[path], list):
             raise ValueError(
                 f"Video '{path}' matches several files in {self.repo} ({', '.join(self.files[path])}); "
                 "use the repo-relative path."
             )
-        from huggingface_hub import hf_hub_download
-
-        from utils.hf_cache_settings import active_hf_hub_cache
-
         return hf_hub_download(
             self.repo,
             self.files[path],
@@ -912,13 +926,22 @@ def _own_video_part(
     from .format_detection import encoded_video
 
     video = encoded_video(video)
+    embedded = isinstance(video, dict) and bool(video.get("bytes"))
     if isinstance(video, dict):
-        if not video.get("path") and video.get("bytes"):
-            raise ValueError(
-                "A video is stored as embedded bytes with no file path; training reads clips from "
-                "files, so save the clips to files and point the column at their paths."
-            )
         video = video.get("path")
+    # An embedded clip's path is often just its original filename, with no file behind it.
+    if embedded and not (isinstance(video, str) and os.path.isfile(video)):
+        resolved = (
+            hub.resolve(video)
+            if hub is not None and isinstance(video, str) and video.strip()
+            else None
+        )
+        if resolved is not None:
+            return resolved
+        raise ValueError(
+            "A video is stored as embedded bytes with no readable file path; training reads clips from "
+            "files, so save the clips to files and point the column at their paths."
+        )
     if not isinstance(video, str) or not video.strip():
         raise ValueError("Row has no video")
     if video.strip().lower().startswith(("http://", "https://")):
