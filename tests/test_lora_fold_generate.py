@@ -749,3 +749,50 @@ def test_bf16_folds_only_when_opted_in(_clean, monkeypatch):
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "1")
     engaged, _ = _generate(model)
     assert engaged is True and _same_bits(before, _bits(model))
+
+
+class _StreamApi(_RefApi):
+    """_RefApi with the position-free store of newer unsloth_zoo: a per-tile correction stream (host_words), its word
+    counts (host_wcnt) and the escapes (host_idx / host_val), sized by the target's own host_store_bytes()."""
+
+    def exact_fold(
+        self,
+        targets,
+        stream = None,
+    ):
+        out = super().exact_fold(targets, stream = stream)
+        for t in targets:
+            n_bad = int(t.bad.sum())
+            t.host_words = torch.zeros((n_bad + 7) // 8, dtype = torch.int32)
+            t.host_wcnt = torch.zeros(3, dtype = torch.int16)
+            t.host_idx = t.host_idx[:1]
+            t.host_val = t.host_val[:1]
+            t.host_store_bytes = lambda t = t: sum(
+                b.numel() * b.element_size()
+                for b in (t.host_words, t.host_wcnt, t.host_idx, t.host_val)
+            )
+        return out
+
+
+def test_position_free_store_is_counted_whole(monkeypatch):
+    """With the position-free store the stream and word counts hold most of the bytes: the stats and the restore
+    chunks count every host buffer (through host_store_bytes), not only the escape positions and values."""
+    api = _StreamApi()
+    monkeypatch.setattr(fold, "_exact_api", lambda: api)
+    sizes = []
+    unfold = api.exact_unfold
+
+    def recording_unfold(targets, stream = None):
+        sizes.append([t.host_store_bytes() for t in targets if t.folded])
+        return unfold(targets, stream = stream)
+
+    monkeypatch.setattr(api, "exact_unfold", recording_unfold)
+    model = _make(MODELS[0])
+    before = _bits(model)
+    engaged, _ = _generate(model)
+    assert engaged is True and _same_bits(before, _bits(model))
+    s = fold.stats()
+    want = sum(sum(chunk) for chunk in sizes)
+    assert s["last"]["host_store_bytes"] == want > 0, (s["last"], sizes)
+    # Not just the escapes (one per target here).
+    assert want > 6 * s["last"]["targets"]

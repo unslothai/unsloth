@@ -428,13 +428,34 @@ def _scope(model, entries):
                 STATS["last"]["unfold_s"] = time.perf_counter() - t2
 
 
+# Host tensors of a target's fix-up store: positions + originals (older unsloth_zoo), or the per-tile correction
+# stream, its word counts and the escapes (newer, position-free store).
+_STORE_NAMES = ("host_words", "host_wcnt", "host_idx", "host_val")
+
+
+def _store_buffers(t):
+    return [
+        b for b in (getattr(t, name, None) for name in _STORE_NAMES) if isinstance(b, torch.Tensor)
+    ]
+
+
+def _store_bytes(t):
+    size = getattr(t, "host_store_bytes", None)
+    if callable(size):
+        try:
+            return int(size())
+        except Exception:
+            pass
+    return sum(b.numel() * b.element_size() for b in _store_buffers(t))
+
+
 def _record_fold(info, targets, fold_s):
     # Pinned host RAM of the fix-up store, held for the whole call.
     host_bytes, pinned = 0, None
     for t in targets:
-        for buf in (getattr(t, "host_idx", None), getattr(t, "host_val", None)):
-            if isinstance(buf, torch.Tensor):
-                host_bytes += buf.numel() * buf.element_size()
+        host_bytes += _store_bytes(t)
+        for buf in _store_buffers(t):
+            if buf.numel():
                 pinned = buf.is_pinned() if pinned is None else (pinned and buf.is_pinned())
     with _LOCK:
         STATS["engaged"] += 1
@@ -454,11 +475,7 @@ _RESTORE_CHUNK_BYTES = 64 << 20
 def _restore_chunks(targets):
     chunk, size = [], 0
     for t in targets:
-        n = sum(
-            b.numel() * b.element_size()
-            for b in (getattr(t, "host_idx", None), getattr(t, "host_val", None))
-            if isinstance(b, torch.Tensor)
-        )
+        n = _store_bytes(t)
         if chunk and size + n > _RESTORE_CHUNK_BYTES:
             yield chunk
             chunk, size = [], 0
