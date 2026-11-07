@@ -3,11 +3,14 @@
 
 """Lets AOTAutogradCache store denoiser graphs with an sdpa_kernel block (FLUX.1, Z-Image, Qwen-
 Image), whose Dynamo-baked calls are not on AOTAutogradCache's allowlist; the SDPA backend
-priority order is keyed into the cache. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it."""
+priority order is keyed into the cache. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it. Also pins
+the libdevice path and the autotune-cache key so a returning start hits what the first one saved."""
 
 from __future__ import annotations
 
+import hashlib
 import os
+import threading
 from typing import Any
 
 from . import diffusion_compile_config as compile_config
@@ -124,3 +127,73 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
                 "diffusion.aot_cache: libdevice not pinned (%s: %s)", type(exc).__name__, exc
             )
         return None
+
+
+# Autotune key: inductor's compile workers start with torch's default ``cache_key_tag`` (the env var, else ""), but
+# the parent's carries the tags Unsloth and Studio add. A worker-built kernel saves its ``.best_config`` under the
+# worker's key, and every later process loads that kernel from the FX cache in the parent and looks under the parent's
+# key, so every returning start re-benchmarked every multi-config reduction (SDXL on L4: 40 kernels, ~9.5 s of a 22 s
+# first render). The kernel source hash is already in the key, so the parent uses the workers' tag for this key only.
+# UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN=0 disables it.
+_AUTOTUNE_KEY_ENV = "UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN"
+_TORCH_TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
+_AUTOTUNE_KEY_LOCK = threading.Lock()
+
+
+def autotune_key_pin_enabled() -> bool:
+    raw = (os.environ.get(_AUTOTUNE_KEY_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def worker_cache_key_tag() -> str:
+    """The ``cache_key_tag`` a freshly started compile worker reads: torch's env default, else empty."""
+    return os.environ.get(_TORCH_TAG_ENV, "")
+
+
+def _autotune_key(filename: str, tag: str) -> str:
+    """torch's ``AutotuneCache._prepare_key`` (2.6+): basename (a hash of the kernel source) and the tag."""
+    return hashlib.sha256(f"{os.path.basename(filename)}:{tag}".encode("utf-8")).hexdigest()
+
+
+def pin_autotune_key(logger: Any = None) -> bool:
+    """Key the parent's autotune cache lookups as the compile workers key their saves (idempotent, process-wide).
+    False when disabled or this torch keys them some other way (probed, not version-gated). Never raises."""
+    if not autotune_key_pin_enabled():
+        return False
+    try:
+        import torch.compiler.config as cconfig
+        from torch._inductor.runtime import autotune_cache
+
+        cls = getattr(autotune_cache, "AutotuneCache", None)
+        raw = getattr(cls, "__dict__", {}).get("_prepare_key")
+        if not isinstance(raw, staticmethod):
+            return False
+        with _AUTOTUNE_KEY_LOCK:
+            if getattr(raw.__func__, "_unsloth_worker_tag", False):
+                return True
+            stock = raw.__func__
+            tag = getattr(cconfig, "cache_key_tag", None)
+            probe = os.path.join("probe", "cunslothprobe.py")
+            if not isinstance(tag, str) or stock(probe) != _autotune_key(probe, tag):
+                return False
+
+            def _prepare_key(filename: str) -> str:
+                return _autotune_key(filename, worker_cache_key_tag())
+
+            _prepare_key._unsloth_worker_tag = True
+            _prepare_key.__wrapped__ = stock
+            cls._prepare_key = staticmethod(_prepare_key)
+        if logger is not None:
+            logger.info(
+                "diffusion.aot_cache: autotune results keyed as the compile workers key them "
+                "(tag %r, this process %r)",
+                worker_cache_key_tag(),
+                tag,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        if logger is not None:
+            logger.debug(
+                "diffusion.aot_cache: autotune key not pinned (%s: %s)", type(exc).__name__, exc
+            )
+        return False
