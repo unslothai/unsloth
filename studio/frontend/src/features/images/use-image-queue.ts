@@ -24,9 +24,16 @@ export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[
     if (finished.length) finishedRef.current(finished);
   }, []);
 
+  // Polls and action refreshes overlap on a slow link: an answer older than one already applied is dropped.
+  const issued = useRef(0);
+  const applied = useRef(0);
   const refresh = useCallback(async () => {
+    const id = ++issued.current;
     try {
-      apply(await listDiffusionQueue());
+      const jobs = await listDiffusionQueue();
+      if (id < applied.current) return;
+      applied.current = id;
+      apply(jobs);
     } catch {
       // transient; the next poll retries
     }
