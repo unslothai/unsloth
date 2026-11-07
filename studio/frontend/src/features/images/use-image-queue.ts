@@ -13,7 +13,7 @@ const IDLE_POLL_MS = 5000;
 /** `onFinished` gets each job that finished since the last poll. */
 export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[]) => void) {
   const [jobs, setJobs] = useState<ImageQueueJob[]>([]);
-  const jobsRef = useRef<ImageQueueJob[]>([]);
+  const jobsRef = useRef<ImageQueueJob[] | null>(null);
   const finishedRef = useRef(onFinished);
   finishedRef.current = onFinished;
 

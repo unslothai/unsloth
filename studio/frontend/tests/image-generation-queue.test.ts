@@ -46,12 +46,12 @@ test("the running job and the waiting ones are told apart; finished jobs are nei
   assert.equal(runningJob([job("b", "queued")]), null);
 });
 
-test("only a job seen pending on the last poll counts as newly finished", () => {
-  const prev = [job("a", "running"), job("b", "queued"), job("c", "queued")];
-  const next = [job("b", "running"), job("c", "queued"), job("a", "done"), job("old", "done")];
-  assert.deepEqual(newlyFinished(prev, next).map((j) => j.id), ["a"]);
+test("a job pending on the last poll, or queued and finished since, counts as newly finished", () => {
+  const prev = [job("a", "running"), job("b", "queued"), job("old", "done")];
+  const next = [job("b", "running"), job("a", "done"), job("api", "failed"), job("old", "done")];
+  assert.deepEqual(newlyFinished(prev, next).map((j) => j.id), ["a", "api"]);
   // The first poll after a reload reports history, not news.
-  assert.deepEqual(newlyFinished([], next), []);
+  assert.deepEqual(newlyFinished(null, next), []);
   assert.deepEqual(
     newlyFinished([job("b", "queued")], [job("b", "cancelled")]).map((j) => j.status),
     ["cancelled"],

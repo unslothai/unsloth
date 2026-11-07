@@ -3647,7 +3647,7 @@ export function ImagesPage({
     void (async () => {
       try {
         const p = await getGenerateProgress();
-        // Not denoising yet: the next queue poll asks again.
+        // Not denoising yet: the next queue poll (a new jobs array) asks again.
         if (cancelled || !p.active || !isMounted.current) return;
         followedJob.current = queueRunningId;
         runTarget.current = undefined;
@@ -3661,7 +3661,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [queueRunningId, busy, resumeGeneratePoll]);
+  }, [queueRunningId, busy, resumeGeneratePoll, imageQueue.jobs]);
 
   useEffect(() => {
     void (async () => {

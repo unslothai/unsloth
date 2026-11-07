@@ -18,15 +18,17 @@ export function queueBusy(jobs: readonly ImageQueueJob[]): boolean {
   return jobs.some((job) => job.status === "queued" || job.status === "running");
 }
 
-/** Jobs that finished between two polls. One already finished on the first poll (a reload) is not news. */
+/** Jobs that finished between two polls, including one queued and finished in between. `prev` null is the first
+ *  poll (a reload): what already finished then is not news. */
 export function newlyFinished(
-  prev: readonly ImageQueueJob[],
+  prev: readonly ImageQueueJob[] | null,
   next: readonly ImageQueueJob[],
 ): ImageQueueJob[] {
+  if (prev === null) return [];
   const before = new Map(prev.map((job) => [job.id, job.status]));
   return next.filter((job) => {
     const was = before.get(job.id);
-    return FINISHED.has(job.status) && was !== undefined && !FINISHED.has(was);
+    return FINISHED.has(job.status) && (was === undefined || !FINISHED.has(was));
   });
 }
 

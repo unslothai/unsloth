@@ -215,3 +215,30 @@ def test_queue_is_capped_and_finished_history_trimmed(monkeypatch):
         assert [j.request.prompt for j in queue.jobs("owner")] == ["c"]
 
     asyncio.run(scenario())
+
+
+def test_retire_cancels_waiting_jobs_and_stops_the_running_render():
+    async def scenario():
+        started = asyncio.Event()
+
+        async def runner(job):
+            started.set()
+            while not job.ticket.cancelled():
+                await asyncio.sleep(0.01)
+            raise JobCancelled()
+
+        queue = ImageGenerationQueue(runner)
+        running = queue.enqueue(OWNER, _request("running"))
+        waiting = queue.enqueue(OWNER, _request("waiting"))
+        other = queue.enqueue(OTHER, _request("other"))
+        await asyncio.wait_for(started.wait(), 5)
+        queue.retire("owner")
+        assert waiting.status == image_queue.CANCELLED and other.status == image_queue.QUEUED
+        for _ in range(200):
+            if running.status == image_queue.CANCELLED:
+                break
+            await asyncio.sleep(0.01)
+        assert running.status == image_queue.CANCELLED
+        assert queue.loop is asyncio.get_running_loop()
+
+    asyncio.run(scenario())

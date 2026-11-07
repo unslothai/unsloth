@@ -50788,7 +50788,9 @@ async def _run_queued_image_job(job) -> list[str]:
         DIFFUSION_CANCELLED_MSG,
         DiffusionModelReplacedError,
     )
+    from core.inference import media_keepwarm
     from core.inference.generation_ticket import generation_ticket
+    from core.inference.gpu_arbiter import DIFFUSION
     from core.inference.image_queue import JobCancelled
 
     async def _run() -> list[str]:
@@ -50798,7 +50800,10 @@ async def _run_queued_image_job(job) -> list[str]:
             raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG)
         if job.ticket.cancelled():
             raise JobCancelled()
+        # No HTTP request carries a queued job: keep-warm and the account checks never see it otherwise.
+        await media_keepwarm.begin_request(DIFFUSION)
         try:
+            account_access.require_live_account()
             with generation_ticket(job.ticket):
                 response = await _generate_diffusion_image_core(job.request, job.load)
         except HTTPException as exc:
@@ -50810,9 +50815,18 @@ async def _run_queued_image_job(job) -> list[str]:
             if isinstance(detail, dict):
                 detail = detail.get("message") or detail.get("detail") or json.dumps(detail)
             raise RuntimeError(str(detail)) from exc
+        finally:
+            media_keepwarm.end_request(DIFFUSION)
         return [image.id for image in response.images]
 
     return await arun_as(job.account, _run())
+
+
+def retire_account_image_jobs(account_id: str) -> None:
+    """Called from a worker thread by account disable / delete; the queue lives on the event loop."""
+    queue = _image_queue
+    if queue is not None and queue.loop is not None and not queue.loop.is_closed():
+        queue.loop.call_soon_threadsafe(queue.retire, account_id)
 
 
 def _get_image_queue():

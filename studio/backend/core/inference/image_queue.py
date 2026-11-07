@@ -68,6 +68,7 @@ class ImageGenerationQueue:
         self._wait_idle = wait_idle
         self._jobs: list[ImageJob] = []
         self._worker: Optional[asyncio.Task] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     def jobs(self, account_id: str) -> list[ImageJob]:
         return [job for job in self._jobs if job.account_id == account_id]
@@ -127,6 +128,11 @@ class ImageGenerationQueue:
             self._jobs.append(job)
         return job
 
+    def retire(self, account_id: str) -> None:
+        """A disabled or deleted account: nothing of its waits, its running render stops."""
+        for job in self.jobs(account_id):
+            self.cancel(account_id, job.id)
+
     def clear(self, account_id: str) -> int:
         """Drop this account's queued and finished jobs; a running job is left to finish."""
         removed = 0
@@ -164,7 +170,8 @@ class ImageGenerationQueue:
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
-            self._worker = asyncio.get_running_loop().create_task(self._drain())
+            self.loop = asyncio.get_running_loop()
+            self._worker = self.loop.create_task(self._drain())
 
     async def _drain(self) -> None:
         while True:
