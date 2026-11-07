@@ -5579,8 +5579,10 @@ export function ImagesPage({
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
-        if (runSeed !== null) {
-          sessionSeedAt.current = Math.max(sessionSeedAt.current, ...res.images.map((image) => image.created_at));
+        const runAt = Math.max(0, ...res.images.map((image) => image.created_at));
+        // A late reply never replaces the seed of a queued run that finished after it.
+        if (runSeed !== null && runAt >= sessionSeedAt.current) {
+          sessionSeedAt.current = runAt;
           setSessionSeed(runSeed);
         }
         // Asked for enhancement and did not get it: say so once, without blocking the result.
