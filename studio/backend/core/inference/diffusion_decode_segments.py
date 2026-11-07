@@ -13,6 +13,8 @@ import sys
 import threading
 from typing import Any, Iterator, Optional
 
+from .rocm_bf16 import is_rocm_torch
+
 DECODE_EXPANDABLE_ENV = "UNSLOTH_DIFFUSION_DECODE_EXPANDABLE"
 ENABLED_ATTR = "_unsloth_decode_expandable"
 _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
@@ -79,7 +81,7 @@ def _setter(torch: Any) -> Any:
 def _decide(torch: Any) -> bool:
     if not _platform_ok() or _allocator_configured():
         return False
-    if getattr(getattr(torch, "version", None), "hip", None):
+    if is_rocm_torch(torch):
         return False
     if _setter(torch) is None:
         return False
