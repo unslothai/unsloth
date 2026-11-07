@@ -342,15 +342,15 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands()
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 12, (
-        f"expected twelve parallel pytest runs, three shards of the backend matrix and nine "
+    assert len(parallel) == 13, (
+        f"expected thirteen parallel pytest runs, three shards of the backend matrix and ten "
         f"of repo-cpu-tests, got {parallel}. If a job stopped running in parallel, or a "
         f"shard was added or removed, say so here rather than letting this scan quietly "
         f"cover fewer runs."
     )
     root = [command for command in parallel if _over_the_repo_tests(command)]
-    assert len(root) == 9, (
-        f"expected the nine repo-root shards, got {root}. The isolation checks above apply "
+    assert len(root) == 10, (
+        f"expected the ten repo-root shards, got {root}. The isolation checks above apply "
         f"to those, and a scan that matched none of them would pass on nothing."
     )
     backend = [command for command in parallel if _over_the_backend(command)]

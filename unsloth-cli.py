@@ -26,8 +26,8 @@ def _is_mlx_backend(unsloth_module):
     return bool(getattr(unsloth_module, "_IS_MLX", False))
 
 
-def _normalize_dtype(dtype, is_mlx):
-    if is_mlx and isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
+def _normalize_dtype(dtype):
+    if isinstance(dtype, str) and dtype.strip().lower() in {"", "none", "auto"}:
         return None
     return dtype
 
@@ -78,6 +78,13 @@ def _raw_text_loader_for_backend(
         stride,
         return_tokenized = not is_mlx,
     )
+
+
+def _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, path):
+    loader = _raw_text_loader_for_backend(
+        RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+    )
+    return loader.load_from_file(path)
 
 
 def _train_with_legacy_save_control(trainer, is_mlx):
@@ -226,7 +233,7 @@ def run(args):
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model_name,
         max_seq_length = args.max_seq_length,
-        dtype = _normalize_dtype(args.dtype, is_mlx),
+        dtype = _normalize_dtype(args.dtype),
         load_in_4bit = args.load_in_4bit,
         device_map = device_map,
     )
@@ -279,13 +286,11 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = _raw_text_loader_for_backend(
-                RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+            dataset = _load_raw_text_file(
+                RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-            dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
-            loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
-            dataset = loader.load_from_file(args.dataset)
+            dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:

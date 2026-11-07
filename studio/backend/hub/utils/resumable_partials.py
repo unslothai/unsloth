@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Give huggingface_hub >= 1.18 back its resumable HTTP partials. 1.18 replaced the shared ``<etag>.incomplete``, opened append and continued with a Range request, with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out (huggingface/huggingface_hub#4228), so a cancelled or killed transfer refetches from zero and :mod:`hub.workers.hf_download`, whose SIGKILL then restart loop reads ``.incomplete`` for its resume offset, has nothing to read. Only the caller went: ``http_get`` still takes ``resume_size``, still sends the Range header, and still does ``seek(0)`` + ``truncate()`` when a server answers 200 to a Range request, the case that would otherwise duplicate bytes, so this restores the 1.17 caller and nothing else. Upstream removed it because the shared name corrupts the cache where ``flock(2)`` does not exclude every caller (Lustre, GPFS, some NFS): two processes append to one file. So exclusion has to be shown, and where it cannot be, the stock writer stays and partials keep reporting as unresumable. Two things have to hold, because a probe run here can only speak for this host: the cache must be on a local filesystem, since NFS mounted ``-o local_lock=flock`` keeps flock locks client-local so two hosts each take "the" lock and neither sees ``EWOULDBLOCK``; and ``flock`` must actually exclude a second holder here, which :func:`_lock_is_honoured_at` measures by taking the lock twice, where only ``EWOULDBLOCK``/``EAGAIN`` counts as exclusion, since a filesystem with no locking answers ``ENOLCK`` or ``EOPNOTSUPP`` and reading that as "refused" would enable the shared writer on precisely the mounts that cannot support it. Neither can be shown on Windows, which has no ``fcntl`` and no way to establish who owns a file without pywin32, so the shared name stays off there. A predictable name is also something another account can get to first, so the partial itself is checked before a byte is appended: ``O_NOFOLLOW`` at open, and then owner, link count and file type on the descriptor rather than the path, since only the descriptor is the thing about to be written (see :func:`_objection_to`); publishing re-checks that the name still holds what was written, because ``_chmod_and_move`` resolves it again. The other corruption route, appending to a sparse XET or parallel-Range partial, belongs to the transport markers in :mod:`hub.utils.download_registry`: they are bypassed on >= 1.18 only because no resumer exists, so restoring one brings them back into force."""
+"""Give huggingface_hub >= 1.18 back its resumable HTTP partials. 1.18 replaced the shared ``<etag>.incomplete``, opened append and continued with a Range request, with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out (huggingface/huggingface_hub#4228), so a cancelled or killed transfer refetches from zero and :mod:`hub.workers.hf_download`, whose SIGKILL then restart loop reads ``.incomplete`` for its resume offset, has nothing to read. Only the caller went: ``http_get`` still takes ``resume_size``, still sends the Range header, and still does ``seek(0)`` + ``truncate()`` when a server answers 200 to a Range request, the case that would otherwise duplicate bytes, so this restores the 1.17 caller and nothing else. Upstream removed it because the shared name corrupts the cache where ``flock(2)`` does not exclude every caller (Lustre, GPFS, some NFS): two processes append to one file. So exclusion has to be shown, and where it cannot be, the stock writer stays and partials keep reporting as unresumable. Two things have to hold, because a probe run here can only speak for this host: the cache must be on a local filesystem, since NFS mounted ``-o local_lock=flock`` keeps flock locks client-local so two hosts each take "the" lock and neither sees ``EWOULDBLOCK``; and ``flock`` must actually exclude a second holder here, which :func:`_lock_is_honoured_at` measures by taking the lock twice, where only ``EWOULDBLOCK``/``EAGAIN`` counts as exclusion, since a filesystem with no locking answers ``ENOLCK`` or ``EOPNOTSUPP`` and reading that as "refused" would enable the shared writer on precisely the mounts that cannot support it. Windows has no ``fcntl``, so there the probe takes the ``msvcrt`` byte-range lock that filelock, and so huggingface_hub, uses instead. A predictable name is also something another account can get to first, so the partial itself is checked before a byte is appended: ``O_NOFOLLOW`` at open, and then owner, link count and file type on the descriptor rather than the path, since only the descriptor is the thing about to be written (see :func:`_objection_to`); publishing re-checks that the name still holds what was written, because ``_chmod_and_move`` resolves it again. The other corruption route, appending to a sparse XET or parallel-Range partial, belongs to the transport markers in :mod:`hub.utils.download_registry`: they are bypassed on >= 1.18 only because no resumer exists, so restoring one brings them back into force."""
 
 from __future__ import annotations
 
@@ -164,6 +164,16 @@ def _filesystem_is_local_on(directory: str, device: int) -> bool:
     return True
 
 
+def _nonblocking_lock():
+    try:
+        import fcntl
+    except ImportError:
+        # filelock's Windows lock, which reads EACCES as held elsewhere.
+        import msvcrt
+        return lambda fd: msvcrt.locking(fd, msvcrt.LK_NBLCK, 1), frozenset({errno.EACCES})
+    return lambda fd: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB), _CONTENDED
+
+
 def _lock_is_honoured_at(directory: str) -> bool:
     """Whether ``flock`` under *directory* actually excludes a second holder."""
     return _lock_is_honoured_on(directory, _device_at(directory))
@@ -173,8 +183,6 @@ def _lock_is_honoured_at(directory: str) -> bool:
 @lru_cache(maxsize = 8)
 def _lock_is_honoured_on(directory: str, device: int) -> bool:
     """Take the lock twice and require the second to be refused. Separate ``open()`` calls make separate open file descriptions and flock judges them independently. Only contention counts as a refusal; a filesystem that grants both, or answers anything else, leaves the stock writer in place. A probe that could not be run at all raises instead, since a full disk or a briefly unwritable cache is not a measurement to remember."""
-    import fcntl
-
     # A random, exclusively created file: the cache can be shared, and a predictable name lets another user pre-place a symlink an unguarded open would follow and truncate.
     try:
         handle, name = tempfile.mkstemp(dir = directory, prefix = ".unsloth-flock-probe.")
@@ -182,12 +190,13 @@ def _lock_is_honoured_on(directory: str, device: int) -> bool:
         raise _ProbeUnavailable(f"could not create the probe in {directory}: {exc}") from exc
     second = None
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock, contended = _nonblocking_lock()
+        lock(handle)
         second = os.open(name, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
         try:
-            fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock(second)
         except OSError as exc:
-            if exc.errno in _CONTENDED:
+            if exc.errno in contended:
                 return True
             # ENOLCK / EOPNOTSUPP / EINTR: not a refusal, so nothing has been shown.
             logger.info(
@@ -224,11 +233,6 @@ def _exclusion_is_provable(hub_cache: Optional[Path | str] = None) -> bool:
     directory = _probe_dir(hub_cache)
     if directory is None:
         return False
-    try:
-        import fcntl  # noqa: F401
-    except ImportError:
-        # No fcntl on Windows, where huggingface_hub locks via msvcrt, and Windows has no way to establish who owns a partial (os.stat reports st_uid 0 for every file and reading an ACL needs pywin32), so another account on a shared NTFS cache could leave a partial with a chosen prefix and have the remaining range appended to it, which the size-only check would pass.
-        return False
     # _ProbeUnavailable is deliberately not caught: a probe that could not run is not an answer, and letting it out keeps any caller from caching one.
     return _filesystem_is_local(str(directory)) and _lock_is_honoured_at(str(directory))
 
@@ -260,11 +264,61 @@ def _objection_to(descriptor: int) -> Optional[str]:
         return "hard linked from elsewhere"
     euid = getattr(os, "geteuid", None)
     if euid is None:
-        # No owner to compare against, so nothing here can be vouched for. Reachable only if the writer is ever enabled without geteuid; _exclusion_is_provable refuses that today.
+        if os.name == "nt":
+            try:
+                owned = _owned_by_this_account(descriptor)
+            except Exception:  # noqa: BLE001 - an owner that cannot be read is not ours
+                owned = False
+            return None if owned else "owned by another user"
         return "on a platform where ownership cannot be established"
     if info.st_uid != euid():
         return "owned by another user"
     return None
+
+
+def _owned_by_this_account(descriptor: int) -> bool:
+    # os.fstat reports st_uid 0 on Windows, so read the owner SID off the handle instead.
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, TOKEN_QUERY = 1, 1, 0x0008
+    TOKEN_USER, TOKEN_OWNER = 1, 4
+
+    owner, security = ctypes.c_void_p(), ctypes.c_void_p()
+    if advapi32.GetSecurityInfo(
+        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+        SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION,
+        ctypes.byref(owner),
+        None,
+        None,
+        None,
+        ctypes.byref(security),
+    ):
+        return False
+    token = wintypes.HANDLE()
+    try:
+        process = wintypes.HANDLE(kernel32.GetCurrentProcess())
+        if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
+            return False
+        # An elevated administrator's new files are owned by the Administrators group, its token owner.
+        for token_class in (TOKEN_USER, TOKEN_OWNER):
+            size = wintypes.DWORD()
+            advapi32.GetTokenInformation(token, token_class, None, 0, ctypes.byref(size))
+            info = ctypes.create_string_buffer(size.value)
+            if advapi32.GetTokenInformation(
+                token, token_class, info, size, ctypes.byref(size)
+            ) and advapi32.EqualSid(owner, ctypes.c_void_p.from_buffer(info)):
+                return True
+        return False
+    finally:
+        if token:
+            kernel32.CloseHandle(token)
+        kernel32.LocalFree(security)
 
 
 def _still_the_written_file(path: Path, written: os.stat_result) -> bool:
@@ -310,6 +364,13 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
                     return None
             else:
                 objection = _objection_to(descriptor)
+                # Without O_NOFOLLOW a link swapped in after the lstat above is followed; the name must still be the opened file.
+                if (
+                    objection is None
+                    and not nofollow
+                    and not _still_the_written_file(path, os.fstat(descriptor))
+                ):
+                    objection = "a symlink"
                 if objection is None:
                     return os.fdopen(descriptor, "ab")
                 os.close(descriptor)

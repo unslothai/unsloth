@@ -2610,8 +2610,9 @@ export function PromptStorageDialog({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
-            {/* */}
+          {/* relative z-10: on WebKit glass each dialog child is its own layer, so the inline
+              suggestions must ride a toolbar stacked above the editor grid that follows. */}
+          <div className="relative z-10 px-6 pt-4 pb-3 shrink-0 flex flex-col gap-3">
             <div className="flex items-center gap-1 self-start rounded-full bg-muted/60 p-1">
               {(["prompts", "lists"] as Tab[]).map((tab) => (
                 <button

@@ -414,6 +414,8 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
             ("warm", True, active),
             "/int8",
             "/rng",
+            # The resident batch warms in its own block, unless the first warm-up lost the queue.
+            *["rng", "/rng"] * (outcome != "dead_queue"),
         ]
     )
     assert events == ["gate_up", *warmed]
@@ -1759,6 +1761,83 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
     config = SimpleNamespace(identifier = "fake/adapter", is_vision = False, is_lora = True)
     with pytest.raises(ValueError, match = "LoRA adapter repos"):
         MLXInferenceBackend().load_model(config, parallel_mode = "tensor", distributed_group = group)
+
+
+def test_vlm_load_streams_each_spm_token_as_it_arrives(monkeypatch):
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    pytest.importorskip("mlx_lm.tokenizer_utils")
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    pieces = ["▁#", "▁A", "▁head", "ing", "<0xE2>", "<0x9C>", "<0x93>", "<eos>"]
+
+    class _SpmTokenizer(_DummyTokenizer):
+        vocab = {piece: index for index, piece in enumerate(pieces)}
+
+        def __len__(self):
+            return len(pieces)
+
+        def convert_ids_to_tokens(self, ids):
+            return [pieces[index] for index in ids]
+
+    def stream(detokenizer):
+        detokenizer.reset()
+        segments = []
+        for token in range(len(pieces)):
+            detokenizer.add_token(token, skip_special_token_ids = [len(pieces) - 1])
+            segments.append(detokenizer.last_segment)
+        detokenizer.finalize()
+        return segments + [detokenizer.last_segment]
+
+    tokenizer = _SpmTokenizer()
+    held = detokenizers.SPMStreamingDetokenizer(tokenizer, trim_space = False)
+    monkeypatch.setattr(_DummyProcessor, "tokenizer", tokenizer)
+    monkeypatch.setattr(_DummyProcessor, "detokenizer", held, raising = False)
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    backend = MLXInferenceBackend()
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config)
+
+    late = stream(held)
+    eager = stream(backend._processor.detokenizer)
+    assert late[:2] == ["", " #"]
+    assert eager == [" #", " A", " head", "ing", "", "", "✓", "", ""]
+    assert "".join(eager) == "".join(late) == " # A heading✓"
+
+
+def test_vlm_load_trims_only_the_reply_s_first_space(monkeypatch):
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    pytest.importorskip("mlx_lm.tokenizer_utils")
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    pieces = ["▁", "<0x20>", "▁world"]
+
+    class _SpmTokenizer(_DummyTokenizer):
+        vocab = {piece: index for index, piece in enumerate(pieces)}
+
+        def __len__(self):
+            return len(pieces)
+
+        def convert_ids_to_tokens(self, ids):
+            return [pieces[index] for index in ids]
+
+    tokenizer = _SpmTokenizer()
+    held = detokenizers.SPMStreamingDetokenizer(tokenizer, trim_space = True)
+    monkeypatch.setattr(_DummyProcessor, "tokenizer", tokenizer)
+    monkeypatch.setattr(_DummyProcessor, "detokenizer", held, raising = False)
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    backend = MLXInferenceBackend()
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config)
+
+    eager = backend._processor.detokenizer
+    for _ in range(2):
+        eager.reset()
+        for token in range(len(pieces)):
+            eager.add_token(token)
+        eager.finalize()
+        assert eager.text == "  world"
 
 
 @pytest.mark.parametrize("accepts_backend", (True, False))
@@ -3523,6 +3602,48 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     session.close()
 
 
+@pytest.mark.parametrize("limit", [None, 16])
+def test_an_image_row_through_mlx_lm_is_refused_when_its_expanded_prompt_fills_the_window(
+    monkeypatch, limit
+):
+    from core.inference import mlx_inference
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    inserted = []
+    generator = SimpleNamespace(
+        insert = lambda prompts, **kw: inserted.append(kw) or [len(inserted)],
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, True
+    backend._make_row_cache = lambda: ["cache"]
+    plan = SimpleNamespace(
+        prompt = "P", max_tokens = limit, sampler = None, processors = (), streamed = None, think_prefix = ""
+    )
+    backend._plan_text_row = lambda messages, **_kw: plan
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    request = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "image": object(),
+        "max_new_tokens": limit,
+    }
+    backend._served_context = 4
+    with pytest.raises(ContextBudgetExceeded):
+        session.admit(request, 0)
+    assert inserted == []
+    backend._served_context = 5
+    session.admit(request, 1)
+    assert [kw["max_tokens"] for kw in inserted] == [[limit or 1]]
+    session.close()
+
+
 @pytest.mark.parametrize("ends", [None, "length", "stop"])
 def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(monkeypatch, ends):
     import numpy
@@ -4974,6 +5095,108 @@ def test_zoo_multimodal_detection_fails_open_to_text(monkeypatch):
 
     monkeypatch.setattr(model_config, "_read_raw_config_json", unreadable)
     assert mlx_inference._zoo_declares_multimodal("repo") is False
+
+
+def _text_family_backend(
+    monkeypatch,
+    vlm_only,
+    *,
+    configs = None,
+    fail_vlm_load = False,
+    config_dir = None,
+):
+    """A backend over a stub unsloth-zoo that builds `raon1_mini` on mlx-vlm when `vlm_only`."""
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    attempts, asked = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if fail_vlm_load and not kwargs["text_only"]:
+                raise RuntimeError("mlx-vlm load failed")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    loader._is_vlm = lambda cfg: False
+    loader._mlx_vlm_only_text_model = lambda cfg, model_type: (
+        asked.append(model_type) or (vlm_only and model_type == "raon1_mini")
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    configs = configs or {"org/raon": {"model_type": "raon1_mini"}}
+    monkeypatch.setattr(
+        model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
+    )
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
+    monkeypatch.setattr(
+        mlx_inference, "_kv_quant_eligibility", lambda *a: ("none", "MLA cache", False)
+    )
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    config = SimpleNamespace(
+        identifier = "org/raon", is_vision = False, is_lora = False, config_dir = config_dir
+    )
+    return mlx_inference.MLXInferenceBackend(), config, attempts, asked
+
+
+@pytest.mark.parametrize("vlm_only", [True, False])
+def test_a_text_family_only_mlx_vlm_ships_is_loaded_and_served_there(monkeypatch, vlm_only):
+    backend, config, attempts, asked = _text_family_backend(monkeypatch, vlm_only)
+    backend.load_model(config)
+    assert "raon1_mini" in asked and attempts == [not vlm_only]
+    assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
+
+
+def test_a_text_family_only_mlx_vlm_ships_is_routed_by_its_precision_folder_config(monkeypatch):
+    # The repo root has no config; the loader builds from 8bit/, whose config declares the family.
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch,
+        True,
+        configs = {"/snap/8bit": {"model_type": "raon1_mini"}},
+        config_dir = "/snap/8bit",
+    )
+    backend.load_model(config)
+    assert attempts == [False] and backend._is_vlm is True
+
+
+def test_a_multimodal_precision_folder_is_routed_by_its_own_config(monkeypatch):
+    # The root config is a text family mlx-lm serves; the picked folder's is one zoo calls multimodal.
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch,
+        False,
+        configs = {"org/raon": {"model_type": "qwen3"}, "/snap/8bit": {"model_type": "mm_family"}},
+        config_dir = "/snap/8bit",
+    )
+    seen = []
+    sys.modules["unsloth_zoo.mlx.loader"]._is_vlm = lambda cfg: (
+        seen.append(cfg["model_type"]) or cfg["model_type"] == "mm_family"
+    )
+    backend.load_model(config)
+    assert seen == ["mm_family"] and attempts == [False] and backend._is_vlm is True
+
+
+@pytest.mark.parametrize("vlm_only", [True, False])
+@pytest.mark.parametrize("failure", ["kv_refused", "load_failed"])
+def test_a_text_family_only_mlx_vlm_ships_never_falls_back_to_mlx_lm(
+    monkeypatch, vlm_only, failure
+):
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch, vlm_only, fail_vlm_load = failure == "load_failed"
+    )
+    if failure == "load_failed" and vlm_only:
+        with pytest.raises(RuntimeError, match = "mlx-vlm load failed"):
+            backend.load_model(config, kv_quant = "8")
+        assert attempts == [False]
+        return
+    backend.load_model(config, kv_quant = "8")
+    assert attempts == ([False] if vlm_only else [False, True])
+    assert backend._is_vlm is vlm_only and backend._kv_quant["kv_bits"] is None
 
 
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
@@ -8227,7 +8450,9 @@ def test_a_width_refusal_is_asked_once_per_checkpoint_and_width(monkeypatch, tmp
 
 def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
     from core.inference import mlx_inference
+    from core.inference.mlx_memory import MlxTurboQuant
 
+    turboquant = MlxTurboQuant(4)
     priced, rewound = [], []
     monkeypatch.setitem(
         sys.modules,
@@ -8286,6 +8511,8 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     for answer in (("refused", "r", True), ("none", "n", True)):
         verdict["answer"] = answer
         assert fit(4) == (24_576, answer) and priced[0]["kv_bits"] is None
+    assert fit(turboquant) == (24_576, None) and asked == []
+    assert priced[0]["kv_bits"] == turboquant
 
     monkeypatch.setitem(
         sys.modules,
@@ -8429,8 +8656,21 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
             requested_kv_bits = bits, kv_bits = bits, eligibility = "full", reason = "", note = ""
         ),
     )
+    from core.inference.mlx_memory import MlxTurboQuant
+
     load(max_seq_length = 0, kv_quant = "tq-4")
-    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [None]
+    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [MlxTurboQuant(4)]
+    assert asked[0][2]["vision"] is True
+    probed = []
+    monkeypatch.setattr(
+        mlx_inference,
+        "_turboquant_status",
+        lambda _m, bits, refusal = "": probed.append(bits)
+        or dict(requested_kv_bits = bits, kv_bits = None, eligibility = "refused", reason = "r", note = ""),
+    )
+    _, info = load(max_seq_length = 0, kv_quant = "tq-4")
+    assert [kw["kv_bits"] for _, _, kw in asked] == [None] and probed == [4]
+    assert info["mlx_kv_bits"] is None
 
     for available, reserved in ((True, True), (False, False)):
         monkeypatch.setattr(
@@ -10914,6 +11154,37 @@ def test_mlx_vlm_counts_a_text_only_turn_by_the_vision_marker_rule(monkeypatch):
 def test_mlx_passes_an_explicit_budget_through_both_paths(monkeypatch):
     assert _run_text_budget(monkeypatch, 4096) == 4096
     assert _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), 4096) == 4096
+
+
+@pytest.mark.parametrize("limit", [None, 16])
+def test_mlx_refuses_a_prompt_that_fills_the_served_window(monkeypatch, limit):
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    fits = _BUDGET_PROMPT_N + 1
+    assert _run_text_budget(monkeypatch, limit, served = fits) == (limit or 1)
+    assert _run_vlm_budget(monkeypatch, _TEXT_TURN, None, limit, served = fits) == (limit or 1)
+    with pytest.raises(ContextBudgetExceeded) as refused:
+        _run_text_budget(monkeypatch, limit, served = _BUDGET_PROMPT_N)
+    assert (refused.value.request_tokens, refused.value.context_tokens) == (fits, _BUDGET_PROMPT_N)
+    with pytest.raises(ContextBudgetExceeded):
+        _run_vlm_budget(monkeypatch, _TEXT_TURN, None, limit, served = _BUDGET_PROMPT_N)
+    with pytest.raises(ContextBudgetExceeded):
+        _run_text_budget(monkeypatch, limit, served = 300, cached = list(range(300)))
+
+
+@pytest.mark.parametrize("limit", [None, 16])
+def test_mlx_batch_rows_refuse_a_prompt_that_fills_the_served_window(monkeypatch, limit):
+    from core.inference import mlx_inference
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, [])
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_kw: None)
+    row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "max_new_tokens": limit})
+    backend._served_context = 4
+    assert backend._plan_text_row([], **row).max_tokens == (limit or 1)
+    backend._served_context = 3
+    with pytest.raises(ContextBudgetExceeded):
+        backend._plan_text_row([], **row)
 
 
 def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypatch):
