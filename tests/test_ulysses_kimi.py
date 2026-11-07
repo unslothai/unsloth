@@ -380,8 +380,10 @@ class KimiDeltaAttention(nn.Module):
         else:
             g = -a * F.softplus(f)
         beta = self.b_proj(hidden_states).to(acc).sigmoid()
-        q = F.normalize(q.to(acc), dim = -1) * HEAD_DIM**-0.5
-        k = F.normalize(k.to(acc), dim = -1)
+        # fla l2norm (use_qk_l2norm_in_kernel): eps 1e-6 under the square root.
+        q, k = q.to(acc), k.to(acc)
+        q = q * torch.rsqrt(q.pow(2).sum(-1, keepdim = True) + 1e-6) * HEAD_DIM**-0.5
+        k = k * torch.rsqrt(k.pow(2).sum(-1, keepdim = True) + 1e-6)
         state = q.new_zeros(bsz, HEADS, HEAD_DIM, HEAD_DIM)
         outs = []
         for t in range(seq):

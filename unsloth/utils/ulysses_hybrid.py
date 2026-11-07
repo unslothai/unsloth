@@ -317,8 +317,10 @@ def _torch_kda(q, k, v, g, beta):
 
     q, k, g [B, T, H, K]; v [B, T, H, V]; beta [B, T, H].
     """
-    q = F.normalize(q.float(), dim = -1) * q.shape[-1] ** -0.5
-    k = F.normalize(k.float(), dim = -1)
+    # fla's use_qk_l2norm_in_kernel: x * rsqrt(sum(x ** 2) + 1e-6), not F.normalize.
+    q, k = q.float(), k.float()
+    q = q * torch.rsqrt(q.pow(2).sum(-1, keepdim = True) + 1e-6) * q.shape[-1] ** -0.5
+    k = k * torch.rsqrt(k.pow(2).sum(-1, keepdim = True) + 1e-6)
     v, g, beta = v.float(), g.float(), beta.float()
     state = q.new_zeros(q.shape[0], q.shape[2], q.shape[3], v.shape[3])
     outs = []
