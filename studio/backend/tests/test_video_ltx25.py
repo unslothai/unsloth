@@ -2709,6 +2709,10 @@ def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(mon
     params = list(model.parameters())
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
     monkeypatch.setattr(worker, "_discrete_card", lambda device: True)
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 64 << 10)
+    monkeypatch.setattr(diffusion_memory, "_host_ram_capacity_mib", lambda: 128 << 10)
     owned = []
     real = worker._own_host_copy
     monkeypatch.setattr(worker, "_own_host_copy", lambda m: owned.append(1) or real(m))
@@ -2737,6 +2741,11 @@ def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(mon
         _FakeTokenizer(), _stack_model(), {"device": "cuda:0", "resident": False}, ["a"], 6
     )
     assert owned == [1]
+    # a host without room above the reserve keeps the mapping (as base's streamed encode did)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1)
+    short = _stack_model()
+    ptrs = [t.data_ptr() for t in short.parameters()]
+    assert real(short) is False and [t.data_ptr() for t in short.parameters()] == ptrs
     # a CPU encode never copies
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", None))
     worker._encode_on(

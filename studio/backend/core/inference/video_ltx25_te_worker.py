@@ -745,6 +745,10 @@ def _own_host_copy(model: Any) -> bool:
     encode. Base did this implicitly (``model.to("cpu")`` after each encode); kept mapped, the pages are page cache the
     server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
     import torch
+
+    if not _host_fits(list(model.parameters()) + list(model.buffers()), copies = 1):
+        # Base's streamed and CPU encodes kept the mapping too; a short host keeps it rather than risk the OOM killer.
+        return False
     try:
         # Keyed by identity: a tied tensor is copied once and stays shared.
         done: dict = {}
@@ -772,6 +776,11 @@ def _pin_fits_twice(tensors: list) -> bool:
     """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
     storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
     without that room the pin pushed the box into reclaim and encodes took 70-80 s instead of 22 s."""
+    return _host_fits(tensors, copies = 2)
+
+
+def _host_fits(tensors: list, copies: int) -> bool:
+    """Whether host RAM holds ``copies`` more copies of ``tensors`` above the pin reserve."""
     from core.inference.diffusion_memory import (
         _PIN_RESERVE_FRACTION,
         _PIN_RESERVE_MIN_BYTES,
@@ -784,7 +793,7 @@ def _pin_fits_twice(tensors: list) -> bool:
         return False
     need = sum(int(t.numel()) * int(t.element_size()) for t in tensors)
     reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
-    return (int(available) << 20) - 2 * need >= reserve
+    return (int(available) << 20) - int(copies) * need >= reserve
 
 
 class _Onload:
