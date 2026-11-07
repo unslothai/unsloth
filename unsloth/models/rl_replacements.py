@@ -4658,15 +4658,9 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
 
 
 def _unsloth_grpo_head_hooked(model):
-    """True when GRPO must score real logits from the model's own head call instead of hidden states.
-
-    The hidden-states scorers read ``lm_head.weight`` directly and never call the head, so forward / backward hooks
-    on it, a patched instance ``forward`` and torch's global module hooks would never see it. Hooks owned by
-    Unsloth, DeepSpeed ZeRO-3 and torch.distributed (FSDP2) are ignored: the scorers already gather / unshard the head
-    themselves. An accelerate ``_hf_hook`` (device placement) is ignored too, along with the ``forward`` it installs.
-    A square head (vocab_size == hidden_size) keeps hidden states: ``_unsloth_grpo_returns_hidden_states`` could not
-    tell its real logits from hidden states by width.
-    """
+    """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
+    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
+    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
     try:
         head = model.get_output_embeddings()
     except Exception:
@@ -4811,9 +4805,7 @@ _GRPO_HIDDEN_STATES_REQUEST = re.compile(
 
 
 def _patch_grpo_accumulated_loss_head_hooks(source):
-    """Give zoo's gradient path the hooked-head fallback of the no-grad path: every request for hidden states in
-    ``grpo_accumulated_loss`` becomes a request for real logits while ``_unsloth_grpo_head_hooked`` holds, so the
-    model calls its own head and the hooks see it. The width dispatches then take the logits branch."""
+    """In ``grpo_accumulated_loss``, request real logits instead of hidden states while ``_unsloth_grpo_head_hooked``."""
     if re.search(r"def grpo_accumulated_loss\(\s*trainer\s*,", source) is None:
         raise RuntimeError(
             "Unsloth: grpo_accumulated_loss in this unsloth_zoo version does not take "
