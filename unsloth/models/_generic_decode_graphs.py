@@ -20,6 +20,7 @@ disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECO
 import collections
 import contextlib
 import copy
+import functools
 import os
 import traceback
 import weakref
@@ -290,15 +291,31 @@ def redo_eagerly(model):
 def _plain_forward(model):
     """No instance forward; the class forward bound on the instance, bare or under functools.wraps
     wrappers (accelerate's mixed-precision autocast / fp32-output wrappers, which eager decode runs too);
-    or Unsloth's GRPO hidden-states wrapper, which passes straight through while generating. Accelerate
-    device hooks (offload, device maps) stay eager."""
+    Unsloth's GRPO hidden-states wrapper, which passes straight through while generating; or accelerate's
+    device hook of a model on one device (a bitsandbytes model placed on a card other than cuda:0 gets
+    one): its input / output moves are no-ops there, and the eager step runs the same hook. Offloading
+    hooks and device maps over several devices stay eager."""
     forward = model.__dict__.get("forward")
     if forward is None:
         return True
+    if isinstance(forward, functools.partial) and "_hf_hook" in model.__dict__:
+        # accelerate's add_hook_to_module: forward = partial(new_forward, model), original in _old_forward.
+        if not (forward.args and forward.args[0] is model and not forward.keywords):
+            return False
+        if not _single_device_hook(model):
+            return False
+        old = model.__dict__.get("_old_forward")
+        return old is not None and _plain_bound(model, old)
+    if hasattr(model, "_hf_hook"):
+        return False
+    return _plain_bound(model, forward)
+
+
+def _plain_bound(model, forward):
     func = getattr(forward, "__func__", forward)
     if getattr(func, "_unsloth_grpo_hidden_states_forward_wrapped", False):
         return True
-    if getattr(forward, "__self__", None) is not model or hasattr(model, "_hf_hook"):
+    if getattr(forward, "__self__", None) is not model:
         return False
     target = getattr(type(model), "forward", None)
     for _ in range(4):
@@ -308,6 +325,37 @@ def _plain_forward(model):
         if func is None:
             return False
     return False
+
+
+def _single_device_hook(model):
+    """accelerate AlignDevicesHook(s) that only move tensors to the model's own (single) device: no
+    offload, no weights map. Another hook type, or an execution device elsewhere, is not ours to graph."""
+    try:
+        from accelerate.hooks import AlignDevicesHook, SequentialHook
+    except Exception:
+        return False
+    hook = model.__dict__.get("_hf_hook")
+    hooks = list(hook.hooks) if isinstance(hook, SequentialHook) else [hook]
+    device = getattr(model, "device", None)
+    for h in hooks:
+        if type(h) is not AlignDevicesHook:
+            return False
+        if h.offload or getattr(h, "offload_buffers", False) or h.weights_map is not None:
+            return False
+        target = h.execution_device
+        if target is None:
+            continue
+        try:
+            target = torch.device(target)
+        except Exception:
+            return False
+        if not isinstance(device, torch.device) or target.type != device.type:
+            return False
+        if (target.index if target.index is not None else 0) != (
+            device.index if device.index is not None else 0
+        ):
+            return False
+    return True
 
 
 class _Entry:
@@ -1018,6 +1066,16 @@ def decode_step(
         reason = _window_reason(cache, 1)
     if reason is not None:
         return _refusal(state, reason)
+    device = getattr(model, "device", None)
+    if (
+        isinstance(device, torch.device)
+        and device.type == ids.device.type
+        and device.index is not None
+        and ids.device.index is not None
+        and device.index != ids.device.index
+    ):
+        # Inputs on another card than the weights (an accelerate hook moves them every step): not one device.
+        return _refusal(state, "inputs on another device")
     index = ids.device.index
     if index is not None and index != _BACKEND.current_device():
         with _BACKEND.device(index):

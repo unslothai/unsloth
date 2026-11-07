@@ -315,3 +315,59 @@ def test_placeholder_masking_models_embed_outside_the_graph():
     assert GG._placeholder_embeds(Model("gemma4"), kwargs) is kwargs
     media = {"input_ids": ids, "pixel_values": torch.ones(1)}
     assert GG._placeholder_embeds(model, media) is media
+
+
+def _hooked(model, hook):
+    """What accelerate's add_hook_to_module leaves on a module (without moving its parameters)."""
+    import functools
+
+    def new_forward(module, *args, **kwargs):
+        args, kwargs = module._hf_hook.pre_forward(module, *args, **kwargs)
+        return module._hf_hook.post_forward(module, module._old_forward(*args, **kwargs))
+
+    old = model.forward
+    model._old_forward = old
+    model._hf_hook = hook
+    model.forward = functools.update_wrapper(functools.partial(new_forward, model), old)
+    return model
+
+
+def test_a_single_device_accelerate_hook_keeps_graphs_eligible(monkeypatch):
+    """A bitsandbytes model placed on cuda:1 gets accelerate's AlignDevicesHook (force_hooks, vision.py
+    _attach_bnb_multidevice_hooks): an instance forward plus _hf_hook, which wanted() used to refuse, so
+    no decode step of a model on a second card was ever graphed."""
+    from accelerate.hooks import AlignDevicesHook, ModelHook
+
+    class OnCard1(torch.nn.Linear):
+        @property
+        def device(self):
+            return torch.device("cuda", 1)
+
+    monkeypatch.setattr(G, "ENABLED", True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.delenv("UNSLOTH_DECODE_GENERIC_GRAPHS", raising = False)
+    assert GG.wanted(
+        _hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 1, io_same_device = True))
+    )
+    assert GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = "cuda:1")))
+    # Hooks that move weights or run elsewhere stay eager.
+    assert not GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 0)))
+    assert not GG.wanted(_hooked(OnCard1(2, 2), AlignDevicesHook(execution_device = 1, offload = True)))
+    assert not GG.wanted(_hooked(OnCard1(2, 2), ModelHook()))
+
+
+def test_generate_through_a_single_device_hook_uses_graphs(host, llama, monkeypatch):
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+    monkeypatch.setenv(ENV, "0")
+    eager = _gen(llama)
+    monkeypatch.delenv(ENV)
+    add_hook_to_module(llama, AlignDevicesHook(execution_device = "cpu", io_same_device = True))
+    hooked = llama.__dict__["forward"]
+    graphed = _gen(llama)
+    s = _stats(llama)
+    assert s["captures"] == 1 and s["replays"] >= 8, s
+    assert torch.equal(eager, graphed)
+    # The hook's forward is put back after the call.
+    assert llama.__dict__["forward"] is hooked
