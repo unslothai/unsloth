@@ -10226,6 +10226,9 @@ class LlamaCppBackend:
     _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
+    # (exec path, mtime_ns, size, budget) -> whether that binary accepts the positive budget. Kept
+    # here, since probe_server_capabilities returns a fresh copy on --fit-target builds.
+    _reasoning_budget_value_cache: dict[tuple[str, int, int, int], bool] = {}
     _capability_cache_lock = threading.Lock()
 
     # Older builds take a bare boolean -fa and exit on a following "on".
@@ -10851,27 +10854,51 @@ class LlamaCppBackend:
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
                 probe_binary = cls._exec_path_for_launch(binary)
-                probe_env = cls._llama_server_env_for_binary(probe_binary)
-                # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
-                for name in tuple(probe_env):
-                    if name.startswith("LLAMA_ARG_"):
-                        probe_env.pop(name, None)
-                if sys.platform == "darwin":
-                    probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
-                    result = subprocess.run(
-                        [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
-                        capture_output = True,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        timeout = 10,
-                        check = False,
-                        env = probe_env,
+                    probe_stat = Path(probe_binary).stat()
+                    value_cache_key = (
+                        str(probe_binary),
+                        probe_stat.st_mtime_ns,
+                        probe_stat.st_size,
+                        effective_budget,
                     )
-                    caps[value_key] = result.returncode == 0
-                except (OSError, subprocess.SubprocessError):
-                    caps[value_key] = False
+                except OSError:
+                    value_cache_key = None
+                with cls._capability_cache_lock:
+                    known = (
+                        cls._reasoning_budget_value_cache.get(value_cache_key)
+                        if value_cache_key is not None
+                        else None
+                    )
+                if known is not None:
+                    caps[value_key] = known
+                else:
+                    probe_env = cls._llama_server_env_for_binary(probe_binary)
+                    # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
+                    for name in tuple(probe_env):
+                        if name.startswith("LLAMA_ARG_"):
+                            probe_env.pop(name, None)
+                    if sys.platform == "darwin":
+                        probe_env["GGML_METAL_DEVICES"] = "0"
+                    try:
+                        result = subprocess.run(
+                            [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
+                            capture_output = True,
+                            text = True,
+                            encoding = "utf-8",
+                            errors = "replace",
+                            timeout = 10,
+                            check = False,
+                            env = probe_env,
+                            **_windows_hidden_subprocess_kwargs(),
+                        )
+                        caps[value_key] = result.returncode == 0
+                        # Only a finished probe is remembered; a spawn error, timeout or crash probes again.
+                        if value_cache_key is not None and result.returncode >= 0:
+                            with cls._capability_cache_lock:
+                                cls._reasoning_budget_value_cache[value_cache_key] = caps[value_key]
+                    except (OSError, subprocess.SubprocessError):
+                        caps[value_key] = False
             if not caps[value_key]:
                 raise ValueError(
                     f"llama-server at {binary} does not accept positive reasoning budgets. "
