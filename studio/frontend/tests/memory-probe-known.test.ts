@@ -127,6 +127,7 @@ test("a fast monitor poll does not join a pending fetch on the 10 s GPU cache", 
     new URL("../src/hooks/use-system.ts", import.meta.url),
     {
       react: {},
+      "@/config/env": { refreshDeviceTypeAfterSystemInfo: () => {} },
       "@/features/auth": {
         authFetch: (url: string) =>
           new Promise<Response>((resolve) => {
