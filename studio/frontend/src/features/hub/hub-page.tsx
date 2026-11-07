@@ -2181,8 +2181,13 @@ export function ModelsPage() {
                     : HUB_SPLIT_CUSTOM_WIDTH_CLASS,
                 )
               : "flex-1",
-            // Opaque overlay: remove the catalog from the tab order.
-            catalogCovered && "pointer-events-none",
+            // The detail overlay covers the catalog. Hide the catalog too: a background
+            // image or macOS Glass clears the overlay's fill, so the list would show
+            // through. Opacity (not visibility, which the active scroll pane forces back
+            // on) keeps its layout and scroll position for "Back to Hub".
+            catalogCovered && "pointer-events-none opacity-0",
+            // Below lg the split detail pane is the same full overlay.
+            splitMode && detailOpen && "max-lg:opacity-0",
           )}
           style={splitMode ? splitWidth.style : undefined}
           aria-hidden={catalogCovered || undefined}
