@@ -8,10 +8,12 @@ import { useSyncExternalStore } from "react";
 import { normalizeModelIdentity } from "./model-identity";
 import {
   type PerModelConfig,
+  type PerModelConfigSnapshot,
   deletePerModelConfigsForOverrideKeys,
   fromStoredPerModelConfig,
   isChatTemplateWithinLimit,
   modelOverrideKeyOwners,
+  perModelConfigChangedSince,
   toStoredPerModelConfig,
 } from "./per-model-config";
 
@@ -368,12 +370,22 @@ export function setSelectedRunSettings(
 /** Back on Default too: a selection left behind would show a set that no longer loads. */
 export function forgetPerModelConfigsForOverrideKeys(
   overrideKeys: readonly string[],
+  unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   const selections = readSelections();
   const pins = readPins();
   let changed = false;
   let unpinned = false;
-  for (const { modelId, ggufVariant } of modelOverrideKeyOwners(overrideKeys)) {
+  for (const { modelId, ggufVariant, storageKey } of modelOverrideKeyOwners(
+    overrideKeys,
+  )) {
+    // Saved again since the forget was sent: that record keeps its set too.
+    if (
+      unchangedSince &&
+      perModelConfigChangedSince(storageKey, unchangedSince)
+    ) {
+      continue;
+    }
     const key = selectionKey(modelId, ggufVariant);
     if (typeof selections[key] === "string") {
       selections[key] = null;
@@ -390,7 +402,7 @@ export function forgetPerModelConfigsForOverrideKeys(
   if (changed) {
     writeSelections(selections);
   }
-  return deletePerModelConfigsForOverrideKeys(overrideKeys);
+  return deletePerModelConfigsForOverrideKeys(overrideKeys, unchangedSince);
 }
 
 // The set a one-time load used and what it sent: the runtime reports resolved values, so sets alone

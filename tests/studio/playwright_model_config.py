@@ -835,9 +835,9 @@ with sync_playwright() as p:
 
     # 3. Reset clears the override (never pins context) (HARD).
     step("reset clears the per-model override", LOAD_STEP_BUDGET_S)
-    reset_btn = popover.get_by_role("button", name = "Reset").first
+    reset_btn = popover.get_by_role("button", name = "Reset all", exact = True).first
     if _count(reset_btn) == 0:
-        fail("Reset button not found in run-settings")
+        fail("Reset all button not found in run-settings")
     else:
         try:
             reset_btn.click()
