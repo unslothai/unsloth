@@ -607,6 +607,22 @@ def test_keep_cpu_weights_follow_the_target_device(
 
 
 @pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
+def test_native_quant_host_staging_follows_the_target_device(
+    mixed_gpu, pins, current_integrated, target_integrated
+):
+    from core.inference import diffusion_native_quant as nq
+
+    mixed_gpu(current_integrated, target_integrated)
+    mover = nq._HostLinearMover(_TARGET)
+    up = mover._staging("up", 1024)
+    down = mover._staging("down", 512)
+    if target_integrated:
+        assert up is None and down is None and pins == []
+    else:
+        assert up.numel() >= 1024 and down.numel() >= 512 and pins == ["empty", "empty"]
+
+
+@pytest.mark.parametrize("current_integrated, target_integrated", _MIXED)
 def test_pin_planners_follow_the_target_device(
     monkeypatch, mixed_gpu, current_integrated, target_integrated
 ):
@@ -683,6 +699,8 @@ def test_only_deviceless_sites_ask_the_predicate_without_a_device():
         # device == "cuda" (the current device) is checked first
         ("core/training/diffusion_dit_trainer.py", "_build_latent_cache"),
         ("core/training/diffusion_dit_trainer.py", "_load_warm_conditioning"),
+        ("core/training/diffusion_dit_trainer.py", "_pin_caption_embeds"),
+        ("core/training/diffusion_h3_trainer.py", "_train_h3"),
         ("core/training/diffusion_lora_trainer.py", "_build_sdxl_latent_cache"),
     }
     bare = set()

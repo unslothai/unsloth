@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music
+from core.inference import audio_cpp_backend, audio_cpp_failures, audio_cpp_files, audio_cpp_music
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import (
     AUDIO_CPP_REPO,
@@ -882,6 +882,65 @@ def test_the_folder_name_never_names_a_variant(hub):
     assert "not found" in model.unsupported
     anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
     assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
+VIBEVOICE = f"{AUDIO_CPP_REPO}/VibeVoice-1.5B-GGUF"
+VIBEVOICE_Q4 = "VibeVoice-1.5B-GGUF/vibevoice-1.5b-q4-ios"
+
+
+def _vibevoice(root, *names):
+    spec = {"family": "vibevoice", "tasks": ["tts"]}
+    pads = {"bf16": 300, "q8_0": 200, "q4-ios": 100}
+    snap = _snapshot(root)
+    return {
+        name: _put(
+            snap,
+            f"VibeVoice-1.5B-GGUF/vibevoice-1.5b-{name}.gguf",
+            _gguf_bytes(family = "vibevoice", spec = spec) + b"\0" * pads[name],
+        )
+        for name in names
+    }
+
+
+def test_a_published_file_the_runtime_cannot_load_is_never_offered(hub):
+    _vibevoice(hub, "bf16", "q8_0", "q4-ios")
+    model = acm.resolve(VIBEVOICE, network = False)
+    assert [v.key for v in model.variants] == ["Q8_0", "BF16"]
+    assert model.unsupported is None
+    assert audio_cpp_failures.smaller_variants(model) == []
+    # A saved or requested Q4 is refused, not swapped for another variant.
+    assert "not found" in acm.resolve(VIBEVOICE, "Q4", network = False).unsupported
+
+
+def test_an_unloadable_file_alone_offers_nothing_but_stays_deletable(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    paths = _vibevoice(hub, "q4-ios")
+    model = acm.resolve(VIBEVOICE, network = False)
+    assert model.variants == () and "cannot be loaded" in model.unsupported
+    assert "cannot be loaded" in acm.resolve(str(paths["q4-ios"]), network = False).unsupported
+    from hub.services.models import gguf_variants as gv
+
+    acm.forget()
+    listing = asyncio.run(gv._audio_cpp_variants_answer(VIBEVOICE, None, True)).response
+    assert listing.variants == [] and listing.loadable_variants == [] and not listing.loadable
+    [cached] = [m for m in acm.downloaded_models() if m.id == VIBEVOICE]
+    assert "cannot be loaded" in cached.unsupported
+    assert acm.cached_folder_target(VIBEVOICE, "Q4") == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+    assert acm.cached_folder_target(VIBEVOICE) == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+
+
+def test_deleting_a_folder_includes_its_unloadable_file(hub):
+    _vibevoice(hub, "q8_0", "q4-ios")
+    q8 = "VibeVoice-1.5B-GGUF/vibevoice-1.5b-q8_0"
+    assert [v.key for v in acm.resolve(VIBEVOICE, network = False).variants] == ["Q8_0"]
+    assert acm.cached_folder_target(VIBEVOICE, "Q4") == (AUDIO_CPP_REPO, [VIBEVOICE_Q4])
+    assert acm.cached_folder_target(VIBEVOICE, "Q8_0") == (AUDIO_CPP_REPO, [q8])
+    assert acm.cached_folder_target(VIBEVOICE) == (AUDIO_CPP_REPO, [q8, VIBEVOICE_Q4])
+    from hub.services.models import deletion
+
+    repo = SimpleNamespace(repo_id = AUDIO_CPP_REPO)
+    own, protected = deletion._umbrella_variant_scope(repo, VIBEVOICE_Q4)
+    assert own == {f"{VIBEVOICE_Q4}.gguf"} and protected == {f"{q8}.gguf"}
 
 
 MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
@@ -3180,3 +3239,59 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
     if "bogus" in options:
         assert body["options"] == {"speed": 1.5}
     assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}
+
+
+def _sized_host(
+    monkeypatch,
+    device = "CUDA",
+    cpu_runtime = False,
+):
+    import utils.hardware as hardware
+    from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType[device])
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+
+
+def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
+    from core.inference.audio_cpp_failures import estimate_resident_gb
+
+    _sized_host(monkeypatch)
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", network = True)
+    assert model.family == "kokoro_tts" and len(model.variants) == 2
+    for variant in model.variants:
+        expected = estimate_resident_gb(variant.size_bytes, model.family)
+        assert rows[variant.key].estimated_resident_gb == expected
+        assert expected != estimate_resident_gb(variant.size_bytes)
+
+
+@pytest.mark.parametrize("cpu_runtime", [False, True])
+def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu_runtime):
+    _sized_host(monkeypatch, cpu_runtime = cpu_runtime)
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-tq2_1.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    assert {quant: row.estimated_resident_gb is None for quant, row in rows.items()} == {
+        "Q8_0": cpu_runtime,
+        "TQ2_1": True,
+    }
+
+
+def test_a_dictation_model_lists_no_gpu_estimate(hub, monkeypatch):
+    _sized_host(monkeypatch)
+    _online(monkeypatch, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf")
+    row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    rows = _rows(row)
+    assert acm.resolve(row, network = True).task == "asr"
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())
+
+
+@pytest.mark.parametrize("device", ["MLX", "CPU"])
+def test_a_host_the_check_never_sizes_lists_no_gpu_estimate(hub, monkeypatch, device):
+    _sized_host(monkeypatch, device)
+    _online(monkeypatch, "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())

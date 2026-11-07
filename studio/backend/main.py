@@ -30,6 +30,13 @@ try:
 except Exception:
     pass
 
+# Triton-only flash-attn (RDNA3/4) imports only with its backend switch; set before any flash_attn import.
+try:
+    from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
+    _default_triton_amd_env()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -325,6 +332,7 @@ del _guard_dataset_media
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Studio decides training / export / chat-only from its own hardware detection, so keep
 # `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+# A training worker on a host Studio trains on CPU opts back in (core/training/worker.py).
 os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 # Must not import unsloth here (pulls torch/GPU); before transformers reads sentencepiece.
@@ -451,8 +459,10 @@ import utils.hardware.hardware as _hw_module
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
     background_media_import,
+    gate_torch_stack_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
+    prewarm_quant_probe_if_image_models_exist,
     reset_background_warm,
     start_background_warm,
     warm_status,
@@ -615,6 +625,25 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
 _first_response_sent = threading.Event()
 
 
+# Snapshot once per lifespan: saving the setting changes the next launch only.
+_startup_ml_warmup_features: frozenset[str] = frozenset()
+_hardware_detection_requested = False
+
+
+def _ml_warmup_enabled(feature: Optional[str] = None) -> bool:
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return False
+    return (
+        bool(_startup_ml_warmup_features)
+        if feature is None
+        else feature in _startup_ml_warmup_features
+    )
+
+
+def _hardware_detection_deferred() -> bool:
+    return not (_ml_warmup_enabled("hardware") or _hardware_detection_requested)
+
+
 _post_warm_thread: Optional[threading.Thread] = None
 _post_warm_lock = threading.Lock()
 # Bumped every start/stop so a worker parked in join_background_warm() cannot act after shutdown.
@@ -693,22 +722,36 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
 
-    # Apple Silicon without MLX: reinstall and re-detect (UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 opts out).
-    try:
-        from utils.mlx_repair import start_mlx_autorepair_if_needed
-        if _post_warm_retired(generation):
-            return
-        start_mlx_autorepair_if_needed()
-    except Exception as _mlx_exc:
-        import structlog as _structlog
+    # Repair only after hardware is needed. A cold Apple Silicon launch must not
+    # import mlx_lm/transformers merely to check whether they need repairing.
+    def repair_mlx() -> None:
+        try:
+            from utils.mlx_repair import start_mlx_autorepair_if_needed
+            if _post_warm_retired(generation):
+                return
+            start_mlx_autorepair_if_needed()
+        except Exception as exc:
+            import structlog as _structlog
+            _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", exc)
 
-        # Warning, not debug: a half-applied update here silently greys out Train/Export.
-        _structlog.get_logger(__name__).warning("mlx autorepair skipped: %s", _mlx_exc)
+    if _ml_warmup_enabled("hardware") or _hw_module.DETECTION_COMPLETE.is_set():
+        repair_mlx()
+    elif _hw_module.is_apple_silicon() and generation is not None:
+
+        def repair_after_detection() -> None:
+            while not _post_warm_retired(generation):
+                if _hw_module.DETECTION_COMPLETE.wait(0.5):
+                    repair_mlx()
+                    return
+
+        threading.Thread(
+            target = repair_after_detection, name = "mlx-repair-on-demand", daemon = True
+        ).start()
 
     if _post_warm_retired(generation):
         return
     # Off the polled path: /api/system must not import torchao itself.
-    if "torch" in sys.modules:
+    if _ml_warmup_enabled("media") and "torch" in sys.modules:
         # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
         with background_media_import() as _window_open:
             if _window_open:
@@ -743,14 +786,21 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     except Exception:  # noqa: BLE001
         pass
 
-    # Last: pure latency work (~5s diffusers import), only with image/video models.
+    # Last: optional latency work, only with image/video models.
     if _post_warm_retired(generation):
         return
-    try:
-        prewarm_diffusers_if_image_models_exist()
-    except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
-        import structlog as _structlog
-        _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
+    if _ml_warmup_enabled("media"):
+        try:
+            # The allocating smoke test has its own selection, separate from library imports.
+            prewarm_diffusers_if_image_models_exist(warm_quantization = False)
+        except Exception as _prewarm_exc:  # noqa: BLE001 -- latency work must never end the worker
+            import structlog as _structlog
+            _structlog.get_logger(__name__).debug("diffusers prewarm skipped: %s", _prewarm_exc)
+
+    if _post_warm_retired(generation):
+        return
+    if _ml_warmup_enabled("quantization"):
+        prewarm_quant_probe_if_image_models_exist()
 
 
 def clear_compiled_cache_unless_shared(app: FastAPI) -> None:
@@ -788,10 +838,15 @@ def bootstrap_banner_lines(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
+    """Startup: seed defaults, run maintenance and selected warmups. Shutdown: clean up compiled cache."""
 
     import time as _time
 
+    global _startup_ml_warmup_features, _hardware_detection_requested
+    from utils.ml_warmup_settings import get_startup_ml_warmup_features
+
+    _startup_ml_warmup_features = get_startup_ml_warmup_features()
+    _hardware_detection_requested = False
     _lifespan_started = _time.perf_counter()
     import structlog as _structlog
 
@@ -986,7 +1041,11 @@ async def lifespan(app: FastAPI):
     # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
     from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
 
-    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+    _startup_warm_expected = _ml_warmup_enabled()
+    start_stall_watchdog(
+        asyncio.get_running_loop(),
+        suppress = lambda: stand_down_for_the_warm(warm_expected = _startup_warm_expected),
+    )
 
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
@@ -1023,7 +1082,8 @@ async def lifespan(app: FastAPI):
 
     # Last, so it never contends for the GIL before the socket binds; its stages wait for the first response.
     _first_response_sent.clear()
-    start_background_warm(gate = _first_response_sent)
+    if _ml_warmup_enabled():
+        start_background_warm(gate = _first_response_sent, features = _startup_ml_warmup_features)
     _start_post_warm_thread()
 
     _lifespan_log.info(
@@ -1488,7 +1548,6 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
-    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1496,6 +1555,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
 )
@@ -1589,7 +1649,9 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
-        return AUDIO_INPUT_MAX_BYTES
+        # None means no cap, as the route treats it.
+        cap = audio_input_max_bytes()
+        return sys.maxsize if cap is None else cap
     if _SANDBOX_UPLOAD_RE.match(path):
         return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
     if _RAG_DOCUMENT_UPLOAD_RE.match(path):
@@ -1982,7 +2044,7 @@ _HEALTH_DETECT_BUDGET_S = 1.0
 
 async def _await_hardware_detection(budget: float) -> bool:
     """Poll instead of awaiting a thread: a timed-out to_thread keeps its executor slot for the import."""
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
+    if _hardware_detection_deferred():
         return _hw_module.DETECTION_COMPLETE.is_set() and _hw_module.DEVICE is not None
     # Check event AND DEVICE: shutdown clears DEVICE before the event.
     if _hw_module.DETECTION_COMPLETE.is_set() and _hw_module.DEVICE is not None:
@@ -2137,7 +2199,7 @@ async def liveness_check():
         alive["inference_active"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
-        if os.environ.get(DISABLE_ENV_VAR) == "1":
+        if _hardware_detection_deferred():
             # With the warm off nothing detects; mark hardware_detection_deferred or the watchdog waits in vain.
             alive["hardware_detection_deferred"] = True
     return alive
@@ -2155,9 +2217,43 @@ async def _desktop_shell_subject(request: Request) -> Optional[str]:
     return storage.DEFAULT_ADMIN_USERNAME
 
 
+async def _health_subject(request: Request) -> Optional[str]:
+    subject = await _desktop_shell_subject(request)
+    auth = request.headers.get("authorization", "")
+    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
+    if subject is None:
+        try:
+            from auth.authentication import credentials_for_token
+            from auth.authentication import get_current_subject as _gcs
+
+            creds = await credentials_for_token(request, bearer)
+            if creds is None:
+                return None
+            # Must await: a bare coroutine is truthy and would skip the auth check
+            subject = await _gcs(creds)
+        except HTTPException:
+            return None
+        except Exception:
+            return None
+    return subject
+
+
 @app.get("/api/health")
-async def health_check(request: Request):
-    """Waits for detection so a GPU host does not grey out Train/Export, but only up to a budget; the snapshot below decides the reply."""
+async def health_check(request: Request, detect_hardware: bool = False):
+    """Liveness plus launcher capability bits; host fingerprint gated on authentication.
+
+    Unauthenticated callers get non-sensitive fields (service, studio_root_id,
+    chat_only, desktop_*, native_path_leases_supported) to re-adopt a sibling
+    backend and gate UI before a token exists. version / studio_version /
+    device_type require authentication, including a valid desktop secret.
+    """
+    global _hardware_detection_requested
+    subject = None
+    if detect_hardware:
+        subject = await _health_subject(request)
+        if not subject:
+            raise HTTPException(status_code = 401, detail = "Authentication required")
+        _hardware_detection_requested = True
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
@@ -2204,26 +2300,11 @@ async def health_check(request: Request):
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
         # Not when a repair is pending, since it settles the verdict; deferred would mean never.
-        if os.environ.get(DISABLE_ENV_VAR) == "1" and not mlx_repairing:
+        if _hardware_detection_deferred() and not mlx_repairing:
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
-    subject = await _desktop_shell_subject(request)
-    auth = request.headers.get("authorization", "")
-    bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
     if subject is None:
-        try:
-            from auth.authentication import credentials_for_token
-            from auth.authentication import get_current_subject as _gcs
-
-            creds = await credentials_for_token(request, bearer)
-            if creds is None:
-                return base
-            # Must await: a bare coroutine is truthy and would skip the auth check
-            subject = await _gcs(creds)
-        except HTTPException:
-            return base
-        except Exception:
-            return base
+        subject = await _health_subject(request)
     if not subject:
         return base
 
@@ -2237,6 +2318,7 @@ async def health_check(request: Request):
     device_type = platform_map.get(sys.platform, sys.platform)
     # Separate from device_type: Intel Macs spill to system RAM; Apple Silicon has one pool.
     from utils.hardware import is_apple_silicon
+    from utils.paths.file_manager import file_manager_kind
 
     authed = {
         **base,
@@ -2260,6 +2342,8 @@ async def health_check(request: Request):
                 authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
             except Exception:
                 pass
+        # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
+        authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
@@ -2275,8 +2359,6 @@ async def health_check(request: Request):
             authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
-        from utils.paths.file_manager import file_manager_kind
-
         authed["file_manager"] = file_manager_kind()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
@@ -2289,6 +2371,11 @@ async def health_check(request: Request):
         if mlx_repairing:
             # base predates the repair, so drop a now-contradicting deferred marker; the repair settles it.
             authed.pop("hardware_detection_deferred", None)
+        elif authed.get("hardware_detection_deferred"):
+            # Nothing will detect until asked, so the host platform cannot wait for a verdict.
+            authed["device_type"] = device_type
+            authed["apple_silicon"] = is_apple_silicon()
+            authed["file_manager"] = file_manager_kind()
     return authed
 
 
@@ -2324,7 +2411,9 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    return asdict(get_download_transport_capabilities(probe = probe))
+    from utils.download_speed_limit import get_download_speed_limit_mbps
+    caps = asdict(get_download_transport_capabilities(probe = probe))
+    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
 
 
 @app.post(
@@ -2698,7 +2787,9 @@ def _dense_quant_schemes() -> list[str]:
 
 @app.get("/api/system")
 def get_system_info(
-    current_subject: str = Depends(get_current_subject), refresh_memory: bool = False
+    current_subject: str = Depends(get_current_subject),
+    refresh_memory: bool = False,
+    probe_media: bool = False,
 ):
     """Get system information.
 
@@ -2720,6 +2811,22 @@ def get_system_info(
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
+
+    # The image/video picker explicitly asks on first use; ordinary system polls
+    # must not import torchao or diffusers just to populate optional picker tiers.
+    if probe_media:
+        # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
+        gate_torch_stack_import("media capability probe", logger)
+        with background_media_import() as window_open:
+            if window_open:
+                try:
+                    _refresh_dense_quant_capability()
+                except Exception as exc:
+                    logger.debug("dense quant capability unavailable: %s", exc)
+                try:
+                    _refresh_quantised_streaming_capability()
+                except Exception as exc:
+                    logger.debug("quantised streaming capability unavailable: %s", exc)
 
     gpu_info, inference_gpu_info = _get_cached_system_gpu_info(
         logger, refresh_memory = refresh_memory
@@ -3244,6 +3351,14 @@ def _match_assets_before_api_routes(app: FastAPI) -> None:
     routes.insert(position, mount)
 
 
+# Takes over at once, then unregisters: no fetch handler, so requests go straight to the network,
+# and no cache or storage is touched (another app's caches are not Studio's to clear).
+_RETIRING_SERVICE_WORKER = (
+    'self.addEventListener("install", () => self.skipWaiting());\n'
+    'self.addEventListener("activate", (event) => event.waitUntil(self.registration.unregister()));\n'
+)
+
+
 def setup_frontend(
     app: FastAPI,
     build_path: Path,
@@ -3319,6 +3434,15 @@ def setup_frontend(
         # A non-string type is unsupported too; an unhashable value would raise TypeError and escape as a 500 instead of a clean 400.
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+
+        # Studio registers no service worker, so this is the browser updating one another app left on
+        # this origin. The app shell fails that update forever and the worker keeps every Studio request.
+        if request.headers.get("service-worker") == "script":
+            return Response(
+                content = _RETIRING_SERVICE_WORKER,
+                media_type = "text/javascript",
+                headers = {"Cache-Control": "no-store", "Service-Worker-Allowed": "/"},
+            )
 
         # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import logging
 import math
 import os
 import re
@@ -52,11 +53,19 @@ __all__ = [
     "drop_absent_adapter_grads_",
     "adapter_state_dict",
     "set_multi_lora_triton",
+    "MULTI_LORA_MOE_STATS",
 ]
 
 
 # Read once: an environment lookup inside a compiled forward would be a guard on every call.
 _TRITON_ENABLED = HAS_TRITON and os.environ.get("UNSLOTH_MULTI_LORA_TRITON", "1") != "0"
+_COMPILE_STACKS_ENABLED = (
+    HAS_TRITON
+    and os.name != "nt"
+    and torch.version.hip is None
+    and os.environ.get("UNSLOTH_MULTI_LORA_COMPILE_STACKS", "1") != "0"
+    and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "true", "True")
+)
 
 
 def set_multi_lora_triton(enabled: bool) -> None:
@@ -123,14 +132,14 @@ if HAS_TRITON:
         stride_wu,
         stride_wk,
         stride_wn,
-        IN_SORTED: tl.constexpr,
-        OUT_SORTED: tl.constexpr,
-        ADD: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
+        IN_SORTED: tl.constexpr,  # IN rows in adapter order, per call site
+        OUT_SORTED: tl.constexpr,  # OUT rows in adapter order, per call site
+        ADD: tl.constexpr,  # accumulate into OUT, per call site
+        SCALE: tl.constexpr,  # per-adapter scales given
+        IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        BLOCK_M: tl.constexpr,  # token tile, fixed 64
+        BLOCK_N: tl.constexpr,  # from N (rank or out_features)
+        BLOCK_K: tl.constexpr,  # from K (in_features or rank)
     ):
         # OUT[rows] (+)= scale_u * IN[rows] @ W_u, W_u read as (K, N) through strides. A row is either the
         # token's position in the sorted order (H, dH live there) or its original row (X, Y, dY, dX).
@@ -201,13 +210,13 @@ if HAS_TRITON:
         stride_ou,
         stride_oi,
         stride_oj,
-        P_SORTED: tl.constexpr,
-        Q_SORTED: tl.constexpr,
-        SCALE: tl.constexpr,
-        IEEE: tl.constexpr,
-        BLOCK_T: tl.constexpr,
-        BLOCK_I: tl.constexpr,
-        BLOCK_J: tl.constexpr,
+        P_SORTED: tl.constexpr,  # P rows in adapter order, per call site
+        Q_SORTED: tl.constexpr,  # Q rows in adapter order, per call site
+        SCALE: tl.constexpr,  # per-adapter scales given
+        IEEE: tl.constexpr,  # fp32 inputs: ieee dot
+        BLOCK_T: tl.constexpr,  # token tile, fixed 64
+        BLOCK_I: tl.constexpr,  # from I (weight dim)
+        BLOCK_J: tl.constexpr,  # from J (weight dim)
     ):
         # OUT_u = scale_u * P[seg_u].T @ Q[seg_u]; an adapter with no tokens stores zeros.
         pid = tl.program_id(0)
@@ -740,6 +749,49 @@ class MultiLoraExpertParam(nn.Module):
             self.num_experts,
         )
 
+    def grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
+        if (
+            not torch.compiler.is_compiling()
+            and self.lora_A[0].device.type == "cuda"
+            and _COMPILE_STACKS_ENABLED
+            and _TRITON_ENABLED
+        ):
+            return _compiled_expert_stacks()(self, reversed_io, dtype)[:3]
+        return self._grouped_stacks(reversed_io, dtype)[:3]
+
+    def _grouped_stacks(self, reversed_io: bool, dtype: torch.dtype) -> tuple:
+        """Every adapter's factors as (E*(U+1), in, R) and (E*(U+1), R, out), group e*(U+1) + u, R the largest rank
+        rounded up to 8, plus per-group output scales; group e*(U+1) + U is zero."""
+        R = -(-max(self.ranks) // 8) * 8
+        firsts, seconds, scales, masks = [], [], [], []
+        scale_dtype = torch.float64 if dtype == torch.float64 else torch.float32
+        for u in range(self.num_adapters):
+            first, second, scale, _ = self.grouped_mm_factors(u, reversed_io)
+            r = first.shape[-1]
+            firsts.append(F.pad(first.to(dtype), (0, R - r)))
+            second = second.to(dtype)
+            scaled = (second.to(scale_dtype) * scale).to(dtype)
+            if abs(scale) > 1:
+                # Keep the original gradient path unless folding actually overflows this expert.
+                finite = torch.isfinite(scaled).all(dim = (-2, -1), keepdim = True)
+                masks.append(finite)
+                second = torch.where(finite, scaled, second)
+                scales.append(torch.where(finite.flatten(), 1.0, scale).to(scale_dtype))
+            else:
+                second = scaled
+                scales.append(torch.ones(second.shape[0], device = second.device, dtype = scale_dtype))
+            seconds.append(F.pad(second, (0, 0, 0, R - r)))
+        firsts.append(torch.zeros_like(firsts[0]))
+        seconds.append(torch.zeros_like(seconds[0]))
+        scales.append(torch.zeros_like(scales[0]))
+        return (
+            torch.stack(firsts, 1).flatten(0, 1),
+            torch.stack(seconds, 1).flatten(0, 1),
+            torch.stack(scales, 1).flatten(),
+            # Escaping masks cannot be donated by AOT before a retained backward.
+            tuple(masks),
+        )
+
     def folded(self, W: torch.Tensor, adapter: int, transposed: bool) -> torch.Tensor:
         """W + delta in W's dtype, as PEFT's ParamWrapper folds it (one baddbmm, autocast off)."""
         A, B = self.lora_A[adapter].to(W.dtype), self.lora_B[adapter].to(W.dtype)
@@ -757,6 +809,16 @@ class MultiLoraExpertParam(nn.Module):
         else:
             flat_B = B.permute(1, 0, 2).reshape(out, E * k)
         return flat_A.detach().clone(), flat_B.detach().clone()
+
+
+@functools.lru_cache(maxsize = 1)
+def _compiled_expert_stacks():
+    return torch.compile(
+        MultiLoraExpertParam._grouped_stacks,
+        fullgraph = True,
+        dynamic = True,
+        options = {"emulate_precision_casts": True},
+    )
 
 
 @functools.lru_cache(maxsize = None)
@@ -819,9 +881,92 @@ def _adapter_groups(batch: MultiLoraBatch) -> list:
     return groups
 
 
+def _token_adapters(batch: MultiLoraBatch) -> torch.Tensor:
+    """Each token's adapter id (-1 = none)."""
+    ids = batch.token_ids
+    if ids is None:
+        ids = batch.__dict__.get("_token_adapters")
+    if ids is None:
+        n, U = batch.num_tokens, batch.num_adapters
+        seg = batch.seg_start.long()
+        pos = torch.arange(n, device = seg.device)
+        ids = torch.full((n,), -1, dtype = torch.int64, device = seg.device)
+        ids = ids.scatter(0, batch.sorted_idx.long(), torch.searchsorted(seg[1:], pos, right = True))
+        ids = torch.where(ids >= U, torch.full_like(ids, -1), ids)
+        batch.__dict__["_token_adapters"] = ids
+    return ids
+
+
+MULTI_LORA_MOE_STATS = {"grouped_calls": 0, "per_adapter_calls": 0, "grouped_fallbacks": 0}
+_HALF = (torch.float16, torch.bfloat16)
+_FLOAT = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+_ZOO_GROUPED = (
+    "_base_grouped_mm",
+    "_get_base_weight",
+    "preprocess_weight",
+    "_moe_recompute_enabled",
+    "_selective_dequant_plan",
+    "_grouped_mm_with_backward_fix",
+    "_grouped_mm_supported_on",
+    "weighted_unpermute",
+    "combine_permuted_moe_outputs",
+)
+
+
+def _zoo_moe_utils():
+    """Unsloth Zoo's MoE module when it has the grouped GEMMs its single-job forward runs on, else None."""
+    try:
+        from unsloth_zoo.temporary_patches import moe_utils
+    except Exception:  # noqa: BLE001
+        return None
+    return moe_utils if all(hasattr(moe_utils, n) for n in _ZOO_GROUPED) else None
+
+
+def _grouped_supported(device: torch.device, dtype: torch.dtype) -> bool:
+    """Zoo's grouped GEMM runs as a kernel here: its Triton grouped GEMM (CUDA, half) or torch's grouped GEMM.
+    Elsewhere it loops over groups, which at E * (U + 1) groups is slower than one adapter at a time."""
+    moe_utils = _zoo_moe_utils()
+    if moe_utils is None:
+        return False
+    if device.type != "cuda":
+        return True
+    try:
+        if dtype in _HALF:
+            from unsloth_zoo.temporary_patches import moe_grouped_fp16
+            if moe_grouped_fp16.triton_grouped_available(device):
+                return True
+        return bool(moe_utils._grouped_mm_supported_on(device))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _is_quantized(param) -> bool:
+    return getattr(param, "quant_state", None) is not None or param.dtype not in _FLOAT
+
+
+def _grouped_disabled() -> bool:
+    return os.environ.get("UNSLOTH_MULTI_LORA_MOE_GROUPED", "1") == "0"
+
+
+_WARNED: set = set()
+
+
+def _warn_once(message: str, level: int = logging.WARNING) -> None:
+    if message in _WARNED:
+        return
+    _WARNED.add(message)
+    try:
+        from unsloth_zoo.log import logger
+    except Exception:  # noqa: BLE001
+        logger = logging.getLogger(__name__)
+    logger.log(level, message)
+
+
 class MultiLoraExperts(nn.Module):
-    """Frozen fused experts; each adapter's tokens run the experts' own forward with only its factors, as a lone
-    PEFT job does: through Zoo's stash when its MoE forward reads one, else with the delta folded in."""
+    """Frozen fused experts. Mode "grouped": one pass for every adapter, rows sorted by (expert, adapter), the frozen
+    stacks in E-group GEMMs and each adapter's LoRA in E*(U+1)-group GEMMs over the same rows. Otherwise each
+    adapter's tokens run the experts' own forward with only its factors, as a lone PEFT job does: through Zoo's
+    stash when its MoE forward reads one ("stash"), else with the delta folded in ("fold")."""
 
     def __init__(
         self,
@@ -854,7 +999,10 @@ class MultiLoraExperts(nn.Module):
             self.adapters[name] = MultiLoraExpertParam(
                 E, in_features, out_features, num_adapters, r, lora_alpha, use_rslora, device = device
             )
-        self.mode: Optional[str] = None  # "stash" or "fold", decided on the first adapter call
+        # How a lone PEFT run of these experts applies LoRA ("stash" or "fold"), and how this module runs
+        # ("grouped", or the same as peft_mode); both decided on the first call with an adapter.
+        self.peft_mode: Optional[str] = None
+        self.mode: Optional[str] = None
 
     def __getattr__(self, name: str):
         try:
@@ -903,17 +1051,288 @@ class MultiLoraExperts(nn.Module):
     def _run(self, adapter: Optional[int], args) -> torch.Tensor:
         if adapter is None:
             return self.base_layer(*args)
-        if self.mode is None:
-            # Probe on one token without autograd, so a checkpointed forward and its recompute run the same ops.
-            with torch.no_grad():
-                probe = self._run_stash(adapter, tuple(a[:1] for a in args))
-            self.mode = "fold" if probe is None else "stash"
-        if self.mode == "fold":
+        if self.peft_mode == "fold":
             return self._run_fold(adapter, args)
         out = self._run_stash(adapter, args)
         if out is None:
             raise RuntimeError("The experts' forward stopped reading the LoRA stash mid-run.")
         return out
+
+    def _per_adapter(self, hidden_states: torch.Tensor, args, groups) -> torch.Tensor:
+        if len(groups) == 1:
+            return self._run(groups[0][0], (hidden_states, *args))
+        out = None
+        for u, rows in groups:
+            y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
+            if out is None:
+                out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
+            out = out.index_copy(0, rows, y)
+        return out
+
+    def _choose_mode(self, hidden_states: torch.Tensor, args, groups) -> None:
+        adapter, rows = None, None
+        for u, candidate_rows in groups:
+            if u is not None:
+                adapter, rows = u, candidate_rows
+                break
+        if adapter is None:
+            return
+        # Probes run without autograd, so a checkpointed forward and its recompute run the same ops.
+        with torch.no_grad():
+            probe = self._run_stash(
+                adapter, (hidden_states[rows[:1]], *(a[rows[:1]] for a in args))
+            )
+        self.peft_mode = "fold" if probe is None else "stash"
+        self.mode = self.peft_mode
+        # Cold traces cannot run the data-dependent grouped parity probe.
+        if torch.compiler.is_compiling() or _grouped_disabled():
+            return
+        try:
+            reason = self._grouped_unsupported(hidden_states, args) or self._grouped_parity(
+                hidden_states, args, groups
+            )
+        except Exception as error:  # noqa: BLE001 - anything unexpected keeps the per-adapter path
+            reason = f"{type(error).__name__}: {error}"
+        if reason is None:
+            self.mode = "grouped"
+            _warn_once(
+                f"Unsloth: batched MoE LoRA on {type(self.base_layer).__name__} runs every adapter in one grouped pass.",
+                logging.INFO,
+            )
+            return
+        if not torch.compiler.is_compiling():
+            MULTI_LORA_MOE_STATS["grouped_fallbacks"] += 1
+        _warn_once(
+            f"Unsloth: batched MoE LoRA on {type(self.base_layer).__name__} runs one adapter at a time ({reason})."
+        )
+
+    def _in_out(self, name: str) -> tuple[int, int, int]:
+        """(E, in, out) of a fused stack, from its stored (E, d1, d2) and layout."""
+        base = self.base_layer
+        E, d1, d2 = _expert_stack_shape(getattr(base, name))
+        input_major = getattr(base, "is_transposed", False) or getattr(
+            base, "_unsloth_grouped_mm_format", False
+        )
+        return (E, d1, d2) if input_major else (E, d2, d1)
+
+    def _compute_dtype(self, hidden_states: torch.Tensor) -> torch.dtype:
+        """As Unsloth Zoo's MoE forward: a half activation runs as it is, half stacks set the dtype, quantized ones
+        take Zoo's ``moe_compute_dtype``; float32 stacks stay float32 even under autocast (grouped GEMM is not
+        autocast-cast)."""
+        if hidden_states.dtype in _HALF:
+            return hidden_states.dtype
+        param = self.base_layer.gate_up_proj
+        if param.dtype in _HALF:
+            return param.dtype
+        if _is_quantized(param):
+            from unsloth_zoo.temporary_patches.moe_utils import moe_compute_dtype
+            return moe_compute_dtype(hidden_states)
+        return hidden_states.dtype
+
+    def _grouped_unsupported(self, hidden_states: torch.Tensor, args) -> Optional[str]:
+        """Why the grouped path cannot run these experts, or None."""
+        base = self.base_layer
+        if not set(self.parameter_names) <= {"gate_up_proj", "down_proj"}:
+            return f"LoRA on {self.parameter_names}"
+        if "GptOss" in type(base).__name__ or getattr(base, "is_concatenated", True) is False:
+            return "interleaved gate_up_proj"
+        if base.__dict__.get("_unsloth_own_apply_gate") or getattr(
+            type(base), "_unsloth_own_apply_gate", False
+        ):
+            return "a custom gate"
+        if not callable(getattr(base, "act_fn", None)):
+            return "no act_fn"
+        names = [n for n, _ in base.named_parameters()] + [n for n, _ in base.named_buffers()]
+        if any("bias" in n for n in names):
+            return "expert biases"
+        params = [getattr(base, n, None) for n in ("gate_up_proj", "down_proj")]
+        if not all(isinstance(p, torch.Tensor) for p in params):
+            return "no fused gate_up_proj / down_proj"
+        if len(args) != 2 or hidden_states.dim() != 2:
+            return "an experts forward not called as (hidden_states, top_k_index, top_k_weights)"
+        top_k_index, top_k_weights = args
+        if (
+            top_k_index.dtype.is_floating_point
+            or not top_k_weights.dtype.is_floating_point
+            or top_k_index.shape != top_k_weights.shape
+            or top_k_index.dim() != 2
+        ):
+            return "an experts forward not called as (hidden_states, top_k_index, top_k_weights)"
+        moe_utils = _zoo_moe_utils()
+        if moe_utils is None:
+            return "an Unsloth Zoo without its grouped MoE GEMMs"
+        layout = getattr(moe_utils, "_mxfp4_expert_layout", None)
+        model_type = getattr(base, "_unsloth_model_type", None)
+        H = hidden_states.shape[-1]
+        if layout is not None and any(
+            layout(getattr(base, n), proj, H, model_type, base) is not None
+            for n, proj in (("gate_up_proj", "gate_up"), ("down_proj", "down"))
+        ):
+            return "MXFP4 experts"
+        dtype = self._compute_dtype(hidden_states)
+        (E, gate_in, gate_out), (E_down, down_in, down_out) = (
+            self._in_out("gate_up_proj"),
+            self._in_out("down_proj"),
+        )
+        if E != E_down or gate_in != H or down_out != H or gate_out != 2 * down_in:
+            return "unexpected expert shapes"
+        # Grouped GEMM needs 16-byte rows (the LoRA rank is padded to 8).
+        step = 16 // torch.empty((), dtype = dtype).element_size()
+        if any(d % step for d in (H, down_in)):
+            return "expert dims not a multiple of 16 bytes"
+        if not _grouped_supported(hidden_states.device, dtype):
+            return f"no grouped GEMM kernel in {dtype} on {hidden_states.device.type}"
+        return None
+
+    def _grouped_parity(self, hidden_states: torch.Tensor, args, groups) -> Optional[str]:
+        """A few rows per adapter through both paths; None when they agree."""
+        ids = _token_adapters(next(iter(self.adapters.values())).batch)
+        picks = [rows[:4] for _, rows in groups]
+        sel = torch.cat(picks)
+        with torch.no_grad():
+            got = self._grouped(hidden_states[sel], *(a[sel] for a in args), ids[sel]).float()
+            ref = torch.cat(
+                [
+                    self._run(u, (hidden_states[r], *(a[r] for a in args))).float()
+                    for (u, _), r in zip(groups, picks)
+                ]
+            )
+        err = (got - ref).abs().max().item()
+        # Under autocast the per-adapter path may itself run in half precision (Zoo's CPU fallback does).
+        half = self._compute_dtype(hidden_states) in _HALF or torch.is_autocast_enabled(
+            hidden_states.device.type
+        )
+        tol = 5e-2 if half else 1e-3
+        if err <= tol * max(ref.abs().max().item(), 1e-6):
+            return None
+        return f"the grouped probe differs by {err:.3g}"
+
+    def _project(
+        self, moe_utils, name: str, x, offs_expert, offs_pair, counts, plan, dtype, pair_slots
+    ) -> torch.Tensor:
+        """Frozen base over E expert groups through Zoo's base GEMM (its weight provider, recompute and selective
+        dequant, as the single-job forward), plus every adapter's LoRA over the E * (U + 1) pair groups."""
+        base = self.base_layer
+        src, proj = getattr(base, name), name.removesuffix("_proj")
+        hidden, model_type = (
+            self._in_out("gate_up_proj")[1],
+            getattr(base, "_unsloth_model_type", None),
+        )
+
+        def provider(experts = None):
+            weight = moe_utils._get_base_weight(src, dtype, counts, experts)
+            return moe_utils.preprocess_weight(
+                weight, proj, hidden, model_type, experts_module = base
+            )
+
+        recompute = moe_utils._moe_recompute_enabled(src, dtype = dtype)
+        y = moe_utils._base_grouped_mm(
+            x, offs_expert, provider, recompute, plan if recompute else None
+        )
+        if name in self.adapters:
+            adapter = self.adapters[name]
+            first, second, scales = adapter.grouped_stacks(self.reversed_io, dtype)
+            h = moe_utils._grouped_mm_with_backward_fix(x, first, offs_pair).contiguous()
+            delta = moe_utils._grouped_mm_with_backward_fix(h, second, offs_pair)
+            y.addcmul_(delta, scales[pair_slots].unsqueeze(-1))
+        return y
+
+    def _grouped(
+        self,
+        hidden_states: torch.Tensor,
+        top_k_index: torch.Tensor,
+        top_k_weights: torch.Tensor,
+        adapter_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        T, k = top_k_index.shape
+        if T * k == 0:
+            # Nothing routed: zeros still tied to the hidden states and every adapter (empty slices, so exact 0 even
+            # for an inf / NaN adapter), as backward and default DDP need.
+            zero = hidden_states.reshape(-1)[:0].sum() + sum(
+                p.reshape(-1)[:0].sum()
+                for adapter in self.adapters.values()
+                for p in (*adapter.lora_A, *adapter.lora_B)
+            )
+            return hidden_states.new_zeros(hidden_states.shape) + zero.to(hidden_states.dtype)
+        E = _expert_stack_shape(self.base_layer.gate_up_proj)[0]
+        U = self.num_adapters
+        Ug = U + 1
+        dtype = self._compute_dtype(hidden_states)
+        # Route = expert * Ug + adapter, slot U for rows of no adapter (zero factors) and for dropped routes
+        # (expert id outside [0, E): they read a zero row and get weight 0, so they add exactly 0 and nothing can
+        # overflow or turn a gradient NaN); sorted, each expert's rows stay contiguous.
+        index = top_k_index.long()
+        valid = (index >= 0) & (index < E)
+        slot = torch.where(adapter_ids < 0, U, adapter_ids).to(index.device).unsqueeze(1)
+        key = (torch.where(valid, index, 0) * Ug + torch.where(valid, slot, U)).reshape(-1)
+        order = torch.argsort(key, stable = True)
+        pair_slots = key[order]
+        # Fixed-size counts: bincount's output size depends on the data, so it syncs on CUDA and breaks a compiled graph.
+        counts = torch.zeros(E * Ug, dtype = torch.int32, device = key.device)
+        counts.scatter_add_(0, key, torch.ones_like(key, dtype = torch.int32))
+        offs_pair = torch.cumsum(counts, 0, dtype = torch.int32)
+        offs_expert = offs_pair.view(E, Ug)[:, -1].contiguous()
+        counts = counts.view(E, Ug).sum(1, dtype = torch.int32)
+        moe_utils = _zoo_moe_utils()
+        base = self.base_layer
+        plan = None
+        if moe_utils._moe_recompute_enabled(base.gate_up_proj, dtype = dtype):
+            plan = moe_utils._selective_dequant_plan(
+                (base.gate_up_proj, base.down_proj), counts, T * k
+            )
+        with torch.autocast(device_type = hidden_states.device.type, enabled = False):
+            rows = torch.where(valid.reshape(-1)[order], order // k, T)
+            x = torch.cat(
+                [
+                    hidden_states.to(dtype),
+                    hidden_states.new_zeros(1, hidden_states.shape[1], dtype = dtype),
+                ]
+            )
+            x = x[rows]
+            h = self._project(
+                moe_utils,
+                "gate_up_proj",
+                x,
+                offs_expert,
+                offs_pair,
+                counts,
+                plan,
+                dtype,
+                pair_slots,
+            )
+            gate, up = h.chunk(2, dim = -1)
+            inter = base.act_fn(gate) * up
+            # From here on as Unsloth Zoo's MoE forward combines routes: its gate-gradient identity when enabled,
+            # then its fused weighted unpermute (deterministic fallback without Triton).
+            weights = torch.where(valid, top_k_weights, 0).reshape(-1)[order]
+            gategrad = getattr(moe_utils, "_moe_gategrad_enabled", lambda: False)()
+            gategrad = gategrad and hasattr(moe_utils, "_MoEGateGradIdentity")
+            gategrad = gategrad and top_k_weights.requires_grad and inter.dtype != torch.float16
+            if gategrad:
+                raw = weights.float() if weights.dtype == torch.float16 else weights
+                floored = torch.where(raw >= 0, raw.clamp(min = 1e-12), raw.clamp(max = -1e-12))
+                weights = raw + (floored - raw).detach()
+                inter = moe_utils._MoEGateGradIdentity.apply(inter, weights)
+                weights = weights.detach()
+            y = self._project(
+                moe_utils,
+                "down_proj",
+                inter,
+                offs_expert,
+                offs_pair,
+                counts,
+                plan,
+                dtype,
+                pair_slots,
+            )
+            out = moe_utils.weighted_unpermute(
+                y, order, weights, T, k, out_dtype = hidden_states.dtype
+            )
+            if out is None:
+                out = moe_utils.combine_permuted_moe_outputs(
+                    y * weights.unsqueeze(-1), order, T, k, out_dtype = hidden_states.dtype
+                )
+            return out
 
     def forward(self, hidden_states: torch.Tensor, *args):
         batch = next(iter(self.adapters.values())).batch
@@ -921,16 +1340,24 @@ class MultiLoraExperts(nn.Module):
             raise ValueError(
                 "Call set_multi_lora_batch(model, ...) with this batch's adapter ids first."
             )
+        if self.mode is None:
+            self._choose_mode(hidden_states, args, _adapter_groups(batch))
+        grouped = self.mode == "grouped"
+        if grouped and torch.compiler.is_compiling():
+            # Grouped GEMM only traces in bfloat16 (its meta checks the dtype on every device).
+            grouped = self._compute_dtype(hidden_states) == torch.bfloat16
+        elif grouped:
+            # With one adapter's tokens there is nothing to fuse: its own pass is the same work in fewer groups.
+            grouped = sum(u is not None for u, _ in _adapter_groups(batch)) >= 2
+        if grouped:
+            if not torch.compiler.is_compiling():
+                MULTI_LORA_MOE_STATS["grouped_calls"] += 1
+            # Every adapter's factors are in the graph, so absent adapters get exact zero grads.
+            return self._grouped(hidden_states, *args, _token_adapters(batch))
+        if not torch.compiler.is_compiling():
+            MULTI_LORA_MOE_STATS["per_adapter_calls"] += 1
         groups = _adapter_groups(batch)
-        if len(groups) == 1:
-            out = self._run(groups[0][0], (hidden_states, *args))
-        else:
-            out = None
-            for u, rows in groups:
-                y = self._run(u, (hidden_states[rows], *(a[rows] for a in args)))
-                if out is None:
-                    out = y.new_zeros((hidden_states.shape[0], *y.shape[1:]))
-                out = out.index_copy(0, rows, y)
+        out = self._per_adapter(hidden_states, args, groups)
         present = {u for u, _ in groups}
         absent = [u for u in range(self.num_adapters) if u not in present]
         if absent and torch.is_grad_enabled():
@@ -1222,12 +1649,34 @@ def adapter_state_dict(
         depth = len(experts.parameter_names)
         for i, param in enumerate(experts.parameter_names):
             key = f"{prefix}{name}" + ".base_layer" * (depth - 1 - i)
-            # Folded experts load through PEFT's own ParamWrapper delta, which is rank-major whatever Zoo uses.
-            layout = "rank_major" if experts.mode == "fold" else b_layout
+            # Experts whose forward ignores the stash load through PEFT's own ParamWrapper delta, which is
+            # rank-major whatever Zoo uses; how they trained here (grouped or not) does not matter.
+            layout = "rank_major" if experts.peft_mode == "fold" else b_layout
             A, B = experts.adapters[param].peft_tensors(adapter, layout)
+            num_experts = _full(experts.adapters[param].lora_B[adapter]).shape[0]
+            A, B = _vanilla_expert_factors(experts.base_layer, A, B, num_experts, layout)
             out[f"{key}.lora_A.weight"] = A
             out[f"{key}.lora_B.weight"] = B
     return out
+
+
+def _vanilla_expert_factors(
+    base: nn.Module, A: torch.Tensor, B: torch.Tensor, num_experts: int, layout: str
+):
+    """Apply Zoo's moe_lora_factor_swap save rules (bypassed by this export) so vanilla PEFT loads it.
+
+    Only flagged classes, never a square pair; a legacy grouped lora_B is saved [out, E, R] as Zoo does."""
+    try:
+        from unsloth_zoo.temporary_patches import moe_lora_factor_swap as swap
+    except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is rewritten on any save
+        return A, B
+    if layout != "rank_major":
+        if hasattr(swap, "_flatten_grouped_lora_B") and B.shape[1] % num_experts == 0:
+            B = B.reshape(B.shape[0], num_experts, B.shape[1] // num_experts)
+        return A, B
+    if A.shape[1] == B.shape[0] or not swap._factors_swapped(type(base)):
+        return A, B
+    return swap.swap_expert_lora_factors(A, B, num_experts)
 
 
 def _peft_moe_lora_b_layout() -> str:

@@ -811,6 +811,36 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
 
 
+def _sent_expressions(field: str) -> list[str]:
+    """Each value the adapter puts in a request body as `field`, read through a `const` it is hoisted into."""
+    sent = []
+    for match in re.finditer(rf"\n\s*{field}:\s*", CHAT_ADAPTER):
+        value = CHAT_ADAPTER[match.end() : match.end() + 200]
+        hoisted = re.match(r"([A-Za-z_$][\w$]*)\s*[,\n}]", value)
+        if hoisted:
+            const = re.search(rf"\bconst {re.escape(hoisted.group(1))}\s*=\s*", CHAT_ADAPTER)
+            assert (
+                const
+            ), f"{field} sends {hoisted.group(1)}, which is not a const this file defines"
+            value = CHAT_ADAPTER[const.end() : const.end() + 200]
+        sent.append(value)
+    return sent
+
+
+def test_the_body_reader_follows_a_hoisted_value_and_sees_a_history_scan(monkeypatch):
+    module = __import__(__name__, fromlist = ["CHAT_ADAPTER"])
+    hoisted = (
+        "const turnAudio = findLatestUserAudioBase64(\n  currentTurnMessages,\n  true,\n);\n"
+        "return {\n  audio_base64: turnAudio,\n  image_base64: findLatestUserImageBase64(messages),\n};"
+    )
+    monkeypatch.setattr(module, "CHAT_ADAPTER", hoisted)
+    assert re.match(
+        r"findLatestUserAudioBase64\(\s*currentTurnMessages\s*,",
+        _sent_expressions("audio_base64")[0],
+    )
+    assert _sent_expressions("image_base64")[0].startswith("findLatestUserImageBase64(messages)")
+
+
 def test_a_media_turn_stays_legacy_and_its_attachments_stay_turn_scoped():
     """Media turns stay legacy; their attachments are scanned from this turn only, not old history."""
     assert "const generationCandidate = isDurableRunCandidate({" in CHAT_ADAPTER
@@ -831,18 +861,18 @@ def test_a_media_turn_stays_legacy_and_its_attachments_stay_turn_scoped():
             "studio/backend/routes/chat_generation_runs.py, not in the frontend gate"
         )
     assert "const currentTurnMessages = [generationUserMessage]" in CHAT_ADAPTER
-    for field, argument in (
-        ("image_base64", "findLatestUserImageBase64(currentTurnMessages)"),
-        (
-            "audio_base64",
-            "findLatestUserAudioBase64(\n              currentTurnMessages,",
-        ),
-        ("video_base64", "findLatestUserVideoBase64(currentTurnMessages)"),
+    for field, finder in (
+        ("image_base64", "findLatestUserImageBase64"),
+        ("audio_base64", "findLatestUserAudioBase64"),
+        ("video_base64", "findLatestUserVideoBase64"),
     ):
-        assert f"{field}: {argument}" in CHAT_ADAPTER, (
-            f"{field} must be scanned out of currentTurnMessages, not thread history: a stale blob from an "
-            "earlier turn makes the backend refuse every later turn"
-        )
+        sent = _sent_expressions(field)
+        assert sent, f"no request body sends {field}"
+        for expression in sent:
+            assert re.match(rf"{finder}\(\s*currentTurnMessages\s*[,)]", expression), (
+                f"{field} must be scanned out of currentTurnMessages, not thread history: a stale blob "
+                f"from an earlier turn makes the backend refuse every later turn. Sent: {expression!r}"
+            )
     # A media-policy rejection degrades silently to the legacy stream.
     assert '"Media chat runs use the legacy streaming path"' in CHAT_GENERATION_API
     assert "isLegacyFallbackChatGenerationAdmissionError" in CHAT_ADAPTER
@@ -1067,7 +1097,7 @@ def test_a_backgrounded_pane_autosaves_without_naming_itself_active():
     # The save itself is ungated so a run outliving its view still lands on disk.
     for call in (
         "await ensureStoredChatThread(remoteId)",
-        "await syncExportedRepositoryToBackend(remoteId, exported)",
+        "await syncExportedRepositoryToBackend(remoteId, exported, {",
     ):
         assert call in autosave, f"{call} must still run while backgrounded"
         assert autosave.index(call) < guard_at, f"{call} must not sit behind the visibility guard"

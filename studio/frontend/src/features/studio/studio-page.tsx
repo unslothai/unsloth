@@ -21,7 +21,7 @@ import { MediaPageLink } from "@/components/media-page-link";
 // eslint-disable-next-line no-restricted-imports -- the Images barrel would pull ImagesPage out of its lazy chunk.
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -37,6 +37,7 @@ import { useTrainingCacheReconciliation } from "./hooks/use-training-cache-recon
 import { LiveTrainingView } from "./live-training-view";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
 import { TrainSubNav } from "./studio-navigation";
+import { TrainingApiButton } from "./training-api-button";
 import {
   studioHistoryTourSteps,
   studioTourSteps,
@@ -82,13 +83,16 @@ export function StudioPage(): ReactElement {
     })),
   );
   const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
-  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
+  const trainsOnCpu = usePlatformStore(
+    (s) => s.isCpuTrainingHost() && !s.capabilitiesUnknown(),
+  );
   const navigate = useNavigate();
-  // The guard let this load on a guess; leave once the host is confirmed chat-only.
+  // The guard let this load on a guess; leave once the host is confirmed unable to train.
   useEffect(() => {
-    if (capabilitiesUnknown || !chatOnly) return;
+    if (capabilitiesUnknown || !trainUnavailable) return;
     void navigate({ to: "/chat", replace: true });
-  }, [capabilitiesUnknown, chatOnly, navigate]);
+  }, [capabilitiesUnknown, trainUnavailable, navigate]);
   const hfToken = useHfTokenStore((s) => s.token);
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const ensureModelDefaultsLoaded = useTrainingConfigStore(
@@ -176,7 +180,7 @@ export function StudioPage(): ReactElement {
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
+    <div data-wallpaper-page-canvas="" className="flex h-full min-h-0 flex-col bg-background">
       <Tabs
         value={activeTab}
         onValueChange={(value) => handleTabChange(value as TrainSubTab)}
@@ -209,11 +213,12 @@ export function StudioPage(): ReactElement {
                   showTrainingView={showTrainingView}
                 />
                 <div className="ml-auto flex items-center gap-2">
+                  <TrainingApiButton />
                   <MediaPageLink
                     to="/images"
                     label={t("studio.imageTraining")}
                     tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     onNavigate={() => setImagesPageMode("train")}
                     labelClassName="max-sm:hidden"
                     arrowClassName="max-sm:hidden"
@@ -243,6 +248,11 @@ export function StudioPage(): ReactElement {
             ) : (
               <>
                 <TabsContent value="configure" className="mt-0">
+                  {trainsOnCpu && (
+                    <p className="mb-6 rounded-2xl border border-border/60 px-4 py-3 text-sm text-muted-foreground">
+                      {t("studio.cpuTrainingNotice")}
+                    </p>
+                  )}
                   <div className="@container/train-configure">
                     {/* 64rem only fit windows 1376px and wider; 56rem still clears @md/train-section */}
                     <div className="grid grid-cols-1 gap-8 @4xl/train-configure:grid-cols-[minmax(0,1fr)_320px] @5xl/train-configure:gap-10">

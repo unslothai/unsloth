@@ -480,7 +480,11 @@ test("the blocked alert scopes direction to its locale", () => {
   };
   source.forEachChild(visit);
   assert.ok(alert, "blocked alert not found");
-  assert.match(alert, /dir=\{locale === "ar" \|\| locale === "he" \? "rtl" : "ltr"\}/);
+  assert.match(alert, /dir=\{RTL_LOCALES\.has\(locale\) \? "rtl" : "ltr"\}/);
+  assert.match(
+    source.getFullText(),
+    /const RTL_LOCALES: ReadonlySet<string> = new Set\(\["ar", "he", "fa"\]\);/,
+  );
 });
 
 test("the climbing blocked count stays outside the assertive live region", () => {

@@ -564,3 +564,76 @@ def test_redirect_target_honours_the_website_policy():
         "op": "navigate",
         "url": "https://www.google.com/url?q=https://unsloth.ai/",
     }
+
+
+def test_file_tools_take_bounded_arguments():
+    assert _request("browser_tabs", {}) == {"op": "tabs"}
+    assert _request("browser_tabs", {"tab": 2}) == {"op": "tabs", "tab": 2}
+    assert _request("browser_tabs", {"tab": "3"}) == {"op": "tabs", "tab": 3}
+    for bad in (0, -1, 1.5, True, "two", 5000):
+        with pytest.raises(ValueError):
+            _request("browser_tabs", {"tab": bad})
+    assert _request("browser_read_file", {}) == {"op": "read_file", "start_line": 1}
+    assert _request("browser_read_file", {"start_line": 40}) == {
+        "op": "read_file",
+        "start_line": 40,
+    }
+    with pytest.raises(ValueError, match = "from 1"):
+        _request("browser_read_file", {"start_line": -3})
+
+    assert _request("browser_edit_file", {"old_text": "<h1>", "new_text": "<h2>"}) == {
+        "op": "edit_file",
+        "old_text": "<h1>",
+        "new_text": "<h2>",
+        "replace_all": False,
+    }
+    assert _request("browser_edit_file", {"old_text": "x", "new_text": ""})["new_text"] == ""
+    assert _request("browser_edit_file", {"content": ""}) == {"op": "edit_file", "content": ""}
+    for arguments, message in (
+        ({}, "old_text is empty"),
+        ({"old_text": "a"}, "new_text is required"),
+        ({"old_text": "a", "new_text": "a"}, "the same"),
+        ({"content": "x", "old_text": "a", "new_text": "b"}, "not both"),
+        ({"content": 5}, "must be a string"),
+        ({"content": "x" * 500_001}, "longer than"),
+    ):
+        with pytest.raises(ValueError, match = message):
+            _request("browser_edit_file", arguments)
+
+
+def test_file_results_name_the_file_inside_the_fence():
+    out = browser_agent.format_result(
+        "browser_read_file",
+        {"ok": True, "file": "page.html", "text": "1\t<h1>Hi</h1>", "note": "Lines 1-1 of 1."},
+        None,
+    )
+    assert out.index("File: page.html") > out.index("<untrusted_web_content>")
+    assert "1\t<h1>Hi</h1>" in out
+    long = browser_agent.format_result(
+        "browser_read_file", {"ok": True, "file": "a.txt", "text": "x" * 50_000}, None
+    )
+    assert "browser_read_file with a later start_line" in long
+
+
+def test_file_tools_have_status_badges_and_are_browser_tools():
+    from core.inference.tool_loop_controller import status_for_tool
+
+    for name in ("browser_tabs", "browser_read_file", "browser_edit_file"):
+        assert browser_agent.is_browser_tool(name)
+    assert status_for_tool("browser_tabs", {}) == "Listing browser tabs"
+    assert status_for_tool("browser_tabs", {"tab": 2}) == "Switching tabs"
+    assert status_for_tool("browser_read_file", {}) == "Reading the file"
+    assert (
+        status_for_tool("browser_edit_file", {"old_text": "a", "new_text": "b"})
+        == "Editing the file"
+    )
+
+
+def test_the_artifact_frame_installs_the_agent_without_eval():
+    from routes.inference import _ARTIFACT_PREVIEW_FRAME_STRICT_CSP, _artifact_preview_frame_html
+
+    html = _artifact_preview_frame_html()
+    assert 'data.command === "agent"' in html
+    assert "buildAgent(data.code)" in html
+    assert "unsafe-eval" not in _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
+    assert "new Function" not in html and "eval(" not in html

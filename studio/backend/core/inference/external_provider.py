@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -77,6 +79,8 @@ _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
 # refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
+_GEMINI_MAX_MODEL_PAGES = 20
+_GEMINI_RESTRICTED_GENERATION = re.compile(r"^gemini-(?:3\.[78]-flash|4-argon)(?:-|$)")
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
 _served_templates: dict[tuple[str, str, str], tuple[float, Optional[str]]] = {}
 _served_versions: dict[tuple[str, str], tuple[float, bool]] = {}
@@ -786,6 +790,26 @@ def _mistral_thinking_spec(model: str) -> _MistralThinkingSpec:
     return _MistralThinkingSpec(models = (), style = "disabled")
 
 
+_MINIMAX_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _apply_minimax_reasoning_controls(
+    body: dict[str, Any],
+    model: str,
+    enable_thinking: Optional[bool],
+    reasoning_effort: Optional[str],
+) -> None:
+    """M3.1-Flash 400s on thinking off; M3 can disable it."""
+    body["reasoning_split"] = True
+    normalized = model.strip().lower()
+    if normalized.startswith("minimax-m3.1"):
+        effort = (reasoning_effort or "").strip().lower()
+        if effort in _MINIMAX_EFFORTS:
+            body["reasoning_effort"] = effort
+    elif normalized == "minimax-m3" and enable_thinking is False:
+        body["thinking"] = {"type": "disabled"}
+
+
 def _apply_mistral_reasoning_controls(
     body: dict[str, Any],
     model: str,
@@ -881,10 +905,11 @@ def _apply_deepseek_reasoning_controls(
 
 
 _KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+_KIMI_K3_FAMILY = re.compile(r"kimi-k3(?:$|[.-])")
 
 
 def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
-    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+    return provider_type == "kimi" and bool(_KIMI_K3_FAMILY.match((model or "").strip().lower()))
 
 
 def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
@@ -1124,6 +1149,40 @@ async def _stream_post_with_compat_fallbacks(
             else:
                 yield response
                 return
+
+
+_OPENROUTER_CATALOG_TTL_S = 3600.0
+_OPENROUTER_CATALOG_RETRY_S = 60.0
+# cache key -> (expires_at, models)
+_openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_OPENROUTER_MODEL_KEYS = (
+    "id",
+    "context_length",
+    "architecture",
+    "reasoning",
+    "top_provider",
+    "supported_parameters",
+)
+
+
+def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
+    raw = payload.get("data") if isinstance(payload, dict) else None
+    models = []
+    for m in raw or []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        endpoints = m.get("endpoints")
+        if isinstance(endpoints, list) and "/api/v1/chat/completions" not in endpoints:
+            continue
+        outputs = (m.get("architecture") or {}).get("output_modalities")
+        if isinstance(outputs, list) and "text" not in outputs:
+            continue
+        slim = {k: m[k] for k in _OPENROUTER_MODEL_KEYS if k in m}
+        slim["created"] = m.get("created") or 0
+        models.append(slim)
+    models.sort(key = lambda m: m["created"], reverse = True)
+    return models
 
 
 def _client() -> httpx.AsyncClient:
@@ -1490,6 +1549,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1499,6 +1559,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1523,6 +1585,26 @@ class ExternalProviderClient:
         # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
+
+    def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
+        """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
+        session = (thread_id or "").strip()
+        self._header_vars = {
+            "CHAT_SESSION_ID": session,
+            "THREAD_ID": session,
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
+
+    def _credential_digest(self) -> str:
+        """Served-metadata cache identity: the key, plus the headers this request really sends."""
+        material = self.api_key or ""
+        headers = render_provider_extra_headers(
+            getattr(self, "extra_headers", None), getattr(self, "_header_vars", None)
+        )
+        if headers:
+            material = _json.dumps([material, headers], sort_keys = True)
+        return hashlib.sha256(material.encode()).hexdigest()
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1562,6 +1644,14 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        custom = render_provider_extra_headers(
+            getattr(self, "extra_headers", {}), getattr(self, "_header_vars", {})
+        )
+        if custom:
+            # Header names are case-insensitive: an override replaces, never duplicates.
+            overridden = {name.lower() for name in custom}
+            headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+            headers.update(custom)
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
@@ -1623,6 +1713,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
@@ -1762,8 +1853,8 @@ class ExternalProviderClient:
         if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
             body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
-            # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
-            if self.provider_type == "openai":
+            # Newer OpenAI models reject max_tokens; MiniMax counts thinking against it.
+            if self.provider_type in ("openai", "minimax"):
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
@@ -1800,6 +1891,8 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
+        elif self.provider_type == "minimax":
+            _apply_minimax_reasoning_controls(body, model, enable_thinking, reasoning_effort)
         elif self.provider_type == "deepseek":
             _apply_deepseek_reasoning_controls(body, enable_thinking, reasoning_effort)
         elif self.provider_type in ("qwen", "qwencloud"):
@@ -2490,17 +2583,19 @@ class ExternalProviderClient:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
 
-        system: Optional[str] = None
+        system_parts: list[str] = []
         filtered: list[dict[str, Any]] = []
         compaction_replayed = False
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
-                system = (
+                system_part = (
                     content
                     if isinstance(content, str)
                     else "\n".join(p["text"] for p in content if p.get("type") == "text")
                 )
+                if system_part:
+                    system_parts.append(system_part)
                 continue
 
             content = msg.get("content")
@@ -2803,6 +2898,7 @@ class ExternalProviderClient:
         if prompt_cache_ttl in ("5m", "1h"):
             cache_marker["ttl"] = prompt_cache_ttl
 
+        system = "\n\n".join(system_parts)
         if system:
             if prompt_caching_enabled:
                 # System is the most stable cross-turn prefix; own breakpoint.
@@ -4416,7 +4512,8 @@ class ExternalProviderClient:
         if system_text_parts:
             body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_text_parts)}]}
 
-        # Frontend capability matrix limits Gemini sliders to temperature, topP, topK and maxOutputTokens.
+        model_lc = model.lower()
+        restricted_generation = bool(_GEMINI_RESTRICTED_GENERATION.match(model_lc))
         gen_config: dict[str, Any] = {}
         if temperature is not None:
             gen_config["temperature"] = temperature
@@ -4424,14 +4521,16 @@ class ExternalProviderClient:
             gen_config["topP"] = top_p
         if top_k is not None and top_k > 0:
             gen_config["topK"] = top_k
-        # presencePenalty shares the OpenAI sign convention: positive values discourage repetition.
-        if presence_penalty:
+        if presence_penalty and not restricted_generation:
             gen_config["presencePenalty"] = presence_penalty
         if max_tokens is not None:
-            gen_config["maxOutputTokens"] = max_tokens
+            gen_config["maxOutputTokens"] = (
+                min(max_tokens, 4096)
+                if model_lc.startswith("gemini-3.1-flash-lite-image")
+                else max_tokens
+            )
 
         # Only image-capable models accept TEXT+IMAGE modalities; text models 400.
-        model_lc = model.lower()
         is_image_picker_model = "-image" in model_lc or "nano-banana" in model_lc
         # tool_choice none or forced-function also suppresses implicit image generation, which still bills.
         _tool_choice_disabled = (
@@ -4504,6 +4603,8 @@ class ExternalProviderClient:
                 level = "high"
             elif enable_thinking is False:
                 level = "low" if is_gemini3_pro else "minimal"
+            if level == "minimal" and restricted_generation:
+                level = "low"
             if level is not None:
                 gen_config["thinkingConfig"] = {"thinkingLevel": level}
         elif not is_image_model_strict:
@@ -4545,6 +4646,7 @@ class ExternalProviderClient:
                 or _m.startswith("gemini-3.1-flash-image")
                 or _m.startswith("nano-banana-pro")
                 or _m.startswith("nano-banana-2")
+                or _m.startswith("gemini-nano-banana-2")
             )
 
         google_search_allowed = (
@@ -6199,6 +6301,9 @@ class ExternalProviderClient:
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
+                    # .done / part.done repeat the deltas' text: show each part once, from whichever arrives first.
+                    reasoning_shown_parts: set = set()
+                    last_reasoning_part = None
                     # Give each function call its own delta.tool_calls[].index so parallel calls do not collide.
                     saw_function_call = False
                     function_call_index = 0
@@ -6592,7 +6697,16 @@ class ExternalProviderClient:
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
                                     )
-                                    summary_text = _extract_reasoning_text(item.get("summary"))
+                                    summary = item.get("summary")
+                                    summary_text = "\n\n".join(
+                                        filter(
+                                            None,
+                                            map(
+                                                _extract_reasoning_text,
+                                                summary if isinstance(summary, list) else [summary],
+                                            ),
+                                        )
+                                    )
                                     if summary_text and not reasoning_emitted:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
@@ -6785,8 +6899,21 @@ class ExternalProviderClient:
                                 recorded_reasoning = _record_openai_reasoning_replay_item(event)
                                 if recorded_reasoning:
                                     last_openai_reasoning_replay_item = recorded_reasoning
-                                reasoning_delta = _extract_reasoning_text(event)
+                                reasoning_part = (
+                                    event.get("item_id"),
+                                    event.get("summary_index", event.get("content_index")),
+                                )
+                                is_delta = event_type.endswith(".delta")
+                                if not is_delta and reasoning_part in reasoning_shown_parts:
+                                    continue
+                                reasoning_delta = _extract_reasoning_text(
+                                    event if is_delta else (event.get("part") or event)
+                                )
                                 if reasoning_delta:
+                                    reasoning_shown_parts.add(reasoning_part)
+                                    if reasoning_open and reasoning_part != last_reasoning_part:
+                                        reasoning_delta = f"\n\n{reasoning_delta}"
+                                    last_reasoning_part = reasoning_part
                                     if not reasoning_open:
                                         reasoning_delta = f"<think>{reasoning_delta}"
                                         reasoning_open = True
@@ -7128,6 +7255,13 @@ class ExternalProviderClient:
             "input": text,
             "response_format": response_format,
         }
+        mai_pcm = (
+            self.provider_type == "openrouter"
+            and model.strip().lower().startswith("microsoft/mai-voice-")
+            and response_format.strip().lower() == "wav"
+        )
+        if mai_pcm:
+            body["response_format"] = "pcm"
         if voice:
             body["voice"] = voice
         if speed is not None:
@@ -7143,6 +7277,19 @@ class ExternalProviderClient:
         response.raise_for_status()
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
         audio = response.content
+        if mai_pcm:
+            if media_type.lower() not in ("audio/pcm", "application/octet-stream", ""):
+                raise httpx.DecodingError("OpenRouter MAI-Voice did not return PCM audio.")
+            if not audio or len(audio) % 2:
+                raise httpx.DecodingError("OpenRouter MAI-Voice returned malformed PCM audio.")
+            # https://openrouter.ai/docs/guides/overview/multimodal/tts#azure-mai-voice
+            output = io.BytesIO()
+            with wave.open(output, "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(2)
+                writer.setframerate(24_000)
+                writer.writeframes(audio)
+            return output.getvalue(), "audio/wav"
         if response_format.strip().lower() == "wav":
             merge_cancelled = threading.Event()
             merge_task = asyncio.create_task(
@@ -7266,6 +7413,8 @@ class ExternalProviderClient:
 
     async def list_models(self) -> list[dict[str, Any]]:
         """return each provider's OpenAI-compatible /models entries, including Anthropic."""
+        if self.provider_type == "openrouter":
+            return await self._list_openrouter_models()
         try:
             data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
@@ -7280,6 +7429,43 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_openrouter_models(self) -> list[dict[str, Any]]:
+        key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
+        cache_key = f"{self.base_url}\n{key_digest}"
+        cached = _openrouter_catalog.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+        # Per key, so a slow proxy or account never holds up another connection's catalog.
+        async with _openrouter_catalog_locks.setdefault(cache_key, asyncio.Lock()):
+            cached = _openrouter_catalog.get(cache_key)
+            if cached and time.monotonic() < cached[0]:
+                return cached[1]
+            try:
+                response = await _client().get(
+                    f"{self.base_url}/models",
+                    headers = self._auth_headers(),
+                    timeout = self._timeout,
+                )
+                response.raise_for_status()
+                models = _slim_openrouter_models(response.json())
+            except (httpx.HTTPError, ValueError) as exc:
+                if cached:
+                    logger.warning("OpenRouter catalog refresh failed, serving cache: %s", exc)
+                    # Back off, or every waiter queued behind a timed-out refresh retries in turn.
+                    _openrouter_catalog[cache_key] = (
+                        time.monotonic() + _OPENROUTER_CATALOG_RETRY_S,
+                        cached[1],
+                    )
+                    return cached[1]
+                logger.error("Failed to list models from openrouter: %s", exc)
+                raise
+            if models:
+                _openrouter_catalog[cache_key] = (
+                    time.monotonic() + _OPENROUTER_CATALOG_TTL_S,
+                    models,
+                )
+            return models
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
@@ -7300,9 +7486,39 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         data = response.json()
+        if self.provider_type == "gemini":
+            data = await self._with_later_gemini_pages(data, response.request.url.params, timeout)
         # Ollama returns data: null when no models are installed.
         raw = data.get("data") if isinstance(data, dict) else None
         return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _with_later_gemini_pages(
+        self, data: Any, params: httpx.QueryParams, timeout: Any
+    ) -> Any:
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            return data
+        models = list(data["models"])
+        seen: set[str] = set()
+        token = data.get("nextPageToken")
+        while isinstance(token, str) and token and token not in seen:
+            if len(seen) >= _GEMINI_MAX_MODEL_PAGES - 1:
+                logger.warning("Gemini model list still paging after %d pages", len(seen) + 1)
+                break
+            seen.add(token)
+            response = await _client().get(
+                f"{self.base_url}/models",
+                params = params.set("pageToken", token),
+                headers = self._auth_headers(),
+                timeout = timeout,
+            )
+            response.raise_for_status()
+            page = response.json()
+            if not isinstance(page, dict):
+                break
+            if isinstance(page.get("models"), list):
+                models.extend(page["models"])
+            token = page.get("nextPageToken")
+        return {**data, "models": models}
 
     async def _read_served_window(self, model: str) -> Optional[int]:
         _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
@@ -7339,7 +7555,7 @@ class ExternalProviderClient:
         if self.provider_type != "vllm":
             return False
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        key = (self.base_url, self._credential_digest())
         cached = _served_versions.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7368,7 +7584,7 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7394,7 +7610,7 @@ class ExternalProviderClient:
         if self.provider_type != "llama_cpp":
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_templates.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]

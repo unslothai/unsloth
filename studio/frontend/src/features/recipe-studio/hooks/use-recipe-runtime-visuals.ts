@@ -19,9 +19,10 @@ import {
   TagsIcon,
   UserAccountIcon,
 } from "@hugeicons/core-free-icons";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { Edge } from "@xyflow/react";
 import { deriveDisplayGraph } from "../utils/graph/derive-display-graph";
+import { createDisplayGraphReuser } from "../utils/graph/reuse-display-graph";
 import {
   deriveGraphRuntimeVisualState,
   pickLatestActiveExecution,
@@ -130,17 +131,20 @@ export function useRecipeRuntimeVisuals({
     [activeExecution, configs, edges],
   );
 
+  const [reuseDisplayGraph] = useState(createDisplayGraphReuser);
   const displayGraph = useMemo(
     () =>
-      deriveDisplayGraph({
-        nodes,
-        edges,
-        configs,
-        layoutDirection,
-        auxNodePositions,
-        llmAuxVisibility,
-        runtime: runtimeVisualState,
-      }),
+      reuseDisplayGraph(
+        deriveDisplayGraph({
+          nodes,
+          edges,
+          configs,
+          layoutDirection,
+          auxNodePositions,
+          llmAuxVisibility,
+          runtime: runtimeVisualState,
+        }),
+      ),
     [
       auxNodePositions,
       configs,
@@ -148,6 +152,7 @@ export function useRecipeRuntimeVisuals({
       layoutDirection,
       llmAuxVisibility,
       nodes,
+      reuseDisplayGraph,
       runtimeVisualState,
     ],
   );
