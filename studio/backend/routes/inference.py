@@ -49360,12 +49360,18 @@ async def generate_diffusion_image(
     global _direct_image_runs, _direct_image_last_end, _direct_sequence_until
     _direct_image_runs += 1
     more = http_request is not None and http_request.headers.get("x-unsloth-more-runs") == "1"
+    finished = False
     try:
-        return await _generate_diffusion_image_core(request)
+        response = await _generate_diffusion_image_core(request)
+        finished = True
+        return response
     finally:
         _direct_image_runs -= 1
         _direct_image_last_end = time.monotonic()
-        _direct_sequence_until = _direct_image_last_end + _DIRECT_SEQUENCE_HOLD_S if more else 0.0
+        # A stopped or failed run ends the sequence: the page sends no more.
+        _direct_sequence_until = (
+            _direct_image_last_end + _DIRECT_SEQUENCE_HOLD_S if more and finished else 0.0
+        )
 
 
 async def _generate_diffusion_image_core(

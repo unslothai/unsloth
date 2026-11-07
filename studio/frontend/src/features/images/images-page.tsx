@@ -5516,7 +5516,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage(requestFor(i), i < runs - 1);
+          res = await generateDiffusionImage(requestFor(i), i < runTotal - 1);
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
           if (!(err instanceof GenerateResponseLostError)) throw err;

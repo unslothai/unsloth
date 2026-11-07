@@ -420,3 +420,45 @@ def test_a_multi_run_generate_holds_the_queue_across_a_long_gap(client, monkeypa
         )
         _wait(client, lambda jobs: jobs[0]["status"] == "done")
         assert order == ["direct-1", "direct-2", "queued"]
+
+
+def test_a_failed_run_marked_more_runs_does_not_hold_the_queue(client, monkeypatch):
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    monkeypatch.setattr(inference_routes, "_DIRECT_RUN_SETTLE_S", 0.2)
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    order: list[str] = []
+    started = threading.Event()
+
+    def generate(*, prompt = None, **kwargs):
+        order.append(prompt)
+        if prompt == "direct-1":
+            started.set()
+            time.sleep(0.3)
+            raise RuntimeError("boom")
+        return real_generate(prompt = prompt, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        first = threading.Thread(
+            target = client.post,
+            args = ("/api/inference/images/generate",),
+            kwargs = {"json": {"prompt": "direct-1"}, "headers": {"X-Unsloth-More-Runs": "1"}},
+        )
+        first.start()
+        started.wait(5)
+        assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
+        first.join(10)
+        _wait(client, lambda jobs: jobs[0]["status"] == "done", timeout = 5)
+        assert order == ["direct-1", "queued"]
