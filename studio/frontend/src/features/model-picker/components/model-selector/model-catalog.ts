@@ -706,7 +706,6 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Nano's checkpoint enables the Cosmos guardrail, which the app does not install: the load refuses with the fix.
   {
     canonicalId: "nvidia/Cosmos3-Nano",
     displayName: "Cosmos3 Nano",
