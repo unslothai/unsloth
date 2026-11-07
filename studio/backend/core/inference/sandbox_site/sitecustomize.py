@@ -473,11 +473,30 @@ def _metadata_address(host):
     return ip.compressed in _METADATA_ADDRS
 
 
+def _resolves_to_metadata(host):
+    import ipaddress
+    import socket
+
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        return False
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return False
+    return any(_metadata_address(info[4][0]) for info in infos)
+
+
 def _metadata_connect_hook(event, args):
     if event != "socket.connect":
         return
     address = args[1] if len(args) > 1 else None
-    if isinstance(address, tuple) and address and _metadata_address(address[0]):
+    if not (isinstance(address, tuple) and address and isinstance(address[0], str)):
+        return
+    # The event carries the caller's address, so a raw connect to a name is resolved here.
+    if _metadata_address(address[0]) or _resolves_to_metadata(address[0]):
         raise PermissionError(f"Blocked: cloud-metadata host ({address[0]})")
 
 
