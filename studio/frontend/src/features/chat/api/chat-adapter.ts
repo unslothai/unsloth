@@ -45,12 +45,12 @@ import {
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
@@ -143,6 +143,7 @@ import {
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
+import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -166,6 +167,12 @@ import {
   type QueuedModelCapabilities,
 } from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
+import {
+  addPass,
+  type PriorPassTiming,
+  withPriorServerTimings,
+  withPriorTiming,
+} from "../utils/continued-timing";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
@@ -372,7 +379,11 @@ import {
   createTrailingPlaceholderWatch,
   stripTrailingTemplatePlaceholder,
 } from "../utils/trailing-template-placeholder";
-import { createStreamPublishGate } from "../utils/stream-pacing";
+import {
+  TRAILING_PUBLISH,
+  createStreamPublishGate,
+  withTrailingPublish,
+} from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -2308,6 +2319,8 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+  // Same id the completion sends (resolveSandboxSessionId).
+  const sessionId = sandboxSessionIdFor(threadId, ragProjectId);
 
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
@@ -2358,6 +2371,7 @@ export async function buildLocalTokenCountExtras(
       ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
+    ...(sessionId ? { session_id: sessionId } : {}),
     // Top level, not in rag_scope: archived threads add search_conversation regardless of RAG.
     ...threadField,
     // Armed research puts the deep_research schema in the prompt, so the count carries it.
@@ -2726,6 +2740,10 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "mlxKvQuantNote",
   "mlxInt8Prefill",
   "loadedMlxInt8PrefillRequested",
+  "mlxAnePrefill",
+  "loadedMlxAnePrefillRequested",
+  "mlxFastVerify",
+  "loadedMlxFastVerifyRequested",
   "mlxPleOffload",
   "mlxExpertOffload",
   "loadedMlxPleOffloadRequested",
@@ -2819,6 +2837,7 @@ function queuedResolvedModelFromStore(
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
           hasVideoInput: activeModel.hasVideoInput,
+          speaks: activeModel.speaks,
         }
       : null,
   };
@@ -2876,6 +2895,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
   "text-to-audio",
   "audio-to-audio",
   "automatic-speech-recognition",
+  "speech-recognition-unsupported",
 ]);
 
 // ollama is excluded: local_model_resolver.py skips its scanner. hermes is read-only, so included.
@@ -2917,8 +2937,8 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // chatOnly is a BROWSER guess until the backend reports it; fail open, since validation refuses an ineligible pick.
-  if (!platform.fetched || !platform.isChatOnly()) return true;
+  // chatOnly is a guess until the backend measures it (deferred detection included); fail open, since validation refuses an ineligible pick.
+  if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
   }
@@ -2933,7 +2953,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 /** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
-  return !platform.fetched || !platform.isChatOnly();
+  return platform.capabilitiesUnknown() || !platform.isChatOnly();
 }
 
 /** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */
@@ -3353,6 +3373,46 @@ async function adoptInFlightServerLoad(
     : "server-idle";
 }
 
+// Busy-host detection outlasts readHealth's one 5 s wait; past this bound autoload stays fail-open.
+const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
+const AUTO_LOAD_VERDICT_POLL_MS = 500;
+
+async function awaitMeasuredVerdict(signal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + AUTO_LOAD_VERDICT_WAIT_MS;
+  // readHealth has no timeout or signal: a stalled read must not outlive the deadline or a stopped send.
+  const bounded = (read: () => Promise<unknown>) =>
+    new Promise<"ok" | "failed" | "timeout">((resolve, reject) => {
+      const timer = setTimeout(() => settle("timeout"), Math.max(0, deadline - Date.now()));
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      function cleanup() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(outcome: "ok" | "failed" | "timeout") {
+        cleanup();
+        resolve(outcome);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      read().then(
+        () => settle("ok"),
+        () => settle("failed"),
+      );
+    });
+  signal?.throwIfAborted();
+  if ((await bounded(() => fetchDeviceType({ detectHardware: true }))) !== "ok") return;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    const platform = usePlatformStore.getState();
+    if (!platform.capabilitiesUnknown() || platform.detectionDeferred) return;
+    await new Promise((resolve) => setTimeout(resolve, AUTO_LOAD_VERDICT_POLL_MS));
+    signal?.throwIfAborted();
+    if ((await bounded(() => fetchDeviceType({ force: true }))) !== "ok") return;
+  }
+}
+
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
@@ -3699,6 +3759,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
+      mlx_ane_prefill: config.mlxAnePrefill ?? false,
+      mlx_fast_verify: config.mlxFastVerify ?? false,
       mlx_ple_offload: config.mlxPleOffload ?? null,
       mlx_expert_offload: config.mlxExpertOffload ?? null,
       speculative_type: effectiveSpeculativeType,
@@ -3984,6 +4046,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const cachedInventoryFailed =
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
+
+    // A deferred verdict admits non-GGUF caches a chat-only host refuses; GGUF-only caches skip the probe.
+    if (
+      usePlatformStore.getState().detectionDeferred &&
+      (allModelRepos.some(isChattableCachedRepo) ||
+        localRows.some(
+          (row) =>
+            !isGgufLocalRow(row) &&
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ))
+    ) {
+      await awaitMeasuredVerdict(options?.abortSignal);
+      options?.abortSignal?.throwIfAborted();
+    }
 
     // Include on-disk models the picker indexes, not just the managed cache.
     const sources = orderAutoLoadSources(
@@ -4350,6 +4426,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
               hasVideoInput: status.has_video_input ?? false,
+              speaks: status.speaks ?? false,
             },
           },
         };
@@ -4442,6 +4519,13 @@ export function createOpenAIStreamAdapter(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
+      await prepareComparePaneRun(
+        options.pairId,
+        options.modelType,
+        abortSignal,
+        () => waitForModelReady(abortSignal),
+      );
+      abortSignal.throwIfAborted();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
@@ -5707,6 +5791,9 @@ export function createOpenAIStreamAdapter(
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const passText = () => cumulativeText.slice(continuationPartial.length);
+      const priorTiming = continuation?.priorTiming;
+      let passSoFar: (() => PriorPassTiming) | null = null;
       const geminiContinuationReplay = (
         final: boolean,
       ): GeminiContinuationReplay | undefined =>
@@ -5805,6 +5892,7 @@ export function createOpenAIStreamAdapter(
       // Provisional reason per yield since aborts skip terminal yields; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
@@ -6115,6 +6203,8 @@ export function createOpenAIStreamAdapter(
               ...part,
               afterToolCalls: 0,
             })) ?? []);
+      // A spoken reply's audio, kept apart from the text so the player renders on its own.
+      let spokenReplyPart: { type: "text"; text: string } | null = null;
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6156,6 +6246,7 @@ export function createOpenAIStreamAdapter(
           }
         }
         assembled.push(...runs[boundaries.length]);
+        if (spokenReplyPart) assembled.push(spokenReplyPart);
 
         pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
         pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
@@ -6350,6 +6441,8 @@ export function createOpenAIStreamAdapter(
         if (usageThreadKey !== null) {
           store.setThreadContextUsage(usageThreadKey, usage);
         }
+        // The realtime meter shows this exact count from here until the next pass starts.
+        store.settleLiveGeneration(usageKey);
         if (
           store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
           store.params.checkpoint === params.checkpoint
@@ -6359,6 +6452,24 @@ export function createOpenAIStreamAdapter(
       };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
+      let liveServerTimings: ServerTimings | undefined;
+      passSoFar = () => {
+        const now = Date.now();
+        return {
+          totalStreamTime: now - streamStartTime,
+          totalChunks,
+          toolCallCount: toolCallParts.length,
+          ...(windowCount !== null
+            ? { tokenCount: windowCount }
+            : cumulativeText.length > continuationPartial.length
+              ? { tokenCount: Math.max(1, Math.round((cumulativeText.length - continuationPartial.length) / 4)) }
+              : {}),
+          ...(firstTokenTime !== undefined ? { firstTokenTime } : {}),
+          startedAt: streamStartTime,
+          durationMs: now - streamStartTime,
+          ...(liveServerTimings ? { serverTimings: { ...liveServerTimings } as unknown as Record<string, number> } : {}),
+        };
+      };
 
       // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
@@ -6449,9 +6560,12 @@ export function createOpenAIStreamAdapter(
             externalProvider?.name ??
             (isExternalRequest ? "External provider" : "Local model"),
           providerType: externalProvider?.providerType ?? "local",
-          startedAt: streamStartTime,
+          startedAt: priorTiming?.startedAt ?? streamStartTime,
           finishedAt,
-          durationMs: finishedAt - streamStartTime,
+          durationMs:
+            (priorTiming ? (priorTiming.durationMs ?? priorTiming.totalStreamTime) : 0) +
+            finishedAt -
+            streamStartTime,
           ...(sandboxSessionId ? { sessionId: sandboxSessionId } : {}),
           cancelId,
           toolCalls: Array.from(
@@ -6815,6 +6929,10 @@ export function createOpenAIStreamAdapter(
             };
           }
 
+          const turnAudioBase64 = findLatestUserAudioBase64(
+            currentTurnMessages,
+            !queuedRunSettings && !continuation,
+          );
           return {
             model: params.checkpoint,
             messages: outboundMessages,
@@ -6846,10 +6964,10 @@ export function createOpenAIStreamAdapter(
               : { seed: params.seed }),
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
-            audio_base64: findLatestUserAudioBase64(
-              currentTurnMessages,
-              !queuedRunSettings && !continuation,
-            ),
+            audio_base64: turnAudioBase64,
+            ...(activeModel?.speaks && turnAudioBase64
+              ? { modalities: ["text", "audio"] }
+              : {}),
             extra_audio_base64:
               findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
@@ -7089,7 +7207,7 @@ export function createOpenAIStreamAdapter(
               }
             };
             // The window lets a length-stop tell user Max Tokens from the backend's stand-in for Max.
-            const stream =
+            const sourceStream =
               generationDecision === "durable"
                 ? durableStream()
                 : streamChatCompletions(
@@ -7099,8 +7217,25 @@ export function createOpenAIStreamAdapter(
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
+            const stream = withTrailingPublish(sourceStream, canPublish);
 
             for await (const chunk of stream) {
+              if (chunk === TRAILING_PUBLISH) {
+                if (canPublish(streamedChars)) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
               const chunkModel = (chunk as { model?: unknown }).model;
               if (typeof chunkModel === "string" && chunkModel.length > 0) {
                 responseModelId = chunkModel;
@@ -7128,6 +7263,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (chunk.context_truncated) {
+                runtime.setLiveCompacting(liveThreadKey(serverCancel), false);
                 contextTruncation = mergeContextTruncation(
                   contextTruncation,
                   chunk.context_truncated,
@@ -7218,6 +7354,8 @@ export function createOpenAIStreamAdapter(
                   runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
                 } else if (update?.phase === "decode") {
                   runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                } else if (update?.phase === "compacting") {
+                  runtime.setLiveCompacting(liveThreadKey(serverCancel), true);
                 }
                 continue;
               }
@@ -7361,6 +7499,7 @@ export function createOpenAIStreamAdapter(
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
                   // assistant-ui saves the last STREAMED yield, so publish why the turn ended now.
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -7430,6 +7569,7 @@ export function createOpenAIStreamAdapter(
                       ),
                     } as PositionedToolCallPart;
                     // A stop before the next chunk saves only what was yielded.
+                    canPublish.published();
                     yield {
                       content: liveAssistantContent(),
                       metadata: {
@@ -7593,6 +7733,8 @@ export function createOpenAIStreamAdapter(
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  // The round boundary: the last pass's prompt and decode figures must not stand in for the next one's.
+                  runtime.clearLiveGenerationForThread(liveThreadKey(serverCancel));
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const id = resolveToolPartId(backendToolCallId);
@@ -7764,6 +7906,7 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
+                canPublish.published();
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -7783,6 +7926,7 @@ export function createOpenAIStreamAdapter(
                 | undefined;
               // Timings can arrive without usage.
               windowCount = windowEvidenceCount(chunkTimings) ?? windowCount;
+              if (chunkTimings && chunkTimings.diffusion !== true) liveServerTimings = chunkTimings;
               // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
@@ -7835,6 +7979,18 @@ export function createOpenAIStreamAdapter(
               )?.extra_content;
               // State reaches the message only via a yield, so pace previews but never state changes.
               let replayStateChanged = false;
+              const spokenAudio = (
+                chunk.choices?.[0]?.delta as
+                  | { audio?: { data?: unknown } }
+                  | undefined
+              )?.audio?.data;
+              if (typeof spokenAudio === "string" && spokenAudio) {
+                spokenReplyPart = {
+                  type: "text",
+                  text: `<audio-player src="data:audio/wav;base64,${spokenAudio}" />`,
+                };
+                replayStateChanged = true;
+              }
               let geminiReplayStateChanged = false;
               let geminiThoughtSignature: string | undefined;
               let capturedGeminiThoughtPart = false;
@@ -8350,6 +8506,7 @@ export function createOpenAIStreamAdapter(
                 const forcePublish =
                   addedToolCall || replayStateChanged || stampedProvenance;
                 if (forcePublish || canPublish(streamedChars)) {
+                  canPublish.published();
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -8371,6 +8528,7 @@ export function createOpenAIStreamAdapter(
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
+                  canPublish.published();
                   yield {
                     content: replayContent,
                     metadata: {
@@ -8461,6 +8619,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (assistantContent.length > 0) {
+                canPublish.published();
                 yield {
                   content: assistantContent,
                   metadata: {
@@ -8547,8 +8706,12 @@ export function createOpenAIStreamAdapter(
 
         const meta = serverMetadata;
         const finalTokenCount =
-          meta?.usage?.completion_tokens ?? estimateTokenCount(cumulativeText);
-        const finalTokPerSec = meta?.timings?.predicted_per_second;
+          meta?.usage?.completion_tokens ?? estimateTokenCount(passText());
+        const finalServerTimings = withPriorServerTimings(
+          meta?.timings,
+          priorTiming?.serverTimings,
+        );
+        const finalTokPerSec = finalServerTimings?.predicted_per_second;
         const serverPromptEvalTime = meta?.timings?.prompt_ms;
 
         // Prefer llama-server timings; fall back to provider usage envelope.
@@ -8693,14 +8856,18 @@ export function createOpenAIStreamAdapter(
               "Compaction needs the conversation archive and the default checkpoint policy.",
           });
         }
-        const finalTiming = buildTiming(
-          streamStartTime,
-          totalChunks,
-          // What the user waited, as a resumed run records it. Server prompt eval has its own row.
-          firstTokenTime ?? serverPromptEvalTime,
-          finishedAt - streamStartTime,
-          finalTokenCount,
-          toolCallParts.length,
+        const finalTiming = withPriorTiming(
+          buildTiming(
+            streamStartTime,
+            totalChunks,
+            // What the user waited, as a resumed run records it. Server prompt eval has its own row.
+            firstTokenTime ?? serverPromptEvalTime,
+            finishedAt - streamStartTime,
+            finalTokenCount,
+            toolCallParts.length,
+            finalTokPerSec,
+          ),
+          priorTiming,
           finalTokPerSec,
         );
 
@@ -8744,7 +8911,7 @@ export function createOpenAIStreamAdapter(
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
-              serverTimings: meta?.timings ?? undefined,
+              serverTimings: finalServerTimings ?? undefined,
               stopReason: lastFinishReason ?? undefined,
               contextUsage: meta?.usage
                 ? {
@@ -8895,13 +9062,16 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          const partialTiming = buildTiming(
-            streamStartTime,
-            totalChunks,
-            firstTokenTime,
-            Date.now() - streamStartTime,
-            estimateTokenCount(partialText),
-            toolCallParts.length,
+          const partialTiming = withPriorTiming(
+            buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(continuation ? passText() : partialText),
+              toolCallParts.length,
+            ),
+            priorTiming,
           );
           yield {
             content: partialContent,
@@ -8935,6 +9105,7 @@ export function createOpenAIStreamAdapter(
                   ),
                 },
                 timing: partialTiming,
+                resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
               },
             },

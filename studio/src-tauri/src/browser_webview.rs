@@ -92,6 +92,12 @@ const MUTE_SCRIPT: &str = r#"((muted) => {
   window[key](muted);
 })"#;
 
+/// Pages are child webviews too, so they type the same stray key text (mac-stray-key-text.ts).
+#[cfg(target_os = "macos")]
+const STRAY_KEY_TEXT_SCRIPT: &str = r#"window.addEventListener("beforeinput", (event) => {
+  if (event.inputType === "insertText" && /^[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+$/.test(event.data ?? "")) event.preventDefault();
+}, true);"#;
+
 /// Pages get every plugin's init script too, but their commands are refused there (opener eats `_blank`
 /// clicks, dialog/notification stub `alert`/`confirm`/`Notification`); `PAGE_RESTORE_SCRIPT` undoes them.
 const PAGE_GUARD_SCRIPT: &str = r#"(() => {
@@ -1038,7 +1044,10 @@ fn with_page_profile<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     {
         #[cfg(windows)]
-        let builder = builder.additional_browser_args(&page_browser_args(&proxy.to_string()));
+        let builder = builder.additional_browser_args(&page_browser_args(
+            &proxy.to_string(),
+            crate::gpu_rendering::pages_disable_gpu(),
+        ));
         #[cfg(not(windows))]
         let builder = builder
             .proxy_url(Url::parse(&format!("http://{proxy}")).map_err(|error| error.to_string())?);
@@ -1057,11 +1066,17 @@ fn with_page_profile<R: Runtime>(
 /// These replace wry's defaults, so repeat them except SmartScreen (kept on for open-web pages).
 /// Chromium bypasses the proxy for loopback otherwise.
 #[cfg(any(windows, test))]
-fn page_browser_args(proxy: &str) -> String {
-    format!(
+/// `disable_gpu` follows the GPU rendering setting (Off) so pages match the main window.
+fn page_browser_args(proxy: &str, disable_gpu: bool) -> String {
+    let args = format!(
         "--disable-features=msWebOOUI,msPdfOOUI --proxy-server=http://{proxy} \
          --proxy-bypass-list=<-loopback>"
-    )
+    );
+    if disable_gpu {
+        format!("{args} --disable-gpu")
+    } else {
+        args
+    }
 }
 
 /// wry's `url()` panics on macOS while WebKit has none (a failed load).
@@ -1457,6 +1472,8 @@ async fn create_view<R: Runtime>(
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT);
     let builder = with_page_profile(builder, &app, local.as_ref())?;
 
     let (position, size) = logical_rect(caller, bounds);
@@ -2732,6 +2749,32 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pages_drop_the_stray_key_text_studio_drops() {
+        let frontend = include_str!("../../frontend/src/lib/mac-stray-key-text.ts");
+        let pattern = frontend
+            .lines()
+            .find_map(|line| line.strip_prefix("const STRAY_KEY_TEXT = "))
+            .unwrap()
+            .trim_end_matches(';');
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(&format!("{pattern}.test(")));
+        assert!(STRAY_KEY_TEXT_SCRIPT.contains(r#"addEventListener("beforeinput""#));
+        assert!(STRAY_KEY_TEXT_SCRIPT.ends_with("}, true);"));
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        let restore = code
+            .find(".initialization_script(PAGE_RESTORE_SCRIPT)")
+            .unwrap();
+        let guard = code
+            .find(".initialization_script_for_all_frames(STRAY_KEY_TEXT_SCRIPT)")
+            .expect("page webviews must drop stray key text in every frame");
+        assert!(
+            guard > restore,
+            "PAGE_RESTORE_SCRIPT would remove the listener"
+        );
+    }
+
     #[test]
     fn the_internet_mark_keeps_where_not_secrets() {
         let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
@@ -2864,10 +2907,18 @@ mod tests {
 
     #[test]
     fn windows_pages_keep_smartscreen_and_the_proxy() {
-        let args = page_browser_args("127.0.0.1:9");
+        let args = page_browser_args("127.0.0.1:9", false);
         assert!(!args.contains("SmartScreen"), "{args}");
         assert!(args.contains("--proxy-server=http://127.0.0.1:9"), "{args}");
         assert!(args.contains("--proxy-bypass-list=<-loopback>"), "{args}");
+        assert!(!args.contains("--disable-gpu"), "{args}");
+    }
+
+    #[test]
+    fn windows_pages_drop_the_gpu_only_when_gpu_rendering_is_off() {
+        let on = page_browser_args("127.0.0.1:9", false);
+        let off = page_browser_args("127.0.0.1:9", true);
+        assert_eq!(off, format!("{on} --disable-gpu"));
     }
 
     #[cfg(target_os = "macos")]

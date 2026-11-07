@@ -82,7 +82,12 @@ from core.training.diffusion_samples import (
     sample_seed,
     SampleRoundStopped,
 )
-from core.training.diffusion_train_extras import BucketBatchSampler, cover_resize_dims
+from core.training.diffusion_train_extras import (
+    BucketBatchSampler,
+    accumulate_loss,
+    cover_resize_dims,
+    loss_value,
+)
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     discard_preexisting_checkpoints,
@@ -94,6 +99,12 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
 )
+
+
+def _parts_to_device(parts, device):
+    import torch
+    moved = [p.to(device, non_blocking = True) for p in parts]
+    return moved[0] if len(moved) == 1 else torch.cat(moved)
 
 
 def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int, int]:
@@ -418,9 +429,12 @@ def run_diffusion_lora_training(
             )
             return str(out_dir)
 
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
-        )
+        from core.training.diffusion_load_progress import report_model_load_progress
+
+        with report_model_load_progress(on_event):
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
+            )
         unet, vae = pipe.unet, pipe.vae
         tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
         text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
@@ -734,7 +748,7 @@ def run_diffusion_lora_training(
                 stopped = True
                 break
             optimizer.zero_grad(set_to_none = True)
-            step_loss = 0.0
+            step_acc = None
             for _ in range(cfg.gradient_accumulation_steps):
                 idx, img_paths, captions = _next_batch()
                 if latent_cache is not None:
@@ -773,8 +787,10 @@ def run_diffusion_lora_training(
                 noisy = noise_scheduler.add_noise(latents, noise, timesteps)
 
                 if precompute:
-                    prompt_embeds = torch.cat([caption_embeds[c][0] for c in captions]).to(device)
-                    pooled = torch.cat([caption_embeds[c][1] for c in captions]).to(device)
+                    prompt_embeds = _parts_to_device(
+                        [caption_embeds[c][0] for c in captions], device
+                    )
+                    pooled = _parts_to_device([caption_embeds[c][1] for c in captions], device)
                 else:
                     prompt_embeds, pooled = _encode_sdxl_prompts(
                         captions, tokenizers, text_encoders, device
@@ -805,7 +821,7 @@ def run_diffusion_lora_training(
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
 
                 scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
-                step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
+                step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
                 micro += 1
 
             # max_grad_norm <= 0 disables clipping; clip_grad_norm_(0.0) would zero all grads.
@@ -816,6 +832,7 @@ def run_diffusion_lora_training(
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
                 if not math.isfinite(grad_norm):
                     grad_norm = None
+            step_loss = loss_value(step_acc)
             scale_before = scaler.get_scale() if scaler.is_enabled() else None
             scaler.step(optimizer)
             scaler.update()

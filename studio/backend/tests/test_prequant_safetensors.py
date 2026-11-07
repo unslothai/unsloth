@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -75,6 +76,55 @@ def test_safetensors_gate_still_needs_torchao_helpers(monkeypatch):
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
     monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
     assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is False
+
+
+# torchao 0.16's safetensors allowlist, verbatim: flatten helpers present, no NVFP4Tensor / MXTensor.
+_TORCHAO_016_SUBCLASSES = [
+    "Float8Tensor",
+    "Int4Tensor",
+    "Int4TilePackedTo4dTensor",
+    "IntxUnpackedToInt8Tensor",
+    "Int8Tensor",
+    "Int4PlainInt32Tensor",
+]
+
+
+@pytest.mark.parametrize(("scheme", "name"), [("nvfp4", "Model-NVFP4"), ("mxfp8", "Model-MXFP8")])
+def test_a_torchao_that_cannot_unflatten_the_scheme_reads_its_safetensors_as_unreadable(
+    monkeypatch, scheme, name
+):
+    """torchao 0.16 has the helpers but raises 'Unsupported tensor type: NVFP4Tensor' on unflatten:
+    the twin must be skipped for the .pt, not picked and then failed into a dense download."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(utils, "ALLOWED_TENSORS_SUBCLASSES", list(_TORCHAO_016_SUBCLASSES))
+    assert pq.restricted_prequant_load_supported(scheme, f"{name}.safetensors") is False
+    assert pq.restricted_prequant_load_supported("fp8", "Model-FP8.safetensors") is True
+    assert pq.restricted_prequant_load_supported("int8", "Model-INT8.safetensors") is True
+    assert pq.restricted_prequant_load_supported(None, f"{name}.safetensors") is True
+    monkeypatch.setattr(
+        utils, "ALLOWED_TENSORS_SUBCLASSES", [*_TORCHAO_016_SUBCLASSES, "MXTensor", "NVFP4Tensor"]
+    )
+    assert pq.restricted_prequant_load_supported(scheme, f"{name}.safetensors") is True
+
+
+def test_an_unreadable_torchao_allowlist_keeps_the_scheme_free_answer(monkeypatch):
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(ps, "_torchao_safetensors_subclasses", lambda: None)
+    assert ps.safetensors_scheme_supported("nvfp4") is True
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
+    assert ps.safetensors_scheme_supported("nvfp4") is False
+
+
+def test_the_installed_torchao_answers_the_nvfp4_question():
+    """Not a stub: the allowlist this install really ships decides (0.17+ lists NVFP4Tensor)."""
+    utils = pytest.importorskip("torchao.prototype.safetensors.safetensors_utils")
+    if not ps.safetensors_prequant_supported():
+        pytest.skip("no safetensors pre-quant support on this install")
+    expected = "NVFP4Tensor" in utils.ALLOWED_TENSORS_SUBCLASSES
+    assert ps.safetensors_scheme_supported("nvfp4") is expected
+    assert pq.restricted_prequant_load_supported("nvfp4", "Model-NVFP4.safetensors") is expected
 
 
 def test_usable_source_survives_a_pickle_only_refusal(monkeypatch):
@@ -584,6 +634,40 @@ def test_plain_encoder_needs_no_torchao(plain_checkpoint):
     assert loaded["state_dict"]["encoder.weight"].dtype == torch.float8_e4m3fn
     assert torch.equal(loaded["state_dict"]["encoder.weight"].float(), torch.ones(2, 3))
     assert loaded["metadata"]["scheme"] == "fp8"
+
+
+def _mapped(path):
+    """Whether this process still maps ``path`` (Linux only; None elsewhere)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    real = os.path.realpath(path)
+    with open("/proc/self/maps", encoding = "utf-8") as fh:
+        return any(line.rstrip().endswith(real) for line in fh)
+
+
+def test_a_buffer_repointed_at_its_pinned_copy_releases_the_file_mapping(plain_checkpoint):
+    """Streaming re-points each host weight at its pinned copy with ``.data =``. A view keeps its base through that,
+    so a buffer loaded straight from the file kept the whole safetensors mapping alive for the model's life (8.7 GiB
+    for Qwen-Image-2.1's int8 encoder; on Windows the open mapping also blocks deleting the file)."""
+    import gc
+
+    import torch
+
+    path = plain_checkpoint(
+        tensors = {"encoder.weight": torch.arange(4096 * 64, dtype = torch.float32).reshape(4096, 64)}
+    )
+    module = torch.nn.Module()
+    module.register_buffer(
+        "weight", ps.load_plain_prequant_safetensors(path)["state_dict"]["encoder.weight"]
+    )
+    expected = module.weight.clone()
+    assert _mapped(path) in (True, None)
+    # the pinned copy, as _GroupPinner / the pin arena re-point it
+    module.weight.data = module.weight.clone()
+    gc.collect()
+    assert _mapped(path) in (False, None)
+    os.remove(path)
+    assert torch.equal(module.weight, expected)
 
 
 @pytest.mark.parametrize(

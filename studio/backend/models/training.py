@@ -670,6 +670,10 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "Set by the server from the checkpoint files; a caller's value is replaced",
     )
+    decision_head: Optional[Literal["clef", "d1"]] = Field(
+        None,
+        description = "What a language model trains into: a Clef head, or a d1 on MLX for LFM3-VL and LFM3-Omni, the default there",
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")
@@ -1222,6 +1226,13 @@ class DiffusionSampleImage(BaseModel):
     seed: Optional[int] = None
 
 
+class DiffusionModelLoadProgress(BaseModel):
+    done: int = Field(ge = 0)
+    total: int = Field(gt = 0)
+    unit: Literal["tensors", "components", "shards"]
+    label: str
+
+
 class DiffusionTrainingPreparation(BaseModel):
     stage: Optional[str] = None
     done: Optional[int] = None
@@ -1255,6 +1266,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     num_images: Optional[int] = None
     in_model_load: bool = False
     preparation: Optional[DiffusionTrainingPreparation] = None
+    model_load_stage: Optional[Literal["conditioning", "transformer", "quantizing"]] = None
+    model_load_progress: Optional[DiffusionModelLoadProgress] = None
     download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None

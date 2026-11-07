@@ -20,6 +20,7 @@ from utils import gguf_archs as _gguf_archs
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 from utils.paths.path_utils import file_contents_available_locally
@@ -38,6 +39,7 @@ _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
 # An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
 _AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
+_UNSUPPORTED_ASR_TASK = "speech-recognition-unsupported"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
@@ -96,16 +98,25 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return read_gguf_architecture(path)
 
 
+def _family_buildable_for_listing(family, *, model_kind: str) -> bool:
+    from core.inference.diffusion_engine_router import family_buildable_here
+    from utils.hardware import hardware as hw
+
+    if hw.DETECTION_COMPLETE.is_set():
+        return family_buildable_here(family, model_kind = model_kind)
+    # Listing must not run hardware detection; the load re-checks the provisional answer.
+    return family_buildable_here(family, model_kind = model_kind, provisional = True)
+
+
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     try:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
-                return family_buildable_here(family, model_kind = "gguf")
+                return _family_buildable_for_listing(family, model_kind = "gguf")
     except Exception:
         return True
     return True
@@ -263,10 +274,11 @@ def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
         family = whole_pipeline_gguf_family(str(path))
         if family is None:
             return None
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family
 
-        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+        buildable = _family_buildable_for_listing(
+            detect_family("", override = family), model_kind = "gguf"
+        )
     except Exception:
         return None
     return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
@@ -281,6 +293,8 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):
         return _audio_cpp_classification(None, name_hints)[0]
+    if is_foreign_asr_gguf_architecture(normalized):
+        return _UNSUPPORTED_ASR_TASK
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -318,15 +332,13 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     if normalized in _AMBIGUOUS_DIFFUSION_GGUF_ARCHS:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
-
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
-                loadable = family_gguf_loadable(family) and family_buildable_here(
+                loadable = family_gguf_loadable(family) and _family_buildable_for_listing(
                     family, model_kind = "gguf"
                 )
                 return "text-to-image" if loadable else _UNSUPPORTED_DIFFUSION_TASK
@@ -430,7 +442,7 @@ def _gguf_folder_task(
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
-        elif task == _UNSUPPORTED_DIFFUSION_TASK:
+        elif task in (_UNSUPPORTED_DIFFUSION_TASK, _UNSUPPORTED_ASR_TASK):
             unsupported = unsupported or task
         elif task is not None and fallback is None:
             fallback = task
@@ -578,7 +590,6 @@ def _local_model_task(model) -> Optional[str]:
     except Exception:
         pass
     try:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import (
             detect_family,
             detect_family_by_pipeline_index,
@@ -595,7 +606,7 @@ def _local_model_task(model) -> Optional[str]:
             if family is not None:
                 return (
                     "text-to-image"
-                    if family_buildable_here(family, model_kind = "pipeline")
+                    if _family_buildable_for_listing(family, model_kind = "pipeline")
                     else None
                 )
         return None
@@ -660,15 +671,20 @@ def _local_is_diffusers(model) -> bool:
             return True
     except Exception:
         pass
+    needles: Optional[tuple[str, ...]] = None
     try:
         from core.inference.diffusion_families import detect_family
-        if any(detect_family(needle) is not None for needle in _local_family_needles(model)):
+        needles = _local_family_needles(model)
+        if any(detect_family(needle) is not None for needle in needles):
             return True
     except Exception:
         pass
     try:
         from core.inference.video_families import detect_video_family
-        families = (detect_video_family(needle) for needle in _local_family_needles(model))
+
+        if needles is None:
+            needles = _local_family_needles(model)
+        families = (detect_video_family(needle) for needle in needles)
         return any(
             family is not None and not _pipeline_only_video_family(family) for family in families
         )

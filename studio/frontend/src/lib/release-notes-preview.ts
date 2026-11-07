@@ -35,10 +35,19 @@ const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
 const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
 const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
+// A parked escape or code span in the destination keeps the link plain.
+const WEB_DESTINATION = /^\((https?:\/\/[^\s()<>\uE000-\uE003]+)\)$/i;
 const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
-// Private-use sentinels park code spans, so document text cannot contain them.
-const SENTINELS = /[\uE000\uE001]/g;
+// Private-use sentinels park code spans and mark links, so document text cannot contain them.
+const SENTINELS = /[\uE000-\uE003]/g;
+// Browsers read `\` as `/` where the expanded view sends `%5C`, so those links stay plain.
+const UNSAFE_HREF = /[\s<>\\]/;
+const LINK_OPEN = "\uE002";
+const LINK_CLOSE = "\uE003";
+// Each mark carries its href index, so a pair removed by tag stripping cannot shift the rest.
+const MARKS = /(\uE002\d+\uE002|\uE003\d+\uE003)/;
+const EDGE_SPACE = /^(\s*)([\s\S]*?)(\s*)$/;
 const LINE_ENDINGS = /\r\n?/g;
 const TABS = /\t/g;
 // A name character must follow "<", so "Python <3.15 and >3.9" keeps its operators.
@@ -128,9 +137,24 @@ function stripHtmlTags(text: string): string {
   return out;
 }
 
+/** `start`/`end` index into the item's `lead` or `rest`. */
+export interface ReleaseNotesLink {
+  part: "lead" | "rest";
+  start: number;
+  end: number;
+  href: string;
+}
+
+interface Span {
+  start: number;
+  end: number;
+  href: string;
+}
+
 export interface ReleaseNotesPreviewItem {
   lead: string;
   rest: string;
+  links: ReleaseNotesLink[];
 }
 
 export interface ReleaseNotesPreview {
@@ -141,6 +165,7 @@ export interface ReleaseNotesPreview {
 interface Bullet {
   text: string;
   indent: number;
+  links: Span[];
 }
 
 function definedLabel(
@@ -172,7 +197,11 @@ function decodeEntity(match: string, body: string): string {
   return NAMED_ENTITIES[body.toLowerCase()] ?? match;
 }
 
-function toPlainText(markdown: string, labels?: Set<string>): string {
+function toPlainText(
+  markdown: string,
+  labels?: Set<string>,
+  hrefs?: string[],
+): string {
   const codes: string[] = [];
   const park = (text: string): string => {
     codes.push(text);
@@ -186,7 +215,19 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     parked
       .replace(AUTOLINK, "$1")
       .replace(IMAGE, "")
-      .replace(LINK, "$1")
+      .replace(LINK, (match, label: string) => {
+        const href = hrefs
+          ? WEB_DESTINATION.exec(match.slice(label.length + 2))?.[1]
+          : undefined;
+        const decoded = href?.replace(ENTITY, decodeEntity);
+        if (!decoded || UNSAFE_HREF.test(decoded)) {
+          return label;
+        }
+        const id = hrefs?.push(decoded) ?? 0;
+        // Edge spaces stay outside the marks, so emphasis around the link strips as before.
+        const [, before, inner, after] = EDGE_SPACE.exec(label) ?? [];
+        return `${before}${LINK_OPEN}${id}${LINK_OPEN}${inner}${LINK_CLOSE}${id}${LINK_CLOSE}${after}`;
+      })
       .replace(IMAGE_REFERENCE, (match, text, ref) =>
         definedLabel(labels, ref, text) ? "" : match,
       )
@@ -203,6 +244,44 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     .replace(PARKED, (_match, index: string) => codes[Number(index)] ?? "")
     .replace(WHITESPACE, " ")
     .trim();
+}
+
+/** Spans index the returned text; any doubt drops them rather than link the wrong words. */
+function plainWithLinks(
+  markdown: string,
+  labels: Set<string>,
+): { text: string; links: Span[] } {
+  const hrefs: string[] = [];
+  const marked = toPlainText(markdown, labels, hrefs);
+  if (hrefs.length === 0) {
+    return { text: marked, links: [] };
+  }
+  const links: Span[] = [];
+  let text = "";
+  let label = "";
+  let open = 0;
+  for (const [index, piece] of marked.split(MARKS).entries()) {
+    if (index % 2 === 0) {
+      text = `${text}${piece}`.replace(WHITESPACE, " ").trimStart();
+      label += piece;
+      continue;
+    }
+    const id = Number(piece.slice(1, -1));
+    if (piece.startsWith(LINK_OPEN)) {
+      open = id;
+      label = "";
+      continue;
+    }
+    const shown = label.replace(WHITESPACE, " ").trim();
+    const end = text.trimEnd().length;
+    const href = hrefs[id - 1];
+    if (open === id && shown && href) {
+      links.push({ start: end - shown.length, end, href });
+    }
+    open = 0;
+  }
+  const plain = toPlainText(markdown, labels);
+  return { text: plain, links: text.trimEnd() === plain ? links : [] };
 }
 
 function truncate(text: string): string {
@@ -652,7 +731,11 @@ function contentLines(markdown: string): ContentLine[] {
 }
 
 /** Conservative: the next sentence must start like one, so "unsloth.ai in the docs" is not split. */
-function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
+function splitLeadSentence(text: string): {
+  lead: string;
+  rest: string;
+  restStart: number;
+} {
   SENTENCE_BREAK.lastIndex = 0;
   let match = SENTENCE_BREAK.exec(text);
   while (match) {
@@ -661,33 +744,81 @@ function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
       TRAILING_WORD.exec(text.slice(0, cut))?.[1]?.toLowerCase() ?? "";
     const isAbbreviation = ABBREVIATIONS.has(word) || INITIAL.test(word);
     if (!isAbbreviation && cut >= MIN_LEAD_CHARS) {
-      return { lead: text.slice(0, cut).trim(), rest: text.slice(cut).trim() };
+      const tail = text.slice(cut);
+      return {
+        lead: text.slice(0, cut).trim(),
+        rest: tail.trim(),
+        restStart: cut + tail.length - tail.trimStart().length,
+      };
     }
     match = SENTENCE_BREAK.exec(text);
   }
-  return { lead: text, rest: "" };
+  return { lead: text, rest: "", restStart: text.length };
+}
+
+/** A link the lead split cuts through becomes one anchor on each side. */
+function previewItem({ text, links }: Bullet): ReleaseNotesPreviewItem {
+  const { lead, rest, restStart } = splitLeadSentence(text);
+  const parts: ReleaseNotesLink[] = [];
+  for (const { start, end, href } of links) {
+    if (start < lead.length) {
+      parts.push({
+        part: "lead",
+        start,
+        end: Math.min(end, lead.length),
+        href,
+      });
+    }
+    if (end > restStart) {
+      const from = Math.max(start, restStart) - restStart;
+      parts.push({ part: "rest", start: from, end: end - restStart, href });
+    }
+  }
+  return { lead, rest, links: parts };
 }
 
 interface Collector {
   bullets: Bullet[];
-  prose: string[];
+  prose: Bullet[];
   current: Bullet | null;
-  paragraph: string;
+  paragraph: Bullet;
   // A quote owns its paragraph: a marker outside the quote opens a list rather than continuing it.
   quotedParagraph: boolean;
 }
 
+const EMPTY: Bullet = { text: "", indent: 0, links: [] };
+
+/** Truncates, dropping links the cut reaches. */
+function clip({ text, indent, links }: Bullet): Bullet {
+  const shown = truncate(text);
+  const kept = shown === text ? shown.length : shown.length - "...".length;
+  return { text: shown, indent, links: links.filter((l) => l.end <= kept) };
+}
+
+function append(block: Bullet, text: string, links: Span[]): Bullet {
+  const offset = block.text.length + 1;
+  return {
+    text: `${block.text} ${text}`,
+    indent: block.indent,
+    links: [
+      ...block.links,
+      ...links.map((l) => ({
+        ...l,
+        start: l.start + offset,
+        end: l.end + offset,
+      })),
+    ],
+  };
+}
+
 function flush(collector: Collector): void {
   if (collector.current?.text) {
-    collector.bullets.push({
-      text: truncate(collector.current.text),
-      indent: collector.current.indent,
-    });
+    collector.bullets.push(clip(collector.current));
   }
   collector.current = null;
-  if (collector.paragraph) {
-    collector.prose.push(truncate(collector.paragraph));
-    collector.paragraph = "";
+  if (collector.paragraph.text) {
+    collector.prose.push(clip(collector.paragraph));
+    collector.paragraph = EMPTY;
   }
   collector.quotedParagraph = false;
 }
@@ -699,12 +830,12 @@ function takeBullet(
   labels: Set<string>,
 ): void {
   flush(collector);
-  const item = toPlainText(text, labels);
+  const { text: item, links } = plainWithLinks(text, labels);
   // A quoted list is example output, never a headline bullet.
   if (!line.quoted) {
-    collector.current = { text: item, indent: line.indent };
+    collector.current = { text: item, indent: line.indent, links };
   } else if (item) {
-    collector.prose.push(truncate(item));
+    collector.prose.push(clip({ text: item, indent: 0, links }));
   }
 }
 
@@ -714,32 +845,29 @@ function takeText(
   labels: Set<string>,
   quoted: boolean,
 ): void {
-  const plain = toPlainText(text, labels);
+  const { text: plain, links } = plainWithLinks(text, labels);
   if (!plain) {
     return;
   }
   if (collector.current === null) {
-    collector.paragraph = collector.paragraph
-      ? `${collector.paragraph} ${plain}`
-      : plain;
+    collector.paragraph = collector.paragraph.text
+      ? append(collector.paragraph, plain, links)
+      : { text: plain, indent: 0, links };
     collector.quotedParagraph = quoted;
     return;
   }
-  collector.current = {
-    text: `${collector.current.text} ${plain}`,
-    indent: collector.current.indent,
-  };
+  collector.current = append(collector.current, plain, links);
 }
 
 function collectBullets(markdown: string): {
   bullets: Bullet[];
-  prose: string[];
+  prose: Bullet[];
 } {
   const collector: Collector = {
     bullets: [],
     prose: [],
     current: null,
-    paragraph: "",
+    paragraph: EMPTY,
     quotedParagraph: false,
   };
 
@@ -809,7 +937,7 @@ function collectBullets(markdown: string): {
       continue;
     }
     const insideBlock =
-      collector.current !== null || collector.paragraph !== "";
+      collector.current !== null || collector.paragraph.text !== "";
     if (!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT) {
       continue;
     }
@@ -817,7 +945,7 @@ function collectBullets(markdown: string): {
     // Only an ordered list starting at 1 may interrupt a paragraph.
     const interrupts =
       collector.current === null &&
-      collector.paragraph !== "" &&
+      collector.paragraph.text !== "" &&
       !collector.quotedParagraph;
     if (
       bullet &&
@@ -849,13 +977,13 @@ export function releaseNotesPreview(
     (min, bullet) => Math.min(min, bullet.indent),
     Number.POSITIVE_INFINITY,
   );
-  const topLevel = bullets
-    .filter((bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE)
-    .map((bullet) => bullet.text);
+  const topLevel = bullets.filter(
+    (bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE,
+  );
 
   const source = topLevel.length > 0 ? topLevel : prose;
   return {
-    items: source.slice(0, limit).map(splitLeadSentence),
+    items: source.slice(0, limit).map(previewItem),
     remaining: Math.max(source.length - limit, 0),
   };
 }

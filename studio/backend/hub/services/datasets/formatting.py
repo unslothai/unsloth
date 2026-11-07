@@ -720,7 +720,7 @@ def check_format_response(
 def ai_assist_mapping_response(
     request: AiAssistMappingRequest, hf_token: Optional[str] = None
 ) -> AiAssistMappingResponse:
-    """User-triggered 7B-model advisor; on failure it falls back to simple column classification."""
+    """User-triggered helper-model advisor; on failure it falls back to simple column classification."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")
@@ -756,7 +756,8 @@ def ai_assist_mapping_response(
 
         return AiAssistMappingResponse(
             success = False,
-            warning = "AI could not determine column roles. Please assign them manually.",
+            warning = (result or {}).get("warning")
+            or "AI could not determine column roles. Please assign them manually.",
         )
 
     except Exception as e:

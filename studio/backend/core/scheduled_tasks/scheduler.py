@@ -82,6 +82,7 @@ class _Swap:
     attended: Optional[float] = None
     # A Transformers or MLX model in the primary has no GGUF identity: it is loaded back by name.
     previous_model: Optional[str] = None
+    previous_launch: Optional[dict] = None
 
 
 @dataclass
@@ -109,7 +110,12 @@ def retire_account_scheduled_tasks(account: AccountContext) -> None:
 
 
 def next_run_for(task: dict, after_ms: int) -> Optional[int]:
-    return next_run_after(parse_schedule(task["schedule"]), task["timezone"], after_ms)
+    return next_run_after(
+        parse_schedule(task["schedule"]),
+        task["timezone"],
+        after_ms,
+        anchor_ms = task.get("nextRunAt"),
+    )
 
 
 def system_prompt(task: dict, now_ms: int) -> str:
@@ -124,6 +130,21 @@ def system_prompt(task: dict, now_ms: int) -> str:
         f"({task['timezone']}). The user is not watching this chat and will read your reply "
         "later, so complete the task directly and do not ask follow-up questions."
     )
+
+
+def _run_instructions(task: dict, now_ms: int) -> str:
+    from core.agents_md import agents_md_text
+    from storage import studio_db
+
+    project = studio_db.get_chat_project(task["projectId"]) if task.get("projectId") else None
+    agents_md = agents_md_text(project).strip()
+    instructions = project["instructions"].strip() if project and not project["archived"] else ""
+    parts = [
+        f"<agents_md>\n{agents_md}\n</agents_md>" if agents_md else "",
+        f"<project_instructions>\n{instructions}\n</project_instructions>" if instructions else "",
+        system_prompt(task, now_ms),
+    ]
+    return "\n\n".join(part for part in parts if part)
 
 
 def _loop_cancelled(current: Optional[asyncio.Task], stopping: bool) -> bool:
@@ -337,7 +358,12 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
 
 async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back; an unattended run swaps only a restorable GGUF while Studio is idle."""
-    from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
+    from core.inference.llama_keepwarm import (
+        attended_stamp,
+        idle_for,
+        launch_to_replay,
+        loaded_identity,
+    )
     from routes.inference import (
         _loaded_slot_ident,
         _resident_npu_model,
@@ -364,6 +390,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
     keep_carried = carried is not None and carried.model and _model_is_loaded(carried.model)
     previous = carried.previous if keep_carried else loaded_identity()
     previous_model = carried.previous_model if keep_carried else None
+    previous_launch = carried.previous_launch if keep_carried else launch_to_replay()
     if not keep_carried and previous is None and _resident_npu_model() is None:
         previous_model = getattr(
             await asyncio.to_thread(get_inference_backend), "active_model_name", None
@@ -376,6 +403,7 @@ async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional
         task_id = task["id"],
         attended = attended_stamp(),
         previous_model = previous_model,
+        previous_launch = previous_launch,
     )
 
 
@@ -437,7 +465,7 @@ async def _restore_after_swap(swap: _Swap, app: Any) -> None:
             if swap.previous is None and not swap.previous_model:
                 return
             if swap.previous is not None:
-                stash_for_reload(swap.previous)
+                stash_for_reload(swap.previous, swap.previous_launch)
             # Named for a non-GGUF model, which must not be held to what is loaded now.
             request = _producer_request(
                 app,
@@ -550,10 +578,18 @@ async def generate_answer(
             # Built once admitted: a model kept alongside is chosen as it stands now, not before a load or unload.
             if not task.get("model") and (kept := _sole_kept_model()):
                 model_fields = {"model": kept}
+            # A project folder on a stalled mount must not keep the scheduler from every other task.
+            try:
+                instructions = await asyncio.wait_for(
+                    asyncio.to_thread(_run_instructions, task, db.now_ms()),
+                    timeout = max(0.0, deadline - loop.time()),
+                )
+            except TimeoutError:
+                raise RunFailed("timeout") from None
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
-                        {"role": "system", "content": system_prompt(task, db.now_ms())},
+                        {"role": "system", "content": instructions},
                         {"role": "user", "content": task["prompt"]},
                     ],
                     "stream": False,

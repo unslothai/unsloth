@@ -2206,6 +2206,12 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
 
 
 def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    detection = threading.Event()
+    detection.set()
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", detection)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     calls = []
     available = (
         types.SimpleNamespace(name = "ltx-2", modular_workflow = False),
@@ -2960,8 +2966,8 @@ def test_a_quantized_reference_load_resolves_the_reference_denoiser():
     # needs a host that can attempt the load at all.
     check_refusal = _h3_pipeline_load_is_attemptable(fam)
     for scheme, expected in (
-        ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
-        ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
+        ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.safetensors"),
+        ("fp8", "MiniMax-H3-Ref2VA-FP8.safetensors"),
     ):
         if check_refusal:
             try:
@@ -10782,8 +10788,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10791,13 +10797,13 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -10812,8 +10818,8 @@ def test_the_download_plan_stages_both_experts_artifacts(monkeypatch):
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
-    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-NVFP4.safetensors" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors" in staged
     assert not any(
         f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
         for f in staged
@@ -10843,8 +10849,8 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10852,13 +10858,13 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -10878,7 +10884,10 @@ def test_an_explicit_scheme_under_speed_off_stages_the_hosted_experts(monkeypatc
     staged = {f for e in plan["entries"] for f in e["files"]}
     assert "transformer/diffusion_pytorch_model.safetensors" not in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" not in staged
-    assert {"Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"} <= staged
+    assert {
+        "Wan2.2-T2V-A14B-NVFP4.safetensors",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+    } <= staged
 
 
 def test_the_video_status_response_carries_the_nvfp4_backend_label():
@@ -10941,8 +10950,8 @@ def _a14b_plan(monkeypatch):
                 _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
             ],
             "unsloth/Wan2.2-T2V-A14B-NVFP4": [
-                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
-                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.safetensors", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors", 8_100_000_000),
             ],
         },
     )
@@ -10950,13 +10959,13 @@ def _a14b_plan(monkeypatch):
         "transformer": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-NVFP4.safetensors",
             fallback_filename = None,
         ),
         "transformer_2": types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
-            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
             fallback_filename = None,
         ),
     }
@@ -10996,8 +11005,8 @@ def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
-    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-NVFP4.safetensors" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors" in staged
     assert not any(
         f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
         for f in staged
@@ -11916,7 +11925,9 @@ def test_an_nvfp4_video_checkpoint_the_hub_refuses_installs_no_flashinfer(
 
 def test_an_nvfp4_video_repo_missing_a_denoiser_installs_no_flashinfer(fake_runtime, monkeypatch):
     # A14B needs BOTH denoisers.
-    installs, listed, _ = _video_install_probe(monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.pt"])
+    installs, listed, _ = _video_install_probe(
+        monkeypatch, listing = ["Wan2.2-T2V-A14B-NVFP4.safetensors"]
+    )
     _video_load_to_the_install_gate()
     assert installs == []
     assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
@@ -11937,7 +11948,10 @@ def test_an_nvfp4_video_family_with_no_hosted_checkpoint_installs_no_flashinfer(
 def test_a_reachable_nvfp4_video_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate()
     assert listed == ["unsloth/Wan2.2-T2V-A14B-NVFP4"]
@@ -11950,7 +11964,10 @@ def test_with_the_nvfp4_switch_off_a_reachable_video_checkpoint_installs_nothing
     monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate(transformer_quant = None, _video_auto_denoiser_planned = "nvfp4")
     assert installs == []
@@ -11973,7 +11990,10 @@ def test_a_video_seed_the_plan_declined_installs_no_flashinfer(fake_runtime, mon
 
     installs, listed, _ = _video_install_probe(
         monkeypatch,
-        listing = ["Wan2.2-T2V-A14B-NVFP4.pt", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"],
+        listing = [
+            "Wan2.2-T2V-A14B-NVFP4.safetensors",
+            "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
+        ],
     )
     _video_load_to_the_install_gate(_video_auto_denoiser_planned = DENOISER_SEED_DECLINED)
     assert installs == []
@@ -12034,7 +12054,7 @@ def _stub_h3_nvfp4_checkpoint(monkeypatch):
         return types.SimpleNamespace(
             kind = "repo",
             location = "unsloth/MiniMax-H3-NVFP4",
-            filename = f"MiniMax-H3-{task}-NVFP4.pt",
+            filename = f"MiniMax-H3-{task}-NVFP4.safetensors",
             fallback_filenames = (),
         )
 
@@ -12065,7 +12085,7 @@ def test_the_minimax_h3_modular_path_skips_the_install_for_a_refused_checkpoint(
 
 def test_the_minimax_h3_modular_path_installs_for_a_reachable_checkpoint(fake_runtime, monkeypatch):
     installs, listed, dispatched = _video_install_probe(
-        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.pt"]
+        monkeypatch, listing = ["MiniMax-H3-ref2va-NVFP4.safetensors"]
     )
     _stub_h3_nvfp4_checkpoint(monkeypatch)
     _video_load_to_the_install_gate(
@@ -13938,3 +13958,138 @@ def test_h3_unified_guard_reruns_before_a_failed_hosted_encoder_goes_dense(
     assert free_mib < initial_memory.free_mib
     assert snapshots == [initial_memory]
     assert calls == [("fp8", "int8", initial_memory), ("fp8", None, initial_memory)]
+
+
+def _png_data_url(width = 64, height = 64):
+    import base64
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 20, 30)).save(buffer, "PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def test_h3_render_reuses_the_audio_the_route_already_decoded(monkeypatch):
+    """The readability check's decode is handed to the render only for the same inputs."""
+    pytest.importorskip("av")
+    import numpy as np
+
+    from core.inference import video_minimax_h3 as h3
+    from core.inference.video import VideoBackend
+    from core.inference.video_families import detect_video_family
+    from routes.video import _refuse_unreadable_audio
+
+    first = _data_url_wav(seconds = 1.0, rate = 32_000)
+    second = _data_url_wav(seconds = 2.0, rate = 32_000)
+    real_decode = h3.decode_h3_reference_audio
+    calls = []
+
+    def counting_decode(*args, **kwargs):
+        calls.append(1)
+        return real_decode(*args, **kwargs)
+
+    monkeypatch.setattr(h3, "decode_h3_reference_audio", counting_decode)
+
+    def resolve(audios, decoded):
+        return VideoBackend._resolve_references(
+            detect_video_family("MiniMaxAI/MiniMax-H3", None),
+            "ref2va",
+            "diffusers",
+            [_png_data_url()],
+            None,
+            audios,
+            "match",
+            960,
+            544,
+            decoded_audios = decoded,
+        )
+
+    checked = _refuse_unreadable_audio([first])
+    assert len(calls) == 1
+    reused = resolve([first], checked)
+    assert len(calls) == 1
+    fresh = resolve([first], None)
+    assert len(calls) == 2
+    (reused_wave, reused_rate), (fresh_wave, fresh_rate) = reused.audios[0], fresh.audios[0]
+    assert reused_rate == fresh_rate == 32_000
+    assert reused_wave.dtype == fresh_wave.dtype
+    assert np.array_equal(reused_wave, fresh_wave)
+    # Different inputs than the check saw: decoded afresh, never the stale waveform.
+    other = resolve([second], checked)
+    assert len(calls) == 3
+    assert other.audios[0][0].shape[0] == 64_000
+    assert _refuse_unreadable_audio(None) is None
+
+
+def test_h3_reference_video_frames_are_rgb_without_an_extra_copy(monkeypatch):
+    pytest.importorskip("av")
+    from PIL import Image
+
+    from core.inference import video_minimax_h3 as h3
+
+    converts = []
+    real_convert = Image.Image.convert
+
+    def counting_convert(self, *args, **kwargs):
+        converts.append(self.mode)
+        return real_convert(self, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "convert", counting_convert)
+    from core.inference.video import _decode_b64_media
+
+    blob = _decode_b64_media(_reference_video_data_url(seconds = 3.0, with_audio = False))
+    frames, _, _ = h3.decode_h3_reference_video(blob, decode_audio = False)
+    assert frames and all(frame.mode == "RGB" for frame in frames)
+    assert converts == []
+
+
+def test_h3_staged_reference_frames_match_one_save_per_frame(tmp_path):
+    """Repeated frame objects (24 fps upsampling) and the writer threads leave the files a plain loop writes."""
+    import hashlib
+
+    from PIL import Image
+
+    from core.inference import video_minimax_h3 as h3
+
+    distinct = [
+        Image.new("RGB", (64, 48), (index * 9 % 256, index, 255 - index)) for index in range(7)
+    ]
+    frames = [distinct[index // 2] for index in range(13)] + [distinct[0]]
+    (tmp_path / "head").mkdir()
+    staged = h3.stage_h3_references(
+        h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path / "head"
+    )
+    expected = tmp_path / "expected"
+    expected.mkdir()
+    for frame_index, frame in enumerate(frames):
+        frame.save(expected / f"{frame_index:05d}.png", format = "PNG", compress_level = 1)
+
+    directory = tmp_path / "head" / "ref-video-00"
+    assert staged.videos == (str(directory),)
+    names = sorted(path.name for path in directory.iterdir())
+    assert names == sorted(path.name for path in expected.iterdir())
+    for name in names:
+        assert (
+            hashlib.sha256((directory / name).read_bytes()).digest()
+            == hashlib.sha256((expected / name).read_bytes()).digest()
+        )
+
+
+def test_h3_staged_reference_frames_raise_the_first_failure_in_frame_order(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from core.inference import video_minimax_h3 as h3
+
+    frames = [Image.new("RGB", (16, 16), (index, 0, 0)) for index in range(8)]
+    real_save = Image.Image.save
+
+    def failing_save(self, fp, *args, **kwargs):
+        if self.getpixel((0, 0))[0] in (3, 6):
+            raise OSError(f"disk full at {self.getpixel((0, 0))[0]}")
+        return real_save(self, fp, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "save", failing_save)
+    with pytest.raises(OSError, match = "disk full at 3"):
+        h3.stage_h3_references(h3.MiniMaxH3References(videos = ((frames, None, None),)), tmp_path)

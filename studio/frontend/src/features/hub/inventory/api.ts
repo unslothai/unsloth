@@ -200,6 +200,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  estimated_resident_gb?: number | null;
   /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
   lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;

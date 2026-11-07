@@ -27,6 +27,7 @@ def _load_rl_module():
     tree = ast.parse(source)
     wanted = {
         "_attested_within_cap",
+        "_arrow_within_cap",
         "pretokenized_within_cap",
         "splits_within_cap",
         "_SCAN_ROWS",

@@ -103,6 +103,7 @@ export interface ChatModelSummary {
   audioType?: string | null;
   hasAudioInput?: boolean;
   hasVideoInput?: boolean;
+  speaks?: boolean;
 }
 
 export interface ChatLoraSummary {

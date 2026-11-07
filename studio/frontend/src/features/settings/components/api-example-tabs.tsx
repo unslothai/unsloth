@@ -5,11 +5,15 @@ import { useIsAccountOwner } from "@/features/auth";
 import { type TranslationKey, useT } from "@/i18n";
 // Not through the barrel: it pulls in chat, which every barrel importer would then load.
 import { RAISED_SURFACE } from "@/features/library/surface";
-import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import {
+  AiSpeechIcon,
+  MessageCircleIcon,
+  TestTubeOutlineIcon,
+} from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
 import {
   BotIcon,
-  Image01Icon,
+  ImageIcon,
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -32,11 +36,19 @@ import {
 import { AudioApiExamples } from "./audio-api-examples";
 import { DecisionApiSection } from "./decision-api-section";
 import { MediaApiExamples } from "./media-api-examples";
+import { TrainingApiExamples } from "./training-api-examples";
 import { UsageExamples } from "./usage-examples";
 
-export type ApiExampleKind = "chat" | "media" | "audio" | "decision" | "agents";
+export type ApiExampleKind =
+  | "chat"
+  | "media"
+  | "audio"
+  | "training"
+  | "decision"
+  | "agents";
 
-export function useApiExampleKinds(): {
+/** Training has no chip of its own: it shows only while the Train page's API button has it open. */
+export function useApiExampleKinds(current?: ApiExampleKind): {
   id: ApiExampleKind;
   label: string;
   icon: IconSvgElement;
@@ -49,7 +61,7 @@ export function useApiExampleKinds(): {
     {
       id: "media",
       label: "Images / Video",
-      icon: Image01Icon,
+      icon: ImageIcon,
       searchLabel: "settings.apiKeys.mediaApi.title",
     },
     {
@@ -58,6 +70,15 @@ export function useApiExampleKinds(): {
       icon: AiSpeechIcon,
       searchLabel: "settings.apiKeys.audioApi.title",
     },
+    ...(current === "training"
+      ? [
+          {
+            id: "training" as const,
+            label: "Training",
+            icon: TestTubeOutlineIcon,
+          },
+        ]
+      : []),
     ...(isOwner
       ? [
           {
@@ -82,7 +103,7 @@ export function ApiExampleTabNav({
   className?: string;
 }): ReactElement {
   const t = useT();
-  const kinds = useApiExampleKinds();
+  const kinds = useApiExampleKinds(kind);
   return (
     <nav aria-label="Example" className={cn("flex flex-wrap gap-1", className)}>
       {kinds.map((entry) => (
@@ -119,6 +140,7 @@ export function ApiExampleTabNav({
 const TAB_FOR_TARGET: Partial<Record<SettingsScrollTarget, ApiExampleKind>> = {
   "api-keys-media-api": "media",
   "api-keys-audio-api": "audio",
+  "api-keys-training-api": "training",
   "api-keys-decision-api": "decision",
 };
 
@@ -206,8 +228,20 @@ export function ApiExamplesPanel({
           showHeading={false}
           {...keyless}
         />
+      ) : kind === "training" ? (
+        <TrainingApiExamples
+          apiKey={apiKey}
+          useTunnel={useTunnel}
+          showHeading={false}
+          {...keyless}
+        />
       ) : (
-        <DecisionApiSection showHeading={false} />
+        <DecisionApiSection
+          apiKey={apiKey}
+          useTunnel={useTunnel}
+          showHeading={false}
+          {...keyless}
+        />
       )}
     </div>
   );

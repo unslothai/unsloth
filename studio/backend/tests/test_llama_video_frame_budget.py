@@ -485,7 +485,11 @@ def test_a_machine_without_ffmpeg_forwards_the_clip_untouched(monkeypatch):
 def test_a_timed_out_shrink_forwards_the_clip_untouched(monkeypatch):
     monkeypatch.setattr(llama_video_input.shutil, "which", lambda name: f"/bin/{name}")
 
-    def timeout(argv, _timeout):
+    def timeout(
+        argv,
+        _timeout,
+        env = None,
+    ):
         raise subprocess.TimeoutExpired(argv, _timeout)
 
     monkeypatch.setattr(llama_video_input, "_run", timeout)

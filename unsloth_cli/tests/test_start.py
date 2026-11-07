@@ -9,6 +9,7 @@ import http.client
 import http.server
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -22,6 +23,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -35,6 +37,7 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
+_REAL_SERVER_LOADS_MLX = start._server_loads_mlx
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
@@ -250,6 +253,20 @@ def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
         "& 'C:\\Managed Node\\npm.cmd' install -g '@openai/codex'",
     ]
     assert env is not None
+
+
+def test_install_command_keeps_an_apostrophe_in_a_windows_prefix(monkeypatch):
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Managed Node\npm.cmd")
+    prefix = r"C:\Users\O'Brien\AppData\Roaming\npm"
+    hint = start._npm_install_hint("@openai/codex@latest", prefix = prefix)
+
+    command, _ = start._install_command(hint)
+
+    assert command[-1] == (
+        "& 'C:\\Managed Node\\npm.cmd' install -g --prefix "
+        "'C:\\Users\\O''Brien\\AppData\\Roaming\\npm' '@openai/codex@latest'"
+    )
 
 
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
@@ -1007,7 +1024,8 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         "codex_home": str(tmp_path / "child"),
         "bypass_permissions": False,
     }
-    assert path.stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or path.stat().st_mode & 0o077 == 0
     profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
     assert profile["model"] == local["id"]
     assert profile["model_provider"] == start._CODEX_PROFILE
@@ -1036,7 +1054,8 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert instructions.startswith("Keep my existing instructions.\n")
     assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
     assert not (overlay / "AGENTS.md").exists()
-    assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
+    # POSIX mode bits: Windows reports 0o666 for any writable file, whatever the open mode.
+    assert os.name == "nt" or (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
 
@@ -1316,6 +1335,18 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
+def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "bf16"},
+    )
+    entry = {"id": "mlx-community/Qwen3-4B"}
+    assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B"
+    assert start._subagent_model_id(BASE, "key", entry, f"{entry['id']}:bf16", None) == entry["id"]
+    assert start._subagent_model_id(BASE, "key", entry, entry["id"], "bf16") == entry["id"]
+
+
 def _kept_model_status(url):
     # Primary Qwen3-4B at Q4_K_M, Qwen3-1.7B kept alongside at Q8_0.
     if "model=unsloth%2FQwen3-1.7B-GGUF" in url:
@@ -1433,6 +1464,24 @@ def test_dsh_resolver_searches_past_an_unrelated_earlier_path_entry(monkeypatch,
     )
 
     assert Path(resolved).parent == harness_dir
+
+
+def test_dsh_first_run_installs_the_latest_dist_tag(monkeypatch):
+    hints = []
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda _: None)
+    monkeypatch.setattr(start, "_which_deepseek_harness_with_install_dirs", lambda: None)
+    monkeypatch.setattr(start, "_install_agent", lambda name, hint: hints.append(hint))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *a, **k: pytest.fail("a missing dsh must stop before model connection"),
+    )
+
+    result = CliRunner().invoke(start.start_app, ["dsh"])
+
+    assert result.exit_code == 1
+    assert len(hints) == 1
+    assert shlex.split(hints[0])[-1] == "@deepseek-ai/dsh@latest", hints
 
 
 def test_declined_opencode_subagent_install_stops_before_connect(monkeypatch):
@@ -2795,6 +2844,123 @@ def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
 
 
+def test_codex_keeps_the_users_instructions_skills_rules_and_prompts(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    (source_home / "rules").mkdir()
+    (source_home / "rules" / "default.rules").write_text(
+        'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    )
+    (source_home / "prompts").mkdir()
+    (source_home / "prompts" / "summarize.md").write_text("Summarize the diff.\n")
+    (source_home / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "Answer in French.\n"
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert "forbidden" in (home / "rules" / "user-default.rules").read_text()
+    assert not (home / "rules").is_symlink()
+    assert (home / "prompts" / "summarize.md").read_text() == "Summarize the diff.\n"
+    # Codex persists an approval by appending to $CODEX_HOME/rules/default.rules.
+    with open(home / "rules" / "default.rules", "a") as rules:
+        rules.write('prefix_rule(pattern = ["ls"], decision = "allow")\n')
+    assert "allow" not in (source_home / "rules" / "default.rules").read_text()
+
+    (source_home / "AGENTS.md").unlink()
+    (source_home / "AGENTS.override.md").write_text("Answer in German.\n")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+    assert not os.path.lexists(home / "AGENTS.md")
+    assert (source_home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+
+
+def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "old").mkdir(parents = True)
+    (source_home / "AGENTS.md").write_text("first\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "old").is_dir()
+
+    (source_home / "AGENTS.md").write_text("second\n")
+    (source_home / "skills" / "old").rmdir()
+    (source_home / "skills" / "new").mkdir()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "second\n"
+    assert not (home / "skills" / "old").exists()
+    assert (home / "skills" / "new").is_dir()
+
+
+def test_codex_merges_user_rules_into_a_used_saved_home_as_real_files(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "rules").mkdir(parents = True)
+    forbid = 'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    (source_home / "rules" / "default.rules").write_text(forbid)
+    (source_home / "rules" / "team.rules").write_text(forbid)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "rules").mkdir(parents = True)
+    approved = 'prefix_rule(pattern = ["ls"], decision = "allow")\n'
+    (home / "rules" / "default.rules").write_text(approved)
+
+    for _ in range(2):
+        assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+        rules = {p.name: p for p in (home / "rules").iterdir()}
+        assert set(rules) == {"default.rules", "user-default.rules", "team.rules"}
+        assert not any(p.is_symlink() for p in rules.values())
+        assert rules["default.rules"].read_text() == approved
+        assert rules["user-default.rules"].read_text() == forbid
+        assert rules["team.rules"].read_text() == forbid
+
+    (source_home / "rules" / "team.rules").unlink()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "rules" / "team.rules")
+    assert (source_home / "rules" / "default.rules").read_text() == forbid
+
+
+def test_codex_merges_user_skills_into_a_used_saved_home(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "skills" / ".system").mkdir(parents = True)
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert (home / "skills" / ".system").is_dir()
+    assert not (source_home / "skills" / ".system").exists()
+
+    shutil.rmtree(source_home / "skills" / "release")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "skills" / "release")
+    assert (home / "skills" / ".system").is_dir()
+
+
+def test_codex_links_user_files_from_a_relative_codex_home(fake_studio, tmp_path, monkeypatch):
+    (tmp_path / "user-codex").mkdir()
+    (tmp_path / "user-codex" / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", "user-codex")
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (tmp_path / "agents" / "codex" / "AGENTS.md").read_text() == "Answer in French.\n"
+
+
 def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"
@@ -3428,6 +3594,10 @@ def test_no_launch_output_is_parseable(fake_studio):
     assert any(ln.startswith("export CODEX_HOME=") for ln in lines)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     # People copy just the last line, so it must inline every session env var.
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
@@ -3447,6 +3617,10 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     assert assignments["UNSLOTH_STUDIO_AUTH_TOKEN"].startswith("sk-unsloth-")
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "inline NAME=value assignments are POSIX; on Windows --no-launch prints PowerShell",
+)
 def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -4268,6 +4442,99 @@ def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
         assert "model_reasoning_effort" not in profile
 
 
+@pytest.mark.parametrize("subagent", [[], ["--as-subagent"], ["--auto-route"]])
+@pytest.mark.parametrize(
+    "version, launches", [((0, 133, 0), False), ((0, 134, 0), True), (None, True)]
+)
+def test_codex_too_old_for_profile_files_stops_before_launch(
+    version, launches, subagent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        start, "_require_agent_for_launch", lambda name, hint, launch: f"/bin/{name}"
+    )
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex", *subagent])
+    assert bool(launched) is launches
+    if launches:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 1
+        assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
+        assert "Update it the way it was installed, or remove it" in result.output
+        assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
+@pytest.mark.parametrize("after, launches", [((0, 134, 0), True), ((0, 133, 0), False)])
+def test_codex_too_old_offers_the_update_with_the_managed_npm(
+    after, launches, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/codex")
+    versions = iter([(0, 133, 0), after])
+    monkeypatch.setattr(start, "_codex_executable_version", lambda _: next(versions, after))
+    hint = start._npm_install_hint("@openai/codex@latest")
+    monkeypatch.setattr(start, "_codex_update_hint", lambda _: hint)
+    install_agent = start._install_agent
+
+    def install_from_a_tty(*args, **kwargs):
+        # CliRunner swaps sys.stdin, so fake the TTY only for the prompt.
+        with mock.patch.object(start.sys, "stdin", SimpleNamespace(isatty = lambda: True)):
+            return install_agent(*args, **kwargs)
+
+    monkeypatch.setattr(start, "_install_agent", install_from_a_tty)
+    prompts = []
+    monkeypatch.setattr(start.typer, "confirm", lambda text, **k: prompts.append(text) or True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/studio/node/bin/npm")
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env = None, **k: ran.append((command, env)) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda name, **k: f"/bin/{name}")
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex"])
+    assert prompts == [f"Update `codex` now with `{hint}`?"]
+    if os.name == "nt":
+        assert ran[0][0][-1] == "& " + start._powershell_quote("/studio/node/bin/npm") + hint[3:]
+    else:
+        assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
+    assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
+    assert bool(launched) is launches
+    if not launches:
+        assert result.exit_code == 1
+        assert f"Update it with `{hint}`" in result.output
+
+
+def test_codex_update_hint_targets_the_resolved_install(tmp_path):
+    prefix = tmp_path / "global"
+    bin_dir = prefix if os.name == "nt" else prefix / "bin"
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
+    (package / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(bin_dir / "codex")) == start._npm_install_hint(
+        "@openai/codex@latest", prefix = prefix
+    )
+    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Homebrew links codex with a symlink")
+def test_codex_update_hint_uses_brew_for_a_homebrew_codex(tmp_path):
+    target = tmp_path / "Caskroom" / "codex" / "0.133.0" / "codex"
+    target.parent.mkdir(parents = True)
+    target.touch()
+    link = tmp_path / "bin" / "codex"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    # A leftover npm package under the same prefix must not win over the brew-owned link.
+    (tmp_path / "lib" / "node_modules" / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(link)) == "brew upgrade codex"
+
+
 def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
     fake_studio, tmp_path, monkeypatch
 ):
@@ -4514,6 +4781,18 @@ def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
     _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
 
 
+def test_connect_loaded_ollama_model_keeps_its_tag(fake_studio):
+    fake_studio.state["models"] = [{"id": "ollama/qwen3:8b", "context_length": 40960}]
+    result = CliRunner().invoke(
+        start.start_app, ["claude", "--no-launch", "--model", "ollama/qwen3:8b"]
+    )
+    assert result.exit_code == 0, result.output
+    loads = [c for c in fake_studio if c[1].endswith("/api/inference/load")]
+    assert loads == []
+    assert "Reusing loaded model: ollama/qwen3:8b\n" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", "ollama/qwen3:8b")
+
+
 def test_connect_model_variant_suffix_defers_to_server_dedup(fake_studio):
     result = CliRunner().invoke(
         start.start_app, ["claude", "--no-launch", "--model", MODEL["id"] + ":UD-Q4_K_XL"]
@@ -4700,6 +4979,28 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
     assert "Claude Code needs a GGUF model" in result.output
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
     assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize("subcommand", ["claude", "codex"])
+def test_connect_gguf_only_agents_run_on_an_mlx_model(fake_studio, monkeypatch, subcommand):
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.split("?")[0].endswith("/api/inference/status"):
+            return {"is_gguf": False, "is_mlx": True, "model_identifier": "unsloth/Qwen3-0.6B"}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, [subcommand, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "needs a GGUF model" not in result.output
 
 
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
@@ -4974,6 +5275,13 @@ def _studio_is_this_machine(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _gguf_only_host(monkeypatch):
+    # The GGUF gate defers on an MLX host, and this suite also runs on Apple Silicon.
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: False)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
+
+
+@pytest.fixture(autouse = True)
 def _reset_auto_served():
     # Never leave a fake server in the module slot: the atexit backstop would signal it.
     yield
@@ -5010,7 +5318,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         ),
     )
     cmd = captured["command"]
-    assert cmd[1] == "run"
+    assert cmd[0] == sys.executable
+    assert cmd[cmd.index("-c") + 2] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
@@ -5025,7 +5334,11 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    assert captured["kwargs"].get("start_new_session") is True
+    # Detached from this console either way: a new session on POSIX, a new process group on Windows.
+    if os.name == "nt":
+        assert captured["kwargs"]["creationflags"] & start.subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert captured["kwargs"].get("start_new_session") is True
     assert server.pid == 4321
     output = capsys.readouterr().out
     assert "Starting Unsloth server\n" in output
@@ -5629,6 +5942,48 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     assert payloads == [
         {"model_path": "owner/model-GGUF", "gguf_variant": "Q8_0", "max_seq_length": 8192}
     ]
+
+
+@pytest.mark.parametrize("requested", ["mlx-community/Qwen3-4B", None])
+def test_resolve_model_reload_option_keeps_the_resident_mlx_folder(monkeypatch, requested):
+    repo = "mlx-community/Qwen3-4B"
+    models = [{"id": repo, "loaded": True}]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    status = {
+        "is_gguf": False,
+        "is_mlx": True,
+        "gguf_variant": "6-bit",
+        "active_model": repo,
+        "model_identifier": repo,
+    }
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: status)
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(BASE, "key", requested, start.LoadOptions(max_seq_length = 8192))
+
+    assert [p.get("gguf_variant") for p in payloads] == ["6-bit"]
+
+
+def test_an_unchanged_mlx_folder_is_not_a_settings_change():
+    status = {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"}
+    assert not start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-bit"), frozenset({"gguf_variant"})
+    )
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "8bit"), frozenset({"gguf_variant"})
+    )
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-BIT"), frozenset({"gguf_variant"})
+    )
+    assert start._resident_serves_variant(status, "6-bit")
+    assert not start._resident_serves_variant(status, "6-BIT")
+    assert start._resident_serves_variant({"is_gguf": True, "gguf_variant": "Q8_0"}, "q8_0")
 
 
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
@@ -7295,6 +7650,120 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
+def test_hermes_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text(
+        "model:\n  default: cloud-model\n"
+        "mcp_servers:\n"
+        "  github:\n    command: npx\n    args: [-y, '@modelcontextprotocol/server-github']\n"
+        "  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert config["model"]["default"] == MODEL["id"]
+
+    config["mcp_servers"]["local"] = {"command": "local-server"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+    user_config.write_text("mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert user_config.read_text() == "mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+
+
+def test_hermes_mcp_servers_follow_the_origin_from_a_recipe_shell(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    user_config.write_text("mcp_servers:\n  github:\n    command: g\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"github": {"command": "g"}}
+
+
+def test_hermes_fresh_session_from_a_recipe_shell_keeps_saved_home_servers(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    config["mcp_servers"]["local"] = {"command": "l"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh = tmp_path / "session" / "config.yaml"
+    fresh.parent.mkdir()
+    start.write_hermes_config(BASE, MODEL, fresh, keep_mcp_servers = True)
+    assert yaml.safe_load(fresh.read_text())["mcp_servers"] == {
+        "local": {"command": "l"},
+        "docs": {"command": "d"},
+    }
+
+
+def test_hermes_relative_origin_survives_a_directory_change(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    (tmp_path / "user-hermes").mkdir()
+    (tmp_path / "user-hermes" / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", "user-hermes")
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"docs": {"command": "d"}}
+
+
+def test_hermes_mcp_servers_follow_the_active_profile(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    root = tmp_path / "user-hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents = True)
+    (root / "config.yaml").write_text("mcp_servers:\n  personal:\n    command: p\n")
+    (root / "active_profile").write_text("work\n")
+    (profile / "config.yaml").write_text("mcp_servers:\n  work:\n    command: w\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((tmp_path / "agents" / "hermes" / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"work": {"command": "w"}}
+
+
 @pytest.mark.parametrize(("found", "warned"), [("v20.19.5", True), ("v22.19.0", False)])
 def test_pi_warns_when_node_is_older_than_it_needs(monkeypatch, capsys, found, warned):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/usr/bin/node")
@@ -7351,7 +7820,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     home = tmp_path / "agents" / "pi"
-    _assert_env_set(result.output, "HOME", str(home))
+    assert not re.search(r"\bHOME\b", result.output)
     _assert_env_set(result.output, "PI_CODING_AGENT_DIR", str(home / ".pi" / "agent"))
     assert f"pi --provider unsloth --model {MODEL['id']}" in result.output
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
@@ -7366,13 +7835,29 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     assert not (user_agent_dir / "models.json").exists()
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason = "needs git")
+def test_pi_shell_commands_keep_the_user_git_identity(fake_studio, tmp_path, monkeypatch):
+    user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
+    (user_home / ".gitconfig").write_text("[user]\n\temail = me@example.com\n")
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising = False)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/pi")
+    run = subprocess.run
+    captured = _capture_launch(monkeypatch, ["pi"])
+    git = run(
+        ["git", "config", "--global", "user.email"],
+        env = captured["env"],
+        capture_output = True,
+        text = True,
+    )
+    assert git.stdout.strip() == "me@example.com"
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "asserts POSIX symlinks and path forms")
 def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_path, monkeypatch):
     user_agent_dir = _pi_user_agent_dir(tmp_path, monkeypatch)
     user_home = user_agent_dir.parent.parent
     for name in ("extensions", "skills", "npm", "git"):
         (user_agent_dir / name).mkdir()
-    (user_home / ".agents" / "skills").mkdir(parents = True)
     (user_agent_dir / "auth.json").write_text('{"google": "user-key"}\n')
     (user_agent_dir / "models.json").write_text('{"providers": {"mine": {}}}\n')
     (user_agent_dir / "sessions").mkdir()
@@ -7403,15 +7888,12 @@ def test_write_pi_user_resources_links_resources_and_keeps_config_private(tmp_pa
     agent_dir = session_home / ".pi" / "agent"
     start.write_pi_config(BASE, "sk-unsloth-abc", MODEL, agent_dir / "models.json")
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     for name in ("extensions", "skills", "npm", "git"):
         assert (agent_dir / name).is_symlink()
         assert (agent_dir / name).resolve() == (user_agent_dir / name).resolve()
     assert not (agent_dir / "prompts").exists()
-    assert (session_home / ".agents" / "skills").resolve() == (
-        user_home / ".agents" / "skills"
-    ).resolve()
     for private in ("auth.json", "sessions"):
         assert not (agent_dir / private).exists()
     assert "mine" not in json.loads((agent_dir / "models.json").read_text())["providers"]
@@ -7444,7 +7926,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["packages"].append("npm:session-only")
@@ -7453,7 +7935,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     user_settings.write_text(json.dumps({"packages": ["npm:kept", "npm:new"]}))
     (user_agent_dir / "extensions").rmdir()
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads(settings_path.read_text()) == {
         "packages": ["npm:session-only", "npm:kept", "npm:new"],
@@ -7462,7 +7944,7 @@ def test_write_pi_user_resources_refreshes_a_persisted_session(tmp_path, monkeyp
     assert not (agent_dir / "extensions").exists() and not (agent_dir / "extensions").is_symlink()
 
     user_settings.unlink()
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads(settings_path.read_text()) == {
         "packages": ["npm:session-only"],
         "theme": "dark",
@@ -7480,7 +7962,7 @@ def test_write_pi_user_resources_leaves_session_dirs_and_user_files_alone(tmp_pa
     (agent_dir / "npm").mkdir(parents = True)
     (agent_dir / "npm" / "session.txt").write_text("session\n")
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not (agent_dir / "npm").is_symlink()
     assert (agent_dir / "npm" / "session.txt").read_text() == "session\n"
@@ -7498,11 +7980,11 @@ def test_write_pi_user_resources_uses_inherited_agent_dir(tmp_path, monkeypatch)
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(configured))
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
 
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(agent_dir))
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert not (agent_dir / "extensions").exists()
 
 
@@ -7518,7 +8000,7 @@ def test_write_pi_user_resources_resolves_a_relative_agent_dir_from_the_launch_d
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert (agent_dir / "extensions").resolve() == (configured / "extensions").resolve()
     settings = json.loads((agent_dir / "settings.json").read_text())
@@ -7565,7 +8047,7 @@ def test_write_pi_user_resources_skips_a_windows_pi_under_wsl(tmp_path, monkeypa
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not agent_dir.exists()
 
@@ -7580,14 +8062,14 @@ def test_write_pi_user_resources_clears_a_session_a_linux_pi_prepared(tmp_path, 
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert (agent_dir / "extensions").is_symlink()
     settings = json.loads((agent_dir / "settings.json").read_text())
     settings["packages"].append("npm:session-only")
     (agent_dir / "settings.json").write_text(json.dumps(settings))
 
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert not (agent_dir / "extensions").exists()
     assert json.loads((agent_dir / "settings.json").read_text()) == {
@@ -7606,7 +8088,7 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: None)
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == [
         "npm",
         "--registry=x",
@@ -7617,7 +8099,7 @@ def test_write_pi_user_resources_clears_npm_command_whole(tmp_path, monkeypatch,
         (agent_dir / "settings.json").write_text(json.dumps(settings))
 
     monkeypatch.setattr(start, "_wsl_windows_executable", lambda _: "/mnt/c/npm/pi.cmd")
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
     assert settings.get("npmCommand") == session_command
@@ -7637,7 +8119,7 @@ def test_write_pi_user_resources_reanchors_when_a_real_session_dir_blocks_the_li
     agent_dir = session_home / ".pi" / "agent"
     (agent_dir / "npm").mkdir(parents = True)
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     settings = json.loads((agent_dir / "settings.json").read_text())
     assert not (agent_dir / "npm").is_symlink()
@@ -7656,12 +8138,10 @@ def test_write_pi_user_resources_keeps_a_disabled_global_skill_disabled(tmp_path
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
-    session_skill = session_home / ".agents" / "skills" / "off" / "SKILL.md"
-    assert session_skill.exists()
     settings = json.loads((agent_dir / "settings.json").read_text())
-    assert settings["skills"] == [f"-{disabled}", f"-{session_skill}"]
+    assert settings["skills"] == [f"-{disabled}"]
 
 
 def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
@@ -7673,14 +8153,14 @@ def test_write_pi_user_resources_copies_the_npm_command(tmp_path, monkeypatch):
     session_home = tmp_path / "session"
     agent_dir = session_home / ".pi" / "agent"
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads((agent_dir / "settings.json").read_text())["npmCommand"] == command
     settings_path = agent_dir / "settings.json"
     settings = json.loads(settings_path.read_text())
     settings["npmCommand"] = ["pnpm"]
     settings_path.write_text(json.dumps(settings))
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
     assert json.loads(settings_path.read_text())["npmCommand"] == ["pnpm"]
 
 
@@ -7694,7 +8174,7 @@ def test_write_pi_user_resources_warns_on_an_unusable_agent_dir_override(
     agent_dir = session_home / ".pi" / "agent"
     agent_dir.mkdir(parents = True)
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert "PI_CODING_AGENT_DIR" in capsys.readouterr().err
 
@@ -7707,7 +8187,7 @@ def test_write_pi_user_resources_keeps_a_non_list_setting(tmp_path, monkeypatch)
     agent_dir.mkdir(parents = True)
     (agent_dir / "settings.json").write_text(json.dumps({"themes": {"name": "dark"}}))
 
-    start.write_pi_user_resources(agent_dir, session_home)
+    start.write_pi_user_resources(agent_dir)
 
     assert json.loads((agent_dir / "settings.json").read_text())["themes"] == {"name": "dark"}
 
@@ -7772,7 +8252,7 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
-    assert command[2].endswith("unsloth_cli/pi_subagent.ts")
+    assert Path(command[2]).as_posix().endswith("unsloth_cli/pi_subagent.ts")
     assert ("--approve" in command) is yolo
     assert "--provider" not in command
     assert "--model" not in command
@@ -7846,7 +8326,7 @@ def test_write_pi_output_limit_context_metadata(tmp_path, context):
         assert "contextWindow" not in model
 
 
-def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
+def test_connect_pi_no_launch_windows_keeps_userprofile(fake_studio, tmp_path, monkeypatch):
     user_home = _pi_user_agent_dir(tmp_path, monkeypatch).parent.parent
     # Avoid pathlib selecting WindowsPath on this POSIX runner.
     monkeypatch.setattr(start.Path, "home", lambda: user_home)
@@ -7854,8 +8334,9 @@ def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_pat
     result = CliRunner().invoke(start.start_app, ["pi", "--no-launch"])
     assert result.exit_code == 0, result.output
     home = tmp_path / "agents" / "pi"
-    assert f'$env:HOME = "{home}"' in result.output
-    assert f'$env:USERPROFILE = "{home}"' in result.output
+    assert f'$env:PI_CODING_AGENT_DIR = "{home / ".pi" / "agent"}"' in result.output
+    assert "$env:HOME" not in result.output
+    assert "$env:USERPROFILE" not in result.output
 
 
 @pytest.fixture()
@@ -8375,7 +8856,8 @@ def test_vibe_env(tmp_path):
             "name": MODEL["id"],
             "provider": start._VIBE_PROVIDER,
             "alias": start._VIBE_MODEL_ALIAS,
-            "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
+            "max_context_length": MODEL["context_length"],
+            "auto_compact_threshold": MODEL["context_length"] - 24_000,
         }
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
@@ -8388,9 +8870,19 @@ def test_vibe_env_carries_temperature_and_odd_model_ids():
     _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
     assert models[0]["name"] == model["id"]
     assert models[0]["temperature"] == 0.7
-    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    assert models[0]["max_context_length"] == 32768
+    assert models[0]["auto_compact_threshold"] == 32768 * 3 // 4
     _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
     assert set(models[0]) == {"name", "provider", "alias"}
+
+
+@pytest.mark.parametrize("window", [16384, 40960, 131072, 262144])
+def test_vibe_env_compaction_threshold_fits_the_window(window):
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m", "context_length": window}))
+    assert models[0]["max_context_length"] == window
+    low = max(min(50_000, window // 2), 10_000)
+    high = window - min(24_000, math.ceil(window / 4))
+    assert low <= models[0]["auto_compact_threshold"] <= high
 
 
 def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
@@ -8413,7 +8905,8 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
-def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+@pytest.mark.parametrize("window", [40960, MODEL["context_length"]])
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path, window):
     requests = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -8423,18 +8916,28 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.headers.get("Authorization"), body))
-            chunk = {
-                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
-            }
+            chunks = [
+                {"choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]},
+                # Vibe 3 refuses a stream without usage; Studio sends it for include_usage.
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+                },
+            ]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.write("".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode())
+            self.wfile.write(b"data: [DONE]\n\n")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    monkeypatch.setattr(
+        start,
+        "_connect",
+        lambda *args, **kwargs: (base, "sk-unsloth-e2e", {**MODEL, "context_length": window}),
+    )
     monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:
@@ -9276,7 +9779,7 @@ def test_claude_launch_does_not_clear(fake_studio, monkeypatch):
     reason = "WSL-from-Linux scenario: a Windows pi shim under /mnt called from WSL "
     "(os.name is 'posix' under WSL), so this can't run on a native Windows runner.",
 )
-def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypatch):
+def test_connect_pi_wsl_windows_shim_keeps_userprofile(fake_studio, monkeypatch):
     captured = {}
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(start.shutil, "which", lambda _: "/mnt/c/Users/x/AppData/Roaming/npm/pi")
@@ -9288,11 +9791,11 @@ def test_connect_pi_wsl_windows_shim_relocates_userprofile(fake_studio, monkeypa
     monkeypatch.setattr(start.subprocess, "run", run)
     result = CliRunner().invoke(start.start_app, ["pi"])
     assert result.exit_code == 0, result.output
-    home = captured["env"]["HOME"]
-    assert captured["env"]["USERPROFILE"] == home
+    assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert captured["env"].get("USERPROFILE") == os.environ.get("USERPROFILE")
     wslenv = captured["env"]["WSLENV"].split(":")
-    assert "HOME/p" in wslenv
-    assert "USERPROFILE/p" in wslenv
+    assert "PI_CODING_AGENT_DIR/p" in wslenv
+    assert "USERPROFILE/p" not in wslenv
 
 
 def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp_path, monkeypatch):
@@ -9440,6 +9943,9 @@ def test_non_codex_agents_keep_the_studio_private_root(monkeypatch, tmp_path):
     assert start._ephemeral_session_prefix("claude", None) == "unsloth-claude-"
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_existing_temp_root_is_unwritable(monkeypatch, tmp_path):
     # mkdir(exist_ok = True) succeeds on an existing unwritable root, so the lock fails first.
     agents = tmp_path / "agents"
@@ -9508,6 +10014,9 @@ def test_probe_env_carries_install_dirs_and_restores_path(monkeypatch, tmp_path)
     assert os.environ.get("PATH") == before
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason = "a 0o500 mode does not make a directory unwritable on Windows"
+)
 def test_session_config_falls_back_when_studio_auth_root_is_unwritable(monkeypatch, tmp_path):
     readonly = tmp_path / "readonly"
     readonly.mkdir(mode = 0o500)
@@ -9563,9 +10072,14 @@ _RESUME_ENV_VAR = {
     "codex": "CODEX_HOME",
     "openclaw": "OPENCLAW_STATE_DIR",
     "hermes": "HERMES_HOME",
-    "pi": "HOME",
+    "pi": "PI_CODING_AGENT_DIR",
     "dsh": "DSH_HOME",
 }
+
+
+def _agent_home(agent, env) -> Path:
+    path = Path(env[_RESUME_ENV_VAR[agent]])
+    return path.parent.parent if agent == "pi" else path
 
 
 def _capture_launch(monkeypatch, argv):
@@ -9594,7 +10108,7 @@ def test_resume_persists_agent_home_to_stable_dir(agent, fake_studio, tmp_path, 
         monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent, "--persist"])
     stable = tmp_path / "agents" / agent
-    assert captured["env"][_RESUME_ENV_VAR[agent]] == str(stable)
+    assert _agent_home(agent, captured["env"]) == stable
     assert stable.exists()
 
 
@@ -9604,7 +10118,7 @@ def test_default_launch_home_is_ephemeral(agent, fake_studio, tmp_path, monkeypa
     if agent == "dsh":
         monkeypatch.setattr(start, "is_deepseek_harness_executable", lambda _: True)
     captured = _capture_launch(monkeypatch, [agent])
-    home = captured["env"][_RESUME_ENV_VAR[agent]]
+    home = str(_agent_home(agent, captured["env"]))
     parent = start._ephemeral_session_parent(agent)
     assert start._ephemeral_session_prefix(agent, parent) in home
     if parent is None:
@@ -11131,6 +11645,158 @@ def test_require_gguf_for_agent_reads_the_requested_models_slot(monkeypatch, cap
     assert "Claude Code needs a GGUF model" in capsys.readouterr().err
 
 
+def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "is_gguf": False,
+            "is_mlx": True,
+            "active_model": "mlx-community/Qwen3-4B-4bit",
+        },
+    )
+    for agent in (start._CLAUDE_GGUF_AGENT, start._CODEX_GGUF_AGENT):
+        start._require_gguf_for_agent(agent, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("health", "loads_mlx"),
+    [
+        ({"device_type": "mac", "apple_silicon": True, "chat_only_reason": None}, True),
+        (
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
+            False,
+        ),
+        ({"device_type": "mac", "apple_silicon": False}, False),
+        ({"device_type": "linux", "apple_silicon": False}, False),
+        ({"status": "healthy"}, False),
+        (OSError("down"), False),
+    ],
+)
+def test_server_loads_mlx_reads_the_servers_platform(monkeypatch, health, loads_mlx):
+    urls = _fake_variants(monkeypatch, health)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is loads_mlx
+    assert urls == [f"{BASE}/api/health?detect_hardware=true"]
+
+
+def test_server_loads_mlx_waits_out_hardware_detection(monkeypatch):
+    answers = iter(
+        [
+            {"status": "healthy", "hardware_detecting": True},
+            {"status": "healthy", "hardware_detecting": True},
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": None},
+        ]
+    )
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: next(answers))
+    monkeypatch.setattr(start.time, "sleep", lambda s: None)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is True
+
+
+def test_attach_check_defers_a_non_gguf_repo_on_an_mlx_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    _fake_variants(monkeypatch, {"variants": [], "has_vision": False})
+    start._attach_gguf_check(
+        start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    start._attach_gguf_check(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "loadable": False,
+            "loadable_variants": ["BF16"],
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/Foo-GGUF")
+    _fake_variants(monkeypatch, {"variants": [], "loadable": None, "loadable_variants": None})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit", "Q8_0"
+        )
+    monkeypatch.setattr(start, "_direct_gguf_companion_is_uncertain", lambda repo: True)
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/MTP/model-Q8_0-MTP.gguf"
+        )
+
+
+def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, capsys):
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit:Q8_0")
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(
+            start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit", gguf_variant = "Q8_0"
+        )
+
+
+def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
+    repo = "mlx-community/Qwen3-4B"
+    _fake_hub_listing(monkeypatch, {repo: []})
+    monkeypatch.setattr(
+        start,
+        "_hub_repo_files",
+        lambda repo: ["config.json", "6-bit/config.json", "8bit/config.json"],
+    )
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
+    start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, repo, gguf_variant = "8bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:4bit")
+    assert "has no precision folder 4bit" in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:8BIT")
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    mlx_answer = {
+        "variants": [
+            {"quant": "6-bit", "filename": "6-bit/"},
+            {"quant": "8bit", "filename": "8bit/"},
+        ],
+        "loadable_variants": [],
+        "variant_format": "mlx",
+    }
+    _fake_variants(monkeypatch, mlx_answer)
+    start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", repo)
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    for wanted in ("Q8_0", "4bit", "6-BIT"):
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
+    for answer in (
+        {"variants": [], "loadable": False},
+        {"variants": [], "loadable": None, "loadable_variants": None},
+    ):
+        _fake_variants(monkeypatch, answer)
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    _fake_variants(monkeypatch, mlx_answer)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+
+
+def test_mlx_precision_folder_pattern_matches_the_backend():
+    source = (
+        Path(start.__file__).resolve().parents[2] / "studio/backend/hub/utils/snapshot_filters.py"
+    ).read_text(encoding = "utf-8")
+    namespace = {}
+    exec(source[source.index("PRECISION_FOLDER_SOURCE =") :].split("\n)\n")[0] + "\n)", namespace)
+    assert start._MLX_PRECISION_FOLDER_RE.pattern == namespace["PRECISION_FOLDER_SOURCE"]
+
+
 def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     with pytest.raises(typer.Exit):
@@ -11783,3 +12449,62 @@ def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monke
 
     assert progress.downloaded_bytes == 2 * GiB
     assert server.count("my-lora") == 0
+
+
+def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
+    fake_studio, tmp_path, monkeypatch
+):
+    pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text(
+        "mcp_servers:\n  remote:\n    url: https://mcp.example/mcp\n"
+        "    headers:\n      Authorization: Bearer ${MCP_REMOTE_API_KEY}\n"
+        "  quoted:\n    url: https://q.example/mcp\n    headers: {X-Key: '${env:Q_KEY}'}\n"
+    )
+    quoted = 'export Q_KEY="a # b" # rotated'
+    (source_home / ".env").write_text(
+        f"OPENROUTER_API_KEY=not-for-the-session\nMCP_REMOTE_API_KEY=sekret\n{quoted}\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "sekret" not in result.output
+    assert (home / ".env").read_text() == f"MCP_REMOTE_API_KEY=sekret\n{quoted}\n"
+    if os.name != "nt":
+        assert (home / ".env").stat().st_mode & 0o777 == 0o600
+
+    # A key added in the saved home stays; a key the user dropped goes.
+    with (home / ".env").open("a") as handle:
+        handle.write("MCP_LOCAL_API_KEY=mine\n")
+    (source_home / ".env").write_text("MCP_REMOTE_API_KEY=rotated\n")
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    assert (home / ".env").read_text() == "MCP_LOCAL_API_KEY=mine\nMCP_REMOTE_API_KEY=rotated\n"
+
+    # A fresh session from that recipe shell also gets the saved home's own server secrets.
+    config = (home / "config.yaml").read_text() + (
+        "  local:\n    url: https://l.example/mcp\n"
+        "    headers: {Authorization: 'Bearer ${MCP_LOCAL_API_KEY}'}\n"
+    )
+    (home / "config.yaml").write_text(config)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh = tmp_path / "session"
+    fresh.mkdir()
+    start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
+    assert (fresh / ".env").read_text() == "MCP_REMOTE_API_KEY=rotated\nMCP_LOCAL_API_KEY=mine\n"
+
+    # A key removed at the origin is not revived from the saved home's copy.
+    (source_home / ".env").write_text("OTHER=1\n")
+    start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
+    assert (fresh / ".env").read_text() == "MCP_LOCAL_API_KEY=mine\n"
+
+    # A server kept in the saved home still gets a key it shares with a dropped origin server.
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    (source_home / ".env").write_text("MCP_REMOTE_API_KEY=shared\n")
+    (source_home / "config.yaml").write_text("mcp_servers: {}\n")
+    (home / "config.yaml").write_text(
+        config.replace("${MCP_LOCAL_API_KEY}", "${MCP_REMOTE_API_KEY}")
+    )
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()

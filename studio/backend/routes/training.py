@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from fastapi import (
@@ -471,23 +472,28 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
     """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
 
-    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
-    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    The embedding and decision runners always build a fresh adapter on top, so those still need
+    a base model."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
-    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
-        return False
-    from core.training.training import should_use_mlx_training_backend
-
-    return not should_use_mlx_training_backend()
+    return not (getattr(request, "is_embedding", False) or getattr(request, "is_decision", False))
 
 
 # The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+# The MLX loader imports PEFT safetensors (not .bin) and reads its own saved format.
+_MLX_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapters.safetensors")
 
 
 def _has_local_adapter_weights(path: Path) -> bool:
-    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+    if not path.is_dir():
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    names = (
+        _MLX_ADAPTER_WEIGHT_FILES if should_use_mlx_training_backend() else _ADAPTER_WEIGHT_FILES
+    )
+    return any((path / name).is_file() for name in names)
 
 
 _HF_MODEL_ACCESS_DENIED = (
@@ -1316,22 +1322,33 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
-    if hardware.DEVICE != hardware.DeviceType.MLX:
-        return
-    if request.training_type == "Continued Pretraining":
+    if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
+        hardware.current_chat_only_verdict()[0]
+    ):
+        # The CPU backend (unsloth/_cpu_init.py) trains text models with SFTTrainer only.
+        if request.is_dataset_image or request.is_dataset_audio:
+            unsupported = "Vision and audio training"
+        elif request.is_embedding:
+            unsupported = "Embedding model training"
+        elif request.is_decision:
+            unsupported = "Decision model training"
+        elif request.drafter is not None and request.drafter.enabled:
+            unsupported = "Drafter training"
+        else:
+            return
         raise HTTPException(
             status_code = 400,
-            detail = "Continued Pretraining is not supported for MLX training yet.",
+            detail = (
+                f"{unsupported} is not supported on CPU yet. No GPU was found, so this host "
+                "trains text models only (LoRA or full finetuning)."
+            ),
         )
+    if hardware.DEVICE != hardware.DeviceType.MLX:
+        return
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
-        )
-    if request.is_dataset_audio:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Audio dataset training is not yet supported on Apple Silicon.",
         )
     if request.use_loftq:
         raise HTTPException(
@@ -1527,13 +1544,15 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest, resume_run: dict
-) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str], dict[str, Any]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
         RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
+        local_model_resume_expectation,
         resource_provenance_is_complete,
+        streamed_dataset_revision,
     )
 
     try:
@@ -1606,6 +1625,22 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    overrides: dict[str, Any] = {}
+    stream_revision = streamed_dataset_revision(stored)
+    if stream_revision is not None:
+        # Replay the streamed commit even if the run never attested, not the moving branch.
+        overrides["dataset_revision"] = stream_revision
+    expected_model = local_model_resume_expectation(stored)
+    if expected_model is not None:
+        # The worker checks the base it loads against this; the dataset pin still applies.
+        return (
+            None,
+            False,
+            requires_exact_dataset,
+            False,
+            None,
+            {**overrides, "resume_expected_model": expected_model},
+        )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
         _normalized_optional_string(marker.get("model_load_mode"))
@@ -1618,6 +1653,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
+        overrides,
     )
 
 
@@ -1939,6 +1975,7 @@ async def _admit_training_request(
     resume_requires_exact_resources = False
     resume_requires_exact_model = False
     resume_requires_exact_dataset = False
+    resume_overrides: dict[str, Any] = {}
     if request.resume_from_checkpoint:
         try:
             resume_output_dir = await asyncio.to_thread(
@@ -1988,6 +2025,7 @@ async def _admit_training_request(
             resume_requires_exact_dataset,
             resume_requires_exact_resources,
             resume_model_load_mode,
+            resume_overrides,
         ) = await asyncio.to_thread(
             _prepare_resume_resource_provenance,
             request,
@@ -2025,11 +2063,6 @@ async def _admit_training_request(
             raise HTTPException(
                 status_code = 400,
                 detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
-            )
-        if _hw.DEVICE == _hw.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
             )
         if request.max_steps is None or request.max_steps <= 0:
             raise HTTPException(
@@ -2204,6 +2237,7 @@ async def _admit_training_request(
         "is_decision": request.is_decision,
         "model_subfolder": request.model_subfolder,
         "decision_layout": request.decision_layout,
+        "decision_head": request.decision_head,
         "enable_wandb": request.enable_wandb,
         "wandb_token": request.wandb_token or "",
         "wandb_project": request.wandb_project or "",
@@ -2223,6 +2257,7 @@ async def _admit_training_request(
         "gpu_ids": request.gpu_ids,
         "s3_config": request.s3_config.model_dump() if request.s3_config else None,
     }
+    training_kwargs.update(resume_overrides)
 
     # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
     # architectures, so VRAM checks must not underestimate a load the worker refuses.
@@ -4325,11 +4360,6 @@ async def upload_diffusion_dataset(
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """repeat uploads accumulate in one Unsloth dataset folder; pass its name as ``data_dir`` to /diffusion/start."""
-    import os
-    import tempfile
-
-    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
-
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
@@ -4348,8 +4378,63 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    return await _run_holding_import_lock(
+        _lock, _store_diffusion_dataset_upload, folder, cleaned, files, create_only
+    )
+
+
+async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
+    """Runs ``fn(*args, _lock, cancelled)`` on a worker that releases ``_lock``, so a cancel never frees it mid-import."""
+    cancelled = threading.Event()
+    guard = threading.Lock()
+    started = False
+
+    def run():
+        nonlocal started
+        with guard:
+            if cancelled.is_set():
+                return None
+            started = True
+        return fn(*args, _lock, cancelled)
+
+    worker = asyncio.ensure_future(asyncio.to_thread(run))
+    try:
+        return await asyncio.shield(worker)
+    except BaseException:
+        with guard:
+            cancelled.set()
+            if not started:
+                _lock.release()
+                raise
+        # Keep the request (interlock, open uploads) alive until the worker stops at its next chunk read.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except BaseException:
+                pass
+        raise
+
+
+def _read_upload_chunk(f: UploadFile, cancelled: "threading.Event") -> bytes:
+    """A cancelled request stops staging at the next chunk."""
+    if cancelled.is_set():
+        raise asyncio.CancelledError()
+    return f.file.read(1024 * 1024)
+
+
+def _store_diffusion_dataset_upload(
+    folder: Path,
+    cleaned: str,
+    files: list[UploadFile],
+    create_only: bool,
+    _lock: "threading.Lock",
+    cancelled: "threading.Event",
+) -> "DiffusionDatasetUploadResponse":
+    """Validates, stages and commits one upload slice; called with ``_lock`` held and releases it."""
     created_folder = False
     try:
+        from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+
         if create_only:
             occupied = (
                 next(
@@ -4394,6 +4479,8 @@ async def upload_diffusion_dataset(
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
+        # Listed lazily, once; iterdir order keeps the reported clash the first listed match.
+        existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
             filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
@@ -4432,8 +4519,20 @@ async def upload_diffusion_dataset(
                     # A casefold-equal name is exempt unless the stems match exactly.
                     return other.stem == stem or other_name.casefold() != fname_cf
 
+                if existing_media_by_stem_cf is None:
+                    existing_media_by_stem_cf = {}
+                    for p in folder.iterdir():
+                        other = Path(p.name)
+                        if other.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
+                            existing_media_by_stem_cf.setdefault(other.stem.casefold(), []).append(
+                                p
+                            )
                 clash = next(
-                    (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
+                    (
+                        p.name
+                        for p in existing_media_by_stem_cf.get(stem_cf, ())
+                        if p.is_file() and _shares_sidecar(p.name)
+                    ),
                     None,
                 )
                 if clash is None:
@@ -4480,7 +4579,7 @@ async def upload_diffusion_dataset(
                 tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
                 staged.append((tmp, dest))
                 with open(tmp, "wb") as out:
-                    while chunk := await f.read(1024 * 1024):
+                    while chunk := _read_upload_chunk(f, cancelled):
                         total_bytes += len(chunk)
                         if total_bytes > limit_bytes:
                             raise HTTPException(
@@ -4678,6 +4777,38 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
     return out
 
 
+_IMAGE_SIZE_CACHE_MAX = 8192
+_image_size_cache: "OrderedDict[str, tuple[tuple, tuple[int, int]]]" = OrderedDict()
+_image_size_cache_lock = threading.Lock()
+
+
+def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tuple[int, int]:
+    """Header size (0x0 if unreadable), reused while the file's stat ``info`` is unchanged."""
+    key = None
+    name = str(image_path)
+    if info is not None:
+        # POSIX: any write moves ctime, even with mtime restored; a replace moves the inode.
+        key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        with _image_size_cache_lock:
+            hit = _image_size_cache.get(name)
+            if hit is not None and hit[0] == key:
+                _image_size_cache.move_to_end(name)
+                return hit[1]
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            size = im.size
+    except Exception:  # noqa: BLE001 -- lists as 0x0 rather than 500; not cached, so retried
+        return 0, 0
+    if key is not None:
+        with _image_size_cache_lock:
+            _image_size_cache[name] = (key, size)
+            _image_size_cache.move_to_end(name)
+            while len(_image_size_cache) > _IMAGE_SIZE_CACHE_MAX:
+                _image_size_cache.popitem(last = False)
+    return size
+
+
 def _image_record(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> DiffusionDatasetImageRecord:
@@ -4709,18 +4840,15 @@ def _image_record(
             caption = meta
             source = "metadata"
     try:
-        size_bytes = image_path.stat().st_size
+        info = image_path.stat()
+        size_bytes = info.st_size
     except OSError:
+        info = None
         size_bytes = 0
     is_clip = image_path.suffix.lower() in _DIFFUSION_DATASET_CLIP_EXTS
     width = height = 0
     if not is_clip:
-        try:
-            from PIL import Image
-            with Image.open(image_path) as im:
-                width, height = im.size
-        except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
-            pass
+        width, height = _dataset_image_size(image_path, info)
     return DiffusionDatasetImageRecord(
         filename = image_path.name,
         caption = caption,

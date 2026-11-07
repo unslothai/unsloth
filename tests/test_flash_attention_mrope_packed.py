@@ -137,10 +137,10 @@ def test_every_other_call_is_passed_through_unchanged(packed_rows):
             {"position_ids": _mrope(8, 2), "packed_seq_lengths": lengths},
         ),
         (
-            _query(9),
+            _query(7),
             None,
-            {"position_ids": _mrope(9), "packed_seq_lengths": lengths},
-        ),  # rows not covered
+            {"position_ids": _mrope(7), "packed_seq_lengths": lengths},
+        ),  # lengths run past the row
         (
             q,
             None,
@@ -150,6 +150,69 @@ def test_every_other_call_is_passed_through_unchanged(packed_rows):
     for query, mask, kwargs in cases:
         forward(query, query, query, mask, **dict(kwargs))
         assert calls[-1] == kwargs
+
+
+def test_padded_tail_gets_its_own_segment(packed_rows):
+    # TRL's padding-free collator pads the flattened row to pad_to_multiple_of after the lengths
+    # are taken: the tail must not fall back to causal attention over every document.
+    forward, calls = packed_rows
+    lengths = torch.tensor([3, 5], dtype = torch.int32)
+    q = _query(16)
+    forward(q, q, q, None, position_ids = _mrope(16), packed_seq_lengths = lengths)
+    assert calls[-1]["cu_seq_lens_q"].tolist() == [0, 3, 8, 16]
+    assert calls[-1]["cu_seq_lens_k"].tolist() == [0, 3, 8, 16]
+    assert calls[-1]["max_length_q"] == calls[-1]["max_length_k"] == 8
+
+
+def _compiled_boundaries(packed_rows, cases, warm):
+    from torch._dynamo.testing import CompileCounter
+    from unsloth.utils import packing
+
+    _, calls = packed_rows
+
+    def step(q, lengths):
+        # Read the module attribute at call time, as transformers' flash_attention_forward does.
+        return fa_integration._flash_attention_forward(
+            q, q, q, None, position_ids = _mrope(q.shape[1]), packed_seq_lengths = lengths
+        )
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(step, backend = counter, dynamic = True)
+    seen = []
+    for length, docs in cases:
+        lengths = torch.tensor(docs, dtype = torch.int32)
+        packing._PACKED_INFO_CACHE.clear()
+        if warm:  # the hybrid varlen outer forward fills the cache before the layers run
+            packing.get_packed_info_from_kwargs(
+                {"packed_seq_lengths": lengths}, torch.device("cpu")
+            )
+        # Dynamo guards the recording list's length.
+        calls.clear()
+        compiled(_query(length), lengths)
+        kw = calls[-1]
+        seen.append(
+            None
+            if "cu_seq_lens_q" not in kw
+            else (kw["cu_seq_lens_q"].tolist(), int(kw["max_length_q"]))
+        )
+    torch._dynamo.reset()
+    return seen, counter.frame_count
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_compiled_calls_match_eager_boundaries(packed_rows, warm):
+    cases = [(8, [3, 5]), (16, [3, 5]), (7, [3, 5])]
+    seen, _ = _compiled_boundaries(packed_rows, cases, warm)
+    assert seen == [([0, 3, 8], 5), ([0, 3, 8, 16], 8), None]
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_compiled_calls_do_not_recompile_per_document_length(packed_rows, warm):
+    cases = [(16, [16 - longest, longest]) for longest in range(8, 16)]
+    seen, frames = _compiled_boundaries(packed_rows, cases, warm)
+    assert [m for _, m in seen] == list(range(8, 16))
+    assert frames <= 4, frames
 
 
 def test_packed_rows_patch_is_idempotent(packed_rows):
@@ -203,3 +266,57 @@ def test_packed_documents_do_not_see_each_other_under_flash_attention():
     torch.testing.assert_close(
         out, torch.cat([alone(0, first), alone(first, total)], dim = 1), atol = 2e-2, rtol = 2e-2
     )
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_warm_packed_rows_support_fullgraph_forward_backward(monkeypatch, dynamic):
+    from unsloth.utils import packing
+
+    def attention(q, k, v, mask, *args, **kwargs):
+        cu = kwargs.get("cu_seq_lens_q")
+        longest = kwargs.get("max_length_q")
+        offset = 0 if cu is None else cu.sum() + longest
+        return q.cos() + offset, cu, longest
+
+    monkeypatch.setattr(fa_integration, "_flash_attention_forward", attention)
+    fix_transformers_flash_attention_mrope_packed_rows()
+
+    def step(q, lengths):
+        q = q.sin()
+        return fa_integration._flash_attention_forward(
+            q, q, q, None, position_ids = _mrope(q.shape[1]), packed_seq_lengths = lengths
+        )
+
+    torch._dynamo.reset()
+    compiled = torch.compile(step, backend = "aot_eager", fullgraph = True, dynamic = dynamic)
+    try:
+        cases = [
+            (8, [3, 5], [0, 3, 8], 5),
+            (16, [3, 5], [0, 3, 8, 16], 8),
+            (7, [3, 5], None, None),
+            (16, [4, 12], [0, 4, 16], 12),
+            (16, [2, 14], [0, 2, 16], 14),
+        ]
+        for total, docs, expected_cu, expected_max in cases:
+            packing.clear_packed_caches()
+            lengths = torch.tensor(docs, dtype = torch.int32)
+            packing.get_packed_info_from_kwargs(
+                {"packed_seq_lengths": lengths}, torch.device("cpu")
+            )
+            q = torch.randn(1, total, 2, 8, requires_grad = True)
+            out, cu, longest = compiled(q, lengths)
+            assert (None if cu is None else cu.tolist()) == expected_cu
+            assert longest == expected_max
+            offset = 0 if expected_cu is None else sum(expected_cu) + expected_max
+            reference = q.sin().cos() + offset
+            torch.testing.assert_close(out, reference)
+            grad = torch.autograd.grad(out.sum(), q)[0]
+            expected_grad = torch.autograd.grad(reference.sum(), q)[0]
+            torch.testing.assert_close(grad, expected_grad)
+
+        report = torch._dynamo.explain(step)(q, lengths)
+        assert report.graph_count == 1
+        assert report.graph_break_count == 0
+    finally:
+        torch._dynamo.reset()
+        packing.clear_packed_caches()
