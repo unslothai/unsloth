@@ -16,7 +16,7 @@ from unsloth.models.llama import LlamaAttention_fast_forward
 
 transformers = pytest.importorskip("transformers")
 
-RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style attention only"
+RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style"
 RL_HYBRID_REFUSAL = "DPO / GRPO context parallelism does not support linear attention hybrids"
 
 
