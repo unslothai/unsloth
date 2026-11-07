@@ -4679,3 +4679,69 @@ def test_worker_leaves_an_approved_run_unsearched_under_disable_tools(research_h
     run = research_db.get_run("run-1")
     assert called == []
     assert (run["status"], run["error"]) == ("failed", "Tools are disabled on this server")
+
+
+def _inventory_snapshot():
+    conn = studio_db.get_connection()
+    try:
+        state = conn.execute(
+            "SELECT dirty FROM chat_attachment_inventory_state WHERE singleton=1"
+        ).fetchone()
+        rows = conn.execute("SELECT * FROM chat_attachment_inventory ORDER BY 1, 2").fetchall()
+        return (state["dirty"] if state is not None else None), [tuple(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def test_terminal_fallback_keeps_a_clean_attachment_inventory_clean():
+    studio_db.upsert_chat_thread(
+        {
+            "id": "thread-inv",
+            "title": "T",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-inv",
+            "threadId": "thread-inv",
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "question"},
+                {"type": "image", "image": "data:image/png;base64,iVBORw0KGgo="},
+            ],
+            "createdAt": 2,
+        }
+    )
+    _create(
+        "run-inv", assistant_message_id = None, thread_id = "thread-inv", user_message_id = "user-inv"
+    )
+    research_db.set_plan("run-inv", _plan())
+    assert research_db.request_cancel("run-inv") == "cancelled"
+    before_dirty, before_rows = _inventory_snapshot()
+    assert before_dirty == 0
+
+    message_id, created = research_db.create_and_bind_terminal_fallback(
+        "run-inv",
+        text = "Research cancelled.",
+        status = "cancelled",
+        sources = [{"url": "https://example.com", "title": "Example", "snippet": "s"}],
+    )
+    assert created is True
+    dirty, rows = _inventory_snapshot()
+    assert dirty == 0
+    assert rows == before_rows
+
+    # A forced rebuild of the same data produces the same inventory.
+    conn = studio_db.get_connection()
+    try:
+        studio_db._rebuild_chat_attachment_inventory(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    rebuilt_dirty, rebuilt_rows = _inventory_snapshot()
+    assert rebuilt_dirty == 0
+    assert rebuilt_rows == rows
+    assert any(m["id"] == message_id for m in studio_db.list_chat_messages("thread-inv"))
