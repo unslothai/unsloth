@@ -22865,13 +22865,16 @@ async def _generate_tts_wav(
     voice: Optional[str] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of the three audio generation routes; a named target is budgeted after preflight."""
-    # A named target must be budgeted against its own context after preflight.
-    if requested_model == _RELOAD_ONLY_MODEL:
-        _raise_if_prompt_leaves_no_speech_budget(text)
     workflow = (run_inputs or {}).get("workflow")
     if workflow == "speak" and (run_inputs or {}).get("audio_inputs"):
         # Speaking in a saved voice is cloning, as _audio_request_problem reads it.
         workflow = "clone"
+    # A named target, or a speech model kept beside a chat primary, is budgeted against its own
+    # context below; only a primary that will answer is checked before the switch.
+    if requested_model == _RELOAD_ONLY_MODEL and await asyncio.to_thread(
+        _serves_audio_workflow, workflow or "speak"
+    ):
+        _raise_if_prompt_leaves_no_speech_budget(text)
     await _maybe_auto_switch_model(
         requested_model,
         request,

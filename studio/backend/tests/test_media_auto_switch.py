@@ -445,6 +445,32 @@ def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
     assert problem.startswith("needs_user_load kind=image") == refused and len(loads) == 1 - refused
 
 
+@pytest.mark.parametrize(
+    "key_policy, chats, switched",
+    [("beside_only", 1, True), ("beside_only", 2, False), ("any", 1, False)],
+)
+def test_a_chat_tools_switch_does_not_wait_on_the_chat_that_called_it(
+    flux, enabled, loads, monkeypatch, key_policy, chats, switched
+):
+    from dataclasses import replace
+
+    from utils.account_context import OWNER, run_as
+
+    # The calling chat is in flight for the whole tool call; only another chat should hold the GPU load.
+    key = replace(OWNER, via_api_key = True, load_policy = key_policy)
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: True)
+    monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.2)
+    monkeypatch.setattr(arb, "would_evict", lambda owner, **_kw: False)
+    monkeypatch.setattr(chat, "other_inference_request_count", lambda **kw: chats)
+    try:
+        run_as(key, _switch, "black-forest-labs/FLUX.1-dev")
+        problem = ""
+    except HTTPException as exc:
+        problem = (exc.headers or {}).get("X-Unsloth-Problem", str(exc.detail))
+    assert (len(loads) == 1) == switched, problem
+
+
 def test_a_chat_model_that_lands_before_the_gates_still_refuses_a_chat_tools_switch(
     flux, enabled, loads, monkeypatch, takes_the_gpu
 ):

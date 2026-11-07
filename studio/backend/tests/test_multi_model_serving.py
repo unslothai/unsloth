@@ -1929,3 +1929,41 @@ def test_an_unattended_load_that_fits_beside_the_primary_is_not_rechecked(backen
     )
     assert primary.model_identifier == "org/A-GGUF"
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
+
+
+def test_long_narration_is_budgeted_against_the_kept_speech_model_not_the_chat_primary(monkeypatch):
+    from models.inference import ChatCompletionRequest
+
+    kept = object()
+
+    class Reached(Exception):
+        pass
+
+    async def route(workflow):
+        inf.routed_slot.set(kept)
+
+    async def no_switch(*a, **kw):
+        return None
+
+    def no_further(*a, **kw):
+        raise Reached
+
+    # The chat primary has a 64-token context; the kept speech model takes the narration.
+    monkeypatch.setattr(inf, "_serves_audio_workflow", lambda workflow: False)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", no_switch)
+    monkeypatch.setattr(inf, "_route_to_kept_audio_model", route)
+    monkeypatch.setattr(
+        inf, "_monitor_context_length", lambda: 8192 if inf.routed_slot.get() is kept else 64
+    )
+    monkeypatch.setattr(inf, "_audio_run_event", no_further)
+    payload = ChatCompletionRequest(messages = [{"role": "user", "content": "x"}])
+
+    async def run():
+        token = inf.routed_slot.set(None)
+        try:
+            await inf._generate_tts_wav("word " * 400, payload, request = None, current_subject = "t")
+        finally:
+            inf.routed_slot.reset(token)
+
+    with pytest.raises(Reached):
+        asyncio.run(run())
