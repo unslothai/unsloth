@@ -888,3 +888,53 @@ def test_out_of_memory_capture_stops_the_call_not_the_key(host, llama):
     assert torch.equal(eager, _generate(llama, ids, mask, True))
     s = GG.stats(llama)
     assert s["captures"] == 1 and s["replays"] == 8, s
+
+
+def test_full_length_type_ids_from_a_trainer_still_replay(host, gemma3, monkeypatch):
+    # TRL's GRPO passes the processor's mm_token_type_ids to generate(); it reached every decode step at full
+    # length (one column longer per step), so every step had a new key and nothing replayed. With the step's
+    # masks prebuilt (a dict) the forward never reads them: the graphed step gets the step's columns.
+    real = type(gemma3).prepare_inputs_for_generation
+
+    def prepare(self, input_ids, *args, **kwargs):
+        out = real(self, input_ids, *args, **kwargs)
+        out["mm_token_type_ids"] = torch.zeros(
+            input_ids.shape[0], input_ids.shape[1], dtype = torch.long
+        )
+        return out
+
+    monkeypatch.setattr(type(gemma3), "prepare_inputs_for_generation", prepare)
+    seen = []
+    real_spec = GG._spec
+
+    def spec(value, leaves, cache):
+        out = real_spec(value, leaves, cache)
+        if isinstance(value, torch.Tensor) and value.dtype == torch.long and value.dim() == 2:
+            seen.append(tuple(value.shape))
+        return out
+
+    monkeypatch.setattr(GG, "_spec", spec)
+    ids, mask = _ids(gemma3, 2, length = 3)
+    _fresh(gemma3)
+    new = 6
+    eager = _generate(gemma3, ids, mask, False, new)
+    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
+    s = GG.stats(gemma3)
+    assert s["captures"] == 1 and s["replays"] == new - 2 and not s["refusals"], s
+    # Every graphed step saw one column of type ids, not the growing history.
+    assert seen and all(shape[-1] == 1 for shape in seen), seen
+
+
+def test_step_type_ids_only_with_prebuilt_masks():
+    t = torch.zeros(2, 9, dtype = torch.long)
+    kwargs = {"mm_token_type_ids": t, "attention_mask": torch.ones(2, 9)}
+    assert GG._step_type_ids(kwargs, 1) is kwargs
+    kwargs = {
+        "mm_token_type_ids": t,
+        "token_type_ids": t,
+        "attention_mask": {"full_attention": None},
+    }
+    out = GG._step_type_ids(kwargs, 1)
+    assert out is not kwargs and kwargs["mm_token_type_ids"] is t
+    for name in ("mm_token_type_ids", "token_type_ids"):
+        assert out[name].shape == (2, 1) and out[name].stride() == (1, 1)

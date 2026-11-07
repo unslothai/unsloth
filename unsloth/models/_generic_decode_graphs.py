@@ -1402,6 +1402,28 @@ def _fingerprint(model, state = None):
 # Forward derives positions from `cache_position[0] == 0` (host sync) without position_ids (4.x Qwen3-VL).
 _MROPE_MODEL_TYPES = ("qwen3_vl", "qwen3_vl_moe")
 
+# Per-token type ids a trainer passes to generate() (TRL's GRPO forwards the processor's mm_token_type_ids /
+# token_type_ids) can reach every decode step at full length, one column longer per step, so every step had a
+# new graph key and nothing replayed. The multimodal forwards that take them (Gemma 3 / 4) read them only to
+# build the attention masks, which they skip when the step's masks come prebuilt (a dict per layer type, as
+# prepare_inputs_for_generation builds over a StaticCache); transformers itself slices them to the step's
+# tokens. With prebuilt masks the graphed step gets the last q_len columns.
+_TYPE_ID_ARGS = ("token_type_ids", "mm_token_type_ids")
+
+
+def _step_type_ids(kwargs, q_len):
+    if not isinstance(kwargs.get("attention_mask"), dict):
+        return kwargs
+    out = None
+    for name in _TYPE_ID_ARGS:
+        value = kwargs.get(name)
+        if isinstance(value, torch.Tensor) and value.dim() >= 2 and value.shape[-1] > q_len:
+            if out is None:
+                out = dict(kwargs)
+            # As transformers slices them: a contiguous copy (a view's row stride would still grow every step).
+            out[name] = value[..., -q_len:].clone(memory_format = torch.contiguous_format)
+    return kwargs if out is None else out
+
 
 def _mrope_positions(model, kwargs):
     """kwargs with the decode position_ids the model's forward would derive, computed outside the
@@ -1589,7 +1611,10 @@ def decode_step(
     elif state.fingerprint is None:
         return _refusal(state, state.fp_reason or "not one CUDA device / adapters")
 
-    kwargs = _host_embeds(model, _placeholder_embeds(model, _mrope_positions(model, kwargs)))
+    kwargs = _host_embeds(
+        model,
+        _placeholder_embeds(model, _mrope_positions(model, _step_type_ids(kwargs, ids.shape[1]))),
+    )
     leaves = []
     spec = []
     for name, value in kwargs.items():
