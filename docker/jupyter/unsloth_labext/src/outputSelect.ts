@@ -2,9 +2,9 @@
 // Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
 import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
 
 /**
  * Colab-style Ctrl/Cmd+A inside a cell output: clicking an output leaves the
@@ -12,11 +12,11 @@ import {
  * Keyed off the target or last pointer-down, never the stale selection anchor.
  */
 
-const OUTPUT_SELECTORS = ['.jp-OutputArea-output', '.jp-Cell-outputWrapper'];
+const OUTPUT_SELECTORS = [".jp-OutputArea-output", ".jp-Cell-outputWrapper"];
 
 function closestOutput(node: Node | null): HTMLElement | null {
   const el =
-    node == null
+    node === null || node === undefined
       ? null
       : node.nodeType === Node.ELEMENT_NODE
         ? (node as HTMLElement)
@@ -42,16 +42,16 @@ function inEditableContext(): boolean {
     return true;
   }
   const tag = ae.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA') {
+  if (tag === "INPUT" || tag === "TEXTAREA") {
     return true;
   }
-  return !!ae.closest('.cm-editor');
+  return !!ae.closest(".cm-editor");
 }
 
 const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:output-select-all',
+  id: "unsloth-jupyterlab:output-select-all",
   description:
-    'Ctrl/Cmd+A inside a cell output selects only that output, not every cell.',
+    "Ctrl/Cmd+A inside a cell output selects only that output, not every cell.",
   autoStart: true,
   activate: (_app: JupyterFrontEnd): void => {
     // a click on an image/widget output leaves no text selection
@@ -62,19 +62,19 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
       if (!output || !output.isConnected) {
         return null;
       }
-      const cell = output.closest('.jp-Cell');
-      return cell && cell.classList.contains('jp-mod-active') ? output : null;
+      const cell = output.closest(".jp-Cell");
+      return cell && cell.classList.contains("jp-mod-active") ? output : null;
     };
     document.addEventListener(
-      'pointerdown',
+      "pointerdown",
       (event: PointerEvent): void => {
         lastPointerOutput = closestOutput(event.target as Node | null);
       },
-      true
+      true,
     );
 
     const handler = (event: KeyboardEvent): void => {
-      if (event.key !== 'a' && event.key !== 'A') {
+      if (event.key !== "a" && event.key !== "A") {
         return;
       }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) {
@@ -103,8 +103,8 @@ const outputSelectPlugin: JupyterFrontEndPlugin<void> = {
         /* no-op */
       }
     };
-    document.addEventListener('keydown', handler, true);
-  }
+    document.addEventListener("keydown", handler, true);
+  },
 };
 
 export default outputSelectPlugin;

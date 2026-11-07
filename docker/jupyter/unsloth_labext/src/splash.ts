@@ -4,20 +4,20 @@
 // Replace the JupyterLab loading splash with a spinning Unsloth logo. The stock
 // splash is disabled + locked at build, so this is the only ISplashScreen provider.
 
-import { JupyterFrontEndPlugin } from '@jupyterlab/application';
-import { ISplashScreen } from '@jupyterlab/apputils';
-import { DisposableDelegate, IDisposable } from '@lumino/disposable';
-import { UNSLOTH_LOGO_DATA_URI } from './logo';
-import { SPLASH_LABEL } from './branding';
+import { type JupyterFrontEndPlugin } from "@jupyterlab/application";
+import { ISplashScreen } from "@jupyterlab/apputils";
+import { DisposableDelegate, type IDisposable } from "@lumino/disposable";
+import { UNSLOTH_LOGO_DATA_URI } from "./logo";
+import { SPLASH_LABEL } from "./branding";
 
-const STYLE_ID = 'unsloth-splash-style';
-const SPLASH_ID = 'unsloth-splash';
+const STYLE_ID = "unsloth-splash-style";
+const SPLASH_ID = "unsloth-splash";
 
 function ensureStyle(): void {
   if (document.getElementById(STYLE_ID)) {
     return;
   }
-  const style = document.createElement('style');
+  const style = document.createElement("style");
   style.id = STYLE_ID;
   style.textContent = `
 #${SPLASH_ID} {
@@ -54,24 +54,24 @@ function ensureStyle(): void {
 }
 
 const splashPlugin: JupyterFrontEndPlugin<ISplashScreen> = {
-  id: 'unsloth-jupyterlab:splash',
-  description: 'Unsloth spinning-logo loading splash.',
+  id: "unsloth-jupyterlab:splash",
+  description: "Unsloth spinning-logo loading splash.",
   autoStart: true,
   provides: ISplashScreen,
   activate: (): ISplashScreen => {
     return {
       show: (): IDisposable => {
         ensureStyle();
-        const overlay = document.createElement('div');
+        const overlay = document.createElement("div");
         overlay.id = SPLASH_ID;
 
-        const img = document.createElement('img');
+        const img = document.createElement("img");
         img.src = UNSLOTH_LOGO_DATA_URI;
-        img.alt = 'Unsloth';
+        img.alt = "Unsloth";
         overlay.appendChild(img);
 
-        const label = document.createElement('div');
-        label.className = 'unsloth-splash-label';
+        const label = document.createElement("div");
+        label.className = "unsloth-splash-label";
         label.textContent = SPLASH_LABEL;
         overlay.appendChild(label);
 
@@ -79,9 +79,9 @@ const splashPlugin: JupyterFrontEndPlugin<ISplashScreen> = {
         return new DisposableDelegate(() => {
           overlay.remove();
         });
-      }
+      },
     };
-  }
+  },
 };
 
 export default splashPlugin;

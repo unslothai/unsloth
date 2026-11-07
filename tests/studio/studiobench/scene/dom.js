@@ -10,7 +10,8 @@
   window.__sb = window.__sb || {};
 
   const q = (sel, root) => (root || document).querySelector(sel);
-  const qa = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const qa = (sel, root) =>
+    Array.from((root || document).querySelectorAll(sel));
 
   // TooltipIconButton renders its label in a visually hidden span, not an aria-label.
   const nameOf = (el) => {
@@ -34,7 +35,8 @@
 
   // Progress hooks: data-status on text parts and aria-busy on reasoning content, named once so
   // the streaming scan and its control cannot drift apart.
-  const STATUS_HOOK = '[data-status], [data-slot="reasoning-content"][aria-busy]';
+  const STATUS_HOOK =
+    '[data-status], [data-slot="reasoning-content"][aria-busy]';
 
   const byName = (sel, name, root) =>
     qa(sel, root).find((el) => nameOf(el) === name) || null;
@@ -93,13 +95,17 @@
     // "the last assistant message", which attributes a stream to the wrong message.
     streamingMessages() {
       return qa("[data-role]").filter(
-        (m) => m.querySelector('[data-status="running"], [aria-busy="true"]') !== null,
+        (m) =>
+          m.querySelector('[data-status="running"], [aria-busy="true"]') !==
+          null,
       );
     },
     // Tells a renamed data-status hook (blind probe) apart from an unmounted row or a row with no
     // parts yet. data-status is rendered for complete parts too.
     statusHookPresent() {
-      return D.assistantMessages().some((m) => m.querySelector(STATUS_HOOK) !== null);
+      return D.assistantMessages().some(
+        (m) => m.querySelector(STATUS_HOOK) !== null,
+      );
     },
     lastAssistantPublishesStatus() {
       const last = D.lastAssistantMessage();
@@ -116,7 +122,9 @@
     threadTotal() {
       // The ordinal may sit on the message or on the virtualizer's row wrapper (same walk as readiness.py).
       const first = q("[data-role]");
-      const owner = first ? first.closest("[aria-setsize]") : q("[aria-setsize]");
+      const owner = first
+        ? first.closest("[aria-setsize]")
+        : q("[aria-setsize]");
       if (owner) {
         const n = Number(owner.getAttribute("aria-setsize"));
         if (Number.isFinite(n) && n >= 0) return n;
@@ -162,14 +170,18 @@
     // Collapsed content stays mounted until animationend/transitionend, so a collapse is settled
     // only once the content is gone.
     reasoningContentMounted() {
-      return qa('[data-slot="reasoning-content"]').filter((el) => !el.hasAttribute("hidden"))
-        .length;
+      return qa('[data-slot="reasoning-content"]').filter(
+        (el) => !el.hasAttribute("hidden"),
+      ).length;
     },
 
     actionBar(message) {
       const m = message || D.lastAssistantMessage();
       if (!m) return null;
-      return q(".aui-assistant-action-bar-root", m) || q(".aui-user-action-bar-root", m);
+      return (
+        q(".aui-assistant-action-bar-root", m) ||
+        q(".aui-user-action-bar-root", m)
+      );
     },
     actionButton(name, message) {
       const bar = D.actionBar(message);
@@ -185,7 +197,10 @@
       const m = D.lastAssistantMessage();
       if (m) {
         m.dispatchEvent(
-          new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })
+          new PointerEvent("pointerover", {
+            bubbles: true,
+            pointerType: "mouse",
+          }),
         );
       }
       return m;
@@ -230,13 +245,24 @@
     // Radix opens on pointerdown, so click() leaves the menu shut. The portaled menu is looked up
     // only when body's children change, not per paint.
     async openMenuAndFind(trigger, name, waitMs) {
-      const pointer = { bubbles: true, cancelable: true, composed: true, button: 0,
-                        pointerId: 1, pointerType: "mouse", isPrimary: true };
+      const pointer = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        button: 0,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+      };
       const budget = Math.max(0, Number(waitMs) || 0);
       const nextPaint = () =>
-        window.__sbNextPaint ? window.__sbNextPaint() : new Promise((r) => setTimeout(r, 16));
+        window.__sbNextPaint
+          ? window.__sbNextPaint()
+          : new Promise((r) => setTimeout(r, 16));
       let bodyChanged = true;
-      const watcher = new MutationObserver(() => { bodyChanged = true; });
+      const watcher = new MutationObserver(() => {
+        bodyChanged = true;
+      });
       watcher.observe(document.body, { childList: true, subtree: false });
       let menu = null;
       let item = null;
@@ -250,8 +276,12 @@
       };
       const started = performance.now();
       try {
-        trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
-        trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+        trigger.dispatchEvent(
+          new PointerEvent("pointerdown", { ...pointer, buttons: 1 }),
+        );
+        trigger.dispatchEvent(
+          new PointerEvent("pointerup", { ...pointer, buttons: 0 }),
+        );
         look();
         while (!item && performance.now() - started < budget) {
           await nextPaint();
@@ -277,7 +307,10 @@
     settingsScroller() {
       const dlg = D.settingsDialog();
       if (!dlg) return null;
-      return q("main > div.hover-scrollbar.overflow-y-auto", dlg) || q("main div.overflow-y-auto", dlg);
+      return (
+        q("main > div.hover-scrollbar.overflow-y-auto", dlg) ||
+        q("main div.overflow-y-auto", dlg)
+      );
     },
     settingsTab(id) {
       return q('[data-testid="settings-tab-' + id + '"]');
@@ -299,12 +332,20 @@
     },
 
     plusButton() {
-      return q('button[aria-label="Tools and attachments"]') || q('[data-tour="chat-plus-menu"]');
+      return (
+        q('button[aria-label="Tools and attachments"]') ||
+        q('[data-tour="chat-plus-menu"]')
+      );
     },
     menuItemByText(text) {
       return (
-        qa('[role="menuitem"], [role="option"], .aui-action-bar-more-item').find((el) =>
-          (el.textContent || "").trim().toLowerCase().includes(text.toLowerCase()),
+        qa(
+          '[role="menuitem"], [role="option"], .aui-action-bar-more-item',
+        ).find((el) =>
+          (el.textContent || "")
+            .trim()
+            .toLowerCase()
+            .includes(text.toLowerCase()),
         ) || null
       );
     },
@@ -316,7 +357,10 @@
       return q('[data-thread-id="' + id + '"]');
     },
     newChatButton() {
-      return q('button[aria-label="New chat"].sidebar-header-action') || q('button[aria-label="New chat"]');
+      return (
+        q('button[aria-label="New chat"].sidebar-header-action') ||
+        q('button[aria-label="New chat"]')
+      );
     },
 
     codeCopyButtons() {
@@ -330,21 +374,26 @@
         messages: qa("[data-role]").length,
         assistant_messages: qa('[data-role="assistant"]').length,
         reasoning_panes: qa('[data-slot="reasoning-root"]').length,
-        reasoning_open: qa('[data-slot="reasoning-root"][data-state="open"]').length,
+        reasoning_open: qa('[data-slot="reasoning-root"][data-state="open"]')
+          .length,
         code_blocks: qa("pre").length,
         // Field capture density was ~5.6 characters per Shiki span; the fixture must reproduce it.
         highlight_spans: qa("pre span").length,
         // Collapsed reasoning panes unmount children, so span location matters. Tools have two
         // renderers (tool-group-root and tool-fallback-root), so count both.
-        tool_groups: qa('[data-slot="tool-group-root"]').length
-                   + qa('[data-slot="tool-fallback-root"]').length,
-        tool_groups_open: qa('[data-slot="tool-group-content"]').length
-                        + qa('[data-slot="tool-fallback-content"]').length,
+        tool_groups:
+          qa('[data-slot="tool-group-root"]').length +
+          qa('[data-slot="tool-fallback-root"]').length,
+        tool_groups_open:
+          qa('[data-slot="tool-group-content"]').length +
+          qa('[data-slot="tool-fallback-content"]').length,
         reasoning_spans: qa('[data-slot="reasoning-root"] pre span').length,
         reasoning_code_blocks: qa('[data-slot="reasoning-root"] pre').length,
         content_spans:
-          qa("pre span").length - qa('[data-slot="reasoning-root"] pre span').length,
-        content_code_blocks: qa("pre").length - qa('[data-slot="reasoning-root"] pre').length,
+          qa("pre span").length -
+          qa('[data-slot="reasoning-root"] pre span').length,
+        content_code_blocks:
+          qa("pre").length - qa('[data-slot="reasoning-root"] pre').length,
         // Read in the same census so occupancy and character count come from one reading.
         assistant_chars: D.assistantChars(),
         viewport_scroll_height: (D.viewport() || {}).scrollHeight || null,
@@ -355,13 +404,15 @@
         distance_from_bottom: D.distanceFromBottom(),
         app_at_bottom: D.appSaysAtBottom(),
       };
-      out.census_cost_ms = Math.round((performance.now() - started) * 100) / 100;
+      out.census_cost_ms =
+        Math.round((performance.now() - started) * 100) / 100;
       return out;
     },
 
     assistantChars() {
       let n = 0;
-      for (const m of qa('[data-role="assistant"]')) n += (m.textContent || "").length;
+      for (const m of qa('[data-role="assistant"]'))
+        n += (m.textContent || "").length;
       return n;
     },
   };
@@ -379,20 +430,23 @@
       return null;
     }
   };
-  const F = Object.assign({
-    samples: 0,
-    running_samples: 0,
-    running_pinned: 0,
-    running_unknown: 0,
-    max_distance_while_running: 0,
-    suspended_samples: 0,
-    detached_samples: 0,
-    yanked_back_samples: 0,
-    stream_samples: 0,
-    reattachments: 0,
-    // Never cleared: a thread that drifts away and is later pulled back has still failed.
-    ever_fell_behind: false,
-  }, restore() || {});
+  const F = Object.assign(
+    {
+      samples: 0,
+      running_samples: 0,
+      running_pinned: 0,
+      running_unknown: 0,
+      max_distance_while_running: 0,
+      suspended_samples: 0,
+      detached_samples: 0,
+      yanked_back_samples: 0,
+      stream_samples: 0,
+      reattachments: 0,
+      // Never cleared: a thread that drifts away and is later pulled back has still failed.
+      ever_fell_behind: false,
+    },
+    restore() || {},
+  );
   window.addEventListener("pagehide", () => {
     try {
       window.sessionStorage.setItem(FOLLOW_KEY, JSON.stringify(F));
@@ -417,14 +471,21 @@
     // Read before the suspended early-return, or a run inside a gesture is never counted.
     const running = D.isRunning();
     if (!running) wasRunning = false;
-    else if (!wasRunning) { wasRunning = true; runSeq += 1; }
-    if (suspended > 0) { F.suspended_samples += 1; return; }
+    else if (!wasRunning) {
+      wasRunning = true;
+      runSeq += 1;
+    }
+    if (suspended > 0) {
+      F.suspended_samples += 1;
+      return;
+    }
     if (!running) return;
     const app = D.appSaysAtBottom();
     const distance = D.distanceFromBottom();
     // The app's own answer wins; geometry is used only when no jump control renders.
     const atBottom =
-      app === true || (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX);
+      app === true ||
+      (app === null && distance !== null && distance <= FOLLOW_TOLERANCE_PX);
     if (detached) {
       if (runSeq !== detachedAtRun && atBottom) {
         detached = false;
@@ -443,7 +504,8 @@
     }
     if (app === null) {
       F.running_unknown += 1;
-      if (distance !== null && distance > FOLLOW_TOLERANCE_PX) F.ever_fell_behind = true;
+      if (distance !== null && distance > FOLLOW_TOLERANCE_PX)
+        F.ever_fell_behind = true;
       return;
     }
     if (app) {
@@ -455,7 +517,11 @@
 
   window.__sb.follow = {
     // Nested-safe. Every suspend latches detached and stamps the current run.
-    suspend() { suspended += 1; detached = true; detachedAtRun = runSeq; },
+    suspend() {
+      suspended += 1;
+      detached = true;
+      detachedAtRun = runSeq;
+    },
     resume() {
       suspended = Math.max(0, suspended - 1);
       // Re-attach if the gesture ended at the bottom; only checked on gesture exit, so the app pulling
@@ -464,7 +530,10 @@
         const app = D.appSaysAtBottom();
         const distance = D.distanceFromBottom();
         // Either answer suffices: the invisible class updates from an async scroll listener and can be stale.
-        if (app === true || (distance !== null && distance <= FOLLOW_TOLERANCE_PX)) {
+        if (
+          app === true ||
+          (distance !== null && distance <= FOLLOW_TOLERANCE_PX)
+        ) {
           detached = false;
           F.reattachments += 1;
         } else {
@@ -488,7 +557,9 @@
         // null, not 1.0, when nothing was sampled mid-run, so it cannot read as a pass.
         pinned_fraction: measured > 0 ? F.running_pinned / measured : null,
         pinned_fraction_reason:
-          measured > 0 ? null : "no sample was taken while a reply was streaming",
+          measured > 0
+            ? null
+            : "no sample was taken while a reply was streaming",
         // pinned_fraction covers attached phases only; this says how much of the stream that was.
         stream_samples: F.stream_samples,
         attached_fraction_of_stream:
@@ -501,7 +572,11 @@
       };
     },
     reset() {
-      try { window.sessionStorage.removeItem(FOLLOW_KEY); } catch (e) {}
+      try {
+        window.sessionStorage.removeItem(FOLLOW_KEY);
+      } catch (e) {
+        /* storage may be unavailable */
+      }
       F.samples = 0;
       F.running_samples = 0;
       F.running_pinned = 0;
