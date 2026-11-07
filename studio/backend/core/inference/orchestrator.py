@@ -433,6 +433,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "precision_folder": model_info.get("precision_folder"),
         "audio_workflows": model_info.get("audio_workflows"),
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
