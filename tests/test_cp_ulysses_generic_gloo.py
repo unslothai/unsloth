@@ -324,6 +324,15 @@ _OUT = os.environ.get("UNSLOTH_TEST_PARITY_OUT", "")
 )
 def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     _config(kind)  # skip before forking when the repo is unavailable
+    if kind in BUILT and int(transformers.__version__.split(".")[0]) < 5:
+        model = _model(kind, implementation)
+        if not cp._supports_context_parallel(model, "ulysses"):
+            # A refusal before training, not a wrong gradient: transformers 4.x builds DeepSeek-V2's experts as
+            # per-expert modules, which the support check declines (_hybrid_config_blocker).
+            pytest.skip(
+                f"{kind}: generic Ulysses is declined on transformers {transformers.__version__}: "
+                f"{cp._hybrid_config_blocker(model)}"
+            )
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
 
 
