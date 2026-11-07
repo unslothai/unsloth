@@ -597,6 +597,10 @@ def _single_device_hook(model):
         if target is None:
             continue
         try:
+            # accelerate names a GPU by its index; torch.device(int) asks for the current accelerator, which
+            # a CPU-only torch build does not have (it raises).
+            if type(target) is int:
+                target = torch.device(_BACKEND.device_type, target)
             target = torch.device(target)
         except Exception:
             return False
