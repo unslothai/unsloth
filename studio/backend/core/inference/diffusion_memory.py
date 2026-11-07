@@ -1092,6 +1092,61 @@ def reclaim_host_memory(logger: Any = None) -> bool:
         return False
 
 
+LOAD_HEAP_TRIM_ENV = "UNSLOTH_DIFFUSION_LOAD_HEAP_TRIM"
+_load_heap_trim_warning_logged = False
+
+
+def _rss_anon_mib() -> Optional[int]:
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as status:
+            for line in status:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) >> 10
+    except Exception:  # noqa: BLE001 - not Linux, or no procfs
+        return None
+    return None
+
+
+def trim_host_heap_after_load(logger: Any = None) -> bool:
+    """Return the heap a finished load freed to the OS; glibc otherwise keeps it (Qwen-Image-2.1, 8 GiB budget:
+    0.65 GiB warm, 1.9 GiB on a first load). Live tensors and the pinned caches are untouched."""
+    if _env_off(LOAD_HEAP_TRIM_ENV):
+        return False
+    try:
+        reclaim = _resolve_host_memory_reclaimer()
+        if reclaim is None:
+            return False
+        import time
+
+        before = _rss_anon_mib()
+        began = time.perf_counter()
+        reclaim()
+        took = time.perf_counter() - began
+        after = _rss_anon_mib()
+        if logger is not None:
+            if before is not None and after is not None:
+                logger.info(
+                    "diffusion.memory: returned %d MiB of freed heap to the OS after the load (%.0f ms)",
+                    before - after,
+                    took * 1000,
+                )
+            else:
+                logger.info(
+                    "diffusion.memory: returned freed heap to the OS after the load (%.0f ms)",
+                    took * 1000,
+                )
+        return True
+    except Exception as exc:  # noqa: BLE001 - a trim never fails a load
+        global _load_heap_trim_warning_logged
+        if logger is not None and not _load_heap_trim_warning_logged:
+            _load_heap_trim_warning_logged = True
+            try:
+                logger.warning("diffusion.memory: heap trim after the load failed: %s", exc)
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode (accepting dashes); None passes through. Raises ValueError
     for an unsupported mode so the route rejects it as a 4xx before any GPU work."""

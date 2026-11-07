@@ -238,6 +238,7 @@ from .diffusion_memory import (
     release_pinned_host_memory,
     request_background_encoder_pins,
     finish_encoder_pins_at_load,
+    trim_host_heap_after_load,
     start_background_pins,
     stop_background_pins,
     refine_balanced_plan_for_components,
@@ -11442,6 +11443,8 @@ class DiffusionBackend:
             plan.estimates,
         )
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
+        # after the pins: their pageable sources are freed by now
+        trim_host_heap_after_load(logger)
         return self.status()
 
     @staticmethod
