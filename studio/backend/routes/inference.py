@@ -38211,10 +38211,9 @@ def _embedding_payload(vector, encoding_format: str):
         import base64
         import numpy as np
         return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
-    if (
-        getattr(vector, "ndim", None) == 1
-        and getattr(getattr(vector, "dtype", None), "kind", None) == "f"
-    ):
+    if getattr(vector, "ndim", None) == 1 and getattr(
+        getattr(vector, "dtype", None), "char", None
+    ) in ("e", "f", "d"):
         # A float numpy row: tolist() gives the same Python floats without a per-element loop.
         return vector.tolist()
     return [float(x) for x in vector]
