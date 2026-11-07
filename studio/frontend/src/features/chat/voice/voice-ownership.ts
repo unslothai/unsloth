@@ -14,6 +14,11 @@ export function holdForServing(hold: VoiceHold | null, id: string): VoiceHold {
   return { id, owned: hold?.id === id && hold.owned };
 }
 
+/** Borrowing another voice that is already serving still releases the one this page loaded. */
+export function releaseBeforeBorrow(hold: VoiceHold | null, id: string): string | null {
+  return hold?.owned && hold.id !== id ? hold.id : null;
+}
+
 /** A load that settles after voice mode let go (epoch moved) is unloaded instead of kept. */
 export function settleVoiceLoad(
   id: string,

@@ -36,6 +36,7 @@ import { unloadSttModel } from "@/features/chat/adapters/studio-model-dictation-
 import { unloadVadModel } from "@/features/chat/voice/vad-client";
 import {
   holdForServing,
+  releaseBeforeBorrow,
   settleVoiceLoad,
   type VoiceHold,
   voiceToUnload,
@@ -3096,6 +3097,11 @@ export function ChatPage({
         const { loadVoice, servedVoice, unloadVoice, voiceServing } = await loadVoiceMode();
         if (await voiceServing(id)) {
           if (epoch !== voiceEpochRef.current) return false;
+          const release = releaseBeforeBorrow(loadedVoiceRef.current, id);
+          if (release) {
+            loadedVoiceRef.current = null;
+            await unloadVoice(release).catch(() => {});
+          }
           loadedVoiceRef.current = holdForServing(loadedVoiceRef.current, id);
           store.setVoiceSlotLoaded(true);
           return true;

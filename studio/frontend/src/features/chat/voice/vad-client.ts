@@ -35,17 +35,17 @@ async function detail(response: Response): Promise<string> {
   return response.statusText || `HTTP ${response.status}`;
 }
 
-// The latest load in flight. A first load downloads before it starts the server, so an unload
-// sent meanwhile would land first and leave the detector running with voice off.
-let pendingLoad: Promise<unknown> | null = null;
+// Every load in flight. A first load downloads before it starts the server, so an unload sent
+// meanwhile would land first and leave the detector running with voice off.
+const pendingLoads = new Set<Promise<unknown>>();
 
 /** Download if needed and start the detector; resolves to the loaded model id. */
 export function loadVadModel(model: string, signal?: AbortSignal): Promise<string> {
   const run = startVadModel(model, signal);
-  const tracked = run.catch(() => {}).finally(() => {
-    if (pendingLoad === tracked) pendingLoad = null;
-  });
-  pendingLoad = tracked;
+  const tracked: Promise<unknown> = run
+    .catch(() => {})
+    .finally(() => pendingLoads.delete(tracked));
+  pendingLoads.add(tracked);
   return run;
 }
 
@@ -68,7 +68,7 @@ async function startVadModel(model: string, signal?: AbortSignal): Promise<strin
 
 /** Stop the detector, after any load in flight has settled so that load cannot outlive it. */
 export async function unloadVadModel(): Promise<void> {
-  if (pendingLoad) await pendingLoad;
+  await Promise.all([...pendingLoads]);
   await authFetch("/api/inference/audio/vad/unload", { method: "POST" }).catch(
     () => {},
   );
