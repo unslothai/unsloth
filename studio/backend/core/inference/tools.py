@@ -9464,6 +9464,28 @@ _NUL_REDIRECT_RE = re.compile(
 _HEREDOC_RE = re.compile(r"<<(-?)[ \t]*(['\"]?)([^\s'\"<>;&|()]+)\2")
 
 
+def _substitution_end(command: str, i: int) -> int:
+    """Index of the `)` closing a `$(` whose body starts at i, or len(command)."""
+    depth, n = 1, len(command)
+    while i < n:
+        c = command[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            j = command.find(c, i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return n
+
+
 def _bash_nul_to_dev_null(command: str) -> str:
     """Git Bash turns `2>nul` into a real file named nul that Explorer cannot delete (#16991).
     Quoted text and heredoc bodies (a .bat written through cat) keep their spelling."""
@@ -9478,12 +9500,27 @@ def _bash_nul_to_dev_null(command: str) -> str:
             out.append(command[i : i + 2])
             i += 2
             continue
-        if c in "'\"":
-            j = i + 1
-            while j < n and command[j] != c:
-                j += 2 if c == '"' and command[j] == "\\" else 1
-            out.append(command[i : j + 1])
-            i = j + 1
+        if c == "'":
+            j = command.find("'", i + 1)
+            j = n if j < 0 else j + 1
+            out.append(command[i:j])
+            i = j
+            continue
+        if c == '"':
+            # A $( ) inside double quotes still runs: `x="$(cmd 2>nul)"`.
+            out.append(c)
+            i += 1
+            while i < n and command[i] != '"':
+                if command.startswith("$(", i):
+                    end = _substitution_end(command, i + 2)
+                    out.append("$(" + _bash_nul_to_dev_null(command[i + 2 : end]))
+                    i = end
+                    continue
+                step = 2 if command[i] == "\\" else 1
+                out.append(command[i : i + step])
+                i += step
+            out.append(command[i : i + 1])
+            i += 1
             continue
         if c == "#" and (i == 0 or command[i - 1] in " \t\n;&|()"):
             j = command.find("\n", i)

@@ -30,6 +30,9 @@ _rewrite = tools._bash_nul_to_dev_null
         ("cmd >&nul", "cmd >&/dev/null"),
         ("read x <nul", "read x </dev/null"),
         ("(where git 2>nul)", "(where git 2>/dev/null)"),
+        ('x="$(git rev-parse HEAD 2>nul)"', 'x="$(git rev-parse HEAD 2>/dev/null)"'),
+        ('echo "v: $(python -V 2>nul) ok"', 'echo "v: $(python -V 2>/dev/null) ok"'),
+        ('x="$(echo "$(ls 2>nul)")"', 'x="$(echo "$(ls 2>/dev/null)")"'),
         (
             "cd sub && python a.py 2>nul\nls 2>nul",
             "cd sub && python a.py 2>/dev/null\nls 2>/dev/null",
@@ -51,6 +54,7 @@ def test_cmd_style_nul_redirects_go_to_dev_null(command, expected):
         "ls 2>/dev/null",
         "grep '2>nul' run.bat",
         'git commit -m "send output >nul"',
+        "echo \"$(echo '2>nul')\"",
         "echo \\>nul",
         "ls # 2>nul",
         "node -e 'x=>nul'",
