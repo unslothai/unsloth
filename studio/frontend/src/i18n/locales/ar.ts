@@ -2595,7 +2595,7 @@ export const ar = {
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
-        noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noGpu: "لم يُكتشف معالج رسومات مخصص.",
         noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
         mismatchCpuBuild:
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
@@ -2671,7 +2671,7 @@ export const ar = {
           "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
       modelMemory: {
-        title: "ذاكرة النموذج",
+        title: "تحميل النموذج",
         keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
         keepResidentDescription: "يبقى في ذاكرة كرت الرسوميات بين الرسائل.",
         keepResidentHint: "لا تُعاد الأوزان إلى ذاكرة النظام ما دام النموذج محمَّلاً. يعطّل التفريغ التلقائي عند الخمول، وإذا كانت الأوزان موجودة فعلاً في ذاكرة المضيف (ذاكرة موحّدة أو تفريغ جزئي إلى المعالج الرسومي) فإنه يمرّر ‎--mlock‎ أيضاً حتى لا يُخرجها النظام من الذاكرة ويعيد رفعها عند رسالتك التالية.",
@@ -2927,6 +2927,8 @@ export const ar = {
     },
     chat: {
       groups: {
+        replies: { title: "الردود" },
+        thinkingTools: { title: "التفكير والأدوات" },
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },
@@ -3011,11 +3013,20 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
-      showGenerationDetails: "تفاصيل التوليد",
+      showGenerationDetails: "معلومات مفصّلة عن السرعة والتحميل",
       showGenerationDetailsDescription:
-        "عرض سرعتَي معالجة الطلب والرد مباشرةً مع عدد الرموز، ومكان تحميل طبقات النموذج.",
+        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة، ويعرض مكان تحميل طبقات النموذج.",
       showGenerationDetailsKeywords:
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "إحصاءات السرعة والسياق",
+      generationStatsUpdatesDescription:
+        "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",
+      generationStatsUpdatesHint:
+        "يحدّث الوضع الفوري مؤشر الرموز في الثانية أسفل الرد وشريط السياق أعلى المحادثة عدة مرات في الثانية أثناء كتابة الرد. أما عند الانتهاء فيحدّثهما مرة واحدة بعد انتهاء كل رد. قد يسبب الوضع الفوري بطئًا أو تراجعًا في الأداء، خاصةً على الأجهزة القديمة أو المشغولة.",
+      generationStatsUpdatesSettled: "عند الانتهاء",
+      generationStatsUpdatesRealtime: "فوري",
+      generationStatsUpdatesKeywords:
+        "فوري مباشر تحديث سرعة سياق إحصاءات realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الجولات",
