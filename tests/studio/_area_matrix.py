@@ -67,25 +67,17 @@ RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # Costs main already has, as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or
 # `count:area=elements` (elements restyled at LONG turns, replacing the length ratio for that area).
-# Each ceiling is about 1.2-1.3x the highest settled reading, so these may not get worse while a new
-# mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: a backdrop-filter is computed again on every
-# frame drawn, and with software compositing every frame redraws the window, so the sidebar's blur
-# costs on any repaint (typing 3.0-5.4x, menus and message controls up to 6.3x). While anything
-# opens, closes or scrolls, glass-motion.ts swaps the blur for a plain fill (only under software
-# compositing, which the gate's headless browsers always use; these ceilings assume it): on origin/main
-# 3d41bf4af3 (4 runs with it and 3 without, loaded 36-core host) Settings scrolling went from
-# 7.8-13.6x to 1.4-4.5x and thread scrolling from 4.6-5.6x to 1.8-4.0x (Liquid 3D keeps its blurred
-# rim glows on the rest of the dialog, hence its higher ceiling). No area restyles the whole thread
-# on open any more, so none needs a count ceiling. Lower or drop an entry when its cause is fixed;
+# These may not get worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: with
+# software compositing (the gate's headless Chromium; these ceilings assume it) every frame redraws
+# the window, so the sidebar's blur costs on any repaint: small areas up to 7.8x on GitHub runners.
+# glass-motion.ts swaps the blur for a plain fill while anything moves, so scrolling Settings reads
+# 1.4-4.5x (main 7.8-13.6x) and the thread 1.8-4.9x (main 4.6-5.6x); 6x leaves runner margin.
 # LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
 _GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
-    [f"{m}:*=7" for m in _GLASS_MODES]
-    + [f"{m}:thread_scroll=5" for m in _GLASS_MODES]
-    + [
-        f"{m}:settings_scroll={r}"
-        for m, r in (("frosted", 3.5), ("blurred", 3.5), ("liquid", 4.5), (GLASS, 6))
-    ]
+    [f"{m}:*=10" for m in _GLASS_MODES]
+    + [f"{m}:thread_scroll=6" for m in _GLASS_MODES]
+    + [f"{m}:settings_scroll=6" for m in _GLASS_MODES]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
