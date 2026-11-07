@@ -1012,7 +1012,6 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # The browser parsers' header ("[PDF: name]", runtime-provider.tsx): their text has no closing tag.
 _LABELLED_TEXT_RE = re.compile(r"\[[A-Z]+: [^\n]*\]\n")
-_CLOSING_TAG_RE = re.compile(r"\n</(?P<tag>[A-Za-z_][\w-]*)>")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
 # No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
@@ -1030,7 +1029,10 @@ def _attachment_spans(text: str):
             openers.append(opened)
     # Wrappers pair with closing tags like brackets, so a quoted attachment nests; an unclosed one runs to the next note.
     events = [(opened.end(), 0, i) for i, opened in enumerate(openers) if opened]
-    events += [(closed.start(), 1, closed) for closed in _CLOSING_TAG_RE.finditer(text)]
+    tags = {opened.group("tag") for opened in openers if opened}
+    if tags:
+        closings = re.compile("\n</(?P<tag>" + "|".join(map(re.escape, sorted(tags))) + ")>")
+        events += [(closed.start(), 1, closed) for closed in closings.finditer(text)]
     ends, open_by_tag = {}, {}
     for _, kind, item in sorted(events, key = lambda event: event[:2]):
         if kind == 0:
