@@ -48,7 +48,7 @@ def _facts(**kw):
         (_facts(key = "missing", mcp = "refused"), "Set UNSLOTH_API_KEY"),
         (_facts(key = "invalid", mcp = "refused"), "refused the key in UNSLOTH_API_KEY"),
         (_facts(key = "error", key_detail = "500 boom"), "500 boom"),
-        (_facts(mcp = "off"), "Allow agent connections"),
+        (_facts(mcp = "off"), "Settings → Agents → Allow agent connections"),
         (_facts(mcp = "absent"), "unsloth studio update"),
         (_facts(mcp = "refused", mcp_detail = "Workflow keys cannot use"), "Workflow keys cannot use"),
         (_facts(mcp = "error", mcp_detail = "timed out"), "timed out"),

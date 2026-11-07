@@ -84,6 +84,27 @@ def test_cancel_by_id_stops_only_that_run(use_backend):
     assert done_b.status_code == 200 and len(done_b.json()["clips"]) == 1
 
 
+def test_stopping_the_callers_generation_ticket_stops_the_run(use_backend):
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    backend, started, release = _blocking_backend()
+    use_backend(backend)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app = app_for(ALICE))
+        async with httpx.AsyncClient(transport = transport, base_url = "http://t") as client:
+            body = {"workflow": "speak", "text": RUN_A, "cancel_id": RUN_A}
+            with generation_ticket(ticket := GenerationTicket()):
+                run = asyncio.create_task(client.post("/api/inference/audio/run", json = body))
+            assert await asyncio.to_thread(started[RUN_A].wait, 10) and ticket.stop() is True
+            try:
+                return await asyncio.wait_for(asyncio.shield(run), 10)
+            finally:
+                release.set()
+
+    assert asyncio.run(scenario()).status_code == 499
+
+
 def test_an_early_cancel_is_kept_for_the_run_that_follows(use_backend):
     backend, started, _release = _blocking_backend()
     use_backend(backend)
