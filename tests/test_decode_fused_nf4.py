@@ -398,6 +398,7 @@ def _driver():
     kernels.__path__ = []
     kernels.nf4_decode_fused = types.ModuleType("dfn.kernels.nf4_decode_fused")
     kernels.utils = types.ModuleType("dfn.kernels.utils")
+    kernels.utils._USE_NF4_KERNELS = True
     saved = {k: sys.modules.get(k) for k in ("dfn", "dfn.models", "dfn.kernels")}
     sys.modules.update({"dfn": pkg, "dfn.models": models, "dfn.kernels": kernels})
     sys.modules["dfn.kernels.nf4_decode_fused"] = kernels.nf4_decode_fused
@@ -420,6 +421,93 @@ def test_off_unless_requested(monkeypatch):
     for value, expected in (("0", False), ("1", True), ("force", True), ("yes", False)):
         monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", value)
         assert D.requested() is expected
+
+
+def test_disabled_nf4_backend_turns_the_fused_path_off(monkeypatch):
+    # UNSLOTH_BNB_TRITON=0 / failed Triton NF4 kernels: no plan built, a cached plan not executed,
+    # and the graph key no longer matches graphs captured while fused.
+    D = _driver()
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", "1")
+    monkeypatch.delenv("UNSLOTH_BNB_TRITON", raising = False)
+    assert D.requested() and D.graph_key() == "1"
+
+    class Cached:
+        def __getattr__(self, name):
+            raise AssertionError("cached fused plan used while the NF4 backend is disabled")
+
+    model = types.SimpleNamespace(__dict__ = {D._PLAN: Cached(), D._BATCH_PLAN: Cached()})
+    X = torch.zeros(1, 1, 8)
+    for disable in ("env", "kernels"):
+        if disable == "env":
+            monkeypatch.setenv("UNSLOTH_BNB_TRITON", "0")
+        else:
+            monkeypatch.delenv("UNSLOTH_BNB_TRITON")
+            monkeypatch.setattr(D.KU, "_USE_NF4_KERNELS", False)
+        assert not D.requested() and D.graph_key() == "0"
+        with torch.no_grad():
+            assert D._decode_forward(model, X, None, None, None, 1, None, 256) is None
+
+
+@pytest.mark.parametrize("release", ["release", "release_for_training"])
+def test_decode_graph_release_frees_fused_plans(release):
+    # for_training / the first training forward / unload call these: the plans' scratch buffers
+    # and weight references must go with the captured graphs.
+    import weakref
+
+    D = _driver()
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    held = torch.zeros(8)
+    ref = weakref.ref(held)
+    for name in (D._PLAN, D._BATCH_PLAN, D._HOMES):
+        model[0].__dict__[name] = ("plan", held)
+    del held
+    getattr(D._decode_graphs, release)(model)
+    assert not any(name in model[0].__dict__ for name in (D._PLAN, D._BATCH_PLAN, D._HOMES))
+    assert ref() is None
+
+
+def test_replaced_attention_or_mlp_blocks_make_the_plan_stale(monkeypatch):
+    D, plan, _ = _norm_plan(monkeypatch)
+    for name in ("self_attn", "mlp"):
+        owner, _, held = next(b for b in plan.bindings if b[1] == name)
+        assert not D._plan_stale(plan)
+        setattr(owner, name, types.SimpleNamespace())
+        assert D._plan_stale(plan)
+        setattr(owner, name, held)
+
+
+def test_every_segment_must_share_the_launch_device(monkeypatch):
+    # q on cuda:0 and k on cuda:1: the kernel would read k through a cuda:0 launch.
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    with FakeTensorMode():
+        parts = []
+        for index in (0, 1):
+            device = torch.device("cuda", index)
+            qs = types.SimpleNamespace(
+                state2 = None,
+                blocksize = 64,
+                absmax = torch.empty(4, device = device),
+                code = torch.empty(16),
+            )
+            parts.append((torch.empty(64, 1, dtype = torch.uint8, device = device), qs, 8, None))
+    monkeypatch.setattr(D, "_proj_parts", lambda proj, K: parts.pop(0))
+    assert (
+        D._site(types.SimpleNamespace(), (0, "qkv"), "qkv", [object(), object()], 16)
+        == "several devices"
+    )
+
+
+def test_empty_layer_list_keeps_the_regular_path(monkeypatch):
+    D = _driver()
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", "1")
+    model = types.SimpleNamespace(model = types.SimpleNamespace(layers = []), __dict__ = {})
+    model.model.layers = []
+    with torch.no_grad():
+        assert (
+            D._decode_forward(model, torch.zeros(1, 1, 8), None, None, None, 1, None, 256) is None
+        )
 
 
 def test_step_runs_on_the_model_device(monkeypatch):
@@ -521,6 +609,32 @@ def test_move_hooks_follow_restored_modules(monkeypatch, serializer):
     assert D._PLAN in model.__dict__ and D._PLAN not in cloned.__dict__
 
 
+def test_pickled_submodule_does_not_serialize_its_owner(monkeypatch):
+    import io
+    import threading
+
+    D = _driver()
+    package = types.ModuleType("dfn")
+    package.__path__ = []
+    models = types.ModuleType("dfn.models")
+    models.__path__ = []
+    package.models = models
+    models._decode_fused_nf4 = D
+    monkeypatch.setitem(sys.modules, "dfn", package)
+    monkeypatch.setitem(sys.modules, "dfn.models", models)
+    monkeypatch.setitem(sys.modules, D.__name__, D)
+    owner = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    D._track_moves(owner)
+    owner.__dict__["_unpicklable"] = threading.Lock()  # anything only the owner holds
+    stream = io.BytesIO()
+    torch.save(owner[0], stream)
+    stream.seek(0)
+    restored = torch.load(stream, weights_only = False)
+    assert restored.__dict__["_apply"].root_ref() is None
+    restored.to(torch.float64)
+    assert restored.weight.dtype == torch.float64 and owner[0].weight.dtype == torch.float32
+
+
 def test_vllm_shared_weights_are_refused():
     # vLLM owns its inference path and captured state.
     D = _driver()
@@ -532,6 +646,7 @@ def test_vllm_shared_weights_are_refused():
 
 def test_refusal_drops_previously_fused_graphs(monkeypatch):
     D = _driver()
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", "1")  # _decode_forward runs only when requested
     dropped = []
     monkeypatch.setattr(D._decode_graphs, "invalidate", lambda model: dropped.append(model))
 
@@ -819,6 +934,7 @@ def test_t4_prefers_regular_graphs(monkeypatch, capability, graphs, flag):
 
 def test_equal_refusal_keeps_regular_graphs(monkeypatch):
     D = _driver()
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", "1")  # _decode_forward runs only when requested
     initial = D._Refused("regular graph path")
     model = types.SimpleNamespace(
         model = types.SimpleNamespace(layers = [types.SimpleNamespace(self_attn = object())])
