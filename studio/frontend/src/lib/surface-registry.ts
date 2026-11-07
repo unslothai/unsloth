@@ -3,11 +3,8 @@
 
 import { type Ref, type RefCallback, useCallback } from "react";
 
-// Shortcut checks ask "is a modal open", "is the composer covered" on every press and every menu
-// re-render. As document queries each walked the whole tree, which on a long chat is tens of ms a
-// press. Instead every element in the app that can match one of these selectors registers itself
-// on mount, and a check reads only those elements plus whatever is mounted outside the app root
-// (third-party portals, such as a fullscreen table, which cannot register).
+// Shortcut checks read the elements that register here plus whatever is outside the app root
+// (third-party portals), instead of walking a long chat's whole document on every press.
 
 /** Every element that can match MODAL_BACKDROP_SELECTOR or an open dialog's content. */
 export const MODAL_SURFACE = "modal";
@@ -19,8 +16,7 @@ export const FIND_SCOPE_SURFACE = "[data-find-scope]";
 const surfaces = new Map<string, Map<Element, number>>();
 let appRoot: Element | null = null;
 
-/** Called once by the app entry, after which tracked checks stop walking the root's subtree.
- * Without it (another embedder, a test) every check reads the document as before; null undoes it. */
+/** Called once by the app entry; without it every check reads the document as before. */
 export function trustSurfaceRegistry(root: Element | null): void {
   appRoot = root;
 }
