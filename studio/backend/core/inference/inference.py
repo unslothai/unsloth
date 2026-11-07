@@ -34,6 +34,7 @@ from utils.hardware import (
 from core.inference.audio_codecs import AudioCodecManager
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.runtime_context import (
+    UNSET_GENERATION_BUDGET,
     generation_budget_within_context,
     runtime_context_length,
 )
@@ -2912,7 +2913,9 @@ class InferenceBackend:
             truncation = False,
         ).to(model.device)
         prompt_len = int(inputs["input_ids"].shape[1])
-        max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens or 2048)
+        budget = generation_budget_within_context(model, prompt_len, max_new_tokens)
+        # Unset: the free window, capped as the MLX path caps it.
+        max_new_tokens = budget if max_new_tokens else min(budget, UNSET_GENERATION_BUDGET)
         kwargs = dict(
             **inputs,
             max_new_tokens = max_new_tokens,

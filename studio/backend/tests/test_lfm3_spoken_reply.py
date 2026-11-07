@@ -331,3 +331,18 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
         with pytest.raises(HTTPException) as exc:
             asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
         assert exc.value.detail == "Active model is not an audio model."
+
+
+@pytest.mark.parametrize("window, expected", [(20, 13), (100_000, 2048), (None, 2048)])
+def test_unset_spoken_budget_fits_the_served_window(monkeypatch, window, expected):
+    import core.inference.runtime_context as rc
+
+    monkeypatch.setattr(rc, "runtime_context_length", lambda _m, *_a: window)
+    model = _Model()
+    b = _backend(model, _Processor(_Codec()))
+    list(
+        inf.InferenceBackend._speak_audio_reply(
+            b, [{"role": "user", "content": "Hi"}], "", np.zeros(1600, np.float32), None, None, None
+        )
+    )
+    assert model.kwargs["max_new_tokens"] == expected
