@@ -2551,11 +2551,25 @@ export const zhCN = {
         gpuUnusableDetail: "已检测到，但 PyTorch 无法使用",
         detailedView: "详细视图",
         detailedViewDescription:
-          "在浮动窗口中显示 CPU 负载以及每个 GPU 的负载、温度和功耗。",
-        cpuLoad: "CPU 负载",
+          "在浮动窗口中显示每个 GPU 的负载、温度和功耗。",
         gpuLoad: "GPU 负载",
         temperature: "温度",
         power: "功耗",
+        memory: "内存",
+        gpuInUse: "GPU 占用",
+        availableForModels: "可用于模型",
+        refreshRate: "刷新频率",
+        refreshRateDescription: "浮动监视器打开时读取内存和 GPU 使用情况的频率。",
+        refreshEvery: "每 {seconds} 秒",
+        unsloth: "Unsloth",
+        otherApps: "其他应用",
+        otherInUse: "其他占用",
+        freeLabel: "空闲",
+        unslothApp: "Unsloth 应用",
+        unslothShare: "显示 Unsloth 占用",
+        unslothShareDescription: "将内存分为 Unsloth 占用、其他应用占用和空闲。",
+        modelBreakdown: "按模型细分",
+        modelBreakdownDescription: "在内存条中将 Unsloth 的占用拆分为每个已加载模型和应用其余部分。",
       },
       gpu: {
         title: "GPU 设备",
@@ -2817,7 +2831,7 @@ export const zhCN = {
       configurationDocs: "文档",
       configurationFlagsSuffix: "了解标志。",
       modelNote:
-        "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
+        "Claude Code 和 Codex 需要通过 llama-server 提供服务的 GGUF 模型，或 MLX 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
         title: "将本地模型用作子智能体",
         description:
@@ -5102,6 +5116,7 @@ export const zhCN = {
     monitor: {
       dragHandleLabel: "移动实时监控。方向键可微调位置，双击可重置。",
       reconnecting: "正在重新连接...",
+      resizeHint: "拖动侧边或角落调整宽度。双击恢复。",
     },
   },
   projectsPage: {

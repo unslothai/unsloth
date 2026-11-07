@@ -522,6 +522,7 @@ from .diffusion_transformer_quant import (
     mark_source_precision,
     nvfp4_gated_base,
     native_int8_act,
+    rdna_auto_w8a8_reason,
     native_offload_host,
     native_quant_host,
     native_quant_scheme,
@@ -8600,9 +8601,33 @@ class DiffusionBackend:
                         auto_bf16_when_resident_reason(getattr(fam, "name", None))
                         == SMALL_DIT_BF16_WHEN_RESIDENT
                     )
+                # ROCm RDNA AUTO W8A8 (FamilyProfile.rdna_auto_w8a8); resident only, offload / low-VRAM keeps bf16.
+                rdna_auto_w8a8 = (
+                    rdna_auto_w8a8_reason(target, getattr(fam, "name", None))
+                    if transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and pipeline_seed_scheme is None
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    # Compiling tiers only; the fused W8A8 linear compiles regardless.
+                    and (
+                        speed_mode is None
+                        or normalize_speed_mode(speed_mode) in (SPEED_DEFAULT, SPEED_MAX)
+                    )
+                    and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                    else None
+                )
+                if rdna_auto_w8a8 is not None:
+                    logger.info(
+                        "diffusion.transformer_quant: auto picks native int8 W8A8 on this RDNA GPU (%s; "
+                        "UNSLOTH_NATIVE_INT8_ACT=0 keeps bf16)",
+                        rdna_auto_w8a8,
+                    )
+                    transformer_quant = TQ_INT8
                 native_scheme = (
                     native_quant_scheme(
-                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                        target,
+                        TQ_INT8 if rdna_auto_w8a8 is not None else transformer_quant_pinned,
+                        family = getattr(fam, "name", None),
                     )
                     if kind == "pipeline"
                     else None
@@ -10338,7 +10363,7 @@ class DiffusionBackend:
                                     {
                                         "offload": plan.offload_policy != OFFLOAD_NONE,
                                         "act_int8": native_scheme == TQ_INT8
-                                        and native_int8_act(target),
+                                        and (native_int8_act(target) or rdna_auto_w8a8 is not None),
                                     }
                                     if native_scheme is not None
                                     else {}
@@ -10512,6 +10537,18 @@ class DiffusionBackend:
                         logger.info(
                             "diffusion.transformer_quant: forcing speed_mode=default "
                             "(quantized transformer must be compiled; eager is ~30x slower)"
+                        )
+                        effective_speed = SPEED_DEFAULT
+                    if (
+                        rdna_auto_w8a8 is not None
+                        and transformer_quant_engaged is not None
+                        and speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                    ):
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (auto int8 W8A8 on RDNA is "
+                            "measured compiled)"
                         )
                         effective_speed = SPEED_DEFAULT
                     if (

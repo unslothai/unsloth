@@ -2573,11 +2573,25 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
-        cpuLoad: "CPU 부하",
+          "플로팅 창에 각 GPU의 부하, 온도, 전력을 표시합니다.",
         gpuLoad: "GPU 부하",
         temperature: "온도",
         power: "전력",
+        memory: "메모리",
+        gpuInUse: "GPU 사용 중",
+        availableForModels: "모델에 사용 가능",
+        refreshRate: "새로 고침 빈도",
+        refreshRateDescription: "플로팅 모니터가 열려 있는 동안 메모리와 GPU 사용량을 읽는 빈도입니다.",
+        refreshEvery: "{seconds}초마다",
+        unsloth: "Unsloth",
+        otherApps: "다른 앱",
+        otherInUse: "기타 사용",
+        freeLabel: "여유",
+        unslothApp: "Unsloth 앱",
+        unslothShare: "Unsloth 사용량 표시",
+        unslothShareDescription: "메모리를 Unsloth, 다른 앱, 여유 공간으로 나눠 보여줍니다.",
+        modelBreakdown: "모델별로 나누기",
+        modelBreakdownDescription: "메모리 막대의 Unsloth 부분을 로드된 각 모델과 나머지 앱으로 나눠 보여줍니다.",
       },
       gpu: {
         title: "GPU 장치",
@@ -2848,7 +2862,7 @@ export const ko = {
       configurationDocs: "문서를",
       configurationFlagsSuffix: "참고하세요.",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
+        "Claude Code와 Codex에는 llama-server가 제공하는 GGUF 모델 또는 MLX 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:
@@ -5191,6 +5205,7 @@ export const ko = {
     monitor: {
       dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
       reconnecting: "다시 연결하는 중...",
+      resizeHint: "옆면이나 모서리를 끌어 너비를 조절하세요. 두 번 클릭하면 초기화됩니다.",
     },
   },
   projectsPage: {

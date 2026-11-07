@@ -2493,7 +2493,7 @@ export const it = {
         apiDescription: "Guarda cosa inviano le altre app all'API di questo server non appena arriva.",
         summary: "Richieste attive, errori e utilizzo dei token",
         status: "{active} attive · {recent} recenti · {model}",
-        noModelLoaded: "nessun modello caricato",
+        noModelLoaded: "Nessun modello caricato",
         autoOpen: "Mostra automaticamente il monitor fluttuante",
         autoOpenDescription:
           "Apre un piccolo pannello quando arriva traffico API.",
@@ -2510,11 +2510,25 @@ export const it = {
         gpuUnusableDetail: "Rilevata, ma PyTorch non può usarla",
         detailedView: "Vista dettagliata",
         detailedViewDescription:
-          "Mostra il carico della CPU e carico, temperatura e consumo di ogni GPU nella finestra mobile.",
-        cpuLoad: "Carico CPU",
+          "Mostra carico, temperatura e consumo di ogni GPU nella finestra mobile.",
         gpuLoad: "Carico GPU",
         temperature: "Temperatura",
         power: "Consumo",
+        memory: "Memoria",
+        gpuInUse: "In uso dalla GPU",
+        availableForModels: "Disponibile per i modelli",
+        refreshRate: "Frequenza di aggiornamento",
+        refreshRateDescription: "Ogni quanto il monitor fluttuante legge l'uso di memoria e GPU mentre è aperto.",
+        refreshEvery: "Ogni {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Altre app",
+        otherInUse: "Altro uso",
+        freeLabel: "Libera",
+        unslothApp: "App Unsloth",
+        unslothShare: "Mostra la quota di Unsloth",
+        unslothShareDescription: "Divide la memoria tra Unsloth, le altre app e quella libera.",
+        modelBreakdown: "Dettaglio per modello",
+        modelBreakdownDescription: "Divide la quota di Unsloth nella barra della memoria tra ogni modello caricato e il resto dell'app.",
       },
       gpu: {
         title: "Dispositivi GPU",
@@ -2785,7 +2799,7 @@ export const it = {
       configurationDocs: "documentazione",
       configurationFlagsSuffix: "per i flag.",
       modelNote:
-        "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
+        "Claude Code e Codex richiedono un modello GGUF servito da llama-server o un modello MLX. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
         title: "Usa un modello locale come subagente",
         description:
@@ -5269,6 +5283,7 @@ export const it = {
     monitor: {
       dragHandleLabel: "Sposta il monitor in tempo reale. I tasti freccia lo spostano leggermente, il doppio clic lo reimposta.",
       reconnecting: "Riconnessione...",
+      resizeHint: "Trascina un lato o un angolo per cambiare la larghezza. Doppio clic la ripristina.",
     },
   },
   projectsPage: {

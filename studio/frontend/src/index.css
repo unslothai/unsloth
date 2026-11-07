@@ -1727,6 +1727,26 @@ html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-c
 	padding-inline-start: 0;
 	text-indent: 0;
 }
+/* A block's own word wrap button (CodeBlockActions) overrides the setting above either way. */
+[data-wrap="on"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre-wrap !important;
+	overflow-wrap: anywhere;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 2.5rem;
+	text-indent: -2.5rem;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span::before {
+	text-indent: 0;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre !important;
+	overflow-wrap: normal;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 0;
+	text-indent: 0;
+}
 /* Capped Thinking box: fades only an edge with more past it; the second layer keeps the scrollbar unfaded. */
 [data-slot="reasoning-tail"][data-capped] {
 	--trace-fade-top: 0px;
@@ -1788,6 +1808,13 @@ html.force-reduced-motion *::after {
 /* Same popup exemption as the OS-level media block below. */
 html.force-reduced-motion [data-radix-popper-content-wrapper] {
 	transition-property: none !important;
+}
+
+/* theme-store.ts withoutTransitions: :root outranks both reduced-motion blocks. */
+:root.theme-switching *,
+:root.theme-switching *::before,
+:root.theme-switching *::after {
+	transition: none !important;
 }
 
 /* Same loader exceptions as the OS-level media block below: freezing
@@ -2133,11 +2160,17 @@ html[data-chat-font] .aui-root {
 	   about 40k elements at 100 turns, 0.45 s in Chromium and 2.4 s in WebKit per toggle. An
 	   explicit value on the scroller stops the inheritance there, and while the lock is up a
 	   transparent cover keeps the thread unclickable and unhovered exactly as before. Portaled
-	   layers (z-50) stay above the cover. */
+	   layers (z-50) stay above the cover.
+	   The rules below key on attributes that src/lib/modal-pointer-lock.ts mirrors from that body
+	   lock, never on the body's inline style: an attribute selector on an ancestor of the thread made
+	   WebKit walk every message on each toggle (about 45 ms per open and close at 150 turns).
+	   data-modal-lock-thread sits on the thread roots, data-modal-lock-path on their ancestors and
+	   data-modal-lock-region on every other subtree of the page. */
 	:where(.aui-thread-viewport) {
 		pointer-events: auto;
 	}
-	body[style*="pointer-events: none"] .aui-thread-root::after {
+	.aui-thread-root[data-modal-lock-thread]::after,
+	[data-modal-lock-region] .aui-thread-root::after {
 		content: "";
 		position: absolute;
 		inset: 0;
@@ -2148,11 +2181,12 @@ html[data-chat-font] .aui-root {
 	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
 	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
 	   listener per open (each add or remove restyles the whole page in WebKit). The pane roots carry a
-	   static class, so the lock toggle only looks at them (an attribute or :is() subject here made
-	   every toggle restyle the thread: 120 ms at 200 turns). Both roots are position: relative;
+	   static class, so the lock toggle only looks at them (an :is() subject here made every toggle
+	   restyle the thread in Chromium: 120 ms at 200 turns). Both roots are position: relative;
 	   dialogs and menus portal to <body> at z-50, above the cover. Its own layer: Chromium's
 	   compositor otherwise hit-tests the composited scroller under a paintless cover and scrolls it. */
-	body[style*="pointer-events: none"] .chat-artifact-pop-surface .side-pane-lock-cover::after {
+	[data-modal-lock-region] .chat-artifact-pop-surface .side-pane-lock-cover::after,
+	[data-modal-lock-region].chat-artifact-pop-surface .side-pane-lock-cover::after {
 		content: "";
 		position: absolute;
 		inset: 0;
@@ -2161,11 +2195,12 @@ html[data-chat-font] .aui-root {
 		will-change: transform;
 	}
 	/* pointer-events-auto restorations (rows, toolbars) inside a dialog or menu that a nested modal
-	   menu has made a lower layer (Radix writes pointer-events: none on it) stayed hit-testable, so
-	   wheel over one scrolled the list behind the menu (Skills rows under Skill actions). Popper
-	   content portaled into that dialog (a modal popover, a select) is the top layer, so it is left
-	   alone. Class-keyed: a lock toggle only looks at these elements. */
-	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
+	   menu has made a lower layer (Radix writes pointer-events: none on it, mirrored as
+	   data-modal-lock-lower) stayed hit-testable, so wheel over one scrolled the list behind the menu
+	   (Skills rows under Skill actions). Popper content portaled into that dialog (a modal popover, a
+	   select) is the top layer, so it is left alone. Class-keyed: a lock toggle only looks at these
+	   elements. */
+	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[data-modal-lock-lower] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
 	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
@@ -2173,8 +2208,10 @@ html[data-chat-font] .aui-root {
 	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
 	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
 	   overlays that are meant to work over a modal (.modal-pe-live). Sidebar row actions restore it in
-	   CSS (an open disclosure arrow) rather than with the class. Class-keyed like the rule above. */
-	body[style*="pointer-events: none"] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
+	   CSS (an open disclosure arrow) rather than with the class. Class-keyed like the rule above; the
+	   region and path attributes together cover every element under <body> outside the thread roots. */
+	[data-modal-lock-region] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *),
+	:is([data-modal-lock-region], [data-modal-lock-path]):is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
 		pointer-events: none !important;
 	}
 
@@ -4152,7 +4189,54 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		max-height: var(--unsloth-code-block-max-height, min(30rem, 55vh));
+		overflow-y: auto;
+		padding-left: var(--spacing) !important;
+		/* Bleeds into the block's padding so the scrollbar hugs its edge. */
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+		padding-inline-end: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		scrollbar-gutter: stable;
+	}
+
+	/* Fades scrolled code under the header; the second layer keeps the scrollbar's strip unfaded. */
+	.aui-thread-root [data-streamdown="code-block-body"][data-scrolled] {
+		mask-image:
+			linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1))),
+			linear-gradient(#000, #000);
+		mask-size: 100% 100%, calc(1rem * var(--ui-space-scale, 1)) 100%;
+		mask-position: 0 0, right;
+		mask-repeat: no-repeat;
+	}
+
+	.aui-thread-root [data-code-expanded] [data-streamdown="code-block-body"] {
+		max-height: none;
+		mask-image: none;
+	}
+
+	.aui-thread-root [data-streamdown="code-block"] {
+		padding-top: calc(0.25rem * var(--ui-space-scale, 1));
+		padding-bottom: 0;
+	}
+
+	/* The half pixel centres the icons on the label. */
+	.aui-thread-root [data-code-block-actions] {
+		top: calc(0.25rem * var(--ui-space-scale, 1) + 0.5px);
+	}
+
+	/* The scrollbar sits in the bottom padding over the code's last gap, so a wide block is no taller. */
+	@supports selector(::-webkit-scrollbar) {
+		.aui-thread-root [data-scrolls-x] [data-streamdown="code-block-body"] {
+			padding-bottom: calc(0.75rem * var(--ui-space-scale, 1) - 6px) !important;
+		}
+	}
+
+	@media print {
+		.aui-thread-root [data-streamdown="code-block-body"] {
+			max-height: none;
+			overflow-y: visible;
+			mask-image: none;
+		}
 	}
 
 	[data-streamdown="code-block"] {
@@ -4485,12 +4569,26 @@ html[data-chat-font] .aui-root {
 		contain: paint;
 	}
 
+	/* Paint containment clips at this box, so it takes the body's bleed and the scrollbar stays inside it. */
+	.aui-thread-root [data-unsloth-fence-paint] {
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+	}
+
+	.aui-thread-root [data-unsloth-fence-paint] > [data-streamdown="code-block-body"] {
+		margin-inline-end: 0;
+	}
+
 	.aui-thread-root [data-unsloth-fence-paint] pre {
 		width: max-content;
 	}
 
-	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre {
+	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre,
+	.aui-thread-root [data-wrap="on"] [data-unsloth-fence-paint] pre {
 		width: auto;
+	}
+
+	html[data-code-wrap] .aui-thread-root [data-wrap="off"] [data-unsloth-fence-paint] pre {
+		width: max-content;
 	}
 
 	html[data-code-block-containment="on"] .aui-thread-root [data-streamdown="code-block"]:not([data-incomplete]) > [data-unsloth-fence-windowed] {
@@ -4884,6 +4982,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
+@supports selector(::-webkit-scrollbar) {
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+	height: 6px;
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: transparent;
+}
+
+.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.72 0 0 / 0.4);
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
@@ -5667,6 +5789,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 :is(.aui-root.aui-thread-root, .aui-md-table.aui-md-table) :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
 	width: round(var(--icon-size), 2px);
 	height: round(var(--icon-size), 2px);
+}
+
+.aui-root.aui-thread-root [data-code-block-actions] .aui-chat-icon-btn svg {
+	width: round(var(--icon-size) - 2px, 2px);
+	height: round(var(--icon-size) - 2px, 2px);
 }
 
 /* Sonner injects fixed 13px toast text and 12px action labels at runtime;
@@ -6768,6 +6895,10 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="pag
   box-shadow: var(--page-glass-edge, inset 0 0 0 1px color-mix(in srgb, var(--foreground) var(--element-outline, 14%), transparent), inset 0 1px 0 rgb(255 255 255 / .072));
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
+/* The frost makes a field its own layer, painted over an icon placed before it, so lift those icons above the glass. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(svg, span:has(> svg)).absolute:has(~ :is([data-slot="input"], .panel-field, .field-soft)) {
+  z-index: 1;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(button:not(:disabled, [data-slot="checkbox"], [data-slot="switch"]):is([class*="hover:bg-"]:hover, [class*="open:bg-"][data-state="open"])) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
