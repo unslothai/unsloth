@@ -2850,6 +2850,24 @@ def test_the_igpu_fit_headroom(monkeypatch, argv, env, user, expected):
     assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == []
 
 
+def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypatch):
+    """A non-default budget spells --fit-target per device at spawn; that rewrite keeps the headroom."""
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
+    monkeypatch.setattr(llama_cpp_module, "_active_vram_fraction", lambda: 0.9)
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+    LlamaCppBackend.probe_server_capabilities()["supports_fit_target"] = True
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert (
+        float(_modes(cmd, "--fit-target")[-1]) > llama_cpp_module._IGPU_PAGED_FIT_HEADROOM_MIB
+    ), cmd
+
+
 def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024, table = 0)
 

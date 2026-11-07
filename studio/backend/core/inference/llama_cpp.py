@@ -15767,6 +15767,15 @@ class LlamaCppBackend:
         base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
         return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
 
+    @staticmethod
+    def _margins_with_paged_headroom(
+        margins: Optional[Mapping[int, float]], headroom: Iterable[str]
+    ) -> Optional[Mapping[int, float]]:
+        """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
+        if not margins or not list(headroom):
+            return margins
+        return {i: m + _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+
     def _page_an_oversized_unmapped_load(
         self,
         cmd: Iterable[str],
@@ -30698,6 +30707,7 @@ class LlamaCppBackend:
                     device_list = False,
                     integrated_gpu_ids = _vulkan_igpu_ids,
                 )
+                _paged_headroom: list = []
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
                     env,
@@ -30706,9 +30716,13 @@ class LlamaCppBackend:
                     lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                         model_path, server_caps, argv, env
                     ),
-                    fit_headroom_flags = lambda argv: self._paged_fit_headroom_flags(
-                        argv, env, extra_args
-                    ),
+                    fit_headroom_flags = lambda argv: _paged_headroom.extend(
+                        self._paged_fit_headroom_flags(argv, env, extra_args)
+                    )
+                    or _paged_headroom,
+                )
+                _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                    _fit_target_margins_by_idx, _paged_headroom
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -32263,6 +32277,7 @@ class LlamaCppBackend:
                                 )
                             )
 
+                        _retry_headroom: list = []
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
                             env,
@@ -32282,9 +32297,13 @@ class LlamaCppBackend:
                             lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                                 model_path, server_caps, argv, env
                             ),
-                            fit_headroom_flags = lambda argv: self._paged_fit_headroom_flags(
-                                argv, env, extra_args
-                            ),
+                            fit_headroom_flags = lambda argv: _retry_headroom.extend(
+                                self._paged_fit_headroom_flags(argv, env, extra_args)
+                            )
+                            or _retry_headroom,
+                        )
+                        _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                            _fit_target_margins_by_idx, _retry_headroom
                         )
                         if _retry_pageable_note:
                             # Onto whichever notice first-notice-wins kept above; a
