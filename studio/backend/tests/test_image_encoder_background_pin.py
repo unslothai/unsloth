@@ -111,6 +111,8 @@ def test_a_registered_pin_is_priced_at_page_rounded_bytes_not_powers_of_two():
 
 
 def test_the_load_starts_and_waits_for_the_encoder_pins(monkeypatch):
+    # the kill switch; by default the first render waits (test_image_encoder_pins_after_load.py)
+    monkeypatch.setenv(dm.ENCODER_PINS_AFTER_LOAD_ENV, "0")
     calls = []
     monkeypatch.setattr(dm, "start_background_pins", lambda pipe: calls.append("start") or 1)
     monkeypatch.setattr(dm, "finish_background_pins", lambda pipe: calls.append("finish") or 0.0)

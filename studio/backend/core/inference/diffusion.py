@@ -238,6 +238,7 @@ from .diffusion_memory import (
     release_pinned_host_memory,
     request_background_encoder_pins,
     finish_encoder_pins_at_load,
+    finish_encoder_pins_before_render,
     trim_host_heap_after_load,
     start_background_pins,
     stop_background_pins,
@@ -11405,7 +11406,7 @@ class DiffusionBackend:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # Never published, so _unload_locked cannot reach them: the pinners would keep the encoders.
-                        stop_background_pins(pipe)
+                        stop_background_pins(pipe, timeout = None)
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
                         if load_bg_compile is not None:
                             load_bg_compile.close()
@@ -11443,7 +11444,7 @@ class DiffusionBackend:
             plan.estimates,
         )
         finish_encoder_pins_at_load(getattr(state, "pipe", None), logger)
-        # after the pins: their pageable sources are freed by now
+        # Encoder pins still running return their sources' heap at the first render.
         trim_host_heap_after_load(logger)
         return self.status()
 
@@ -14220,6 +14221,11 @@ class DiffusionBackend:
             try:
                 self._state_device_target(state)
                 apply_cpu_render_threads(state.device)
+                if finish_encoder_pins_before_render(state.pipe, cancel, logger) > 0.0:
+                    # Load-side time: the background compile sizes its slices from render_t0.
+                    render_t0 = time.perf_counter()
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                 # Local `state` keeps the pipe alive past unload() nulling _state; resolve (prompt, seed) jobs first.
                 jobs, seed = resolve_batch_jobs(
                     prompt = prompt,
@@ -15663,8 +15669,8 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
-        # A pinner still copying would hold its host copies past release_pinned_host_memory().
-        stop_background_pins(getattr(state, "pipe", None))
+        # Encoder pinners outlive the load and hold host copies past release_pinned_host_memory(): wait for exit.
+        stop_background_pins(getattr(state, "pipe", None), timeout = None)
         # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:
             try:
