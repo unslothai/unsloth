@@ -457,3 +457,56 @@ test("a page whose protections fail shows an error, and Try again opens a new vi
     stop();
   }
 });
+
+test("a dragged floating window shows its layered page as a snapshot, and the live page again on the drop", async () => {
+  const doc = (globalThis as unknown as { document: { querySelector: (selector: string) => unknown } }).document;
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const { querySelector } = doc;
+  const { Image, nativeViewCall } = globals;
+  globals.Image = class {
+    src = "";
+    decode = () => Promise.resolve();
+  };
+  globals.nativeViewCall = (command: string, args?: Record<string, unknown>) => {
+    calls.push({ command, args });
+    if (command === "browser_capture") return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+    return Promise.resolve(command === "browser_view_layered" ? true : undefined);
+  };
+  let moving = false;
+  doc.querySelector = (selector: string) =>
+    selector.startsWith("[data-floating-gesture") ? (moving ? {} : null) : querySelector(selector);
+  // an earlier test left only the section opaque
+  const cut = () => section.attributes.has("data-native-hole");
+  useBrowserStore.getState().openUrl("https://drag.example/");
+  const stop = startNativeViews();
+  try {
+    await frame();
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId;
+    assert.ok(cut(), "cut open while still");
+
+    const from = calls.length;
+    moving = true;
+    await frame();
+    await frame();
+    const during = calls.slice(from);
+    assert.ok(during.some(({ command, args }) => command === "browser_capture" && args?.tabId === tabId));
+    assert.ok(during.some(({ command, args }) => command === "browser_view_show" && args?.parked === true));
+    assert.ok(!cut(), "the snapshot shows, uncut, while the window moves");
+    const parked = calls.length;
+    await frame();
+    assert.equal(calls.length, parked, "nothing is sent per frame of the drag");
+
+    moving = false;
+    await frame();
+    await frame();
+    const dropped = calls.slice(parked);
+    assert.ok(dropped.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && !args?.parked));
+    assert.ok(cut(), "cut open again on the drop");
+  } finally {
+    stop();
+    doc.querySelector = querySelector;
+    globals.Image = Image;
+    globals.nativeViewCall = nativeViewCall;
+  }
+});

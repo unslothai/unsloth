@@ -555,6 +555,10 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
+// Inside the floating window a fixed background misses the page (its own layer, a drag's transform),
+// so those cut in their own box instead. Backgrounds only: UI drawn over the page (annotations) stays.
+const LOCAL_ATTRIBUTE = "data-native-hole-local";
+let local: HTMLElement[] = [];
 // The wallpaper is no ancestor of the page, so it is masked instead.
 const MASK_ATTRIBUTE = "data-native-hole-mask";
 let masked: HTMLElement[] = [];
@@ -591,12 +595,20 @@ function placeHole(): void {
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
   const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
   const values = rect.map((value) => value / zoom);
-  for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
-  // No zoom correction: a mask is no fixed background.
-  for (const node of masked) {
+  for (const node of holed) {
+    if (local.includes(node)) continue;
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+  }
+  // No zoom correction: neither a mask nor a box-local cut is a fixed background.
+  for (const node of [...local, ...masked]) {
     const box = node.getBoundingClientRect();
-    const local = [rect[0] - box.left, rect[1] - box.top, rect[2], rect[3]];
-    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${local[index]}px`));
+    // Kept inside the box: a negative length voids the whole cut (a page a drag left behind).
+    const x = Math.max(0, rect[0] - box.left);
+    const y = Math.max(0, rect[1] - box.top);
+    const width = Math.max(0, Math.min(box.width, rect[0] + rect[2] - box.left) - x);
+    const height = Math.max(0, Math.min(box.height, rect[1] + rect[3] - box.top) - y);
+    const cut = [x, y, width, height];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${cut[index]}px`));
   }
 }
 
@@ -618,16 +630,19 @@ function markHole(): boolean {
   if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
   const colors = chain.map((node) => getComputedStyle(node));
   chain.forEach((node, index) => {
     const computed = colors[index];
     if (computed.backgroundImage === "none" && !opaque(computed.backgroundColor)) return;
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
+    if (index <= floating) local.push(node);
   });
   masked = layers;
   placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of local) node.setAttribute(LOCAL_ATTRIBUTE, "");
   for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
@@ -654,6 +669,8 @@ function unmarkHole(): void {
     for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
   }
   holed = [];
+  for (const node of local) node.removeAttribute(LOCAL_ATTRIBUTE);
+  local = [];
   for (const node of masked) {
     node.removeAttribute(MASK_ATTRIBUTE);
     for (const name of HOLE_VARS) node.style.removeProperty(name);
@@ -758,7 +775,13 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
-  return !layered && coveredNow(rect) ? { ...shown, covered: true } : shown;
+  // A layered page trails a dragged window by a frame: it waits under its snapshot instead.
+  const covered = layered ? movingWindow() : coveredNow(rect);
+  return covered ? { ...shown, covered: true } : shown;
+}
+
+function movingWindow(): boolean {
+  return document.querySelector?.('[data-floating-gesture="move"]') != null;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -982,6 +1005,7 @@ async function coverView(tabId: string, zoom: number, bounds: Bounds): Promise<v
       retryCover();
       return;
     }
+    closeHole();
     await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
     parkedView = tabId;
     staleSnapshot = null;
@@ -1022,7 +1046,8 @@ export function refreshCoveredPage(tabId: string): void {
 
 async function applyView(desired: Desired): Promise<void> {
   if (!desired || "covered" in desired) {
-    closeHole();
+    // Cut open until the snapshot is up (coverView), or the window flashes blank.
+    if (!(layered && desired && parkable(desired.tabId))) closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
     // Another tab under a lasting cover (the find bar): show it first so it can be captured, not left blank.
@@ -1145,8 +1170,8 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
-    // A page on top waits out a floating drag under its snapshot, not a capture per frame.
-    if (!layered && parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
+    // A parked page waits out a floating drag under its snapshot, not a capture per frame.
+    if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
