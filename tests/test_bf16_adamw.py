@@ -102,6 +102,25 @@ def test_sub_ulp_update_moves_correct_fraction_and_preserves_rng(api):
     assert 0.3 < float((mask != (p != 1)).float().mean()) < 0.45
 
 
+def test_cpu_parameters_never_share_a_rounding_stream(api, monkeypatch):
+    draws = []
+    randint = torch.randint
+
+    def record(*args, **kwargs):
+        draws.append(randint(*args, **kwargs))
+        return draws[-1]
+
+    monkeypatch.setattr(api.torch, "randint", record)
+    params = [torch.nn.Parameter(torch.zeros(256, dtype = torch.bfloat16)) for _ in range(4)]
+    optimizer = api.AdamWBF16(params, seed = 5)
+    for _ in range(8):
+        for p in params:
+            p.grad = torch.ones_like(p)
+        optimizer.step()
+    streams = {tuple(d.tolist()) for d in draws}
+    assert len(streams) == len(draws) == 32
+
+
 def test_checkpoint_restores_fp32_moments_and_next_random_update(api):
     p = torch.nn.Parameter(torch.linspace(0.5, 1.5, 4096, dtype = torch.bfloat16))
     optimizer = api.AdamWBF16([p], lr = 0.0009, weight_decay = 0.01, seed = 81)
