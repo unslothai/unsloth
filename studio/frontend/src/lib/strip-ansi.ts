@@ -81,10 +81,23 @@ function consumeCsi(text: string, afterIntro: number): number {
   return cursor;
 }
 
+// Bytes the scanner acts on: CAN, SUB, ESC and the C1 range. Everything else is copied in runs.
+const SPECIAL = /[\x18\x1a\x1b\x80-\x9f]/g;
+
 export function stripAnsi(text: string): string {
   let out = "";
   let index = 0;
   while (index < text.length) {
+    SPECIAL.lastIndex = index;
+    const found = SPECIAL.exec(text);
+    const stop = found === null ? text.length : found.index;
+    if (stop > index) {
+      out += text.slice(index, stop);
+      index = stop;
+      if (index >= text.length) {
+        break;
+      }
+    }
     const code = text.charCodeAt(index);
 
     if (code === CAN || code === SUB) {
@@ -105,11 +118,6 @@ export function stripAnsi(text: string): string {
       continue;
     }
     if (code >= 0x80 && code <= 0x9f) {
-      index += 1;
-      continue;
-    }
-    if (code !== ESC) {
-      out += text[index] ?? "";
       index += 1;
       continue;
     }
@@ -167,10 +175,21 @@ export function tailToolOutput(text: string): ToolOutputTail {
   let visible = text;
   let hiddenLines = 0;
   let hiddenChars = 0;
-  const lines = visible.split("\n");
-  if (lines.length > TAIL_LINES) {
-    hiddenLines = lines.length - TAIL_LINES;
-    visible = lines.slice(hiddenLines).join("\n");
+  // The TAIL_LINES-th newline from the end starts the kept lines; no split of the whole text.
+  let cut = text.length;
+  let found = 0;
+  while (found < TAIL_LINES) {
+    cut = cut > 0 ? text.lastIndexOf("\n", cut - 1) : -1;
+    if (cut < 0) {
+      break;
+    }
+    found += 1;
+  }
+  if (cut >= 0) {
+    for (let at = cut; at >= 0; at = at > 0 ? text.lastIndexOf("\n", at - 1) : -1) {
+      hiddenLines += 1;
+    }
+    visible = text.slice(cut + 1);
   }
   if (visible.length > TAIL_CHARS) {
     hiddenChars = visible.length - TAIL_CHARS;
