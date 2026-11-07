@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { availableAxes, MAX_COMPARE_CELLS, type CompareContext } from "../src/features/images/compare/compare-axes.ts";
 import { xyGridCellSize } from "../src/features/images/image-size.ts";
+import { recipeSettings, unknownRecipeKeys } from "../src/features/images/lib/image-metadata.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const backend = readFileSync(new URL("../../backend/models/inference.py", import.meta.url), "utf8");
@@ -56,4 +57,8 @@ test("reusing a server grid's recipe restores the cell size, not the grid's pixe
   assert.equal(xyGridCellSize({ xy_grid: null }), null);
   assert.equal(xyGridCellSize({}), null);
   assert.match(readSrc("features/images/images-page.tsx"), /hiresBaseSize\(image\) \?\? xyGridCellSize\(image\) \?\?/);
+  const dropped = { prompt: "a fox", width: 2880, height: 2441, xy_grid: { cell_width: 768, cell_height: 768, cells: [] } };
+  const settings = recipeSettings(dropped, { width: 1024, height: 1024, steps: 8, guidance: 1 });
+  assert.deepEqual([settings.width, settings.height], [768, 768]);
+  assert.deepEqual(unknownRecipeKeys(dropped), []);
 });

@@ -299,3 +299,12 @@ def test_stop_between_cells_ends_the_grid(client):
     assert len(calls) == 1
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 1
     assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}
+
+
+def test_grid_infotext_records_the_cell_size():
+    from core.inference import image_gallery
+
+    meta = {"prompt": "a sloth", "width": 2880, "height": 2441, "seed": 1, "steps": 8}
+    assert "Size: 2880x2441," in image_gallery._params_text(meta)
+    meta["xy_grid"] = {"cell_width": 768, "cell_height": 768}
+    assert "Size: 768x768," in image_gallery._params_text(meta)
