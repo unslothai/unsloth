@@ -100,7 +100,10 @@ const subscribeCodeWrap = (listener: () => void): (() => void) => {
     wrapObserver = new MutationObserver(() => {
       for (const notify of wrapListeners) notify();
     });
-    wrapObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-code-wrap"] });
+    // data-wrap: a block's own word wrap button (CodeBlockActions) overrides the setting for that block.
+    wrapObserver.observe(document.documentElement, {
+      attributes: true, subtree: true, attributeFilter: ["data-code-wrap", "data-wrap"],
+    });
   }
   return () => {
     wrapListeners.delete(listener);
@@ -110,8 +113,12 @@ const subscribeCodeWrap = (listener: () => void): (() => void) => {
     }
   };
 };
-const codeWrapOn = (): boolean => document.documentElement.hasAttribute("data-code-wrap");
-const useCodeWrap = (): boolean => useSyncExternalStore(subscribeCodeWrap, codeWrapOn, () => false);
+const codeWrapOn = (node: Element | null): boolean => {
+  const own = node?.closest("[data-wrap]")?.getAttribute("data-wrap");
+  return own ? own === "on" : document.documentElement.hasAttribute("data-code-wrap");
+};
+const useCodeWrap = (node: RefObject<Element | null>): boolean =>
+  useSyncExternalStore(subscribeCodeWrap, () => codeWrapOn(node.current), () => false);
 
 /* One viewport of lookahead. The percentage resolves against the root's HEIGHT in all engines
  * (spec says width, w3c/IntersectionObserver#391); pf9462_parity.py guards it. */
@@ -1843,16 +1850,16 @@ export const FenceBody = memo(function FenceBody({
   source: string;
   windowing: boolean;
 }) {
-  const codeWrap = useCodeWrap();
+  const code = useRef<HTMLElement | null>(null);
+  const surface = useRef<HTMLDivElement | null>(null);
+  const wrapper = useRef<HTMLDivElement | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
+  const codeWrap = useCodeWrap(frame);
   const tokens = result?.tokens ?? null;
   // Only fences over the cap get a line window; below it the batched highlight path stays on,
   // so a dense line (minified JSON) still renders in quiet-work batches.
   windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap
     && (tokens?.length ?? 0) > WINDOW_CAP_LINES;
-  const code = useRef<HTMLElement | null>(null);
-  const surface = useRef<HTMLDivElement | null>(null);
-  const wrapper = useRef<HTMLDivElement | null>(null);
-  const frame = useRef<HTMLDivElement | null>(null);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,

@@ -439,3 +439,28 @@ test("only a finished body mounting right after a stream takes its scroll place,
   assert.match(pin, /bodyScrolls\.delete\(key\);\s*return saved !== undefined && performance\.now\(\) - saved\.at < JUST_STREAMED_MS/);
   assert.equal(pin.match(/rememberBodyScroll\(/g)?.length, 1);
 });
+
+test("a block's own word wrap turns off line windowing for that block only", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { runInNewContext } = await import("node:vm");
+  const ts = (await import("@typescript/typescript6")).default;
+  const src = readFileSync(new URL("../src/components/assistant-ui/code-fence-defer.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("const codeWrapOn = ");
+  const end = src.indexOf("const useCodeWrap = ", start);
+  const js = ts.transpileModule(src.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const html = { attrs: new Set<string>(), hasAttribute(name: string) { return this.attrs.has(name); } };
+  const block = (wrap: string | null) => ({
+    closest: (selector: string) => selector === "[data-wrap]" && wrap !== null
+      ? { getAttribute: () => wrap } : null,
+  });
+  const context: Record<string, unknown> = { document: { documentElement: html } };
+  runInNewContext(`${js}\nthis.codeWrapOn = codeWrapOn;`, context);
+  const codeWrapOn = context.codeWrapOn as (node: unknown) => boolean;
+  assert.equal(codeWrapOn(block(null)), false, "setting off, no override");
+  assert.equal(codeWrapOn(block("on")), true, "the block's wrap button wins over the setting");
+  html.attrs.add("data-code-wrap");
+  assert.equal(codeWrapOn(block(null)), true, "setting on");
+  assert.equal(codeWrapOn(block("off")), false, "the block's unwrap wins too");
+  assert.equal(codeWrapOn(null), true, "before mount: the setting");
+  assert.match(src, /attributeFilter: \["data-code-wrap", "data-wrap"\]/, "a toggle re-reads the guard");
+});
