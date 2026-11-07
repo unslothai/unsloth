@@ -28682,8 +28682,10 @@ async def _proxy_to_external_provider(
     if provider_type == "claude_agent":
         if not claude_agent_enabled():
             raise HTTPException(status_code = 403, detail = CLAUDE_AGENT_OFF)
-        # Runs on the owner's own Claude login, so only the owner's Studio UI may use it.
-        if account_access.managed_account() or _request_has_api_key(request):
+        # Runs on the owner's own Claude login: only the owner's Studio UI and Deep Research runs.
+        if account_access.managed_account() or (
+            _request_has_api_key(request) and not _request_is_saved_credential_workflow(request)
+        ):
             raise HTTPException(
                 status_code = 403,
                 detail = "Claude Agent is available only to the installation owner in the Studio UI.",

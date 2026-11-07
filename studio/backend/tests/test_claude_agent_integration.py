@@ -474,6 +474,45 @@ def test_transcription_refuses_a_claude_agent_connection(claude_agent_row):
     assert "chat only" in refused.value.detail
 
 
+@pytest.mark.parametrize(
+    "account, key_name, status",
+    [
+        (OWNER, "deep-research workflow", 400),
+        (OWNER, "data-recipe workflow", 403),
+        (ALICE, "deep-research workflow", 403),
+    ],
+)
+def test_only_the_owners_deep_research_key_passes_the_owner_gate(
+    monkeypatch, claude_agent_row, account, key_name, status
+):
+    from models.inference import ChatCompletionRequest
+
+    inference = claude_agent_row
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(inference.auth_storage, "is_internal_api_key", lambda raw: True)
+    monkeypatch.setattr(inference.auth_storage, "internal_api_key_name", lambda raw: key_name)
+    request = SimpleNamespace(
+        headers = {"authorization": "Bearer sk-unsloth-deadbeefdeadbeef"},
+        state = SimpleNamespace(skip_api_monitor = True),
+    )
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        provider_id = "c" * 16,
+        external_model = "opus",
+        stream = False,
+    )
+    token = bind_account(account)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(
+                inference._proxy_to_external_provider(payload, request, current_subject = "t")
+            )
+    finally:
+        reset_account(token)
+    # Past the owner gate, the next refusal is the stream=true check.
+    assert refused.value.status_code == status, refused.value.detail
+
+
 def test_a_scheduled_run_with_claude_agent_off_fails_with_the_reason(monkeypatch):
     from core.scheduled_tasks import scheduler
     from routes import inference
