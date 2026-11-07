@@ -899,6 +899,7 @@ def fit_rolling_context(
     headroom_ratio: Optional[float] = None,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
     replay_only: bool = False,
+    on_evict: Optional[Callable[[], None]] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Drops oldest turns; reserve_tokens never affects trimming; sticky_dropped replays the boundary."""
     if context_length <= 1:
@@ -948,6 +949,8 @@ def fit_rolling_context(
         headroom = int(prompt_target * ratio) if keeps_boundary else 0
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
+    if on_evict is not None and current_tokens > trim_target:
+        on_evict()
     while current_tokens > trim_target:
         keep_ratio = trim_target / max(1, current_tokens)
         if min_bite:

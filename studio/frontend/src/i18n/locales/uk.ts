@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const uk = {
+  turns: {
+    label: "Хід {number}",
+    bookmarkedLabel: "Хід {number}, у закладках",
+    bookmark: "Додати хід у закладки",
+    removeBookmark: "Прибрати закладку",
+    navigator: "Ходи",
+  },
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
@@ -31,6 +38,7 @@ export const uk = {
     halftone: "Напівтони",
     scanlines: "Рядки сканування",
     visibility: "Видимість",
+    conversationVisibility: "Видимість у розмовах",
     blur: "Розмиття зображення",
     position: "Позиція",
     horizontal: "Положення по горизонталі",
@@ -40,8 +48,8 @@ export const uk = {
     scopeChats: "У чатах",
     scopeAll: "На всіх сторінках",
     positionValue: "По горизонталі {x}%, по вертикалі {y}%",
-    newChat: "Новий чат",
-    conversation: "Розмова",
+    newChat: "Попередній перегляд нового чату",
+    conversation: "Попередній перегляд розмови",
     prompt: "Що хочете дослідити?",
     response: "Розмова залишається чіткою на тлі.",
     storageError: "Не вдалося зберегти тло. Перевірте доступне сховище браузера.",
@@ -49,6 +57,26 @@ export const uk = {
     dimensionsError: "Виберіть зображення менше ніж 40 мегапікселів.",
     decodeError: "Не вдалося декодувати зображення. Спробуйте інший файл.",
     effectError: "Не вдалося відтворити ефект. Виберіть «Немає» або інше зображення.",
+    material: "Скло",
+    materialSolid: "Вимк.",
+    materialTransparent: "Прозоре",
+    materialFrosted: "Матове",
+    materialBlurred: "Розмите",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Системне скло macOS",
+    materialMacosNote: "Використовує напівпрозорий матеріал вікон macOS, тож крізь нього видно робочий стіл.",
+    materialNativeFailed: "Ця версія Unsloth Desktop не може використовувати матеріал macOS. Оновіть застосунок, щоб увімкнути його.",
+    glassTheme: "Скляна тема",
+    materialStyle: "Стиль",
+    materialMenus: "Скляні меню",
+    materialMenusDescription: "Розкривні списки, меню та засоби вибору також використовують скло.",
+    materialStrength: "Сила скла",
+    lens: "Скляна лінза",
+    lensDescription: "Викривлює зображення під полем введення, як справжнє скло.",
+    lensOff: "Вимк.",
+    lensMagnify: "Збільшити",
+    lensShrink: "Зменшити",
   },
   linkMenu: {
     openInBrowser: "Відкрити в браузері Unsloth",
@@ -178,12 +206,16 @@ export const uk = {
         history: "Читання вашої історії переглядів",
         move: "Переміщення миші",
         drag: "Перетягування",
+        tabs: "Перегляд вкладок",
+        readFile: "Читання файлу",
+        editFile: "Редагування файлу",
       },
     },
     title: "Браузер",
     tabs: "Вкладки браузера",
     newTab: "Нова вкладка",
     newTabFullView: "Нова вкладка на весь екран",
+    newTabFloating: "Нова вкладка в плаваючому вікні",
     closeTab: "Закрити вкладку",
     close: "Закрити браузер",
     show: "Показати браузер",
@@ -333,6 +365,8 @@ export const uk = {
     askBeforeDownloadingSetting: "Питати перед завантаженням",
     askBeforeDownloadingSettingDescription:
       "Підтверджувати файли з вебсайтів перед їх збереженням.",
+    askBeforeProgramDownloadsSetting: "Питати перед завантаженням програм",
+    askBeforeProgramDownloadsSettingDescription: "Підтверджувати файли, які можуть запускати програми, як-от .exe або .dmg, навіть якщо для інших завантажень питання не ставиться.",
     downloadSitesSetting: "Дозволи сайтів на завантаження",
     downloadSitesSettingDescription:
       "Сайти, для яких ви вирішили завжди дозволяти або блокувати завантаження.",
@@ -341,6 +375,7 @@ export const uk = {
     downloadSitesFor: "Завантаження з {host}",
     downloadSitesRemove: "Забути {host}",
     downloadSiteAllow: "Завжди дозволяти",
+    downloadSiteAllowAll: "Дозволяти й програми",
     downloadSiteBlock: "Завжди блокувати",
     downloadPrompt: {
       title: "Завантажити цей файл?",
@@ -348,6 +383,9 @@ export const uk = {
       dangerous:
         "Такі файли можуть запускати програми на вашому комп’ютері. Завантажуйте його, лише якщо довіряєте {host}.",
       remember: "Запам’ятати на наступний раз",
+      once: "Запитати наступного разу",
+      site: "Завжди для {host}",
+      all: "Завжди завантажувати, з будь-якого сайту",
       cancel: "Скасувати",
       download: "Завантажити",
       blocked: "Заблоковано завантаження з {host}.",
@@ -396,6 +434,12 @@ export const uk = {
       openChat: "Відкрити в повному вигляді",
       moveLeft: "Перемістити на ліву панель",
       moveRight: "Перемістити на праву панель",
+    },
+    floating: {
+      enter: "Плаваюче вікно",
+      dock: "Закріпити збоку",
+      close: "Закрити плаваюче вікно",
+      handle: "Перемістити вікно. Стрілки переміщують його, Shift зі стрілками змінює розмір.",
     },
     annotate: {
       countOne: "1 анотація",
@@ -714,6 +758,8 @@ export const uk = {
     plainText: "Поле введення простого тексту",
     plainTextDescription:
       "Залишати код, Markdown і посилання звичайним текстом. Вимкніть, щоб показувати відформатований попередній перегляд.",
+    richPaste: "Вставлення форматованого тексту",
+    richPasteDescription: "Вставляє посилання, таблиці й форматування як Markdown. {shortcut} вставляє звичайний текст. Повноцінний редактор форматованого тексту незабаром.",
     showContext: "Використання контекстного вікна",
     sendShortcut: "Сполучення клавіш для надсилання",
     sendMultiline: "{mod} + Enter для багаторядкових запитів",
@@ -828,36 +874,6 @@ export const uk = {
     compactUnsupported:
       "Для стиснення потрібна модель GGUF або MLX з підтримкою інструментів",
   },
-  halloween: {
-    navLabel: "Солодощі або капость…",
-    title: "Солодощі або капость?!",
-    description:
-      "Ми наварили для Unsloth трохи страхіть — вони будуть тут до кінця жовтня.",
-    chooseTheme: "Виберіть моторошну тему",
-    spookyGreetings: "Моторошні привітання",
-    spookyGreetingsDescription: "Лінивець вітає нові чати переляком.",
-    decorations: "Павуки й кажани",
-    decorationsDescription: "Павутиння, а подекуди павук чи кажан.",
-    surprise: "Солодощі або капость!",
-    surpriseDescription: "Нехай лінивець вибере тему за вас.",
-    themesTitle: "Моторошні теми",
-    back: "Назад",
-    footer: "Unsloth повернеться до звичайного вигляду опівночі 1 листопада.",
-    removeNow: "Вилучити зараз",
-    hideFromSidebar: "Приховати з бічної панелі",
-    greeting: {
-      pumpkins: "Гарбузи вирізано. Що далі?",
-      brewing: "Час варити зілля",
-      trickOrTreat: "Солодощі або капость?",
-      manor: "Ласкаво просимо до маєтку",
-      manorName: "Ласкаво просимо до маєтку, {name}",
-      happyHalloween: "Щасливого Гелловіну",
-      happyHalloweenName: "Щасливого Гелловіну, {name}",
-      spirits: "Духи слухають…",
-      mysteries: "Які таємниці розкриємо сьогодні вночі?",
-      conjure: "Що мені для вас начаклувати?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Радий вас бачити",
     goodToSeeYouName: "Радий вас бачити, {name}",
@@ -882,6 +898,9 @@ export const uk = {
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",
+    residentToRun: "для запуску",
+    residentToRunHint:
+      "Пам'ять GPU, яку перевірка завантаження вимагає під час роботи",
     onDevice: "На пристрої",
     huggingFace: "Hugging Face",
     retry: "Повторити",
@@ -1085,7 +1104,7 @@ export const uk = {
       deleteProjects: "Видалити проєкти",
       deleteProjectsTitle: "Видалити проєкти",
       deleteProjectsDescription:
-        "Видалити проєкти (кількість: {count})? Їхні чати буде видалено назавжди.",
+        "Проєкти ({count}) і всі їхні чати буде видалено назавжди. Цю дію не можна скасувати.",
       deleteProjectsFilesDescription:
         "Папку робочої області кожного проєкту буде вилучено з диска.",
       countSelected: "Вибрано: {count}",
@@ -1097,7 +1116,7 @@ export const uk = {
       deleteChats: "Видалити чати",
       deleteTitle: "Видалити чати",
       deleteDescription:
-        "Видалити чати (кількість: {count})? Цю дію не можна скасувати.",
+        "Чати ({count}) і їхні повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
       deleteFilesDescription:
         "Власну папку ізольованого середовища кожного чату буде вилучено з диска. Файли, які чати записали всередині проєкту, залишаться в робочій області цього проєкту.",
       deleteFilesLabel: "Видалити файли й папку ізольованого середовища",
@@ -1146,7 +1165,7 @@ export const uk = {
     dialog: {
       deleteChat: {
         title: "Видалити чат",
-        description: "Справді видалити чат «{name}»?",
+        description: "Чат «{name}» і його повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
       },
       deleteRun: {
         title: "Видалити запуск навчання",
@@ -1172,6 +1191,7 @@ export const uk = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Перш ніж додавати інший обліковий запис, установіть пароль власника цієї інсталяції. Ви використовуватимете його для входу, коли в інсталяції буде кілька облікових записів.",
       signsInAs: "Вхід як {username}",
       signsInAsOwner: "Вхід як {alias} або {username}",
       signInName: "Ваше ім’я для входу",
@@ -1203,6 +1223,9 @@ export const uk = {
         "Одна модель у рядку, наприклад unsloth/Qwen3-4B-GGUF, або unsloth/* для всієї організації. Залиште порожнім, щоб дозволити всі моделі.",
       modelAccessSave: "Зберегти",
       modelAccessLimited: "Обмежений доступ до моделей",
+      rename: "Перейменувати",
+      renameTitle: "Перейменувати {username}",
+      renameDescription: "Виберіть ім'я, з яким цей обліковий запис входить у систему. Чати, файли та ключі API залишаються в обліковому записі. Користувача буде виведено з системи, і він знову ввійде з новим ім'ям та поточним паролем.",
       empty: "Інших облікових записів поки що немає",
       setupCode: "Код налаштування",
       setupFor: "Код налаштування для {username}",
@@ -2055,6 +2078,26 @@ export const uk = {
       chatDefaults: "Типові параметри чату",
       autoTitleNewChats: "Автоматичні назви нових чатів",
       autoTitleNewChatsDescription: "Генерувати назву з першого повідомлення.",
+      mlWarmup: {
+        sectionTitle: "Продуктивність під час запуску",
+        description: "Підготуйте вибрані функції для швидшого першого використання. За замовчуванням усі параметри вимкнено. Вони можуть завантажувати спільні залежності та збільшувати використання RAM у стані простою.",
+        restartRequired: "Зміни набудуть чинності після перезапуску Unsloth.",
+        hardwareLabel: "Виявлення обладнання",
+        hardwareDescription: "Виявити GPU та підготувати PyTorch.",
+        textLabel: "Текстові моделі",
+        textDescription: "Підготувати підтримку текстових моделей Transformers.",
+        datasetsLabel: "Підготовка наборів даних",
+        datasetsDescription: "Підготувати Datasets та її залежності для попереднього перегляду й обробки.",
+        mediaLabel: "Моделі зображень і відео",
+        mediaDescription: "Підготувати Diffusers і спільні залежності моделей.",
+        advanced: "Додатково",
+        quantizationLabel: "Попередні перевірки квантування зображень",
+        quantizationDescription: "Перевірити підтримку перед першим завантаженням квантованої моделі зображень. Може ненадовго збільшити використання RAM.",
+        requiredBySelections: "Необхідно для вибраних параметрів.",
+        disabledByEnv: "Вимкнено змінною UNSLOTH_STUDIO_DISABLE_TORCH_WARM у середовищі бекенда.",
+        loadError: "Не вдалося завантажити налаштування попередньої підготовки під час запуску.",
+        saveError: "Не вдалося зберегти налаштування попередньої підготовки під час запуску.",
+      },
       helperLlm: {
         sectionTitle: "Допоміжна LLM",
         preloadOnStartup: "Попередньо кешувати допоміжну LLM під час запуску",
@@ -2121,6 +2164,7 @@ export const uk = {
         saveError: "Не вдалося зберегти налаштування автоперемикання моделей.",
         idleError:
           "Введіть 0, щоб модель залишалася завантаженою, або щонайменше 60 секунд.",
+        idleUnsaved: "Ще не збережено.",
         keepKv: "Зберігати контекст чату між вивантаженнями",
         keepKvDescription:
           "Зберігати KV-кеш перед вивантаженням через простій або перед тим, як модель зображень чи відео займе GPU, щоб відновлені чати не перечитували історію. До 10 GB на диску.",
@@ -2190,6 +2234,14 @@ export const uk = {
           off: "Виконує кожен виклик інструмента без запиту. Код Python і термінала однаково виконується в пісочниці, яка обмежує, до яких файлів на вашому комп’ютері він має доступ. Без робочої пісочниці ОС ризиковані виклики спершу запитують дозвіл.",
           full: "Виконує кожен виклик інструмента без запиту та вимикає пісочницю коду, тож код Python і термінала може читати й змінювати будь-який файл, доступний вашому обліковому запису.",
         },
+      },
+      display: {
+        title: "Відображення",
+        timeFormat: "Формат часу",
+        timeFormatDescription: "Показувати час у 12- або 24-годинному форматі.",
+        timeFormatSystem: "Як у системі",
+        timeFormat12: "12-годинний",
+        timeFormat24: "24-годинний",
       },
       notifications: {
         sectionTitle: "Сповіщення",
@@ -2274,6 +2326,12 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
+        speedLimitUsesHttps: "Поки встановлено обмеження швидкості, завантаження використовують HTTPS. Файли понад 50 ГБ і далі завантажуються через Xet без обмеження.",
       },
       uploads: {
         sectionTitle: "Вивантаження",
@@ -2380,10 +2438,14 @@ export const uk = {
         label: "Тип інсталяції",
         description:
           "Лише чат (GGUF). Повна інсталяція додає навчання, експорт, відео, моделі safetensors і додаткові функції генерування зображень.",
+        descriptionCpu:
+          "Лише чат (GGUF). Підтримуваний GPU не знайдено, тому повна інсталяція додає навчання на CPU.",
         action: "Перейти на повну інсталяцію",
         confirmTitle: "Перейти на повну інсталяцію?",
         confirmDescription:
           "Ця інсталяція «Лише чат» запускає моделі GGUF. Повна інсталяція додає PyTorch для GPU цього комп’ютера, що вмикає навчання, експорт, відео, моделі safetensors і додаткові функції генерування зображень. Буде завантажено кілька гігабайтів (потрібно щонайменше 5 GB місця на диску), а сервер перезапуститься. Чати, моделі й налаштування зберігаються. Це може тривати кілька хвилин.",
+        confirmDescriptionCpu:
+          "Ця інсталяція «Лише чат» запускає моделі GGUF. На цьому комп’ютері не знайдено підтримуваного GPU, тому повна інсталяція додає PyTorch для CPU, що вмикає навчання на CPU. Навчання на CPU набагато повільніше, ніж на GPU. Потрібно щонайменше 5 GB місця на диску, а сервер перезапуститься. Чати, моделі й налаштування збережуться. Це може тривати кілька хвилин.",
         confirmAction: "Оновити",
         keywords:
           "повна інсталяція оновлення тип інсталяції лише чат навчання донавчання експорт відео генерування зображень full install upgrade chat only gguf training train fine-tune pytorch torch export video image generation safetensors",
@@ -2428,6 +2490,13 @@ export const uk = {
       avatarShapeRounded: "Заокруглена",
       greetingSloth: "Привітання",
       greetingSlothDescription: "Показувати привітання в нових чатах.",
+      greetingDefault: "За замовчуванням",
+      greetingCustom: "Власне",
+      greetingImage: "Зображення",
+      greetingText: "Текст привітання",
+      greetingTextDescription: "Залиште порожнім, щоб використовувати вбудовані привітання.",
+      greetingFileError: "Виберіть PNG, JPEG, WebP або GIF розміром до 10 МБ.",
+      greetingImageError: "Не вдалося використати це зображення. Спробуйте менше.",
       chooseSloth: "Або виберіть лінивця",
       noPicture: "Немає зображення профілю",
       noneLabel: "Немає",
@@ -2551,15 +2620,10 @@ export const uk = {
         description:
           "Кольори, що використовуються в Unsloth у світлому й темному режимах.",
         standard: "Стандартна",
-        classic: "Класична",
-        minimal: "Мінімалістична",
         moreThemes: "Інші теми",
-        halloween: "Гелловін",
       },
-      trickOrTreat: {
-        label: "Солодощі або капость",
-        description:
-          "Теми до Гелловіну та моторошні привітання до 1 листопада.",
+      composer: {
+        title: "Поле введення",
       },
       code: {
         title: "Код",
@@ -2581,7 +2645,7 @@ export const uk = {
         chatWidth: {
           label: "Ширина чату",
           description: "Ширина повідомлень і поля введення.",
-          standard: "Стандартна",
+          standard: "За замовчуванням",
           wide: "Широка",
           full: "На всю ширину",
         },
@@ -2659,6 +2723,10 @@ export const uk = {
         },
         contrast: {
           label: "Контраст",
+        },
+        elementOutline: {
+          label: "Контур елементів",
+          description: "Насиченість меж кнопок, полів, карток і меню.",
         },
         reduceMotion: {
           label: "Зменшити рух",
@@ -3208,6 +3276,8 @@ export const uk = {
         "Сповіщення заблоковано. Дозвольте їх для Unsloth у налаштуваннях браузера або системи, а потім повторіть спробу.",
       replyNotificationKeywords:
         "сповіщення сповістити оповіщення готово завершено виконано відповідь фон згорнуто робочий стіл звук notification",
+      showLinkPreviews: "Попередній перегляд посилань",
+      showLinkPreviewsDescription: "Показувати попередній перегляд під час наведення на посилання на джерела.",
       showResponseModel: "Модель відповіді",
       showResponseModelDescription:
         "Показувати відомості про модель у відповідях асистента.",
@@ -3224,9 +3294,10 @@ export const uk = {
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
-      composerAtBottom: "Поле введення внизу",
-      composerAtBottomDescription:
-        "Починати нові чати з полем введення внизу сторінки, а не посередині.",
+      turnNavigation: "Навігація ходами",
+      turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
+      composerPosition: "Розташування поля введення",
+      composerPositionDescription: "Де розташоване поле введення в новому чаті: від верху сторінки до самого низу.",
       projectAttachments: "Спільні файли в проєкті",
       projectAttachmentsDescription:
         "Робити нові вкладення чату доступними для всіх чатів проєкту.",
@@ -3513,10 +3584,10 @@ export const uk = {
         moveFailed: "Не вдалося перемістити чати",
         deleteChatsTitle: "Видалити чати ({count})",
         deleteChatsWarning:
-          "Видалити вибрані чати ({count})? Цю дію неможливо скасувати.",
+          "Чати ({count}) і їхні повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
         deleteArchivedTitle: "Видалити архівні чати ({count})",
         deleteArchivedWarning:
-          "Видалити вибрані архівні чати ({count})? Цю дію неможливо скасувати.",
+          "Архівні чати ({count}) і їхні повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
         deleting: "Видалення...",
       },
       title: "Дані",
@@ -3744,6 +3815,9 @@ export const uk = {
         docsLabel: "Відкрити документацію API рішень",
         description:
           "Відповідайте на запитання «так/ні», з кількома варіантами та з оцінкою щодо тексту за допомогою моделі на цьому комп’ютері або моделі рішень із розділу «Підключення». Працює з TypeSafe SDK.",
+        codeTitle: "Виклик із коду",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Інші клієнти MCP підключаються сюди з тим самим токеном.",
         enable: "Обслуговувати запити",
         enableDescription:
           "Обслуговує /v1/systemone. Увімкнення завантажує модель.",
@@ -3896,8 +3970,6 @@ export const uk = {
         repoCheckoutFallback:
           "Якщо у вас досі є checkout репозиторію, запустіть із нього локальний інсталятор:",
         restartAfterUpdate: "Після оновлення перезапустіть Unsloth.",
-        desktopManaged:
-          "Застосунок для комп’ютера автоматично перевіряє наявність нових версій. Ви також можете будь-коли перевірити або оновити його тут.",
         desktopReady: "Оновлення застосунку для комп’ютера",
         desktopReadyDescription:
           "Перевірте, чи доступна новіша версія застосунку для комп’ютера.",
@@ -3907,7 +3979,7 @@ export const uk = {
         desktopAvailableDescription:
           "Оновіть зараз, і застосунок для комп’ютера перезапуститься після завершення.",
         desktopExternalServer:
-          "Застосунок під’єднався до вже запущеного сервера Unsloth і не може його оновити. Зупиніть цей сервер, потім закрийте й знову відкрийте застосунок для комп’ютера, щоб оновити його.",
+          "Під’єднано до сервера Unsloth на порту {port}, який цей застосунок не запускав, наприклад `unsloth studio` у терміналі. Зупиніть його там, де його було запущено, потім закрийте й знову відкрийте застосунок, щоб оновити його.",
         desktopManualInstall:
           "Відкрийте сторінку випуску, щоб інсталювати найновіший пакет для Linux.",
         desktopCheckFailed: "Не вдалося перевірити наявність оновлень",
@@ -3940,6 +4012,8 @@ export const uk = {
   },
   studio: {
     routeTitle: "Навчання",
+    cpuTrainingNotice:
+      "GPU не знайдено, тому навчання виконується на CPU. Воно набагато повільніше, ніж на GPU, і підтримує лише текстові моделі (LoRA або повне донавчання).",
     wizard: {
       modelTitle: "Модель",
       modelDescription: "Виберіть модель і метод навчання",
@@ -4228,8 +4302,6 @@ export const uk = {
             "Схоже, цей набір даних містить зображення, які не можна передавати потоком.",
           audioDataset:
             "Схоже, цей набір даних містить аудіо, яке не можна передавати потоком.",
-          appleSilicon:
-            "Потокове передавання ще не підтримується на Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "лише відповіді асистента",
@@ -5098,9 +5170,9 @@ export const uk = {
       dialog: {
         renameChat: "Перейменувати чат",
         deleteChatDescription:
-          "Цей чат буде остаточно видалено. Цю дію неможливо скасувати.",
+          "Чат і його повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
         deleteProjectDescription:
-          "Проєкт і його чати ({count}) буде остаточно видалено. Цю дію неможливо скасувати.",
+          "Проєкт і його чати ({count}) буде видалено назавжди. Цю дію не можна скасувати.",
         deleteFilesMany:
           "Також видалити файли та папки ізольованого середовища, створені цими чатами.",
         deleteProjectFilesLabel: "Видалити папку робочої області проєкту",
@@ -5495,6 +5567,8 @@ export const uk = {
     removeLevel: "Вилучити рівень {n}",
     addLevel: "Додати рівень",
     jsonHelp: "Тіло запиту. «Виконати» надсилає його без змін.",
+    copyBody: "Копіювати тіло",
+    copyCurl: "Копіювати як cURL",
     examples: "Приклади",
     presetToolApproval: "Схвалювати виклики інструментів агентом",
     presetPromptInjection: "Виявляти ін’єкції в запити",
@@ -5598,7 +5672,7 @@ export const uk = {
     chatName: "Назва чату",
     deleteChat: "Видалити чат",
     deleteChatDescription:
-      "Справді видалити «{name}»? Його повідомлення буде остаточно видалено.",
+      "Чат «{name}» і його повідомлення буде видалено назавжди. Цю дію не можна скасувати.",
     importChats: "Імпортувати чати",
     importDestination: "Виберіть, куди імпортувати «{name}»:",
     selectDestination: "Виберіть розташування",
@@ -5606,7 +5680,7 @@ export const uk = {
     import: "Імпортувати",
     deleteProject: "Видалити проєкт",
     deleteProjectDescription:
-      "Справді видалити «{name}»? Його чати буде остаточно видалено.",
+      "Проєкт «{name}» і всі його чати буде видалено назавжди. Цю дію не можна скасувати.",
     deleteProjectFiles: "Папку робочої області проєкту буде видалено з диска.",
     deleteAll: "Видалити все",
     projectFallback: "проєкт",
@@ -5872,7 +5946,7 @@ export const uk = {
     skippedVersion: "Наразі пропущено: {component} {version}",
     skippedUpdate: "Оновлення {component} наразі пропущено",
     skippedUpdates: "Оновлення {components} наразі пропущено",
-    vulkanFaster: "Vulkan на >10% швидший за ROCM. Перезапуск не потрібен",
+    vulkanFaster: "Швидше більш ніж на 10%",
     noRestart: "Перезапуск не потрібен",
     downloadSize: "Обсяг завантаження: {size}",
     backendChange: "Бекенд: {change}",
@@ -5881,8 +5955,8 @@ export const uk = {
     installingPhase: "Інсталяція {component} ({current} із {total})...",
     installingCount: "Інсталяція оновлень: {count}...",
     bundleTitle: "Оновлень середовища виконання: {count}",
-    newBackend: "Новий бекенд {component}",
-    newUpdate: "Нове оновлення {component}",
+    newBackend: "Новий бекенд середовища виконання",
+    newUpdate: "Нове оновлення середовища виконання",
     hideUpdate:
       "Приховати оновлення {component} до повторного відкриття Unsloth",
     hideUpdates:
@@ -5892,5 +5966,61 @@ export const uk = {
     later: "Пізніше",
     update: "Оновити",
     undo: "Скасувати",
+  },
+  generationStats: {
+    working: "Виконання...",
+    processingPrompt: "Обробка запиту {percent}%",
+    compactingContext: "Стиснення контексту...",
+    timeLeft: "залишилось {eta}",
+    tokensOne: "токени: {count}",
+    tokens: "токени: {count}",
+    tokensOf: "токени: {done} / {total}",
+    draftAccepted: "чернетка: прийнято {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Час генерування повідомлення",
+      firstToken: "Перший токен",
+      speedInStep: "Швидкість (у кроці)",
+      effective: "Ефективна",
+      output: "Вивід",
+      denoising: "Знешумлення",
+      stepsOne: "кроки: {count}",
+      steps: "кроки: {count}",
+      blocksOne: "блоки: {count}",
+      blocks: "блоки: {count}",
+      canvas: "Полотно",
+      generation: "Генерування",
+      answerTokens: "Токени відповіді",
+      prompt: "Запит",
+      total: "Усього",
+      chunks: "Фрагменти",
+      promptEval: "Обробка запиту",
+      promptSpeed: "Швидкість запиту",
+      speed: "Швидкість",
+      tokens: "Токени",
+      draftAccepted: "Прийнято з чернетки",
+      denoisingSteps: "Кроки знешумлення",
+      blocksLabel: "Блоки",
+      cacheHits: "Влучання в кеш",
+      cacheWrites: "Записи в кеш",
+      stopReason: "Причина зупинки",
+      stoppedByYou: "Зупинено вами",
+      endOfTurn: "Кінець відповіді",
+      lengthLimit: "Ліміт довжини",
+      toolCall: "Виклик інструмента",
+      contentFilter: "Фільтр вмісту",
+    },
+    placement: {
+      title: "Розміщення ваг",
+      allOnCpu: "Усі шари ({total}) на CPU",
+      split: "Шари: {gpu} з {total} на GPU, {cpu} на CPU",
+      allOnGpu: "Усі шари ({total}) на GPU",
+      expertCache: "Усі шари ({total}) на GPU, усі експерти в RAM (кеш експертів {amount} на GPU)",
+      expertSpillOne: "Усі шари ({total}) на GPU, ваги експертів {count} шару в RAM",
+      expertSpill: "Усі шари ({total}) на GPU, ваги експертів у RAM, шарів: {count}",
+      inUnifiedMemory: "{amount} в уніфікованій пам’яті",
+      inSharedMemory: "{amount} у спільній пам’яті",
+      inVram: "{amount} у VRAM",
+      inRam: "{amount} у RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

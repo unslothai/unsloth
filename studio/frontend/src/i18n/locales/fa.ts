@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fa = {
+  turns: {
+    label: "نوبت {number}",
+    bookmarkedLabel: "نوبت {number}، نشانک‌شده",
+    bookmark: "نشانک‌گذاری نوبت",
+    removeBookmark: "حذف نشانک",
+    navigator: "نوبت‌ها",
+  },
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
@@ -31,6 +38,7 @@ export const fa = {
     halftone: "نیم‌سایه",
     scanlines: "خطوط اسکن",
     visibility: "میزان نمایش",
+    conversationVisibility: "میزان نمایش در گفتگوها",
     blur: "تاری تصویر",
     position: "موقعیت",
     horizontal: "موقعیت افقی",
@@ -40,8 +48,8 @@ export const fa = {
     scopeChats: "گفتگوها",
     scopeAll: "همهٔ صفحه‌ها",
     positionValue: "افقی {x}٪، عمودی {y}٪",
-    newChat: "گفتگوی جدید",
-    conversation: "گفتگو",
+    newChat: "پیش‌نمایش گفتگوی جدید",
+    conversation: "پیش‌نمایش گفتگو",
     prompt: "می‌خواهید چه چیزی را بررسی کنید؟",
     response: "متن گفتگو روی پس‌زمینه خوانا می‌ماند.",
     storageError: "ذخیرهٔ پس‌زمینه ممکن نشد. فضای ذخیره‌سازی مرورگر را بررسی کنید.",
@@ -49,6 +57,26 @@ export const fa = {
     dimensionsError: "تصویری کوچک‌تر از 40 مگاپیکسل انتخاب کنید.",
     decodeError: "رمزگشایی تصویر ممکن نشد. فایل دیگری را امتحان کنید.",
     effectError: "رندر جلوه ممکن نشد. هیچ‌کدام یا تصویر دیگری را انتخاب کنید.",
+    material: "شیشه",
+    materialSolid: "خاموش",
+    materialTransparent: "شفاف",
+    materialFrosted: "مات",
+    materialBlurred: "محو",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "شیشهٔ سیستمی macOS",
+    materialMacosNote: "از مادهٔ نیمه‌شفاف پنجرهٔ macOS استفاده می‌کند، بنابراین دسکتاپ شما از پشت آن دیده می‌شود.",
+    materialNativeFailed: "این نسخه از Unsloth Desktop نمی‌تواند از مادهٔ macOS استفاده کند. برای روشن کردن آن برنامه را به‌روزرسانی کنید.",
+    glassTheme: "پوسته شیشه‌ای",
+    materialStyle: "سبک",
+    materialMenus: "منوهای شیشه‌ای",
+    materialMenusDescription: "منوهای کشویی، منوها و انتخابگرها هم از شیشه استفاده می‌کنند.",
+    materialStrength: "شدت شیشه",
+    lens: "عدسی شیشه",
+    lensDescription: "تصویر زیر کادر نوشتن را مانند شیشه واقعی خم می‌کند.",
+    lensOff: "خاموش",
+    lensMagnify: "بزرگ‌نمایی",
+    lensShrink: "کوچک‌نمایی",
   },
   linkMenu: {
     openInBrowser: "باز کردن در مرورگر Unsloth",
@@ -178,12 +206,16 @@ export const fa = {
         history: "در حال خواندن سابقهٔ مرور شما",
         move: "در حال حرکت دادن ماوس",
         drag: "در حال کشیدن",
+        tabs: "در حال بررسی زبانه‌ها",
+        readFile: "در حال خواندن فایل",
+        editFile: "در حال ویرایش فایل",
       },
     },
     title: "مرورگر",
     tabs: "زبانه‌های مرورگر",
     newTab: "زبانهٔ جدید",
     newTabFullView: "زبانهٔ جدید در نمای کامل",
+    newTabFloating: "زبانه جدید در پنجره شناور",
     closeTab: "بستن زبانه",
     close: "بستن مرورگر",
     show: "نمایش مرورگر",
@@ -331,6 +363,8 @@ export const fa = {
     askBeforeDownloadingSetting: "پرسیدن پیش از دانلود",
     askBeforeDownloadingSettingDescription:
       "تأیید فایل‌های وب‌سایت‌ها پیش از ذخیره شدن.",
+    askBeforeProgramDownloadsSetting: "پرسیدن پیش از دانلود برنامه‌ها",
+    askBeforeProgramDownloadsSettingDescription: "تأیید فایل‌هایی که می‌توانند برنامه اجرا کنند، مانند .exe یا .dmg، حتی وقتی دانلودهای دیگر نمی‌پرسند.",
     downloadSitesSetting: "مجوزهای دانلود سایت‌ها",
     downloadSitesSettingDescription:
       "سایت‌هایی که انتخاب کرده‌اید دانلود از آن‌ها همیشه مجاز یا مسدود باشد.",
@@ -339,6 +373,7 @@ export const fa = {
     downloadSitesFor: "دانلودها از {host}",
     downloadSitesRemove: "فراموش کردن {host}",
     downloadSiteAllow: "همیشه اجازه بده",
+    downloadSiteAllowAll: "اجازه به برنامه‌ها هم",
     downloadSiteBlock: "همیشه مسدود کن",
     downloadPrompt: {
       title: "این فایل دانلود شود؟",
@@ -346,6 +381,9 @@ export const fa = {
       dangerous:
         "فایل‌هایی از این نوع می‌توانند برنامه‌هایی را روی رایانهٔ شما اجرا کنند. فقط در صورتی دانلود کنید که به {host} اعتماد دارید.",
       remember: "به خاطر سپردن برای دفعهٔ بعد",
+      once: "دفعهٔ بعد بپرس",
+      site: "همیشه برای {host}",
+      all: "همیشه دانلود کن، از همهٔ سایت‌ها",
       cancel: "لغو",
       download: "دانلود",
       blocked: "یک دانلود از {host} مسدود شد.",
@@ -394,6 +432,12 @@ export const fa = {
       openChat: "باز کردن در نمای کامل",
       moveLeft: "انتقال به قاب چپ",
       moveRight: "انتقال به قاب راست",
+    },
+    floating: {
+      enter: "پنجره شناور",
+      dock: "چسباندن به کنار",
+      close: "بستن پنجره شناور",
+      handle: "جابه‌جایی پنجره. کلیدهای جهت آن را جابه‌جا می‌کنند و Shift همراه کلیدهای جهت اندازه‌اش را تغییر می‌دهد.",
     },
     annotate: {
       countOne: "1 حاشیه‌نویسی",
@@ -705,6 +749,8 @@ export const fa = {
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
       "کد، Markdown و پیوندها به‌صورت متن خام نگه داشته شوند. برای نمایش پیش‌نمایش قالب‌بندی‌شده، خاموش کنید.",
+    richPaste: "چسباندن متن قالب‌دار",
+    richPasteDescription: "پیوندها، جدول‌ها و قالب‌بندی را به‌صورت Markdown می‌چسباند. {shortcut} متن ساده می‌چسباند. ویرایشگر کامل متن غنی به‌زودی.",
     showContext: "میزان استفاده از پنجرهٔ زمینه",
     sendShortcut: "میان‌بر ارسال",
     sendMultiline: "{mod} + Enter برای پرامپت‌های چندخطی",
@@ -819,37 +865,6 @@ export const fa = {
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
   },
-  halloween: {
-    navLabel: "حقه یا خوراکی…",
-    title: "حقه یا خوراکی؟!",
-    description:
-      "چند ترفند ترسناک برای Unsloth آماده کرده‌ایم که تا پایان ماه اکتبر اینجاست.",
-    chooseTheme: "یک پوستهٔ ترسناک انتخاب کنید",
-    spookyGreetings: "خوشامدهای ترسناک",
-    spookyGreetingsDescription:
-      "تنبل گفتگوهای جدید را با یک ترس کوچک خوشامد می‌گوید.",
-    decorations: "عنکبوت‌ها و خفاش‌ها",
-    decorationsDescription: "تار عنکبوت، به‌علاوهٔ گاه‌گاهی یک عنکبوت یا خفاش.",
-    surprise: "حقه یا خوراکی!",
-    surpriseDescription: "بگذارید تنبل برایتان یک پوسته انتخاب کند.",
-    themesTitle: "پوسته‌های ترسناک",
-    back: "بازگشت",
-    footer: "Unsloth در نیمه‌شب 1 نوامبر به حالت عادی برمی‌گردد.",
-    removeNow: "حذف همین حالا",
-    hideFromSidebar: "پنهان کردن از نوار کناری",
-    greeting: {
-      pumpkins: "کدوها تراشیده شده‌اند. قدم بعدی چیست؟",
-      brewing: "بیایید معجون را هم بزنیم",
-      trickOrTreat: "حقه یا خوراکی؟",
-      manor: "به عمارت خوش آمدید",
-      manorName: "به عمارت خوش آمدید، {name}",
-      happyHalloween: "هالووین مبارک",
-      happyHalloweenName: "هالووین مبارک، {name}",
-      spirits: "ارواح گوش می‌دهند…",
-      mysteries: "امشب چه رازهایی را کشف کنیم؟",
-      conjure: "چه چیزی برایتان احضار کنم؟",
-    },
-  },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
     goodToSeeYouName: "از دیدنتان خوشحالیم، {name}",
@@ -874,6 +889,8 @@ export const fa = {
     unifiedTightFit: "جای تنگ",
     unifiedTightFitHint:
       "ممکن است با زمینهٔ کوتاه‌تر بارگذاری شود یا روی این Mac کندتر اجرا شود.",
+    residentToRun: "برای اجرا",
+    residentToRunHint: "حافظه GPU که بررسی بارگذاری هنگام اجرا لازم دارد",
     onDevice: "روی دستگاه",
     huggingFace: "Hugging Face",
     retry: "تلاش دوباره",
@@ -1074,7 +1091,7 @@ export const fa = {
       deleteProjects: "حذف پروژه‌ها",
       deleteProjectsTitle: "حذف پروژه‌ها",
       deleteProjectsDescription:
-        "{count} پروژه حذف شود؟ گفتگوهای آن‌ها برای همیشه حذف می‌شوند.",
+        "{count} پروژه و همه گفتگوهای آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteProjectsFilesDescription:
         "پوشهٔ فضای کار هر پروژه از دیسک حذف می‌شود.",
       countSelected: "{count} مورد انتخاب شده",
@@ -1085,7 +1102,7 @@ export const fa = {
       markRead: "علامت‌گذاری به‌عنوان خوانده‌شده",
       deleteChats: "حذف گفتگوها",
       deleteTitle: "حذف گفتگوها",
-      deleteDescription: "{count} گفتگو حذف شود؟ این کار قابل بازگشت نیست.",
+      deleteDescription: "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteFilesDescription:
         "پوشهٔ سندباکس اختصاصی هر گفتگو از دیسک حذف می‌شود. فایل‌هایی که گفتگوها درون یک پروژه نوشته‌اند در فضای کار همان پروژه باقی می‌مانند.",
       deleteFilesLabel: "حذف فایل‌ها و پوشهٔ سندباکس",
@@ -1134,7 +1151,7 @@ export const fa = {
     dialog: {
       deleteChat: {
         title: "حذف گفتگو",
-        description: "آیا مطمئن هستید که می‌خواهید گفتگوی «{name}» را حذف کنید؟",
+        description: "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       },
       deleteRun: {
         title: "حذف اجرای آموزش",
@@ -1159,6 +1176,7 @@ export const fa = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "پیش از افزودن حساب دیگر، گذرواژهٔ مالک این نصب را تعیین کنید. وقتی این نصب چند حساب داشته باشد، برای ورود از این گذرواژه استفاده خواهید کرد.",
       signsInAs: "ورود با نام {username}",
       signsInAsOwner: "ورود با نام {alias} یا {username}",
       signInName: "نام ورود شما",
@@ -1190,6 +1208,9 @@ export const fa = {
         "در هر خط یک مدل، برای مثال unsloth/Qwen3-4B-GGUF، یا unsloth/* برای یک سازمان کامل. برای مجاز کردن همهٔ مدل‌ها، خالی بگذارید.",
       modelAccessSave: "ذخیره",
       modelAccessLimited: "دسترسی محدود به مدل",
+      rename: "تغییر نام",
+      renameTitle: "تغییر نام {username}",
+      renameDescription: "نامی را که این حساب با آن وارد می‌شود انتخاب کنید. گفتگوها، فایل‌ها و کلیدهای API در همین حساب می‌مانند. کاربر از حساب خارج می‌شود و با نام جدید و گذرواژهٔ فعلی دوباره وارد می‌شود.",
       empty: "هنوز حساب دیگری وجود ندارد",
       setupCode: "کد راه‌اندازی",
       setupFor: "کد راه‌اندازی برای {username}",
@@ -2033,6 +2054,26 @@ export const fa = {
       chatDefaults: "پیش‌فرض‌های گفتگو",
       autoTitleNewChats: "عنوان‌گذاری خودکار گفتگوهای جدید",
       autoTitleNewChatsDescription: "از اولین پیام یک عنوان تولید می‌شود.",
+      mlWarmup: {
+        sectionTitle: "کارایی هنگام راه‌اندازی",
+        description: "قابلیت‌های انتخاب‌شده را برای استفادهٔ اولیهٔ سریع‌تر آماده کنید. همهٔ گزینه‌ها به‌طور پیش‌فرض خاموش هستند. گزینه‌ها ممکن است وابستگی‌های مشترک را بارگذاری کنند و در حالت بیکار RAM بیشتری مصرف کنند.",
+        restartRequired: "تغییرات پس از راه‌اندازی مجدد Unsloth اعمال می‌شوند.",
+        hardwareLabel: "شناسایی سخت‌افزار",
+        hardwareDescription: "GPUها را شناسایی و PyTorch را آماده کنید.",
+        textLabel: "مدل‌های متنی",
+        textDescription: "پشتیبانی از مدل‌های متنی در Transformers را آماده کنید.",
+        datasetsLabel: "آماده‌سازی مجموعه‌داده‌ها",
+        datasetsDescription: "Datasets و وابستگی‌های آن را برای پیش‌نمایش و پردازش آماده کنید.",
+        mediaLabel: "مدل‌های تصویر و ویدیو",
+        mediaDescription: "Diffusers و وابستگی‌های مشترک مدل‌ها را آماده کنید.",
+        advanced: "پیشرفته",
+        quantizationLabel: "بررسی‌های اولیهٔ کوانتیزه‌سازی تصویر",
+        quantizationDescription: "پیش از نخستین بارگذاری مدل تصویر کوانتیزه‌شده، پشتیبانی را بررسی کنید. ممکن است مصرف RAM را برای مدت کوتاهی افزایش دهد.",
+        requiredBySelections: "برای گزینه‌های انتخاب‌شدهٔ شما ضروری است.",
+        disabledByEnv: "با UNSLOTH_STUDIO_DISABLE_TORCH_WARM در محیط بک‌اند غیرفعال شده است.",
+        loadError: "بارگذاری تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+        saveError: "ذخیرهٔ تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+      },
       helperLlm: {
         sectionTitle: "LLM کمکی",
         preloadOnStartup: "پیش‌دانلود LLM کمکی هنگام راه‌اندازی",
@@ -2095,6 +2136,7 @@ export const fa = {
         loadError: "بارگذاری تنظیمات تعویض خودکار مدل ناموفق بود.",
         saveError: "ذخیرهٔ تنظیمات تعویض خودکار مدل ناموفق بود.",
         idleError: "برای بارگذاری‌شده ماندن مدل 0 یا دست‌کم 60 ثانیه وارد کنید.",
+        idleUnsaved: "هنوز ذخیره نشده است.",
         keepKv: "حفظ زمینهٔ گفتگو در میان تخلیه‌ها",
         keepKvDescription:
           "کش KV پیش از تخلیه در حالت بیکاری، یا پیش از آنکه مدل تصویر یا ویدیو GPU را بگیرد، ذخیره می‌شود تا گفتگوهای ازسرگرفته‌شده بازخوانی تاریخچه را رد کنند. حداکثر 10 GB روی دیسک.",
@@ -2160,6 +2202,14 @@ export const fa = {
           off: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند. کد Python و ترمینال همچنان در سندباکس اجرا می‌شود که محدود می‌کند به کدام فایل‌های رایانهٔ شما دسترسی داشته باشند. بدون سندباکس سیستم‌عامل فعال، فراخوانی‌های پرخطر ابتدا اجازه می‌گیرند.",
           full: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند و سندباکس کد را خاموش می‌کند، بنابراین کد Python و ترمینال می‌تواند هر فایلی را که حساب شما به آن دسترسی دارد بخواند و تغییر دهد.",
         },
+      },
+      display: {
+        title: "نمایش",
+        timeFormat: "قالب زمان",
+        timeFormatDescription: "نمایش زمان به صورت ۱۲ ساعته یا ۲۴ ساعته.",
+        timeFormatSystem: "پیش‌فرض سیستم",
+        timeFormat12: "۱۲ ساعته",
+        timeFormat24: "۲۴ ساعته",
       },
       notifications: {
         sectionTitle: "اعلان‌ها",
@@ -2242,6 +2292,12 @@ export const fa = {
         autoCurrently:
           "حالت خودکار روی این دستگاه از {transport} استفاده می‌کند.",
         xetMissing: "Xet در دسترس نیست، زیرا hf_xet نصب نشده است.",
+        speedLimit: "محدودیت سرعت دانلود",
+        speedLimitDescription:
+          "بدون محدودیت مگر اینکه عددی تعیین شود. دانلود محدودشده از HTTPS استفاده می‌کند.",
+        speedLimitNoLimit: "بدون محدودیت",
+        speedLimitInvalid: "عددی بر حسب Mbit/s وارد کنید یا فیلد را خالی بگذارید.",
+        speedLimitUsesHttps: "تا زمانی که محدودیت سرعت تنظیم شده باشد، دانلودها از HTTPS استفاده می‌کنند. فایل‌های بزرگ‌تر از ۵۰ گیگابایت همچنان بدون محدودیت از Xet استفاده می‌کنند.",
       },
       uploads: {
         sectionTitle: "آپلودها",
@@ -2346,10 +2402,14 @@ export const fa = {
         label: "نوع نصب",
         description:
           "فقط گفتگو (GGUF). نصب کامل، آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را اضافه می‌کند.",
+        descriptionCpu:
+          "فقط گفتگو (GGUF). هیچ GPU پشتیبانی‌شده‌ای پیدا نشد، بنابراین نصب کامل آموزش روی CPU را اضافه می‌کند.",
         action: "ارتقا به نصب کامل",
         confirmTitle: "به نصب کامل ارتقا داده شود؟",
         confirmDescription:
           "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. نصب کامل، PyTorch را برای GPU این دستگاه اضافه می‌کند که آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را فعال می‌کند. چندین گیگابایت دانلود می‌کند (دست‌کم 5 GB فضای دیسک) و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
+        confirmDescriptionCpu:
+          "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. هیچ GPU پشتیبانی‌شده‌ای روی این دستگاه پیدا نشد، بنابراین نصب کامل PyTorch را برای CPU اضافه می‌کند که آموزش روی CPU را فعال می‌کند. آموزش روی CPU بسیار کندتر از آموزش روی GPU است. دست‌کم 5 GB فضای دیسک لازم دارد و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
         confirmAction: "ارتقا",
         keywords:
           "نصب کامل ارتقا نوع نصب فقط گفتگو افزودن آموزش تنظیم دقیق خروجی ویدیو تولید تصویر full install upgrade chat only gguf training fine-tune pytorch torch export video image generation safetensors",
@@ -2394,6 +2454,13 @@ export const fa = {
       avatarShapeRounded: "گوشه‌گرد",
       greetingSloth: "خوشامدگویی",
       greetingSlothDescription: "نمایش خوشامدگویی در گفتگوهای جدید.",
+      greetingDefault: "پیش‌فرض",
+      greetingCustom: "سفارشی",
+      greetingImage: "تصویر",
+      greetingText: "متن خوشامدگویی",
+      greetingTextDescription: "برای استفاده از خوشامدگویی‌های داخلی، خالی بگذارید.",
+      greetingFileError: "یک تصویر PNG، JPEG، WebP یا GIF کمتر از ۱۰ مگابایت انتخاب کنید.",
+      greetingImageError: "این تصویر قابل استفاده نیست. تصویر کوچک‌تری را امتحان کنید.",
       chooseSloth: "یا یک تنبل انتخاب کنید",
       noPicture: "بدون تصویر نمایه",
       noneLabel: "هیچ",
@@ -2517,14 +2584,10 @@ export const fa = {
         description:
           "رنگ‌هایی که در سراسر Unsloth، در حالت روشن و تیره، استفاده می‌شوند.",
         standard: "استاندارد",
-        classic: "کلاسیک",
-        minimal: "مینیمال",
         moreThemes: "پوسته‌های بیشتر",
-        halloween: "هالووین",
       },
-      trickOrTreat: {
-        label: "حقه یا خوراکی",
-        description: "پوسته‌های هالووین و خوشامدگویی‌های ترسناک، تا 1 نوامبر.",
+      composer: {
+        title: "ویرایشگر پیام",
       },
       code: {
         title: "کد",
@@ -2546,7 +2609,7 @@ export const fa = {
         chatWidth: {
           label: "عرض گفتگو",
           description: "عرض پیام‌ها و کادر نوشتن.",
-          standard: "استاندارد",
+          standard: "پیش‌فرض",
           wide: "عریض",
           full: "تمام عرض",
         },
@@ -2625,6 +2688,10 @@ export const fa = {
         },
         contrast: {
           label: "کنتراست",
+        },
+        elementOutline: {
+          label: "حاشیهٔ عناصر",
+          description: "شدت حاشیهٔ دکمه‌ها، فیلدها، کارت‌ها و منوها.",
         },
         reduceMotion: {
           label: "کاهش حرکت",
@@ -3169,6 +3236,8 @@ export const fa = {
         "اعلان‌ها مسدود هستند. آن‌ها را برای Unsloth در تنظیمات مرورگر یا سیستم مجاز کنید و دوباره تلاش کنید.",
       replyNotificationKeywords:
         "اعلان هشدار تمام پایان کامل آماده پاسخ پس‌زمینه کوچک‌شده دسکتاپ صدا notification",
+      showLinkPreviews: "پیش‌نمایش پیوندها",
+      showLinkPreviewsDescription: "نمایش پیش‌نمایش هنگام قرار گرفتن نشانگر روی پیوندهای منابع.",
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",
@@ -3185,9 +3254,10 @@ export const fa = {
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
-      composerAtBottom: "کادر نوشتن در پایین",
-      composerAtBottomDescription:
-        "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
+      turnNavigation: "پیمایش نوبت‌ها",
+      turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
+      composerPosition: "جای کادر نوشتن",
+      composerPositionDescription: "جای کادر نوشتن هنگام شروع گفتگوی تازه، از بالای صفحه تا پایین آن.",
       projectAttachments: "اشتراک فایل‌ها در سراسر پروژه",
       projectAttachmentsDescription:
         "پیوست‌های جدید گفتگو در دسترس همهٔ گفتگوهای پروژه قرار گیرند.",
@@ -3469,10 +3539,10 @@ export const fa = {
         moveFailed: "انتقال گفتگوها انجام نشد",
         deleteChatsTitle: "حذف گفتگوها ({count})",
         deleteChatsWarning:
-          "گفتگوهای انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteArchivedTitle: "حذف {count} گفتگوی بایگانی‌شده",
         deleteArchivedWarning:
-          "گفتگوهای بایگانی‌شدهٔ انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگوی بایگانی‌شده و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleting: "در حال حذف...",
       },
       title: "داده‌ها",
@@ -3700,6 +3770,9 @@ export const fa = {
         docsLabel: "باز کردن مستندات API تصمیم‌گیری",
         description:
           "با یک مدل روی این دستگاه یا یک مدل تصمیم‌گیری از «اتصال‌ها»، به پرسش‌های بله/خیر، چندگزینه‌ای و امتیازدهی دربارهٔ متن پاسخ دهید. با TypeSafe SDK کار می‌کند.",
+        codeTitle: "فراخوانی از کد",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "سایر کلاینت‌های MCP با همان توکن به اینجا وصل می‌شوند.",
         enable: "پاسخ به درخواست‌ها",
         enableDescription:
           "/v1/systemone را ارائه می‌دهد. روشن کردن آن مدل را دانلود می‌کند.",
@@ -3852,8 +3925,6 @@ export const fa = {
           "اگر هنوز checkout مخزن را دارید، نصب‌کنندهٔ محلی را از همان‌جا اجرا کنید:",
         restartAfterUpdate:
           "پس از به‌روزرسانی، Unsloth را دوباره راه‌اندازی کنید.",
-        desktopManaged:
-          "برنامهٔ دسکتاپ به‌طور خودکار نسخه‌های جدید را بررسی می‌کند. همچنین می‌توانید هر زمان از اینجا بررسی یا به‌روزرسانی کنید.",
         desktopReady: "به‌روزرسانی‌های برنامهٔ دسکتاپ",
         desktopReadyDescription:
           "بررسی کنید که آیا نسخهٔ جدیدتری از برنامهٔ دسکتاپ در دسترس است.",
@@ -3863,7 +3934,7 @@ export const fa = {
         desktopAvailableDescription:
           "اکنون به‌روزرسانی کنید؛ برنامهٔ دسکتاپ پس از پایان کار دوباره راه‌اندازی می‌شود.",
         desktopExternalServer:
-          "برنامه به سرور Unsloth که از قبل در حال اجرا بود متصل شده است و نمی‌تواند آن را به‌روزرسانی کند. آن سرور را متوقف کنید، سپس برای به‌روزرسانی، برنامهٔ دسکتاپ را ببندید و دوباره باز کنید.",
+          "به سرور Unsloth روی پورت {port} متصل است که این برنامه آن را اجرا نکرده است، مانند `unsloth studio` در ترمینال. آن را از همان جایی که اجرا شده متوقف کنید، سپس برای به‌روزرسانی، برنامه را ببندید و دوباره باز کنید.",
         desktopManualInstall:
           "برای نصب آخرین بستهٔ Linux، صفحهٔ انتشار را باز کنید.",
         desktopCheckFailed: "بررسی به‌روزرسانی‌ها ممکن نشد",
@@ -3894,6 +3965,8 @@ export const fa = {
   },
   studio: {
     routeTitle: "آموزش",
+    cpuTrainingNotice:
+      "هیچ GPU پیدا نشد، بنابراین آموزش روی CPU اجرا می‌شود. این کار بسیار کندتر از آموزش روی GPU است و فقط از مدل‌های متنی پشتیبانی می‌کند (LoRA یا تنظیم دقیق کامل).",
     wizard: {
       modelTitle: "مدل",
       modelDescription: "انتخاب مدل و روش آموزش",
@@ -4175,8 +4248,6 @@ export const fa = {
             "به نظر می‌رسد این مجموعه‌داده شامل تصویر است که قابل جریان‌دهی نیست.",
           audioDataset:
             "به نظر می‌رسد این مجموعه‌داده شامل صدا است که قابل جریان‌دهی نیست.",
-          appleSilicon:
-            "جریان‌دهی هنوز روی Apple Silicon (MLX) پشتیبانی نمی‌شود.",
         },
         options: {
           trainOnCompletions: "فقط تکمیل‌های دستیار",
@@ -5031,9 +5102,9 @@ export const fa = {
       dialog: {
         renameChat: "تغییر نام گفتگو",
         deleteChatDescription:
-          "این گفتگو برای همیشه حذف خواهد شد. این کار قابل بازگشت نیست.",
+          "این گفتگو و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteProjectDescription:
-          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف خواهند شد. این کار قابل بازگشت نیست.",
+          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteFilesMany:
           "فایل‌ها و پوشه‌های سندباکسی که این گفتگوها ایجاد کرده‌اند نیز حذف شوند.",
         deleteProjectFilesLabel: "حذف پوشهٔ فضای کار پروژه",
@@ -5421,6 +5492,8 @@ export const fa = {
     removeLevel: "حذف سطح {n}",
     addLevel: "افزودن سطح",
     jsonHelp: "بدنهٔ درخواست. «اجرا» آن را همان‌طور که نوشته شده ارسال می‌کند.",
+    copyBody: "کپی بدنه",
+    copyCurl: "کپی به‌صورت cURL",
     examples: "نمونه‌ها",
     presetToolApproval: "تأیید فراخوانی‌های ابزار عامل",
     presetPromptInjection: "شناسایی تزریق پرامپت",
@@ -5524,7 +5597,7 @@ export const fa = {
     chatName: "نام گفتگو",
     deleteChat: "حذف گفتگو",
     deleteChatDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ پیام‌های آن برای همیشه حذف خواهند شد.",
+      "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     importChats: "وارد کردن گفتگوها",
     importDestination: "محل وارد کردن {name} را انتخاب کنید:",
     selectDestination: "انتخاب مقصد",
@@ -5532,7 +5605,7 @@ export const fa = {
     import: "وارد کردن",
     deleteProject: "حذف پروژه",
     deleteProjectDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ گفتگوهای آن برای همیشه حذف خواهند شد.",
+      "پروژه «{name}» و همه گفتگوهای آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     deleteProjectFiles: "پوشهٔ فضای کار پروژه از دیسک حذف خواهد شد.",
     deleteAll: "حذف همه",
     projectFallback: "پروژه",
@@ -5797,8 +5870,7 @@ export const fa = {
     skippedVersion: "{component} {version} فعلاً رد شد",
     skippedUpdate: "به‌روزرسانی {component} فعلاً رد شد",
     skippedUpdates: "به‌روزرسانی‌های {components} فعلاً رد شدند",
-    vulkanFaster:
-      "Vulkan بیش از 10% سریع‌تر از ROCM است. نیازی به راه‌اندازی دوباره نیست",
+    vulkanFaster: "بیش از ۱۰٪ سریع‌تر",
     noRestart: "نیازی به راه‌اندازی دوباره نیست",
     downloadSize: "دانلود {size}",
     backendChange: "بک‌اند {change}",
@@ -5807,8 +5879,8 @@ export const fa = {
     installingPhase: "در حال نصب {component} ({current} از {total})...",
     installingCount: "در حال نصب {count} به‌روزرسانی...",
     bundleTitle: "{count} به‌روزرسانی محیط اجرا",
-    newBackend: "بک‌اند جدید {component}",
-    newUpdate: "به‌روزرسانی جدید {component}",
+    newBackend: "بک‌اند جدید محیط اجرا",
+    newUpdate: "به‌روزرسانی جدید محیط اجرا",
     hideUpdate: "پنهان کردن به‌روزرسانی {component} تا باز شدن دوبارهٔ Unsloth",
     hideUpdates:
       "پنهان کردن به‌روزرسانی‌های {components} تا باز شدن دوبارهٔ Unsloth",
@@ -5817,5 +5889,61 @@ export const fa = {
     later: "بعداً",
     update: "به‌روزرسانی",
     undo: "واگرد",
+  },
+  generationStats: {
+    working: "در حال انجام...",
+    processingPrompt: "پردازش پرامپت {percent}%",
+    compactingContext: "در حال فشرده‌سازی زمینه...",
+    timeLeft: "{eta} مانده",
+    tokensOne: "{count} توکن",
+    tokens: "{count} توکن",
+    tokensOf: "{done} / {total} توکن",
+    draftAccepted: "پیش‌نویس {accepted}/{drafted} پذیرفته شد ({percent}%)",
+    timing: {
+      trigger: "زمان‌بندی پیام",
+      firstToken: "اولین توکن",
+      speedInStep: "سرعت (درون گام)",
+      effective: "مؤثر",
+      output: "خروجی",
+      denoising: "نویززدایی",
+      stepsOne: "{count} گام",
+      steps: "{count} گام",
+      blocksOne: "{count} بلوک",
+      blocks: "{count} بلوک",
+      canvas: "بوم",
+      generation: "تولید",
+      answerTokens: "توکن‌های پاسخ",
+      prompt: "پرامپت",
+      total: "کل",
+      chunks: "تکه‌ها",
+      promptEval: "ارزیابی پرامپت",
+      promptSpeed: "سرعت پرامپت",
+      speed: "سرعت",
+      tokens: "توکن‌ها",
+      draftAccepted: "پیش‌نویس پذیرفته‌شده",
+      denoisingSteps: "گام‌های نویززدایی",
+      blocksLabel: "بلوک‌ها",
+      cacheHits: "برخورد کش",
+      cacheWrites: "نوشتن در کش",
+      stopReason: "دلیل توقف",
+      stoppedByYou: "توسط شما متوقف شد",
+      endOfTurn: "پایان نوبت",
+      lengthLimit: "محدودیت طول",
+      toolCall: "فراخوانی ابزار",
+      contentFilter: "فیلتر محتوا",
+    },
+    placement: {
+      title: "محل قرارگیری وزن‌ها",
+      allOnCpu: "هر {total} لایه روی CPU",
+      split: "{gpu} از {total} لایه روی GPU، {cpu} روی CPU",
+      allOnGpu: "هر {total} لایه روی GPU",
+      expertCache: "هر {total} لایه روی GPU، همهٔ متخصص‌ها در RAM ({amount} کش متخصص روی GPU)",
+      expertSpillOne: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      expertSpill: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      inUnifiedMemory: "{amount} در حافظهٔ یکپارچه",
+      inSharedMemory: "{amount} در حافظهٔ مشترک",
+      inVram: "{amount} در VRAM",
+      inRam: "{amount} در RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

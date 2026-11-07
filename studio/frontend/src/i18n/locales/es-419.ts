@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es419 = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
@@ -31,6 +38,7 @@ export const es419 = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
     horizontal: "Posición horizontal",
@@ -40,8 +48,8 @@ export const es419 = {
     scopeChats: "Chats",
     scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nuevo chat",
-    conversation: "Conversación",
+    newChat: "Vista previa del chat nuevo",
+    conversation: "Vista previa de la conversación",
     prompt: "¿Qué te gustaría explorar?",
     response: "Tu conversación sigue siendo legible sobre el fondo.",
     storageError: "No se pudo guardar el fondo. Comprueba el almacenamiento del navegador.",
@@ -49,6 +57,26 @@ export const es419 = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Vidrio del sistema macOS",
+    materialMacosNote: "Usa el material de ventana translúcido de macOS, así que se ve tu escritorio a través.",
+    materialNativeFailed: "Esta versión de Unsloth Desktop no puede usar el material de macOS. Actualiza la app para activarlo.",
+    glassTheme: "Tema de vidrio",
+    materialStyle: "Estilo",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
+    lens: "Lente de vidrio",
+    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensOff: "Desactivado",
+    lensMagnify: "Ampliar",
+    lensShrink: "Reducir",
   },
 
   linkMenu: {
@@ -179,12 +207,16 @@ export const es419 = {
         history: "Leyendo tu historial de navegación",
         move: "Moviendo el mouse",
         drag: "Arrastrando",
+        tabs: "Revisando las pestañas",
+        readFile: "Leyendo el archivo",
+        editFile: "Editando el archivo",
       },
     },
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -335,6 +367,8 @@ export const es419 = {
     askBeforeDownloadingSetting: "Preguntar antes de descargar",
     askBeforeDownloadingSettingDescription:
       "Confirma los archivos de sitios web antes de guardarlos.",
+    askBeforeProgramDownloadsSetting: "Preguntar antes de descargar programas",
+    askBeforeProgramDownloadsSettingDescription: "Confirma los archivos que pueden ejecutar programas, como .exe o .dmg, aunque las demás descargas no pregunten.",
     downloadSitesSetting: "Permisos de descarga por sitio",
     downloadSitesSettingDescription:
       "Sitios cuyas descargas elegiste permitir o bloquear siempre.",
@@ -343,6 +377,7 @@ export const es419 = {
     downloadSitesFor: "Descargas de {host}",
     downloadSitesRemove: "Olvidar {host}",
     downloadSiteAllow: "Permitir siempre",
+    downloadSiteAllowAll: "Permitir también programas",
     downloadSiteBlock: "Bloquear siempre",
     downloadPrompt: {
       title: "¿Descargar este archivo?",
@@ -350,6 +385,9 @@ export const es419 = {
       dangerous:
         "Los archivos como este pueden ejecutar programas en tu computadora. Descárgalo solo si confías en {host}.",
       remember: "Recordar para la próxima vez",
+      once: "Preguntar la próxima vez",
+      site: "Siempre para {host}",
+      all: "Descargar siempre, desde cualquier sitio",
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
@@ -398,6 +436,12 @@ export const es419 = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al costado",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -712,6 +756,8 @@ export const es419 = {
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
       "Mantiene el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Pega enlaces, tablas y formato como Markdown. {shortcut} pega texto sin formato. Pronto, un editor de texto enriquecido completo.",
     showContext: "Uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",
@@ -828,37 +874,6 @@ export const es419 = {
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
-  halloween: {
-    navLabel: "Truco o trato…",
-    title: "¡¿Truco o trato?!",
-    description:
-      "Preparamos algunos sustos para Unsloth, disponibles el resto de octubre.",
-    chooseTheme: "Elige un tema terrorífico",
-    spookyGreetings: "Saludos terroríficos",
-    spookyGreetingsDescription:
-      "El perezoso recibe los chats nuevos con un susto.",
-    decorations: "Arañas y murciélagos",
-    decorationsDescription: "Telarañas, y alguna que otra araña o murciélago.",
-    surprise: "¡Truco o trato!",
-    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
-    themesTitle: "Temas terroríficos",
-    back: "Atrás",
-    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
-    removeNow: "Quitar ahora",
-    hideFromSidebar: "Ocultar de la barra lateral",
-    greeting: {
-      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
-      brewing: "¡A preparar la poción!",
-      trickOrTreat: "¿Truco o trato?",
-      manor: "Te damos la bienvenida a la mansión",
-      manorName: "Te damos la bienvenida a la mansión, {name}",
-      happyHalloween: "¡Feliz Halloween!",
-      happyHalloweenName: "¡Feliz Halloween, {name}!",
-      spirits: "Los espíritus están escuchando…",
-      mysteries: "¿Qué misterios descubriremos esta noche?",
-      conjure: "¿Qué puedo conjurar para ti?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -883,6 +898,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1086,7 +1104,7 @@ export const es419 = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -1098,7 +1116,7 @@ export const es419 = {
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
       deleteDescription:
-        "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+        "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de sandbox propia de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta del sandbox",
@@ -1146,7 +1164,7 @@ export const es419 = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -1172,6 +1190,7 @@ export const es419 = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de agregar otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
@@ -1203,6 +1222,9 @@ export const es419 = {
         "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -2062,6 +2084,26 @@ export const es419 = {
       autoTitleNewChats: "Poner título automático a los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título a partir del primer mensaje.",
+      mlWarmup: {
+        sectionTitle: "Rendimiento al iniciar",
+        description: "Prepara las funciones seleccionadas para acelerar su primer uso. Todas están desactivadas de forma predeterminada. Estas opciones pueden cargar dependencias compartidas y aumentar el uso de RAM en reposo.",
+        restartRequired: "Los cambios se aplican después de reiniciar Unsloth.",
+        hardwareLabel: "Detección de hardware",
+        hardwareDescription: "Detectar las GPU y preparar PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar el soporte de Transformers para modelos de texto.",
+        datasetsLabel: "Preparación de conjuntos de datos",
+        datasetsDescription: "Preparar Datasets y sus dependencias para las vistas previas y el procesamiento.",
+        mediaLabel: "Modelos de imagen y video",
+        mediaDescription: "Preparar Diffusers y las dependencias compartidas de los modelos.",
+        advanced: "Avanzado",
+        quantizationLabel: "Verificaciones previas de cuantización de imagen",
+        quantizationDescription: "Verificar la compatibilidad antes de cargar por primera vez un modelo de imagen cuantizado. Puede aumentar brevemente el uso de RAM.",
+        requiredBySelections: "Necesario para las opciones seleccionadas.",
+        disabledByEnv: "Desactivado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM en el entorno del backend.",
+        loadError: "No se pudo cargar la configuración de preparación al iniciar.",
+        saveError: "No se pudo guardar la configuración de preparación al iniciar.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Precargar el LLM auxiliar en caché al iniciar",
@@ -2132,6 +2174,7 @@ export const es419 = {
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError:
           "Ingresa 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se guardó.",
         keepKv: "Conservar el contexto del chat entre descargas de memoria",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad, o antes de que un modelo de imagen o video ocupe la GPU, para que los chats reanudados no tengan que volver a leer el historial. Hasta 10 GB en disco.",
@@ -2201,6 +2244,14 @@ export const es419 = {
           off: "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu computadora puede acceder. Sin un sandbox del sistema que funcione, las llamadas riesgosas preguntan primero.",
           full: "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así que el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
+      },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
       },
       notifications: {
         sectionTitle: "Notificaciones",
@@ -2284,6 +2335,12 @@ export const es419 = {
           "Elige según la computadora y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta computadora.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Ingresa un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2392,10 +2449,14 @@ export const es419 = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa agrega entrenamiento, exportación, video, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionCpu:
+          "Solo chat (GGUF). No se encontró una GPU compatible, así que la instalación completa agrega entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa agrega PyTorch para la GPU de esta computadora, lo que habilita el entrenamiento, la exportación, el video, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
+        confirmDescriptionCpu:
+          "Esta instalación de solo chat ejecuta modelos GGUF. No se encontró una GPU compatible en esta computadora, así que la instalación completa agrega PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan los chats, los modelos y la configuración. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
         keywords:
           "full install upgrade tipo de instalación instalación completa actualizar solo chat chat only gguf entrenamiento entrenar train training fine-tune ajuste fino pytorch torch exportar export video generación de imágenes safetensors",
@@ -2440,6 +2501,13 @@ export const es419 = {
       avatarShapeRounded: "Redondeada",
       greetingSloth: "Saludo",
       greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
+      greetingDefault: "Predeterminado",
+      greetingCustom: "Personalizado",
+      greetingImage: "Imagen",
+      greetingText: "Texto del saludo",
+      greetingTextDescription: "Déjalo vacío para usar los saludos integrados.",
+      greetingFileError: "Elige un PNG, JPEG, WebP o GIF de menos de 10 MB.",
+      greetingImageError: "No se pudo usar esta imagen. Prueba con una más pequeña.",
       chooseSloth: "O elige un perezoso",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
@@ -2563,15 +2631,10 @@ export const es419 = {
         label: "Tema",
         description: "Colores que se usan en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
-        classic: "Clásico",
-        minimal: "Minimalista",
         moreThemes: "Más temas",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Dulce o truco",
-        description:
-          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+      composer: {
+        title: "Editor",
       },
       code: {
         title: "Código",
@@ -2593,7 +2656,7 @@ export const es419 = {
         chatWidth: {
           label: "Ancho del chat",
           description: "Ancho de los mensajes y del cuadro de redacción.",
-          standard: "Estándar",
+          standard: "Predeterminado",
           wide: "Amplio",
           full: "Ancho completo",
         },
@@ -2674,6 +2737,10 @@ export const es419 = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -3228,6 +3295,8 @@ export const es419 = {
         "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
       replyNotificationKeywords:
         "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado escritorio sonido notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Vistas previas de enlaces",
+      showLinkPreviewsDescription: "Mostrar vistas previas al pasar el cursor sobre los enlaces a fuentes.",
       showResponseModel: "Modelo de la respuesta",
       showResponseModelDescription:
         "Muestra los detalles del modelo en las respuestas del asistente.",
@@ -3244,9 +3313,10 @@ export const es419 = {
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription:
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      composerAtBottom: "Cuadro de mensaje abajo",
-      composerAtBottomDescription:
-        "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
+      composerPosition: "Posición del cuadro de mensaje",
+      composerPositionDescription: "Dónde aparece el cuadro de mensaje al iniciar un chat nuevo, desde arriba de la página hasta abajo.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Haz que los nuevos archivos adjuntos del chat estén disponibles para todos los chats del proyecto.",
@@ -3537,10 +3607,10 @@ export const es419 = {
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
         deleteChatsWarning:
-          "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
         deleteArchivedWarning:
-          "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -3772,6 +3842,9 @@ export const es419 = {
         docsLabel: "Abrir la documentación de la API de decisiones",
         description:
           "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en esta computadora o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription:
           "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -3928,8 +4001,6 @@ export const es419 = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde ahí:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o actualizar aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Verifica si hay disponible una versión más reciente de la app de escritorio.",
@@ -3940,7 +4011,7 @@ export const es419 = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en una terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudieron buscar actualizaciones",
@@ -3972,6 +4043,8 @@ export const es419 = {
   },
   studio: {
     routeTitle: "Entrenar",
+    cpuTrainingNotice:
+      "No se encontró ninguna GPU, así que el entrenamiento se ejecuta en la CPU. Es mucho más lento que en una GPU y solo admite modelos de texto (LoRA o ajuste fino completo).",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Selecciona el modelo y el método de entrenamiento",
@@ -4260,8 +4333,6 @@ export const es419 = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          appleSilicon:
-            "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",
@@ -5140,9 +5211,9 @@ export const es419 = {
       dialog: {
         renameChat: "Renombrar chat",
         deleteChatDescription:
-          "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
         deleteProjectDescription:
-          "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+          "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany:
           "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
@@ -5537,6 +5608,8 @@ export const es419 = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Agregar nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5640,7 +5713,7 @@ export const es419 = {
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
     deleteChatDescription:
-      "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+      'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",
@@ -5648,7 +5721,7 @@ export const es419 = {
     import: "Importar",
     deleteProject: "Eliminar proyecto",
     deleteProjectDescription:
-      "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+      'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles:
       "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
@@ -5916,8 +5989,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5926,8 +5998,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:
@@ -5937,5 +6009,61 @@ export const es419 = {
     later: "Más tarde",
     update: "Actualizar",
     undo: "Deshacer",
+  },
+  generationStats: {
+    working: "Procesando...",
+    processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
+    timeLeft: "quedan {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "borrador {accepted}/{drafted} aceptados ({percent}%)",
+    timing: {
+      trigger: "Tiempos del mensaje",
+      firstToken: "Primer token",
+      speedInStep: "Velocidad (por paso)",
+      effective: "Efectiva",
+      output: "Salida",
+      denoising: "Eliminación de ruido",
+      stepsOne: "{count} paso",
+      steps: "{count} pasos",
+      blocksOne: "{count} bloque",
+      blocks: "{count} bloques",
+      canvas: "Lienzo",
+      generation: "Generación",
+      answerTokens: "Tokens de respuesta",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragmentos",
+      promptEval: "Evaluación del prompt",
+      promptSpeed: "Velocidad del prompt",
+      speed: "Velocidad",
+      tokens: "Tokens",
+      draftAccepted: "Borrador aceptado",
+      denoisingSteps: "Pasos de eliminación de ruido",
+      blocksLabel: "Bloques",
+      cacheHits: "Aciertos de caché",
+      cacheWrites: "Escrituras en caché",
+      stopReason: "Motivo de parada",
+      stoppedByYou: "Detenido por ti",
+      endOfTurn: "Fin del turno",
+      lengthLimit: "Límite de longitud",
+      toolCall: "Llamada a herramienta",
+      contentFilter: "Filtro de contenido",
+    },
+    placement: {
+      title: "Ubicación de los pesos",
+      allOnCpu: "Las {total} capas en la CPU",
+      split: "{gpu} de {total} capas en la GPU, {cpu} en la CPU",
+      allOnGpu: "Las {total} capas en la GPU",
+      expertCache: "Las {total} capas en la GPU, todos los expertos en RAM ({amount} de caché de expertos en la GPU)",
+      expertSpillOne: "Las {total} capas en la GPU, pesos de expertos de {count} capa en RAM",
+      expertSpill: "Las {total} capas en la GPU, pesos de expertos de {count} capas en RAM",
+      inUnifiedMemory: "{amount} en memoria unificada",
+      inSharedMemory: "{amount} en memoria compartida",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

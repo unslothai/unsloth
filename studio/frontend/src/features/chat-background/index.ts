@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 export { ChatBackground } from "./mount";
-export { useChatWelcomeShown, useMarkChatWelcome } from "./welcome";
+export {
+  WindowMaterialMount,
+  nativeMaterialAvailable,
+  useMaterialStore,
+} from "./material";
+export { MATERIAL_LABELS } from "./material-labels";
+export { MATERIALS, type WindowMaterial } from "./model";
+export {
+  useChatWelcomeShown,
+  useMarkChatCompare,
+  useMarkChatWelcome,
+} from "./welcome";
 export { resetChatBackground, useBackgroundStore } from "./storage";

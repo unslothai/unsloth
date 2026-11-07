@@ -10,7 +10,7 @@ test("a fence body becomes skippable only once it carries its measured height", 
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   assert.match(
     defer,
-    /data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}/,
+    /data-unsloth-fence-windowed=\{offscreenPlain \|\| lineWindow === null \|\| !measured \? undefined : "true"\}/,
     "a fence that upgrades off screen is first laid out as its plain lines; skipped before its height is written, it collapses, and WebKit, with no scroll anchoring, clamps a following reader's scrollTop and detaches them",
   );
   assert.match(defer, /const NO_WINDOW = \{ window: null, pins: null, measured: false \} as const;\s*const EMPTY_WINDOW = \{ window: EMPTY_LINE_WINDOW, pins: null, measured: false \} as const;/);
@@ -46,12 +46,12 @@ test("the Windows thread gutter follows the native thin bar, which neither brows
   assert.equal(readSrc("features/settings/lib/interface-scale-runtime.ts").includes("--studio-interface-zoom"), false);
 });
 
-test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text", () => {
+test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text unless a chat background shows through it", () => {
   const css = readSrc("index.css");
   assert.match(
     css,
-    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*background-color: var\(--background\);\s*\}\s*\}/,
-    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter",
+    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*\}\s*\/\*[^*]*\*\/\s*:root\.client-windows\[data-low-device-scale\]:not\(\[data-chat-wallpaper-ready\]\) \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*background-color: var\(--background\);\s*\}\s*\}/,
+    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter. A chat background or glass backdrop needs a see-through thread, so it drops the fill",
   );
   const supports = css.lastIndexOf("@supports selector(::-webkit-scrollbar)", css.indexOf("[data-low-device-scale]"));
   assert.ok(supports > css.indexOf(".aui-thread-viewport {\n\t/* Reserve scrollbar space"), "the Chromium-only scrollbar block holds it, so Firefox keeps its own scrolling");
@@ -87,4 +87,27 @@ test("find in page defers rebuilds during scrolling with a maximum wait", () => 
   assert.match(find, /window\.addEventListener\("wheel", noteScroll, \{ capture: true, passive: true \}\);/);
   assert.match(find, /window\.removeEventListener\("wheel", noteScroll, \{ capture: true \}\);/);
   assert.equal(/addEventListener\("scroll", noteScroll/.test(find), false, "autoscroll's own scrolling must not starve a followed stream of rebuilds");
+});
+
+test("an offscreen fence update skipped under a held pointer or selection is retried on release", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  const hook = defer.slice(defer.indexOf("function useOffscreenFenceText("), defer.indexOf("export const FenceBody = memo("));
+  assert.match(
+    hook,
+    /if \(selected \|\| inputPointerHeld\(\)\) \{[^}]*heldLastFrame = true;\s*return;\s*\}/,
+    "releasePointer and selectionchange remeasure only after a held frame, so a skip must mark one or a fence that entered view mid-drag stays plain",
+  );
+  assert.match(defer, /const releasePointer = \(\): void => \{\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/, "touch never sets pointerHeld, so the release must not be gated on it (behaviour: code-fence-offscreen-restore.test.ts)");
+});
+
+test("settled WebKitGTK fences only line-window themselves while code wrapping is off", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(
+    defer,
+    /windowing \|\|= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap\s*&& \(tokens\?\.length \?\? 0\) > WINDOW_CAP_LINES;/,
+    "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader, "
+      + "and a fence under the cap has no line window, so forcing windowing there would only drop the batched highlight path",
+  );
+  assert.match(defer, /const useCodeWrap = \(\): boolean => useSyncExternalStore\(subscribeCodeWrap, codeWrapOn, \(\) => false\);/);
+  assert.match(defer, /attributeFilter: \["data-code-wrap"\]/);
 });

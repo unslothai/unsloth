@@ -2765,6 +2765,101 @@ class TestAnthropicPassthroughStreamAdapter:
         asyncio.run(run())
         assert captured["body"].get("chat_template_kwargs") == expected
 
+    @pytest.mark.parametrize("upstream_error", [False, True])
+    def test_stream_stopped_by_the_server_does_not_look_finished(self, monkeypatch, upstream_error):
+        import routes.inference as inf_mod
+
+        cancel_event = threading.Event()
+
+        async def upstream_lines():
+            chunk = {"choices": [{"delta": {"content": "Once"}}]}
+            yield f"data: {json.dumps(chunk)}\n\n".encode()
+            cancel_event.set()
+            await asyncio.sleep(0.2)
+            if upstream_error:
+                raise httpx.ReadError("closed by cancel")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content = upstream_lines(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(transport = transport, timeout = kwargs.get("timeout", 600))
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        backend = SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+        )
+
+        async def run():
+            response = await _anthropic_passthrough_stream(
+                self._Request(),
+                cancel_event,
+                backend,
+                [{"role": "user", "content": "hi"}],
+                [{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+                0.7,
+                0.95,
+                20,
+                16,
+                "msg_1",
+                "test-model",
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "content_block_delta")[0]["delta"]["text"] == "Once"
+        assert self._payloads(lines, "message_delta") == []
+        assert self._payloads(lines, "message_stop") == []
+
+    @pytest.mark.parametrize("stopped", [False, True])
+    def test_in_process_client_tool_stream_stopped_does_not_look_finished(self, stopped):
+        import routes.inference as inf_mod
+
+        class Source:
+            cancel_event = threading.Event()
+
+            @property
+            def cancelled(self):
+                return self.cancel_event.is_set()
+
+            async def chunks(self):
+                yield {"choices": [{"delta": {"content": "Once"}}]}
+                if stopped:
+                    self.cancel_event.set()
+
+            async def next_chunk(self, chunks):
+                return await anext(chunks, None)
+
+            async def close(self, *, cancelled):
+                pass
+
+        async def run():
+            response = inf_mod._anthropic_in_process_sse(
+                Source(),
+                request = self._Request(),
+                monitor_id = None,
+                message_id = "msg_1",
+                model_name = "test-model",
+                input_tokens = 2,
+                disable_parallel_tool_use = False,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "content_block_delta")[0]["delta"]["text"] == "Once"
+        assert bool(self._payloads(lines, "message_stop")) is not stopped
+
 
 class TestReasoningContentReachesTheClient:
     """llama-server puts the thinking trace in `reasoning_content`, not `content`.
@@ -6795,7 +6890,7 @@ class TestInProcessMessages:
         assert ("cancelled",) in seen["monitor"]
         assert not [k for k in inf._CANCEL_REGISTRY if "msg_" in str(k)]
         if stop_at is not None:
-            assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+            assert seen["stopped"] == 1 and "message_stop" not in out
             assert seen["runs"] == []  # chat's own tracker records the run
             assert seen["request"].scope.get("_unsloth_keepwarm_response_failed")
 
@@ -6824,7 +6919,7 @@ class TestInProcessMessages:
 
     def test_a_source_raising_on_stop_still_ends_the_stream_cleanly(self, monkeypatch):
         out, seen = self._serve(monkeypatch, 1, 1, -1, raise_on_stop = True)
-        assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+        assert seen["stopped"] == 1 and "message_stop" not in out
         assert not [
             k for k in __import__("routes.inference").inference._CANCEL_REGISTRY if "msg_" in str(k)
         ]

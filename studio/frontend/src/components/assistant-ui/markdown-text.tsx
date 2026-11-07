@@ -35,7 +35,10 @@ import {
 } from "@/components/assistant-ui/message-derived";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
+import {
+  type SettledEscapedMath,
+  normalizeEscapedInlineMath,
+} from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
@@ -1419,6 +1422,10 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  const [settledEscapedMath] = useState<SettledEscapedMath>(() => ({
+    prefix: "",
+    ranges: [],
+  }));
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -1437,12 +1444,20 @@ function MarkdownTextRenderer({
               ),
               searchImages,
             ),
+            isStreaming ? settledEscapedMath : undefined,
           ),
           isStreaming,
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, messageTexts, precedingText, searchImages],
+    [
+      displayText,
+      isStreaming,
+      messageTexts,
+      precedingText,
+      searchImages,
+      settledEscapedMath,
+    ],
   );
   const incrementalCacheRef = useRef({
     messageId,

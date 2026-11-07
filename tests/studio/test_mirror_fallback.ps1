@@ -48,7 +48,9 @@ try {
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     $r = Wait-MirrorProbe ($state = Start-MirrorProbe -Urls @("$base/ok", "$base/slow", "$base/whole", "$base/late", "$base/404", "http://127.0.0.1:9/") -Seconds 1.5 -LastByte 1023)
     Check "probe: gives up at its deadline, cancelling what has not answered" ($clock.Elapsed.TotalSeconds -lt 3 -and $r["$base/late"][0] -eq 0 -and [System.Threading.Tasks.Task]::WaitAny(@($state.Heads["$base/late"]), 200) -eq 0)
-    Check "probe: a ranged 1 KiB answer is 206 with its speed" ($r["$base/ok"][0] -eq 206 -and $r["$base/ok"][1] -gt 1024)
+    # The speed is bytes over the probe's clock, so it can only be bounded by the whole batch's time: a loaded runner can take
+    # over a second to answer, which a fixed 1 KiB/s floor read as a broken probe.
+    Check "probe: a ranged 1 KiB answer is 206 with its speed" ($r["$base/ok"][0] -eq 206 -and $state.Buffers["$base/ok"].Position -eq 1024 -and $r["$base/ok"][1] -ge [long](1024 / $clock.Elapsed.TotalSeconds))
     Check "probe: redirects are followed" ((Wait-MirrorProbe (Start-MirrorProbe -Urls @("$base/redirect") -Seconds 1.5 -LastByte 1023))["$base/redirect"][0] -eq 206)  # alone: pwsh 7 gets resets from this server on side-by-side redirects
     Check "probe: a stalled body reports the speed so far" ($r["$base/slow"][0] -eq 206 -and $r["$base/slow"][1] -gt 200 -and $r["$base/slow"][1] -lt 600)
     Check "probe: an answer that ignores Range is capped, not buffered whole" ($r["$base/whole"][0] -eq 200 -and $state.Buffers["$base/whole"].Position -in 1024..(1024 + 65536))

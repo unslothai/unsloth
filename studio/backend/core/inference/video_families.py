@@ -304,6 +304,9 @@ class VideoFamily:
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Separate partition, served ONLY by its own (scheme, task, filename) row or it loads the wrong one.
     prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
+    # An offloaded int8 load reads the hosted int8 file's ConvRot codes as native Linears (diffusion_native_hosted)
+    # instead of staging and quantising the dense shards. Only for a family whose hosted int8 file is ConvRot safetensors.
+    native_offload_from_hosted_int8: bool = False
     # Modular workflow loaded instead of a DiffusionPipeline; its routing blocks are not pruned.
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
@@ -672,6 +675,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
             ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
         ),
+        native_offload_from_hosted_int8 = True,
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
         # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
@@ -757,13 +761,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt. Sizes from Hub metadata (2026-08-04).
+        # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
             ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
         ),
-        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
@@ -822,8 +826,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
         ),
         prequant_filenames = (
-            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
-            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+            ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.safetensors"),
+            ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"),
             ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
             ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
@@ -938,7 +942,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         # No bare "hunyuanvideo" alias: it would also claim the incompatible 1.0 repos.
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
@@ -983,7 +987,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
-        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.safetensors"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,

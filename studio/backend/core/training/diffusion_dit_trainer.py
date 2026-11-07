@@ -97,7 +97,9 @@ from core.training.diffusion_samples import (
 from core.training.diffusion_train_extras import (
     BucketBatchSampler,
     LoRAEMA,
+    accumulate_loss,
     cover_resize_dims,
+    loss_value,
     PersistentConditioningCache,
     save_ema_adapter,
 )
@@ -183,7 +185,7 @@ class _FamilySpec:
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     """Gathers by index, so sigma_table must stay aligned with the timesteps the indices were drawn from."""
-    sigma = sigma_table[indices].to(device = device, dtype = dtype).flatten()
+    sigma = sigma_table[indices].to(device = device, non_blocking = True).to(dtype = dtype).flatten()
     while sigma.ndim < n_dim:
         sigma = sigma.unsqueeze(-1)
     return sigma
@@ -253,8 +255,17 @@ def _sample_timesteps(scheduler, batch_size, device):
     )
     num_train = scheduler.config.num_train_timesteps
     indices = (u * num_train).long().clamp(0, num_train - 1)
-    timesteps = scheduler.timesteps.to(device)[indices].to(device)
+    # Gather on host then one async copy; device-table indexing with host indices blocks.
+    timesteps = scheduler.timesteps[indices].to(device, non_blocking = True)
     return timesteps, indices
+
+
+def _empty_device_cache(device) -> None:
+    import torch
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    elif device == "xpu":
+        torch.xpu.empty_cache()
 
 
 def _encoders_to_device(pipe, device) -> None:
@@ -310,7 +321,8 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     )
-    pipe.vae.to(device, dtype = torch.float32)
+    # Stays on host until the text encoders are freed (never resident beside them).
+    pipe.vae.to(dtype = torch.float32)
     return pipe, pipe.vae
 
 
@@ -344,12 +356,14 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
 
     # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
     # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
-    return transformer_cls.from_pretrained(
+    transformer = transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
-    ).to(device)
+    )
+    # int8 stays on host: _int8_quantize_base streams Linears to device so the bf16 base is never whole in VRAM.
+    return transformer if base_precision == "int8" else transformer.to(device)
 
 
 def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
@@ -378,8 +392,13 @@ def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
     return transformer
 
 
-def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
-    """Passing family keeps training and inference on one exclusion list, else the first forward raises."""
+def _int8_quantize_base(
+    transformer,
+    family: Optional[str] = None,
+    device = None,
+) -> None:
+    """Passing family keeps training and inference on one exclusion list, else the first forward raises. With device,
+    a host-resident base moves to it one module at a time as it quantizes (peak = int8 base + one bf16 Linear)."""
     from core.inference.diffusion_transformer_quant import (
         _quiet_config,
         apply_small_m_padding,
@@ -395,9 +414,15 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
         filter_fn = make_filter_fn(
             512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family, baked = True)
         ),
+        **({} if device is None else {"device": device}),
     )
     # After quantize_: the helper reparents the Linears it wraps. Not best-effort: a raise leaves the base quantized but not safely runnable.
     apply_small_m_padding(transformer, "int8", family)
+    if device is not None:
+        # quantize_ moves every module it visits; this catches anything outside its walk (root params / buffers).
+        transformer.to(device)
+        gc.collect()
+        _empty_device_cache(device)
 
 
 # Small-M linears (conditioning vectors, LTX-2 one-token audio) stay bf16: the float8 / MX casts cost more than the GEMM.
@@ -853,9 +878,9 @@ def _flux_collate(
     import torch
 
     # FLUX embeds are fixed-length, so a plain cat batches them; text_ids are shared across prompts.
-    pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    pooled = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
-    text_ids = entries[0][2].to(device = device, dtype = torch.float32)
+    pe = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
+    pooled = _to_device_cat([e[1] for e in entries], device).to(dtype = weight_dtype)
+    text_ids = entries[0][2].to(device = device, non_blocking = True).to(dtype = torch.float32)
     return (pe, pooled, text_ids)
 
 
@@ -994,17 +1019,21 @@ def _qwen_collate(
     seqs = [e[0].shape[1] for e in entries]
     target = max(pad_to or 0, max(seqs))
     pes, masks = [], []
+    # Pad/cat on device: a host pad/cat is pageable and its copy blocks.
     for pe, mask in entries:
         s = pe.shape[1]
+        pe = pe.to(device, non_blocking = True)
         if mask is None:
-            mask = torch.ones((1, s), dtype = torch.int64)
+            mask = torch.ones((1, s), dtype = torch.int64, device = pe.device)
+        else:
+            mask = mask.to(device, non_blocking = True)
         if s < target:
             pe = F.pad(pe, (0, 0, 0, target - s))
             mask = F.pad(mask, (0, target - s))
         pes.append(pe)
         masks.append(mask)
-    pe_b = torch.cat(pes).to(device = device, dtype = weight_dtype)
-    mask_b = torch.cat(masks).to(device)
+    pe_b = (pes[0] if len(pes) == 1 else torch.cat(pes)).to(dtype = weight_dtype)
+    mask_b = masks[0] if len(masks) == 1 else torch.cat(masks)
     # A single unpadded sample keeps the legacy None mask, avoiding a behaviour change for existing single-image runs.
     if len(entries) == 1 and entries[0][1] is None and target == seqs[0]:
         mask_b = None
@@ -1088,7 +1117,7 @@ def _zimage_collate(
     weight_dtype,
     pad_to = None,
 ):
-    caps = [e[0].to(device = device, dtype = weight_dtype) for e in entries]
+    caps = [e[0].to(device = device, non_blocking = True).to(dtype = weight_dtype) for e in entries]
     return (caps,)
 
 
@@ -1120,7 +1149,8 @@ def _krea2_load_conditioners(cfg, device, weight_dtype):
     pipe = load_krea2_pipeline(
         cfg.base_model, torch.bfloat16, hf_token = cfg.hf_token, with_transformer = False
     )
-    pipe.vae.to(device, dtype = torch.float32)
+    # Host until the text encoders are freed, as _load_pipe_without_transformer.
+    pipe.vae.to(dtype = torch.float32)
     return pipe, pipe.vae
 
 
@@ -1159,11 +1189,9 @@ def _krea2_collate(
     weight_dtype,
     pad_to = None,
 ):
-    import torch
-
     # Fixed-length embeds, so collation is a plain concat with the mask riding along; ``pad_to`` is moot.
-    pe_b = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    mask_b = torch.cat([e[1] for e in entries]).to(device)
+    pe_b = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
+    mask_b = _to_device_cat([e[1] for e in entries], device)
     return (pe_b, mask_b)
 
 
@@ -1280,8 +1308,8 @@ def _flux2_collate(
     import torch
 
     # text_ids are PER-SAMPLE (unlike FLUX.1's shared grid).
-    pe = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    text_ids = torch.cat([e[1] for e in entries]).to(device = device, dtype = torch.float32)
+    pe = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
+    text_ids = _to_device_cat([e[1] for e in entries], device).to(dtype = torch.float32)
     return (pe, text_ids)
 
 
@@ -1425,8 +1453,6 @@ def _ltx2_encode_prompts(pipe, captions, device):
 
 
 def _ltx2_latent_affine(vae, ref):
-    import torch
-
     mean = vae.latents_mean.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
     std = vae.latents_std.to(device = ref.device, dtype = ref.dtype).view(1, -1, 1, 1, 1)
     # scaling_factor is 1.0 on the shipped checkpoint but is applied for fidelity to _normalize_latents.
@@ -1460,12 +1486,10 @@ def _ltx2_collate(
     weight_dtype,
     pad_to = None,
 ):
-    import torch
-
     # Connector embeds are fixed at [1, 1024, 3840] via max_sequence_length, so pad_to is moot.
-    video = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
-    audio = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
-    mask = torch.cat([e[2] for e in entries]).to(device)
+    video = _to_device_cat([e[0] for e in entries], device).to(dtype = weight_dtype)
+    audio = _to_device_cat([e[1] for e in entries], device).to(dtype = weight_dtype)
+    mask = _to_device_cat([e[2] for e in entries], device)
     return (video, audio, mask)
 
 
@@ -1966,12 +1990,21 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     return _to_unit_tensor(img)
 
 
-def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, flip):
-    """Deterministic pixel-crop variant for the latent cache: crop offsets are unit fractions over the randint range; center_crop matches the uncached path."""
+def _load_pixel_tensor_planned(
+    path,
+    resolution,
+    center_crop,
+    u_left,
+    u_top,
+    flip,
+    resized = None,
+):
+    """Deterministic pixel-crop variant for the latent cache: crop offsets are unit fractions over the randint range; center_crop matches the uncached path.
+    ``resized`` is a prior ``_open_resized`` result, reused across variants."""
     from PIL import Image
 
     cw, ch = _canvas(resolution)
-    img, rw, rh = _open_resized(path, resolution)
+    img, rw, rh = resized if resized is not None else _open_resized(path, resolution)
     if center_crop:
         left, top = (rw - cw) // 2, (rh - ch) // 2
     else:
@@ -2027,6 +2060,7 @@ def _build_latent_cache(
     gated = False
     for i, path in enumerate(image_paths):
         variants = []
+        resized = None
         for u_left, u_top, flip in plan[i]:
             canvas = cfg.resolution if canvases is None else canvases[i]
             key = (
@@ -2038,8 +2072,12 @@ def _build_latent_cache(
             if entry is not None:
                 a, b = entry
             else:
+                if resized is None:
+                    resized = _open_resized(path, canvas)
                 px = (
-                    _load_pixel_tensor_planned(path, canvas, cfg.center_crop, u_left, u_top, flip)
+                    _load_pixel_tensor_planned(
+                        path, canvas, cfg.center_crop, u_left, u_top, flip, resized = resized
+                    )
                     .unsqueeze(0)
                     .to(device)
                 )
@@ -2184,6 +2222,34 @@ def _to_device_cat(parts, device):
 
     moved = [p.to(device, non_blocking = True) for p in parts]
     return moved[0] if len(moved) == 1 else torch.cat(moved)
+
+
+# Pinned (page-locked) host memory is not swappable, so a huge caption set stays pageable; the copies stay async.
+_CAPTION_PIN_BUDGET_BYTES = 1024**3
+
+
+def _pin_caption_embeds(caption_embeds: dict, device) -> dict:
+    import torch
+
+    from core.inference.host_pinning import host_pinning_allowed
+
+    if device != "cuda" or not caption_embeds or not host_pinning_allowed():
+        return caption_embeds
+    tensors = [t for entry in caption_embeds.values() for t in entry if isinstance(t, torch.Tensor)]
+    if any(t.device.type != "cpu" for t in tensors):
+        return caption_embeds
+    if sum(t.numel() * t.element_size() for t in tensors) > _CAPTION_PIN_BUDGET_BYTES:
+        return caption_embeds
+
+    def _pin(t):
+        if not isinstance(t, torch.Tensor):
+            return t
+        try:
+            return t.contiguous().pin_memory()
+        except RuntimeError:
+            return t
+
+    return {cap: type(entry)(_pin(t) for t in entry) for cap, entry in caption_embeds.items()}
 
 
 def _should_compile(
@@ -2544,7 +2610,6 @@ def _train_dit(
             torch.cuda.empty_cache()
         elif device == "xpu":
             torch.xpu.empty_cache()
-        # Some families keep the VAE on host while text encoders are resident.
         if vae is not None:
             vae.to(device)
 
@@ -2596,6 +2661,7 @@ def _train_dit(
             torch.xpu.empty_cache()
     # Variant picks use their own stream so the training loop index/noise draws stay seed-deterministic.
     variant_rng = random.Random(cfg.seed + 1)
+    caption_embeds = _pin_caption_embeds(caption_embeds, device)
 
     # Transformer loads last, at resolved precision: nf4 by default, 'auto' picks from free VRAM.
     base_precision = _resolve_base_precision(cfg, spec, device)
@@ -2628,7 +2694,9 @@ def _train_dit(
 
     # Convert AFTER the LoRA attaches so the adapter modules stay high precision.
     if base_precision == "int8":
-        _int8_quantize_base(transformer, cfg.resolved_family)
+        _int8_quantize_base(transformer, cfg.resolved_family, device = device)
+        # Re-collect: the move to device must not leave the optimizer holding host tensors.
+        lora_params = [p for p in transformer.parameters() if p.requires_grad]
     if base_precision == "fp8" and not _apply_fp8_training(
         transformer, on_event, cfg.resolved_family
     ):
@@ -2856,7 +2924,7 @@ def _train_dit(
             stopped = True
             break
         optimizer.zero_grad(set_to_none = True)
-        step_loss = 0.0
+        step_acc = None
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
             if canvases is not None:
@@ -2886,7 +2954,10 @@ def _train_dit(
             if shift_active:
                 # timestep = sigma * num_train_timesteps, gathered in fp32 so bf16 rounding never skews it.
                 timesteps = (
-                    sigma_table[t_indices].to(device = device, dtype = torch.float32).flatten()
+                    sigma_table[t_indices]
+                    .to(device = device, non_blocking = True)
+                    .to(dtype = torch.float32)
+                    .flatten()
                     * num_train_ts
                 )
             noisy = (1.0 - sigmas) * latents + sigmas * noise
@@ -2917,12 +2988,13 @@ def _train_dit(
                     w = bell_weights[w_idx].view(-1, *([1] * (per.ndim - 1)))
                     loss = (per * w).mean()
             (loss / cfg.gradient_accumulation_steps).backward()
-            step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
+            step_acc = accumulate_loss(step_acc, loss, cfg.gradient_accumulation_steps)
 
         grad_norm = None
         if cfg.max_grad_norm and cfg.max_grad_norm > 0:
             # Pre-clip norm: the UI's health signal.
             grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
+        step_loss = loss_value(step_acc)
         optimizer.step()
         lr_sched.step()
         if ema is not None:
