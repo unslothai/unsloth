@@ -1071,7 +1071,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             <div
               data-tauri-drag-region={true}
               aria-hidden="true"
-              className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              className="pointer-events-auto modal-pe-live fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
           ) : null}
           {chromeVars}

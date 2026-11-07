@@ -184,62 +184,37 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "OpenAI-compatible API. deepseek-flash and deepseek-v4-pro take thinking on/off plus reasoning_effort low/high/max.",
     },
-    "mistral": {
-        "display_name": "Mistral AI",
-        "base_url": "https://api.mistral.ai/v1",
+    "openrouter": {
+        "display_name": "OpenRouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        # Live /models fills the rest; ~*-latest aliases track new releases.
         "default_models": [
-            "codestral-latest",
-            "devstral-latest",
-            "devstral-medium-latest",
-            "magistral-medium-latest",
-            "ministral-14b-latest",
-            "ministral-3b-latest",
-            "ministral-8b-latest",
-            "mistral-large-latest",
-            "mistral-medium-latest",
-            "mistral-small-latest",
-            "mistral-tiny-latest",
-            "mistral-vibe-cli-latest",
+            "openrouter/free",
+            "openrouter/auto",
+            "~anthropic/claude-sonnet-latest",
+            "~anthropic/claude-opus-latest",
+            "~openai/gpt-sol-latest",
+            "~openai/gpt-mini-latest",
+            "~google/gemini-pro-latest",
+            "~google/gemini-flash-latest",
+            "~x-ai/grok-latest",
+            "~deepseek/deepseek-flash-latest",
+            "~moonshotai/kimi-latest",
+            "~z-ai/glm-latest",
         ],
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
         "studio_tools": True,
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "model_id_allowlist": re.compile(
-            r"^(codestral-latest|devstral-latest|devstral-medium-latest|"
-            r"magistral-medium-latest|ministral-(?:14b|3b|8b)-latest|"
-            r"mistral-(?:large|medium|small|tiny)-latest|"
-            r"mistral-vibe-cli-latest)$"
-        ),
-    },
-    "kimi": {
-        "display_name": "Kimi",
-        "base_url": "https://api.moonshot.ai/v1",
-        # Docs: https://platform.kimi.ai/docs/models
-        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
-        #                   https://platform.kimi.ai/docs/api/overview
-        "default_models": [
-            "kimi-k3",
-            "kimi-k3.1-pro",
-            "kimi-k2.6",
-            "kimi-k2.5",
-        ],
-        "supports_streaming": True,
-        "supports_vision": True,
-        "supports_tool_calling": True,
-        "studio_tools": True,
-        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
+        # The router's universal web plugin (`plugins: [{id: "web"}]`).
         "hosted_tools": ("web_search",),
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
-        "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
-        "model_id_allowlist": re.compile(r"^kimi-k\d"),
-        "model_id_denylist": re.compile(r"-preview$|^kimi-k2-thinking"),
-        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
-        # is allowed"). Strip both so the server uses its required defaults.
-        "body_omit": ("temperature", "top_p"),
+        "extra_headers": {
+            "HTTP-Referer": "https://unsloth.ai",
+            "X-Title": "Unsloth Studio",
+        },
+        "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
     },
     "zai": {
         "display_name": "Z.ai",
@@ -276,6 +251,63 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_prefix": "Bearer ",
         "notes": "Z.ai API key. China mainland: use base URL https://open.bigmodel.cn/api/paas/v4",
         "body_omit": ("presence_penalty",),
+    },
+    "kimi": {
+        "display_name": "Kimi",
+        "base_url": "https://api.moonshot.ai/v1",
+        # Docs: https://platform.kimi.ai/docs/models
+        # Listing/overview: https://platform.kimi.ai/docs/api/list-models
+        #                   https://platform.kimi.ai/docs/api/overview
+        "default_models": [
+            "kimi-k3",
+            "kimi-k3.1-pro",
+            "kimi-k2.6",
+            "kimi-k2.5",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        # `$web_search` builtin_function, driven by `_stream_kimi_web_search`.
+        "hosted_tools": ("web_search",),
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
+        "model_id_allowlist": re.compile(r"^kimi-k\d"),
+        "model_id_denylist": re.compile(r"-preview$|^kimi-k2-thinking"),
+        # Reasoning-class: the API rejects custom temperature/top_p ("only 1
+        # is allowed"). Strip both so the server uses its required defaults.
+        "body_omit": ("temperature", "top_p"),
+    },
+    "mistral": {
+        "display_name": "Mistral AI",
+        "base_url": "https://api.mistral.ai/v1",
+        "default_models": [
+            "codestral-latest",
+            "devstral-latest",
+            "devstral-medium-latest",
+            "magistral-medium-latest",
+            "ministral-14b-latest",
+            "ministral-3b-latest",
+            "ministral-8b-latest",
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "mistral-tiny-latest",
+            "mistral-vibe-cli-latest",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "model_id_allowlist": re.compile(
+            r"^(codestral-latest|devstral-latest|devstral-medium-latest|"
+            r"magistral-medium-latest|ministral-(?:14b|3b|8b)-latest|"
+            r"mistral-(?:large|medium|small|tiny)-latest|"
+            r"mistral-vibe-cli-latest)$"
+        ),
     },
     "minimax": {
         "display_name": "MiniMax",
@@ -505,38 +537,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "body_omit": ("min_p",),
         "hidden": True,
         "managed": True,
-    },
-    "openrouter": {
-        "display_name": "OpenRouter",
-        "base_url": "https://openrouter.ai/api/v1",
-        # Live /models fills the rest; ~*-latest aliases track new releases.
-        "default_models": [
-            "openrouter/free",
-            "openrouter/auto",
-            "~anthropic/claude-sonnet-latest",
-            "~anthropic/claude-opus-latest",
-            "~openai/gpt-sol-latest",
-            "~openai/gpt-mini-latest",
-            "~google/gemini-pro-latest",
-            "~google/gemini-flash-latest",
-            "~x-ai/grok-latest",
-            "~deepseek/deepseek-flash-latest",
-            "~moonshotai/kimi-latest",
-            "~z-ai/glm-latest",
-        ],
-        "supports_streaming": True,
-        "supports_vision": True,
-        "supports_tool_calling": True,
-        "studio_tools": True,
-        # The router's universal web plugin (`plugins: [{id: "web"}]`).
-        "hosted_tools": ("web_search",),
-        "auth_header": "Authorization",
-        "auth_prefix": "Bearer ",
-        "extra_headers": {
-            "HTTP-Referer": "https://unsloth.ai",
-            "X-Title": "Unsloth Studio",
-        },
-        "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
     },
     "typesafe": {
         "display_name": "TypeSafe",

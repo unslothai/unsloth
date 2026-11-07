@@ -143,6 +143,37 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
     """The picker activated a model whose explicit transfer is still pending."""
 
 
+# Shared by the raise sites and is_download_required_error: a document job keeps only the error text.
+DOWNLOAD_REQUIRED_HINT = "Finish its Settings download before indexing documents."
+
+
+def download_required_message(name: str) -> str:
+    return f"Embedding model {name!r} is not downloaded yet. {DOWNLOAD_REQUIRED_HINT}"
+
+
+def is_download_required_error(error: str | None) -> bool:
+    """A stored error text from EmbeddingModelDownloadRequiredError: a wait, not a bad file."""
+    return bool(error) and DOWNLOAD_REQUIRED_HINT in error
+
+
+def download_required(model_name: str | None = None) -> bool:
+    """True while ``model_name``'s Settings transfer is pending and the cache-only loader still cannot load it."""
+    name = model_name or config.effective_embedding_model()
+    try:
+        from utils.embedding_model_settings import get_stored_download_pending
+        if not get_stored_download_pending(name):
+            return False
+    except Exception:  # noqa: BLE001 - old/unavailable settings store
+        return False
+    try:
+        warm(name)
+    except EmbeddingModelDownloadRequiredError:
+        return True
+    except Exception:  # noqa: BLE001 - any other load failure stays the per-document error it was
+        logger.debug("embedding model %s failed to warm", name, exc_info = True)
+    return False
+
+
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
@@ -604,19 +635,13 @@ def _get(model_name: str | None = None):
                 if download_pending and st_source is None:
                     # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
                     # still a pending model.
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             # Scan only after load_target is settled, so the scanned commit is the loaded one.

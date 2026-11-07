@@ -92,9 +92,7 @@ def _class_source(cls):
             if lines[prev].startswith("@"):
                 return inspect.getsource(cls)
             try:
-                compile(
-                    "".join(lines[prev:start]), "<unsloth_class_source>", "exec", ast.PyCF_ONLY_AST
-                )
+                ast.parse("".join(lines[prev:start]), "<unsloth_class_source>", "exec")
                 break
             except SyntaxError:
                 continue

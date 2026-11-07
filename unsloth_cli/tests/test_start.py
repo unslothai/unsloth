@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from unittest import mock
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -251,6 +252,20 @@ def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
         "& 'C:\\Managed Node\\npm.cmd' install -g '@openai/codex'",
     ]
     assert env is not None
+
+
+def test_install_command_keeps_an_apostrophe_in_a_windows_prefix(monkeypatch):
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Managed Node\npm.cmd")
+    prefix = r"C:\Users\O'Brien\AppData\Roaming\npm"
+    hint = start._npm_install_hint("@openai/codex@latest", prefix = prefix)
+
+    command, _ = start._install_command(hint)
+
+    assert command[-1] == (
+        "& 'C:\\Managed Node\\npm.cmd' install -g --prefix "
+        "'C:\\Users\\O''Brien\\AppData\\Roaming\\npm' '@openai/codex@latest'"
+    )
 
 
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
@@ -4295,6 +4310,99 @@ def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
             tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml"
         ).read_text()
         assert "model_reasoning_effort" not in profile
+
+
+@pytest.mark.parametrize("subagent", [[], ["--as-subagent"], ["--auto-route"]])
+@pytest.mark.parametrize(
+    "version, launches", [((0, 133, 0), False), ((0, 134, 0), True), (None, True)]
+)
+def test_codex_too_old_for_profile_files_stops_before_launch(
+    version, launches, subagent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        start, "_require_agent_for_launch", lambda name, hint, launch: f"/bin/{name}"
+    )
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex", *subagent])
+    assert bool(launched) is launches
+    if launches:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 1
+        assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
+        assert "Update it the way it was installed, or remove it" in result.output
+        assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
+@pytest.mark.parametrize("after, launches", [((0, 134, 0), True), ((0, 133, 0), False)])
+def test_codex_too_old_offers_the_update_with_the_managed_npm(
+    after, launches, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/codex")
+    versions = iter([(0, 133, 0), after])
+    monkeypatch.setattr(start, "_codex_executable_version", lambda _: next(versions, after))
+    hint = start._npm_install_hint("@openai/codex@latest")
+    monkeypatch.setattr(start, "_codex_update_hint", lambda _: hint)
+    install_agent = start._install_agent
+
+    def install_from_a_tty(*args, **kwargs):
+        # CliRunner swaps sys.stdin, so fake the TTY only for the prompt.
+        with mock.patch.object(start.sys, "stdin", SimpleNamespace(isatty = lambda: True)):
+            return install_agent(*args, **kwargs)
+
+    monkeypatch.setattr(start, "_install_agent", install_from_a_tty)
+    prompts = []
+    monkeypatch.setattr(start.typer, "confirm", lambda text, **k: prompts.append(text) or True)
+    monkeypatch.setattr(start, "_npm_executable", lambda: "/studio/node/bin/npm")
+    ran = []
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env = None, **k: ran.append((command, env)) or SimpleNamespace(returncode = 0),
+    )
+    monkeypatch.setattr(start.shutil, "which", lambda name, **k: f"/bin/{name}")
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex"])
+    assert prompts == [f"Update `codex` now with `{hint}`?"]
+    if os.name == "nt":
+        assert ran[0][0][-1] == "& " + start._powershell_quote("/studio/node/bin/npm") + hint[3:]
+    else:
+        assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
+    assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
+    assert bool(launched) is launches
+    if not launches:
+        assert result.exit_code == 1
+        assert f"Update it with `{hint}`" in result.output
+
+
+def test_codex_update_hint_targets_the_resolved_install(tmp_path):
+    prefix = tmp_path / "global"
+    bin_dir = prefix if os.name == "nt" else prefix / "bin"
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
+    (package / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(bin_dir / "codex")) == start._npm_install_hint(
+        "@openai/codex@latest", prefix = prefix
+    )
+    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Homebrew links codex with a symlink")
+def test_codex_update_hint_uses_brew_for_a_homebrew_codex(tmp_path):
+    target = tmp_path / "Caskroom" / "codex" / "0.133.0" / "codex"
+    target.parent.mkdir(parents = True)
+    target.touch()
+    link = tmp_path / "bin" / "codex"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    # A leftover npm package under the same prefix must not win over the brew-owned link.
+    (tmp_path / "lib" / "node_modules" / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(link)) == "brew upgrade codex"
 
 
 def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
