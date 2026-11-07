@@ -838,10 +838,16 @@ async def get_gguf_download_progress_response(
     ) -> tuple[int, frozenset[str]]:
         if progress_variant is None:
             return expected_total, frozenset()
-        requirement = gguf_variants.gguf_variant_requirements(
-            resolved_repo_id,
-            progress_variant,
-            token,
+        # A variant starting with "@" is a scope (see _scope_variant): its files are not a GGUF plan, so
+        # the requirement lookup never applies and would only cost a model_info request per poll.
+        requirement = (
+            None
+            if progress_variant.startswith(_SCOPE_PREFIX)
+            else gguf_variants.gguf_variant_requirements(
+                resolved_repo_id,
+                progress_variant,
+                token,
+            )
         )
         if requirement is not None:
             return requirement.download_size_bytes, requirement.required_hashes
@@ -893,7 +899,7 @@ async def get_gguf_download_progress_response(
         resolved_repo_id: str, token: Optional[str]
     ) -> Sequence[download_manifest.ExpectedFile]:
         """What HF says this variant should contain, paths and declared sizes. The only thing that lets a finished variant whose manifest is missing settle terminal instead of staying partial forever, so it has to be the metadata's own file list: a byte tally from the shared blobs/ dir cannot tell this quant's bytes from a sibling's. The requirement lookup is cached, and snapshot_progress calls this only once a reading has otherwise passed for complete."""
-        if progress_variant is None:
+        if progress_variant is None or progress_variant.startswith(_SCOPE_PREFIX):
             return ()
         requirement = gguf_variants.gguf_variant_requirements(
             resolved_repo_id,

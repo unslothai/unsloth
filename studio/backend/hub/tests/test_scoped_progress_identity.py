@@ -216,3 +216,24 @@ def test_offline_variant_manifest_does_not_shrink_hint(scoped_progress):
     result = case.poll(670, "Q6_K")
     assert result["expected_bytes"] == 670
     assert result["complete_on_disk"] is False
+
+
+@pytest.mark.parametrize("scope", ["@diffusion", "@audio", "@hub-assets"])
+def test_scoped_poll_asks_the_hub_for_no_gguf_requirement(monkeypatch, scoped_progress, scope):
+    """A scope is never a GGUF quant, so polling it must not cost a model_info request each time."""
+    case = scoped_progress
+    case.metadata.scoped_files = ()
+    asked = []
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *a, **k: asked.append(a[1]),
+    )
+    (case.blobs / "new.incomplete").write_bytes(b"n" * 20)
+    for _ in range(3):
+        result = case.poll(700, scope)
+    assert asked == []
+    assert result["expected_bytes"] == 700
+    assert result["downloaded_bytes"] == 0
+    case.poll(700, "Q6_K")
+    assert asked == ["Q6_K"]
