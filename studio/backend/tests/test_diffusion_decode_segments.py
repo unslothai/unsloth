@@ -186,10 +186,15 @@ def test_platform_gate(monkeypatch):
     monkeypatch.delenv("WSL_DISTRO_NAME")
     monkeypatch.delenv("WSL_INTEROP", raising = False)
     monkeypatch.setattr(
-        D.os, "uname", lambda: types.SimpleNamespace(release = "5.15.167.4-microsoft-standard-WSL2")
+        D.os,
+        "uname",
+        lambda: types.SimpleNamespace(release = "5.15.167.4-microsoft-standard-WSL2"),
+        raising = False,
     )
     assert not D._platform_ok()
-    monkeypatch.setattr(D.os, "uname", lambda: types.SimpleNamespace(release = "6.8.0-1015-aws"))
+    monkeypatch.setattr(
+        D.os, "uname", lambda: types.SimpleNamespace(release = "6.8.0-1015-aws"), raising = False
+    )
     monkeypatch.setattr(D.os.path, "exists", lambda p: False)
     assert D._platform_ok()
 
