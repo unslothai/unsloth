@@ -435,6 +435,9 @@ class TestUnpinnedArchCrashRetry:
         monkeypatch.setattr(
             LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: False)
         )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_visibility_masks_are_stacked", staticmethod(lambda: False)
+        )
         monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
 
     def test_drops_the_crashed_card(self):
@@ -492,6 +495,16 @@ class TestUnpinnedArchCrashRetry:
         assert LlamaCppBackend._unpinned_arch_crash_retry(
             _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
         ) == ([], [])
+
+    def test_stacked_rocr_and_hip_masks_are_left_alone(self, monkeypatch):
+        # HIP ordinals index the ROCr-filtered set, so the resolved ids are not physical.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_visibility_masks_are_stacked", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
 
     def test_the_childs_own_mask_still_maps_under_an_unmappable_parent(self, monkeypatch):
         monkeypatch.setattr(

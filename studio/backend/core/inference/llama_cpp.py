@@ -22194,21 +22194,20 @@ class LlamaCppBackend:
         enumerated,
         child_ids: Optional[Sequence[int]] = None,
     ) -> tuple[list[int], list[int]]:
-        """``(crashed, remaining)`` physical ids for a ROCm kernel-image crash on an unpinned
-        launch, from the child's "current device: N"; ``([], [])`` when it cannot be named.
-        ``child_ids`` is the child's own ordinal-to-physical list when the launch masked it."""
+        """``(crashed, remaining)`` physical ids from the child's "current device: N", or ``([], [])``.
+        ``child_ids`` maps the child's ordinals when Studio masked it."""
         if not cls._host_torch_is_rocm():
-            return [], []  # CUDA orders the unmasked child by speed, not by our ids
+            return [], []  # an unmasked CUDA child orders devices by speed, not by our ids
         matches = cls._CURRENT_DEVICE_RE.findall(output or "")
         if not matches:
             return [], []
         ordinal = int(matches[-1])
-        # GPU_DEVICE_ORDINAL filters HIP ordinals unseen by the mask readers; a UUID/MIG mask has no ids.
+        # Ordinals we cannot map back to physical ids; guessing could expose a hidden card.
         if cls._gpu_device_ordinal_active() or (
-            child_ids is None and cls._visibility_mask_is_unmappable()
+            child_ids is None
+            and (cls._visibility_mask_is_unmappable() or cls._rocm_visibility_masks_are_stacked())
         ):
-            return [], []  # renumbering either could expose a hidden card
-        # The child's ordinals index its own mask (a split-order or survivor pin), not ours.
+            return [], []
         physical_ids = (
             list(child_ids) if child_ids is not None else cls._resolve_visible_physical_ids()
         )
@@ -22220,9 +22219,10 @@ class LlamaCppBackend:
         if ordinal not in _enumerated:
             return [], []
         remaining = [i for i in _enumerated if i != ordinal]
-        # A shared-memory iGPU is the usual second uncovered arch; keep it only when nothing else is left.
+        # A shared-memory iGPU is the usual second uncovered arch; kept only when nothing else is left.
         try:
-            discrete = [i for i in remaining if i not in cls._rocm_unified_memory_gpu_ids()]
+            unified = cls._rocm_unified_memory_gpu_ids()
+            discrete = [i for i in remaining if i not in unified]
         except Exception:
             discrete = []
         return [ordinal], (discrete or remaining)
@@ -23070,7 +23070,6 @@ class LlamaCppBackend:
                 "UNSLOTH_LLAMA_CPP_BACKEND=cpu unsloth studio update."
             )
         if backend == "hip":
-            # ROCR_VISIBLE_DEVICES masks nothing on Windows.
             var = "HIP_VISIBLE_DEVICES" if sys.platform == "win32" else "ROCR_VISIBLE_DEVICES"
             return base + (
                 "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
@@ -31570,7 +31569,7 @@ class LlamaCppBackend:
                             "update llama.cpp to use tensor parallelism with a "
                             "quantized cache."
                         )
-                # A launched device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds or unreadable coverage; explicit picks keep their error.
+                # A launched device has no kernels in this binary: retry once on a narrowed set (the gate cannot see custom builds or unreadable coverage); explicit picks keep their error.
                 _arch_crash_tail = "\n".join(self._stdout_lines[-80:])
                 if (
                     not healthy
@@ -31587,11 +31586,10 @@ class LlamaCppBackend:
                         _crashed = sorted(set(gpu_indices))
                         _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
                     elif _cache_target_unknown or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip():
-                        # A user --device / --main-gpu or their env twins name cards by the unnarrowed numbering.
+                        # A user --device / --main-gpu (or env twin) numbers cards by the unnarrowed set.
                         _crashed, _remaining = [], []
                     else:
-                        # Unpinned (a manual split, or a gate that could not read the build's
-                        # coverage): only the child's own "current device" names the card.
+                        # Unpinned (manual split, or unreadable coverage): only the child's "current device" names the card.
                         _crashed, _remaining = self._unpinned_arch_crash_retry(
                             _arch_crash_tail, _enumerated, _child_gpu_physical_ids
                         )
@@ -31745,8 +31743,7 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # Recorded like the proactive gate, or the next Apply reads
-                            # the narrowed server as a different one and reloads it.
+                            # Recorded like the proactive gate, or the next Apply sees a different server and reloads.
                             if self._tensor_split:
                                 self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)
                             self._tensor_split = None
