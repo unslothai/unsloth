@@ -195,6 +195,28 @@ def test_a_null_first_video_row_still_reads_as_video():
     assert [_video_parts(row) for row in out] == [[{"type": "video", "video": c}] for c in CLIPS]
 
 
+def test_filling_a_blank_first_row_does_not_decode_other_columns():
+    import io
+
+    from datasets import Image as HFImage
+    from PIL import Image
+
+    from utils.datasets.format_detection import detect_video_columns, video_sample
+
+    png = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(png, "PNG")
+    ds = Dataset.from_dict(
+        {
+            "image": [
+                {"bytes": png.getvalue(), "path": None},
+                {"bytes": b"not an image", "path": None},
+            ],
+            "clip": [None, CLIPS[0]],
+        }
+    ).cast_column("image", HFImage())
+    assert detect_video_columns(video_sample(ds, ds[0])) == ["clip"]
+
+
 def test_a_blank_first_answer_still_finds_the_answer_column():
     ds = Dataset.from_dict({"video": CLIPS, "answer": ["  ", ANSWERS[1]]})
     assert check_dataset_format(ds, is_vlm = True)["detected_format"] == "video_text"
