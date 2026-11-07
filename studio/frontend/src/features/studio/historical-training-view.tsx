@@ -3,18 +3,23 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type TrainingRunDetailResponse,
   type TrainingViewData,
   getTrainingRun,
   onTrainingRunUpdated,
   parseBackendTrainingMethod,
+  useActivationData,
   useTrainingActions,
 } from "@/features/training";
 import { translate, useT } from "@/i18n";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
+import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
+import { NeuronHealthTrend } from "./sections/neuron-health-trend";
+import { DiagnosticsPanel } from "./sections/diagnostics-panel";
 import { ProgressSection } from "./sections/progress-section";
 import { mapRunConfigToOverride } from "./sections/run-config-override";
 import { PlayIcon } from "lucide-react";
@@ -96,6 +101,7 @@ function mapToViewData(
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
     projectName: run.project_name,
+    datasetName: run.dataset_name ?? null,
     trainingMethod: parseBackendTrainingMethod(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
@@ -106,6 +112,87 @@ function mapToViewData(
     gradNormHistory,
     evalLossHistory,
   };
+}
+
+function InterpretabilitySection({ runId }: { runId: string }): ReactElement {
+  const t = useT();
+  const { metadata, records, loading } = useActivationData({ isTraining: false, jobId: runId });
+  const [stepIndex, setStepIndex] = useState(0);
+
+  useEffect(() => {
+    setStepIndex(Math.max(0, records.length - 1));
+  }, [records.length]);
+
+  const handleStepChange = useCallback(
+    (idx: number) => {
+      if (idx === -1) {
+        setStepIndex((prev) => Math.min(prev + 1, records.length - 1));
+      } else {
+        setStepIndex(Math.max(0, Math.min(idx, records.length - 1)));
+      }
+    },
+    [records.length],
+  );
+
+  const record = records[stepIndex] ?? null;
+
+  if (!loading && records.length === 0) {
+    const [hintBefore, hintAfter] = t("studio.interpretability.noRunDataHint").split("{setting}");
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[calc(300px*var(--ui-space-scale,1))] gap-3 text-center text-muted-foreground">
+        <p className="text-sm">{t("studio.interpretability.noRunData")}</p>
+        <p className="text-xs max-w-sm">
+          {hintBefore}
+          <span className="font-medium text-foreground">{t("studio.params.activationCapture")}</span>
+          {hintAfter}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Heatmap — full width, horizontal */}
+      <NeuronHeatmapSection
+        isTraining={false}
+        records={records}
+        metadata={metadata}
+        loading={loading}
+        record={record}
+        stepIndex={stepIndex}
+        onStepChange={handleStepChange}
+      />
+
+      {/* Trend chart — full width, compact */}
+      <div className="h-[calc(280px*var(--ui-space-scale,1))]">
+        <NeuronHealthTrend
+          records={records}
+          stepIndex={stepIndex}
+          onStepChange={handleStepChange}
+        />
+      </div>
+
+      {/* Replay controls */}
+      {records.length > 1 && (
+        <ReplayControls
+          stepIndex={stepIndex}
+          totalSteps={records.length}
+          onStepChange={handleStepChange}
+          currentStep={record?.step ?? 0}
+        />
+      )}
+
+      {/* Diagnostics */}
+      {records.length > 0 && (
+        <DiagnosticsPanel
+          records={records}
+          stepIndex={stepIndex}
+          metadata={metadata}
+          onStepChange={handleStepChange}
+        />
+      )}
+    </div>
+  );
 }
 
 export function HistoricalTrainingView({
@@ -227,16 +314,27 @@ export function HistoricalTrainingView({
         isHistorical={true}
         configOverride={configOverride}
       />
-      <ChartsSection
-        currentStep={viewData.currentStep}
-        totalSteps={viewData.totalSteps}
-        isTraining={false}
-        evalEnabled={viewData.evalEnabled}
-        lossHistory={viewData.lossHistory}
-        lrHistory={viewData.lrHistory}
-        gradNormHistory={viewData.gradNormHistory}
-        evalLossHistory={viewData.evalLossHistory}
-      />
+      <Tabs defaultValue="training">
+        <TabsList className="mb-2">
+          <TabsTrigger value="training">{t("studio.interpretability.tabTraining")}</TabsTrigger>
+          <TabsTrigger value="interpretability">{t("studio.interpretability.tabInterpretability")}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="training">
+          <ChartsSection
+            currentStep={viewData.currentStep}
+            totalSteps={viewData.totalSteps}
+            isTraining={false}
+            evalEnabled={viewData.evalEnabled}
+            lossHistory={viewData.lossHistory}
+            lrHistory={viewData.lrHistory}
+            gradNormHistory={viewData.gradNormHistory}
+            evalLossHistory={viewData.evalLossHistory}
+          />
+        </TabsContent>
+        <TabsContent value="interpretability">
+          <InterpretabilitySection runId={runId} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

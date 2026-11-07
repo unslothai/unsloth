@@ -1666,6 +1666,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        setEnableActivationCapture: (enableActivationCapture) =>
+          setUserEdit({ enableActivationCapture }),
         restoreRunConfig: (config) => {
           const selections = runConfigDraftSelections(config);
           const hyperparameters = mapBackendModelConfigToTrainingPatch({

@@ -44,13 +44,13 @@ export function EvalLossChartCard({
   } satisfies ChartConfig;
 
   return (
-    <Card data-tour="studio-eval-loss" size="sm">
+    <Card data-tour="studio-eval-loss" size="sm" className="h-full">
       <CardHeader>
         <CardTitle className={`text-sm${data.length > 0 ? "" : " text-muted-foreground"}`}>
           {t("studio.charts.evalLoss")}
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex-1 min-h-0">
         {data.length > 0 ? (
           <ChartContainer config={evalLossConfig} className={CHART_CONTAINER_CLASS}>
             <LineChart
