@@ -50,7 +50,13 @@ for (const page of ["features/images/images-page.tsx", "features/video/video-pag
       src,
       /\{trainMounted && \(\s*<div className=\{pageMode === "train" \? "contents" : "hidden"\} inert=\{pageMode !== "train" \|\| undefined\}>\s*<DiffusionTrainPanel/,
     );
-    assert.match(src, /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/);
+    // Video has a third mode, Restyle, so its Create view is gated on "create" rather than "not train".
+    assert.match(
+      src,
+      page.includes("video")
+        ? /\/>\s*<\/div>\s*\)\}\s*\{pageMode === "restyle" && <VideoRestylePanel active=\{active\} \/>\}\s*\{pageMode === "create" && \(/
+        : /\/>\s*<\/div>\s*\)\}\s*\{pageMode !== "train" && \(/,
+    );
     assert.doesNotMatch(src, /\{pageMode === "train" \? \(\s*<DiffusionTrainPanel/);
   });
 }
