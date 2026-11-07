@@ -4,7 +4,7 @@
 "use client";
 
 import { type ComponentProps, type FC, useRef } from "react";
-import { useThrottledLiveGeneration } from "../hooks/use-throttled-live-generation";
+import { useThrottledLiveGenerationWithPass } from "../hooks/use-throttled-live-generation";
 import {
   createPassSettledTracker,
   liveContextUsage,
@@ -35,7 +35,7 @@ const RealtimeContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   liveThreadKey,
   ...props
 }) => {
-  const live = useThrottledLiveGeneration(liveThreadKey);
+  const { live, pass } = useThrottledLiveGenerationWithPass(liveThreadKey);
   const settled = useChatRuntimeStore((state) => state.contextUsage);
   const tracker = useRef<ReturnType<typeof createPassSettledTracker> | null>(
     null,
@@ -43,7 +43,7 @@ const RealtimeContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   tracker.current ??= createPassSettledTracker();
   const usage = liveContextUsage(
     live,
-    tracker.current(live?.prefill != null, live?.decode != null, settled),
+    tracker.current(pass, settled),
   );
   if (!usage) return <ContextUsageBar {...props} />;
   return (

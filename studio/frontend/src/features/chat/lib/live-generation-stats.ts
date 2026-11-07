@@ -69,22 +69,30 @@ export type LiveContextUsage = {
   cached: number;
 };
 
+/** A new generation pass starts when live progress appears, or when prefill follows a decoded pass. Read on
+ *  every store change, before throttling, so a gap shorter than the throttle still counts. */
+export function nextPassNumber(
+  pass: number,
+  previous: LiveGenerationProgress | undefined,
+  next: LiveGenerationProgress | undefined,
+): number {
+  if (!next?.prefill) return pass;
+  if (!previous?.prefill) return pass + 1;
+  return previous.decode && !next.decode ? pass + 1 : pass;
+}
+
 /** True once this pass's own context_usage landed (the last decode frame trails it). Keyed on the snapshot
  *  object, not its numbers, so a regenerate with the same prompt still counts live. */
 export function createPassSettledTracker<S>(): (
-  active: boolean,
-  decoding: boolean,
+  pass: number,
   snapshot: S,
 ) => boolean {
   let baseline: S | undefined;
-  let seeded = false;
-  let decoded = false;
-  return (active, decoding, snapshot) => {
-    const newPass = decoded && !decoding;
-    decoded = active && decoding;
-    if (!active || !seeded || newPass) {
+  let seenPass: number | undefined;
+  return (pass, snapshot) => {
+    if (pass !== seenPass) {
       baseline = snapshot;
-      seeded = true;
+      seenPass = pass;
       return false;
     }
     return snapshot !== baseline;
