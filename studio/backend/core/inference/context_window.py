@@ -1012,6 +1012,7 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # The browser parsers' header ("[PDF: name]", runtime-provider.tsx): their text has no closing tag.
 _LABELLED_TEXT_RE = re.compile(r"\[[A-Z]+: [^\n]*\]\n")
+_CLOSING_TAG_RE = re.compile(r"\n</(?P<tag>[A-Za-z_][\w-]*)>")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
 # No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
@@ -1021,35 +1022,42 @@ _MAX_CHARS_PER_TOKEN = 16
 def _attachment_spans(text: str):
     """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
     # A note starts an attachment only when its content follows; a file quoting the note is text (#16913).
-    notes = [
-        note
-        for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text)
-        if _ATTACHMENT_OPEN_RE.match(text, note.end()) or _LABELLED_TEXT_RE.match(text, note.end())
-    ]
-    index, next_close = 0, {}
-    while index < len(notes):
-        note = notes[index]
+    notes, openers = [], []
+    for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text):
         opened = _ATTACHMENT_OPEN_RE.match(text, note.end())
-        closing = f"\n</{opened.group('tag')}>" if opened else ""
-        first_close = next_close.get(closing, 0) if opened else -1
-        # Cached per tag: notes only move forward, so a miss stays a miss and a later hit is reused.
-        if -1 < first_close < opened.end():
-            first_close = next_close[closing] = text.find(closing, opened.end())
+        if opened or _LABELLED_TEXT_RE.match(text, note.end()):
+            notes.append(note)
+            openers.append(opened)
+    # Wrappers pair with closing tags like brackets: a quoted attachment nests, an unclosed one is text.
+    events = [(opened.end(), 0, i) for i, opened in enumerate(openers) if opened]
+    events += [(closed.start(), 1, closed) for closed in _CLOSING_TAG_RE.finditer(text)]
+    ends, open_by_tag = {}, {}
+    for _, kind, item in sorted(events, key = lambda event: event[:2]):
+        if kind == 0:
+            open_by_tag.setdefault(openers[item].group("tag"), []).append(item)
+        elif open_by_tag.get(item.group("tag")):
+            ends[open_by_tag[item.group("tag")].pop()] = item.end()
+    starts = [i for i, opened in enumerate(openers) if opened is None or i in ends]
+    index = 0
+    while index < len(starts):
+        note, opened = notes[starts[index]], openers[starts[index]]
+        extent = ends.get(starts[index], -1)
         index += 1
-        while index < len(notes) and notes[index].start() < first_close:
+        while index < len(starts) and notes[starts[index]].start() < extent:
             index += 1
-        body = text[note.end() : notes[index].start() if index < len(notes) else len(text)]
-        close = body.rfind(closing) if opened else -1
-        if opened and close >= opened.end() - note.end():
-            yield (
-                note,
-                opened.group(0),
-                body[opened.end() - note.end() : close],
-                closing,
-                body[close + len(closing) :],
-            )
-        else:
+        body = text[note.end() : notes[starts[index]].start() if index < len(starts) else len(text)]
+        if opened is None:
             yield note, "", body, "", ""
+            continue
+        closing = f"\n</{opened.group('tag')}>"
+        close = body.rfind(closing)
+        yield (
+            note,
+            opened.group(0),
+            body[opened.end() - note.end() : close],
+            closing,
+            body[close + len(closing) :],
+        )
 
 
 def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:

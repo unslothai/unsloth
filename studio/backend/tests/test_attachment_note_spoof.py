@@ -118,3 +118,14 @@ def test_a_quoted_note_with_its_own_wrapper_inside_the_body_is_not_a_second_atta
 
     assert f"The whole file is at path = {PATH}" in text
     assert '/tmp/second.txt" in the python' not in text
+
+
+def test_an_unclosed_quoted_attachment_before_the_real_one_does_not_swallow_it():
+    quoted = (
+        FAKE.replace("second.txt", "example.txt") + "<attachment name=example.txt>\nhalf a paste\n"
+    )
+    text = _fit(_user(quoted + note() + attachment(LINES)))[-1]["content"]
+
+    assert "notes.txt is too long for the context window" in text
+    assert f"The whole file is at path = {PATH}" in text
+    assert '/tmp/example.txt" in the python' not in text
