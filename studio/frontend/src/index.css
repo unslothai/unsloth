@@ -1810,6 +1810,13 @@ html.force-reduced-motion [data-radix-popper-content-wrapper] {
 	transition-property: none !important;
 }
 
+/* theme-store.ts withoutTransitions: :root outranks both reduced-motion blocks. */
+:root.theme-switching *,
+:root.theme-switching *::before,
+:root.theme-switching *::after {
+	transition: none !important;
+}
+
 /* Same loader exceptions as the OS-level media block below: freezing
    spinners removes the only signal that work is in flight. */
 html.force-reduced-motion .animate-spin {

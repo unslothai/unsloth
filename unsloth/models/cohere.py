@@ -23,9 +23,11 @@ from ._utils import move_to_device, per_layer_device, refresh_moved_layer_device
 from unsloth_zoo.hf_utils import dtype_from_config
 from unsloth_zoo.utils import _get_dtype, Version
 from ..utils.packing import get_packed_info_from_kwargs
+from ..context_parallel import get_cp_manager
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    context_parallel_attention,
     run_attention,
     select_attention_backend,
     resolve_prefix_seg_info,
@@ -82,6 +84,7 @@ def fast_layernorm_inference(
 
 
 # QK norm in Cohere.
+@context_parallel_attention
 def CohereAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -128,11 +131,19 @@ def CohereAttention_fast_forward(
     if past_key_value is not None:
         kv_seq_len += past_key_value[0].shape[-2]
 
+    # Under context parallel this rank holds a shard of the sequence but its positions are global.
+    cp_manager = get_cp_manager()
+    rope_seq_len = kv_seq_len * cp_manager.size if cp_manager is not None else kv_seq_len
+
     # Extend RoPE dynamically to fit in VRAM; useful for LongRoPE.
-    if position_embeddings:
+    if position_embeddings and (
+        cp_manager is None or rope_seq_len <= position_embeddings[0].shape[0]
+    ):
         cos, sin = position_embeddings
     else:
-        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
+        if cp_manager is not None:
+            self.rotary_emb.extend_rope_embedding(V, seq_len = rope_seq_len)
+        cos, sin = self.rotary_emb.get_cached(rope_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
