@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Plain module so the node suite can import it.
-
 import type { LiveGenerationProgress } from "../stores/chat-runtime-store";
 
-/** "settled": the context meter moves when a pass finishes, the reply speed only with Detailed speed and loading info.
- *  "realtime": both follow the stream, at most once per LIVE_STATS_INTERVAL_MS. */
 export type GenerationStatsUpdates = "settled" | "realtime";
 
 export const GENERATION_STATS_UPDATES: readonly GenerationStatsUpdates[] = [
@@ -39,8 +35,7 @@ const defaultClock: ThrottleClock = {
     globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
 };
 
-/** Leading and trailing: the first change runs at once, later ones coalesce into one run per interval,
- *  and the last change always lands. */
+/** Leading and trailing: the last change always lands. */
 export function createTrailingThrottle(
   intervalMs: number,
   run: () => void,
@@ -74,10 +69,8 @@ export type LiveContextUsage = {
   cached: number;
 };
 
-/** True once the settled snapshot changed during this pass: its own context_usage has landed and counts
- *  the reply exactly, where the last decode frame trails it. A pass starts when live progress appears,
- *  or when prefill follows a decoded pass. Keyed on the snapshot object, not its numbers, so a
- *  regenerate (same prompt as the snapshot) still counts live. */
+/** True once this pass's own context_usage landed (the last decode frame trails it). Keyed on the snapshot
+ *  object, not its numbers, so a regenerate with the same prompt still counts live. */
 export function createPassSettledTracker<S>(): (
   active: boolean,
   decoding: boolean,
@@ -98,8 +91,7 @@ export function createPassSettledTracker<S>(): (
   };
 }
 
-/** What the context holds right now: the prompt read so far, then the whole prompt plus the reply so far.
- *  Null when the stream has not said, so the meter keeps the last settled count. */
+/** Null when the stream has not said, so the meter keeps the last settled count. */
 export function liveContextUsage(
   live: LiveGenerationProgress | undefined,
   passSettled: boolean,

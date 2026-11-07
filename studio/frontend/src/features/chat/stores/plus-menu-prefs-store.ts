@@ -43,7 +43,6 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   exportChat: false,
 };
 
-/** Whether Reset to default has anything to undo. */
 export function plusMenuAtDefaults(
   pins: Record<PlusMenuItemId, boolean>,
   order: readonly PlusMenuItemId[],

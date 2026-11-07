@@ -140,7 +140,6 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
   );
 }
 
-/** Plain text composer and Rich text paste, at the end of Settings > Chat > Display. */
 export function ComposerFormatRows() {
   const t = useT();
   const prefs = useChatPreferencesStore();
@@ -173,7 +172,6 @@ export function ComposerFormatRows() {
   );
 }
 
-/** The chat header's context meter on or off: Settings > Chat > Display. */
 export function ContextWindowUsageRow() {
   const t = useT();
   const checked = useChatPreferencesStore((s) => s.showContextWindowUsage);

@@ -164,7 +164,6 @@ test("realtime renders at most once per interval however fast frames arrive, and
   advance(1);
   assert.equal(runs, 2, "the burst lands once the interval is up");
   assert.equal(pending(), 0);
-  // Quiet for longer than the interval: the next frame is not held back.
   advance(500);
   throttle.schedule();
   assert.equal(runs, 3);

@@ -15,8 +15,7 @@ import { ContextUsageBar } from "./context-usage-bar";
 
 type BarProps = ComponentProps<typeof ContextUsageBar>;
 
-/** The chat header's meter. Settled mode subscribes to no live figures, so the header never
- *  re-renders mid-stream; realtime counts the prompt and reply as they stream. */
+/** Settled mode subscribes to no live figures, so the header never re-renders mid-stream. */
 export const LiveContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   liveThreadKey,
   ...props

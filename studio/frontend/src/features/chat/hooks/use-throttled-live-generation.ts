@@ -11,8 +11,7 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 
-/** The thread's live figures, re-rendering the caller at most once per LIVE_STATS_INTERVAL_MS however
- *  fast frames arrive. Subscribes outside React so a burst costs no render, only the trailing one. */
+/** Subscribes outside React so a burst of frames costs one trailing render per interval. */
 export function useThrottledLiveGeneration(
   threadKey: string,
 ): LiveGenerationProgress | undefined {
