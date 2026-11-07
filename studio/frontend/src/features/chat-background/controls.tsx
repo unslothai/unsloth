@@ -370,7 +370,7 @@ export function ChatBackgroundControls() {
 				}}
 			/>
 			{error && (
-				<p role="alert" className="mt-3 mb-3 text-sm text-destructive">
+				<p role="alert" className="my-3 text-sm text-destructive">
 					{t(errors[error])}
 				</p>
 			)}

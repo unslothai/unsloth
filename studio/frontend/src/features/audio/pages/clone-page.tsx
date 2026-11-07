@@ -115,7 +115,7 @@ function CloneInputs({
           {transcriber.error ? (
             <p
               role="alert"
-              className="text-ui-11p5 leading-snug text-destructive"
+              className="text-ui-11p5/snug text-destructive"
             >
               {transcriber.error}{" "}
               <Button
@@ -128,7 +128,7 @@ function CloneInputs({
               </Button>
             </p>
           ) : (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-11p5/snug text-muted-foreground">
               {transcriptField === "required"
                 ? "This model matches the voice using the clip's words."
                 : "Helps the model match the voice."}

@@ -83,14 +83,14 @@ export function DatasetDeviceList({
         <p className="text-ui-12p5 font-medium text-foreground">
           {t("studio.datasetPicker.couldntScan")}
         </p>
-        <p className="text-ui-11 leading-snug text-muted-foreground">{error}</p>
+        <p className="text-ui-11/snug text-muted-foreground">{error}</p>
         <RetryButton onRetry={onRetry} />
       </div>
     );
   }
   if (listState === "warning") {
     return (
-      <div className="flex items-center justify-between gap-3 px-2 py-2 text-ui-10p5 text-muted-foreground/80">
+      <div className="flex items-center justify-between gap-3 p-2 text-ui-10p5 text-muted-foreground/80">
         {warningContent}
       </div>
     );

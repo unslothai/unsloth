@@ -256,7 +256,7 @@ function ToolFallbackTrigger({
           className={cn(
             "block truncate leading-normal",
             wrapWhenOpen &&
-              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:wrap-break-word",
           )}
         >
           {label}:{" "}
@@ -269,7 +269,7 @@ function ToolFallbackTrigger({
             className={cn(
               "aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate leading-normal motion-reduce:animate-none",
               wrapWhenOpen &&
-              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:wrap-break-word",
             )}
           >
             {label}:{" "}

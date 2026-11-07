@@ -289,7 +289,7 @@ export function OnDeviceFoldersDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(620px*var(--ui-space-scale,1))] lg:max-w-[calc(660px*var(--ui-space-scale,1))] xl:max-w-[calc(680px*var(--ui-space-scale,1))] [&_[data-slot=dialog-close]]:right-3 [&_[data-slot=dialog-close]]:top-3"
+          className="flex max-h-[90dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(620px*var(--ui-space-scale,1))] lg:max-w-[calc(660px*var(--ui-space-scale,1))] xl:max-w-[calc(680px*var(--ui-space-scale,1))] **:data-[slot=dialog-close]:right-3 **:data-[slot=dialog-close]:top-3"
           overlayClassName="bg-black/20 backdrop-blur-none"
         >
           <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-4">
@@ -547,7 +547,7 @@ export function OnDeviceFoldersDialog({
                     {listError}
                   </div>
                 ) : sortedFolders.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center gap-1.5 px-6 py-6 text-center">
+                  <div className="flex flex-col items-center justify-center gap-1.5 p-6 text-center">
                     <HugeiconsIcon
                       icon={FolderAddIcon}
                       strokeWidth={1.75}

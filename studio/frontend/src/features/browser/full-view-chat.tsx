@@ -61,7 +61,7 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
         "grid shrink-0 transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none",
         expanded || menuOpen
           ? "grid-rows-[1fr]"
-          : "grid-rows-[0fr] group-hover/dock:grid-rows-[1fr] has-[:focus-visible]:grid-rows-[1fr]",
+          : "grid-rows-[0fr] group-hover/dock:grid-rows-[1fr] has-focus-visible:grid-rows-[1fr]",
       )}
     >
       <div className="min-h-0 overflow-hidden">

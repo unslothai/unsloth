@@ -50,7 +50,7 @@ function ExamplesOrHint({
 }) {
   if (!empty) {
     return (
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">{hint}</p>
+      <p className="text-ui-11p5/snug text-muted-foreground">{hint}</p>
     );
   }
   return (
@@ -140,7 +140,7 @@ function VariationsSlider({
         info="Several takes of the same request, kept together in history."
       />
       {notice ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           {notice}
         </p>
       ) : null}
@@ -223,7 +223,7 @@ function SongInputs({
               }
             />
           </FieldLabel>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {instrumental.reason ?? "No vocals; the lyrics are kept for later."}
           </p>
         </div>
@@ -247,14 +247,14 @@ function SongInputs({
           {lyrics.trim() ? (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-11p5/snug text-muted-foreground"
             >
               Section tags shape the song.
             </p>
           ) : (
             <p
               id="music-lyrics-hint"
-              className="text-ui-11p5 leading-snug text-muted-foreground"
+              className="text-ui-11p5/snug text-muted-foreground"
             >
               Section tags shape the song.{" "}
               <Button
@@ -380,7 +380,7 @@ export function MusicStudioInputs({
               label: musicModeLabel(mode),
             }))}
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {musicModeHint(rule)}
           </p>
         </div>
@@ -389,7 +389,7 @@ export function MusicStudioInputs({
           <span className="text-ui-13 font-medium text-foreground">
             {musicModeLabel(rule)}
           </span>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {musicModeHint(rule)}
           </p>
         </div>

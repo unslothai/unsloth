@@ -110,7 +110,7 @@ function FindBarLoading({
       role="search"
       aria-busy="true"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-5 pl-4.5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-5 pl-4.5"
     >
       <HugeiconsIcon
         icon={Search01Icon}
@@ -309,7 +309,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             dismissLabel={t("common.close")}
             onDismiss={close}
             testId="find-in-page-load-failure"
-            className="fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
+            className="fixed top-3 right-3 z-100 max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
           />
         }
       >

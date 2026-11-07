@@ -110,7 +110,7 @@ function SwitchRow({
       </FieldLabel>
       <p
         id={`${id}-hint`}
-        className="text-ui-11p5 leading-snug text-muted-foreground"
+        className="text-ui-11p5/snug text-muted-foreground"
       >
         {value.hint}
         {value.suggestSpeakersModel && onUseSpeakersModel ? (
@@ -520,7 +520,7 @@ export function TranscribeFooter({
         ) : notice && !running ? (
           <p
             id="transcribe-notice"
-            className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+            className="text-center text-ui-11p5/snug text-muted-foreground"
           >
             {notice}
           </p>

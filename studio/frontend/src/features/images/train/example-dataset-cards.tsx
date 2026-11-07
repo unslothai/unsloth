@@ -136,7 +136,7 @@ export function ExampleDatasetCards({
                 <TooltipContent>{ex.license}</TooltipContent>
               </Tooltip>
             </div>
-            <p className="line-clamp-2 text-ui-11 leading-snug text-muted-foreground">
+            <p className="line-clamp-2 text-ui-11/snug text-muted-foreground">
               {ex.description}
             </p>
             <div className="flex min-w-0 items-end justify-between gap-3">

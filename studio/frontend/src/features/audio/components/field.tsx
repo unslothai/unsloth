@@ -63,7 +63,7 @@ export function Field({
       </FieldLabel>
       {children}
       {hint ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           {hint}
         </p>
       ) : null}

@@ -66,11 +66,11 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         onDragLeave={() => uploads.setIsDatasetDragOver(false)}
         className={cn(
           "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-full border border-dashed px-3 text-center transition-colors",
-          "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]",
-          "hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(2%*var(--contrast-wash-gain,1)),transparent)] dark:hover:border-[rgb(255_255_255_/_calc(0.3*var(--contrast-edge-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.025*var(--contrast-wash-gain,1)))]",
+          "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] dark:border-[rgb(255_255_255/calc(0.15*var(--contrast-edge-gain,1)))]",
+          "hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(2%*var(--contrast-wash-gain,1)),transparent)] dark:hover:border-[rgb(255_255_255/calc(0.3*var(--contrast-edge-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.025*var(--contrast-wash-gain,1)))]",
           PICKER_FOCUS_VISIBLE_CLASS,
           uploads.isDatasetDragOver &&
-            "border-[color-mix(in_oklab,var(--foreground)_calc(45%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:border-[rgb(255_255_255_/_calc(0.4*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]",
+            "border-[color-mix(in_oklab,var(--foreground)_calc(45%*var(--contrast-edge-gain,1)),transparent)] bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:border-[rgb(255_255_255/calc(0.4*var(--contrast-edge-gain,1)))] dark:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))]",
           uploads.isUploading && "cursor-progress opacity-80",
         )}
       >
@@ -155,7 +155,7 @@ export function EvaluationDatasetUpload({
             aria-label={`${t("studio.dataset.clear")} ${t(
               "studio.dataset.evalDataset",
             )}`}
-            className="h-6 w-6 shrink-0 cursor-pointer p-0"
+            className="size-6 shrink-0 cursor-pointer p-0"
             onClick={() => setUploadedEvalFile(null)}
           >
             <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />

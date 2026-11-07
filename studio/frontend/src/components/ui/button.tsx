@@ -22,7 +22,7 @@ export const buttonVariants = cva(
           "btn-fill hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
         // A menu trigger that shows the current value, dressed as a select trigger.
         picker:
-          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:text-foreground",
+          "border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground aria-expanded:text-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:

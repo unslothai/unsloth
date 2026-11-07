@@ -441,7 +441,7 @@ export function DownloadedList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))]"
               >
                 Show all types
               </button>
@@ -545,7 +545,7 @@ export function DownloadedList({
             })}
           </div>
           {unpinnedItems.length > 0 && (
-            <div className="px-1 pb-2 pt-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">
+            <div className="px-1 py-2 text-ui-11 font-semibold uppercase tracking-wider text-muted-foreground">
               All {isDataset ? "datasets" : "models"}
             </div>
           )}

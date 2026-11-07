@@ -273,7 +273,7 @@ function OwnerAccountsTab() {
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
           <p
             role="alert"
-            className="min-w-0 break-words text-xs text-destructive"
+            className="min-w-0 wrap-break-word text-xs text-destructive"
           >
             {error}
           </p>
@@ -330,7 +330,7 @@ function OwnerAccountsTab() {
                   className="[&>td]:transition-colors hover:[&>td]:bg-muted/40 focus-within:[&>td]:bg-muted/40"
                   data-testid={`account-${account.username}`}
                 >
-                  <td className="rounded-l-md py-3 pl-3 pr-3">
+                  <td className="rounded-l-md p-3">
                     <div className="flex items-center gap-2.5">
                       <UserAvatar
                         name={shownName(account)}
@@ -568,7 +568,7 @@ function OwnerAccountsTab() {
               accounts[0].role === "owner" &&
               !query.trim())) && (
             <p
-              className="py-8 text-center text-xs font-normal leading-relaxed text-muted-foreground"
+              className="py-8 text-center text-ui-12/relaxed font-normal text-muted-foreground"
               role="status"
             >
               {t(
@@ -631,7 +631,7 @@ function OwnerAccountsTab() {
       >
         <DialogContent
           showCloseButton={false}
-          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-sm:rounded-2xl"
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-[calc(50%+var(--studio-window-chrome-top,0)/2)] max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top,0)-2rem)] max-sm:rounded-2xl"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const trigger = actionTrigger.current;
@@ -642,7 +642,7 @@ function OwnerAccountsTab() {
           }}
         >
           <DialogHeader>
-            <DialogTitle className="break-words">
+            <DialogTitle className="wrap-break-word">
               {setup
                 ? t("settings.accounts.setupFor", { username: setup.username })
                 : t("settings.accounts.create")}
@@ -658,7 +658,7 @@ function OwnerAccountsTab() {
           {setup ? (
             <>
               <code
-                className="block select-all break-all rounded-full border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed"
+                className="block select-all break-all rounded-full border border-border/60 bg-muted/30 px-4 py-3 font-mono text-sm/relaxed"
                 data-testid="account-setup-code"
               >
                 {setup.setup_code}
@@ -739,7 +739,7 @@ function OwnerAccountsTab() {
             </form>
           )}
           {error && (
-            <p role="alert" className="break-words text-xs text-destructive">
+            <p role="alert" className="wrap-break-word text-xs text-destructive">
               {error}
             </p>
           )}
@@ -765,7 +765,7 @@ function OwnerAccountsTab() {
           }}
         >
           <DialogHeader>
-            <DialogTitle className="break-words">
+            <DialogTitle className="wrap-break-word">
               {t("settings.accounts.modelAccessTitle", {
                 username: modelAccess?.username ?? "",
               })}
@@ -815,7 +815,7 @@ function OwnerAccountsTab() {
               </p>
             </div>
             {error && (
-              <p role="alert" className="break-words text-xs text-destructive">
+              <p role="alert" className="wrap-break-word text-xs text-destructive">
                 {error}
               </p>
             )}
@@ -859,7 +859,7 @@ function OwnerAccountsTab() {
           }}
         >
           <DialogHeader>
-            <DialogTitle className="break-words">
+            <DialogTitle className="wrap-break-word">
               {t("settings.accounts.renameTitle", {
                 username: renaming?.username ?? "",
               })}
@@ -896,7 +896,7 @@ function OwnerAccountsTab() {
               />
             </div>
             {error && (
-              <p role="alert" className="break-words text-xs text-destructive">
+              <p role="alert" className="wrap-break-word text-xs text-destructive">
                 {error}
               </p>
             )}
@@ -945,7 +945,7 @@ function OwnerAccountsTab() {
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle className="break-words">
+            <AlertDialogTitle className="wrap-break-word">
               {t(
                 resetting
                   ? "settings.accounts.resetTitle"
@@ -953,7 +953,7 @@ function OwnerAccountsTab() {
                 { username: confirming?.username ?? "" },
               )}
             </AlertDialogTitle>
-            <AlertDialogDescription className="break-words">
+            <AlertDialogDescription className="wrap-break-word">
               {t(
                 resetting
                   ? "settings.accounts.resetDescription"
@@ -963,7 +963,7 @@ function OwnerAccountsTab() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           {error && (
-            <p role="alert" className="break-words text-sm text-destructive">
+            <p role="alert" className="wrap-break-word text-sm text-destructive">
               {error}
             </p>
           )}

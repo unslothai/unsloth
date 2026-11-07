@@ -23,7 +23,7 @@ export function Navbar() {
             <div
               data-tauri-drag-region
               aria-hidden="true"
-              className="pointer-events-auto absolute inset-x-0 top-0 h-[var(--studio-mac-titlebar-height,34px)] select-none"
+              className="pointer-events-auto absolute inset-x-0 top-0 h-(--studio-mac-titlebar-height,34px) select-none"
             />
           )}
         </header>
@@ -32,7 +32,7 @@ export function Navbar() {
           <DesktopTitlebarNavigation
             expanded={false}
             onToggleSidebar={togglePinned}
-            className="modal-pe-live pointer-events-auto absolute left-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] top-px z-[60]"
+            className="modal-pe-live pointer-events-auto absolute left-[calc(var(--studio-mac-traffic-light-inset,78px)+calc(6px*var(--ui-space-scale,1)))] top-px z-60"
           />
         )}
       </>
@@ -44,8 +44,8 @@ export function Navbar() {
       className={cn(
         "modal-pe-live absolute top-0 inset-x-0 pointer-events-none",
         usesCustomTitlebar
-          ? "z-[80] h-[var(--studio-custom-titlebar-height,34px)]"
-          : "z-[45] h-[calc(48px*var(--ui-space-scale,1))]",
+          ? "z-80 h-(--studio-custom-titlebar-height,34px)"
+          : "z-45 h-[calc(48px*var(--ui-space-scale,1))]",
       )}
     >
       <div
@@ -62,8 +62,8 @@ export function Navbar() {
           className={cn(
             "pointer-events-auto",
             usesCustomTitlebar
-              ? "!size-[calc(34px*var(--ui-space-scale,1))]"
-              : "!size-[calc(34px*var(--ui-space-scale,1))]",
+              ? "size-[calc(34px*var(--ui-space-scale,1))]!"
+              : "size-[calc(34px*var(--ui-space-scale,1))]!",
           )}
         />
       </div>

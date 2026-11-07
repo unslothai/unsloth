@@ -33,7 +33,7 @@ const ReplyTime: FC = () => {
         locale,
         withTimeFormat({ dateStyle: "full", timeStyle: "medium" }, locale),
       )}
-      className="aui-assistant-message-time ml-[var(--icon-btn-inset)] mr-2 shrink-0 select-none text-ui-11p5 text-muted-foreground tabular-nums"
+      className="aui-assistant-message-time ml-(--icon-btn-inset) mr-2 shrink-0 select-none text-ui-11p5 text-muted-foreground tabular-nums"
     >
       {date.toLocaleString(
         locale,

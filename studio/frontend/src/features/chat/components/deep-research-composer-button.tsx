@@ -108,14 +108,14 @@ function DomainList({
     <div className="space-y-2">
       <div>
         <div className="text-sm font-medium">{label}</div>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-0.5 text-ui-12/relaxed text-muted-foreground">
           {description}
         </p>
       </div>
       <div
         onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
-          "flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-xl border border-border bg-background px-1.5 py-[3px] transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]",
+          "flex min-h-9 cursor-text flex-wrap items-center gap-1 rounded-xl border border-border bg-background px-1.5 py-[3px] transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]",
           error && "border-destructive ring-[3px] ring-destructive/20 dark:border-destructive/50",
         )}
       >
@@ -191,7 +191,7 @@ function McpSourceList({
     <div className="space-y-2">
       <div>
         <div className="text-sm font-medium">MCP search sources</div>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-0.5 text-ui-12/relaxed text-muted-foreground">
           Every research search also sends its query to the tools turned on
           here. Choose up to {MAX_RESEARCH_MCP_SOURCES}.
         </p>
@@ -209,7 +209,7 @@ function McpSourceList({
             className="flex cursor-pointer items-start justify-between gap-6"
           >
             <span className="min-w-0">
-              <span className="block break-words text-sm">
+              <span className="block wrap-break-word text-sm">
                 {tool.serverName} · {tool.tool}
               </span>
               {tool.description ? (
@@ -219,7 +219,7 @@ function McpSourceList({
               ) : null}
             </span>
             <Switch
-              className="mt-[var(--ui-title-cap-inset)]"
+              className="mt-(--ui-title-cap-inset)"
               checked={values.some((value) => matches(tool, value))}
               disabled={
                 !values.some((value) => matches(tool, value)) &&
@@ -247,7 +247,7 @@ function McpSourceList({
           key={`${value.serverId}:${value.tool}`}
           className="flex items-start justify-between gap-6"
         >
-          <span className="min-w-0 break-words text-sm">
+          <span className="min-w-0 wrap-break-word text-sm">
             {value.serverId} · {value.tool}
             <span className="block text-xs text-muted-foreground">
               Currently unavailable. Selection kept until you remove it.
@@ -404,7 +404,7 @@ function DeepResearchWebsiteAccessContent({
             <div>
               {/* A run makes many model requests, so this bounds each one, not the run. */}
               <div className="text-sm font-medium">Time per model request</div>
-              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              <p className="mt-0.5 text-ui-12/relaxed text-muted-foreground">
                 {unlimited
                   ? "No limit on a single model request. Slow models can continue while they keep producing output."
                   : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
@@ -412,7 +412,7 @@ function DeepResearchWebsiteAccessContent({
             </div>
             <label
               htmlFor="research-no-time-limit"
-              className="mt-[var(--ui-title-cap-inset)] flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted-foreground"
+              className="mt-(--ui-title-cap-inset) flex shrink-0 cursor-pointer items-center gap-2 text-sm text-muted-foreground"
             >
               No limit
               <Switch

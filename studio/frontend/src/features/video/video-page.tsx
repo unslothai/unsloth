@@ -782,7 +782,7 @@ function ReferenceVideoTrimStatus({
     <p
       aria-live="polite"
       className={cn(
-        "text-ui-11 leading-snug",
+        "text-ui-11/snug",
         feedback.invalid ? "text-destructive" : "text-muted-foreground/70",
       )}
     >
@@ -876,11 +876,11 @@ const VideoStripTile = memo(function VideoStripTile({
         )}
         {/* A terse caption strip so cards read at a glance. Left/bottom padding clears the rounded
             corner and the selection border. */}
-        <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
+        <span className="relative z-10 truncate bg-linear-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
           {clipMeta(video)}
         </span>
         {selected && (
-          <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+          <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255/calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
         )}
       </button>
       </TooltipTrigger>
@@ -947,7 +947,7 @@ function RecipePopover({
         align="end"
         side="top"
         collisionPadding={12}
-        className="flex max-h-[var(--radix-popover-content-available-height)] w-80 flex-col gap-0 overflow-hidden p-0"
+        className="flex max-h-(--radix-popover-content-available-height) w-80 flex-col gap-0 overflow-hidden p-0"
       >
         <div className="shrink-0 border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
@@ -1030,7 +1030,7 @@ function RecipeRow({
       <span
         className={cn(
           "min-w-0 flex-1 text-foreground",
-          wrap ? "whitespace-pre-wrap break-words" : "truncate",
+          wrap ? "whitespace-pre-wrap wrap-break-word" : "truncate",
           mono && "font-mono",
         )}
       >
@@ -1098,7 +1098,7 @@ type VideoLoadAdvanced = Pick<
 
 function VideoGate({ children }: { children: ReactNode }) {
   return (
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 pt-[var(--studio-content-top-inset,0px)] text-center text-sm text-muted-foreground">
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 pt-(--studio-content-top-inset,0px) text-center text-sm text-muted-foreground">
       {children}
     </div>
   );
@@ -1162,7 +1162,7 @@ function VideoCpuExperimentalBanner() {
     <div
       role="status"
       data-testid="video-cpu-experimental"
-      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs leading-snug text-amber-700 dark:text-amber-300"
+      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-ui-12/snug text-amber-700 dark:text-amber-300"
     >
       <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} className="mt-px size-3.5 shrink-0" />
       <span>
@@ -3844,7 +3844,7 @@ function VideoGenerator({
     <div
       {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
       style={railRootStyle}
-      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      className="diffusion-surface media-header-layout @container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-(--studio-content-top-inset,0px)"
     >
       <MediaRailResizeHandle kind="video" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
@@ -3901,7 +3901,7 @@ function VideoGenerator({
             >
               <span className="grid gap-1">
                 <span className="font-medium">Text and frames</span>
-                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                <span className="text-ui-11/snug font-normal text-muted-foreground">
                   Generate from text, with optional first and last frame images.
                 </span>
               </span>
@@ -3914,7 +3914,7 @@ function VideoGenerator({
             >
               <span className="grid gap-1">
                 <span className="font-medium">References</span>
-                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                <span className="text-ui-11/snug font-normal text-muted-foreground">
                   Generate from reference pictures, videos and audio tracks.
                 </span>
               </span>
@@ -3932,12 +3932,12 @@ function VideoGenerator({
               ? "pl-12"
               : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
                 !pinned && isTauri
-                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+                ? "pl-(--studio-collapsed-chat-controls-inset,0.75rem)"
+                : "pl-(--studio-media-header-left-inset,1.5rem)",
           )}
         >
           {/* min-w-0: without it a long resident model name pushes the Library link off a phone screen. */}
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-(--studio-chat-header-padding-top,11px)">
             {pageMode === "train" ? (
               <TrainBaseSelector
                 families={trainFamilies}
@@ -3959,7 +3959,7 @@ function VideoGenerator({
               resolveDownloadFootprint={resolveDownloadFootprint}
               onEject={status?.loaded ? handleUnload : undefined}
               variant="ghost"
-              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
+              className="ml-1.5 max-w-full overflow-hidden pl-2.5! pr-1.5! h-(--studio-chat-control-height,34px)!"
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               opaqueKind={opaqueKind}
@@ -3980,7 +3980,7 @@ function VideoGenerator({
                     variant="outline"
                     size="sm"
                     aria-label="Cancel load"
-                    className="!h-[calc(34px*var(--ui-space-scale,1))] rounded-full text-xs"
+                    className="h-[calc(34px*var(--ui-space-scale,1))]! rounded-full text-xs"
                     onClick={() => void handleCancelLoad()}
                   >
                     Cancel load
@@ -3993,7 +3993,7 @@ function VideoGenerator({
         </div>
         <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
           {pageMode !== "train" && status?.loaded && (
-            <div className="pointer-events-auto col-start-1 mt-[var(--studio-chat-header-padding-top,11px)] flex h-[var(--studio-chat-control-height,34px)] min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-[var(--studio-chat-control-height,34px)]">
+            <div className="pointer-events-auto col-start-1 mt-(--studio-chat-header-padding-top,11px) flex h-(--studio-chat-control-height,34px) min-w-0 flex-wrap content-start gap-x-3 overflow-hidden pl-4 text-ui-11 leading-(--studio-chat-control-height,34px)">
               {status.family && <StatusChip label="Family" value={status.family} />}
               {status.engine && <StatusChip label="Engine" value={status.engine} />}
               {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
@@ -4003,14 +4003,14 @@ function VideoGenerator({
               {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
             </div>
           )}
-          <div data-media-header-centre className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 row-start-1 justify-self-center pt-(--studio-chat-header-padding-top,11px)">
             <PillTabs
               dataTour="video-mode"
               ariaLabel="Page mode"
               value={pageMode}
               onValueChange={(v) => setPageMode(v as "create" | "train")}
               fit={true}
-              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 [[data-media-header-tight]_&]:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+              className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-7 @[68rem]:[&>button]:px-14 in-data-media-header-tight:[&>button]:px-4 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
               tabs={[
                 { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
                 { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
@@ -4018,7 +4018,7 @@ function VideoGenerator({
             />
           </div>
           {/* The chat header's right inset. */}
-          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
+          <MediaHeaderActions className="pr-[calc(var(--thread-scrollbar-gutter,10px)+0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0)))]">
             <MediaApiButton
               kind="video"
               model={status?.loaded ? (status.repo_id ?? null) : null}
@@ -4060,7 +4060,7 @@ function VideoGenerator({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0px))]",
+              "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto @[50rem]:[scrollbar-gutter:stable] @[50rem]:pr-[calc(var(--spacing)*10-var(--classic-scrollbar-width,0))]",
               settingsFadeClass,
             )}
           >
@@ -4070,7 +4070,7 @@ function VideoGenerator({
                 <HugeiconsIcon icon={FlimSlateIcon} className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0" />
                 Create videos
               </h2>
-              <p className="text-xs leading-snug text-muted-foreground">
+              <p className="text-ui-12/snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
                   : supportsLastFrame
@@ -4157,7 +4157,7 @@ function VideoGenerator({
               </div>
               {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
                 // Surface the same aspect-ratio rejection before Generate.
-                <p className="text-ui-11 leading-snug text-destructive">
+                <p className="text-ui-11/snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
                   1:4 and 4:1. Crop it, or pick a resolution preset to stretch it onto.
                 </p>
@@ -4190,15 +4190,15 @@ function VideoGenerator({
                       <button
                         type="button"
                         aria-label={`Edit crop for picture ${index + 1}`}
-                        className="group h-full w-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+                        className="group size-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
                         onClick={() => setCropPictureIndex(index)}
                       >
                         <img
                           src={image.dataUrl}
                           alt=""
-                          className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
+                          className="size-full object-cover transition-transform group-hover:scale-[1.02]"
                         />
-                        <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/80 to-transparent px-2 pb-1.5 pt-6 text-ui-11 font-medium text-white">
+                        <span className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-linear-to-t from-black/80 to-transparent px-2 pb-1.5 pt-6 text-ui-11 font-medium text-white">
                           <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
                           Edit crop
                         </span>
@@ -4415,7 +4415,7 @@ function VideoGenerator({
               </div>
 
               {referenceImages.length === 0 && referenceVideos.length === 0 && (
-                <p className="text-ui-11 leading-snug text-muted-foreground/70">
+                <p className="text-ui-11/snug text-muted-foreground/70">
                   This checkpoint generates from references. Add a picture or a video, or load a
                   first/last-frame checkpoint for plain text-to-video.
                 </p>
@@ -4500,7 +4500,7 @@ function VideoGenerator({
               />
             </div>
             {!sourceSized && !isPresetSize(videoSize[0], videoSize[1], sizeLimits) && (
-              <p className="text-ui-11 leading-snug text-muted-foreground">
+              <p className="text-ui-11/snug text-muted-foreground">
                 Not one of the model's trained sizes, so quality may be lower.
               </p>
             )}
@@ -4767,13 +4767,13 @@ function VideoGenerator({
                   className="media-stage-shadow max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
-                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-full bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
+                  <div className="absolute left-4 top-4 flex items-center gap-1 rounded-full bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur-sm">
                     <HugeiconsIcon icon={Volume02Icon} className="size-3.5" />
                     Audio
                   </div>
                 )}
                 {/* No button borders: focus returning from a menu would draw one. Keyboard focus tints instead. */}
-                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-full bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur-sm **:data-[slot=button]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
                   {/* Not a click on the clip itself: Chrome's ⋮ menu, WebKit's centred play button and the
                       first click of a double-click to fullscreen all land on the frame, above the controls. */}
                   <Button
@@ -4857,7 +4857,7 @@ function VideoGenerator({
                   selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
-                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
+                <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur-sm">
                   <ModelLoadDescription
                     className="min-h-0"
                     title={null}
@@ -4925,7 +4925,7 @@ function VideoGenerator({
                     <button
                       type="button"
                       onClick={() => setClearConfirmOpen(true)}
-                      className="btn-fill flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
+                      className="btn-fill flex size-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
                     >
                       <HugeiconsIcon icon={TrashIcon} className="size-4" />
                       <span className="text-ui-9 font-medium">Clear all</span>

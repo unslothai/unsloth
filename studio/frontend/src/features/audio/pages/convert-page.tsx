@@ -163,7 +163,7 @@ function ConvertInputs({
           {pitchSupport.auto &&
           convert.pitchAuto &&
           !pitchSupport.shiftWithAuto ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-11p5/snug text-muted-foreground">
               Turn off to set the pitch shift yourself.
             </p>
           ) : (
@@ -239,7 +239,7 @@ function SourceTextField({
         className="min-h-16"
       />
       {transcriber.error ? (
-        <p role="alert" className="text-ui-11p5 leading-snug text-destructive">
+        <p role="alert" className="text-ui-11p5/snug text-destructive">
           {transcriber.error}{" "}
           <Button
             type="button"
@@ -251,7 +251,7 @@ function SourceTextField({
           </Button>
         </p>
       ) : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           Taking the target's style rebuilds the delivery from these words.
         </p>
       )}
@@ -332,7 +332,7 @@ export function ConvertFooter({
         handleGenerate={convert.handleGenerate}
       />
       {notice ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-11p5/snug text-muted-foreground">
           {notice}
         </p>
       ) : null}

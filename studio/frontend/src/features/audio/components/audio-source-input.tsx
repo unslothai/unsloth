@@ -129,7 +129,7 @@ function AlertLine({ children }: { children: ReactNode }) {
   return (
     <p
       role="alert"
-      className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+      className="flex items-start gap-1.5 text-ui-12/snug text-foreground"
     >
       <HugeiconsIcon
         icon={Alert02Icon}
@@ -378,13 +378,13 @@ export function AudioSourceInput({
           ) : usesFirstSeconds !== null &&
             durationS !== null &&
             durationS > usesFirstSeconds ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-11p5/snug text-muted-foreground">
               {usesFirstSeconds % 60 === 0 && usesFirstSeconds >= 60
                 ? `Uses the first ${usesFirstSeconds / 60} min.`
                 : `Uses the first ${usesFirstSeconds} s.`}
             </p>
           ) : lengthHint ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-11p5/snug text-muted-foreground">
               {lengthHint}
             </p>
           ) : null}
@@ -479,7 +479,7 @@ export function AudioSourceInput({
           ) : null}
           {tab === "history" && !recording ? (
             history.length === 0 ? (
-              <p className="text-ui-12 leading-snug text-muted-foreground">
+              <p className="text-ui-12/snug text-muted-foreground">
                 Clips you make in Audio show up here.
               </p>
             ) : (

@@ -118,8 +118,8 @@ function TextFile({
     <pre
       style={{ zoom: scale }}
       className={cn(
-        "size-full overflow-auto px-6 py-4 font-mono text-sm leading-relaxed select-text",
-        kind === "text" || view.wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+        "size-full overflow-auto px-6 py-4 font-mono text-sm/relaxed select-text",
+        kind === "text" || view.wrap ? "whitespace-pre-wrap wrap-break-word" : "whitespace-pre",
       )}
     >
       {preview.text}

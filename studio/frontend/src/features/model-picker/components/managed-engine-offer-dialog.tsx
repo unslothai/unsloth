@@ -75,7 +75,7 @@ export function ManagedEngineOfferDialog() {
               className="size-5 text-muted-foreground"
             />
           </AlertDialogMedia>
-          <AlertDialogTitle className="min-w-0 break-words">
+          <AlertDialogTitle className="min-w-0 wrap-break-word">
             {displayName} needs {names.join(" or ")}
           </AlertDialogTitle>
           <AlertDialogDescription>

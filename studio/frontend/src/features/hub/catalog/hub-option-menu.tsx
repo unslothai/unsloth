@@ -203,7 +203,7 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-(--radix-popover-trigger-width) max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] ring-0",
           composer ? "hub-composer-menu gap-0" : "rounded-lg p-1",
           contentClassName,
         )}
@@ -241,7 +241,7 @@ export function HubOptionMenu<T extends string>({
                       "rounded-md pr-8 leading-snug",
                 )}
               >
-                <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">
+                <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal wrap-break-word">
                   {option.label}
                 </span>
                 {selectedOption && (
@@ -265,7 +265,7 @@ export function HubOptionMenu<T extends string>({
         {footer &&
           (composer ? (
             <div>
-              <div aria-hidden={true} className="mx-1 my-1 h-px bg-border/50" />
+              <div aria-hidden={true} className="m-1 h-px bg-border/50" />
               {footer}
             </div>
           ) : (

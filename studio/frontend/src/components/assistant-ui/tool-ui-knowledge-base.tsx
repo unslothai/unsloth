@@ -227,7 +227,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             ) : query ? (
               <div
                 data-slot="knowledge-base-query"
-                className="break-words text-xs"
+                className="wrap-break-word text-xs"
               >
                 Query: &ldquo;{query}&rdquo;
               </div>

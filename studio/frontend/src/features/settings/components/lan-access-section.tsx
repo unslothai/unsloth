@@ -171,7 +171,7 @@ function StatusMessage({
   return (
     <p
       className={cn(
-        "border-t border-border/60 px-4 py-2.5 text-xs leading-snug",
+        "border-t border-border/60 px-4 py-2.5 text-ui-12/snug",
         destructive ? "text-destructive" : "text-muted-foreground",
       )}
     >
@@ -207,7 +207,7 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
             {single ? null : <LanUrlQrButton url={url} />}
           </div>
           {stale.has(url) ? (
-            <span className="text-xs text-destructive leading-snug">
+            <span className="text-ui-12/snug text-destructive">
               This address is no longer on this computer, so nothing reaches it.
               Stop and start LAN access to use the current one.
             </span>
@@ -215,21 +215,21 @@ function LanUrlPanel({ status }: { status: LanAccessStatus | null }) {
         </div>
       ))}
       {status.publicUrls.length > 0 ? (
-        <span className="text-xs text-destructive leading-snug">
+        <span className="text-ui-12/snug text-destructive">
           {keylessNote}
           {status.publicUrls[0]} is a public internet address, so this reaches
           beyond your local network. Anyone who has the password or an API key
           can sign in and run code on this machine.
         </span>
       ) : (
-        <span className="text-xs text-muted-foreground leading-snug">
+        <span className="text-ui-12/snug text-muted-foreground">
           {keylessNote}
           {status.servesWebUi
             ? "Anyone on this network who has the password or an API key can sign in and run code on this machine."
             : "This launch serves the API only, so devices on the network can call the API but not open the web UI."}
         </span>
       )}
-      <span className="text-xs text-muted-foreground leading-snug">
+      <span className="text-ui-12/snug text-muted-foreground">
         Can't connect from another device? Allow Unsloth through this computer's
         firewall, and check both devices are on the same network (guest Wi-Fi
         often keeps devices apart).
@@ -448,7 +448,7 @@ export function LanAccessSection() {
               </h2>
               <AccessStatus status={status} />
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-ui-12/relaxed text-muted-foreground">
               Use Unsloth and its APIs from devices on your Wi-Fi or wired
               network.
             </p>

@@ -150,8 +150,8 @@ export function ColorPickerSwatch({
           className={cn(
             "flex h-8 min-w-24 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 font-mono text-xs uppercase transition-colors",
             light
-              ? "border-[rgb(0_0_0_/_calc(0.1*var(--contrast-edge-gain,1)))] text-black/80"
-              : "border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))] text-white",
+              ? "border-[rgb(0_0_0/calc(0.1*var(--contrast-edge-gain,1)))] text-black/80"
+              : "border-[rgb(255_255_255/calc(0.15*var(--contrast-edge-gain,1)))] text-white",
           )}
           style={{ backgroundColor: value }}
         >
@@ -159,8 +159,8 @@ export function ColorPickerSwatch({
             className={cn(
               "size-3.5 shrink-0 rounded-full border",
               light
-                ? "border-[rgb(0_0_0_/_calc(0.2*var(--contrast-edge-gain,1)))]"
-                : "border-[rgb(255_255_255_/_calc(0.4*var(--contrast-edge-gain,1)))]",
+                ? "border-[rgb(0_0_0/calc(0.2*var(--contrast-edge-gain,1)))]"
+                : "border-[rgb(255_255_255/calc(0.4*var(--contrast-edge-gain,1)))]",
             )}
           />
           {value.toUpperCase()}
@@ -204,7 +204,7 @@ export function ColorPickerSwatch({
             }}
           >
             <span
-              className="pointer-events-none absolute size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
+              className="pointer-events-none absolute size-3.5 -translate-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)]"
               style={{
                 left: `${hsv.s * 100}%`,
                 top: `${(1 - hsv.v) * 100}%`,
@@ -239,7 +239,7 @@ export function ColorPickerSwatch({
               }}
               aria-label={t("settings.appearance.custom.colorPicker.hex")}
               spellCheck={false}
-              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+              className="h-8 w-full min-w-0 rounded-full border border-border bg-background px-3 font-mono text-xs text-foreground uppercase outline-none focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]"
             />
             {eyeDropperCtor && (
               <button

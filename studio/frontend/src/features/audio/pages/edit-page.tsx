@@ -124,7 +124,7 @@ function EditInputs({
         {transcriber.error ? (
           <p
             role="alert"
-            className="text-ui-11p5 leading-snug text-destructive"
+            className="text-ui-11p5/snug text-destructive"
           >
             {transcriber.error}{" "}
             <Button
@@ -137,7 +137,7 @@ function EditInputs({
             </Button>
           </p>
         ) : (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {EDIT_COPY.transcriptHint}
           </p>
         )}
@@ -213,13 +213,13 @@ function EditInputs({
             onChange={(pitchSteps) => setDelivery({ pitchSteps })}
             commitWhileDragging
           />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {EDIT_COPY.pitchHint}
           </p>
         </div>
       ) : null}
       {adapter?.family === "vevo2" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           {EDIT_COPY.vevo2SwitchNote}
         </p>
       ) : null}

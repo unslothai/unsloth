@@ -384,13 +384,13 @@ export function ApiModelLoadControls({
         placeholder="Load models"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="ml-1.5 max-w-[62vw] !pl-2.5 !pr-1.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+        className="ml-1.5 max-w-[62vw] pl-2.5! pr-1.5! md:max-w-none h-(--studio-chat-control-height,34px)!"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
       {actionError ? (
         <span
           role="alert"
-          className="basis-full break-words text-ui-12 text-red-600 dark:text-red-400"
+          className="basis-full wrap-break-word text-ui-12 text-red-600 dark:text-red-400"
         >
           {actionError}
         </span>
