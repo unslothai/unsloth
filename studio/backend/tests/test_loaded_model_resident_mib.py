@@ -124,6 +124,24 @@ def test_media_owner_sums_its_own_gpus_only(media_needs):
     assert gr.media_owner_held_mib(arb.VIDEO) == 9000
 
 
+class _Need(dict):
+    headroom_mib = 3000
+
+
+def test_an_idle_media_owner_holds_its_weights_not_its_generation_headroom(
+    media_needs, monkeypatch
+):
+    media_needs._residents = {arb.DIFFUSION: frozenset({0})}
+    media_needs._owner = arb.DIFFUSION
+    media_needs._media_needs = {arb.DIFFUSION: _Need({0: 7000})}
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (False, False))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) == 4000
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (False, True))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) == 7000
+    monkeypatch.setattr(gr, "_media_busy", lambda owner: (True, False))
+    assert gr.media_owner_held_mib(arb.DIFFUSION) is None
+
+
 def test_unpriced_media_owner_is_none(media_needs):
     assert gr.media_owner_held_mib(arb.VIDEO) is None
     media_needs._media_needs = {arb.VIDEO: {0: "lots"}}
