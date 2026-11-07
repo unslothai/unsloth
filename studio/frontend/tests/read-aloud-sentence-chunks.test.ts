@@ -171,6 +171,11 @@ test("a dot with no space after it (.75, .env) stays inside its token", () => {
     "Then retry.",
   ]);
   assert.deepEqual(speechText.splitIntoSentences("It costs $.50 now. Use -.5 here."), ["It costs $.50 now.", "Use -.5 here."]);
+  assert.deepEqual(speechText.splitIntoSentences("Run ./train.py to start. Then wait."), [
+    "Run ./train.py to start.",
+    "Then wait.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("10\n.75"), ["10", ".75"]);
   assert.deepEqual(speechText.splitIntoSentences("Use .env for the key. Then restart."), [
     "Use .env for the key.",
     "Then restart.",
