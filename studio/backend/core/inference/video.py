@@ -5080,8 +5080,34 @@ _NATIVE_CRASH_NEEDLES = (
 )
 
 
+_FAILURE_REASON_MAX_CHARS = 120
+_PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
+# Absolute paths (quoted ones may hold spaces); URLs are left for redact_log_text.
+_FAILURE_PATH_RE = re.compile(
+    r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
+    rf"|(?P<q>['\"`]){_PATH_START}[^\n]*?(?P=q)"
+    rf"|(?<![\w/~]){_PATH_START}[^\s\"'`,;]+"
+)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Exception class and first message line, without credentials or filesystem paths."""
+    from utils.log_redaction import redact_log_text
+
+    lines = str(exc).strip().splitlines()
+    text = redact_log_text(lines[0] if lines else "")
+    text = _FAILURE_PATH_RE.sub(lambda m: m["url"] or f"{m['q'] or ''}<path>{m['q'] or ''}", text)
+    text = " ".join(text.split())
+    reason = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    if len(reason) > _FAILURE_REASON_MAX_CHARS:
+        cut = reason[: _FAILURE_REASON_MAX_CHARS - 3]
+        reason = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:") + "..."
+    return reason
+
+
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
-    """A user-facing reason for a failed generation, built only from fixed text."""
+    """A user-facing reason for a failed generation: fixed text for known classes, else the
+    redacted exception class and first line."""
     try:
         from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -5100,17 +5126,18 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
                     _probe_target(request_shape), request_shape.get("attention_head_dims")
                 )
             ):
-                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+                return (
+                    f"{VIDEO_GENERATION_FAILED_MSG} Out of memory: this device has no fused attention "
+                    "kernel. Lower the resolution or frame count."
+                )
             return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
-                "resolution, fewer frames, or fewer steps."
+                f"{VIDEO_GENERATION_FAILED_MSG} Out of memory. Try a smaller resolution, fewer "
+                "frames or fewer steps."
             )
         text = str(exc).lower()
         if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
-            return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
-                "server log in Settings > Logs for its output."
-            )
+            return f"{VIDEO_GENERATION_FAILED_MSG} The renderer crashed. See Settings > Logs."
+        return f"{VIDEO_GENERATION_FAILED_MSG} {_failure_reason(exc)}"
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass
     return VIDEO_GENERATION_FAILED_MSG
@@ -9755,11 +9782,28 @@ class VideoBackend:
                 device = target.torch_device if target.device == "cuda" else None,
             )
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(
-                _base_local_dir or fetch_base,
-                **_pinned_base_kwargs(),
-                **pipe_kwargs,
-            )
+            if fam.name in COSMOS3_FAMILIES:
+                from .video_cosmos3 import guardrail_access_refusal, guardrail_hub_token
+                hub_token_scope = guardrail_hub_token(hf_token)
+            else:
+                hub_token_scope = contextlib.nullcontext()
+            try:
+                with hub_token_scope:
+                    pipe = pipeline_cls.from_pretrained(
+                        _base_local_dir or fetch_base,
+                        **_pinned_base_kwargs(),
+                        **pipe_kwargs,
+                    )
+            except Exception as exc:
+                refusal = (
+                    guardrail_access_refusal(str(repo_id), exc)
+                    if fam.name in COSMOS3_FAMILIES
+                    else None
+                )
+                if refusal is None:
+                    raise
+                logger.warning("video.cosmos3: guardrail download refused: %s", exc)
+                raise ValueError(refusal) from exc
             if cast_missed:
                 from .diffusion_cast_cache import defer_writes
 
@@ -12631,8 +12675,8 @@ class VideoBackend:
         video_id: Optional[str] = None,
         **gen_kwargs: Any,
     ) -> None:
-        """Worker for begin_generate; unexpected errors are logged, the client gets only a generic
-        message."""
+        """Worker for begin_generate; unexpected errors are logged in full, the client gets
+        video_failure_detail's redacted reason."""
         from . import video_gallery
 
         def _record_outcome(error: Optional[str] = None) -> None:
