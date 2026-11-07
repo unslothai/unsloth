@@ -32,14 +32,37 @@ const STORED_PALETTE = Object.fromEntries(
   COLOR_THEME_IDS.map((id) => [id, id]),
 ) as Record<Palette, Palette>;
 
+const APPEARANCE_COOKIE_RE =
+  /(?:^|;\s*)unsloth_appearance=([a-z-]+)\.([a-z-]+)(?:;|$)/;
+
+/**
+ * The account's appearance as the server last sent it (routes/settings.py), for a browser whose
+ * localStorage has no theme yet. Same parse as public/theme-boot.js, so mounting keeps its first frame.
+ */
+export function readAppearanceCookie(
+  cookie: string,
+): { theme: string; palette: string } | null {
+  const match = APPEARANCE_COOKIE_RE.exec(cookie);
+  return match ? { theme: match[1], palette: match[2] } : null;
+}
+
+function cookieAppearance(): { theme: string; palette: string } | null {
+  try {
+    return readAppearanceCookie(document.cookie);
+  } catch {
+    return null;
+  }
+}
+
 function readStoredTheme(): Theme {
   if (typeof window === "undefined") return "system";
   let stored: string | null = null;
   try {
     stored = window.localStorage.getItem(STORAGE_KEY);
   } catch {
-    return "system";
+    stored = null;
   }
+  if (stored === null) stored = cookieAppearance()?.theme ?? null;
   if (stored === "light" || stored === "dark" || stored === "system")
     return stored;
   return "system";
@@ -51,8 +74,9 @@ function readStoredPalette(): Palette {
   try {
     stored = window.localStorage.getItem(PALETTE_STORAGE_KEY);
   } catch {
-    return "standard";
+    stored = null;
   }
+  if (stored === null) stored = cookieAppearance()?.palette ?? null;
   return isPalette(stored) ? stored : "standard";
 }
 

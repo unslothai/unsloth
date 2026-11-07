@@ -4,12 +4,26 @@
 // Apply the stored theme before first paint. External classic script since CSP is script-src 'self'.
 try {
   // Guarded reads so blocked localStorage still falls back to the OS preference.
-  var theme = "system";
+  var theme = null;
   var palette = null;
   try {
-    theme = localStorage.getItem("theme") || "system";
+    theme = localStorage.getItem("theme");
     palette = localStorage.getItem("palette");
   } catch (e) {}
+  // A browser without the keys (new profile, cleared storage) uses the account's appearance the
+  // server last sent (unsloth_appearance = "<theme>.<palette>", routes/settings.py).
+  if (theme === null || palette === null) {
+    try {
+      var cookie = /(?:^|;\s*)unsloth_appearance=([a-z-]+)\.([a-z-]+)(?:;|$)/.exec(
+        document.cookie,
+      );
+      if (cookie) {
+        if (theme === null) theme = cookie[1];
+        if (palette === null) palette = cookie[2];
+      }
+    } catch (e) {}
+  }
+  theme = theme || "system";
   var dark =
     theme === "dark" ||
     (theme !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);

@@ -5045,12 +5045,39 @@ class PersonalizationResponse(PersonalizationPayload):
     greetingCustomSaved: bool = False
 
 
+# Read by public/theme-boot.js (and theme-store.ts) before first paint when localStorage has no
+# theme, e.g. a fresh browser profile, so the account's appearance is not painted ~150 ms late.
+APPEARANCE_COOKIE = "unsloth_appearance"
+_APPEARANCE_COOKIE_MAX_AGE = 400 * 24 * 60 * 60
+_THEME_IDS = frozenset(("light", "dark", "system"))
+
+
+def _set_appearance_cookie(
+    request: Request, response: Response, appearance: PersonalizationAppearance
+) -> None:
+    theme = appearance.theme if appearance.theme in _THEME_IDS else "system"
+    palette = appearance.palette if appearance.palette in _PALETTE_IDS else "standard"
+    response.set_cookie(
+        APPEARANCE_COOKIE,
+        f"{theme}.{palette}",
+        max_age = _APPEARANCE_COOKIE_MAX_AGE,
+        path = "/",
+        samesite = "lax",
+        secure = request.url.scheme == "https",
+        # Not httponly: the boot script has to read it. It holds only the theme and palette ids.
+        httponly = False,
+    )
+
+
 @_account_settings_router.get("/personalization", response_model = PersonalizationResponse)
 def get_personalization_settings(
+    request: Request,
+    http_response: Response,
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
     stored = drop_unknown_palette(get_personalization(), _PALETTE_IDS)
     response = PersonalizationResponse.model_validate(stored or {})
+    _set_appearance_cookie(request, http_response, response.appearance)
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
     customization = appearance.get("customization") if isinstance(appearance, dict) else None
@@ -5080,7 +5107,10 @@ def _merge_personalization(base: dict, overlay: dict) -> dict:
 
 @_account_settings_router.put("/personalization", response_model = PersonalizationPayload)
 def update_personalization_settings(
-    payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
+    payload: PersonalizationPayload,
+    request: Request,
+    http_response: Response,
+    current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationPayload:
     try:
         # exclude_unset so absent fields aren't stored as defaults; merge keeps fields the request omits.
@@ -5096,7 +5126,9 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so it matches the next GET.
-    return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
+    stored = PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
+    _set_appearance_cookie(request, http_response, stored.appearance)
+    return stored
 
 
 class BrowserPrefsPayload(BaseModel):
