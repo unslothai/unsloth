@@ -67,13 +67,10 @@ RECHECKS = int(os.environ.get("LONG_THREAD_AREAS_RECHECKS", "2"))
 RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # Costs main already has, as `mode:area=ratio`, `mode:*=ratio`, `length:area=ratio` or
 # `count:area=elements` (elements restyled at LONG turns, replacing the length ratio for that area).
-# Set from the GitHub runners this gate runs on: one PR's identical code read 6.2-8.3x (other
-# areas) and 9.3-13.8x (Settings scrolling) across its runs, so a ceiling must clear that spread,
-# not one host's best reading. Highest of 25 runs (2026-11-07): other areas 8.3x on Glass, Settings
-# scrolling 14.0x, transparent 4.2x and macos 3.9x against the 4.0 MAX_RATIO. Glass: CPU raster of
-# the backdrop-filter on every repaint. No area restyles the whole thread on open any more, so none
-# needs a count ceiling. Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN=""
-# holds main to the plain limits.
+# Set from the GitHub runners this gate runs on, where identical code reads 6.2-8.3x (other areas)
+# and 9.3-13.8x (Settings scrolling) across runs; highest of 25 runs on 2026-11-07: 8.3x, 14.0x,
+# transparent 4.2x, macos 3.9x. Glass: CPU raster of the backdrop-filter on every repaint. Lower or
+# drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
 GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
     [f"{m}:*=10" for m in GLASS_MODES]
