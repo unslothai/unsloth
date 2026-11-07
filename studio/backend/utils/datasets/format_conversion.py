@@ -523,8 +523,20 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
+    def _fetch_repo_image(name):
+        from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        local_path = hf_hub_download(
+            dataset_name,
+            _image_lookup[name],
+            repo_type = "dataset",
+            cache_dir = active_hf_hub_cache(),
+        )
+        return Image.open(local_path).convert("RGB")
+
     def _convert_single_sample(sample, fetched = None):
-        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's or repo file's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -532,16 +544,7 @@ def convert_to_vlm_format(
                 image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
-                from huggingface_hub import hf_hub_download
-                from utils.hf_cache_settings import active_hf_hub_cache
-
-                local_path = hf_hub_download(
-                    dataset_name,
-                    _image_lookup[image_data],
-                    repo_type = "dataset",
-                    cache_dir = active_hf_hub_cache(),
-                )
-                image_data = Image.open(local_path).convert("RGB")
+                image_data = fetched if fetched is not None else _fetch_repo_image(image_data)
             else:
                 image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
         elif image_data is None:
@@ -772,15 +775,55 @@ def convert_to_vlm_format(
             unit = "sample",
             **_quiet_bar_kwargs(),
         )
-        for sample in pbar:
+
+        def _record(sample, future = None):
+            nonlocal failed_count
             try:
-                converted_list.append(_convert_single_sample(sample))
+                fetched = future.result() if future is not None else None
+                converted_list.append(_convert_single_sample(sample, fetched))
             except Exception as e:
                 failed_count += 1
                 if failed_count == 1:
                     logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-        pbar.close()
+
+        from utils.hardware import safe_thread_num_proc
+
+        num_workers = (
+            min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS) if _image_lookup is not None else 1
+        )
+        try:
+            if num_workers <= 1:
+                for sample in pbar:
+                    _record(sample)
+            else:
+                from collections import deque
+                from concurrent.futures import ThreadPoolExecutor
+
+                # Each repo file is one Hub request, so fetch them on a pool; rows still settle in order
+                # in this thread (same output, random caption pick and first-failure log as serial), and
+                # 2x workers bounds the images held in memory.
+                pending = deque()
+                with ThreadPoolExecutor(max_workers = num_workers) as executor:
+                    try:
+                        for sample in pbar:
+                            name = sample[image_column]
+                            future = None
+                            if isinstance(name, str) and name in _image_lookup:
+                                # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
+                                future = executor.submit(
+                                    contextvars.copy_context().run, _fetch_repo_image, name
+                                )
+                            pending.append((sample, future))
+                            if len(pending) > 2 * num_workers:
+                                _record(*pending.popleft())
+                        while pending:
+                            _record(*pending.popleft())
+                    except BaseException:
+                        executor.shutdown(wait = False, cancel_futures = True)
+                        raise
+        finally:
+            pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
