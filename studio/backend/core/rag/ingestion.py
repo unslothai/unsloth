@@ -122,6 +122,9 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     # An unlink stops a linked-folder document mid-embed, not after it (folder_sync imports this module).
     from . import folder_sync
 
+    # Never wait inside a write transaction: it would hold the database lock for the whole chat.
+    if not conn.in_transaction:
+        folder_sync.wait_while_chat_busy()
     if folder_sync.is_cancel_requested(getattr(folder_sync._worker_state, "folder_id", None)):
         # Terminal, so the folder cleanup can prune the row with the document it discards.
         _set_job(conn, job_id, status = "failed", stage = "error", error = "Linked folder was removed")
