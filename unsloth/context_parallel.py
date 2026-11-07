@@ -1582,10 +1582,13 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
+        # compute_loss returns this shard's token mean (TRL ignores an inputs["num_items_in_batch"]):
+        # weight it by the shard's share of the targets so the cp sum is the sequence's token mean.
+        count = shift_labels.ne(-100).sum().clamp_min(1)
         inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs).detach()
+            local = inputs["shift_labels"].ne(-100).sum()
+            loss = self.compute_loss(model, inputs).detach() * local / count
         dist.all_reduce(loss, group = manager.mesh.get_group())
         return loss, None, None
 
