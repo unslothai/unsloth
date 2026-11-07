@@ -729,6 +729,8 @@ def _pin_host_copy(model: Any, config: dict) -> int:
             return 0
         host = {name: p.data for name, p in model.named_parameters() if p.device.type == "cpu"}
         buffers = {name: b for name, b in _named_buffers(model) if b.device.type == "cpu"}
+        if not _pin_fits_twice(list(host.values()) + list(buffers.values())):
+            return 0
         return int(
             _pin_host_weights(model, host, None, buffer_host = buffers, exact = True, device = device)
             or 0
@@ -736,6 +738,53 @@ def _pin_host_copy(model: Any, config: dict) -> int:
     except Exception as exc:  # noqa: BLE001 -- an optimisation: the encode reads the pageable copy
         print(f"video.ltx25_te: host copy left pageable ({exc})", file = sys.stderr, flush = True)
         return 0
+
+
+def _own_host_copy(model: Any) -> bool:
+    """Copy the host weights out of the checkpoint's file mapping into process memory, once, before the first card
+    encode. Base did this implicitly (``model.to("cpu")`` after each encode); kept mapped, the pages are page cache the
+    server's pins evict, and each onload then re-reads 23 GB from disk (70-80 s per encode on an A100 host)."""
+    import torch
+    try:
+        # Keyed by identity: a tied tensor is copied once and stays shared.
+        done: dict = {}
+        with torch.no_grad():
+            for module in model.modules():
+                for table in (module._parameters, module._buffers):
+                    for key, tensor in list(table.items()):
+                        if tensor is None or tensor.device.type != "cpu":
+                            continue
+                        if isinstance(tensor, torch.nn.Parameter):
+                            if id(tensor) not in done:
+                                done[id(tensor)] = tensor
+                                tensor.data = tensor.data.clone()
+                            continue
+                        if id(tensor) not in done:
+                            done[id(tensor)] = tensor.clone()
+                        table[key] = done[id(tensor)]
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the mapped copy still encodes, only slower when evicted
+        print(f"video.ltx25_te: host copy left mapped ({exc})", file = sys.stderr, flush = True)
+        return False
+
+
+def _pin_fits_twice(tensors: list) -> bool:
+    """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
+    storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
+    without that room the pin pushed the box into reclaim and encodes took 70-80 s instead of 22 s."""
+    from core.inference.diffusion_memory import (
+        _PIN_RESERVE_FRACTION,
+        _PIN_RESERVE_MIN_BYTES,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+    )
+
+    available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
+    if available is None or total is None:
+        return False
+    need = sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    return (int(available) << 20) - 2 * need >= reserve
 
 
 class _Onload:
@@ -957,13 +1006,11 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
 
     resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
-    if (
-        not resident
-        and device != "cpu"
-        and config.get("_pin_host")
-        and "_pinned_bytes" not in config
-    ):
-        config["_pinned_bytes"] = _pin_host_copy(model, config)
+    if not resident and device != "cpu":
+        if config.get("_pin_host") and "_pinned_bytes" not in config:
+            config["_pinned_bytes"] = _pin_host_copy(model, config)
+        if not config.get("_pinned_bytes") and not config.get("_owned_host"):
+            config["_owned_host"] = _own_host_copy(model)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = (
         _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None

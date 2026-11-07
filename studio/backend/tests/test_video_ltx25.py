@@ -2673,7 +2673,8 @@ def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monke
     handle = model.model.language_model.layers[0].register_forward_pre_hook(
         lambda module, _args: seen.append(module.weight.data_ptr() != host[id(module.weight)])
     )
-    config = {"device": "cuda:0", "resident": False}
+    # The host copy is already the process's own (see the next test): every encode restores it as is.
+    config = {"device": "cuda:0", "resident": False, "_owned_host": True}
     try:
         for _ in range(2):
             embeds, _mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
@@ -2690,6 +2691,52 @@ def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monke
             model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
         )
     assert torch.equal(embeds, plain)
+
+
+def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(monkeypatch):
+    """A checkpoint-mapped host copy is page cache the server's pins can evict; it is copied into process memory once
+    (as base's copy back did), ties kept, values unchanged; a pinned copy skips it."""
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    language = model.model.language_model
+    language.extra = torch.nn.Module()
+    language.extra.register_buffer("scale", language.scale)  # a tied buffer
+    before = {n: t.detach().clone() for n, t in model.state_dict().items()}
+    ptrs = {id(t): t.data_ptr() for t in list(model.parameters()) + list(model.buffers())}
+    params = list(model.parameters())
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
+    monkeypatch.setattr(worker, "_discrete_card", lambda device: True)
+    owned = []
+    real = worker._own_host_copy
+    monkeypatch.setattr(worker, "_own_host_copy", lambda m: owned.append(1) or real(m))
+    config = {"device": "cuda:0", "resident": False}
+    for _ in range(2):
+        worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert owned == [1] and config["_owned_host"] is True
+    assert all(t.data_ptr() != ptrs[id(t)] for t in params)
+    assert list(model.parameters()) == params
+    assert model.lm_head.weight is language.embed_tokens.weight
+    assert language.extra.scale is language.scale
+    after = model.state_dict()
+    assert all(torch.equal(before[n], after[n]) for n in before)
+    pinned = _stack_model()
+    worker._encode_on(
+        _FakeTokenizer(),
+        pinned,
+        {"device": "cuda:0", "resident": False, "_pinned_bytes": 1},
+        ["a"],
+        6,
+    )
+    assert owned == [1]
+    # a CPU encode never copies
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", None))
+    worker._encode_on(
+        _FakeTokenizer(), _stack_model(), {"device": "cuda:0", "resident": False}, ["a"], 6
+    )
+    assert owned == [1]
 
 
 def test_unified_memory_keeps_moving_the_encoder_with_model_to(monkeypatch):
@@ -2767,6 +2814,8 @@ def test_the_host_copy_is_pinned_once_before_the_first_card_encode(monkeypatch):
 
     monkeypatch.setattr(diffusion_memory, "_pin_host_weights", _pin)
     monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: True)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 64 << 10)
+    monkeypatch.setattr(diffusion_memory, "_host_ram_capacity_mib", lambda: 128 << 10)
     model = _stack_model()
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
     config = {"device": "cuda:0", "resident": False}
@@ -2794,6 +2843,26 @@ def test_the_host_copy_is_pinned_once_before_the_first_card_encode(monkeypatch):
     monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: False)
     assert worker._pin_host_copy(model, {"device": "cuda:0", "resident": False}) == 0
     assert calls == []
+    # Room for one copy but not the transient second one above the reserve: stay pageable.
+    monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: True)
+    nbytes = sum(
+        t.numel() * t.element_size() for t in list(model.parameters()) + list(model.buffers())
+    )
+    reserve = max(
+        diffusion_memory._PIN_RESERVE_MIN_BYTES,
+        int((128 << 30) * diffusion_memory._PIN_RESERVE_FRACTION),
+    )
+    monkeypatch.setattr(
+        diffusion_memory, "_available_system_memory_mib", lambda: (reserve + nbytes) >> 20
+    )
+    assert not worker._pin_fits_twice(list(model.parameters()) + list(model.buffers()))
+    assert (
+        worker._pin_host_copy(model, {"device": "cuda:0", "resident": False}) == 0 and calls == []
+    )
+    monkeypatch.setattr(
+        diffusion_memory, "_available_system_memory_mib", lambda: ((reserve + 2 * nbytes) >> 20) + 1
+    )
+    assert worker._pin_fits_twice(list(model.parameters()) + list(model.buffers()))
 
 
 def test_an_encode_out_of_memory_on_the_card_retries_on_the_cpu(monkeypatch):
