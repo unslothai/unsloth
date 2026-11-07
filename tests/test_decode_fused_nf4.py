@@ -670,7 +670,13 @@ def test_t4_qwen3_prefers_regular_graphs(monkeypatch, family, capability, graphs
         capability = capability,
         graphs = graphs,
     )
-    if family in ("llama", "qwen3") and capability == (7, 5) and graphs and flag == "1":
+    # Families with Unsloth decode CUDA graphs (Qwen2 since #16753) keep them on T4.
+    if (
+        family in D._decode_graphs._SUPPORTED_MODEL_TYPES
+        and capability == (7, 5)
+        and graphs
+        and flag == "1"
+    ):
         assert not isinstance(plan, D._Plan)
         assert calls == []
     else:
