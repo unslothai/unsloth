@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`exclude_no_placement_params` runs after the Block Swap decisions: before them, Auto saw an
-explicit map and bailed, and a Count's collapse to `{"": N}` put the n-gram table back on the GPU."""
+"""`exclude_no_placement_params` must run after the Block Swap decisions (Auto bail, Count collapse)."""
 
 import ast
 import os
