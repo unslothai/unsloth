@@ -711,8 +711,8 @@ PIN_HOST_ENV = "UNSLOTH_LTX25_TE_PIN"
 
 
 def _pin_host_copy(model: Any, config: dict) -> int:
-    """Pin a non-resident encoder's host copy once (in place, Linux CUDA only, within the host-RAM reserve) so
-    uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
+    """Copy a non-resident encoder's host weights into registered (pinned) chunks once, Linux CUDA only and only with
+    room for the transient second copy, so uploads run at DMA speed; returns bytes pinned, 0 when skipped."""
     if config.get("resident") or (os.environ.get(PIN_HOST_ENV) or "").strip() == "0":
         return 0
     device = str(config.get("device") or "")
@@ -1006,7 +1006,7 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
 
     resident = bool(config.get("resident"))
     onloaded = not resident and device != "cpu" and stream is None
-    if not resident and device != "cpu":
+    if not resident and device != "cpu" and _discrete_card(device):
         if config.get("_pin_host") and "_pinned_bytes" not in config:
             config["_pinned_bytes"] = _pin_host_copy(model, config)
         if not config.get("_pinned_bytes") and not config.get("_owned_host"):

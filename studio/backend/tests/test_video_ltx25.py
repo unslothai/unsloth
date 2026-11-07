@@ -2731,6 +2731,12 @@ def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(mon
         6,
     )
     assert owned == [1]
+    # unified memory keeps model.to, which copies anyway: no extra host copy there
+    monkeypatch.setattr(worker, "_discrete_card", lambda device: False)
+    worker._encode_on(
+        _FakeTokenizer(), _stack_model(), {"device": "cuda:0", "resident": False}, ["a"], 6
+    )
+    assert owned == [1]
     # a CPU encode never copies
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", None))
     worker._encode_on(
@@ -2816,6 +2822,7 @@ def test_the_host_copy_is_pinned_once_before_the_first_card_encode(monkeypatch):
     monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: True)
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 64 << 10)
     monkeypatch.setattr(diffusion_memory, "_host_ram_capacity_mib", lambda: 128 << 10)
+    monkeypatch.setattr(worker, "_discrete_card", lambda device: True)
     model = _stack_model()
     monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
     config = {"device": "cuda:0", "resident": False}
