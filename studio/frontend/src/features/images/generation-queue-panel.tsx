@@ -10,7 +10,6 @@ import { Spinner } from "@/components/ui/spinner";
 import type { ImageQueueJob } from "./api";
 import { promptSnippet, queueJobSummary, queuedJobs, runningJob } from "./lib/generation-queue";
 
-/** The running job and the ones lined up behind it. Finished jobs leave the list; their images are in the gallery. */
 export function GenerationQueuePanel({
   jobs,
   onCancel,

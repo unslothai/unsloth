@@ -542,7 +542,6 @@ export async function cancelDiffusionGeneration(
 
 export type ImageQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
-/** One job in the server's image generation queue (GET /images/queue). */
 export interface ImageQueueJob {
   id: string;
   status: ImageQueueStatus;

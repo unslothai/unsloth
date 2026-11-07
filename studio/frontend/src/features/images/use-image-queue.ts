@@ -10,8 +10,7 @@ const BUSY_POLL_MS = 1000;
 // Idle, the page still notices jobs queued over the API.
 const IDLE_POLL_MS = 5000;
 
-/** The server's image queue, polled while the page is open. `onFinished` gets each job that finished since the last
- *  poll, so the page can pull its images into the gallery. */
+/** `onFinished` gets each job that finished since the last poll. */
 export function useImageQueue(active: boolean, onFinished: (jobs: ImageQueueJob[]) => void) {
   const [jobs, setJobs] = useState<ImageQueueJob[]>([]);
   const jobsRef = useRef<ImageQueueJob[]>([]);

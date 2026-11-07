@@ -3631,7 +3631,7 @@ export function ImagesPage({
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [loadGallery, refreshStatus]);
 
-  // The server queue runs its jobs without this page: follow each one like a run started elsewhere.
+  // Follow a queued job's render like a run started elsewhere.
   const imageQueue = useImageQueue(active, (finished) => {
     if (finished.some((job) => job.status === "done")) void loadGallery();
     for (const job of finished) {
@@ -5621,7 +5621,6 @@ export function ImagesPage({
     }
   }, []);
 
-  // Queue: the same validation and request as Generate, sent to the server queue so it runs after the current job.
   const handleQueue = useCallback(async () => {
     if (!imagePresets.hydrated) return;
     queueOnce.current = true;
@@ -5672,7 +5671,6 @@ export function ImagesPage({
     [busy, handleGenerate, imagePresets.hydrated],
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
-  // The queue runs on the loaded local model; a saved connection generates directly.
   const canQueue = !external && Boolean(status?.loaded);
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
