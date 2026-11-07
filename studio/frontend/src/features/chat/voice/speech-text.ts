@@ -43,7 +43,8 @@ export function splitIntoSentences(text: string): string[] {
       }
       const tail = prev.replace(/["')\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
-      const decimal = /\d\.$/.test(tail) && !spaced && /^\d/.test(part);
+      // "3.5", and ".75" / "$.50" / "-.5" with no integer part.
+      const decimal = /(?:\d|(?:^|[\s$€£(+-]))\.$/.test(tail) && !spaced && /^\d/.test(part);
       // "J. Smith", "John F. Kennedy" are names; "pick option A. Then" is a boundary.
       const nameInitial =
         /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);

@@ -494,6 +494,11 @@ function speakWithBackendAudio(
           next = pendingChunk;
         }
         if (i === 0) markRunning();
+        // A subscriber may cancel on the running notification.
+        if (cancelled) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
         await play(url);
         if (cancelled) return;
       }

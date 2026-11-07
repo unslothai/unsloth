@@ -165,6 +165,31 @@ test("an initialism before a lowercase word stays in its sentence", () => {
   ]);
 });
 
+test("a decimal with no integer part stays whole", () => {
+  assert.deepEqual(speechText.splitIntoSentences("Set the threshold to .75. Then retry."), [
+    "Set the threshold to .75.",
+    "Then retry.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("It costs $.50 now. Use -.5 here."), ["It costs $.50 now.", "Use -.5 here."]);
+});
+
+test("a subscriber that cancels on the running notification gets no playback", async () => {
+  FakeAudio.live = [];
+  (globalThis as { Audio?: unknown }).Audio = FakeAudio;
+  const { adapter, answers } = load();
+  const utterance = new adapter.StudioSpeechSynthesisAdapter().speak(REPLY) as Utterance & {
+    subscribe: (cb: () => void) => () => void;
+  };
+  utterance.subscribe(() => {
+    if (utterance.status.type === "running") utterance.cancel();
+  });
+  await tick();
+  answers.shift()?.(undefined);
+  await tick();
+  assert.equal(FakeAudio.live.length, 0);
+  assert.equal(utterance.status.type, "ended");
+});
+
 test("a closing quote ends its sentence without swallowing the next one", () => {
   assert.deepEqual(speechText.splitIntoSentences('The sign read "Stop." Then we left.'), [
     'The sign read "Stop."',
