@@ -3124,6 +3124,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
         try:
             with (
                 _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
+                _decode_graphs.plan_scope("graph" if graphs else "eager"),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
             ):
