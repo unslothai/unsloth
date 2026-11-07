@@ -27,6 +27,9 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.llama_server_args import apply_load_mode_policy, resolve_launch_load_mode
 
 _NO_SETTINGS = (False, False)
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason = "shell script stands in for the binary"
+)
 
 
 def _fake_server(tmp_path, body: str) -> str:
@@ -81,12 +84,14 @@ def test_a_failed_help_probe_emits_no_load_flag(tmp_path):
     assert _launch_flags(caps) == []
 
 
+@posix_only
 def test_an_empty_help_probe_emits_no_load_flag(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(_fake_server(tmp_path, "exit 0"))
     assert caps["help_probe_ok"] is True and not caps["flags"]
     assert _launch_flags(caps) == []
 
 
+@posix_only
 def test_a_build_listing_only_the_old_flags_still_gets_them(tmp_path):
     help_text = "--no-mmap                do not memory-map model\n--mlock                  lock model in RAM"
     caps = LlamaCppBackend.probe_server_capabilities(
@@ -96,6 +101,7 @@ def test_a_build_listing_only_the_old_flags_still_gets_them(tmp_path):
     assert _launch_flags(caps) == ["--no-mmap"]
 
 
+@posix_only
 def test_a_build_listing_load_mode_gets_it(tmp_path):
     help_text = "--load-mode MODE         how to load the model"
     caps = LlamaCppBackend.probe_server_capabilities(
@@ -203,6 +209,7 @@ _LOAD_MODE_HELP_WITHOUT_AUTO = """\
                                         (env: LLAMA_ARG_LOAD_MODE)"""
 
 
+@posix_only
 @pytest.mark.parametrize(
     "help_text, auto",
     [
