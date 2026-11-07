@@ -14,8 +14,9 @@ from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 REPEATABLE = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
 # Reading an image is not new work that licenses a rerun.
 _BUILT_IN_READS = frozenset({"view_image"})
-# Unsloth's own tools whose answer changes while a job runs: generate_video says to keep calling get_job.
-_STUDIO_POLLS = frozenset({"get_job"})
+# Unsloth's own tools where an identical call is new work: get_job's answer moves while a job runs,
+# and a generator with no seed draws a fresh one.
+_STUDIO_REPEATS = frozenset({"get_job", "generate_image", "generate_audio", "generate_video"})
 _mcp_polls: set[str] = set()
 # readOnlyHint MCP functions; trusting the hint only makes deduplication stricter.
 _mcp_reads: set[str] = set()
@@ -40,7 +41,7 @@ def note_mcp_tool(
     *,
     studio: bool = False,
 ) -> None:
-    if studio and tool.get("name") in _STUDIO_POLLS:
+    if studio and tool.get("name") in _STUDIO_REPEATS:
         _mcp_polls.add(name)
     else:
         _mcp_polls.discard(name)

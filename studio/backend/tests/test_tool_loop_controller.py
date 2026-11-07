@@ -1120,3 +1120,26 @@ def test_polling_unsloths_own_get_job_is_never_a_duplicate():
     other = ToolLoopController(tools = [_tool("mcp__other__get_job")])
     other.record_result(other.prepare_call(_call("mcp__other__get_job", poll)), "{}")
     assert other.prepare_call(_call("mcp__other__get_job", poll)).action == "duplicate"
+
+
+def test_unsloths_own_generators_run_again_on_identical_arguments():
+    # No seed: each call draws one, so "two images of a cat" is two calls with the same arguments.
+    names = [f"mcp__unsloth__{n}" for n in ("generate_image", "generate_audio", "generate_video")]
+    for name in names:
+        tool_facts.note_mcp_tool(name, {"name": name.split("__")[2]}, studio = True)
+    controller = ToolLoopController(tools = [_tool(name) for name in names])
+    for name in names:
+        for _ in range(2):
+            decision = controller.prepare_call(_call(name, {"prompt": "a cat"}))
+            assert decision.action == "execute", name
+            controller.record_result(decision, '{"ok":true}')
+    # The same tool name on another server is still deduplicated.
+    tool_facts.note_mcp_tool("mcp__other__generate_image", {"name": "generate_image"})
+    other = ToolLoopController(tools = [_tool("mcp__other__generate_image")])
+    other.record_result(
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})), "{}"
+    )
+    assert (
+        other.prepare_call(_call("mcp__other__generate_image", {"prompt": "a cat"})).action
+        == "duplicate"
+    )

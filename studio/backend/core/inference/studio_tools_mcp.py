@@ -16,6 +16,7 @@ import contextvars
 import json
 import threading
 import time
+import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -135,9 +136,17 @@ async def _call(
         reset_caller(token)
 
 
+# Dataset rows as Unsloth Studio wrote them: a null there is data, and an all-null column is still a column.
+_VERBATIM = frozenset({"data_rows"})
+
+
 def _drop_nulls(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: _drop_nulls(item) for key, item in value.items() if item is not None}
+        return {
+            key: item if key in _VERBATIM else _drop_nulls(item)
+            for key, item in value.items()
+            if item is not None
+        }
     if isinstance(value, list):
         return [_drop_nulls(item) for item in value]
     return value
@@ -170,6 +179,32 @@ def _without_nulls(result: Any) -> Any:
     return result
 
 
+# A render an earlier call of this turn left running (generate_video returns its job at once) is
+# stopped with the turn: a Stop while get_job polls it would otherwise leave it on the GPU.
+_turn_tickets: "weakref.WeakKeyDictionary[Any, list[GenerationTicket]]" = (
+    weakref.WeakKeyDictionary()
+)
+_turn_lock = threading.Lock()
+
+
+def _remember(cancel_event: Any, ticket: GenerationTicket) -> None:
+    with _turn_lock:
+        try:
+            _turn_tickets.setdefault(cancel_event, []).append(ticket)
+        except TypeError:
+            pass
+
+
+def _stop_turn(cancel_event: Any) -> None:
+    with _turn_lock:
+        try:
+            tickets = _turn_tickets.pop(cancel_event, [])
+        except TypeError:
+            tickets = []
+    for ticket in tickets:
+        ticket.stop()
+
+
 def _stop(future: Any, ticket: Any) -> None:
     # Cancelling the route alone leaves an image render running on the GPU; stop it and let the route unwind.
     if ticket.stop():
@@ -194,6 +229,7 @@ def call(
     from utils.account_context import arun_as, current_account
 
     if cancel_event is not None and cancel_event.is_set():
+        _stop_turn(cancel_event)
         return f"Error: MCP tool '{name}' cancelled"
     account = current_account()
     if keyless_caller(account):
@@ -218,6 +254,7 @@ def call(
             return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
         # A Stop during the mint must not still start the tool.
         if cancel_event is not None and cancel_event.is_set():
+            _stop_turn(cancel_event)
             return f"Error: MCP tool '{name}' cancelled"
         caller = Caller(
             token = key,
@@ -230,6 +267,8 @@ def call(
         )
         # Empty context: another request's fastmcp HTTP request on this thread would outrank the bound caller.
         ticket = GenerationTicket()
+        if cancel_event is not None:
+            _remember(cancel_event, ticket)
         future = contextvars.Context().run(
             asyncio.run_coroutine_threadsafe,
             arun_as(account, _call(caller, name, args, ticket, config_check)),
@@ -239,6 +278,7 @@ def call(
         while not future.done():
             if cancel_event is not None and cancel_event.is_set():
                 _stop(future, ticket)
+                _stop_turn(cancel_event)
                 return f"Error: MCP tool '{name}' cancelled"
             if time.monotonic() >= deadline:
                 _stop(future, ticket)

@@ -5,6 +5,7 @@
 the chat's own account through a per-call internal key, against a fake Studio behind the real auth."""
 
 import asyncio
+import json
 import sqlite3
 import threading
 import time
@@ -287,6 +288,38 @@ def test_stop_cancels_the_route_and_an_image_render_on_the_gpu(alice, server_loo
         assert done.wait(5)
 
 
+def test_stop_while_polling_stops_a_render_an_earlier_call_of_the_turn_started(
+    alice, server_loop, monkeypatch
+):
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    # generate_video binds its job's cancel and returns at once; get_job then polls it.
+    renders, bound = [], threading.Event()
+
+    async def starts_a_render(request):
+        renders.append(threading.Event())
+        await asyncio.to_thread(bind_generation_cancel, renders[-1])
+        return RUN_PAYLOADS[RUNS]
+
+    async def polling(request):
+        bound.set()
+        await asyncio.sleep(30)
+
+    turn, other_turn = threading.Event(), threading.Event()
+    studio(monkeypatch, {**RUN_PAYLOADS, RUNS: starts_a_render})
+    assert "qwen-lora" in runs(alice, cancel_event = turn)
+    assert "qwen-lora" in runs(alice, cancel_event = other_turn)
+    studio(monkeypatch, {**RUN_PAYLOADS, RUNS: polling})
+    # A poll that only times out leaves the render running.
+    assert "timed out" in runs(alice, cancel_event = turn, timeout = 1.0)
+    assert not any(render.is_set() for render in renders)
+    threading.Thread(target = lambda: bound.wait(10) and turn.set(), daemon = True).start()
+    assert runs(alice, cancel_event = turn) == CANCELLED
+    video, other_video = renders
+    assert video.wait(5) and chat_keys() == []
+    assert not other_video.is_set()
+
+
 async def _hang(request):
     await asyncio.sleep(30)
 
@@ -561,3 +594,18 @@ def test_dropping_nulls_keeps_empty_lists_false_and_zero():
     texts = [block.text for block in result.content]
     assert texts == ['{"b":[],"c":false,"d":0,"e":[{}]}', "not json {"]
     assert result.structured_content == {"b": {"d": 1}}
+
+
+def test_dropping_nulls_leaves_recipe_rows_as_written():
+    from mcp.types import TextContent
+
+    rows = [{"text": "x", "label": None}, {"text": "y", "label": None}]
+    text = json.dumps({"status": "completed", "error": None, "data_rows": rows})
+    result = studio_tools_mcp._without_nulls(
+        SimpleNamespace(
+            content = [TextContent(type = "text", text = text)],
+            structured_content = {"error": None, "data_rows": rows},
+        )
+    )
+    assert json.loads(result.content[0].text) == {"status": "completed", "data_rows": rows}
+    assert result.structured_content == {"data_rows": rows}
