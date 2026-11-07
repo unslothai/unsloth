@@ -130,6 +130,7 @@ from core.inference.llama_server_args import (
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
+    load_mode_left_auto,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
@@ -4125,6 +4126,15 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
+# Extra --fit-target for a load paged on a Windows iGPU, whose GPU share and mapped pages share one
+# memory: on a Strix Halo 8 GiB still aborted at warm-up, 16 GiB ran. Linux runs slower with it.
+_IGPU_PAGED_FIT_HEADROOM_MIB = 15360
+
+
+def _paged_load_needs_fit_headroom() -> bool:
+    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
+    return sys.platform == "win32"
+
 
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -7779,6 +7789,11 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
+# The override where nobody chose the mode (auto is none on an iGPU); lazy and fit flags are logged.
+_PAGEABLE_AUTO_OVERRIDE_NOTE = (
+    " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
+    "integrated GPU."
+)
 # The override is reported, not undone: the running server is already memory-mapped.
 _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "This model was set to load without memory mapping, and with its vision projector "
@@ -7786,6 +7801,13 @@ _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "mapping instead. The projector then failed to start and this session is text-only, "
     "which the weights alone would have fit. The running server keeps the memory "
     "mapping it started with; load the model again to run it as you asked."
+)
+_PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE = (
+    "With its vision projector in system RAM this model could run out of memory without "
+    "memory mapping, llama.cpp's default on this integrated GPU, so Unsloth loaded it with "
+    "memory mapping instead. The projector then failed to start and this session is "
+    "text-only, which the weights alone would have fit. The running server keeps the "
+    "memory mapping it started with."
 )
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
@@ -10366,6 +10388,7 @@ class LlamaCppBackend:
                 "supports_video_timestamp_interval": False,
                 "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
+                "supports_load_mode_auto": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
                 "supports_lazy_mode": False,
@@ -10437,6 +10460,7 @@ class LlamaCppBackend:
         supports_video_timestamp_interval = False
         supports_video_ffmpeg_dir = None
         supports_load_mode = False
+        supports_load_mode_auto = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
         supports_lazy_mode = False
@@ -10651,6 +10675,14 @@ class LlamaCppBackend:
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            # "auto: mmap, unless a device does not support it": without it, mmap is the default everywhere.
+            supports_load_mode_auto = bool(
+                supports_load_mode
+                and re.search(
+                    r"(?<![a-z0-9_+-])auto(?![a-z0-9_+-])",
+                    (blocks.get("--load-mode") or "").lower(),
+                )
+            )
             # "auto" is a fork addition; upstream builds exit on it, so fail closed.
             supports_moe_cache = bool(probe_ok and _is_real("--moe-cache-mib"))
             supports_moe_cache_auto = bool(
@@ -10764,6 +10796,7 @@ class LlamaCppBackend:
             "supports_video_timestamp_interval": supports_video_timestamp_interval,
             "supports_video_ffmpeg_dir": supports_video_ffmpeg_dir,
             "supports_load_mode": supports_load_mode,
+            "supports_load_mode_auto": supports_load_mode_auto,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
             "supports_lazy_mode": supports_lazy_mode,
@@ -15671,12 +15704,131 @@ class LlamaCppBackend:
             "yes",
         )
 
+    def _auto_load_mode_unmapped(
+        self,
+        server_caps: Optional[Mapping[str, object]],
+        *,
+        child_has_no_gpu: bool = False,
+        **devices,
+    ) -> bool:
+        """Whether llama.cpp resolves ``--load-mode auto`` to ``none`` here: a device lacking
+        ``mmap_support`` turns both auto modes off (``load_tensors``); ``devices`` go to
+        ``_lazy_auto_resolves_off``."""
+        if child_has_no_gpu or not (server_caps or {}).get("supports_load_mode_auto"):
+            return False
+        try:
+            return bool(self._lazy_auto_resolves_off(**devices))
+        except Exception as e:  # noqa: BLE001 -- unknown devices: keep the launch as is
+            logger.debug("Could not tell whether llama.cpp maps this load: %s", e)
+            return False
+
+    def _paged_lookup_table_flags(
+        self,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> list[str]:
+        """``[<lazy flag>, "on"]`` to stream the tables auto streams elsewhere: mmap prefetch skips
+        only lazy ranges (llama-mmap.cpp). Empty when a lazy mode is set or nothing would stream."""
+        caps = caps or {}
+        if not model_path or not caps.get("supports_lazy_mode"):
+            return []
+        flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
+        source_env = os.environ if env is None else env
+        flags, env_name = _LAZY_MODE_SPELLINGS.get(flag, (frozenset({flag}), ""))
+        argv = list(argv or ())
+        if (env_name and str(source_env.get(env_name) or "").strip()) or _extra_args_set_any_flag(
+            argv, flags
+        ):
+            return []
+        if self._lazy_read_host_bytes(model_path, caps = caps, extra_args = argv, env = source_env) <= 0:
+            return []
+        return [flag, "on"]
+
+    @staticmethod
+    def _paged_fit_headroom_flags(
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        user_args: Optional[Iterable[str]],
+        gpu_count: int = 1,
+    ) -> list[str]:
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
+        Empty off Windows, with the fitter off, a user margin, a per-device list, or a second
+        device, which the broadcast margin would starve."""
+        args = [str(a) for a in argv or ()]
+        if not _paged_load_needs_fit_headroom() or gpu_count > 1:
+            return []
+        if (
+            _extra_args_device(args, {"--rpc"})
+            or str((env or {}).get("LLAMA_ARG_RPC") or "").strip()
+        ):
+            return []
+        devices = _extra_args_device(args, {"--device", "-dev"})
+        if devices is None:
+            devices = str((env or {}).get("LLAMA_ARG_DEVICE") or "")
+        if (
+            len(
+                [
+                    d
+                    for d in devices.split(",")
+                    if d.strip().lower() not in ("", *_CPU_DEVICE_VALUES)
+                ]
+            )
+            > 1
+        ):
+            return []
+        if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
+            return []
+        raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+        if (
+            raw is not None
+            and len([p for p in str(raw).replace("/", ",").split(",") if p.strip()]) > 1
+        ):
+            return []
+        have = _single_device_fit_margin(args, None)
+        base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
+        return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
+
+    @staticmethod
+    def _margins_with_paged_headroom(
+        margins: Optional[Mapping[int, float]],
+        headroom: Iterable[str],
+        sign: int = 1,
+    ) -> Optional[Mapping[int, float]]:
+        """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
+        if not margins or not list(headroom):
+            return margins
+        return {i: m + sign * _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+
+    @staticmethod
+    def _withdraw_paged_headroom(
+        cmd: list[str], margins: Optional[Mapping[int, float]], headroom: list[str]
+    ) -> tuple[list[str], Optional[Mapping[int, float]]]:
+        """``cmd`` and ``margins`` without the iGPU paging headroom, for a respawn off the iGPU."""
+        return (
+            LlamaCppBackend._without_flag_pairs(cmd, headroom),
+            LlamaCppBackend._margins_with_paged_headroom(margins, headroom, sign = -1),
+        )
+
     def _page_an_oversized_unmapped_load(
-        self, cmd: Iterable[str], env: Optional[dict], oversized
+        self,
+        cmd: Iterable[str],
+        env: Optional[dict],
+        oversized,
+        *,
+        auto_unmapped: bool = False,
+        lazy_table_flags: Optional[Callable[[list], list]] = None,
+        fit_headroom_flags: Optional[Callable[[list], list]] = None,
     ) -> tuple[list, Optional[str]]:
-        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks."""
+        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks.
+
+        ``auto_unmapped``: auto is none for this child, so an unset mode is rewritten too, and
+        ``lazy_table_flags(argv)`` / ``fit_headroom_flags(argv)`` are appended."""
         original = cmd if isinstance(cmd, list) else list(cmd or ())
-        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(original, env)
+        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(
+            original, env, auto_unmapped = auto_unmapped
+        )
         if not _reserves_ram_now:
             return original, None
         try:
@@ -15686,15 +15838,33 @@ class LlamaCppBackend:
             # Advisory pricing: an unreadable host or GGUF leaves the launch alone.
             logger.debug("Could not price the load for a pageable override.", exc_info = True)
             return original, None
-        paged, overridden = force_pageable_load(original, env)
+        from_auto = auto_unmapped and load_mode_left_auto(original, env)
+        paged, overridden = force_pageable_load(original, env, auto_unmapped = auto_unmapped)
         if not overridden:
             return original, None
+        lazy: list = []
+        if auto_unmapped and lazy_table_flags is not None:
+            try:
+                lazy = list(lazy_table_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping alone still lets the load finish
+                logger.debug("Lookup tables: could not price lazy reads.", exc_info = True)
+        paged = [*paged, *lazy]
+        headroom: list = []
+        if auto_unmapped and fit_headroom_flags is not None:
+            try:
+                headroom = list(fit_headroom_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping still applies without the margin
+                logger.debug("Fit headroom: could not read the launch's margin.", exc_info = True)
+        paged = [*paged, *headroom]
         logger.warning(
             "Overriding the unmapped load mode (%s) for an oversized model: it would "
-            "allocate the whole model in host RAM instead of paging it in.",
+            "allocate the whole model in host RAM instead of paging it in.%s%s",
             ", ".join(overridden),
+            f" Lookup tables: {' '.join(lazy)}." if lazy else "",
+            f" GPU headroom: {' '.join(headroom)}." if headroom else "",
         )
-        return paged, _PAGEABLE_OVERRIDE_NOTE
+        note = _PAGEABLE_AUTO_OVERRIDE_NOTE if from_auto else _PAGEABLE_OVERRIDE_NOTE
+        return paged, note
 
     @property
     def last_load_warning(self) -> Optional[str]:
@@ -15750,7 +15920,11 @@ class LlamaCppBackend:
             # The discrete guard never charged the projector, so its verdict stands.
             self._last_load_warning = host_msg + suffix
         elif suffix.strip():
-            self._last_load_warning = _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            self._last_load_warning = (
+                _PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE
+                if _PAGEABLE_AUTO_OVERRIDE_NOTE in suffix
+                else _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            )
         else:
             self._last_load_warning = None
         logger.info(
@@ -23527,6 +23701,8 @@ class LlamaCppBackend:
             _fit_target_delta_by_idx: Optional[dict[int, float]] = None
             # Studio's emitted margins per card, spelled into --fit-target at spawn.
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
+            # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
+            _paged_headroom: list = []
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -30597,8 +30773,38 @@ class LlamaCppBackend:
                         )
                     )
 
+                # On an iGPU auto is none; same devices as the guard above.
+                _launch_auto_unmapped = self._auto_load_mode_unmapped(
+                    server_caps,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    gpu_indices = [row[0] for row in _reachable_gpus] or None,
+                    detected_gpus = _reachable_gpus,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    is_vulkan_backend = is_vulkan_backend,
+                    probe_integrated_cuda = False,
+                    extra_args = cmd,
+                    env = env,
+                    device_list = False,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
+                )
+                _paged_headroom = []
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
-                    cmd, env, _launch_is_oversized
+                    cmd,
+                    env,
+                    _launch_is_oversized,
+                    auto_unmapped = _launch_auto_unmapped,
+                    lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                        model_path, server_caps, argv, env
+                    ),
+                    fit_headroom_flags = lambda argv: _paged_headroom.extend(
+                        self._paged_fit_headroom_flags(
+                            argv, env, extra_args, gpu_count = len(_reachable_gpus)
+                        )
+                    )
+                    or _paged_headroom,
+                )
+                _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                    _fit_target_margins_by_idx, _paged_headroom
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -32181,8 +32387,41 @@ class LlamaCppBackend:
                                 )
                             )
 
+                        _retry_auto_unmapped = self._auto_load_mode_unmapped(
+                            server_caps,
+                            gpu_indices = [row[0] for row in _retry_rows] or None,
+                            detected_gpus = _retry_rows,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                            probe_integrated_cuda = False,
+                            extra_args = cmd,
+                            env = env,
+                            device_list = False,
+                            integrated_gpu_ids = _vulkan_igpu_ids,
+                        )
+                        if _paged_headroom and not _retry_auto_unmapped:
+                            cmd, _fit_target_margins_by_idx = self._withdraw_paged_headroom(
+                                cmd, _fit_target_margins_by_idx, _paged_headroom
+                            )
+                            _paged_headroom = []
+                        _retry_headroom: list = []
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
-                            cmd, env, _retry_is_oversized
+                            cmd,
+                            env,
+                            _retry_is_oversized,
+                            auto_unmapped = _retry_auto_unmapped,
+                            lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                                model_path, server_caps, argv, env
+                            ),
+                            fit_headroom_flags = lambda argv: _retry_headroom.extend(
+                                self._paged_fit_headroom_flags(
+                                    argv, env, extra_args, gpu_count = len(_retry_rows)
+                                )
+                            )
+                            or _retry_headroom,
+                        )
+                        _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                            _fit_target_margins_by_idx, _retry_headroom
                         )
                         if _retry_pageable_note:
                             # Onto whichever notice first-notice-wins kept above; a
