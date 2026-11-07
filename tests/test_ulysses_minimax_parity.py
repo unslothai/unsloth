@@ -31,6 +31,11 @@ transformers = pytest.importorskip("transformers")
 if not hasattr(transformers, "MiniMaxConfig"):
     pytest.skip("transformers without MiniMax", allow_module_level = True)
 HAS_M2 = hasattr(transformers, "MiniMaxM2Config")
+# transformers 5 fuses the experts into 3D weights; 4.x keeps per-expert modules (refused under CP).
+FUSED_EXPERTS = hasattr(
+    getattr(getattr(transformers.models, "minimax", None), "modeling_minimax", None),
+    "MiniMaxExperts",
+)
 
 TOL = dict(rtol = 1e-8, atol = 1e-10)
 # A broken variant must fail on numbers (assert_close with these names), not crash on a shape.
@@ -126,6 +131,12 @@ def _model(
         model = get_peft_model(
             model,
             LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False, **extra),
+        )
+    if lora == "experts":
+        # Engaged: the fused expert weights carry adapters (PEFT matches no parameter silently).
+        assert any(
+            "experts" in name and "lora_" in name and param.requires_grad
+            for name, param in model.named_parameters()
         )
     return model.double()
 
@@ -486,6 +497,10 @@ def test_minimax_model_matches_upstream(case):
     kind, cp_size, world, lora, kwargs = MODEL_CASES[case]
     if kind == "m2" and not HAS_M2:
         pytest.skip("transformers without MiniMax-M2")
+    if lora == "experts" and not FUSED_EXPERTS:
+        pytest.skip(
+            "transformers without fused MiniMax experts (target_parameters has nothing to match)"
+        )
     _spawn(_model_worker, world, kind, cp_size, lora, None, kwargs)
 
 
