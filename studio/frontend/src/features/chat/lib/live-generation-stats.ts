@@ -69,43 +69,12 @@ export type LiveContextUsage = {
   cached: number;
 };
 
-/** A new generation pass starts when live progress appears, or when prefill follows a decoded pass. Read on
- *  every store change, before throttling, so a gap shorter than the throttle still counts. */
-export function nextPassNumber(
-  pass: number,
-  previous: LiveGenerationProgress | undefined,
-  next: LiveGenerationProgress | undefined,
-): number {
-  if (!next?.prefill) return pass;
-  if (!previous?.prefill) return pass + 1;
-  return previous.decode && !next.decode ? pass + 1 : pass;
-}
-
-/** True once this pass's own context_usage landed (the last decode frame trails it). Keyed on the snapshot
- *  object, not its numbers, so a regenerate with the same prompt still counts live. */
-export function createPassSettledTracker<S>(): (
-  pass: number,
-  snapshot: S,
-) => boolean {
-  let baseline: S | undefined;
-  let seenPass: number | undefined;
-  return (pass, snapshot) => {
-    if (pass !== seenPass) {
-      baseline = snapshot;
-      seenPass = pass;
-      return false;
-    }
-    return snapshot !== baseline;
-  };
-}
-
 /** Null when the stream has not said, so the meter keeps the last settled count. */
 export function liveContextUsage(
   live: LiveGenerationProgress | undefined,
-  passSettled: boolean,
 ): LiveContextUsage | null {
   const prefill = live?.prefill;
-  if (!prefill || live?.compacting || passSettled) return null;
+  if (!prefill || live?.compacting || live?.settled) return null;
   const cached = prefill.cached ?? 0;
   const decode = live.decode;
   if (decode) {

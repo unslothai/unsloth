@@ -16,9 +16,7 @@ import {
 registerBundlerResolver();
 installLocalStorageFake();
 const {
-  createPassSettledTracker,
   createTrailingThrottle,
-  nextPassNumber,
   GENERATION_STATS_UPDATES,
   LIVE_STATS_INTERVAL_MS,
   liveContextUsage,
@@ -175,9 +173,9 @@ test("realtime renders at most once per interval however fast frames arrive, and
 });
 
 test("realtime context counts the prompt as it is read, then the prompt plus the reply so far", () => {
-  assert.equal(liveContextUsage(undefined, false), null);
+  assert.equal(liveContextUsage(undefined), null);
   assert.deepEqual(
-    liveContextUsage(live({ prefill: prefill(2048, 5316, 1024) }), false),
+    liveContextUsage(live({ prefill: prefill(2048, 5316, 1024) })),
     {
       used: 2048,
       promptTokens: 2048,
@@ -188,7 +186,6 @@ test("realtime context counts the prompt as it is read, then the prompt plus the
   assert.deepEqual(
     liveContextUsage(
       live({ prefill: prefill(5316, 5316), decode: decode(300) }),
-      false,
     ),
     {
       used: 5616,
@@ -201,67 +198,22 @@ test("realtime context counts the prompt as it is read, then the prompt plus the
   assert.equal(
     liveContextUsage(
       live({ prefill: prefill(10, null), decode: decode(3) }),
-      false,
     ),
     null,
   );
-  assert.equal(liveContextUsage(live({ decode: decode(3) }), false), null);
+  assert.equal(liveContextUsage(live({ decode: decode(3) })), null);
   assert.equal(
     liveContextUsage(
       live({ prefill: prefill(10, 20), compacting: true }),
-      false,
     ),
     null,
   );
   assert.equal(
     liveContextUsage(
-      live({ prefill: prefill(20, 20), decode: decode(3) }),
-      true,
+      live({ prefill: prefill(20, 20), decode: decode(3), settled: true }),
     ),
     null,
   );
-});
-
-test("a pass's own context_usage ends the live count, even on a regenerate with the same prompt", () => {
-  const settled = createPassSettledTracker<object>();
-  const before = { promptTokens: 5316 };
-  assert.equal(settled(1, before), false, "decoding against the previous reply's snapshot");
-  const landed = { promptTokens: 5316 };
-  assert.equal(settled(1, landed), true, "same numbers, new snapshot: this pass settled");
-  // The next pass of a tool loop starts over.
-  assert.equal(settled(2, landed), false);
-});
-
-test("a pass that settles before its first decode frame still shows its exact count", () => {
-  const settled = createPassSettledTracker<object>();
-  const before = { promptTokens: 5316 };
-  assert.equal(settled(1, before), false, "prefill of a short tool-call pass");
-  assert.equal(settled(1, { promptTokens: 5330 }), true, "its context_usage arrived with no decode frame seen");
-});
-
-test("passes are numbered on every frame, so a boundary inside one throttle window is kept", () => {
-  const prefill = { processed: 10, total: 100 } as never;
-  const decode = { tokens: 5 } as never;
-  const live = (p: unknown, d: unknown) => ({ prefill: p, decode: d, prefillShown: true }) as never;
-  let pass = 0;
-  pass = nextPassNumber(pass, undefined, live(prefill, null));
-  assert.equal(pass, 1, "live progress appears");
-  pass = nextPassNumber(pass, live(prefill, null), live(prefill, decode));
-  assert.equal(pass, 1, "decoding is the same pass");
-  pass = nextPassNumber(pass, live(prefill, decode), live(prefill, null));
-  assert.equal(pass, 2, "prefill after a decoded pass");
-  // A tool pass with no decode frame, cleared by tool_end, then the next prefill: both changes land
-  // inside one throttle window, but each store change is counted.
-  pass = nextPassNumber(pass, live(prefill, null), undefined);
-  pass = nextPassNumber(pass, undefined, live(prefill, null));
-  assert.equal(pass, 3);
-  const hook = readSrc("features/chat/hooks/use-throttled-live-generation.ts");
-  assert.match(hook, /pass = nextPassNumber\(pass, before, next\);\s*throttle\.schedule\(\);/);
-});
-
-test("the realtime meter keeps one settled tracker per thread", () => {
-  const bar = readSrc("features/chat/components/live-context-usage-bar.tsx");
-  assert.match(bar, /<RealtimeContextUsageBar\s+key=\{liveThreadKey\}/);
 });
 
 test("settled mode keeps today's paths: no live subscription in the meter, the line only with details", () => {
@@ -279,7 +231,7 @@ test("settled mode keeps today's paths: no live subscription in the meter, the l
     /useThrottledLiveGeneration|liveGenerationByThreadId|useChatRuntimeStore/,
   );
   const realtime = bar.slice(bar.indexOf("const RealtimeContextUsageBar"));
-  assert.match(realtime, /useThrottledLiveGenerationWithPass\(liveThreadKey\)/);
+  assert.match(realtime, /useThrottledLiveGeneration\(liveThreadKey\)/);
   assert.doesNotMatch(
     realtime,
     /liveGenerationByThreadId/,

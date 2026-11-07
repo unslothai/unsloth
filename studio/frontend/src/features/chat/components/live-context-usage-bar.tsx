@@ -3,14 +3,10 @@
 
 "use client";
 
-import { type ComponentProps, type FC, useRef } from "react";
-import { useThrottledLiveGenerationWithPass } from "../hooks/use-throttled-live-generation";
-import {
-  createPassSettledTracker,
-  liveContextUsage,
-} from "../lib/live-generation-stats";
+import type { ComponentProps, FC } from "react";
+import { useThrottledLiveGeneration } from "../hooks/use-throttled-live-generation";
+import { liveContextUsage } from "../lib/live-generation-stats";
 import { useChatPreferencesStore } from "../stores/chat-preferences-store";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { ContextUsageBar } from "./context-usage-bar";
 
 type BarProps = ComponentProps<typeof ContextUsageBar>;
@@ -23,9 +19,8 @@ export const LiveContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   const realtime = useChatPreferencesStore(
     (state) => state.generationStatsUpdates === "realtime",
   );
-  // Keyed so a chat switch mid-pass starts a fresh settled tracker for the new thread.
   return realtime ? (
-    <RealtimeContextUsageBar key={liveThreadKey} liveThreadKey={liveThreadKey} {...props} />
+    <RealtimeContextUsageBar liveThreadKey={liveThreadKey} {...props} />
   ) : (
     <ContextUsageBar {...props} />
   );
@@ -35,16 +30,7 @@ const RealtimeContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   liveThreadKey,
   ...props
 }) => {
-  const { live, pass } = useThrottledLiveGenerationWithPass(liveThreadKey);
-  const settled = useChatRuntimeStore((state) => state.contextUsage);
-  const tracker = useRef<ReturnType<typeof createPassSettledTracker> | null>(
-    null,
-  );
-  tracker.current ??= createPassSettledTracker();
-  const usage = liveContextUsage(
-    live,
-    tracker.current(pass, settled),
-  );
+  const usage = liveContextUsage(useThrottledLiveGeneration(liveThreadKey));
   if (!usage) return <ContextUsageBar {...props} />;
   return (
     <ContextUsageBar
