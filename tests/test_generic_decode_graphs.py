@@ -646,7 +646,8 @@ def test_generate_routes_only_static_cache_calls():
     call = "_generic_decode_graphs.plan(self, args, kwargs, input_ids)"
     assert call in source
     i = source.index(call)
-    guard = source[source.rindex("if (", 0, i) : i]
+    guard = source[source.rindex("\n", 0, source.rindex(" if ", 0, i)) : i]
+    assert guard.count(" if ") == 1, guard
     for clause in (
         'cache_implementation == "static"',
         "not force_dynamic_cache",
