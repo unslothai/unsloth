@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import io
+import itertools
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ MAX_SKILLS_PER_ROOT = 1_000
 MAX_SKILL_INSTRUCTIONS_BYTES = 256 * 1024
 MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_SKILL_ARCHIVE_FILES = 200
+SKILL_FILES_HINT = " Files in this skill: "
 MAX_SKILL_FRONTMATTER_PAIRS = 10_000
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,7 @@ _OVERRIDES_NAME = "skill-overrides.json"
 _DIR_FD_OPENS = (
     hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
 )
+_SCANDIR_FD = _DIR_FD_OPENS and os.scandir in os.supports_fd
 _WINDOWS_RESERVED_STEMS = frozenset(
     {"con", "prn", "aux", "nul", "conin$", "conout$"}
     | {f"com{index}" for index in range(1, 10)}
@@ -1157,6 +1160,90 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
     return path
 
 
+def _list_skill_files(
+    skill_dir: Path,
+    identity,
+    limit: int = 20,
+    max_chars: int = 1000,
+    max_entries: int = 1000,
+) -> list[str]:
+    """Best-effort names for a not-found hint; never reads content or follows links."""
+
+    def pinned() -> bool:
+        return not _is_linked_path(skill_dir) and (
+            identity is None
+            or os.path.samestat(os.stat(skill_dir, follow_symlinks = False), identity)
+        )
+
+    def classify(scan, parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
+        # Types are read while the scan is open: DT_UNKNOWN entries stat through its descriptor.
+        nonlocal max_entries
+        taken = list(itertools.islice(scan, max_entries))
+        max_entries -= len(taken)
+        return sorted(
+            (
+                entry.name,
+                entry.is_symlink()
+                or (not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name))),
+                entry.is_dir(follow_symlinks = False),
+                entry.is_file(follow_symlinks = False),
+            )
+            for entry in taken
+        )
+
+    def entries(parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
+        # Same pinning as resource reads: no-follow descriptors, else per-component link checks.
+        if _SCANDIR_FD:
+            descriptor = _open_within(skill_dir, identity, parts)
+            try:
+                with os.scandir(descriptor) as scan:
+                    return classify(scan, parts)
+            finally:
+                os.close(descriptor)
+        chain = [skill_dir.joinpath(*parts[: index + 1]) for index in range(len(parts))]
+
+        def unlinked() -> bool:
+            return not any(map(_is_linked_path, chain)) and pinned()
+
+        if not unlinked():
+            raise SkillError("Skill folder changed while it was listed.")
+        with os.scandir(skill_dir.joinpath(*parts)) as scan:
+            listed = classify(scan, parts)
+        if not unlinked():
+            raise SkillError("Skill folder changed while it was listed.")
+        return listed
+
+    found: list[str] = []
+    pending: list[tuple[str, ...]] = [()]
+    try:
+        if not pinned():
+            return []
+        while pending and max_entries > 0:
+            parts = pending.pop(0)
+            for name, linked, is_dir, is_file in entries(parts):
+                if name.startswith(".") or linked:
+                    continue
+                relative = "/".join((*parts, name))
+                try:
+                    size = len(relative.encode("utf-8"))
+                except UnicodeEncodeError:
+                    continue
+                if is_dir:
+                    if size < MAX_SKILL_RESOURCE_PATH_BYTES:
+                        pending.append((*parts, name))
+                    continue
+                if not is_file:
+                    continue
+                if len(found) == limit or sum(map(len, found)) + len(relative) > max_chars:
+                    return found + ["..."] if pinned() else []
+                found.append(relative)
+        return found if pinned() else []
+    except SkillError:
+        return []
+    except (OSError, ValueError):
+        return []
+
+
 def _read_enabled_skill_text(
     name: str,
     resource: str,
@@ -1186,7 +1273,13 @@ def _read_enabled_skill_text(
         except SkillError:
             raise
         except (FileNotFoundError, NotADirectoryError) as exc:
-            raise SkillError(f"Skill resource '{path.as_posix()}' was not found.") from exc
+            # Small models retry attachment names or guessed names until shown the real files.
+            files = _list_skill_files(skill_dir, identity)
+            listing = f"{SKILL_FILES_HINT}{', '.join(files)}." if files else ""
+            raise SkillError(
+                f"Skill resource '{path.as_posix()}' was not found in the skill's folder. "
+                f"Chat attachments are not skill resources.{listing}"
+            ) from exc
         except (OSError, ValueError) as exc:
             raise SkillError("Skill resource path must stay inside the skill directory.") from exc
         raw = _read_limited(

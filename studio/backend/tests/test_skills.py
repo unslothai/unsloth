@@ -3,6 +3,7 @@
 
 import codecs
 import json
+import contextlib
 import os
 import re
 import sys
@@ -14,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference import skills
+from core.inference import skills, tools
 from routes.skills import router
 
 
@@ -242,6 +243,199 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
     skills.set_skill_enabled("reader", False, home = home)
     with pytest.raises(skills.SkillError, match = "disabled"):
         skills.read_skill_resource("reader", home = home)
+
+
+@pytest.mark.parametrize(
+    "resource", ["data.jsonl", f"{tools._ATTACHMENTS_DIR}/85563b7dcbb0/data.jsonl"]
+)
+def test_missing_resource_says_attachments_are_not_skill_resources(isolated_skills, resource):
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "reader")
+
+    with pytest.raises(skills.SkillError, match = "Chat attachments are not skill resources"):
+        skills.read_skill_resource("reader", resource, home = home)
+
+
+def test_missing_resource_lists_the_skill_files(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lint")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("print(1)", encoding = "utf-8")
+    (root / ".cache").mkdir()
+    (root / ".cache" / "x.json").write_text("{}", encoding = "utf-8")
+    (root / ".hidden").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lint", "dataset-lint.py", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX byte filenames")
+def test_missing_resource_listing_skips_undecodable_names(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "bytes")
+    try:
+        open(os.fsencode(root) + b"/bad-\xff.txt", "w").close()
+    except OSError:
+        pytest.skip("filesystem refuses non-UTF-8 names")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("bytes", "missing.txt", home = home)
+
+    str(error.value).encode("utf-8")
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_swapped_directory(isolated_skills, tmp_path):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "swap")
+    identity = os.stat(root, follow_symlinks = False)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("", encoding = "utf-8")
+    root.rename(root.with_name("swap-old"))
+    try:
+        os.symlink(outside, root, target_is_directory = True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+    assert skills._list_skill_files(root, identity) == []
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
+    isolated_skills, tmp_path, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "queued")
+    (root / "scripts").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private-filename.txt").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+    queued = []
+    swapped = []
+
+    def swapping_scandir(target):
+        # Swap between queueing scripts/ as a real directory and scanning it.
+        if queued and not swapped:
+            (root / "scripts").rename(root / "scripts-old")
+            os.symlink(outside, root / "scripts", target_is_directory = True)
+            swapped.append(True)
+        with real_scandir(target) as scan:
+            entries = list(scan)
+        if any(entry.name == "scripts" for entry in entries):
+            queued.append(True)
+        return contextlib.nullcontext(entries)
+
+    monkeypatch.setattr(skills.os, "scandir", swapping_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("queued", "missing.txt", home = home)
+
+    assert swapped
+    assert "private-filename" not in str(error.value)
+
+
+@pytest.mark.skipif(not skills._SCANDIR_FD, reason = "descriptor scans only")
+def test_missing_resource_listing_types_entries_while_the_folder_is_open(
+    isolated_skills, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lazy")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+
+    class LazyEntry:
+        # DT_UNKNOWN: the type comes from an fstatat on the scanned descriptor.
+        def __init__(self, entry, descriptor):
+            self._entry, self._descriptor, self.name = entry, descriptor, entry.name
+
+        def _typed(self, method, *args, **kwargs):
+            os.fstat(self._descriptor)
+            return getattr(self._entry, method)(*args, **kwargs)
+
+        def is_symlink(self):
+            return self._typed("is_symlink")
+
+        def is_dir(self, **kwargs):
+            return self._typed("is_dir", **kwargs)
+
+        def is_file(self, **kwargs):
+            return self._typed("is_file", **kwargs)
+
+    def lazy_scandir(target):
+        if not isinstance(target, int):
+            return real_scandir(target)
+        with real_scandir(target) as scan:
+            return contextlib.nullcontext([LazyEntry(entry, target) for entry in scan])
+
+    monkeypatch.setattr(skills.os, "scandir", lazy_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lazy", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
+def test_missing_resource_listing_stops_reading_a_large_folder(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "flat")
+    for index in range(300):
+        (root / f"{index:03d}.txt").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+    read = []
+
+    class Counted:
+        def __init__(self, scan):
+            self._scan = scan
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._scan.close()
+
+        def __iter__(self):
+            for entry in self._scan:
+                read.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr(skills.os, "scandir", lambda target: Counted(real_scandir(target)))
+    listed = skills._list_skill_files(root, os.stat(root, follow_symlinks = False), max_entries = 50)
+
+    assert len(read) == 50 and len(listed) == 21 and listed[-1] == "..."
+
+
+def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "deep")
+    try:
+        current = root
+        for _ in range(1100):
+            current = current / "d"
+            current.mkdir()
+    except OSError:
+        pytest.skip("filesystem refuses deep paths")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("deep", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+def test_missing_resource_listing_is_capped(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "many")
+    for index in range(30):
+        (root / f"f{index:02d}.txt").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("many", "missing.txt", home = home)
+
+    listed = str(error.value).split("Files in this skill: ", 1)[1].removesuffix(".").split(", ")
+    assert len(listed) == 21 and listed[-1] == "..."
 
 
 @pytest.mark.skipif(
@@ -823,6 +1017,28 @@ def test_read_skill_page_floor_reports_no_room_instead_of_slivers(isolated_skill
     monkeypatch.setattr(tools_module, "_fit_result_to_room", lambda result, name: result[:40])
     result = tools_module.execute_tool("read_skill", {"name": "long"})
     assert result.startswith("Error: Not enough context room")
+
+
+def test_read_skill_not_found_hint_fits_the_priced_room(isolated_skills, monkeypatch):
+    from core.inference import tools as tools_module
+
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "_owner_home", lambda: home)
+    root = _write_skill(home, "agents", "wide")
+    for index in range(20):
+        (root / f"{index:02d}-{'n' * 200}.txt").write_text("", encoding = "utf-8")
+    unpriced = tools_module.execute_tool("read_skill", {"name": "wide", "resource": "x.py"})
+    priced = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 150
+    )
+
+    assert "Files in this skill: " in unpriced and len(unpriced) < 1400
+    assert priced == unpriced.split(" Files in this skill: ", 1)[0]
+    assert priced.endswith("Chat attachments are not skill resources.")
+    exhausted = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 0
+    )
+    assert exhausted == priced
 
 
 def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills, monkeypatch):
