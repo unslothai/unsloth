@@ -100,7 +100,6 @@ def test_rl_refuses_real_minimax_m2_and_sft_accepts_it():
     _sft(model)
     with pytest.raises(NotImplementedError, match = RL_REFUSAL):
         _rl(model)
-    # The reference model is checked too.
     with pytest.raises(NotImplementedError, match = RL_REFUSAL):
         cp._check_cp_trainer(_trainer(), 2, "ulysses", [_llama_style(), model])
 
