@@ -66,7 +66,6 @@ class _Codec(torch.nn.Module):
 
     def decode(self, codes):
         self.decoded = codes
-        # 1920 samples per frame, as LiquidCodec
         samples = codes.shape[-1] * 1920
         return types.SimpleNamespace(audio_values = torch.full((1, 1, samples), 0.25))
 

@@ -801,8 +801,7 @@ def _audio_chat_auto_model(config):
     return getattr(transformers, "AutoModelForMultimodalLM", None)
 
 
-# The model card's prompt for LFM3 speech chat. Audio sampling is left to each checkpoint's
-# generation_config: LFM3-Audio and LFM3-Omni recommend different settings.
+# Audio sampling stays with each checkpoint's generation_config: LFM3-Audio and -Omni differ.
 _SPEECH_REPLY_SYSTEM_PROMPT = "Respond with interleaved text and audio."
 _TTS_LOCALES = {
     "ar": "Arabic",
@@ -2850,7 +2849,6 @@ class InferenceBackend:
     def _speak_audio_reply(
         self, messages, system_prompt, audio_array, max_new_tokens, use_adapter, cancel_event
     ):
-        """One spoken question answered in interleaved text and speech, not streamed."""
         import base64
 
         system = "\n\n".join(p for p in (_SPEECH_REPLY_SYSTEM_PROMPT, system_prompt) if p)
