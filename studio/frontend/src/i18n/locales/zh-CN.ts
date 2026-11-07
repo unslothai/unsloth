@@ -207,6 +207,7 @@ export const zhCN = {
     tabs: "浏览器标签页",
     newTab: "新标签页",
     newTabFullView: "在全屏视图中新建标签页",
+    newTabFloating: "在浮动窗口中新建标签页",
     closeTab: "关闭标签页",
     close: "关闭浏览器",
     show: "显示浏览器",
@@ -389,6 +390,12 @@ export const zhCN = {
       openChat: "在全屏视图中打开",
       moveLeft: "移到左侧窗格",
       moveRight: "移到右侧窗格",
+    },
+    floating: {
+      enter: "浮动窗口",
+      dock: "停靠到侧边",
+      close: "关闭浮动窗口",
+      handle: "移动窗口。方向键移动，Shift 加方向键调整大小。",
     },
     annotate: {
       countOne: "1 条批注",
@@ -785,6 +792,8 @@ export const zhCN = {
   picker: {
     unifiedTightFit: "勉强可用",
     unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
+    residentToRun: "运行所需",
+    residentToRunHint: "加载检查要求的运行时 GPU 显存",
     onDevice: "本机",
     huggingFace: "Hugging Face",
     retry: "重试",
@@ -1093,6 +1102,9 @@ export const zhCN = {
       modelAccessHint: "每行一个模型，例如 unsloth/Qwen3-4B-GGUF，或使用 unsloth/* 表示整个组织。留空则允许所有模型。",
       modelAccessSave: "保存",
       modelAccessLimited: "模型访问受限",
+      rename: "重命名",
+      renameTitle: "重命名 {username}",
+      renameDescription: "选择此账户用于登录的名称。其聊天、文件和 API 密钥仍保留在该账户中。该用户将被退出登录，需要使用新名称和当前密码重新登录。",
       empty: "暂无其他账户",
       setupCode: "设置码",
       setupFor: "{username} 的设置码",
@@ -2067,6 +2079,12 @@ export const zhCN = {
         autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
         autoCurrently: "本机上 Auto 正在使用 {transport}。",
         xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
+        speedLimit: "下载速度限制",
+        speedLimitDescription:
+          "未设置数值时不限速。限速下载使用 HTTPS。",
+        speedLimitNoLimit: "不限速",
+        speedLimitInvalid: "请输入 Mbit/s 数值，或留空。",
+        speedLimitUsesHttps: "设置了速度限制时，下载使用 HTTPS。超过 50 GB 的文件仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上传",
@@ -2467,6 +2485,10 @@ export const zhCN = {
         contrast: {
           label: "对比度",
         },
+        elementOutline: {
+          label: "元素轮廓",
+          description: "按钮、输入框、卡片和菜单的边框强度。",
+        },
         reduceMotion: {
           label: "减少动态效果",
           description: "减少动画，或跟随系统设置。",
@@ -2545,7 +2567,7 @@ export const zhCN = {
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
-        noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noGpu: "未检测到独立 GPU。",
         noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
         mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
         mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
@@ -2619,7 +2641,7 @@ export const zhCN = {
           "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
       },
       modelMemory: {
-        title: "模型内存",
+        title: "模型加载",
         keepResident: "将模型保留在显存中",
         keepResidentDescription: "在两次提问之间保持驻留显存。",
         keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载；当权重确实位于主机内存中时（统一内存，或部分卸载到 GPU），还会传入 --mlock，使操作系统无法将其换出、并在你下次提问时重新上传。",
@@ -2795,7 +2817,7 @@ export const zhCN = {
       configurationDocs: "文档",
       configurationFlagsSuffix: "了解标志。",
       modelNote:
-        "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
+        "Claude Code 和 Codex 需要通过 llama-server 提供服务的 GGUF 模型，或 MLX 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
         title: "将本地模型用作子智能体",
         description:
@@ -2866,6 +2888,8 @@ export const zhCN = {
     },
     chat: {
       groups: {
+        replies: { title: "回复" },
+        thinkingTools: { title: "思考与工具" },
         conversations: { title: "对话" },
         files: { title: "文件与粘贴" },
         display: { title: "显示" },
@@ -2946,11 +2970,20 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
-      showGenerationDetails: "生成详情",
+      showGenerationDetails: "详细速度与加载信息",
       showGenerationDetailsDescription:
-        "实时显示提示词和回复速度及 token 数，并显示模型各层的加载位置。",
+        "在实时读数中加入提示词读取速度、token 数和草稿采纳率，并显示模型各层加载在哪里。",
       showGenerationDetailsKeywords:
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度与上下文统计",
+      generationStatsUpdatesDescription:
+        "实时模式在回复流式输出时统计每秒 token 数和上下文用量。完成后模式在每条回复结束时更新。",
+      generationStatsUpdatesHint:
+        "实时模式会在回复生成期间，每秒数次刷新回复下方的每秒 token 数读数和聊天顶部的上下文条。完成后模式会在每条回复结束后更新一次。实时模式可能导致卡顿或性能下降，在较旧或繁忙的机器上尤其明显。",
+      generationStatsUpdatesSettled: "完成后",
+      generationStatsUpdatesRealtime: "实时",
+      generationStatsUpdatesKeywords:
+        "实时 动态 更新 速度 上下文 统计 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       turnNavigation: "轮次导航",
@@ -5375,7 +5408,7 @@ export const zhCN = {
     skippedVersion: "已暂时跳过 {component} {version}",
     skippedUpdate: "已暂时跳过 {component} 更新",
     skippedUpdates: "已暂时跳过 {components} 更新",
-    vulkanFaster: "Vulkan 比 ROCM 快 10% 以上。无需重启",
+    vulkanFaster: "快 10% 以上",
     noRestart: "无需重启",
     downloadSize: "下载大小 {size}",
     backendChange: "{change} 后端",
@@ -5384,8 +5417,8 @@ export const zhCN = {
     installingPhase: "正在安装 {component}（第 {current} 个，共 {total} 个）...",
     installingCount: "正在安装 {count} 项更新...",
     bundleTitle: "{count} 项运行时更新",
-    newBackend: "新的 {component} 后端",
-    newUpdate: "新的 {component} 更新",
+    newBackend: "新的运行时后端",
+    newUpdate: "新的运行时更新",
     hideUpdate: "在重新打开 Unsloth 之前隐藏 {component} 更新",
     hideUpdates: "在重新打开 Unsloth 之前隐藏 {components} 更新",
     whatsNew: "新功能",

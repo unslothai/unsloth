@@ -208,6 +208,7 @@ export const ja = {
     tabs: "ブラウザのタブ",
     newTab: "新しいタブ",
     newTabFullView: "全画面表示で新しいタブ",
+    newTabFloating: "フローティングウィンドウで新しいタブ",
     closeTab: "タブを閉じる",
     close: "ブラウザを閉じる",
     show: "ブラウザを表示",
@@ -390,6 +391,12 @@ export const ja = {
       openChat: "全画面で開く",
       moveLeft: "左ペインに移動",
       moveRight: "右ペインに移動",
+    },
+    floating: {
+      enter: "フローティングウィンドウ",
+      dock: "横にドッキング",
+      close: "フローティングウィンドウを閉じる",
+      handle: "ウィンドウを移動。矢印キーで移動、Shift と矢印キーでサイズを変更します。",
     },
     annotate: {
       countOne: "注釈 1 件",
@@ -786,6 +793,8 @@ export const ja = {
   picker: {
     unifiedTightFit: "ぎりぎり",
     unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
+    residentToRun: "実行に必要",
+    residentToRunHint: "実行中に読み込みチェックが必要とする GPU メモリ",
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",
@@ -1097,6 +1106,9 @@ export const ja = {
       modelAccessHint: "1 行に 1 モデルずつ入力します。例: unsloth/Qwen3-4B-GGUF、組織全体なら unsloth/*。空欄にするとすべてのモデルを許可します。",
       modelAccessSave: "保存",
       modelAccessLimited: "モデルへのアクセスを制限中",
+      rename: "名前を変更",
+      renameTitle: "{username} の名前を変更",
+      renameDescription: "このアカウントがサインインに使う名前を選びます。チャット、ファイル、API キーはアカウントに残ります。サインアウトされるので、新しい名前と現在のパスワードで再度サインインします。",
       empty: "ほかのアカウントはまだありません",
       setupCode: "セットアップコード",
       setupFor: "{username} のセットアップコード",
@@ -2079,6 +2091,12 @@ export const ja = {
           "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
         autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
         xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
+        speedLimit: "ダウンロード速度制限",
+        speedLimitDescription:
+          "値を設定しない限り制限はありません。制限中のダウンロードは HTTPS を使用します。",
+        speedLimitNoLimit: "制限なし",
+        speedLimitInvalid: "Mbit/s の数値を入力するか、空欄のままにしてください。",
+        speedLimitUsesHttps: "速度制限が設定されている間、ダウンロードは HTTPS を使用します。50 GB を超えるファイルは引き続き Xet を使用し、制限は適用されません。",
       },
       uploads: {
         sectionTitle: "アップロード",
@@ -2464,6 +2482,10 @@ export const ja = {
         contrast: {
           label: "コントラスト",
         },
+        elementOutline: {
+          label: "要素の枠線",
+          description: "ボタン、入力欄、カード、メニューの枠線の濃さ。",
+        },
         reduceMotion: {
           label: "モーションを減らす",
           description: "アニメーションを減らすか、システム設定に従います。",
@@ -2555,7 +2577,7 @@ export const ja = {
         detecting: "GPU を確認しています...",
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
-          "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+          "専用 GPU は検出されませんでした。",
         noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
         mismatchCpuBuild:
           "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
@@ -2631,7 +2653,7 @@ export const ja = {
           "llama.cpp backend gguf 推論 cuda rocm hip vulkan metal cpu gpu アクセラレータ prebuilt 切り替え エンジン",
       },
       modelMemory: {
-        title: "モデルメモリ",
+        title: "モデルの読み込み",
         keepResident: "モデルを GPU メモリに保持",
         keepResidentDescription: "プロンプト間も VRAM に常駐します。",
         keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、重みが実際にホスト RAM 上にある場合（ユニファイドメモリ、または GPU への部分オフロード）は --mlock も渡すため、OS が重みをページアウトして次のプロンプトで再アップロードすることがなくなります。",
@@ -2814,7 +2836,7 @@ export const ja = {
       configurationDocs: "ドキュメント",
       configurationFlagsSuffix: "を参照してください。",
       modelNote:
-        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
+        "Claude Code と Codex には、llama-server が提供する GGUF モデルか MLX モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
         title: "ローカルモデルをサブエージェントとして使う",
         description:
@@ -2893,6 +2915,8 @@ export const ja = {
     },
     chat: {
       groups: {
+        replies: { title: "応答" },
+        thinkingTools: { title: "思考とツール" },
         conversations: { title: "会話" },
         files: { title: "ファイルと貼り付け" },
         display: { title: "表示" },
@@ -2975,11 +2999,20 @@ export const ja = {
       showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
       showReplyTimesKeywords:
         "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
-      showGenerationDetails: "生成の詳細",
+      showGenerationDetails: "速度と読み込みの詳細情報",
       showGenerationDetailsDescription:
-        "プロンプトと応答の速度をトークン数とともにリアルタイムで表示し、モデルのレイヤーの読み込み先も表示します。",
+        "ライブ表示にプロンプトの読み取り速度、トークン数、ドラフトの採用率を追加し、モデルのレイヤーの読み込み先を表示します。",
       showGenerationDetailsKeywords:
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度とコンテキストの統計",
+      generationStatsUpdatesDescription:
+        "リアルタイムでは、応答のストリーミング中に毎秒トークン数とコンテキスト使用量を数えます。完了時は各応答の終了時に更新します。",
+      generationStatsUpdatesHint:
+        "リアルタイムでは、応答の生成中に応答の下の毎秒トークン数表示とチャット上部のコンテキストバーを毎秒数回更新します。完了時は各応答が終わった後に一度だけ更新します。リアルタイムは、特に古いマシンや負荷の高いマシンで動作の遅れやパフォーマンス低下を招くことがあります。",
+      generationStatsUpdatesSettled: "完了時",
+      generationStatsUpdatesRealtime: "リアルタイム",
+      generationStatsUpdatesKeywords:
+        "リアルタイム ライブ 更新 速度 コンテキスト 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       turnNavigation: "ターンナビゲーション",
@@ -5424,7 +5457,7 @@ export const ja = {
     skippedVersion: "{component} {version} を今回はスキップしました",
     skippedUpdate: "{component} の更新を今回はスキップしました",
     skippedUpdates: "{components} の更新を今回はスキップしました",
-    vulkanFaster: "Vulkan は ROCM より 10% 以上高速です。再起動は不要です",
+    vulkanFaster: "10% 以上高速",
     noRestart: "再起動は不要です",
     downloadSize: "ダウンロードサイズ {size}",
     backendChange: "{change} バックエンド",
@@ -5433,8 +5466,8 @@ export const ja = {
     installingPhase: "{component} をインストールしています ({current}/{total})...",
     installingCount: "{count} 件の更新をインストールしています...",
     bundleTitle: "{count} 件のランタイム更新",
-    newBackend: "新しい {component} バックエンド",
-    newUpdate: "新しい {component} の更新",
+    newBackend: "新しいランタイムのバックエンド",
+    newUpdate: "新しいランタイムの更新",
     hideUpdate: "Unsloth を再度開くまで {component} の更新を非表示",
     hideUpdates: "Unsloth を再度開くまで {components} の更新を非表示",
     whatsNew: "新機能",

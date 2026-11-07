@@ -215,6 +215,7 @@ export const uk = {
     tabs: "Вкладки браузера",
     newTab: "Нова вкладка",
     newTabFullView: "Нова вкладка на весь екран",
+    newTabFloating: "Нова вкладка в плаваючому вікні",
     closeTab: "Закрити вкладку",
     close: "Закрити браузер",
     show: "Показати браузер",
@@ -433,6 +434,12 @@ export const uk = {
       openChat: "Відкрити в повному вигляді",
       moveLeft: "Перемістити на ліву панель",
       moveRight: "Перемістити на праву панель",
+    },
+    floating: {
+      enter: "Плаваюче вікно",
+      dock: "Закріпити збоку",
+      close: "Закрити плаваюче вікно",
+      handle: "Перемістити вікно. Стрілки переміщують його, Shift зі стрілками змінює розмір.",
     },
     annotate: {
       countOne: "1 анотація",
@@ -891,6 +898,9 @@ export const uk = {
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",
+    residentToRun: "для запуску",
+    residentToRunHint:
+      "Пам'ять GPU, яку перевірка завантаження вимагає під час роботи",
     onDevice: "На пристрої",
     huggingFace: "Hugging Face",
     retry: "Повторити",
@@ -1213,6 +1223,9 @@ export const uk = {
         "Одна модель у рядку, наприклад unsloth/Qwen3-4B-GGUF, або unsloth/* для всієї організації. Залиште порожнім, щоб дозволити всі моделі.",
       modelAccessSave: "Зберегти",
       modelAccessLimited: "Обмежений доступ до моделей",
+      rename: "Перейменувати",
+      renameTitle: "Перейменувати {username}",
+      renameDescription: "Виберіть ім'я, з яким цей обліковий запис входить у систему. Чати, файли та ключі API залишаються в обліковому записі. Користувача буде виведено з системи, і він знову ввійде з новим ім'ям та поточним паролем.",
       empty: "Інших облікових записів поки що немає",
       setupCode: "Код налаштування",
       setupFor: "Код налаштування для {username}",
@@ -2313,6 +2326,12 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
+        speedLimitUsesHttps: "Поки встановлено обмеження швидкості, завантаження використовують HTTPS. Файли понад 50 ГБ і далі завантажуються через Xet без обмеження.",
       },
       uploads: {
         sectionTitle: "Вивантаження",
@@ -2705,6 +2724,10 @@ export const uk = {
         contrast: {
           label: "Контраст",
         },
+        elementOutline: {
+          label: "Контур елементів",
+          description: "Насиченість меж кнопок, полів, карток і меню.",
+        },
         reduceMotion: {
           label: "Зменшити рух",
           description: "Зменшити анімацію або як у системі.",
@@ -2799,7 +2822,7 @@ export const uk = {
         unavailable: "недоступно",
         detecting: "Пошук GPU...",
         unreadable: "Не вдалося прочитати дані про обладнання цього сервера.",
-        noGpu: "Видимих GPU не виявлено. Вище показано лише ресурси CPU.",
+        noGpu: "Окремий GPU не виявлено.",
         noUsableGpu: "На цьому комп’ютері немає GPU, придатного для PyTorch.",
         mismatchCpuBuild:
           "PyTorch — це збірка лише для CPU ({version}), тому наведені нижче GPU не можна використовувати. Відновіть інсталяцію, щоб повернути підтримку GPU.",
@@ -2888,7 +2911,7 @@ export const uk = {
           "бекенд інференс прискорювач готова збірка перемкнути рушій власний шлях папка каталог виконуваний файл llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Пам’ять моделей",
+        title: "Завантаження моделей",
         keepResident: "Тримати модель у пам’яті GPU",
         keepResidentDescription: "Залишатися у VRAM між запитами.",
         keepResidentHint:
@@ -3088,7 +3111,7 @@ export const uk = {
       configurationDocs: "документацію",
       configurationFlagsSuffix: "щодо прапорців.",
       modelNote:
-        "Codex потребує моделі GGUF, яку обслуговує llama-server. Інші агенти можуть також використовувати моделі на основі transformers; вилучіть --model, щоб використати модель, уже завантажену в Unsloth.",
+        "Claude Code і Codex потребують моделі GGUF, яку обслуговує llama-server, або моделі MLX. Інші агенти можуть також використовувати моделі на основі transformers; вилучіть --model, щоб використати модель, уже завантажену в Unsloth.",
       subagent: {
         title: "Використовувати локальну модель як субагента",
         description:
@@ -3164,6 +3187,8 @@ export const uk = {
     },
     chat: {
       groups: {
+        replies: { title: "Відповіді" },
+        thinkingTools: { title: "Міркування та інструменти" },
         conversations: {
           title: "Розмови",
         },
@@ -3263,11 +3288,20 @@ export const uk = {
         "Показувати під кожною відповіддю, коли її завершено.",
       showReplyTimesKeywords:
         "позначка часу час годинник дата година коли завершено надійшло відповідь повідомлення timestamp",
-      showGenerationDetails: "Відомості про генерування",
+      showGenerationDetails: "Докладна інформація про швидкість і завантаження",
       showGenerationDetailsDescription:
-        "Показувати поточну швидкість обробки запиту й відповіді з кількістю токенів, а також де завантажено шари моделі.",
+        "Додає до живих показників швидкість читання запиту, кількість токенів і прийняття чернеток, а також показує, куди завантажено шари моделі.",
       showGenerationDetailsKeywords:
         "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
+      generationStatsUpdates: "Статистика швидкості й контексту",
+      generationStatsUpdatesDescription:
+        "У реальному часі рахує токени за секунду й використання контексту, поки відповідь передається. Після завершення оновлює їх, коли кожна відповідь закінчена.",
+      generationStatsUpdatesHint:
+        "У реальному часі оновлює показник токенів за секунду під відповіддю та смугу контексту вгорі чату кілька разів на секунду, поки відповідь пишеться. Після завершення оновлює їх один раз, коли кожна відповідь закінчена. Режим реального часу може спричиняти підвисання або знижувати продуктивність, особливо на старих чи завантажених комп'ютерах.",
+      generationStatsUpdatesSettled: "Після завершення",
+      generationStatsUpdatesRealtime: "У реальному часі",
+      generationStatsUpdatesKeywords:
+        "реальний час наживо оновлення швидкість контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
@@ -5923,7 +5957,7 @@ export const uk = {
     skippedVersion: "Наразі пропущено: {component} {version}",
     skippedUpdate: "Оновлення {component} наразі пропущено",
     skippedUpdates: "Оновлення {components} наразі пропущено",
-    vulkanFaster: "Vulkan на >10% швидший за ROCM. Перезапуск не потрібен",
+    vulkanFaster: "Швидше більш ніж на 10%",
     noRestart: "Перезапуск не потрібен",
     downloadSize: "Обсяг завантаження: {size}",
     backendChange: "Бекенд: {change}",
@@ -5932,8 +5966,8 @@ export const uk = {
     installingPhase: "Інсталяція {component} ({current} із {total})...",
     installingCount: "Інсталяція оновлень: {count}...",
     bundleTitle: "Оновлень середовища виконання: {count}",
-    newBackend: "Новий бекенд {component}",
-    newUpdate: "Нове оновлення {component}",
+    newBackend: "Новий бекенд середовища виконання",
+    newUpdate: "Нове оновлення середовища виконання",
     hideUpdate:
       "Приховати оновлення {component} до повторного відкриття Unsloth",
     hideUpdates:

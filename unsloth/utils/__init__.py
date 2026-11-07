@@ -10,6 +10,10 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import importlib
+
+# Import models first, else the CPU route sees attention_dispatch half initialised (import cycle via llama.py).
+importlib.import_module("..models", __name__)
 from .packing import (
     configure_padding_free,
     configure_sample_packing,

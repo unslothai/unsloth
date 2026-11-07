@@ -30,6 +30,13 @@ try:
 except Exception:
     pass
 
+# Triton-only flash-attn (RDNA3/4) imports only with its backend switch; set before any flash_attn import.
+try:
+    from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
+    _default_triton_amd_env()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -1714,6 +1721,35 @@ async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     await send({"type": "http.response.body", "body": payload, "more_body": False})
 
 
+_ZSTD_BODY_PATH = "/v1/systemone"
+_ZSTD_MIN_DECODED_BYTES = 8 * 1024 * 1024
+_ZSTD_MAX_RATIO = 64
+_ZSTD_MAX_FRAMES = 1024
+
+
+def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
+    view = memoryview(data)
+    frames = []
+    total = 0
+    pos = 0
+    while True:
+        if len(frames) == _ZSTD_MAX_FRAMES:
+            raise zstd.ZstdError("too many zstd frames")
+        # Slice by get_frame_size, not unused_data: that copies the rest per frame (quadratic).
+        end = pos + zstd.get_frame_size(view[pos:])
+        decompressor = zstd.ZstdDecompressor()
+        frame = decompressor.decompress(view[pos:end], max_length = limit + 1 - total)
+        total += len(frame)
+        if total > limit:
+            return None
+        if not decompressor.eof:
+            raise zstd.ZstdError("truncated zstd frame")
+        frames.append(frame)
+        pos = end
+        if pos == len(data):
+            return b"".join(frames)
+
+
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
@@ -1838,6 +1874,49 @@ class MaxBodyMiddleware:
             if not msg.get("more_body", False):
                 break
 
+        body = b"".join(chunks)
+        headers = scope.get("headers", [])
+        if (
+            path.rstrip("/") == _ZSTD_BODY_PATH
+            and dict(headers).get(b"content-encoding", b"").strip().lower() == b"zstd"
+        ):
+            try:
+                from compression import zstd  # novermin
+            except ImportError:
+                try:
+                    from backports import zstd
+                except ImportError:
+                    await JSONResponse(
+                        {
+                            "detail": "zstd request bodies need Python 3.14 or the backports.zstd package."
+                        },
+                        status_code = 415,
+                    )(scope, receive, send)
+                    return
+            limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
+            try:
+                body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
+            except zstd.ZstdError:
+                await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
+                    scope, receive, send
+                )
+                return
+            if body is None:
+                await JSONResponse(
+                    {"detail": f"Decoded zstd request body is larger than {limit:,} bytes."},
+                    status_code = 413,
+                )(scope, receive, send)
+                return
+            scope = dict(
+                scope,
+                headers = [
+                    (name, value)
+                    for name, value in headers
+                    if name not in (b"content-encoding", b"content-length")
+                ]
+                + [(b"content-length", str(len(body)).encode("ascii"))],
+            )
+
         replayed = {"sent": False}
 
         async def replay_receive():
@@ -1845,7 +1924,7 @@ class MaxBodyMiddleware:
                 replayed["sent"] = True
                 return {
                     "type": "http.request",
-                    "body": b"".join(chunks),
+                    "body": body,
                     "more_body": False,
                 }
             # After replay, fall through so http.disconnect still propagates.
@@ -2404,7 +2483,9 @@ def studio_download_transport_capabilities(
     probe: bool = False, _current_subject: str = Depends(get_current_subject)
 ):
     # Sync def, so FastAPI runs this in the threadpool and an opted-in probe cannot block the loop.
-    return asdict(get_download_transport_capabilities(probe = probe))
+    from utils.download_speed_limit import get_download_speed_limit_mbps
+    caps = asdict(get_download_transport_capabilities(probe = probe))
+    return {**caps, "speed_limited": get_download_speed_limit_mbps() is not None}
 
 
 @app.post(

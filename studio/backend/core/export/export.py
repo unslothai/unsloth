@@ -31,7 +31,7 @@ from huggingface_hub import HfApi, ModelCard
 from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
-from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import (
     detect_audio_type,
@@ -1075,6 +1075,13 @@ class ExportBackend:
                 self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                # Only a definitive no (not an unreadable config) takes the multimodal load below.
+                audio_vlm_multimodal = False
+                if self._audio_type == "audio_vlm" and not self.is_vision:
+                    takes, known = audio_vlm_multimodal_lm_checked(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                    audio_vlm_multimodal = known and takes
                 from utils.models.diffusion_lm import diffusion_lm_profile_for_model
 
                 self.diffusion_lm_profile = (
@@ -1177,6 +1184,34 @@ class ExportBackend:
                     **_device_map_kw,
                     **_offload_kw,
                 )
+
+            elif self._audio_type == "audio_vlm" and audio_vlm_multimodal:
+                # LFM3-Audio: the text load builds the bare backbone with no LM head; Training and Chat use this class.
+                from unsloth import FastModel
+                from transformers import AutoModelForMultimodalLM
+
+                logger.info("Loading as audio-input model (AutoModelForMultimodalLM)...")
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    auto_model = AutoModelForMultimodalLM,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+                if base_model and not hasattr(tokenizer, "feature_extractor"):
+                    with _offline_window_if(local_files_only):
+                        tokenizer = _with_base_processor(
+                            tokenizer,
+                            base_model,
+                            trust_remote_code = trust_remote_code,
+                            token = token,
+                            local_files_only = local_files_only,
+                        )
 
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel

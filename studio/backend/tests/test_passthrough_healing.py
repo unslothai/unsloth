@@ -21,6 +21,7 @@ from core.inference.passthrough_healing import (  # noqa: E402
     heal_openai_message,
     nudge_enabled,
     nudge_messages,
+    native_tool_format,
     nudge_should_retry,
     response_has_promotable_calls,
 )
@@ -349,6 +350,43 @@ def test_stream_keeps_a_bracket_call_inside_an_open_block_in_its_arguments():
     (call,) = _events_calls(events)
     assert "rm" in json.loads(call["function"]["arguments"])["command"]
     assert "run " in json.loads(call["function"]["arguments"])["command"]
+
+
+@pytest.mark.parametrize("step", [1, 5])
+def test_stream_drops_the_tool_call_wrapper_around_a_function_call(step):
+    def call(command):
+        return (
+            "<tool_call>\n<function=Bash>\n<parameter=command>\n"
+            f"{command}\n</parameter>\n</function>\n</tool_call>"
+        )
+
+    text = f"Listing.\n\n{call('ls')}\n{call('pwd')}\nDone."
+    healer = StreamToolCallHealer({"Bash"})
+    events = []
+    for start in range(0, len(text), step):
+        events += healer.feed(text[start : start + step])
+    events += healer.finalize()
+    calls = _events_calls(events)
+    assert [json.loads(c["function"]["arguments"]) for c in calls] == [
+        {"command": "ls"},
+        {"command": "pwd"},
+    ]
+    assert len({c["id"] for c in calls}) == 2
+    assert _events_text(events) == "Listing.\n\n\n\nDone."
+
+
+def test_an_unclosed_wrapper_still_streams_past_the_hold_limit():
+    healer = StreamToolCallHealer({"Bash"})
+    events = healer.feed(
+        "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>\n"
+    )
+    for _ in range(8000):
+        events += healer.feed("more text ")
+    assert _events_calls(events), "the call must not wait for finalize past the hold limit"
+    assert len(healer._buffer) < 70000
+    events += healer.finalize()
+    (call,) = _events_calls(events)
+    assert json.loads(call["function"]["arguments"]) == {"command": "ls"}
 
 
 def test_stream_delivers_a_bracket_call_wrapped_in_a_closed_block():
@@ -1691,6 +1729,228 @@ class TestHealerSignalAlignment:
         (call,) = _events_calls(events)
         assert call["function"]["name"] == "web_search"
         assert healer.healed
+
+
+_XML_BASH = "<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>"
+_GLM = "<tool_call>Bash<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>"
+_KIMI = (
+    "<|tool_calls_section_begin|><|tool_call_begin|>functions.Bash:0<|tool_call_argument_begin|>"
+    '{"command": "ls"}<|tool_call_end|><|tool_calls_section_end|>'
+)
+_MINIMAX = (
+    '<minimax:tool_call><invoke name="Bash"><parameter name="command">ls</parameter></invoke>'
+    "</minimax:tool_call>"
+)
+_SEED = f"<seed:tool_call>\n{_XML_BASH}\n</seed:tool_call>"
+_DEEPSEEK = (
+    '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>Bash<｜tool▁sep｜>{"command": "ls"}'
+    "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+)
+# Format -> (template marker, a block calling Bash(command="ls")).
+_NATIVE = {
+    "glm": ("<arg_key>", _GLM),
+    "minimax": ("<minimax:tool_call>", _MINIMAX),
+    "kimi": ("<|tool_calls_section_begin|>", _KIMI),
+    "deepseek": ("<｜tool▁calls▁begin｜>", _DEEPSEEK),
+    "seed": ("<seed:tool_call>", _SEED),
+}
+_LS = ("Bash", {"command": "ls"})
+_JSON_LS = '{"command": "ls"}'
+
+
+def _named(calls):
+    return [(c["function"]["name"], json.loads(c["function"]["arguments"])) for c in calls]
+
+
+def _heal_native(
+    name,
+    text,
+    allowed = ("Bash", "Write"),
+    tools = None,
+):
+    """Calls and text from the stream at several chunk sizes and from the message path, which agree."""
+    native = native_tool_format(_NATIVE[name][0])
+    results = []
+    for step in (1, 7, len(text)):
+        healer = StreamToolCallHealer(set(allowed), tools, native = native)
+        events = [e for i in range(0, len(text), step) for e in healer.feed(text[i : i + step])]
+        events += healer.finalize()
+        results.append((_named(_events_calls(events)), _events_text(events)))
+    assert results.count(results[0]) == len(results)
+    calls, relayed = results[0]
+    msg = {"content": text}
+    heal_openai_message(msg, set(allowed), tools, native = native)
+    assert _named(msg.get("tool_calls") or []) == calls
+    assert msg["content"] == ((relayed.strip() or None) if calls else text)
+    return results[0]
+
+
+class TestNativeToolFormats:
+    """In-process models: the template's own call blocks are promoted, as llama-server parses them."""
+
+    def test_detects_the_format_from_the_template(self):
+        for marker, block in _NATIVE.values():
+            fmt = native_tool_format(f"{{% if tools %}}{marker}{{% endif %}}")
+            assert block.startswith(fmt.open) and block.endswith(fmt.close)
+        assert native_tool_format({"tool_use": "<minimax:tool_call>"}).open == "<minimax:tool_call>"
+        assert native_tool_format("<tool_call>\n<function=", None) is None
+
+    @pytest.mark.parametrize("name", _NATIVE)
+    def test_each_format_is_promoted_with_no_markup_left(self, name):
+        block = _NATIVE[name][1]
+        text = f"On it.\n{block}\n{block}\nDone."
+        assert _heal_native(name, text) == ([_LS, _LS], "On it.\n\n\nDone.")
+
+    @pytest.mark.parametrize(
+        "name, text",
+        [
+            ("minimax", _MINIMAX.replace("</invoke>", '</invoke><invoke name="Read"></invoke>')),
+            ("minimax", _MINIMAX.replace("</invoke>", '</invoke><invoke\nname="Bash"><parameter>')),
+            ("kimi", _KIMI.replace(_JSON_LS, "{command: ls}")),
+            ("seed", f"<seed:tool_call><function=Bash>{_JSON_LS}</function></seed:tool_call>"),
+            ("minimax", _MINIMAX.replace('<parameter name="command">ls</parameter>', _JSON_LS)),
+            ("glm", f"<tool_call>Bash\n{_JSON_LS}</tool_call>"),
+            (
+                "glm",
+                f'<tool_call>{json.dumps({"name": "Write", "arguments": {"c": _GLM}})}</tool_call>',
+            ),
+            (
+                "minimax",
+                f"<function=Write>\n<parameter=content>\n{_MINIMAX}\n</parameter>\n</function>",
+            ),
+            ("kimi", f'<|tool_call>call:Write{{c:<|"|>a<tool_call|>{_KIMI}<|"|>}}<tool_call|>'),
+            ("glm", f"<|tool_call_begin|>functions.Write:0<|tool_call_argument_begin|>{_GLM}"),
+            ("glm", f'<function\n name="Write"><parameter name="c">{_GLM}</parameter></function>'),
+            ("kimi", f"{_KIMI} then {_XML_BASH}"),
+            ("kimi", f"see <seed:tool_call> then {_KIMI}"),
+            (
+                "minimax",
+                _MINIMAX.replace(">ls<", '><invoke name="Bash"></invoke><').replace(
+                    '"><parameter name="command">',
+                    f'">{_JSON_LS}</invoke><invoke name="Bash"><parameter name="command">',
+                    1,
+                ),
+            ),
+            ("kimi", f"<think>{_XML_BASH}</think>{_KIMI}"),
+            ("kimi", "<function=Write><|tool_calls_section_begin|>x"),
+            ("kimi", f"<|tool_calls_section_begin|>x<|tool_calls_section_end|> see {_KIMI[28:]}"),
+            ("kimi", _KIMI.replace(_JSON_LS, '{"x": ' + "[" * 1100 + "]" * 1100 + "}")),
+            ("seed", _SEED.replace("ls", "</seed:tool_call>" * 3200)),
+            *(
+                ("kimi", f"<|tool_calls_section_begin|>{wrapper}{_KIMI[28:]}</parameter>")
+                for wrapper in (
+                    "<function=Write><parameter=c>",
+                    '<function\n name="Write"><parameter name="c">',
+                )
+            ),
+            (
+                "kimi",
+                f'<|tool_calls_section_begin|><function name="Write"><parameter name="c">'
+                + _KIMI[28:].replace('"ls"', json.dumps('<function name="Write">')),
+            ),
+        ],
+    )
+    def test_a_reply_that_is_not_all_declared_well_formed_blocks_stays_text(self, name, text):
+        assert _heal_native(name, text, ("Bash",)) == ([], text)
+
+    @pytest.mark.parametrize(
+        "name, text, calls",
+        [
+            (
+                "kimi",
+                _KIMI.replace('"ls"', '"<|tool_calls_section_end|>"'),
+                [("Bash", {"command": "<|tool_calls_section_end|>"})],
+            ),
+            (
+                "kimi",
+                _KIMI.replace('"ls"', '"<|tool_call_begin|>"'),
+                [("Bash", {"command": "<|tool_call_begin|>"})],
+            ),
+            (
+                "seed",
+                _SEED.replace("\nls\n", "\n<function=x>\n"),
+                [("Bash", {"command": "<function=x>"})],
+            ),
+            ("minimax", _MINIMAX.replace("<invoke ", "<invoke\n"), [_LS]),
+            (
+                "minimax",
+                _MINIMAX.replace("<invoke", '<invoke name="Bash"></invoke><invoke').replace(
+                    "parameter", "param"
+                ),
+                [("Bash", {}), _LS],
+            ),
+            (
+                "minimax",
+                _MINIMAX.replace(">ls<", '><invoke name="x">y</invoke><'),
+                [("Bash", {"command": '<invoke name="x">y</invoke>'})],
+            ),
+            ("glm", f"<think>maybe [/THINK] {_GLM}</think>{_GLM}", [_LS]),
+            (
+                "minimax",
+                f"{_MINIMAX.replace('>ls<', '><think><')}{_MINIMAX}",
+                [("Bash", {"command": "<think>"}), _LS],
+            ),
+            ("minimax", f"[THINK]maybe </think> {_MINIMAX}[/THINK]{_MINIMAX}", [_LS]),
+            ("glm", json.dumps({"a": [_GLM, "<function=x>"]}) + _GLM, [_LS]),
+            ("glm", "[" * 100000 + _GLM, [_LS]),
+        ],
+    )
+    def test_argument_and_reasoning_text_is_data(self, name, text, calls):
+        assert _heal_native(name, text)[0] == calls
+
+    def test_kimi_call_ids_replay_through_its_template(self):
+        native = native_tool_format(_NATIVE["kimi"][0])
+        two = _KIMI + _KIMI.replace(":0", ":1")
+        for text, ids in (
+            (two, ["functions.Bash:0", "functions.Bash:1"]),
+            (_KIMI * 2, ["call_0", "call_1"]),
+        ):
+            msg = {"content": text}
+            heal_openai_message(msg, {"Bash"}, native = native)
+            healer = StreamToolCallHealer({"Bash"}, native = native)
+            events = healer.feed(text) + healer.finalize()
+            assert (
+                [c["id"] for c in msg["tool_calls"]]
+                == [c["id"] for c in _events_calls(events)]
+                == ids
+            )
+
+    def test_a_block_relays_once_if_its_calls_are_un_promoted(self):
+        block = _MINIMAX.replace("</invoke>", '</invoke><invoke name="Bash"></invoke>')
+        healer = StreamToolCallHealer({"Bash"}, native = native_tool_format("<minimax:tool_call>"))
+        assert _events_calls(healer.feed(block) + healer.finalize())
+        assert (healer.promoted_source("call_0"), healer.promoted_source("call_1")) == (block, "")
+
+    def test_glm_values_are_typed_by_the_tools_schema(self):
+        tools = [_client_tool("Write", {"c": {"type": "string"}, "o": {"type": "object"}})]
+        text = '<tool_call>Write<arg_key>c</arg_key><arg_value>{"on":true}</arg_value>'
+        text += '<arg_key>o</arg_key><arg_value>{"a": 1}</arg_value></tool_call>'
+        calls = [("Write", {"c": '{"on":true}', "o": {"a": 1}})]
+        assert _heal_native("glm", text, ("Write",), tools)[0] == calls
+
+    def test_a_cut_off_block_promotes_only_when_incomplete_calls_may(self):
+        cut = _DEEPSEEK[: -len("<｜tool▁calls▁end｜>")]
+        assert _heal_native("deepseek", cut)[0] == [_LS]
+        native = native_tool_format(_NATIVE["deepseek"][0])
+        generic = f'<tool_call>{{"name": "Bash", "arguments": {_JSON_LS}}}'
+        for native, text, calls in (
+            (native, cut, []),
+            (native, f"{_DEEPSEEK} and the", [_LS]),
+            (None, generic, []),
+        ):
+            msg = {"content": text}
+            heal_openai_message(msg, {"Bash"}, allow_incomplete = False, native = native)
+            healer = StreamToolCallHealer({"Bash"}, native = native)
+            events = healer.feed(text) + healer.finalize(promote = False)
+            assert _named(msg.get("tool_calls") or []) == _named(_events_calls(events)) == calls
+
+    def test_the_stream_holds_no_more_than_the_hold_limit(self):
+        native = native_tool_format("<seed:tool_call>")
+        text = _SEED.replace("\nls\n", "x" * (70 * 1024)).replace("Bash", "Write") + _SEED
+        healer = StreamToolCallHealer({"Bash", "Write"}, native = native)
+        events = [e for i in range(0, len(text), 4096) for e in healer.feed(text[i : i + 4096])]
+        assert _events_text(events + healer.finalize()) == text
+        assert heal_openai_message({"content": text}, {"Bash", "Write"}, native = native)
 
 
 def _client_tool(name, properties):
