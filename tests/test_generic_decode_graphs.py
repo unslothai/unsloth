@@ -572,7 +572,8 @@ def test_argument_keys(host):
     assert GG._spec(cache, [], cache) == ("C",)
     for bad, why in (
         (object(), "argument object"),
-        (torch.zeros(3, requires_grad = True), "tensor argument"),
+        (torch.zeros(3, requires_grad = True), "tensor argument requires grad"),
+        (torch.zeros(3, device = "meta"), "tensor argument on meta"),
         (torch.zeros(5 * 1024 * 1024), "large tensor argument"),
     ):
         with pytest.raises(GG._Refuse, match = why):

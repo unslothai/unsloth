@@ -371,3 +371,66 @@ def test_generate_through_a_single_device_hook_uses_graphs(host, llama, monkeypa
     assert torch.equal(eager, graphed)
     # The hook's forward is put back after the call.
     assert llama.__dict__["forward"] is hooked
+
+
+class _Muse(torch.nn.Module):
+    """A Muse-Glimmer-like decoder: the embedding is trainable and may answer on another device."""
+
+    def __init__(self, answer_on = None):
+        super().__init__()
+        self.config = types.SimpleNamespace(
+            model_type = "muse_glimmer", image_token_id = 5, video_token_id = 6
+        )
+        self.embed = torch.nn.Embedding(10, 4)
+        self.answer_on = answer_on
+
+    def get_input_embeddings(self):
+        if self.answer_on is None:
+            return self.embed
+        return lambda ids: torch.zeros(*ids.shape, 4, device = self.answer_on)
+
+
+def test_placeholder_embeds_never_track_grad_and_pass_the_argument_check(host):
+    model = _Muse()
+    assert model.embed.weight.requires_grad
+    ids = torch.tensor([[5], [3]])
+    with torch.enable_grad():
+        out = GG._placeholder_embeds(model, {"input_ids": ids})
+    embeds = out["inputs_embeds"]
+    assert not embeds.requires_grad
+    leaves = []
+    GG._spec(out, leaves, None)  # not "tensor argument requires grad"
+    assert any(leaf is embeds for leaf in leaves)
+
+
+def test_placeholder_embeds_land_on_the_decode_step_device():
+    # The lookup answers on the host while the ids live elsewhere (meta stands in for the card).
+    model = _Muse(answer_on = "cpu")
+    ids = torch.tensor([[5], [3]], device = "meta")
+    out = GG._placeholder_embeds(model, {"input_ids": ids})
+    assert out["inputs_embeds"].device == ids.device
+
+
+def test_refusal_reasons_name_the_argument(host, llama, monkeypatch):
+    real = GG._mrope_positions
+
+    def with_grad_tensor(model, kwargs):
+        return {**real(model, kwargs), "extra": torch.zeros(1, requires_grad = True)}
+
+    import functools
+
+    monkeypatch.setattr(GG, "_mrope_positions", with_grad_tensor)
+    cls_forward = type(llama).forward
+
+    @functools.wraps(cls_forward)
+    def forward(
+        self,
+        *a,
+        extra = None,
+        **k,
+    ):
+        return cls_forward(self, *a, **k)
+
+    monkeypatch.setattr(type(llama), "forward", forward)
+    _gen(llama)
+    assert _stats(llama)["refusals"] == {"tensor argument requires grad (extra)": 9}, _stats(llama)

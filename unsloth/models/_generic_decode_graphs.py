@@ -807,8 +807,10 @@ def _advance(cache, q_len):
 def _spec(value, leaves, cache):
     """Hashable structure of a forward argument; its tensors appended to `leaves` in order."""
     if isinstance(value, torch.Tensor):
-        if value.requires_grad or value.device.type != _BACKEND.device_type:
-            raise _Refuse("tensor argument")
+        if value.requires_grad:
+            raise _Refuse("tensor argument requires grad")
+        if value.device.type != _BACKEND.device_type:
+            raise _Refuse(f"tensor argument on {value.device}")
         if value.numel() * value.element_size() > _MAX_ARG_BYTES:
             raise _Refuse("large tensor argument")
         leaves.append(value)
@@ -1026,7 +1028,14 @@ def _placeholder_embeds(model, kwargs):
     mask = ids == tokens[0]
     for token in tokens[1:]:
         mask = mask | (ids == token)
-    return {**kwargs, "input_ids": None, "inputs_embeds": embed()(ids.masked_fill(mask, 0))}
+    # As the forward's own lookup runs (no autograd under generate), on the decoder's card: an offloaded or
+    # hooked embedding may hand back a host tensor or one that tracks its trainable weight.
+    with torch.no_grad():
+        embeds = embed()(ids.masked_fill(mask, 0))
+    embeds = embeds.detach()
+    if embeds.device != ids.device:
+        embeds = embeds.to(ids.device)
+    return {**kwargs, "input_ids": None, "inputs_embeds": embeds}
 
 
 def decode_step(
@@ -1101,10 +1110,14 @@ def decode_step(
 
     kwargs = _placeholder_embeds(model, _mrope_positions(model, kwargs))
     leaves = []
-    try:
-        spec = tuple((k, _spec(v, leaves, cache)) for k, v in kwargs.items())
-    except _Refuse as error:
-        return _refusal(state, str(error))
+    spec = []
+    for name, value in kwargs.items():
+        try:
+            spec.append((name, _spec(value, leaves, cache)))
+        except _Refuse as error:
+            # The argument's name makes a refusal in a GPU log self-explanatory.
+            return _refusal(state, f"{error} ({name})")
+    spec = tuple(spec)
     if not torch.is_inference_mode_enabled() and any(leaf.is_inference() for leaf in leaves):
         # Their static buffers could not be refilled outside inference mode.
         return _refusal(state, "inference tensor outside inference mode")
