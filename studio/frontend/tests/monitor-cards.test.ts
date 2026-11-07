@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { shortCardName, vramCards } from "../src/components/monitor-cards.ts";
+import { holdsModelsInVram, shortCardName, vramCards } from "../src/components/monitor-cards.ts";
 import type { GpuDevice } from "../src/hooks/use-system.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -68,4 +68,14 @@ test("an aggregate the cards cannot split keeps its own row (Windows ROCm, #7452
   assert.equal(vramCards(read, { devices: read }).showTotal, false);
   assert.equal(vramCards([r9700(0, 4)], { devices: [r9700(0, 4)] }).showTotal, true);
   assert.match(readSrc("components/floating-monitor.tsx"), /discreteVram && \(vram\.showTotal \|\| vramSegments\)/);
+});
+
+test("an APU's carve-out keeps its models in the RAM split, in the monitor and in Settings alike", () => {
+  // Strix Halo on Windows ROCm: a reserved carve-out is dedicated memory, but it is still host RAM.
+  const apu = { ...igpu, memory_total_gb: 96, shared_memory: true } as GpuDevice;
+  assert.equal(holdsModelsInVram(vramCards([apu], { devices: [apu] }).cards), false);
+  assert.equal(holdsModelsInVram(vramCards([r9700(0, 6.62), igpu], undefined).cards), true);
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.match(readSrc(file), /holdsModelsInVram\(vram\.cards\)/, file);
+  }
 });

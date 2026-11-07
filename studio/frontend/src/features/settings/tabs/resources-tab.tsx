@@ -86,7 +86,7 @@ import {
   unslothPoolGb,
 } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
-import { vramCards } from "@/components/monitor-cards";
+import { holdsModelsInVram, vramCards } from "@/components/monitor-cards";
 import {
   Select,
   SelectContent,
@@ -658,7 +658,7 @@ export function ResourcesTab() {
     hasGpu &&
     !unifiedPool &&
     !memoryDisplay.sharedOnly &&
-    vram.cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
+    holdsModelsInVram(vram.cards);
   const models = modelShares(
     loadedModels,
     discreteVram,

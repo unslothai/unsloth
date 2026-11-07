@@ -13,7 +13,7 @@ import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attribut
 
 import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { monitorRefreshMs } from "./monitor-refresh";
-import { vramCards } from "./monitor-cards";
+import { holdsModelsInVram, vramCards } from "./monitor-cards";
 import {
   formatGiB,
   MeterRow,
@@ -269,6 +269,8 @@ function FloatingMonitorPanel({
   const cardsPercent = clampPercent(
     cardsUsedKnown && vram.totalGb > 0 ? (cardsUsed / vram.totalGb) * 100 : 0,
   );
+  // The share split follows Settings: an APU's carve-out still shows as VRAM, but its models are RAM's.
+  const modelsInVram = discreteVram && holdsModelsInVram(vram.cards);
   const cardLabel =
     vram.cards.length === 1 ? (vram.cards[0]?.name ?? undefined) : undefined;
 
@@ -280,7 +282,7 @@ function FloatingMonitorPanel({
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
   const models = wantsModels ? modelShares(
     loadedModels,
-    discreteVram,
+    modelsInVram,
     inferenceGpuDisjoint(systemInfo.gpu?.backend, separateInferenceGpu?.backend),
   ) : [];
   const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
@@ -290,22 +292,22 @@ function FloatingMonitorPanel({
   const unslothRamGb = unslothPoolGb(
     ramKnown && processMb !== undefined ? processMb / 1024 : null,
     modelsGb,
-    !discreteVram,
+    !modelsInVram,
   );
   // The model split lives in the pool that holds the models: Memory/RAM, or VRAM on a discrete GPU.
   const breakdown = showBreakdown
-    ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
+    ? modelBreakdown(modelsInVram ? null : unslothRamGb, models, !modelsInVram)
     : null;
   const ramShare =
-    showShare || (breakdown && !discreteVram)
+    showShare || (breakdown && !modelsInVram)
       ? memoryShare(ramUsed, ramTotal, unslothRamGb)
       : null;
   const ramSegments = ramShare
-    ? memorySegments(ramShare, discreteVram ? null : breakdown)
+    ? memorySegments(ramShare, modelsInVram ? null : breakdown)
     : null;
   // On a discrete GPU the models are what Unsloth holds in VRAM.
   const vramShare =
-    wantsModels && discreteVram && cardsUsedKnown
+    wantsModels && modelsInVram && cardsUsedKnown
       ? memoryShare(cardsUsed, vram.totalGb, modelsGb)
       : null;
   const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
@@ -514,7 +516,7 @@ function FloatingMonitorPanel({
               {ramSegments ? (
                 <MemoryShareBar
                   segments={ramSegments}
-                  noModels={!discreteVram && breakdown !== null && loadedModels.length === 0}
+                  noModels={!modelsInVram && breakdown !== null && loadedModels.length === 0}
                 />
               ) : (
                 <UsageBar percent={ramKnown ? ramPercent : null} />

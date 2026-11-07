@@ -69,3 +69,8 @@ export function vramCards(
     rows.length === 0 || (usedGb !== null && rows.some((row) => row.usedGb === null));
   return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows, showTotal };
 }
+
+/** Loaded models sit in VRAM only on a card with memory of its own; an APU's carve-out is host RAM. */
+export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {
+  return cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
+}
