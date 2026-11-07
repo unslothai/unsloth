@@ -1447,3 +1447,30 @@ def test_a_kept_crop_reconciles_the_recorded_placement(monkeypatch, crop, expect
         generate_kwargs = {},
     )
     assert result["denoiser_offload"] == expected
+
+
+def test_a_queued_jobs_ticket_reaches_its_detailer_pass(monkeypatch):
+    """Stopping one queued job ends its Detailer pass without cancelling anyone else's."""
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    seen = []
+    monkeypatch.setattr(
+        det,
+        "_detail_images",
+        lambda generate, result, images, settings, stop, **k: seen.append(stop),
+    )
+    ticket = GenerationTicket()
+    with generation_ticket(ticket):
+        det.detail_result(
+            lambda **k: None,
+            {"images": [object()]},
+            det.DetailerSettings(),
+            prompt_for = lambda i: "p",
+            negative_prompt = None,
+            steps = 4,
+            guidance = 1.0,
+            generate_kwargs = {},
+        )
+    assert len(seen) == 1 and not seen[0].is_set()
+    ticket.stop()
+    assert seen[0].is_set()

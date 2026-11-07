@@ -306,7 +306,10 @@ import {
   type LoraSpecInput,
   GenerateResponseLostError,
   cancelDiffusionGeneration,
+  cancelDiffusionQueueJob,
+  clearDiffusionQueue,
   deleteGalleryImage,
+  enqueueDiffusionImage,
   fetchGalleryBlob,
   fetchGalleryResponse,
   fetchGalleryObjectUrl,
@@ -320,8 +323,13 @@ import {
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
+  moveDiffusionQueueJob,
+  type ImageQueueJob,
   unloadDiffusionModel,
 } from "./api";
+import { GenerationQueuePanel } from "./generation-queue-panel";
+import { queuedJobs, runningJob } from "./lib/generation-queue";
+import { useImageQueue } from "./use-image-queue";
 import {
   shouldContinueGenerating,
   shouldReportGenerateError,
@@ -1965,6 +1973,8 @@ export function ImagesPage({
   const oversizedOnce = useRef(false);
   // The compare grid run handleGenerate is to send instead of the form's runs (compare/).
   const compareOnce = useRef<CompareRun | null>(null);
+  // The queued job this page is following, so Stop ends that job and never the one the queue starts next.
+  const followingJob = useRef<string | null>(null);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -3625,6 +3635,46 @@ export function ImagesPage({
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [loadGallery, refreshStatus]);
 
+  // Follow a queued job's render like a run started elsewhere.
+  const imageQueue = useImageQueue(active, (finished) => {
+    if (finished.some((job) => job.status === "done")) void loadGallery();
+    for (const job of finished) {
+      if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
+    }
+  });
+  const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
+  const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
+  useEffect(() => {
+    if (busy === null) followingJob.current = null;
+  }, [busy]);
+  useEffect(() => {
+    // The queue moved on inside one progress window: keep following, now the next job.
+    if (queueRunningId && busy !== null && followingJob.current && followingJob.current !== queueRunningId) {
+      followingJob.current = queueRunningId;
+      return;
+    }
+    // Idle with a job running (also after a gap in its progress, e.g. captioning): follow it once it denoises.
+    if (!queueRunningId || busy !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await getGenerateProgress();
+        // Not denoising yet: the next queue poll (a new jobs array) asks again.
+        if (cancelled || !p.active || !isMounted.current) return;
+        followingJob.current = queueRunningId;
+        runTarget.current = undefined;
+        setBusy("generating");
+        setGenStep(p);
+        resumeGeneratePoll();
+      } catch {
+        // best-effort, like the mount probe
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [queueRunningId, busy, resumeGeneratePoll, imageQueue.jobs]);
+
   useEffect(() => {
     void (async () => {
       await refreshStatus();
@@ -5174,7 +5224,8 @@ export function ImagesPage({
     </>
   );
 
-  const handleGenerate = useCallback(async () => {
+  // toQueue: the runs go to the server queue instead of running here.
+  const handleGenerate = useCallback(async (toQueue = false) => {
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
     const vary = sdCaps?.variation_seed ? varyOnce.current : null;
@@ -5336,7 +5387,78 @@ export function ImagesPage({
       return;
     }
 
+    // One run's request; Generate sends them here one by one, Queue hands them all to the server queue.
+    const requestFor = (i: number): DiffusionGenerateRequest => {
+      const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
+      return compareRequest(compare, i, baseSeed, {
+        prompt: prompt.trim(),
+        // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
+        negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
+        width: w,
+        height: h,
+        steps,
+        guidance: effectiveGuidance,
+        seed: runBaseSeed,
+        batch_size: batchSize,
+        // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
+        // derives output size from the image.
+        init_image: condInit,
+        mask_image: condMask,
+        strength: condStrength,
+        ...condInpaint,
+        upscale: condUpscale,
+        upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
+        hires: hiresRequest(hires, hiresCapability, workflow),
+        allow_oversized: allowOversizedSent ? true : undefined,
+        live_preview: livePreview,
+        ...samplerRequestFields(samplerOptions, samplerChoice),
+        ...sdControlsRequestFields(
+          sdCaps,
+          runChoice,
+          // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
+          // only the swept setting differs between cells.
+          baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
+          varying,
+          !controlnetEngaged,
+        ),
+        ...shiftRequestFields(shiftControl, shiftValue),
+        ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
+        ...condFields,
+        ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
+        // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
+        // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
+        loras: (() => {
+          if (!loraCapable) return undefined;
+          const active = loras
+            .map((l) => ({ id: l.id.trim(), weight: l.weight }))
+            .filter((l) => l.id && l.weight > 0);
+          return active.length ? active : undefined;
+        })(),
+        // ControlNet: sent only when a model + control image are chosen; v1 conditions plain text-to-image only.
+        controlnet:
+          controlnetCapable && controlnetId && controlImage && workflow === "create"
+            ? {
+                id: controlnetId,
+                image: controlImage,
+                control_type: controlType,
+                strength: controlStrength,
+              }
+            : undefined,
+        ...(external && { provider_id: external.providerId, model: external.modelId }),
+      });
+    };
+
+    // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt(`images:${workflow}`, prompt);
+    if (toQueue && !compare && !external) {
+      try {
+        for (let i = 0; i < runs; i++) await enqueueDiffusionImage(requestFor(i));
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not queue the generation");
+      }
+      return;
+    }
+    followingJob.current = null;
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
@@ -5398,59 +5520,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage(compareRequest(compare, i, baseSeed, {
-            prompt: prompt.trim(),
-            // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
-            width: w,
-            height: h,
-            steps,
-            guidance: effectiveGuidance,
-            seed: runBaseSeed,
-            batch_size: batchSize,
-            init_image: condInit,
-            mask_image: condMask,
-            strength: condStrength,
-            ...condInpaint,
-            upscale: condUpscale,
-            upscale_model: isUpscale ? upscaleModelRequest(upscaleModel, upscaleModels) : undefined,
-            hires: hiresRequest(hires, hiresCapability, workflow),
-            allow_oversized: allowOversizedSent ? true : undefined,
-            live_preview: livePreview,
-            ...samplerRequestFields(samplerOptions, samplerChoice),
-            ...sdControlsRequestFields(
-              sdCaps,
-              runChoice,
-              // A compare grid keeps the form's variation seed for every cell (its axis, if any, replaces it), so
-              // only the swept setting differs between cells.
-              baseVariationSeed !== null ? (baseVariationSeed + (compare ? 0 : i * batchSize)) % 2 ** 32 : null,
-              varying,
-              !controlnetEngaged,
-            ),
-            ...shiftRequestFields(shiftControl, shiftValue),
-            ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
-            ...condFields,
-            ...detailerRequestField(detailerOn, detailerReady, detailerOptions),
-            // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
-            // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
-            loras: (() => {
-              if (!loraCapable) return undefined;
-              const active = loras
-                .map((l) => ({ id: l.id.trim(), weight: l.weight }))
-                .filter((l) => l.id && l.weight > 0);
-              return active.length ? active : undefined;
-            })(),
-            controlnet:
-              controlnetCapable && controlnetId && controlImage && workflow === "create"
-                ? {
-                    id: controlnetId,
-                    image: controlImage,
-                    control_type: controlType,
-                    strength: controlStrength,
-                  }
-                : undefined,
-            ...(external && { provider_id: external.providerId, model: external.modelId }),
-          }));
+          res = await generateDiffusionImage(requestFor(i), i < runTotal - 1);
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
           if (!(err instanceof GenerateResponseLostError)) throw err;
@@ -5548,9 +5618,12 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = runTarget.current
-        ? await cancelConnectionImageGeneration(abort.signal)
-        : await cancelDiffusionGeneration(abort.signal);
+      const followed = followingJob.current;
+      const { cancelled } = followed
+        ? { cancelled: (await cancelDiffusionQueueJob(followed)).status !== "done" }
+        : runTarget.current
+          ? await cancelConnectionImageGeneration(abort.signal)
+          : await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
@@ -5564,6 +5637,32 @@ export function ImagesPage({
       if (cancelAbort.current === abort) cancelAbort.current = null;
     }
   }, []);
+
+  const handleQueue = useCallback(async () => {
+    if (!imagePresets.hydrated) return;
+    await handleGenerate(true);
+    await imageQueue.refresh();
+  }, [handleGenerate, imagePresets.hydrated, imageQueue.refresh]);
+  const queueAction = useCallback(
+    async (action: () => Promise<unknown>) => {
+      try {
+        await action();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not update the queue");
+      }
+      await imageQueue.refresh();
+    },
+    [imageQueue.refresh],
+  );
+  const handleCancelQueued = useCallback(
+    (job: ImageQueueJob) => void queueAction(() => cancelDiffusionQueueJob(job.id)),
+    [queueAction],
+  );
+  const handleMoveQueued = useCallback(
+    (job: ImageQueueJob, index: number) => void queueAction(() => moveDiffusionQueueJob(job.id, index)),
+    [queueAction],
+  );
+  const handleClearQueue = useCallback(() => void queueAction(clearDiffusionQueue), [queueAction]);
 
   // Compare grid: handleGenerate reads the run from compareOnce, so a grid shares Stop, progress and the gallery
   // merge with Generate. Text-to-image on a loaded local model only.
@@ -5584,6 +5683,7 @@ export function ImagesPage({
     [busy, handleGenerate, imagePresets.hydrated],
   );
   const compareAvailable = !external && Boolean(status?.loaded) && workflow === "create";
+  const canQueue = !external && Boolean(status?.loaded);
   const compareSdControls = sdCaps;
   const compareContext = useMemo<CompareContext>(
     () => ({
@@ -7095,6 +7195,12 @@ export function ImagesPage({
             )}
 
           </div>
+          <GenerationQueuePanel
+            jobs={imageQueue.jobs}
+            onCancel={handleCancelQueued}
+            onMove={handleMoveQueued}
+            onClear={handleClearQueue}
+          />
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
           <div className="relative z-10 flex shrink-0 flex-wrap justify-center gap-2 px-4 pt-0.5 pb-3">
             {!external && busy === null && heldByOtherAccount(status) && (
@@ -7103,22 +7209,32 @@ export function ImagesPage({
               </p>
             )}
             {busy === "generating" ? (
-              <Button
-                className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
-                variant="outline"
-                onClick={handleCancelGenerate}
-              >
-                <Spinner className="mr-2 size-4" />
-                {stopButtonLabel({ stopping, done: genDone, count })}
-              </Button>
+              /* Replaces Generate while a run is in flight. Every workflow funnels through the same
+                 handler, so one control stops all of them. */
+              <>
+                <Button
+                  className="relative z-10 text-ui-13 hover:bg-muted dark:hover:bg-muted"
+                  variant="outline"
+                  onClick={handleCancelGenerate}
+                >
+                  <Spinner className="mr-2 size-4" />
+                  {stopButtonLabel({ stopping, done: genDone, count })}
+                </Button>
+                {canQueue && compareRun === null && (
+                  <Button className="relative z-10 text-ui-13" onClick={handleQueue} disabled={!imagePresets.hydrated}>
+                    Queue
+                  </Button>
+                )}
+              </>
             ) : (
               <>
                 <Button variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-                  onClick={handleGenerateWithRecall}
+                  // Jobs still waiting: a new one lines up behind them instead of jumping the queue.
+                  onClick={queueWaiting && canQueue ? handleQueue : handleGenerateWithRecall}
                   disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
-                  Generate
+                  {queueWaiting && canQueue ? "Queue" : "Generate"}
                 </Button>
                 {canVary && (
                   <Tooltip>

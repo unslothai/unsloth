@@ -487,8 +487,10 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
+/** `moreRuns`: another run of the same Generate follows, so the server queue holds its next job until it arrives. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
+  moreRuns = false,
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
@@ -497,7 +499,7 @@ export async function generateDiffusionImage(
       "/api/inference/images/generate",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(moreRuns && { "X-Unsloth-More-Runs": "1" }) },
         body: JSON.stringify(body),
       },
       { retryNetworkErrors: false },
@@ -538,6 +540,74 @@ export async function cancelDiffusionGeneration(
       { retryNetworkErrors: false },
     ),
   );
+}
+
+export type ImageQueueStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface ImageQueueJob {
+  id: string;
+  status: ImageQueueStatus;
+  /** 0-based place among the queued jobs; null once started. */
+  position: number | null;
+  prompt: string;
+  width: number;
+  height: number;
+  /** null follows the loaded model's default. */
+  steps: number | null;
+  seed: number | null;
+  batch_size: number;
+  workflow: string | null;
+  loras: string[];
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  error: string | null;
+  image_ids: string[];
+}
+
+// A server without the queue (older Studio, proxy, test double) answers without a list: no jobs, not a crash.
+function queueJobs(body: unknown): ImageQueueJob[] {
+  const jobs = (body as { jobs?: unknown } | null)?.jobs;
+  return Array.isArray(jobs) ? (jobs as ImageQueueJob[]) : [];
+}
+
+export async function enqueueDiffusionImage(body: DiffusionGenerateRequest): Promise<ImageQueueJob> {
+  // No retry: a re-sent POST queues the run twice.
+  return parseJson(
+    await authFetch(
+      "/api/inference/images/queue",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    ),
+  );
+}
+
+export async function listDiffusionQueue(): Promise<ImageQueueJob[]> {
+  return queueJobs(await parseJson(await authFetch("/api/inference/images/queue")));
+}
+
+export async function cancelDiffusionQueueJob(id: string): Promise<ImageQueueJob> {
+  return parseJson(
+    await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/cancel`, { method: "POST" }),
+  );
+}
+
+export async function moveDiffusionQueueJob(id: string, index: number): Promise<ImageQueueJob[]> {
+  const res = await authFetch(`/api/inference/images/queue/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ index }),
+  });
+  return queueJobs(await parseJson(res));
+}
+
+export async function clearDiffusionQueue(): Promise<ImageQueueJob[]> {
+  const res = await authFetch("/api/inference/images/queue", { method: "DELETE" });
+  return queueJobs(await parseJson(res));
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
