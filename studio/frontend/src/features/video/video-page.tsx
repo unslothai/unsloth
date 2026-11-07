@@ -1300,6 +1300,8 @@ function VideoGenerator({
     numFrames / FALLBACK_FPS,
   );
   const [fpsPick, setFpsPick] = useState<FpsPick | null>(null);
+  // A preset rate restored before status names the family; kept in the saved params until it can be validated.
+  const [pendingPresetFps, setPendingPresetFps] = useState<number | null>(null);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
@@ -1639,9 +1641,9 @@ function VideoGenerator({
       guidance,
       flowShift,
       audioFlowShift,
-      fps: fpsOptions ? fps : null,
+      fps: status?.defaults == null ? pendingPresetFps : fpsOptions ? fps : null,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, pendingPresetFps, status?.defaults, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -1661,13 +1663,12 @@ function VideoGenerator({
           : null,
     [familyFps, fpsOptions, statusKnown],
   );
-  const pendingPresetFps = useRef<number | null>(null);
   useEffect(() => {
-    if (!statusKnown || pendingPresetFps.current == null) return;
-    const rate = presetVideoFps(fpsOptions, pendingPresetFps.current);
-    pendingPresetFps.current = null;
+    if (!statusKnown || pendingPresetFps == null) return;
+    const rate = presetVideoFps(fpsOptions, pendingPresetFps);
+    setPendingPresetFps(null);
     if (rate != null) setPickedFps(rate);
-  }, [fpsOptions, setPickedFps, statusKnown]);
+  }, [fpsOptions, pendingPresetFps, setPickedFps, statusKnown]);
   const presetDurationOptions = useCallback(
     (rate: number | null) =>
       rate == null || rate === fps
@@ -1709,7 +1710,7 @@ function VideoGenerator({
       const options = presetDurationOptions(rate);
       const durationIndex = closestDurationIndex(options, params.durationSeconds);
       const durationFrames = options[durationIndex]?.frames ?? options[0]?.frames ?? numFrames;
-      if (!statusKnown) pendingPresetFps.current = rate;
+      if (!statusKnown) setPendingPresetFps(rate);
       else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
