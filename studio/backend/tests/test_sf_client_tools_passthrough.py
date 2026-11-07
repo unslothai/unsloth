@@ -354,6 +354,29 @@ def test_nudge_retry_cut_at_length_keeps_the_cut(monkeypatch):
     assert choice["message"]["content"] == _CUT_XML
 
 
+@pytest.mark.parametrize("content", [None, ""])
+def test_call_only_turn_reaches_the_local_template_with_content(monkeypatch, content):
+    backend = _ScriptedBackend(_fixed("done"))
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+    }
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "hi"),
+            ChatMessage(role = "assistant", content = content, tool_calls = [call]),
+            ChatMessage(role = "tool", content = "r", tool_call_id = "c1"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    (turn,) = [m for m in backend.calls[0]["messages"] if m["role"] == "assistant"]
+    assert turn["content"] == ""
+    assert turn["tool_calls"][0]["function"]["arguments"] == {"q": "x"}
+
+
 def test_undeclared_call_stays_text(monkeypatch):
     xml = '<tool_call>{"name": "other", "arguments": {}}</tool_call>'
     backend = _ScriptedBackend(_fixed(xml))

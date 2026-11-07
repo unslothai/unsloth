@@ -660,6 +660,10 @@ def build_text_encoder(
         for key, tensor in list(state.items()):
             if key.endswith(".bias") and tensor.is_floating_point():
                 state[key] = tensor.to(dtype)
+    from .prequant_safetensors import _unviewed
+
+    # Views of the file mapping would keep it alive through the streaming pin's ``.data =`` re-point.
+    state = {key: _unviewed(tensor) for key, tensor in state.items()}
     missing, unexpected = encoder.load_state_dict(state, strict = False, assign = True)
     bad_missing = [k for k in missing if k not in tied and not _is_dead(k, _DEAD_MISSING)]
     if bad_missing or unexpected:

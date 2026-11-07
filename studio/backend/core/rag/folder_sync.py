@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from core.rag import account_db as rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
-from . import config, gitignore, ingestion, job_leases, store
+from . import config, embeddings, gitignore, ingestion, job_leases, store
 from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
@@ -1524,6 +1524,8 @@ def _load_failed(folder: dict) -> dict[str, dict]:
         if isinstance(entry, dict)
         and isinstance(entry.get("at"), (int, float))
         and entry["at"] > cutoff
+        # A pending embedder download is not the file's fault; also frees entries saved before this check.
+        and not embeddings.is_download_required_error(entry.get("error"))
     }
 
 
@@ -1547,6 +1549,7 @@ def _ingest_folder_document(
     content_hash: str,
     embedding_model: str,
     rebuild: bool,
+    stage_slots: threading.Semaphore | None = None,
 ) -> _IngestionResult:
     """Thread-local, so the coordinator lease and stop state are copied in for _check_running."""
     _worker_state.job_id = job_id
@@ -1571,6 +1574,7 @@ def _ingest_folder_document(
                 linked_relative_path = relative_path,
                 background = False,
                 reuse_identical = not rebuild,
+                stage_slots = stage_slots,
             )
             result = ingestion.get_job_status(ingestion_job)
             if result is None:
@@ -1596,6 +1600,10 @@ def _cleanup_pending_ingestion(pending: _PendingIngestion, result: _IngestionRes
 
 def _folder_ingest_workers() -> int:
     return max(1, min(4, config.FOLDER_INGEST_WORKERS))
+
+
+def _folder_ingest_in_flight(workers: int) -> int:
+    return max(workers, min(64, config.FOLDER_INGEST_IN_FLIGHT))
 
 
 def _reconcile_folder(job_id: str) -> None:
@@ -1681,6 +1689,24 @@ def _reconcile_folder(job_id: str) -> None:
     # An unchanged file whose ingestion failed fails again: retrying it every periodic sync kept a
     # folder of scanned PDFs indexing forever (#13095). Sync changes and Rebuild retry at once.
     known_failed = {} if rebuild else _load_failed(folder)
+    if any(
+        known_failed.get(rel, {}).get("sig") != _failure_signature(current[rel]) for rel in work
+    ) and embeddings.download_required(embedding_model):
+        # One job-level wait, not every file failing the same check; the periodic sync resumes it.
+        error = f"The embedding model {embedding_model!r} is not downloaded yet. " + (
+            "Indexing starts on its own once its Settings download finishes."
+            if folder.get("auto_sync")
+            else "Sync again once its Settings download finishes."
+        )
+        _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
+        with closing(rag_db.get_connection()) as conn:
+            conn.execute(
+                "UPDATE linked_folders SET status='error', last_error=?, updated_at=? WHERE id=?",
+                (error, _now(), folder["id"]),
+            )
+            conn.commit()
+            _prune_terminal_jobs(conn)
+        return
     ingest_failed: dict[str, dict] = {}
     cached_grace = False
     total = len(work) + len(missing)
@@ -1693,6 +1719,12 @@ def _reconcile_folder(job_id: str) -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     account = current_account()
     workers = _folder_ingest_workers()
+    in_flight_limit = (
+        _folder_ingest_in_flight(workers)
+        if ingestion.embeddings.batches_across_documents(embedding_model)
+        else workers
+    )
+    stage_slots = threading.Semaphore(workers)
     in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
 
     def update_progress() -> None:
@@ -1736,11 +1768,13 @@ def _reconcile_folder(job_id: str) -> None:
                     failures.append(pending.relative_path)
                     reason = _error_text(result.error, folder["path"])
                     failure_errors[pending.relative_path] = reason
-                    ingest_failed[pending.relative_path] = {
-                        "sig": _failure_signature(pending.metadata),
-                        "at": time.time(),
-                        "error": reason,
-                    }
+                    if not embeddings.is_download_required_error(reason):
+                        # A transfer that went pending mid-sync is retried by the next sync.
+                        ingest_failed[pending.relative_path] = {
+                            "sig": _failure_signature(pending.metadata),
+                            "at": time.time(),
+                            "error": reason,
+                        }
                     # A failed file may be a rename or copy of a vanished path, so grant one pass.
                     withheld.update(missing - already_withheld)
                     logger.warning(
@@ -1817,7 +1851,7 @@ def _reconcile_folder(job_id: str) -> None:
             prune_ingestion_job(result)
 
     with ThreadPoolExecutor(
-        max_workers = workers,
+        max_workers = in_flight_limit,
         thread_name_prefix = "rag-folder-ingest",
     ) as executor:
         try:
@@ -1836,7 +1870,13 @@ def _reconcile_folder(job_id: str) -> None:
                             cached_grace = True
                         processed += 1
                         continue
-                    if len(in_flight) >= workers:
+                    # Only small files queue past the workers: each queued one keeps a snapshot.
+                    cap = (
+                        in_flight_limit
+                        if current[rel]["size_bytes"] <= config.FOLDER_INGEST_BATCH_FILE_BYTES
+                        else workers
+                    )
+                    while len(in_flight) >= cap:
                         drain_one()
                     snapshot = None
                     try:
@@ -1887,6 +1927,7 @@ def _reconcile_folder(job_id: str) -> None:
                                 content_hash,
                                 embedding_model,
                                 rebuild,
+                                stage_slots,
                             )
                             in_flight[future] = _PendingIngestion(
                                 relative_path = rel,

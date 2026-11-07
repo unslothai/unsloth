@@ -431,6 +431,45 @@ def test_qwen3_comfy_layout_int8_convrot_stays_int8(tmp_path):
     assert cos > 0.98
 
 
+def test_int8_convrot_encoder_releases_the_file_once_its_weights_are_repointed(tmp_path):
+    """Streaming re-points every host tensor at its pinned copy with ``.data =``; an int8 code buffer that was still a
+    view of the file mapping kept the whole file mapped (and undeletable on Windows) for the model's life."""
+    import gc
+    import os
+    import sys
+
+    cfg, ref = _tiny_qwen3()
+    group = 16
+    out = {}
+    for key, value in ref.state_dict().items():
+        comfy_key = "model." + key
+        if ".mlp." in key and key.endswith(".weight"):
+            codes, scale = _convrot_int8(value, group)
+            stem = comfy_key[: -len(".weight")]
+            out[comfy_key] = codes
+            out[stem + ".weight_scale"] = scale
+            out[stem + ".comfy_quant"] = _quant_blob(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": group}
+            )
+        else:
+            out[comfy_key] = value.to(torch.bfloat16)
+    path = _save(tmp_path / "qwen_3_4b_int8_convrot.safetensors", out)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.bfloat16
+    )
+    expected = {k: v.clone() for k, v in enc.state_dict().items()}
+    for tensor in list(enc.parameters()) + list(enc.buffers()):
+        tensor.data = tensor.data.clone()  # the pinned copy, as the group pinner re-points it
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        real = os.path.realpath(path)
+        with open("/proc/self/maps", encoding = "utf-8") as fh:
+            assert not any(line.rstrip().endswith(real) for line in fh)
+    os.remove(path)
+    for key, value in enc.state_dict().items():
+        assert torch.equal(value, expected[key]), key
+
+
 def test_qwen3_bf16_strip_model_prefix_and_dead_lm_head(tmp_path):
     cfg, ref = _tiny_qwen3()
     out = {"model." + k: v for k, v in ref.state_dict().items()}

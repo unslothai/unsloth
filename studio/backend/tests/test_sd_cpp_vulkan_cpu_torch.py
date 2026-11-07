@@ -71,6 +71,10 @@ def _pinned_host(monkeypatch):
     monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
     monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: False)
     monkeypatch.setattr(r, "_reachable_intel_arc_render_node", lambda: True, raising = False)
+    # Keeps the CUDA route beside NVIDIA (#16803) off the real llama.cpp install.
+    from core.inference import sd_cpp_engine
+
+    monkeypatch.setattr(sd_cpp_engine, "_llama_server_binary", lambda: None)
 
 
 @pytest.mark.parametrize(
