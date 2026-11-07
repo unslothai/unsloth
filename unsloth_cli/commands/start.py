@@ -3792,7 +3792,6 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
 
 
 def _link_codex_entry(source: Path, target: Path) -> bool:
-    # Symlink, then junction; copy only _CODEX_COPIED_DIRS when neither link works.
     _remove_overlay_entry(target)
     try:
         target.symlink_to(source, target_is_directory = source.is_dir())
@@ -3904,7 +3903,6 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
         for target in list(overlay.iterdir()):
             _remove_overlay_entry(target)
 
-    # Keep the user's auth, config, plugins, agents, skills, rules and session state visible.
     entries = []
     if source_home.is_dir():
         for source in source_home.iterdir():
