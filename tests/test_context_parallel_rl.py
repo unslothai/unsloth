@@ -253,7 +253,7 @@ def _fake_trainer_class(log):
 @pytest.mark.parametrize("kind", ["dpo_trainer", "grpo_trainer"])
 def test_rl_scopes_keep_generation_unsharded(monkeypatch, kind):
     log = []
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(cp, "_install_accelerator_state", lambda *a: None)
@@ -586,7 +586,7 @@ def _cp_fake_trainer(
     log,
     installs = None,
 ):
-    manager = types.SimpleNamespace(size = 2, backend = "ulysses")
+    manager = types.SimpleNamespace(size = 2, backend = "ulysses", _clear_real_tokens = lambda: None)
     monkeypatch.setattr(cp, "_check_cp_runtime", lambda *a: None)
     monkeypatch.setattr(cp, "_check_cp_trainer", lambda *a: None)
     monkeypatch.setattr(
