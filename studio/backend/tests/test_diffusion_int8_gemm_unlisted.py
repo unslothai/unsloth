@@ -19,6 +19,7 @@ _ENVS = (
     g8.INT8_GEMM_ENV,
     g8.INT8_GEMM_UNLISTED_ENV,
     g8.INT8_GEMM_CONVROT_ENV,
+    g8.INT8_GEMM_RACE_ENV,
     cq.INT8_ROTQUANT_ENV,
 )
 
@@ -37,9 +38,12 @@ def _reset():
 
 
 @pytest.fixture(autouse = True)
-def _clean(monkeypatch):
+def _clean(monkeypatch, tmp_path):
     for name in _ENVS:
         monkeypatch.delenv(name, raising = False)
+    # the race winner's cross-process file lives in a per-test directory, keyed by a fixed card
+    monkeypatch.setattr(g8, "_race_cache_file", lambda: tmp_path / g8._RACE_CACHE_NAME)
+    monkeypatch.setattr(g8, "_race_key", lambda index: f"card{index}")
     _reset()
     yield
     _reset()
@@ -327,7 +331,13 @@ def test_race_keeps_the_fastest_probed_tile(monkeypatch):
     fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 9.0, _L4_TILE: 7.0})
     assert g8.device_config(0) == _L4_TILE
     assert fake.raced == [(g8._FALLBACK_CONFIG, _A100_TILE, _L4_TILE)]
-    assert g8._UNLISTED_TIMING[0]["tile"] == _L4_TILE and g8._UNLISTED_TIMING[0]["fused"] == 7.0
+    # the latency check's own numbers stay; the race is logged beside them
+    assert g8._UNLISTED_TIMING[0]["tile"] == _L4_TILE and g8._UNLISTED_TIMING[0]["fused"] == 10.0
+    assert g8._UNLISTED_TIMING[0]["race"] == {
+        g8._FALLBACK_CONFIG: 10.0,
+        _A100_TILE: 9.0,
+        _L4_TILE: 7.0,
+    }
     assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1  # raced once per device
 
 
@@ -373,3 +383,116 @@ def test_listed_archs_never_race(monkeypatch, cap):
     fake = _Fake(monkeypatch, cap, race = {_A100_TILE: 1.0, _L4_TILE: 1.0})
     assert g8.device_config(0) == g8._ARCH_CONFIG[cap]
     assert fake.raced == [] and fake.timed == []
+
+
+def test_race_winner_is_reused_by_the_next_process(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 9.0, _L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1
+    _reset()  # a new process: in-memory verdicts gone, the file stays
+    fake.probes.clear()
+    assert g8.device_config(0) == _L4_TILE
+    assert len(fake.raced) == 1  # no second race
+    assert fake.probes == [g8._FALLBACK_CONFIG, _L4_TILE]  # only the kept tile is probed again
+
+
+def test_a_kept_fallback_is_reused_without_probing_the_race_tiles(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 11.0, _L4_TILE: 12.0})
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    _reset()
+    fake.probes.clear()
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    assert len(fake.raced) == 1 and fake.probes == [g8._FALLBACK_CONFIG]
+
+
+def test_another_card_or_toolchain_races_again(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 9.0, _L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE
+    _reset()
+    monkeypatch.setattr(g8, "_race_key", lambda index: "other-card")
+    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 2
+
+
+def test_kept_tile_that_now_fails_its_probe_falls_back(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE
+    _reset()
+    fake.race = {}  # the kept tile no longer passes its probe
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+
+
+@pytest.mark.parametrize("raw", ["", "{not json", '{"card0": [1, 2, 3]}', '{"card0": "x"}'])
+def test_unreadable_or_foreign_cache_entries_are_a_miss(monkeypatch, tmp_path, raw):
+    (tmp_path / g8._RACE_CACHE_NAME).write_text(raw)
+    fake = _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1
+
+
+@pytest.mark.parametrize("raw", ["0", "off"])
+def test_race_switch_off_keeps_the_fallback_and_never_reads_the_file(monkeypatch, tmp_path, raw):
+    (tmp_path / g8._RACE_CACHE_NAME).write_text('{"card0": [256, 128, 128, 8, 8, 3]}')
+    monkeypatch.setenv(g8.INT8_GEMM_RACE_ENV, raw)
+    fake = _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 7.0})
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    assert fake.raced == [] and fake.probes == [g8._FALLBACK_CONFIG]
+
+
+def test_cache_keeps_a_bounded_number_of_cards(monkeypatch, tmp_path):
+    import json
+
+    path = tmp_path / g8._RACE_CACHE_NAME
+    path.write_text(json.dumps({f"old{i}": list(g8._FALLBACK_CONFIG) for i in range(40)}))
+    _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE
+    table = json.loads(path.read_text())
+    assert len(table) == g8._RACE_CACHE_MAX and table["card0"] == list(_L4_TILE)
+
+
+def test_race_holds_each_tile_under_load_at_render_rows(monkeypatch):
+    seen = {}
+
+    def fake_graph_latency(
+        index,
+        fns,
+        shapes = g8._UNLISTED_LATENCY_SHAPES,
+        hold_s = 0.0,
+    ):
+        seen.update(shapes = shapes, hold_s = hold_s, arms = tuple(fns))
+        return {k: 1.0 for k in fns}
+
+    monkeypatch.setattr(g8, "_graph_latency", fake_graph_latency)
+    g8._unlisted_race(0, (g8._FALLBACK_CONFIG, _L4_TILE))
+    assert seen["hold_s"] == g8._RACE_HOLD_S > 0
+    assert all(m == 4096 for m, _n, _k in seen["shapes"]) and len(seen["shapes"]) == 3
+    assert seen["arms"] == (g8._FALLBACK_CONFIG, _L4_TILE)
+
+
+class _Ev:
+    def __init__(self, clock):
+        self.clock, self.t = clock, None
+
+    def record(self):
+        self.t = self.clock[0]
+
+    def synchronize(self):
+        pass
+
+    def elapsed_time(self, other):
+        return (other.t - self.t) / 1000.0  # ms
+
+
+def test_held_timing_skips_the_settle_window(monkeypatch):
+    # a part that runs 1 us per replay for the first 50 ms, then 2 us (clocked down): the held time is the slow one
+    import time
+
+    clock = [0.0]  # GPU us
+    wall = [0.0]
+    monkeypatch.setattr(time, "perf_counter", lambda: wall[0])
+
+    class _G:
+        def replay(self):
+            dt = 1.0 if wall[0] < 0.05 else 2.0
+            clock[0] += dt
+            wall[0] += 0.001
+
+    us = g8._held_us(_G(), 0.1, _Ev(clock), _Ev(clock))
+    assert us == pytest.approx(2.0)

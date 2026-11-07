@@ -23,6 +23,7 @@ INT8_GEMM_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TILES"
 INT8_SWIGLU_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_SWIGLU_STREAMED"
 INT8_GEMM_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED"
 INT8_GEMM_TMA_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_TMA"
+INT8_GEMM_RACE_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_RACE"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -587,6 +588,10 @@ _UNLISTED_OK: dict = {}
 _UNLISTED_TIMING: dict = {}
 # (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
+# The tile race runs the same projections at a 1024^2 image's 4096 tokens, held under load for this long per tile
+# (and as long again timed): long enough for a power-capped part (L4: 72 W) to settle at the clock that tile sustains.
+_UNLISTED_RACE_SHAPES = tuple((4096, n, k) for _m, n, k in _UNLISTED_LATENCY_SHAPES)
+_RACE_HOLD_S = 0.3
 
 
 def _unlisted_latency(index: int, cfg: tuple) -> dict:
@@ -608,22 +613,30 @@ def _int_mm_stock(a: Any, w: Any) -> Any:
 
 
 def _unlisted_race(index: int, cfgs: tuple) -> dict:
-    """{tile: us} for each tile in ``cfgs``, timed like ``_unlisted_latency`` (interleaved, best of seven)."""
+    """{tile: us} for each tile in ``cfgs`` at a 1024^2 image's rows, each held under load (``_RACE_HOLD_S`` to settle,
+    then as long again timed) one after another: a power-capped part clocks down under a tile that draws more, so a
+    short best-of-N burst ranks the tiles by their boost-clock speed, not by the speed a render runs at."""
     fns = {}
     for cfg in cfgs:
         fns[cfg] = lambda a, w, xs, ws, cfg = cfg: _launch(a, w, xs, ws, None, cfg).amax()
-    return _graph_latency(index, fns)
+    return _graph_latency(index, fns, _UNLISTED_RACE_SHAPES, hold_s = _RACE_HOLD_S)
 
 
-def _graph_latency(index: int, fns: dict) -> dict:
-    """{name: us} over ``_UNLISTED_LATENCY_SHAPES`` for each ``fns`` arm, captured in a CUDA graph and replayed."""
+def _graph_latency(
+    index: int,
+    fns: dict,
+    shapes: tuple = _UNLISTED_LATENCY_SHAPES,
+    hold_s: float = 0.0,
+) -> dict:
+    """{name: us} over ``shapes`` for each ``fns`` arm, captured in a CUDA graph and replayed: best of seven interleaved
+    rounds, or with ``hold_s`` each arm replayed back to back for ``hold_s`` before timing ``hold_s`` more."""
     import torch
     from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
 
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(5)
     ops = []
-    for m, n, k in _UNLISTED_LATENCY_SHAPES:
+    for m, n, k in shapes:
         a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
         w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
         xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
@@ -652,6 +665,11 @@ def _graph_latency(index: int, fns: dict) -> dict:
         synchronize_outside_capture(dev)
         start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
         best = {name: float("inf") for name in graphs}
+        if hold_s > 0:
+            for name, graph in graphs.items():
+                best[name] = _held_us(graph, hold_s, start, end) / reps
+            del graphs
+            return best
         for _ in range(7):
             for name, graph in graphs.items():
                 start.record()
@@ -661,6 +679,29 @@ def _graph_latency(index: int, fns: dict) -> dict:
                 best[name] = min(best[name], start.elapsed_time(end) * 1000.0 / reps)
         del graphs
     return best
+
+
+def _held_us(graph: Any, hold_s: float, start: Any, end: Any) -> float:
+    """us per replay of ``graph`` after ``hold_s`` of back-to-back replays, averaged over ``hold_s`` more."""
+    import time
+
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < hold_s:
+        graph.replay()
+        end.record()
+        end.synchronize()
+    n = 0
+    start.record()
+    t0 = time.perf_counter()
+    while n == 0 or time.perf_counter() - t0 < hold_s:
+        graph.replay()
+        n += 1
+        if n % 2 == 0:
+            end.record()
+            end.synchronize()
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) * 1000.0 / n
 
 
 def unlisted_config(index: int) -> Optional[tuple]:
@@ -698,25 +739,111 @@ def unlisted_config(index: int) -> Optional[tuple]:
 
 
 _UNLISTED_TILE: dict = {}
+_RACE_CACHE_NAME = "diffusion_int8_tile_race.json"
+_RACE_CACHE_MAX = 16
+
+
+def race_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_RACE_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def _race_cache_file() -> Optional[Any]:
+    try:
+        from pathlib import Path
+        from utils.paths.storage_roots import cache_root
+        return Path(cache_root()) / _RACE_CACHE_NAME
+    except Exception:  # noqa: BLE001 - no resolvable root: race every process
+        return None
+
+
+def _race_key(index: int) -> Optional[str]:
+    """Card, toolchain and this file's source: any change re-races."""
+    try:
+        import hashlib
+        import torch
+        import triton as _triton
+
+        src = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:16]
+        cap = torch.cuda.get_device_capability(index)
+        return "|".join(
+            (
+                torch.cuda.get_device_name(index),
+                f"{cap[0]}.{cap[1]}",
+                torch.__version__,
+                str(torch.version.cuda),
+                _triton.__version__,
+                src,
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _race_cache_load(key: Optional[str]) -> Optional[tuple]:
+    path = _race_cache_file() if key else None
+    try:
+        import json
+        tile = (
+            json.loads(path.read_text()).get(key) if path is not None and path.is_file() else None
+        )
+    except Exception:  # noqa: BLE001 - unreadable or corrupt: a miss
+        return None
+    tile = tuple(tile) if isinstance(tile, list) else None
+    return tile if tile == _FALLBACK_CONFIG or tile in _UNLISTED_RACE_TILES else None
+
+
+def _race_cache_store(key: Optional[str], tile: tuple) -> None:
+    path = _race_cache_file() if key else None
+    if path is None:
+        return
+    try:
+        import json
+
+        try:
+            table = json.loads(path.read_text()) if path.is_file() else {}
+        except Exception:  # noqa: BLE001
+            table = {}
+        table = {k: v for k, v in table.items() if k != key and isinstance(v, list)}
+        table = dict(list(table.items())[-(_RACE_CACHE_MAX - 1) :])
+        table[key] = list(tile)
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(table))
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        pass
 
 
 def _unlisted_tile(index: int) -> tuple:
-    """Once per device: ``_FALLBACK_CONFIG`` raced against the ``_UNLISTED_RACE_TILES`` that pass the bit-exact probe;
-    the fastest wins (ties keep the fallback). Any failure keeps the fallback, which already beat cuBLAS."""
+    """Once per device: ``_FALLBACK_CONFIG`` raced against the ``_UNLISTED_RACE_TILES`` that pass the bit-exact probe
+    (``_unlisted_race``, held under load); the fastest wins (ties keep the fallback). The winner is kept per card and
+    toolchain across processes. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback, which already
+    beat cuBLAS."""
     if index not in _UNLISTED_TILE:
         best = _FALLBACK_CONFIG
         try:
-            cands = tuple(
-                t for t in _UNLISTED_RACE_TILES if t != _FALLBACK_CONFIG and _probe(index, t)
-            )
-            if cands:
-                timing = _unlisted_race(index, (_FALLBACK_CONFIG,) + cands)
-                for tile in cands:
-                    if timing[tile] < timing[best]:
-                        best = tile
+            key = _race_key(index) if race_enabled() else None
+            cached = _race_cache_load(key)
+            if cached is not None and (cached == _FALLBACK_CONFIG or _probe(index, cached)):
+                best = cached
                 if index in _UNLISTED_TIMING:
-                    _UNLISTED_TIMING[index]["fused"] = round(timing[best], 1)
                     _UNLISTED_TIMING[index]["tile"] = best
+            elif race_enabled():
+                cands = tuple(
+                    t for t in _UNLISTED_RACE_TILES if t != _FALLBACK_CONFIG and _probe(index, t)
+                )
+                if cands:
+                    timing = _unlisted_race(index, (_FALLBACK_CONFIG,) + cands)
+                    for tile in cands:
+                        if timing[tile] < timing[best]:
+                            best = tile
+                    if index in _UNLISTED_TIMING:
+                        _UNLISTED_TIMING[index]["tile"] = best
+                        _UNLISTED_TIMING[index]["race"] = {
+                            t: round(us, 1) for t, us in timing.items()
+                        }
+                    _race_cache_store(key, best)
         except Exception:  # noqa: BLE001 - the fallback stays
             best = _FALLBACK_CONFIG
         _UNLISTED_TILE[index] = best
@@ -1423,6 +1550,15 @@ def _swap_on(
             *torch.cuda.get_device_capability(index),
             f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS"
             + (f", tile {timing['tile']}" if timing.get("tile") else "")
+            + (
+                " of "
+                + " / ".join(
+                    f"{t[0]}x{t[1]}x{t[2]} {us:.0f} us" for t, us in timing["race"].items()
+                )
+                + " held"
+                if timing.get("race")
+                else ""
+            )
             + ")"
             if timing
             else "",
