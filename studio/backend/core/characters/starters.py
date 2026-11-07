@@ -18,7 +18,7 @@ from storage import characters_db as db
 logger = logging.getLogger(__name__)
 
 STARTER_DIR = Path(__file__).resolve().parents[2] / "assets" / "characters"
-STARTERS = ("rhys-calloway", "rin-takeda", "elara-voss")
+STARTERS = ("leo-marsh", "rin-takeda")
 
 
 def seed_starters() -> None:

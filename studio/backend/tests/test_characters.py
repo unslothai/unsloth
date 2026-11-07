@@ -585,6 +585,10 @@ def test_starter_characters_arrive_once_with_portraits_and_stay_deleted(client):
     full = client.get(f"/api/characters/{rin['id']}").json()
     assert full["firstMes"] and full["alternateGreetings"] and full["characterBook"]["entries"]
     assert client.get(f"/api/characters/{rin['id']}/avatar").headers["content-type"] == "image/webp"
+    # The tutor replaces the roleplay instructions with its own.
+    leo = next(c for c in starters if c["name"] == "Leo Marsh")
+    tutor = client.get(f"/api/characters/{leo['id']}").json()
+    assert "language tutor" in tutor["systemPrompt"] and tutor["postHistoryInstructions"]
 
     # A second load adds nothing, and a deleted starter does not come back.
     assert client.delete(f"/api/characters/{rin['id']}").status_code == 204
