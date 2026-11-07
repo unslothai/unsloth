@@ -15,6 +15,7 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 LLAMA = REPO_ROOT / "unsloth" / "models" / "llama.py"
@@ -174,7 +175,9 @@ def test_get_cached_materialises_the_length_it_is_asked_for():
     cos, sin = rope.get_cached(40000, 0)
     assert cos.shape[0] >= 40000
     ref_cos, ref_sin = _reference(cos.shape[0])
-    assert torch.equal(cos, ref_cos) and torch.equal(sin, ref_sin)
+    # ARM trig vectorization can round differently across cache chunk sizes.
+    torch.testing.assert_close(cos, ref_cos, rtol = 0, atol = 2 * torch.finfo(cos.dtype).eps)
+    torch.testing.assert_close(sin, ref_sin, rtol = 0, atol = 2 * torch.finfo(sin.dtype).eps)
 
 
 def test_forward_builds_only_input_device():
@@ -612,3 +615,175 @@ def test_longrope_long_rebuild_keeps_short_marked_for_training(monkeypatch):
     cos, sin = rope.get_cached(4, 1)
     _assert_trainable(cos, sin)
     _assert_trainable(rope.multi_gpu_long_cos_cached[1], rope.multi_gpu_long_sin_cached[1])
+
+
+def test_stock_call_compiles_as_one_graph():
+    rope = _llama(1 << 17)
+    x = torch.zeros(1, 4, DIM)
+    position_ids = torch.tensor([[3, 4, 5, 6]])
+    eager_cos, eager_sin = rope(x, position_ids)
+    torch._dynamo.reset()
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, position_ids)
+    assert explained.graph_break_count == 0, explained.break_reasons
+    cos, sin = torch.compile(rope, backend = "eager", fullgraph = True)(x, position_ids + 1)
+    ref_cos, ref_sin = _reference(8)
+    assert torch.equal(eager_cos[0], ref_cos[3:7]) and torch.equal(eager_sin[0], ref_sin[3:7])
+    assert torch.equal(cos[0], ref_cos[4:8]) and torch.equal(sin[0], ref_sin[4:8])
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+def test_compiled_stock_call_serves_every_position_below_max_position(backend):
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = backend, fullgraph = True)
+    ref_cos, ref_sin = _reference(max_position)
+    x = torch.zeros(1, 4, DIM)
+    for start in (0, 32766, 32768, max_position - 4):
+        position_ids = torch.arange(start, start + 4)[None]
+        cos, sin = compiled(x, position_ids)
+        torch.testing.assert_close(
+            cos[0], ref_cos[start : start + 4], rtol = 0, atol = 2 * torch.finfo(cos.dtype).eps
+        )
+        torch.testing.assert_close(
+            sin[0], ref_sin[start : start + 4], rtol = 0, atol = 2 * torch.finfo(sin.dtype).eps
+        )
+    explained = torch._dynamo.explain(lambda x, p: rope(x, p))(x, torch.tensor([[40000, 40001]]))
+    assert explained.graph_break_count == 0, explained.break_reasons
+
+
+def test_compiled_stock_call_preserves_eager_cache_dtype():
+    max_position = 1 << 16
+    rope = _llama(max_position)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = "eager", fullgraph = True)
+    position_ids = torch.arange(3, 7)[None]
+    compiled(torch.zeros(1, 4, DIM, dtype = torch.bfloat16), position_ids)
+    torch._dynamo.reset()
+    cos, sin = rope(torch.zeros(1, 4, DIM), position_ids)
+    ref_cos, ref_sin = _reference(max_position)
+    assert cos.dtype == torch.float32
+    assert torch.equal(cos[0], ref_cos[3:7])
+    assert torch.equal(sin[0], ref_sin[3:7])
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+@pytest.mark.parametrize("kind", ["llama", "linear", "extended", "gemma", "gemma_linear"])
+def test_compiled_stock_positions_cross_configured_extent(kind, backend):
+    ns = _load(
+        LLAMA,
+        list(_HELPERS)
+        + [
+            "LlamaRotaryEmbedding",
+            "LlamaLinearScalingRotaryEmbedding",
+            "LlamaExtendedRotaryEmbedding",
+        ],
+    )
+    if kind.startswith("gemma"):
+        ns = _load(
+            GEMMA,
+            ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"],
+            {"_PerDeviceRopeCache": ns["_PerDeviceRopeCache"]},
+        )
+    name = {
+        "llama": "LlamaRotaryEmbedding",
+        "linear": "LlamaLinearScalingRotaryEmbedding",
+        "extended": "LlamaExtendedRotaryEmbedding",
+        "gemma": "GemmaFixedRotaryEmbedding",
+        "gemma_linear": "GemmaFixedLinearScalingRotaryEmbedding",
+    }[kind]
+    kwargs = {"dim": DIM, "max_position_embeddings": 16, "base": BASE}
+    if kind.endswith("linear"):
+        kwargs["scaling_factor"] = 1.3 if kind == "gemma_linear" else 2.0
+    rope = ns[name](**kwargs)
+    reference = ns[name](**kwargs)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = backend, fullgraph = True, dynamic = True)
+    for start in (0, 15, 32768):
+        positions = torch.arange(start, start + 4)[None]
+        x = torch.ones(1, 4, DIM, requires_grad = True)
+        cos, sin = compiled(x, positions)
+        ref_cos, ref_sin = reference(x, positions)
+        assert torch.equal(cos, ref_cos)
+        assert torch.equal(sin, ref_sin)
+        (x * cos + x * sin).sum().backward()
+        assert torch.equal(x.grad, cos + sin)
+    assert _built(rope.multi_gpu_cos_cached) == []
+
+
+@pytest.mark.parametrize("rope_type", ["llama3", "yarn", "linear", "dynamic"])
+def test_scaled_config_compiles_without_tracing_config_initialization(rope_type):
+    import contextlib
+    from transformers import LlamaConfig
+
+    names = list(_HELPERS) + [
+        "_get_rope_theta",
+        "_rope_scaling_as_dict",
+        "_llama3_inv_freq_from_config",
+        "_vanilla_inv_freq_from_config",
+        "_compute_config_rope_inv_freq",
+        "LlamaRotaryEmbedding",
+    ]
+    ns = _load(LLAMA, names, {"contextlib": contextlib})
+    scaling = {"rope_type": rope_type, "factor": 8.0}
+    if rope_type == "llama3":
+        scaling.update(
+            low_freq_factor = 1.0, high_freq_factor = 4.0, original_max_position_embeddings = 8192
+        )
+    config = LlamaConfig(
+        hidden_size = DIM,
+        num_attention_heads = 1,
+        head_dim = DIM,
+        max_position_embeddings = 1 << 17,
+        rope_scaling = scaling,
+    )
+    rope = ns["LlamaRotaryEmbedding"](config = config)
+    positions = torch.tensor([[0, 32768, 131071, 131072]])
+    inv_freq = rope.inv_freq.clone()
+    freqs = positions[..., None].float() * inv_freq
+    emb = torch.cat((freqs, freqs), dim = -1)
+    expected_cos = emb.cos() * rope.attention_scaling
+    expected_sin = emb.sin() * rope.attention_scaling
+    rope.inv_freq.fill_(float("nan"))
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = "aot_eager", fullgraph = True)
+    x = torch.ones(1, 4, DIM, requires_grad = True)
+    cos, sin = compiled(x, positions)
+    assert torch.equal(cos, expected_cos)
+    assert torch.equal(sin, expected_sin)
+    (x * cos + x * sin).sum().backward()
+    assert torch.equal(x.grad, cos + sin)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA/ROCm accelerator required")
+@pytest.mark.parametrize(
+    "kind", ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"]
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_compiled_gemma_stock_cuda_preserves_cpu_timescale(kind, dtype):
+    ns = _load(LLAMA, list(_HELPERS), {"torch": torch, "get_current_device": lambda: 0})
+    ns = _load(
+        GEMMA,
+        ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"],
+        {
+            "torch": torch,
+            "get_current_device": lambda: 0,
+            "_PerDeviceRopeCache": ns["_PerDeviceRopeCache"],
+        },
+    )
+    kwargs = {"dim": 128, "max_position_embeddings": 16}
+    if kind == "GemmaFixedLinearScalingRotaryEmbedding":
+        kwargs["scaling_factor"] = 1.3
+    rope = ns[kind](**kwargs)
+    reference = ns[kind](**kwargs)
+    positions = torch.tensor([[0, 15, 32767, 131071]], device = "cuda")
+    x = torch.ones(1, 4, 128, device = "cuda", dtype = dtype, requires_grad = True)
+    torch._dynamo.reset()
+    cos, sin = torch.compile(rope, fullgraph = True, dynamic = True)(x, positions)
+    ref_cos, ref_sin = reference(x, positions)
+    tolerance = 1e-5 if dtype == torch.float32 else 2e-3
+    torch.testing.assert_close(cos, ref_cos, rtol = tolerance, atol = tolerance)
+    torch.testing.assert_close(sin, ref_sin, rtol = tolerance, atol = tolerance)
+    ((cos + sin) * x).sum().backward()
+    assert torch.isfinite(x.grad).all()
