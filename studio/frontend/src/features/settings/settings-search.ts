@@ -281,6 +281,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
     "settings.agents.dryRun.title",
+    "settings.mcp.title",
+    "settings.apiKeys.mcp.title",
   ],
   connections: [],
   voice: [
