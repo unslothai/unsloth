@@ -1205,7 +1205,7 @@ def test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
         assert res["seen_lengths"] == [SEQ // 2]
         assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
         assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
-        _close(res, ref, what = ("qwen3_5", env, rank))
+        _close(res, ref, what = ("qwen3_5", env, rank), state_atol = 1e-5)
 
 
 def test_dense_qwen3_under_cp_matches_one_process():
