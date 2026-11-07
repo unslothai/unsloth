@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, Optional
+from typing import TYPE_CHECKING, Literal, NamedTuple, NoReturn, Optional
 from urllib.parse import quote, urlencode, urlparse
 
 import click
@@ -48,6 +48,9 @@ from unsloth_cli._inference import (
     urlopen_no_redirect,
     verify_studio_identity,
 )
+
+if TYPE_CHECKING:
+    from unsloth_cli._model_catalog import ModelEntry
 
 start_app = typer.Typer(
     help = "Start a coding agent against a running Unsloth server.",
@@ -279,7 +282,8 @@ _MODEL_OPTION = typer.Option(
     "-m",
     rich_help_panel = _PANEL_MODEL,
     help = "Model for the agent, or a bare `org/name(:variant)` positional. "
-    "Defaults to the one loaded in Unsloth.",
+    "Defaults to the one loaded in Unsloth; with none loaded, a terminal run lists the "
+    "models on this device to pick from.",
 )
 _GGUF_VARIANT_OPTION = typer.Option(
     None,
@@ -2234,6 +2238,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
     preload_check = None,
     infer_resident: bool = True,
+    require_idle: bool = False,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -2397,7 +2402,11 @@ def _resolve_model(
                 typer.echo(f"Applying new load settings to {active_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
-        elif not active_id and _inference_status(base, key).get("yours") is False:
+        elif (
+            not require_idle
+            and not active_id
+            and _inference_status(base, key).get("yours") is False
+        ):
             typer.echo(
                 "Switching the Unsloth server from another account's model to "
                 f"{_display_model_spec(requested, load.gguf_variant)}."
@@ -2477,6 +2486,11 @@ def _resolve_model(
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
+        # Both picker flows can outlive the server state they observed before prompting.
+        if require_idle:
+            if not _picker_server_is_idle(base, key):
+                _fail("The model state changed while the picker was open. Run the command again.")
+            payload["require_idle"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -2634,28 +2648,6 @@ _QUANT_LABEL_RE = re.compile(
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
     re.IGNORECASE,
 )
-
-
-def _direct_gguf_variant_labels(path: str) -> tuple:
-    """The labels the server's direct-file resolver accepts for *path*. Mirrors _direct_gguf_for_variant: the quant label read from the basename first, the immediate parent only when the basename carries none, plus the shard-stripped stem itself. The basename wins the disagreement: a Q8_0/foo-Q4_K_M.gguf answers Q4_K_M, so its parent must not vouch for Q8_0 here while the load resolves nothing and evicts."""
-    norm = path.replace("\\", "/").rstrip("/")
-    name = norm.rsplit("/", 1)[-1]
-    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", name.rsplit(".", 1)[0])
-    match = _QUANT_LABEL_RE.search(stem)
-    if match is None and "/" in norm:
-        match = _QUANT_LABEL_RE.search(norm.rsplit("/", 2)[-2])
-    labels = [stem]
-    if match is not None:
-        label = f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}"
-        labels.append(label)
-        # The resolver also accepts the hub-style bpw-stripped spelling.
-        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags = re.IGNORECASE)
-        if stripped != label:
-            labels.append(stripped)
-    else:
-        # The extractor's own fallback: the last hyphen-separated segment.
-        labels.append(stem.split("-")[-1])
-    return tuple(labels)
 
 
 # Mirrors hub.utils.gguf._BIG_ENDIAN_GGUF_FILENAME_RE; change in lockstep.
@@ -5014,6 +5006,186 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
+def _can_ask_for_model() -> bool:
+    # A piped stdin cannot answer, and a captured stdout would hide the list.
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _picked_load_options(entry: "ModelEntry", load: LoadOptions) -> LoadOptions:
+    variant = entry.file_variant or load.gguf_variant
+    if not variant:
+        return load
+    from unsloth_cli._model_catalog import _is_gguf_file
+    from utils.models.model_config import _direct_gguf_for_variant
+
+    if _is_gguf_file(entry.model) and _direct_gguf_for_variant(entry.model, variant) is None:
+        _fail(
+            f"Selected GGUF file {entry.model} cannot use --gguf-variant {variant}. "
+            "Choose the matching file, or pass --model naming the repository or directory "
+            "to select a different quant."
+        )
+    return load._replace(gguf_variant = variant)
+
+
+def _allowed_picker_models(base: str, key: str, models: list[str]) -> set:
+    try:
+        response = _http_json("POST", f"{base}/api/auth/model-access", key, models)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        _fail_request(
+            exc, "Couldn't check account model access; pass --model to select one explicitly"
+        )
+    if not isinstance(response, dict) or not isinstance(response.get("allowed"), list):
+        _fail("Couldn't check account model access. Pass --model to select one explicitly.")
+    return set(response["allowed"])
+
+
+def _ask_for_local_model(
+    gguf_only: bool,
+    reason: str,
+    load: LoadOptions,
+    account: Optional[dict] = None,
+    base: Optional[str] = None,
+    key: Optional[str] = None,
+) -> tuple[str, LoadOptions]:
+    from rich.console import Console
+
+    # No cache seeding: its pins would reach the agent and an auto-started server as if user-set.
+    ensure_studio_backend_path(seed_cache_env = False)
+    from unsloth_cli._model_picker import _is_gguf_entry, pick_model_entry, quiet_inventory_logs
+
+    quiet_inventory_logs()
+
+    gguf_variant = load.gguf_variant
+    kind = "GGUF models" if gguf_only else "models"
+    hint = (
+        f"No {kind} found on this device. Pass one with --model <hf-id-or-path>, or "
+        "download one in Unsloth Studio."
+    )
+    if gguf_variant:
+        hint = f"No {kind} found for --gguf-variant {gguf_variant}. Pass --model explicitly to select one."
+    typer.echo(reason)
+    picker = functools.partial(pick_model_entry, keep = _is_gguf_entry if gguf_only else None)
+
+    def choose(check_access: bool):
+        from unsloth_cli._model_catalog import list_chat_models
+
+        entries = (
+            list_chat_models(gguf_variant = gguf_variant) if gguf_variant else list_chat_models()
+        )
+        empty_hint = hint
+        if check_access:
+            allowed = _allowed_picker_models(base, key, [entry.model for entry in entries])
+            entries = [entry for entry in entries if entry.model in allowed]
+            empty_hint = f"No {kind} available to this account. Pass an allowed model with --model <hf-id-or-path>."
+        entry = picker(Console(), prompt = "Load", empty_hint = empty_hint, entries = entries)
+        return entry.model, _picked_load_options(entry, load)
+
+    if account is None:
+        return choose(False)
+    from utils.account_context import AccountContext, run_as
+
+    context = AccountContext(
+        account["account_id"],
+        account["username"],
+        account["role"],
+        via_api_key = account.get("via_api_key", True),
+    )
+    return run_as(context, choose, check_access = not context.is_owner)
+
+
+def _pick_model_to_auto_start(
+    serve: bool,
+    launch: bool,
+    gguf_only: bool,
+    load: LoadOptions = LoadOptions(),
+) -> Optional[tuple[str, LoadOptions]]:
+    if not (serve and launch and _can_ask_for_model()):
+        return None
+    # Mirrors _require_studio's auto-start gate.
+    expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    if not is_loopback_url(expected) or urlparse(expected).scheme != "http":
+        return None
+    if find_studio_server() is not None:
+        return None
+    return _ask_for_local_model(
+        gguf_only,
+        "No Unsloth server is running. Pick a model on this device to start one with:",
+        load,
+    )
+
+
+def _picker_server_is_idle(base: str, key: str) -> bool:
+    status = _inference_status(base, key)
+    if isinstance(status, dict) and status.get("yours") is False:
+        _fail(_OTHER_ACCOUNT_RESIDENT)
+    if not isinstance(status, dict) or not all(
+        isinstance(status.get(field), list) for field in ("loaded", "loading")
+    ):
+        _fail(
+            "Couldn't verify whether Unsloth has a resident model. Retry or pass --model explicitly."
+        )
+    # Older servers ignore the idle-only load flag. Only send a pick to one advertising it.
+    if not isinstance(status.get("load_in_flight"), bool):
+        _fail(
+            "This server cannot confirm idle-only loads. Update Unsloth or pass --model explicitly."
+        )
+    if status["load_in_flight"]:
+        return False
+    if status["loaded"] or status["loading"] or status.get("active_model"):
+        return False
+    # An empty chat slot can still share the GPU with another account's image or video model.
+    for route in ("images", "video"):
+        try:
+            media = _http_json("GET", f"{base}/api/inference/{route}/status", key)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            _fail_request(exc, "Couldn't verify media model ownership before opening the picker")
+        if not isinstance(media, dict) or not isinstance(media.get("loaded"), bool):
+            _fail("Couldn't verify media model ownership. Retry or pass --model explicitly.")
+        if media.get("yours") is False:
+            _fail(
+                "A media model belongs to another account. Pass --model explicitly to request a load."
+            )
+    return True
+
+
+def _pick_model_for_idle_server(
+    base: str,
+    key: str,
+    gguf_only: bool,
+    load: LoadOptions = LoadOptions(),
+) -> Optional[tuple[str, LoadOptions]]:
+    if not _can_ask_for_model():
+        return None
+    # The picker lists THIS machine's files, which only a local Studio of ours can open.
+    if not is_loopback_url(base) or not verify_studio_identity(base):
+        return None
+    models = _loaded_models(base, key)
+    if any(m.get("loaded") is not False and m.get("task") is None for m in models):
+        return None
+    # The listing hides other accounts' models. Only the status endpoint can confirm an idle slot.
+    if not _picker_server_is_idle(base, key):
+        return None
+    try:
+        account = _http_json("GET", f"{base}/api/auth/account", key)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            return None
+        _fail_request(exc, "Couldn't determine the account for the model picker")
+    # Older servers can answer missing API routes with error JSON and HTTP 200.
+    if not isinstance(account, dict) or not all(
+        account.get(field) for field in ("account_id", "username", "role")
+    ):
+        return None
+    return _ask_for_local_model(
+        gguf_only,
+        "No model is loaded in Unsloth. Pick one on this device to load:",
+        load,
+        account = account,
+        base = base,
+        key = key,
+    )
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -5024,8 +5196,15 @@ def _connect(
     server_options: ServerOptions = ServerOptions(),
     preload_check = None,
     connections: bool = False,
+    gguf_only: bool = False,
 ) -> tuple:
     _refuse_npu_model(model)
+    local_model_picked = False
+    if model is None:
+        picked = _pick_model_to_auto_start(serve, launch, gguf_only, load)
+        if picked is not None:
+            model, load = picked
+            local_model_picked = True
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
@@ -5048,13 +5227,30 @@ def _connect(
         launch = launch,
         server_options = server_options,
     )
+    appeared_during_pick = local_model_picked and server is None
+    if appeared_during_pick and not (is_loopback_url(base) and verify_studio_identity(base)):
+        _fail(
+            "A server appeared while the picker was open. Run the command again to connect to it."
+        )
     # The server resolves relative paths against its own cwd; only a local Studio shares our filesystem.
     if model and server is None and is_loopback_url(base) and _is_model_path(model):
         if os.path.exists(os.path.expanduser(model)) and verify_studio_identity(base):
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
-        connection = None if server is not None else _connection_entry(base, key, requested)
+        if appeared_during_pick and model not in _allowed_picker_models(base, key, [model]):
+            _fail("The selected model is unavailable to this account. Run the command again.")
+        if model is None and server is None:
+            picked = _pick_model_for_idle_server(base, key, gguf_only, load)
+            if picked is not None:
+                model, load = picked
+                requested = model
+                local_model_picked = True
+        connection = (
+            None
+            if server is not None or local_model_picked
+            else _connection_entry(base, key, requested)
+        )
         if connection is not None:
             if not connections:
                 _fail(
@@ -5096,6 +5292,7 @@ def _connect(
             preload_check = None if server is not None else preload_check,
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
+            require_idle = local_model_picked and server is None,
         )
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
@@ -7431,6 +7628,7 @@ def claude(
         ),
         server_options = server_options,
         connections = True,
+        gguf_only = True,
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
     try:
@@ -7612,6 +7810,7 @@ def codex(
         preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = server_options,
         connections = True,
+        gguf_only = True,
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
     try:

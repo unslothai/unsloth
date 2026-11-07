@@ -141,37 +141,8 @@ def _drain_available_stdin() -> None:
 
 def _pick_model(console) -> str:
     ensure_studio_backend_path()
-    from unsloth_cli._model_catalog import list_chat_models
-
-    entries = list_chat_models()
-    if not entries:
-        typer.echo(
-            "No local models found. Pass a model id or path: `unsloth chat <model>`.",
-            err = True,
-        )
-        raise typer.Exit(code = 1)
-
-    console.print("Your models", style = "bold")
-    width = max(len(e.name) for e in entries)
-    group = None
-    for i, entry in enumerate(entries, 1):
-        if entry.group != group:
-            group = entry.group
-            console.print(f"\n  {group}", style = "bright_black")
-        line = f"  {i:>2}. {entry.name:<{width}}   {entry.detail}".rstrip()
-        console.print(line, markup = False, highlight = False, soft_wrap = True)
-    console.print()
-
-    while True:
-        try:
-            raw = input(f"Chat with [1-{len(entries)}, Enter = 1]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise typer.Exit(code = 1)
-        if not raw:
-            return entries[0].model
-        if raw.isdigit() and 1 <= int(raw) <= len(entries):
-            return entries[int(raw) - 1].model
-        console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
+    from unsloth_cli._model_picker import pick_model_entry
+    return pick_model_entry(console).model
 
 
 def chat(

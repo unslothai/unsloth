@@ -5,6 +5,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
 from typing import List, Optional
 
@@ -26,6 +27,7 @@ class ModelEntry:
     name: str
     detail: str
     model: str
+    file_variant: Optional[str] = None
 
 
 def _run_title(run: dict) -> str:
@@ -127,7 +129,7 @@ def trained_entries() -> List[ModelEntry]:
     return entries
 
 
-def exported_entries() -> List[ModelEntry]:
+def exported_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     from utils.models import scan_exported_models
 
     entries = []
@@ -137,7 +139,15 @@ def exported_entries() -> List[ModelEntry]:
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
         if export_type == "gguf":
-            # Drop only when positively unloadable: a falsy result also means "could not tell".
+            if gguf_variant:
+                # The export scanner represents the whole export by its first GGUF file.
+                folder = Path(path)
+                entry = _gguf_variant_entry(
+                    folder.parent if folder.is_file() else folder, gguf_variant, "Fine-tunes", name
+                )
+                if entry is not None:
+                    entries.append(entry)
+                continue
             load_id = _preferred_complete_gguf(path)
             if not load_id and not _local_dir_holds_a_payload(Path(path)):
                 continue
@@ -448,7 +458,67 @@ def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     return newest_first(gguf_rows), newest_first(model_rows)
 
 
-def cached_entries() -> List[ModelEntry]:
+def _gguf_variant_entry(
+    source: Path,
+    variant: str,
+    group: str,
+    name: str,
+    *,
+    cached_repo: Optional[str] = None,
+) -> Optional[ModelEntry]:
+    from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
+
+    source = source.absolute()
+    if source.is_dir():
+        target = _find_local_gguf_by_variant(str(source), variant)
+        if target is not None and not Path(target).is_relative_to(source):
+            return None
+    else:
+        target = _direct_gguf_for_variant(str(source), variant)
+    if target is None:
+        return None
+    file = Path(target)
+    if not file.is_file() or not _gguf_file_is_loadable(file):
+        return None
+    if cached_repo:
+        from hub.utils.gguf import gguf_variant_key
+        from hub.utils.gguf_sources import cached_gguf_manifest_complete, cached_gguf_source_partial
+
+        quant = gguf_variant_key(file.relative_to(source).as_posix())
+        if not cached_gguf_manifest_complete(
+            cached_repo, quant, source
+        ) or cached_gguf_source_partial(cached_repo, quant, source):
+            return None
+    file_variant = variant if _direct_gguf_for_variant(target, variant) is not None else file.name
+    return ModelEntry(group, name, variant, target, file_variant)
+
+
+def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
+    from hub.services.models.catalog_classification import _gguf_path_task
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS, gguf_cache_snapshots
+
+    repo_id = row["repo_id"]
+    load_id = row.get("load_id")
+    repo_dir = Path(row["cache_path"])
+    preferred = _reachable_snapshots(repo_dir, load_id)
+    snapshots = preferred
+    if load_id == repo_id:
+        # A repo ID can resolve in any chat snapshot. Try the inventory's chosen revision first.
+        other_snapshots = (
+            snapshot
+            for snapshot in gguf_cache_snapshots(repo_id)
+            if snapshot not in preferred
+            and _gguf_path_task(snapshot, (repo_id,)) in CHAT_GGUF_TASKS
+        )
+        snapshots = chain(preferred, other_snapshots)
+    for snapshot in snapshots:
+        entry = _gguf_variant_entry(snapshot, variant, "Downloaded", repo_id, cached_repo = repo_id)
+        if entry is not None:
+            return entry
+    return None
+
+
+def cached_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     gguf_rows, model_rows = _cached_catalog_rows()
     entries = []
     for row in gguf_rows:
@@ -457,6 +527,11 @@ def cached_entries() -> List[ModelEntry]:
             or row.get("task") in NON_CHAT_TASKS
             or row.get("capabilities", {}).get("can_chat") is False
         ):
+            continue
+        if gguf_variant:
+            entry = _cached_variant_entry(row, gguf_variant)
+            if entry is not None:
+                entries.append(entry)
             continue
         entries.append(
             ModelEntry(
@@ -607,7 +682,7 @@ def _registered_custom_hf_cache(model) -> bool:
         return False
 
 
-def local_folder_entries() -> List[ModelEntry]:
+def local_folder_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     entries = []
     for model in _local_catalog_rows():
         if (
@@ -629,6 +704,13 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         target = model.load_id or model.id
         if is_gguf:
+            if gguf_variant and (Path(target).is_dir() or _is_gguf_file(target)):
+                entry = _gguf_variant_entry(
+                    Path(target), gguf_variant, "Downloaded", model.display_name
+                )
+                if entry is not None:
+                    entries.append(entry)
+                continue
             target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
@@ -641,7 +723,7 @@ def local_folder_entries() -> List[ModelEntry]:
     return entries
 
 
-def _safe(fn) -> List[ModelEntry]:
+def _safe(fn, **kwargs) -> List[ModelEntry]:
     """Run one source, and never let it take the other three down with it.
 
     Fails open, since a picker missing one group beats a traceback where a model list should
@@ -649,7 +731,7 @@ def _safe(fn) -> List[ModelEntry]:
     the reason turns "my HF cache is unreadable" into an empty list. UNSLOTH_DEBUG re-raises.
     """
     try:
-        return fn()
+        return fn(**kwargs)
     except Exception as error:
         # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
         if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -703,10 +785,14 @@ def _dedup_key(model: str):
         return os.path.normcase(model) if os.path.isabs(model) else model.lower()
 
 
-def list_chat_models() -> List[ModelEntry]:
-    entries = []
-    for fn in (trained_entries, exported_entries, cached_entries, local_folder_entries):
-        entries.extend(_safe(fn))
+def list_chat_models(*, gguf_variant: Optional[str] = None) -> List[ModelEntry]:
+    options = {"gguf_variant": gguf_variant} if gguf_variant else {}
+    entries = [
+        *_safe(trained_entries),
+        *_safe(exported_entries, **options),
+        *_safe(cached_entries, **options),
+        *_safe(local_folder_entries, **options),
+    ]
     seen = set()
     unique = []
     for entry in entries:

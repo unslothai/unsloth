@@ -12205,6 +12205,25 @@ def _unified_metal_host() -> bool:
     return _on_metal()
 
 
+async def _settle_unpriced_mlx_load(
+    backend, identifier: str, policy: str, *, allow_evict: bool
+) -> None:
+    from core.inference.gpu_arbiter import (
+        GpuBusyForAnotherAccountError,
+        GpuOwnerBusyError,
+        MultiModelAlwaysRefusal,
+    )
+    from core.inference.gpu_residency import settle_unpriced_chat_beside_media
+    try:
+        await asyncio.to_thread(settle_unpriced_chat_beside_media, policy, allow_evict = allow_evict)
+    except (MultiModelAlwaysRefusal, GpuOwnerBusyError) as exc:
+        await asyncio.to_thread(backend.unload_model, identifier)
+        await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
+        if isinstance(exc, GpuBusyForAnotherAccountError):
+            raise exc.as_http_exception() from exc
+        raise
+
+
 def _mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
     from core.inference.gpu_residency import mlx_cache_bounded
     return mlx_cache_bounded(entry, slots)
@@ -17825,6 +17844,28 @@ def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
         pass
 
 
+def _other_chat_load_in_flight(attempt: Optional[_ScopedLoadAttempt] = None) -> bool:
+    with _scoped_load_attempts_lock:
+        return (_running_load_attempt is not None and _running_load_attempt is not attempt) or any(
+            pending is not attempt for pending in _pending_load_attempts.values()
+        )
+
+
+def _require_idle_for_load(attempt: _ScopedLoadAttempt) -> None:
+    if (
+        _other_chat_load_in_flight(attempt)
+        or model_slots.busy()
+        or model_slots.stuck
+        or model_slots.in_slot(
+            None, lambda: get_llama_cpp_backend().is_active or _primary_seat_occupied()
+        )
+        or any(account_access.resident_hidden(owner) for owner in ("chat", "diffusion", "video"))
+    ):
+        raise HTTPException(
+            status_code = 409, detail = "Unsloth is no longer idle. Run the command again."
+        )
+
+
 async def load_model_gated(
     request: LoadRequest,
     fastapi_request: Request,
@@ -17855,6 +17896,7 @@ async def load_model_gated(
     # install can reserve while this request queues on the gate, so the pre-gate
     # check alone is only a fast path.
     from core.inference.gpu_arbiter import (
+        GpuOwnerBusyError,
         MultiModelAlwaysRefusal,
         eviction_sink,
         note_evictions,
@@ -17891,6 +17933,11 @@ async def load_model_gated(
         async with model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
+            # Check after waiting: another account's accepted load may now be resident.
+            if request.require_idle:
+                await asyncio.to_thread(_require_idle_for_load, attempt)
+                # Media can claim the GPU outside the chat gate, up to the instant of handoff.
+                impl_kwargs = {**(impl_kwargs or {}), "allow_gpu_owner_eviction": False}
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
             new_slot = extra is not None and extra not in model_slots.slots
@@ -17944,6 +17991,19 @@ async def load_model_gated(
                         # Before any eviction below: a cancelled load unloads nothing to make room.
                         _raise_if_load_cancelled(attempt, impl_kwargs)
                         measured = isinstance(exc, GpuMemoryShortError)
+                        if request.require_idle:
+                            if not measured:
+                                raise
+                            if (
+                                exc.capped or getattr(exc, "host", False)
+                            ) and not request.force_alongside:
+                                # A smaller context or host spill can retry without reclaiming another model.
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            raise HTTPException(
+                                status_code = 409,
+                                detail = "Insufficient free memory for an idle-only load.",
+                            ) from exc
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
                                 await asyncio.to_thread(_refuse_oom_beside_media_under_always)
@@ -18109,6 +18169,12 @@ async def load_model_gated(
                 )
             ]
         return response
+    except GpuOwnerBusyError as exc:
+        if request.require_idle:
+            raise HTTPException(
+                status_code = 409, detail = "The GPU is no longer idle. Run the command again."
+            ) from exc
+        raise
     except MultiModelAlwaysRefusal as exc:
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise exc.as_http_exception(path) from exc
@@ -18359,7 +18425,7 @@ def _primary_respawning() -> bool:
     )
 
 
-def _reassert_chat_claim(policy: str) -> None:
+def _reassert_chat_claim(policy: str, allow_evict: bool = True) -> None:
     """Re-assert CHAT for a chat model already loaded. Under Always a refusal is ignored: the
     model stays usable and nothing is unloaded."""
     from core.inference.gpu_arbiter import (
@@ -18369,7 +18435,7 @@ def _reassert_chat_claim(policy: str) -> None:
         policy_kwargs,
     )
     try:
-        acquire_for_request(CHAT, **policy_kwargs(policy))
+        acquire_for_request(CHAT, allow_evict = allow_evict, **policy_kwargs(policy))
     except MultiModelAlwaysRefusal:
         pass
 
@@ -19005,7 +19071,9 @@ async def _load_model_impl(
             if reused is not None:
                 # Reassert CHAT ownership unless the resident server is zero-VRAM.
                 if not llama_backend.holds_no_vram:
-                    await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
+                    await asyncio.to_thread(
+                        _reassert_chat_claim, multi_model_mode, allow_gpu_owner_eviction
+                    )
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
@@ -19064,7 +19132,9 @@ async def _load_model_impl(
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 # Reassert CHAT ownership; skip when it owns no GPU (would cancel a generation for nothing).
                 if not _resident_audio_holds_no_gpu(backend):
-                    await asyncio.to_thread(_reassert_chat_claim, multi_model_mode)
+                    await asyncio.to_thread(
+                        _reassert_chat_claim, multi_model_mode, allow_gpu_owner_eviction
+                    )
                 if replacing:
                     account_access.join_resident("chat")
                 if request._advertised_id:
@@ -19868,19 +19938,12 @@ async def _load_model_impl(
                 }
             elif mlx_chat_need is not None:
                 # Admitted at a price the loaded cache does not keep to: settle as an unpriced load would have.
-                from core.inference.gpu_arbiter import (
-                    GpuBusyForAnotherAccountError,
-                    MultiModelAlwaysRefusal,
+                await _settle_unpriced_mlx_load(
+                    backend,
+                    config.identifier,
+                    multi_model_mode,
+                    allow_evict = allow_gpu_owner_eviction,
                 )
-                from core.inference.gpu_residency import settle_unpriced_chat_beside_media
-                try:
-                    await asyncio.to_thread(settle_unpriced_chat_beside_media, multi_model_mode)
-                except (MultiModelAlwaysRefusal, GpuBusyForAnotherAccountError) as exc:
-                    await asyncio.to_thread(backend.unload_model, config.identifier)
-                    await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
-                    if isinstance(exc, GpuBusyForAnotherAccountError):
-                        raise exc.as_http_exception() from exc
-                    raise
 
         if request._advertised_id:
             backend._openai_advertised_id = request._advertised_id
@@ -22286,6 +22349,7 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
+        response.load_in_flight = _other_chat_load_in_flight()
         response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []

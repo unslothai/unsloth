@@ -1605,6 +1605,8 @@ def fake_studio(tmp_path, monkeypatch):
             return {"object": "list", "data": state["models"]}
         if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
+        if url.endswith("/api/auth/account"):
+            return {"account_id": "owner", "username": "unsloth", "role": "owner"}
         if url.endswith("/api/auth/api-keys"):
             if method == "GET":
                 return {"api_keys": [{"key_prefix": "feedface"}]}
@@ -11813,8 +11815,11 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
     assert config["memory"]["search"]["provider"] == "openai-compatible"
 
 
-def test_direct_gguf_labels_keep_packed_and_grouped_quants():
-    # Mirrors model_config._extract_quant_label: prism-ml/Ternary-Bonsai-*-gguf ships all three.
+def test_picked_gguf_accepts_packed_and_grouped_quants(tmp_path):
+    from unsloth_cli._model_catalog import ModelEntry
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path(seed_cache_env = False)
     for name, label in (
         ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
         ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
@@ -11822,7 +11827,13 @@ def test_direct_gguf_labels_keep_packed_and_grouped_quants():
         ("Ternary-Bonsai-27B-Q2_g64.gguf", "Q2_g64"),
         ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
     ):
-        assert start._direct_gguf_variant_labels(name)[1] == label
+        file = tmp_path / name
+        file.write_bytes(b"GGUF" + bytes(4092))
+        load = start.LoadOptions(gguf_variant = label)
+        assert (
+            start._picked_load_options(ModelEntry("Downloaded", name, "gguf", str(file)), load)
+            == load
+        )
 
 
 GiB = 1024**3

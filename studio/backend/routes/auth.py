@@ -402,6 +402,37 @@ def identity(nonce: str, request: Request) -> dict:
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
+@router.get("/account")
+async def authenticated_account(current_subject: str = Depends(get_current_subject)) -> dict:
+    from utils.account_context import current_account
+    account = current_account()
+    return {
+        "account_id": account.account_id,
+        "username": account.username,
+        "role": account.role,
+        "via_api_key": account.via_api_key,
+    }
+
+
+@router.post("/model-access")
+async def allowed_model_references(
+    models: list[str], current_subject: str = Depends(get_current_subject)
+) -> dict:
+    from starlette.concurrency import run_in_threadpool
+    def visible_models():
+        from hub.services.models.account_access import filter_model_rows, managed_account
+        from utils.paths.path_utils import is_network_or_device_path
+
+        if not managed_account():
+            return models
+        rows = [
+            {"id": reference} for reference in models if not is_network_or_device_path(reference)
+        ]
+        return [row["id"] for row in filter_model_rows(rows)]
+
+    return {"allowed": await run_in_threadpool(visible_models)}
+
+
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
