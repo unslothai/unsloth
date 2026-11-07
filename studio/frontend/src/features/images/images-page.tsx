@@ -3638,11 +3638,15 @@ export function ImagesPage({
   // Follow a queued job's render like a run started elsewhere.
   const imageQueue = useImageQueue(active, (finished) => {
     if (finished.some((job) => job.status === "done")) void loadGallery();
+    let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
-      // A run this page queued is its latest run, as a direct Generate's would be, for Reuse last seed.
-      if (job.status === "done" && queuedHere.current.delete(job.id) && typeof job.seed_used === "number") setSessionSeed(job.seed_used);
+      if (job.status === "done" && queuedHere.current.delete(job.id) && typeof job.seed_used === "number") {
+        if (!latest || (job.finished_at ?? 0) > (latest.finished_at ?? 0)) latest = job;
+      }
     }
+    // The newest run this page queued is its latest run, as a direct Generate's would be, for Reuse last seed.
+    if (latest) setSessionSeed(latest.seed_used);
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
