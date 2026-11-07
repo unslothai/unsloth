@@ -1997,6 +1997,8 @@ export const sv = {
         updateFailed: "Det gick inte att uppdatera lösenordet.",
       },
       chatDefaults: "Chattstandardvärden",
+      customTitlePrompt: "Egen instruktion för titel",
+      customTitlePromptDescription: "Lämna tomt för att använda standardinstruktionerna.",
       autoTitleNewChats: "Skapa automatiskt rubriker för nya chattar",
       autoTitleNewChatsDescription:
         "Generera en rubrik från det första meddelandet.",

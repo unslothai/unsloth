@@ -2061,6 +2061,8 @@ export const id = {
         updateFailed: "Pembaruan kata sandi gagal.",
       },
       chatDefaults: "Default chat",
+      customTitlePrompt: "Instruksi judul khusus",
+      customTitlePromptDescription: "Kosongkan untuk menggunakan instruksi bawaan.",
       autoTitleNewChats: "Beri judul chat baru secara otomatis",
       autoTitleNewChatsDescription: "Buat judul dari pesan pertama.",
       mlWarmup: {

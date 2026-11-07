@@ -186,6 +186,7 @@ test("the real preference store persists all controls and restores them on reloa
   prefs.getState().setShowContextWindowUsage(false);
   prefs.getState().setSendShortcut("mod-enter");
   prefs.getState().setFollowUpBehavior("steer");
+  prefs.getState().setTitlePrompt("Use an emoji and German words");
   const saved = store.get("unsloth_chat_preferences")!;
   const expected = {
     plainTextComposer: false,
@@ -201,5 +202,6 @@ test("the real preference store persists all controls and restores them on reloa
   store.set("unsloth_chat_preferences", saved);
   await prefs.persist.rehydrate();
   assert.deepEqual(normalizeComposerPreferences(prefs.getState()), expected);
+  assert.equal(prefs.getState().titlePrompt, "Use an emoji and German words");
   assert.equal(typeof prefs.getState().setFollowUpBehavior, "function");
 });

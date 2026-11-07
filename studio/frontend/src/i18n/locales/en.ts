@@ -1896,6 +1896,8 @@ export const en = {
         updateFailed: "Password update failed.",
       },
       chatDefaults: "Chat defaults",
+      customTitlePrompt: "Custom title prompt",
+      customTitlePromptDescription: "Leave blank to use the default instructions.",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",

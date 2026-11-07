@@ -2087,6 +2087,8 @@ export const nl = {
         updateFailed: "Bijwerken van wachtwoord mislukt.",
       },
       chatDefaults: "Chatstandaarden",
+      customTitlePrompt: "Aangepaste titelinstructie",
+      customTitlePromptDescription: "Laat leeg om de standaardinstructies te gebruiken.",
       autoTitleNewChats: "Nieuwe chats automatisch een titel geven",
       autoTitleNewChatsDescription:
         "Een titel genereren op basis van het eerste bericht.",
