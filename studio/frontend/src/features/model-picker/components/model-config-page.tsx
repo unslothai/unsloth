@@ -81,6 +81,7 @@ import {
   type GpuIndexKind,
   type SystemGpuDevice,
   cachedPinnableGpuContext,
+  defaultGpuIds,
   pinnableGpuContext,
   reconcileGpuSelection,
   useGpuDevices,
@@ -936,12 +937,16 @@ function GpuMemorySettings({
   const gpuContext = pinnableGpuContext(gpuDevices, isDiffusion);
   const pinnableDevices = gpuContext.devices ?? [];
   const gpuIndexKind = gpuContext.indexKind ?? null;
-  const singleGpuInUse = (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
-  const isGpuChecked = (index: number) =>
-    selectedGpuIds === null || selectedGpuIds.includes(index);
   // List order is the device order the backend pins, so a re-checked GPU goes to the end.
-  const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
+  // Untouched, an iGPU beside a discrete card starts unticked, matching what the load sends.
+  const orderedGpuIds =
+    selectedGpuIds ??
+    (showGpuPicker && !isDiffusion ? defaultGpuIds(pinnableDevices) : null) ??
+    gpuContext.ids ??
+    [];
+  const singleGpuInUse = orderedGpuIds.length <= 1;
+  const isGpuChecked = (index: number) => orderedGpuIds.includes(index);
   // Mirrors the backend's --tensor-split gate.
   const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
   const showSplit =
