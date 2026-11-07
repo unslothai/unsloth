@@ -49357,16 +49357,17 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
-    global _direct_image_runs
+    global _direct_image_runs, _direct_image_last_end
     _direct_image_runs += 1
     try:
         return await _generate_diffusion_image_core(request)
     finally:
         _direct_image_runs -= 1
+        _direct_image_last_end = time.monotonic()
 
 
 async def _generate_diffusion_image_core(
-    request: DiffusionGenerateRequest,
+    request: DiffusionGenerateRequest, pinned_load = None
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference.diffusion_segment import render_fence
@@ -49374,11 +49375,11 @@ async def _generate_diffusion_image_core(
     # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
     # render takes the engine's generation slot.
     with render_fence():
-        return await _generate_diffusion_image_run(request)
+        return await _generate_diffusion_image_run(request, pinned_load)
 
 
 async def _generate_diffusion_image_run(
-    request: DiffusionGenerateRequest,
+    request: DiffusionGenerateRequest, pinned_load = None
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -49461,6 +49462,8 @@ async def _generate_diffusion_image_run(
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
+        if pinned_load is not None:
+            expected_load = pinned_load
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
@@ -49526,8 +49529,8 @@ async def _generate_diffusion_image_run(
         except FallbackLoadRefusedError as exc:
             raise exc.http from exc
         except DiffusionModelReplacedError as exc:
-            if attempt > 0:
-                raise HTTPException(status_code = 409, detail = str(exc))
+            if attempt > 0 or pinned_load is not None:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
             # The caption was written for the replaced model's family.
             enhancement = await _enhance_generate_prompts(backend, request)
             continue
@@ -50752,10 +50755,11 @@ async def cancel_diffusion_generation(
     return {"cancelled": bool(cancelled or upsampling or detailing)}
 
 
-# ── Image generation queue ──
-
 # Direct /images/generate runs in flight: the queue waits them out, so a job queued behind one starts after it.
 _direct_image_runs = 0
+_direct_image_last_end = 0.0
+# The page sends a multi-run Generate one request at a time: a queued job must not slip into the gap between two.
+_DIRECT_RUN_SETTLE_S = 1.5
 _image_queue = None
 _QUEUE_MODEL_CHANGED_MSG = (
     "The image model changed since this job was queued. Queue it again on the loaded model."
@@ -50770,13 +50774,20 @@ def _resident_load(status: dict):
 
 
 async def _wait_for_direct_image_runs() -> None:
-    while _direct_image_runs > 0 or _diffusion_persist_active > 0:
+    while (
+        _direct_image_runs > 0
+        or _diffusion_persist_active > 0
+        or time.monotonic() - _direct_image_last_end < _DIRECT_RUN_SETTLE_S
+    ):
         await asyncio.sleep(0.25)
 
 
 async def _run_queued_image_job(job) -> list[str]:
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
-    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_families import (
+        DIFFUSION_CANCELLED_MSG,
+        DiffusionModelReplacedError,
+    )
     from core.inference.generation_ticket import generation_ticket
     from core.inference.image_queue import JobCancelled
 
@@ -50789,10 +50800,12 @@ async def _run_queued_image_job(job) -> list[str]:
             raise JobCancelled()
         try:
             with generation_ticket(job.ticket):
-                response = await _generate_diffusion_image_core(job.request)
+                response = await _generate_diffusion_image_core(job.request, job.load)
         except HTTPException as exc:
             if exc.status_code == 409 and exc.detail == DIFFUSION_CANCELLED_MSG:
                 raise JobCancelled() from exc
+            if exc.status_code == 409 and isinstance(exc.__cause__, DiffusionModelReplacedError):
+                raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG) from exc
             detail = exc.detail
             if isinstance(detail, dict):
                 detail = detail.get("message") or detail.get("detail") or json.dumps(detail)

@@ -268,3 +268,93 @@ def test_cancelling_a_queued_job_waiting_for_the_engine_leaves_the_render_ahead_
         jobs = _wait(client, lambda jobs: jobs[0]["status"] in ("done", "failed", "cancelled"))
         assert ran == ["chat"]
         assert jobs[0]["status"] == "cancelled"
+
+
+def test_a_queued_job_is_pinned_to_its_model_and_never_retries_on_a_replacement(
+    client, monkeypatch
+):
+    """A swap between the queue's model check and the render must fail the job, not run it on the new model."""
+    from core.inference.diffusion_families import DiffusionModelReplacedError, load_identity
+    from fastapi import HTTPException
+    from models.inference import DiffusionGenerateRequest
+
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    seen: list = []
+    queued_for = load_identity("unsloth/queued-model", None, None)
+
+    def generate(*, expected_load = None, **kwargs):
+        seen.append(expected_load)
+        loaded = load_identity("unsloth/swapped-in", None, None)
+        if expected_load is not None and expected_load != loaded:
+            raise DiffusionModelReplacedError(expected_load, loaded)
+        return real_generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        with pytest.raises(HTTPException) as refused:
+            client.portal.call(
+                inference_routes._generate_diffusion_image_core,
+                DiffusionGenerateRequest(prompt = "p", steps = 4, guidance = 1.0),
+                queued_for,
+            )
+        assert refused.value.status_code == 409
+        assert isinstance(refused.value.__cause__, DiffusionModelReplacedError)
+        assert seen == [queued_for]
+
+
+def test_a_queued_job_waits_out_the_gap_between_two_direct_runs(client, monkeypatch):
+    """Generate x2 sends two requests back to back; a job queued meanwhile runs after both."""
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    order: list[str] = []
+
+    def generate(*, prompt = None, **kwargs):
+        order.append(prompt)
+        if prompt == "direct-1":
+            time.sleep(0.3)
+        return real_generate(prompt = prompt, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        first = client.portal.start_task_soon(
+            lambda: inference_routes.generate_diffusion_image(
+                inference_routes.DiffusionGenerateRequest(prompt = "direct-1"), None
+            )
+        )
+        deadline = time.monotonic() + 5
+        while "direct-1" not in order and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
+        first.result(timeout = 10)
+        # The page's next run arrives a few hundred ms later.
+        time.sleep(0.3)
+        assert (
+            client.post("/api/inference/images/generate", json = {"prompt": "direct-2"}).status_code
+            == 200
+        )
+        _wait(client, lambda jobs: jobs[0]["status"] == "done")
+        assert order == ["direct-1", "direct-2", "queued"]
