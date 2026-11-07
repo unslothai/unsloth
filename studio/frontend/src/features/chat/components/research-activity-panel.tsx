@@ -891,9 +891,9 @@ export function ResearchActivityPanel({
           ? {
               // Keep the panel's controls below the absolute chat header.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
+                "calc(100% - var(--studio-content-top-inset, 0) - var(--studio-chat-header-height, 48px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
+                "calc(var(--studio-content-top-inset, 0) + var(--studio-chat-header-height, 48px))",
             }
           : undefined
       }

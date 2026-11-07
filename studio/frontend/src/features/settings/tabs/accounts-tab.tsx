@@ -631,7 +631,7 @@ function OwnerAccountsTab() {
       >
         <DialogContent
           showCloseButton={false}
-          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-sm:rounded-2xl"
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-[calc(50%+var(--studio-window-chrome-top, 0)/2)] max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top, 0)-2rem)] max-sm:rounded-2xl"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const trigger = actionTrigger.current;

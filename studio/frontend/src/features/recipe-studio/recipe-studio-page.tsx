@@ -799,7 +799,7 @@ export function RecipeStudioPage({
         maximized
           ? {
               // Start below the custom/mac titlebar so the header is not hidden or click-blocked.
-              top: "var(--studio-non-chat-content-top-inset, var(--studio-content-top-inset, 0px))",
+              top: "var(--studio-non-chat-content-top-inset, var(--studio-content-top-inset, 0))",
             }
           : undefined
       }

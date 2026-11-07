@@ -11,6 +11,35 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+
+// A CSS-variable fallback written as `0px` is canonically unitless `0`.
+const localRules = {
+  rules: {
+    "no-px-zero-fallback": {
+      meta: {
+        type: "problem",
+        messages: {
+          unitless:
+            "Use a unitless 0 fallback here: `var(--name, 0)`, not `var(--name, 0px)`.",
+        },
+        schema: [],
+      },
+      create(context) {
+        return {
+          Literal(node) {
+            if (
+              typeof node.value === "string" &&
+              /var\(--[\w-]+,\s*0px\s*\)/.test(node.value)
+            ) {
+              context.report({ node, messageId: "unitless" });
+            }
+          },
+        };
+      },
+    },
+  },
+};
+
 export default defineConfig([
   globalIgnores(["dist", "**/._*"]),
   {
@@ -46,5 +75,10 @@ export default defineConfig([
         },
       ],
     },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { local: localRules },
+    rules: { "local/no-px-zero-fallback": "error" },
   },
 ]);

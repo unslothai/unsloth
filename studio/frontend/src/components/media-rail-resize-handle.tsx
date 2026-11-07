@@ -93,7 +93,7 @@ export function MediaRailResizeHandle({
       <span
         ref={anchorRef}
         className={cn(
-          "pointer-events-none absolute bottom-0 left-0 top-[var(--studio-content-top-inset,0px)] z-50",
+          "pointer-events-none absolute bottom-0 left-0 top-[var(--studio-content-top-inset, 0)] z-50",
           className,
         )}
         style={{ width: RAIL_BOX_WIDTH[kind] }}
