@@ -205,6 +205,15 @@ test("a closing quote ends its sentence without swallowing the next one", () => 
   ]);
 });
 
+test("punctuation left after a sentence is never its own chunk", () => {
+  assert.deepEqual(speechText.splitIntoSentences("He said \u201cHello.\u201d"), ["He said \u201cHello.\u201d"]);
+  assert.deepEqual(speechText.splitIntoSentences('"Done.".'), ['"Done.".']);
+  assert.deepEqual(speechText.splitIntoSentences("She said \u201cGo.\u201d Then we left."), [
+    "She said \u201cGo.\u201d",
+    "Then we left.",
+  ]);
+});
+
 test("a dot inside a name like llama.cpp or config.json is not a boundary", () => {
   assert.deepEqual(speechText.splitIntoSentences("It runs in llama.cpp, Ollama and vLLM. Then go."), [
     "It runs in llama.cpp, Ollama and vLLM.",

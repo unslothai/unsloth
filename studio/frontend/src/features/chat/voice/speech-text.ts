@@ -13,6 +13,8 @@ const SPEECH_ABBREVIATIONS = new Set([
 
 const SENTENCE_FINAL_ABBREVIATIONS = new Set(["etc", "inc", "ltd", "co", "jr", "sr"]);
 
+const speakable = (s: string) => /[\p{L}\p{N}]/u.test(s);
+
 export function splitIntoSentences(text: string): string[] {
   // Horizontal whitespace only: a newline is a boundary the regex below relies on.
   const norm = text
@@ -23,6 +25,7 @@ export function splitIntoSentences(text: string): string[] {
   if (!raw) return [text];
   const out: string[] = [];
   let at = 0;
+  let lead = "";
   for (const chunk of raw) {
     const start = norm.indexOf(chunk, at);
     at = start + chunk.length;
@@ -30,10 +33,23 @@ export function splitIntoSentences(text: string): string[] {
     // Whether a space or newline came before it: "2.5" has none, "in 2020. 30 people" has one.
     const spaced = /^\s/.test(chunk) || (start > 0 && /\s/.test(norm[start - 1] ?? ""));
     if (!part) continue;
+    if (lead) {
+      part = `${lead} ${part}`;
+      lead = "";
+    }
     const prev = out[out.length - 1];
+    if (prev === undefined && !speakable(part)) {
+      lead = part;
+      continue;
+    }
     if (prev !== undefined) {
+      // Nothing to say on its own ("”", "\".") belongs to the sentence before it.
+      if (!speakable(part)) {
+        out[out.length - 1] = prev + part;
+        continue;
+      }
       // A quote or bracket followed by whitespace closes the previous sentence.
-      const closer = /^(["')\]]+)(?:\s|$)/.exec(part);
+      const closer = /^(["'”’»)\]]+)(?:\s|$)/.exec(part);
       if (closer) {
         out[out.length - 1] = prev + closer[1];
         part = part.slice(closer[1].length).trim();
@@ -41,7 +57,7 @@ export function splitIntoSentences(text: string): string[] {
         out.push(part);
         continue;
       }
-      const tail = prev.replace(/["')\]]+$/, "");
+      const tail = prev.replace(/["'”’»)\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
       // A dot with no space after it ends no sentence: "3.5", ".75", "llama.cpp", ".env", "D.C.".
       const attached = !spaced && /^[\p{L}\p{N}]/u.test(part);
@@ -67,5 +83,6 @@ export function splitIntoSentences(text: string): string[] {
     }
     out.push(part);
   }
+  if (lead) out.push(lead);
   return out.filter(Boolean);
 }
