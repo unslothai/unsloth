@@ -100,6 +100,7 @@ export {
   prefillPercent,
 } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -499,7 +500,6 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";

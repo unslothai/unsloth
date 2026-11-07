@@ -2607,7 +2607,7 @@ export const ru = {
         detecting: "Поиск GPU...",
         unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
-          "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+          "Отдельный GPU не обнаружен.",
         noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
         mismatchCpuBuild:
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
@@ -2683,7 +2683,7 @@ export const ru = {
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
       modelMemory: {
-        title: "Память модели",
+        title: "Загрузка модели",
         keepResident: "Держать модель в памяти GPU",
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
@@ -2943,6 +2943,8 @@ export const ru = {
     },
     chat: {
       groups: {
+        replies: { title: "Ответы" },
+        thinkingTools: { title: "Размышления и инструменты" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
@@ -3024,11 +3026,20 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности генерации",
+      showGenerationDetails: "Подробности о скорости и загрузке",
       showGenerationDetailsDescription:
-        "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Статистика скорости и контекста",
+      generationStatsUpdatesDescription:
+        "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",
+      generationStatsUpdatesHint:
+        "В реальном времени обновляет показатель токенов в секунду под ответом и полосу контекста вверху чата несколько раз в секунду, пока ответ пишется. По завершении обновляет их один раз, когда каждый ответ закончен. Режим реального времени может вызывать подтормаживания или снижать производительность, особенно на старых или загруженных компьютерах.",
+      generationStatsUpdatesSettled: "По завершении",
+      generationStatsUpdatesRealtime: "В реальном времени",
+      generationStatsUpdatesKeywords:
+        "реальное время вживую обновление скорость контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",

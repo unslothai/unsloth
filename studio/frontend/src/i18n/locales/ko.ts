@@ -2589,7 +2589,7 @@ export const ko = {
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
-        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noGpu: "전용 GPU가 감지되지 않았습니다.",
         noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
         mismatchCpuBuild:
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
@@ -2665,7 +2665,7 @@ export const ko = {
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
       modelMemory: {
-        title: "모델 메모리",
+        title: "모델 로딩",
         keepResident: "모델을 GPU 메모리에 유지",
         keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
         keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고, 가중치가 실제로 호스트 RAM에 있는 경우(통합 메모리 또는 부분 GPU 오프로드)에는 --mlock도 전달하여 운영체제가 가중치를 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
@@ -2922,6 +2922,8 @@ export const ko = {
     },
     chat: {
       groups: {
+        replies: { title: "응답" },
+        thinkingTools: { title: "생각과 도구" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
@@ -3004,11 +3006,20 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "생성 세부 정보",
+      showGenerationDetails: "자세한 속도 및 로딩 정보",
       showGenerationDetailsDescription:
-        "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "속도 및 컨텍스트 통계",
+      generationStatsUpdatesDescription:
+        "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",
+      generationStatsUpdatesHint:
+        "실시간은 응답이 작성되는 동안 응답 아래의 초당 토큰 표시와 채팅 상단의 컨텍스트 막대를 초당 몇 번씩 새로 고칩니다. 완료 시는 각 응답이 끝난 뒤 한 번만 업데이트합니다. 실시간은 특히 오래되었거나 바쁜 기기에서 지연이나 성능 저하를 일으킬 수 있습니다.",
+      generationStatsUpdatesSettled: "완료 시",
+      generationStatsUpdatesRealtime: "실시간",
+      generationStatsUpdatesKeywords:
+        "실시간 라이브 업데이트 속도 컨텍스트 통계 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
