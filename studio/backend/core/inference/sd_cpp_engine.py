@@ -363,8 +363,8 @@ def host_cuda_runtime_dirs() -> list[str]:
         return []
 
 
-def host_cuda_runtime_major() -> Optional[str]:
-    """CUDA major the installed llama.cpp links, else torch's."""
+def llama_cpp_cuda_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, None when it is not a CUDA build (or unreadable)."""
     binary = _llama_server_binary()
     if binary:
         try:
@@ -376,6 +376,14 @@ def host_cuda_runtime_major() -> Optional[str]:
                 return match.group(1)
         except Exception:  # noqa: BLE001
             pass
+    return None
+
+
+def host_cuda_runtime_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, else torch's."""
+    major = llama_cpp_cuda_major()
+    if major:
+        return major
     version = getattr(getattr(sys.modules.get("torch"), "version", None), "cuda", None)
     return version.split(".")[0] if isinstance(version, str) and version else None
 

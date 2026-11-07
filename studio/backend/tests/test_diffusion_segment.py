@@ -464,6 +464,62 @@ def _weights(model):
     return {k: v.detach().clone() for k, v in model.state_dict().items()}
 
 
+@pytest.mark.parametrize(
+    "env,pin,fast",
+    [
+        (None, False, True),
+        ("", False, True),
+        ("0", False, False),
+        ("off", False, False),
+        ("1", True, False),
+    ],
+)
+def test_park_pins_with_registered_memory_by_default(monkeypatch, env, pin, fast):
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    _gpu_loaded(monkeypatch, segmenter, _small_model())
+    if env is None:
+        monkeypatch.delenv(seg.ENV_PARK_PIN, raising = False)
+    else:
+        monkeypatch.setenv(seg.ENV_PARK_PIN, env)
+    monkeypatch.setattr(
+        "core.inference.host_pinning.host_pinning_allowed", lambda device = None: True
+    )
+    made = []
+
+    class _Recorder(seg._HostWeights):
+        def __init__(
+            self,
+            pin,
+            fast = False,
+        ):
+            made.append((pin, fast))
+            super().__init__(False)
+
+    monkeypatch.setattr(seg, "_HostWeights", _Recorder)
+    monkeypatch.setattr(segmenter, "_load_weights", lambda *a, **k: None)
+    assert segmenter.release("image generation", wait = True, park = True) is True
+    assert made == [(pin, fast)]
+
+
+def test_fast_park_pin_falls_back_to_pageable_not_the_torch_allocator(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes: None)
+    allocs = []
+    real_empty = torch.empty
+
+    def _empty(*a, **k):
+        allocs.append(k.get("pin_memory", False))
+        return real_empty(*a, **{key: v for key, v in k.items() if key != "pin_memory"})
+
+    monkeypatch.setattr(torch, "empty", _empty)
+    host = seg._HostWeights(False, fast = True)
+    host.park(_small_model())
+    assert host.pin is False and allocs[0] is False
+
+
 def test_park_keeps_the_model_in_host_ram_and_the_next_load_reuses_it(monkeypatch):
     """The render (or the Detailer) parks SAM 3 instead of dropping it: its weight storages are emptied, and the next
     call on the same card gives the same module its exact bytes back with no second load."""

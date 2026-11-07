@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { usePlatformStore } from "@/config/env";
 import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -12,7 +11,6 @@ import { getDatasetStreamingBlockers } from "./dataset-panel-helpers";
 
 export function DatasetAdvancedSettingsSection() {
   const t = useT();
-  const platformDeviceType = usePlatformStore((state) => state.deviceType);
   const {
     datasetEvalSplit,
     datasetFormat,
@@ -63,7 +61,6 @@ export function DatasetAdvancedSettingsSection() {
     datasetSource,
     datasetSplit,
     evalSteps,
-    isAppleSilicon: platformDeviceType === "mac",
     isAudioModel,
     isDatasetAudio,
     isDatasetImage,

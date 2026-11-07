@@ -6,7 +6,7 @@
 Unsloth installs a ParallelismConfig for the (dp_shard, cp) mesh. transformers < 5 dispatches
 save_model on that config before FSDP, skipping the full state dict gather, so PEFT is handed DTensor
 shards and fails. The patched save_model must write whole adapter tensors equal to the unsharded ones,
-and leave the installed config in place afterwards.
+and put back the config that was there before the CP trainer installed its own.
 """
 
 from __future__ import annotations
@@ -83,8 +83,8 @@ def _worker(
             # A dp_shard only ParallelismConfig the user passed: still non-None for transformers 4.x.
             from accelerate.parallelism_config import ParallelismConfig
             state.parallelism_config = ParallelismConfig(dp_shard_size = 2)
+        user = state.parallelism_config
         cp._install_fsdp2_parallelism_config(state, manager)
-        installed = state.parallelism_config
 
         torch.manual_seed(0)
         cfg = LlamaConfig(
@@ -119,7 +119,7 @@ def _worker(
             def unwrap_model(self, model, **kwargs):
                 return model
 
-        trainer = object.__new__(SFTTrainer)
+        trainer = cp._bind_cp_methods(object.__new__(SFTTrainer))
         trainer.model = trainer.model_wrapped = model
         trainer.is_fsdp_enabled = True
         trainer.is_deepspeed_enabled = False
@@ -145,7 +145,8 @@ def _worker(
             result["error"] = None
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
-        result["config_kept"] = state.parallelism_config is installed
+        # The CP save_model installs its config only while it runs (_cp_state_scope), then puts the user's back.
+        result["config_kept"] = state.parallelism_config is user
         result["full_state_dicts"] = len(full_state_dicts)
         dist.barrier()
         if rank == 0 and result["error"] is None:

@@ -211,7 +211,7 @@ async def list_previews(
     base = str(request.base_url)
     sharing_on = get_preview_sharing_enabled() and not no_credential
     previews = []
-    for target in list_preview_targets():
+    for target in await asyncio.to_thread(list_preview_targets):
         ref = quote(target["ref"], safe = "/")
         token = sign_preview_ref(target["ref"]) if sharing_on else None
         previews.append(

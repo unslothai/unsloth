@@ -2,13 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  turns: {
+    label: "Turn {number}",
+    bookmarkedLabel: "Turn {number}, bookmarked",
+    bookmark: "Bookmark turn",
+    removeBookmark: "Remove bookmark",
+    navigator: "Turns",
+  },
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
+    sizingPosition: "Image sizing & position",
     fill: "Fill",
     fit: "Fit",
     stretch: "Stretch",
     original: "Original size",
+    fitWidth: "Fit width",
+    fitHeight: "Fit height",
     zoom: "Zoom",
     outline: "Composer outline",
     fade: "Fade to background",
@@ -25,11 +35,18 @@ export const en = {
     halftone: "Halftone",
     scanlines: "Scanlines",
     visibility: "Visibility",
+    conversationVisibility: "Visibility in conversations",
     blur: "Image blur",
     position: "Position",
+    horizontal: "Horizontal position",
+    vertical: "Vertical position",
+    scope: "Show on",
+    scopeNewChat: "New chat page",
+    scopeChats: "Chats",
+    scopeAll: "All pages",
     positionValue: "Horizontal {x}%, vertical {y}%",
-    newChat: "New chat",
-    conversation: "Conversation",
+    newChat: "New chat preview",
+    conversation: "Conversation preview",
     prompt: "What would you like to explore?",
     response: "Your conversation stays clear over the background.",
     storageError: "Could not save the background. Check available browser storage.",
@@ -37,6 +54,26 @@ export const en = {
     dimensionsError: "Choose an image smaller than 40 megapixels.",
     decodeError: "Could not decode this image. Try another file.",
     effectError: "Could not render the effect. Try None or choose another image.",
+    material: "Glass",
+    materialSolid: "Off",
+    materialTransparent: "Transparent",
+    materialFrosted: "Frosted",
+    materialBlurred: "Blurred",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS system glass",
+    materialMacosNote: "Uses the macOS translucent window material, so your desktop shows through.",
+    materialNativeFailed: "This version of Unsloth Desktop cannot use the macOS material. Update the app to turn it on.",
+    glassTheme: "Glass theme",
+    materialStyle: "Style",
+    materialMenus: "Glass menus",
+    materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
+    materialStrength: "Glass strength",
+    lens: "Glass lens",
+    lensDescription: "Bends the image under the composer like real glass.",
+    lensOff: "Off",
+    lensMagnify: "Magnify",
+    lensShrink: "Shrink",
   },
 
   linkMenu: {
@@ -158,12 +195,16 @@ export const en = {
         history: "Reading your browsing history",
         move: "Moving the mouse",
         drag: "Dragging",
+        tabs: "Looking at the tabs",
+        readFile: "Reading the file",
+        editFile: "Editing the file",
       },
     },
     title: "Browser",
     tabs: "Browser tabs",
     newTab: "New tab",
     newTabFullView: "New tab in full view",
+    newTabFloating: "New tab in floating window",
     closeTab: "Close tab",
     close: "Close browser",
     show: "Show browser",
@@ -287,18 +328,24 @@ export const en = {
     downloadLocationReset: "Reset",
     askBeforeDownloadingSetting: "Ask before downloading",
     askBeforeDownloadingSettingDescription: "Confirm files from websites before they're saved.",
+    askBeforeProgramDownloadsSetting: "Ask before downloading programs",
+    askBeforeProgramDownloadsSettingDescription: "Confirm files that can run programs, such as .exe or .dmg, even when other downloads don't ask.",
     downloadSitesSetting: "Site download permissions",
     downloadSitesSettingDescription: "Sites you chose to always allow or block downloads from.",
-    downloadSitesNone: "Check Remember for next time when asked, and the site shows up here.",
+    downloadSitesNone: "Choose Always for a site when asked, and it shows up here.",
     downloadSitesFor: "Downloads from {host}",
     downloadSitesRemove: "Forget {host}",
     downloadSiteAllow: "Always allow",
+    downloadSiteAllowAll: "Allow programs too",
     downloadSiteBlock: "Always block",
     downloadPrompt: {
       title: "Download this file?",
       description: "{host} wants to save {name} to your computer.",
       dangerous: "Files like this can run programs on your computer. Only download it if you trust {host}.",
-      remember: "Remember for next time",
+      remember: "Remember this choice",
+      once: "Ask next time",
+      site: "Always for {host}",
+      all: "Always download, from every site",
       cancel: "Cancel",
       download: "Download",
       blocked: "Blocked a download from {host}.",
@@ -340,6 +387,12 @@ export const en = {
       openChat: "Open in full view",
       moveLeft: "Move to left pane",
       moveRight: "Move to right pane",
+    },
+    floating: {
+      enter: "Floating window",
+      dock: "Dock to side",
+      close: "Close floating window",
+      handle: "Move window. Arrow keys move it; Shift and arrow keys resize it.",
     },
     annotate: {
       countOne: "1 annotation",
@@ -612,6 +665,8 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
+    richPaste: "Rich text paste",
+    richPasteDescription: "Pastes links, tables and formatting as Markdown. {shortcut} pastes plain text. Full rich text composer coming soon.",
     showContext: "Context window usage",
     sendShortcut: "Send shortcut",
     sendMultiline: "{mod} + Enter for multiline prompts",
@@ -719,38 +774,6 @@ export const en = {
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
-  // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
-    chooseTheme: "Choose a frightful theme",
-    spookyGreetings: "Spooky greetings",
-    spookyGreetingsDescription: "The sloth greets new chats with a scare.",
-    decorations: "Spiders and bats",
-    decorationsDescription:
-      "Webs, plus the odd spider or bat.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Let the sloth pick a theme for you.",
-    themesTitle: "Frightful themes",
-    back: "Back",
-    footer: "Unsloth returns to normal at midnight on November 1.",
-    removeNow: "Remove now",
-    hideFromSidebar: "Hide from sidebar",
-    greeting: {
-      pumpkins: "The pumpkins are carved. What’s next?",
-      brewing: "Let’s get brewing",
-      trickOrTreat: "Trick or treat?",
-      manor: "Welcome to the manor",
-      manorName: "Welcome to the manor, {name}",
-      happyHalloween: "Happy Halloween",
-      happyHalloweenName: "Happy Halloween, {name}",
-      spirits: "The spirits are listening…",
-      mysteries: "What mysteries shall we uncover tonight?",
-      conjure: "What can I conjure up for you?",
-    },
-  },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
     goodToSeeYou: "Good to see you",
@@ -775,6 +798,8 @@ export const en = {
   picker: {
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
+    residentToRun: "to run",
+    residentToRunHint: "GPU memory the load check needs while running",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -977,7 +1002,7 @@ export const en = {
       deleteProjects: "Delete projects",
       deleteProjectsTitle: "Delete projects",
       deleteProjectsDescription:
-        "Delete {count} projects? Their chats are permanently deleted.",
+        "This permanently deletes {count} projects and all of their chats. This cannot be undone.",
       deleteProjectsFilesDescription:
         "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
@@ -988,7 +1013,7 @@ export const en = {
       markRead: "Mark as read",
       deleteChats: "Delete chats",
       deleteTitle: "Delete chats",
-      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteDescription: "This permanently deletes {count} chats and their messages. This cannot be undone.",
       deleteFilesDescription:
         "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
       deleteFilesLabel: "Delete files and sandbox folder",
@@ -1037,7 +1062,7 @@ export const en = {
     dialog: {
       deleteChat: {
         title: "Delete chat",
-        description: 'Are you sure you want to delete this chat "{name}"?',
+        description: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
       },
       deleteRun: {
         title: "Delete training run",
@@ -1062,6 +1087,7 @@ export const en = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Choose the owner's password before adding another account. You will use it to sign in once this installation has multiple accounts.",
       signsInAs: "Signs in as {username}",
       signsInAsOwner: "Signs in as {alias} or {username}",
       signInName: "Your sign-in name",
@@ -1087,6 +1113,9 @@ export const en = {
       modelAccessHint: "One model per line, for example unsloth/Qwen3-4B-GGUF, or unsloth/* for a whole organization. Leave empty to allow every model.",
       modelAccessSave: "Save",
       modelAccessLimited: "Limited model access",
+      rename: "Rename",
+      renameTitle: "Rename {username}",
+      renameDescription: "Choose the name this account signs in with. Their chats, files and API keys stay with the account. They are signed out and sign in again with the new name and their current password.",
       empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
@@ -1870,6 +1899,29 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",
+      mlWarmup: {
+        sectionTitle: "Startup performance",
+        description:
+          "Prepare selected features for faster first use. All off by default. Options may load shared dependencies and use more RAM while idle.",
+        restartRequired: "Changes apply after restarting Unsloth.",
+        hardwareLabel: "Hardware detection",
+        hardwareDescription: "Detect GPUs and prepare PyTorch.",
+        textLabel: "Text models",
+        textDescription: "Prepare Transformers text-model support.",
+        datasetsLabel: "Dataset preparation",
+        datasetsDescription: "Prepare Datasets and its dependencies for previews and processing.",
+        mediaLabel: "Image and video models",
+        mediaDescription: "Prepare Diffusers and shared model dependencies.",
+        advanced: "Advanced",
+        quantizationLabel: "Image quantization prechecks",
+        quantizationDescription:
+          "Check support before the first quantized image model load. Can briefly increase RAM use.",
+        requiredBySelections: "Required by your selections.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_STUDIO_DISABLE_TORCH_WARM in the backend environment.",
+        loadError: "Failed to load startup warmup settings.",
+        saveError: "Failed to save startup warmup settings.",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1931,9 +1983,10 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
@@ -1999,6 +2052,14 @@ export const en = {
           full:
             "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
+      },
+      display: {
+        title: "Display",
+        timeFormat: "Time format",
+        timeFormatDescription: "Show times on a 12-hour or 24-hour clock.",
+        timeFormatSystem: "System default",
+        timeFormat12: "12-hour",
+        timeFormat24: "24-hour",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -2073,6 +2134,12 @@ export const en = {
           "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
         autoCurrently: "Auto is using {transport} on this machine.",
         xetMissing: "Xet is unavailable because hf_xet is not installed.",
+        speedLimit: "Download speed limit",
+        speedLimitDescription:
+          "No limit unless a figure is set. A limited download uses HTTPS.",
+        speedLimitNoLimit: "No limit",
+        speedLimitInvalid: "Enter a number of Mbit/s, or leave the field empty.",
+        speedLimitUsesHttps: "Downloads use HTTPS while a speed limit is set. Files over 50 GB still use Xet, without the limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2171,10 +2238,14 @@ export const en = {
         label: "Install type",
         description:
           "Chat only (GGUF). The full install adds training, export, video, safetensors models and additional image generation features.",
+        descriptionCpu:
+          "Chat only (GGUF). No supported GPU was found, so the full install adds training on the CPU.",
         action: "Upgrade to full install",
         confirmTitle: "Upgrade to the full install?",
         confirmDescription:
           "This Chat only install runs GGUF models. The full install adds PyTorch for this machine's GPU, which enables training, export, video, safetensors models and additional image generation features. It downloads several gigabytes (at least 5 GB of disk space) and restarts the server. Chats, models and settings are kept. This can take several minutes.",
+        confirmDescriptionCpu:
+          "This Chat only install runs GGUF models. No supported GPU was found on this machine, so the full install adds PyTorch for the CPU, which enables training on the CPU. CPU training is much slower than GPU training. It needs at least 5 GB of disk space and restarts the server. Chats, models and settings are kept. This can take several minutes.",
         confirmAction: "Upgrade",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors",
@@ -2219,6 +2290,13 @@ export const en = {
       avatarShapeRounded: "Rounded",
       greetingSloth: "Greeting",
       greetingSlothDescription: "Show the greeting on new chats.",
+      greetingDefault: "Default",
+      greetingCustom: "Custom",
+      greetingImage: "Image",
+      greetingText: "Greeting text",
+      greetingTextDescription: "Leave blank to use the built-in greetings.",
+      greetingFileError: "Choose a PNG, JPEG, WebP or GIF under 10 MB.",
+      greetingImageError: "This image couldn't be used. Try a smaller one.",
       chooseSloth: "Or pick a sloth",
       noPicture: "No profile picture",
       noneLabel: "None",
@@ -2336,21 +2414,32 @@ export const en = {
         label: "Theme",
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
-        classic: "Classic",
-        minimal: "Minimal",
         moreThemes: "More themes",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description:
-          "Halloween themes and spooky greetings, until November 1.",
+      composer: {
+        title: "Composer",
+      },
+      code: {
+        title: "Code",
+        fontDescription: "Code blocks in chat, file previews and API examples.",
+        lineNumbers: {
+          label: "Line numbers",
+          description: "Number the lines of code blocks in chat.",
+        },
+        wordWrap: {
+          label: "Word wrap",
+          description: "Wrap long lines in code blocks instead of scrolling sideways.",
+        },
+        ligatures: {
+          label: "Font ligatures",
+          description: "Join symbols such as => and != into one glyph when the code font supports it.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Chat width",
           description: "Width of messages and the composer.",
-          standard: "Standard",
+          standard: "Default",
           wide: "Wide",
           full: "Full width",
         },
@@ -2428,6 +2517,10 @@ export const en = {
         },
         contrast: {
           label: "Contrast",
+        },
+        elementOutline: {
+          label: "Element outline",
+          description: "Border strength for buttons, fields, cards and menus.",
         },
         reduceMotion: {
           label: "Reduce motion",
@@ -2519,7 +2612,7 @@ export const en = {
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
-        noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noGpu: "No dedicated GPU detected.",
         noUsableGpu: "No GPU on this machine is usable by PyTorch.",
         mismatchCpuBuild:
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
@@ -2596,7 +2689,7 @@ export const en = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Model memory",
+        title: "Model loading",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
         keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
@@ -2781,7 +2874,7 @@ export const en = {
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+        "Claude Code and Codex need a GGUF model served by llama-server, or an MLX model. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:
@@ -2853,6 +2946,8 @@ export const en = {
     },
     chat: {
       groups: {
+        replies: { title: "Replies" },
+        thinkingTools: { title: "Thinking and tools" },
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
@@ -2925,6 +3020,8 @@ export const en = {
         "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Link previews",
+      showLinkPreviewsDescription: "Show previews when hovering over source links.",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2932,16 +3029,27 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Generation details",
+      showGenerationDetails: "Detailed speed and loading info",
       showGenerationDetailsDescription:
-        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts, and shows where a model's layers loaded.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "generation details verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Speed and context stats",
+      generationStatsUpdatesDescription:
+        "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesHint:
+        "Realtime refreshes the tokens per second readout under a reply and the context bar at the top of the chat a few times a second while the reply is written. When done updates them once, after each reply finishes. Realtime may cause lag or slower performance, especially on older or busy machines.",
+      generationStatsUpdatesSettled: "When done",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
-      composerAtBottom: "Composer at the bottom",
-      composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
+      turnNavigation: "Turn navigation",
+      turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
+      composerPosition: "Composer position",
+      composerPositionDescription: "Where the composer sits when a new chat starts, from the top of the page down to the bottom.",
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
         "Make new chat attachments available to every chat in the project.",
@@ -3205,9 +3313,9 @@ export const en = {
         movedChatsToRecents: "Chats moved to Recents: {count}",
         moveFailed: "Failed to move chats",
         deleteChatsTitle: "Delete chats ({count})",
-        deleteChatsWarning: "Delete the selected chats ({count})? This cannot be undone.",
+        deleteChatsWarning: "This permanently deletes {count} chats and their messages. This cannot be undone.",
         deleteArchivedTitle: "Delete {count} archived chats",
-        deleteArchivedWarning: "Delete the selected archived chats ({count})? This cannot be undone.",
+        deleteArchivedWarning: "This permanently deletes {count} archived chats and their messages. This cannot be undone.",
         deleting: "Deleting...",
       },
       title: "Data",
@@ -3412,6 +3520,9 @@ export const en = {
         docs: "Docs",
         docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        codeTitle: "Call it from code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Other MCP clients connect here with the same token.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -3431,7 +3542,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. Exported Laya fine-tunes use llama.cpp when it is chosen here. llama.cpp also reads images.",
         backendDescriptionMlx:
           "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
@@ -3554,8 +3665,6 @@ export const en = {
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
-        desktopManaged:
-          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
         desktopReady: "Desktop app updates",
         desktopReadyDescription:
           "Check whether a newer desktop app version is available.",
@@ -3565,7 +3674,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -3596,6 +3705,8 @@ export const en = {
   },
   studio: {
     routeTitle: "Train",
+    cpuTrainingNotice:
+      "No GPU was found, so training runs on the CPU. It is much slower than GPU training and supports text models only (LoRA or full finetuning).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Select model and training method",
@@ -3869,7 +3980,6 @@ export const en = {
             "Embedding models don't support streaming (training needs the full dataset).",
           imageDataset: "This dataset looks like images, which can't stream.",
           audioDataset: "This dataset looks like audio, which can't stream.",
-          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
         },
         options: {
           trainOnCompletions: "assistant completions only",
@@ -4694,8 +4804,8 @@ export const en = {
       },
       dialog: {
         renameChat: "Rename chat",
-        deleteChatDescription: "This chat will be permanently deleted. This cannot be undone.",
-        deleteProjectDescription: "The project and its chats ({count}) will be permanently deleted. This cannot be undone.",
+        deleteChatDescription: "This permanently deletes the chat and its messages. This cannot be undone.",
+        deleteProjectDescription: "This permanently deletes the project and its chats ({count}). This cannot be undone.",
         deleteFilesMany: "Also remove the files and sandbox folders these chats created.",
         deleteProjectFilesLabel: "Delete project workspace folder",
         deleteProjectFiles: "The project workspace folder will be removed from disk.",
@@ -5066,6 +5176,8 @@ export const en = {
     removeLevel: "Remove level {n}",
     addLevel: "Add level",
     jsonHelp: "The request body. Run sends it as written.",
+    copyBody: "Copy body",
+    copyCurl: "Copy as cURL",
     examples: "Examples",
     presetToolApproval: "Approve agent tool calls",
     presetPromptInjection: "Catch prompt injection",
@@ -5167,14 +5279,14 @@ export const en = {
     renameChat: "Rename chat",
     chatName: "Chat name",
     deleteChat: "Delete chat",
-    deleteChatDescription: "Are you sure you want to delete {name}? Its messages will be permanently deleted.",
+    deleteChatDescription: 'This permanently deletes "{name}" and its messages. This cannot be undone.',
     importChats: "Import chats",
     importDestination: "Choose where to import {name}:",
     selectDestination: "Select destination",
     recents: "Recents",
     import: "Import",
     deleteProject: "Delete project",
-    deleteProjectDescription: "Are you sure you want to delete {name}? Its chats will be permanently deleted.",
+    deleteProjectDescription: 'This permanently deletes the project "{name}" and all of its chats. This cannot be undone.',
     deleteProjectFiles: "The project workspace folder will be removed from disk.",
     deleteAll: "Delete all",
     projectFallback: "project",
@@ -5258,6 +5370,18 @@ export const en = {
     flaggedIntro: "Our automatic scanner flagged issues including:",
     nothingFlagged:
       "Our automatic scanner did not flag any worrying files, but please double check.",
+    unscannedTitle: "Model files could not be scanned",
+    unscannedBody: "{model} ships pickle weights, which can run code when they load, and no malware scan is available for them, so it cannot be loaded. {note}",
+    unscannedIntro: "Files that could not be scanned:",
+    switchSourceNote: "Switch the model source to Hugging Face in Settings to load it.",
+    reconnectNote: "Connect to Hugging Face so its scan can be read, then try again.",
+    managedTitle: "Custom code is off for this account",
+    managedNote: "It is turned off for managed accounts. Ask the installation owner to enable it.",
+    notFoundTitle: "Not found on {source}",
+    notFoundBody: "{model} was not found on {source}, so its security checks could not run. Check the name, or set a token with access if the repository is private.",
+    notOnModelScopeBody: "{model} is not available on ModelScope, so its security checks could not run and it cannot be loaded from there. Switch the model source to Hugging Face in Settings to use it.",
+    checksFailedTitle: "Security checks could not run",
+    checksFailedBody: "{model} could not be read from {source}, so its security checks could not finish and it cannot be loaded. Check your connection and token, then try again. {note}",
     enableAndContinue: "Enable and continue",
   },
   tour: {
@@ -5424,7 +5548,7 @@ export const en = {
     skippedVersion: "Skipped {component} {version} for now",
     skippedUpdate: "Skipped the {component} update for now",
     skippedUpdates: "Skipped the {components} updates for now",
-    vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
+    vulkanFaster: "Over 10% faster",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
     // {change}: "<from backend> → <to backend>".
@@ -5434,8 +5558,8 @@ export const en = {
     installingPhase: "Installing {component} ({current} of {total})...",
     installingCount: "Installing {count} updates...",
     bundleTitle: "{count} runtime updates",
-    newBackend: "New {component} backend",
-    newUpdate: "New {component} update",
+    newBackend: "New runtime backend",
+    newUpdate: "New runtime update",
     hideUpdate: "Hide the {component} update until Unsloth is reopened",
     hideUpdates: "Hide the {components} updates until Unsloth is reopened",
     whatsNew: "What's new",
@@ -5443,5 +5567,66 @@ export const en = {
     later: "Later",
     update: "Update",
     undo: "Undo",
+  },
+  // The live prompt and reply figures (Settings > Chat > Display > Generation details), the reply's
+  // timing tooltip and the Run settings "Weight placement" row. Keep GPU, CPU, RAM and VRAM.
+  generationStats: {
+    working: "Working...",
+    processingPrompt: "Processing prompt {percent}%",
+    compactingContext: "Compacting context...",
+    // {eta}: a short duration such as "12s" or "2m 10s".
+    timeLeft: "{eta} left",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    // Speculative decoding: of {drafted} drafted tokens, the model kept {accepted}.
+    draftAccepted: "draft {accepted}/{drafted} accepted ({percent}%)",
+    timing: {
+      trigger: "Message timing",
+      firstToken: "First token",
+      speedInStep: "Speed (in-step)",
+      effective: "Effective",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} step",
+      steps: "{count} steps",
+      blocksOne: "{count} block",
+      blocks: "{count} blocks",
+      canvas: "Canvas",
+      generation: "Generation",
+      answerTokens: "Answer tokens",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Chunks",
+      promptEval: "Prompt eval",
+      promptSpeed: "Prompt speed",
+      speed: "Speed",
+      tokens: "Tokens",
+      draftAccepted: "Draft accepted",
+      denoisingSteps: "Denoising steps",
+      blocksLabel: "Blocks",
+      cacheHits: "Cache hits",
+      cacheWrites: "Cache writes",
+      stopReason: "Stop reason",
+      stoppedByYou: "Stopped by you",
+      endOfTurn: "End of turn",
+      lengthLimit: "Length limit",
+      toolCall: "Tool call",
+      contentFilter: "Content filter",
+    },
+    placement: {
+      title: "Weight placement",
+      allOnCpu: "All {total} layers on the CPU",
+      split: "{gpu} of {total} layers on the GPU, {cpu} on the CPU",
+      allOnGpu: "All {total} layers on the GPU",
+      // A MoE with every routed expert in RAM and a GPU cache of the busiest ones; {amount} is like "18 GiB".
+      expertCache: "All {total} layers on the GPU, all experts in RAM ({amount} expert cache on the GPU)",
+      expertSpillOne: "All {total} layers on the GPU, expert weights of {count} layer in RAM",
+      expertSpill: "All {total} layers on the GPU, expert weights of {count} layers in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in shared memory",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } as const;
