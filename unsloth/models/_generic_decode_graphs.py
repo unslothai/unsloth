@@ -592,11 +592,24 @@ def _single_device_hook(model):
             return False
         if not isinstance(device, torch.device) or target.type != device.type:
             return False
-        if (target.index if target.index is not None else 0) != (
+        same = (target.index if target.index is not None else 0) == (
             device.index if device.index is not None else 0
-        ):
+        )
+        if not same and not _split_entry_card(model, target):
             return False
     return True
+
+
+def _split_entry_card(model, target):
+    """A model split over cards (multi-device graphs on): its root hook moves the inputs to the card of the
+    first block, which need not be `model.device` (the first parameter: a tied embedding / lm_head can sit
+    on the last card). Any card the model's parameters are on is its own."""
+    if not _multidevice_enabled():
+        return False
+    devices = _param_devices(model)
+    return len(devices) > 1 and _device_index(target) in {
+        _device_index(d) for d in devices if d.type == target.type
+    }
 
 
 class _Entry:

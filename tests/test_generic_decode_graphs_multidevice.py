@@ -368,3 +368,30 @@ def test_segment_recorder_leaves_movable_objects_to_accelerate(monkeypatch):
         and recorder.segments.parts == []
         and recorder.pending is None
     )
+
+
+def test_split_model_root_hook_on_the_first_blocks_card_is_plain(monkeypatch):
+    # 16-bit models with tied embeddings: Unsloth's split puts the tied embedding / lm_head (the first
+    # parameter, so model.device) on cuda:1 while the root hook moves inputs to cuda:0.
+    from accelerate.hooks import AlignDevicesHook
+
+    class Root:
+        device = torch.device("cuda", 1)
+
+    root = Root()
+    root.__dict__["_hf_hook"] = AlignDevicesHook(
+        execution_device = torch.device("cuda", 0), io_same_device = True
+    )
+    cards = {torch.device("cuda", 0), torch.device("cuda", 1)}
+    monkeypatch.setattr(GG, "_param_devices", lambda model: cards)
+    monkeypatch.setenv("UNSLOTH_DECODE_MULTIDEVICE_GRAPHS", "1")
+    assert GG._single_device_hook(root)
+    monkeypatch.setenv("UNSLOTH_DECODE_MULTIDEVICE_GRAPHS", "0")
+    assert not GG._single_device_hook(root)
+    monkeypatch.setenv("UNSLOTH_DECODE_MULTIDEVICE_GRAPHS", "1")
+    # A card the model is not on stays refused; a model on one card keeps the exact-device rule.
+    root.__dict__["_hf_hook"] = AlignDevicesHook(execution_device = torch.device("cuda", 2))
+    assert not GG._single_device_hook(root)
+    monkeypatch.setattr(GG, "_param_devices", lambda model: {torch.device("cuda", 1)})
+    root.__dict__["_hf_hook"] = AlignDevicesHook(execution_device = torch.device("cuda", 0))
+    assert not GG._single_device_hook(root)
