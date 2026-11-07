@@ -8608,7 +8608,12 @@ class DiffusionBackend:
                     and kind == "pipeline"
                     and pipeline_seed_scheme is None
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
-                    # UNSLOTH_DIFFUSION_ROCM_COMPILE=0 or a failed probe: the fused W8A8 linear would compile anyway.
+                    # Measured compiled: unset / default / max only (eager = no compile), and never when ROCm compile
+                    # is off or its probe failed, since the fused W8A8 linear would compile anyway.
+                    and (
+                        speed_mode is None
+                        or normalize_speed_mode(speed_mode) in (SPEED_DEFAULT, SPEED_MAX)
+                    )
                     and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                     else None
                 )

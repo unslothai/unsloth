@@ -13346,6 +13346,20 @@ def test_auto_on_rdna_keeps_bf16_when_rocm_compile_is_off(fake_runtime, tmp_path
     backend.unload()
 
 
+def test_auto_on_rdna_with_the_eager_tier_stays_bf16(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_rdna_w8a8_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        speed_mode = "eager",
+        _base_local_dir = str(tmp_path),
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    backend.unload()
+
+
 def test_auto_on_rdna_keeps_bf16_for_an_unmeasured_family(fake_runtime, tmp_path, monkeypatch):
     backend = DiffusionBackend()
     calls = _stub_rdna_w8a8_host(backend, monkeypatch)
