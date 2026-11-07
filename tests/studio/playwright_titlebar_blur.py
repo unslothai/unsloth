@@ -11,7 +11,13 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _playwright_robust import chromium_launch_args, start_vite, stop_process, wait_for_smoke_page
+from _playwright_robust import (
+    chromium_launch_args,
+    is_vite_outdated_dep,
+    start_vite,
+    stop_process,
+    wait_for_smoke_page,
+)
 
 PORT = int(os.environ.get("SMOKE_PORT", "5491"))
 URL = os.environ.get("SMOKE_URL", f"http://127.0.0.1:{PORT}/smoke-titlebar-blur.html")
@@ -60,6 +66,7 @@ def run():
             lambda response: errors.append(f"{response.status}: {response.url}")
             if response.status >= 400
             and response.request.resource_type in ("script", "stylesheet", "font")
+            and not is_vite_outdated_dep(response)
             else None,
         )
         page.goto(URL)

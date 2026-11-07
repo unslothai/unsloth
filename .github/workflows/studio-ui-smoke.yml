@@ -99,7 +99,9 @@ permissions:
 jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
+    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
+    runs-on: ubuntu-24.04
     # Do not tighten: a timeout is for hangs, and runner stalls would turn into red builds.
     timeout-minutes: 30
     strategy:
@@ -151,7 +153,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -508,7 +510,9 @@ jobs:
         env:
           STUDIO_E2E_URL: http://127.0.0.1:18894
           STUDIO_E2E_OWNER_PASSWORD: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_multi_account
         run: |
+          mkdir -p logs/playwright_multi_account
           python tests/studio/playwright_multi_account.py
 
       - name: Update banner layout regression (Playwright)
@@ -546,6 +550,13 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_footprint
           python tests/studio/playwright_image_model_footprint.py
+
+      - name: Image generation time regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+        run: python tests/studio/playwright_images_generation_time.py
 
       - name: Image staged-download cancel/retry regression (Playwright)
         if: matrix.shard == 'extra'
@@ -771,13 +782,16 @@ jobs:
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
             logs/playwright_ime
+            logs/playwright_multi_account
             logs/studio-permissions-*.log
           # Repository-wide cap; larger values are silently clamped.
           retention-days: 1
 
   ui-indicator:
     name: Loaded-models indicator (cross-browser)
-    runs-on: ubuntu-latest
+    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
+    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
+    runs-on: ubuntu-24.04
     env:
       # A release published mid-run puts an update card over the controls the scripts click.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'
@@ -804,7 +818,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

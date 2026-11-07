@@ -14,6 +14,7 @@ from transformers.convert_slow_tokenizer import convert_slow_tokenizer
 from transformers import PreTrainedTokenizerFast
 import re
 import os
+import json
 import shutil
 import tempfile
 import weakref
@@ -301,27 +302,56 @@ def _resolve_tokenizer_json(
     tokenizer,
     cache_dir = None,
     revision = None,
+    filename = "tokenizer.json",
+    allow_default_cache = True,
 ):
     name = getattr(tokenizer, "name_or_path", None)
     if not isinstance(name, str) or not name:
         return None
     if os.path.isdir(name):
-        path = os.path.join(name, "tokenizer.json")
+        path = os.path.join(name, filename)
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import try_to_load_from_cache
     except Exception:
         return None
-    for _cache_dir in dict.fromkeys((cache_dir, None)):
+    cache_dirs = (cache_dir, None) if allow_default_cache else (cache_dir,)
+    for _cache_dir in dict.fromkeys(cache_dirs):
         try:
-            path = try_to_load_from_cache(
-                name, "tokenizer.json", cache_dir = _cache_dir, revision = revision
-            )
+            path = try_to_load_from_cache(name, filename, cache_dir = _cache_dir, revision = revision)
         except Exception:
             path = None
         if isinstance(path, str) and os.path.isfile(path):
             return path
     return None
+
+
+def _inferred_tokenizer_max_length(
+    tokenizer,
+    cache_dir = None,
+    revision = None,
+):
+    backend = getattr(tokenizer, "_tokenizer", None)
+    truncation = getattr(backend, "truncation", None)
+    padding = getattr(backend, "padding", None)
+    limit = truncation["max_length"] if truncation else padding.get("length") if padding else None
+    if limit is None or getattr(tokenizer, "init_kwargs", {}).get("max_length") != limit:
+        return None
+    path = _resolve_tokenizer_json(
+        tokenizer,
+        cache_dir = cache_dir,
+        revision = revision,
+        filename = "tokenizer_config.json",
+        allow_default_cache = False,
+    )
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        return limit if isinstance(config, dict) and "max_length" not in config else None
+    except Exception:
+        return None
 
 
 def _repair_one_tokenizer_backend(
@@ -381,6 +411,13 @@ def _repair_tokenizer_backend_from_json(
     cache_dir = None,
     revision = None,
 ):
+    for obj in _tokenizer_objects(tokenizer):
+        backend = getattr(obj, "_tokenizer", None)
+        if backend is None or hasattr(obj, "_unsloth_loaded_runtime_max_length"):
+            continue
+        obj._unsloth_loaded_runtime_max_length = _inferred_tokenizer_max_length(
+            obj, cache_dir = cache_dir, revision = revision
+        )
     if tokenizer is None or os.environ.get("UNSLOTH_DISABLE_TOKENIZER_JSON_REPAIR", "0") == "1":
         return tokenizer
     for obj in _tokenizer_objects(tokenizer):
@@ -499,6 +536,9 @@ def _apply_post_load_tokenizer_fixes(
     tokenizer = _repair_tokenizer_backend_from_json(
         tokenizer, cache_dir = cache_dir, revision = revision
     )
+    from .models.loader_utils import _mark_loaded_revision
+
+    _mark_loaded_revision(tokenizer, revision, cache_dir = cache_dir, load_kwargs = {})
     tokenizer = _fix_llava_num_additional_image_tokens(tokenizer, config = config)
     if not fix_tokenizer:
         return tokenizer
@@ -1085,6 +1125,30 @@ def _fix_pad_token(tokenizer):
         return tokenizer
     fix_pad_token(tokenizer, allow_add = False)
     return tokenizer
+
+
+def _sync_pad_token_id(model, tokenizer):
+    """Point config / generation_config pad_token_id at the tokenizer's pad when it has an embedding row (an older
+    unsloth_zoo raised after adding a pad, leaving the config on an id the fallback tokenizer lacks)."""
+    if model is None or tokenizer is None:
+        return model
+    inner = getattr(tokenizer, "tokenizer", None) or tokenizer
+    pad_id = getattr(inner, "pad_token_id", None)
+    if type(pad_id) is not int or pad_id < 0:
+        return model
+    try:
+        rows = model.get_input_embeddings().weight.shape[0]
+    except Exception:
+        return model
+    if pad_id >= rows:
+        return model
+    config = getattr(model, "config", None)
+    if config is not None and getattr(config, "pad_token_id", None) != pad_id:
+        config.update({"pad_token_id": pad_id})
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None and getattr(generation_config, "pad_token_id", None) != pad_id:
+        generation_config.update(pad_token_id = pad_id)
+    return model
 
 
 def load_correct_tokenizer(

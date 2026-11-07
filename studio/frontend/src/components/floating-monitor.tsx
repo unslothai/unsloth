@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
-import { useMonitorOverlayStore } from "@/features/settings";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
@@ -264,7 +264,9 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          // transition-none: reduce motion's 0.01ms duration otherwise turns the drop's transform to
+          // left/top handoff into a transition, and the compositor paints a frame at the start spot.
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 transition-none max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"

@@ -926,7 +926,7 @@ class MtmdSttSidecar:
         _context_size: Optional[int] = None,
         _active_request: bool = False,
     ) -> None:
-        from core.inference.audio_device import audio_device_forces_cpu
+        from core.inference.audio_device import stt_device_forces_cpu
 
         if path_revision is None:
             from utils.llama_cpp_path_settings import custom_llama_cpp_path_revision
@@ -953,10 +953,10 @@ class MtmdSttSidecar:
             # None is no opinion: a caller sending none cannot move the server.
             if device is None:
                 forced_cpu = (
-                    self._forced_cpu if self._process_alive() else audio_device_forces_cpu(None)
+                    self._forced_cpu if self._process_alive() else stt_device_forces_cpu(None)
                 )
             else:
-                forced_cpu = audio_device_forces_cpu(device)
+                forced_cpu = stt_device_forces_cpu(device)
             # Both mean "no offload", which _gpu_disabled already tracks.
             training = _training_active() or forced_cpu
             if (

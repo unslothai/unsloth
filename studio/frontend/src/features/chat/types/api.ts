@@ -89,6 +89,7 @@ export interface LoadModelRequest {
   mlx_kv_quant?: string | null;
   mlx_int8_prefill?: boolean;
   mlx_ane_prefill?: boolean;
+  mlx_fast_verify?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlx_ple_offload?: "off" | number | null;
   mlx_expert_offload?: "off" | number | null;
@@ -164,6 +165,7 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  estimated_resident_gb?: number | null;
   /** Streamed lookup-table bytes inside `size_bytes`; 0 when none or on an older backend. */
   lookup_table_bytes?: number;
   pending_drafter_filename?: string | null;
@@ -272,6 +274,9 @@ export interface LoadModelResponse {
   mlx_ane_prefill?: boolean | null;
   mlx_ane_prefill_requested?: boolean | null;
   mlx_ane_prefill_reason?: string | null;
+  mlx_fast_verify?: boolean | null;
+  mlx_fast_verify_requested?: boolean | null;
+  mlx_fast_verify_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template?: string | null;
   speculative_type?: string | null;
@@ -362,6 +367,8 @@ export interface InferenceStatusResponse {
   audio_device_fallback?: "cpu" | null;
   /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
   audio_music?: unknown;
+  /** Unknown-shaped on purpose: audioModelContextFor reads only what it needs. */
+  audio_clone?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   /** Answers a spoken question in its own voice when asked for modalities ["text", "audio"]. */
@@ -411,6 +418,9 @@ export interface InferenceStatusResponse {
   mlx_ane_prefill?: boolean | null;
   mlx_ane_prefill_requested?: boolean | null;
   mlx_ane_prefill_reason?: string | null;
+  mlx_fast_verify?: boolean | null;
+  mlx_fast_verify_requested?: boolean | null;
+  mlx_fast_verify_reason?: string | null;
   mlx_offload?: MlxOffloadReport | null;
   chat_template_override?: string | null;
   speculative_type?: string | null;

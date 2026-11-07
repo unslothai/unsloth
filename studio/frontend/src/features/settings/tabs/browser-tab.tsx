@@ -39,7 +39,8 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { ArrowUpRight01Icon, Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -119,6 +120,7 @@ function DownloadSiteRows() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allow">{t("browser.downloadSiteAllow")}</SelectItem>
+                    <SelectItem value="allowAll">{t("browser.downloadSiteAllowAll")}</SelectItem>
                     <SelectItem value="block">{t("browser.downloadSiteBlock")}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -162,6 +164,7 @@ export function BrowserTab() {
   const saveDownloadHistory = useBrowserPrefsStore((state) => state.saveDownloadHistory);
   const askWhereToSave = useBrowserPrefsStore((state) => state.askWhereToSave);
   const askBeforeDownloading = useBrowserPrefsStore((state) => state.askBeforeDownloading);
+  const askBeforeProgramDownloads = useBrowserPrefsStore((state) => state.askBeforeProgramDownloads);
   const annotationScreenshots = useBrowserPrefsStore((state) => state.annotationScreenshots);
   const {
     setOpenLinksInBrowser,
@@ -180,6 +183,7 @@ export function BrowserTab() {
     setSaveDownloadHistory,
     setAskWhereToSave,
     setAskBeforeDownloading,
+    setAskBeforeProgramDownloads,
     setAnnotationScreenshots,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
@@ -490,6 +494,16 @@ export function BrowserTab() {
             onCheckedChange={setAskBeforeDownloading}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("browser.askBeforeProgramDownloadsSetting")}
+          description={t("browser.askBeforeProgramDownloadsSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.askBeforeProgramDownloadsSetting")}
+            checked={askBeforeProgramDownloads}
+            onCheckedChange={setAskBeforeProgramDownloads}
+          />
+        </SettingsRow>
         <DownloadSiteRows />
         <SettingsRow
           label={t("browser.saveDownloadHistorySetting")}
@@ -557,7 +571,7 @@ export function BrowserTab() {
           )}
         >
           <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} data-icon="inline-start" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} data-icon="inline-start" />
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>

@@ -32,6 +32,9 @@ def _from_diffusers(module: str, name: str):
     return getattr(loaded, name)
 
 
+_REAL_DEVICE_COUNT = torch.cuda.device_count
+
+
 @pytest.fixture(autouse = True)
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
@@ -41,6 +44,12 @@ def _env(monkeypatch):
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
+
+
+@pytest.fixture
+def real_cuda(monkeypatch):
+    # The fake count makes a CUDA wheel with no GPU report CUDA available; Dynamo and the diffusers import then touch it.
+    monkeypatch.setattr(torch.cuda, "device_count", _REAL_DEVICE_COUNT)
 
 
 def test_one_card_or_the_kill_switch_means_no_selection(monkeypatch):
@@ -453,7 +462,7 @@ def test_boundary_is_inert_on_the_same_card():
     assert torch.equal(vae(x), vae.lin(x))
 
 
-def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
+def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch, real_cuda):
     monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     DiffusionPipeline = _from_diffusers("diffusers", "DiffusionPipeline")
 
@@ -482,7 +491,7 @@ def test_execution_device_reports_the_primary_of_a_split_pipeline(monkeypatch):
     assert pipe.device == before
 
 
-def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch):
+def test_execution_device_reports_the_primary_of_a_split_modular_pipeline(monkeypatch, real_cuda):
     """ModularPipeline reports its first component's card (the text encoder, on the secondary): step 0 device mismatch."""
     monkeypatch.setattr(mg, "_SPLIT_EVER_PLACED", True)
     import importlib
@@ -756,7 +765,7 @@ def test_closure_forward_override_is_declined_but_bound_methods_are_rebound():
     assert replica.proj.forward.__self__ is replica.proj
 
 
-def test_replica_reapplies_recorded_compile(monkeypatch):
+def test_replica_reapplies_recorded_compile(monkeypatch, real_cuda):
     mg.install_compile_recorder()
     dit = _Dit()
     dit.proj.compile(backend = "eager")
@@ -1870,11 +1879,14 @@ def test_automatic_load_splits_only_when_one_card_would_offload(monkeypatch):
     assert fits.secondary_ordinal is None
 
 
-def test_automatic_placement_does_not_arm_cfg_parallel(monkeypatch):
+def test_automatic_placement_arms_cfg_parallel_only_with_the_auto_lever(monkeypatch):
     class Pipe:
         transformer = _Dit()
 
     automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
+    # default: past the automatic gate (install_cfg_parallel then keeps only idle cards of the same model)
+    assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = automatic)
+    monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, "0")
     assert "automatic" in mg.cfg_parallel_decline(
         Pipe(), offload_policy = "none", selection = automatic
     )
@@ -1909,14 +1921,20 @@ def test_begin_load_marks_an_unpicked_load_automatic(module_file):
     assert ast.unparse(value.orelse.orelse) == "[]"
 
 
-def test_automatic_selection_leaves_module_compile_alone(monkeypatch):
+def test_automatic_selection_leaves_module_compile_alone_without_the_auto_lever(monkeypatch):
     def original(self, *args, **kwargs):
         return self
 
     monkeypatch.setattr(torch.nn.Module, "compile", original)
+    monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, "0")
     automatic = mg.MultiGpuSelection(primary = 0, secondaries = (1,), automatic = True)
     with mg.selection_scope(automatic):
         assert torch.nn.Module.compile is original
+    monkeypatch.delenv(mg.AUTO_CFG_PARALLEL_ENV)
+    with mg.selection_scope(automatic):
+        # Automatic may build a CFG replica, which re-applies the recorded compile arguments
+        assert getattr(torch.nn.Module.compile, "_unsloth_recorder", False)
+    monkeypatch.setattr(torch.nn.Module, "compile", original)
     with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1,))):
         assert getattr(torch.nn.Module.compile, "_unsloth_recorder", False)
 
@@ -2730,8 +2748,20 @@ def test_invalidate_cfg_replica_drops_a_built_replica():
 
 
 @pytest.mark.parametrize("dynamic", [None, False])
-def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
+def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic, monkeypatch, real_cuda):
     # A warm call runs beside the other side, so it must never compile (FX tracing is process-wide up to 2.13).
+    # dynamic=False recompiles per number: past the limit Dynamo runs eager and "no compile" proves nothing.
+    cfg = torch._dynamo.config
+    for limit, fail in (
+        ("recompile_limit", "fail_on_recompile_limit_hit"),
+        ("cache_size_limit", None),
+    ):
+        if hasattr(cfg, limit):
+            monkeypatch.setattr(cfg, limit, 64)
+            if fail and hasattr(cfg, fail):
+                monkeypatch.setattr(cfg, fail, True)
+            break
+    torch._dynamo.reset()
     compiles = []
 
     def backend(gm, _example_inputs):
@@ -2764,6 +2794,7 @@ def test_a_warm_signature_never_compiles_on_a_changed_number(dynamic):
             assert len(compiles) == before, (scale, k, s)
         mg._note_warm(warm, sig)
     torch._dynamo.reset()
+    assert compiles
 
 
 def test_warm_signature_keys_on_storage_offset_and_autocast():
@@ -2775,3 +2806,35 @@ def test_warm_signature_keys_on_storage_offset_and_autocast():
     with torch.autocast("cpu", enabled = False, cache_enabled = False):
         assert mg._call_signature((base[:4],), {}) != a
     assert mg._call_signature((base[:4],), {}) == a
+
+
+def test_automatic_partner_skips_a_card_holding_the_splits_components(monkeypatch):
+    """Three cards, Automatic: the idlest card holds a small text encoder of the split, so it cannot take the replica;
+    the next idle card does (the occupied card is excluded before the partner is chosen, not after)."""
+
+    class Pipe:
+        transformer = _Dit()
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "B200", total_mib = 180000, free_mib = 170000, util_pct = 0.0),
+        1: mg.DeviceProbe(ordinal = 1, name = "B200", total_mib = 180000, free_mib = 179900, util_pct = 0.0),
+        2: mg.DeviceProbe(ordinal = 2, name = "B200", total_mib = 180000, free_mib = 179800, util_pct = 0.0),
+    }
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
+    }
+    try:
+        with mg.selection_scope(
+            mg.MultiGpuSelection(primary = 0, secondaries = (1, 2), automatic = True)
+        ):
+            assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:2"
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)

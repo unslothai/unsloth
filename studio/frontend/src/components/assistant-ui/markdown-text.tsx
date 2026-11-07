@@ -35,7 +35,10 @@ import {
 } from "@/components/assistant-ui/message-derived";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
+import {
+  type SettledEscapedMath,
+  normalizeEscapedInlineMath,
+} from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled, urlToBlob } from "@/lib/native-files";
@@ -121,6 +124,7 @@ import {
 import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
+import { rehypeAutoDirection } from "./rehype-auto-direction";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
@@ -1405,6 +1409,7 @@ function MarkdownTextRenderer({
       // Streamdown caches processors by plugin name and serialized options.
       withDataImageSupport(STREAMDOWN_ALLOWED_TAGS, [
         [rehypeSandboxImages, { threadId, projectId }],
+        rehypeAutoDirection,
       ]),
     [threadId, projectId],
   );
@@ -1417,6 +1422,10 @@ function MarkdownTextRenderer({
     [messageTextKey],
   );
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
+  const [settledEscapedMath] = useState<SettledEscapedMath>(() => ({
+    prefix: "",
+    ranges: [],
+  }));
   const processedText = useMemo(
     () =>
       stabilizeStreamingMarkdown(
@@ -1435,12 +1444,20 @@ function MarkdownTextRenderer({
               ),
               searchImages,
             ),
+            isStreaming ? settledEscapedMath : undefined,
           ),
           isStreaming,
         ),
         isStreaming,
       ),
-    [displayText, isStreaming, messageTexts, precedingText, searchImages],
+    [
+      displayText,
+      isStreaming,
+      messageTexts,
+      precedingText,
+      searchImages,
+      settledEscapedMath,
+    ],
   );
   const incrementalCacheRef = useRef({
     messageId,

@@ -18,6 +18,7 @@ import {
   type SttModel,
   migrateVoiceSettings,
 } from "./stt-model-catalog";
+import { syncSttDevicePreference } from "../api/stt-device";
 
 export * from "./stt-model-catalog";
 export * from "./stt-context";
@@ -245,7 +246,12 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
-      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
+      setSttDevice: (value) => {
+        const sttDevice = normalizeSttDevice(value);
+        set({ sttDevice });
+        // Server default for cold /v1/audio/transcriptions loads (#15280).
+        syncSttDevicePreference(sttDevice);
+      },
 
       sttContextLength: DEFAULT_STT_CONTEXT_LENGTH,
       setSttContextLength: (value) =>
@@ -428,6 +434,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useVoiceSettingsStore.persist.getOptions().name) {
+      void useVoiceSettingsStore.persist.rehydrate();
+    }
+  });
+}
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;

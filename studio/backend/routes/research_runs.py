@@ -455,7 +455,7 @@ def _sanitize_config(
     budgets = {
         "maxSteps": 12,
         "maxSources": 40,
-        "modelTimeoutSeconds": 900,
+        "modelTimeoutSeconds": 0,
         "toolTimeoutSeconds": 120,
         "firstOutputTimeoutSeconds": 120,
     }

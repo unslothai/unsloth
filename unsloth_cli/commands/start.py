@@ -82,7 +82,7 @@ _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
 _DSH_PATCH_FILE = "unsloth.patch.yml"
-_DSH_PACKAGE = "@deepseek-ai/dsh"
+_DSH_PACKAGE = "@deepseek-ai/dsh@latest"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
@@ -656,9 +656,16 @@ def _vibe_install_hint() -> str:
     return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
-def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
+def _npm_install_hint(
+    package: str,
+    *,
+    ignore_scripts: bool = False,
+    prefix: Optional[Path] = None,
+) -> str:
     parts = ["npm", "install", "-g"]
-    if os.name != "nt":
+    if prefix is not None:
+        parts.extend(("--prefix", str(prefix)))
+    elif os.name != "nt":
         # No home (bare container UID): fall back to npm's own prefix instead of failing.
         try:
             parts.extend(("--prefix", str(Path.home() / ".local")))
@@ -3284,6 +3291,7 @@ def _merge_codex_config(
 # Keep custom-model behavior aligned with Codex's own unknown-model fallback. This Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PROFILE_FILE_MIN_VERSION = (0, 134, 0)
 _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 # Older Codex sends no reasoning for a model without reasoning summaries, and older Pi has no samplingParams.
 _CODEX_REASONING_REQUEST_MIN_VERSION = (0, 145, 0)
@@ -3305,6 +3313,18 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
         return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
     return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _codex_update_hint(executable: str) -> Optional[str]:
+    # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH, so an unknown install gets None.
+    if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
+        return "brew upgrade codex"
+    directory = Path(executable).parent
+    prefix = directory if os.name == "nt" else directory.parent
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules") / "@openai/codex"
+    if package.is_dir():
+        return _npm_install_hint("@openai/codex@latest", prefix = prefix)
+    return None
 
 
 def _codex_supports_model_catalog() -> bool:
@@ -4609,7 +4629,6 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             "Unsloth-managed Node installation was found. Install Node.js with npm, "
             "then re-run."
         )
-    args = shlex.split(install_hint)
     env = dict(os.environ)
     # dirname, not Path().parent: Path picks its flavour from os.name, which the tests override. Empty means npm is a bare name; prepending "" would put the cwd on PATH.
     npm_dir = os.path.dirname(npm)
@@ -4617,7 +4636,8 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
     if npm_dir:
         env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
     if os.name == "nt":
-        command = "& " + " ".join(_powershell_quote(arg) for arg in [npm, *args[1:]])
+        # The hint is already PowerShell-quoted; shlex would drop the doubled ' of a path like O'Brien.
+        command = "& " + _powershell_quote(npm) + install_hint.lstrip()[len("npm") :]
         return (
             [
                 "powershell",
@@ -4629,14 +4649,19 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             ],
             env,
         )
-    return [npm, *args[1:]], env
+    return [npm, *shlex.split(install_hint)[1:]], env
 
 
-def _install_agent(name: str, install_hint: str) -> Optional[str]:
+def _install_agent(
+    name: str,
+    install_hint: str,
+    *,
+    update: bool = False,
+) -> Optional[str]:
     # Missing agent under --launch: offer to run its documented install command, then re-resolve it on PATH. Consent-based, and a non-interactive stdin cannot answer the prompt, so both the no-TTY and declined cases return None and let the caller print the hint and exit.
     if not sys.stdin.isatty():
         return None
-    typer.echo(f"`{name}` is not installed.")
+    typer.echo(f"`{name}` is {'too old' if update else 'not installed'}.")
     # Make the supply-chain risk explicit before the prompt: these are the vendors' own installers (curl | bash, irm | iex, npm), run with the user's privileges, and nothing checks a signature or hash on the fetched content. Naming the source turns a blind "yes" into informed consent.
     source = _install_source(install_hint)
     if source:
@@ -4660,7 +4685,8 @@ def _install_agent(name: str, install_hint: str) -> Optional[str]:
             "there is no signature or hash check."
         )
     typer.secho(warning, fg = "yellow", err = True)
-    if not typer.confirm(f"Install `{name}` now with `{install_hint}`?", default = False):
+    action = "Update" if update else "Install"
+    if not typer.confirm(f"{action} `{name}` now with `{install_hint}`?", default = False):
         return None
     install_command, install_env = _install_command(install_hint)
     try:
@@ -7540,7 +7566,23 @@ def codex(
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
-    _require_agent_for_launch("codex", install_hint, launch and not app)
+    executable = _require_agent_for_launch("codex", install_hint, launch and not app)
+    version = executable and _codex_executable_version(executable)
+    if version and version < _CODEX_PROFILE_FILE_MIN_VERSION:
+        needed = (
+            f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
+            f"but {executable} is {'.'.join(map(str, version))}."
+        )
+        update_hint = _codex_update_hint(executable)
+        updated = update_hint and _install_agent("codex", update_hint, update = True)
+        version = updated and _codex_executable_version(updated)
+        if not updated or (version and version < _CODEX_PROFILE_FILE_MIN_VERSION):
+            if update_hint:
+                _fail(f"{needed} Update it with `{update_hint}`.")
+            _fail(
+                f"{needed} Update it the way it was installed, or remove it so "
+                "`unsloth start codex` can install a current one."
+            )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None

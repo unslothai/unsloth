@@ -359,6 +359,8 @@ def _idle_state() -> dict[str, Any]:
         "num_images": None,
         "in_model_load": False,
         "preparation": None,
+        "model_load_stage": None,
+        "model_load_progress": None,
         "download_progress": None,
         "output_dir": None,
         "lora_path": None,
@@ -786,6 +788,8 @@ class DiffusionTrainingService:
                     status = "stopped",
                     in_model_load = False,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = "Stopped while loading model files; training had not started.",
                     updated_at = time.time(),
@@ -919,6 +923,8 @@ class DiffusionTrainingService:
                                 # A worker killed mid-load / mid-preparation sends no terminal event to clear these.
                                 in_model_load = False,
                                 preparation = None,
+                                model_load_stage = None,
+                                model_load_progress = None,
                                 download_progress = None,
                                 message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
@@ -1089,12 +1095,36 @@ class DiffusionTrainingService:
                 s.update(
                     in_model_load = True,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     status = "running",
                     message = "Loading base model...",
                 )
+                s["model_load_stage"] = (
+                    ev.get("stage")
+                    if ev.get("stage") in ("conditioning", "transformer", "quantizing")
+                    else None
+                )
                 if ev.get("num_images") is not None:
                     s["num_images"] = ev.get("num_images")
+            elif etype == "model_load_progress":
+                done, total = ev.get("done"), ev.get("total")
+                if (
+                    s.get("in_model_load")
+                    and s.get("preparation") is None
+                    and type(done) is int
+                    and type(total) is int
+                    and 0 <= done <= total
+                    and total > 0
+                    and ev.get("unit") in ("tensors", "components", "shards")
+                ):
+                    s["model_load_progress"] = {
+                        "done": done,
+                        "total": total,
+                        "unit": ev["unit"],
+                        "label": str(ev.get("label", "Model weights"))[:200],
+                    }
             elif etype == "model_download_progress":
                 if s.get("in_model_load") and s.get("preparation") is None:
                     progress = ev.get("download_progress")
@@ -1115,10 +1145,14 @@ class DiffusionTrainingService:
                 s.update(
                     in_model_load = False,
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = "Training...",
                 )
             elif etype == "preparing":
+                s["model_load_stage"] = None
+                s["model_load_progress"] = None
                 # Long precompute such as the VAE latent cache, surfaced so the UI does not look stalled.
                 done, total = ev.get("done"), ev.get("total")
                 stage = str(ev.get("stage", "prepare")).replace("_", " ")
@@ -1189,6 +1223,8 @@ class DiffusionTrainingService:
                     status = "running",
                     step = ev.get("step", s["step"]),
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     in_model_load = False,
                     total_steps = ev.get("total_steps", s["total_steps"]),
@@ -1229,6 +1265,8 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "stopped" if ev.get("stopped") else "completed",
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     output_dir = ev.get("output_dir"),
                     lora_path = ev.get("lora_path"),
@@ -1264,6 +1302,8 @@ class DiffusionTrainingService:
                     in_model_load = False,
                     status = "error",
                     preparation = None,
+                    model_load_stage = None,
+                    model_load_progress = None,
                     download_progress = None,
                     message = str(ev.get("message", "error")),
                 )

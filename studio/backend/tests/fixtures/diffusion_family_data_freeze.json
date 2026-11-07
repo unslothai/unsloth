@@ -1,5 +1,11 @@
 {
  "auto_static_skip_by_base": {
+  "anima": {
+   "circlestone-labs/Anima-Base-v1.0-Diffusers": null
+  },
+  "chroma": {
+   "lodestones/Chroma1-HD": null
+  },
   "cosmos3-edge": {
    "nvidia/Cosmos3-Edge": null
   },
@@ -119,6 +125,14 @@
   }
  },
  "defaults": {
+  "anima": [
+   30,
+   4.0
+  ],
+  "chroma": [
+   26,
+   3.5
+  ],
   "cosmos3-edge": {
    "fields": [
     20,
@@ -225,17 +239,17 @@
   ],
   "minimax-h3": {
    "fields": [
-    30,
+    20,
     1.0
    ],
    "resolved": [
-    30,
+    20,
     1.0
    ]
   },
   "moss-image": [
-   50,
-   3.0
+   25,
+   2.5
   ],
   "qwen-image": [
    20,
@@ -303,6 +317,18 @@
   ]
  },
  "flags": {
+  "anima": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
+  "chroma": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
   "cosmos3-edge": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
@@ -593,6 +619,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -607,6 +634,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -621,6 +649,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -643,6 +672,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -656,6 +686,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -669,6 +700,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": null,
@@ -687,6 +719,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -701,6 +734,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -715,6 +749,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -749,6 +784,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -762,6 +801,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -775,6 +815,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -858,6 +899,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -872,6 +914,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -886,6 +929,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -920,6 +964,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -933,6 +981,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -946,13 +995,14 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
    "preview_key": "qwen_image",
    "te_int8_effective": "fp8"
   },
-  "cosmos3-edge": {
+  "anima": {
    "auto": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -964,9 +1014,10 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -978,6 +1029,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -992,6 +1044,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1014,6 +1067,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1027,6 +1081,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1040,6 +1095,207 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "chroma": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "cosmos3-edge": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -1058,6 +1314,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1072,6 +1329,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1086,6 +1344,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1108,6 +1367,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1121,6 +1381,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1134,6 +1395,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -1152,6 +1414,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1166,6 +1429,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1180,6 +1444,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1202,6 +1467,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1215,6 +1481,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1228,6 +1495,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1246,6 +1514,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1260,6 +1529,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1274,6 +1544,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1296,6 +1567,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1309,6 +1581,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1322,6 +1595,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1340,6 +1614,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1354,6 +1629,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1368,6 +1644,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1390,6 +1667,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1403,6 +1681,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1416,6 +1695,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1434,6 +1714,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1448,6 +1729,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1462,6 +1744,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1484,6 +1767,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1497,6 +1781,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1510,6 +1795,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1534,6 +1820,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1554,6 +1841,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1574,6 +1862,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1601,6 +1890,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1620,6 +1910,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1639,6 +1930,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1663,6 +1955,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -1683,6 +1976,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1703,6 +1997,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1730,6 +2025,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1749,6 +2045,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1768,6 +2065,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1786,6 +2084,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
@@ -1800,6 +2099,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1814,6 +2114,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1836,6 +2137,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1849,6 +2151,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1862,6 +2165,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1880,6 +2184,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1894,6 +2199,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -1908,6 +2214,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -1930,6 +2237,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -1943,6 +2251,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -1956,6 +2265,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -1974,6 +2284,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -1988,6 +2299,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2002,6 +2314,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2031,6 +2344,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2044,6 +2358,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2057,6 +2372,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": [
      "image_embedder",
      "context_embedder_2"
@@ -2078,6 +2394,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2092,6 +2409,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2106,6 +2424,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2135,6 +2454,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2148,6 +2468,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2161,6 +2482,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": [
      "image_embedder",
      "context_embedder_2"
@@ -2182,6 +2504,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2196,6 +2519,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2210,6 +2534,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2232,6 +2557,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2245,6 +2571,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2258,6 +2585,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2276,6 +2604,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2290,6 +2619,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2304,6 +2634,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2326,6 +2657,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2339,6 +2671,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2352,6 +2685,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2370,6 +2704,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2384,6 +2719,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2398,6 +2734,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2423,6 +2760,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2436,6 +2774,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2449,6 +2788,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2467,6 +2807,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2481,6 +2822,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -2495,6 +2837,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2522,6 +2865,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2535,6 +2879,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2548,6 +2893,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2566,6 +2912,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
@@ -2580,6 +2927,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2594,6 +2942,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2616,6 +2965,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2629,6 +2979,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2642,6 +2993,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2660,6 +3012,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2674,6 +3027,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2688,6 +3042,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2714,6 +3069,7 @@
      "token_refiner"
     ],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2727,6 +3083,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2740,6 +3097,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -2762,6 +3120,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -2780,6 +3139,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -2798,6 +3158,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2832,6 +3193,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -2849,6 +3211,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2866,6 +3229,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2884,6 +3248,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -2898,6 +3263,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -2912,6 +3278,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -2946,6 +3313,10 @@
      "to_add_out",
      "txt_mlp"
     ],
+    "streamed_weight_only": [
+     "img_mod",
+     "txt_mod"
+    ],
     "zero_row": []
    },
    "mxfp8": {
@@ -2959,6 +3330,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -2972,6 +3344,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -2990,6 +3363,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3004,6 +3378,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -3018,6 +3393,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3052,6 +3428,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3065,6 +3442,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3078,6 +3456,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3096,6 +3475,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3110,6 +3490,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3124,6 +3505,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3152,6 +3534,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3165,6 +3548,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3178,6 +3562,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3196,6 +3581,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3210,6 +3596,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3224,6 +3611,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3252,6 +3640,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3265,6 +3654,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3278,6 +3668,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3296,6 +3687,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3310,6 +3702,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3324,6 +3717,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3346,6 +3740,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3359,6 +3754,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3372,6 +3768,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3390,6 +3787,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3404,6 +3802,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3418,6 +3817,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3440,6 +3840,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3453,6 +3854,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3466,6 +3868,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -3484,6 +3887,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3498,6 +3902,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3512,6 +3917,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3534,6 +3940,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3547,6 +3954,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3560,6 +3968,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3578,6 +3987,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3592,6 +4002,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3606,6 +4017,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3628,6 +4040,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3641,6 +4054,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3654,6 +4068,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3672,6 +4087,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3686,6 +4102,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3700,6 +4117,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3722,6 +4140,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3735,6 +4154,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3748,6 +4168,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3766,6 +4187,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": null,
@@ -3780,6 +4202,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": false,
@@ -3794,6 +4217,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3816,6 +4240,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3829,6 +4254,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3842,6 +4268,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "video",
@@ -3860,6 +4287,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -3874,6 +4302,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "convrot_default_on": true,
@@ -3888,6 +4317,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "int8": {
@@ -3919,6 +4349,7 @@
     ],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "mxfp8": {
@@ -3932,6 +4363,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "nvfp4": {
@@ -3945,6 +4377,7 @@
     "exclude": [],
     "pad": [],
     "runtime_quant": [],
+    "streamed_weight_only": [],
     "zero_row": []
    },
    "page": "image",
@@ -4010,6 +4443,7 @@
    "wan2.2-ti2v-5b"
   ],
   "family_auto_bf16_when_resident": {
+   "anima": "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled",
    "flux.2-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
    "flux.3-klein-base": "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, 0.103 on Z-Image-Turbo)",
@@ -4097,6 +4531,10 @@
    }
   },
   "family_scheme_deny": {
+   "chroma": [
+    "mxfp8",
+    "nvfp4"
+   ],
    "flux.3-klein": [
     "nvfp4"
    ],
@@ -4354,6 +4792,8 @@
    ]
   },
   "train_family_labels": {
+   "anima": "Anima",
+   "chroma": "Chroma",
    "flux.1": "FLUX.1-dev",
    "flux.2-dev": "FLUX.2-dev",
    "flux.2-klein": "FLUX.2 Klein",
@@ -4386,6 +4826,7 @@
    "black-forest-labs/flux.2-klein-9b",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
+   "circlestone-labs/anima-base-v1.0-diffusers",
    "hidream-ai/hidream-i1-dev",
    "hidream-ai/hidream-i1-fast",
    "hidream-ai/hidream-i1-full",
@@ -4395,6 +4836,7 @@
    "ideogram-ai/ideogram-4-nf4-diffusers",
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
+   "lodestones/chroma1-hd",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",

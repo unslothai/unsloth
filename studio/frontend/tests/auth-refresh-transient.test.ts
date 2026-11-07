@@ -28,6 +28,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
   const previousWindow = globalThis.window;
   const previousFetch = globalThis.fetch;
   const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
   const previousNow = Date.now;
   const location = { pathname: "/chat", href: "" };
   const tokens = {
@@ -37,24 +38,30 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
   let now = 0;
   let clears = 0;
   let unexpected = 0;
+  let timerId = 0;
+  const timers = new Set<number>();
   const delays: number[] = [];
   const refreshBodies: string[] = [];
   const apiTokens: (string | null)[] = [];
-  const state = { onWait: null as null | (() => void) };
+  const state = { onWait: null as null | (() => void), mark: "session" as string | null };
   globalThis.window = { location } as unknown as Window & typeof globalThis;
   // A fake clock: a wait advances it and resolves on the next turn, not in real time.
   Date.now = () => now;
   globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    const id = ++timerId;
+    timers.add(id);
     delays.push(ms ?? 0);
     const hook = state.onWait;
     state.onWait = null;
     hook?.();
     setImmediate(() => {
+      if (!timers.delete(id)) return;
       now += ms ?? 0;
       fn();
     });
-    return 0;
+    return id;
   }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((id: number) => { timers.delete(id); }) as typeof clearTimeout;
   globalThis.fetch = async (input, init) => {
     const path = String(input);
     if (path.endsWith("/status")) {
@@ -84,11 +91,14 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
     globalThis.window = previousWindow;
     globalThis.fetch = previousFetch;
     globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
     Date.now = previousNow;
     assert.equal(unexpected, 0, "a refresh ran past its script");
   });
   const session = {
     getAuthToken: () => tokens.access,
+    getAuthSessionMark: () => state.mark,
+    ensureAuthSessionMark: () => state.mark ??= "legacy-session",
     getRefreshToken: () => tokens.refresh,
     hasAuthToken: () => !!tokens.access,
     hasRefreshToken: () => !!tokens.refresh,
@@ -102,6 +112,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
       clears++;
       tokens.access = null;
       tokens.refresh = null;
+      state.mark = null;
     },
   };
   const apiBase = {
@@ -109,7 +120,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
     getApiPort: () => null,
     isTauri: false,
   };
-  const api = loadWithStubs<typeof AuthApi>(
+  const makeApi = () => loadWithStubs<typeof AuthApi>(
     new URL("../src/features/auth/api.ts", import.meta.url),
     {
       "@/lib/api-base": apiBase,
@@ -117,6 +128,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
       "./session": session,
     },
   );
+  const api = makeApi();
   const settle = async () => {
     for (let i = 0; i < 5; i++) {
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -124,6 +136,7 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
   };
   return {
     api,
+    makeApi,
     session,
     apiBase,
     tokens,
@@ -136,6 +149,114 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
     clears: () => clears,
   };
 }
+
+test("two windows serialize rotation of their shared refresh token", async (t) => {
+  const f = fixture(t, [
+    () => new Promise<Response>((resolve) => setImmediate(() => resolve(rotated()))),
+    () => new Response(null, { status: 401 }),
+  ]);
+  let tail: Promise<unknown> = Promise.resolve();
+  Object.assign(window, { navigator: { locks: {
+    request: (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+      const result = tail.then(callback);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  } } });
+  const otherWindow = f.makeApi();
+  const results = await Promise.all([
+    f.api.refreshSessionOutcome(),
+    otherWindow.refreshSessionOutcome(),
+  ]);
+  assert.deepEqual(results, ["ok", "ok"]);
+  assert.equal(f.refreshBodies.length, 1);
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+  assert.equal(f.clears(), 0);
+});
+
+test("a queued refresh does not use another account's session", async (t) => {
+  const f = fixture(t, []);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  Object.assign(window, { navigator: { locks: {
+    request: async (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+      await gate;
+      return callback();
+    },
+  } } });
+  const pending = f.api.refreshSessionOutcome();
+  f.state.mark = "another-session";
+  f.tokens.access = "other-access";
+  f.tokens.refresh = "other-refresh";
+  release();
+  assert.equal(await pending, "unavailable");
+  assert.equal(f.refreshBodies.length, 0);
+  assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
+});
+
+test("both windows reject a revoked refresh token without replaying it", async (t) => {
+  const f = fixture(t, [() => new Response(null, { status: 401 })]);
+  let tail: Promise<unknown> = Promise.resolve();
+  Object.assign(window, { navigator: { locks: {
+    request: (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+      const result = tail.then(callback);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  } } });
+  const peer = f.makeApi();
+  assert.deepEqual(await Promise.all([
+    f.api.refreshSessionOutcome(), peer.refreshSessionOutcome(),
+  ]), ["rejected", "rejected"]);
+  assert.equal(f.refreshBodies.length, 1);
+  assert.deepEqual(f.tokens, { access: null, refresh: null });
+  assert.equal(f.state.mark, null);
+});
+
+test("a legacy session without a marker shares the peer's rotation", async (t) => {
+  const f = fixture(t, [rotated]);
+  f.state.mark = null;
+  let tail: Promise<unknown> = Promise.resolve();
+  Object.assign(window, { navigator: { locks: {
+    request: (_name: string, _options: unknown, callback: () => Promise<unknown>) => {
+      const result = tail.then(callback);
+      tail = result.catch(() => undefined);
+      return result;
+    },
+  } } });
+  const otherWindow = f.makeApi();
+  assert.deepEqual(await Promise.all([
+    f.api.refreshSessionOutcome(), otherWindow.refreshSessionOutcome(),
+  ]), ["ok", "ok"]);
+  assert.equal(f.refreshBodies.length, 1);
+  assert.equal(f.state.mark, "legacy-session");
+});
+
+test("a hung refresh bounds another window's lock wait without aborting or replaying the POST", async (t) => {
+  let finish!: (response: Response) => void;
+  const f = fixture(t, [() => new Promise<Response>((resolve) => { finish = resolve; })]);
+  let held = false;
+  Object.assign(window, { navigator: { locks: {
+    request: (_name: string, options: { signal: AbortSignal }, callback: () => Promise<unknown>) => {
+      if (!held) {
+        held = true;
+        return Promise.resolve().then(callback);
+      }
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    },
+  } } });
+  const holder = f.api.refreshSessionOutcome();
+  await Promise.resolve();
+  const waiting = f.makeApi().refreshSessionOutcome();
+  assert.equal(await waiting, "unavailable");
+  assert.equal(f.refreshBodies.length, 1);
+  assert.equal(f.clears(), 0);
+  finish(rotated());
+  assert.equal(await holder, "ok");
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+});
 
 test("a 503 then 200 is retried and stores the rotated pair", async (t) => {
   const f = fixture(t, [() => busy("0"), () => busy("1"), rotated]);

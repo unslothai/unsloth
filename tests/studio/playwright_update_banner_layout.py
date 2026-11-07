@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -1272,7 +1273,8 @@ def main() -> int:
             check(
                 f"{width}x{height}: three pending runtimes share the one card",
                 page.locator('[data-testid="llama-update-banner"]').count() == 1
-                and "llama.cpp, whisper.cpp and audio.cpp" in summary,
+                # Intl.ListFormat joins the names, so English carries a serial comma.
+                and re.search(r"llama\.cpp, whisper\.cpp,? and audio\.cpp", summary) is not None,
                 f"summary={summary!r}",
             )
             exercise_llama_changelog(page, f"{width}x{height} bundle")

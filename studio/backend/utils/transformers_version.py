@@ -37,7 +37,9 @@ import structlog
 from loggers import get_logger
 import errno
 import contextlib
+import contextvars
 import os
+from concurrent.futures import Future
 import re
 import shutil
 import stat
@@ -129,7 +131,37 @@ def _hf_proxy_opener(url: str):
     return None
 
 
+_hf_json_ahead: dict[tuple[str, str | None], Future] = {}
+
+
+def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
+    """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
+    if not _is_canonical_repo_id(model_name) or _env_offline():
+        return
+    from utils.paths import is_local_path
+
+    if is_local_path(model_name):
+        return
+
+    def fill(future: Future, url: str) -> None:
+        try:
+            future.set_result(_read_hf_json(url, hf_token))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    for filename in ("adapter_config.json", "tokenizer_config.json", "config.json"):
+        url = _hf_raw_url(model_name, filename)
+        future = Future()
+        _hf_json_ahead[(url, hf_token)] = future
+        threading.Thread(target = fill, args = (future, url), daemon = True).start()
+
+
 def _hf_json(url: str, hf_token: str | None):
+    ahead = _hf_json_ahead.pop((url, hf_token), None)
+    return _read_hf_json(url, hf_token) if ahead is None else ahead.result()
+
+
+def _read_hf_json(url: str, hf_token: str | None):
     """GET a JSON file from the Hub, once more without the token if the Hub refuses it (#11551)."""
     import urllib.request
 
@@ -723,6 +755,24 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     return None
 
 
+_remote_lora_base_answers: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "_remote_lora_base_answers", default = None
+)
+
+
+@contextlib.contextmanager
+def remote_lora_base_scope():
+    """Within one load only: reuses definitive answers (a read config or a 404), never a failure; re-entrant."""
+    if _remote_lora_base_answers.get() is not None:
+        yield
+        return
+    reset = _remote_lora_base_answers.set({})
+    try:
+        yield
+    finally:
+        _remote_lora_base_answers.reset(reset)
+
+
 def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | None:
     """Raw HTTP so the base is known before ML import; offline or transient failure reads hub cache; definitive 404 returns None, not a stale base."""
     if not _is_canonical_repo_id(model_name):
@@ -740,14 +790,27 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.request
 
     url = _hf_raw_url(model_name, "adapter_config.json")
+    answers = _remote_lora_base_answers.get()
+    if not isinstance(hf_token, (str, bool, type(None))):
+        answers = None
+    key = (url, hf_token)
+    if answers is not None and key in answers:
+        base = answers[key]
+        if base:
+            logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
+        return base
     try:
         cfg = _hf_json(url, hf_token)
         base = cfg.get("base_model_name_or_path")
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
+        if answers is not None:
+            answers[key] = base or None
         return base or None
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
+            if answers is not None:
+                answers[key] = None
             return None  # definitively not a LoRA; do not serve a stale cached base
         logger.debug("adapter_config.json fetch failed for '%s': %s", model_name, exc)
         return _adapter_base_from_hf_cache(model_name)
@@ -1102,6 +1165,81 @@ def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
         return int(ver.strip().split(".", 1)[0]) >= 5
     except ValueError:
         return False
+
+
+def _release_tuple(ver) -> tuple[int, int, int] | None:
+    """``"5.19.0.dev0"`` -> ``(5, 19, 0)``; a dev build counts as its release."""
+    m = re.match(r"\s*(\d+)\.(\d+)(?:\.(\d+))?", ver) if isinstance(ver, str) else None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
+
+
+def _remote_code_saving_version(cfg: dict) -> str | None:
+    """Top-level ``transformers_version``, else the newest one on a nested sub-config."""
+    ver = cfg.get("transformers_version")
+    if isinstance(ver, str):
+        return ver
+    nested = [
+        sub.get("transformers_version")
+        for sub in cfg.values()
+        if isinstance(sub, dict) and _release_tuple(sub.get("transformers_version"))
+    ]
+    return max(nested, key = _release_tuple, default = None)
+
+
+def _remote_code_min_version(cfg: dict | None) -> tuple[int, int, int] | None:
+    """Saving transformers 5.x version of a custom-code (``auto_map`` AutoConfig) config, else None."""
+    if not isinstance(cfg, dict):
+        return None
+    auto_map = cfg.get("auto_map")
+    if not isinstance(auto_map, dict) or "AutoConfig" not in auto_map:
+        return None
+    v = _release_tuple(_remote_code_saving_version(cfg))
+    if v is None or v[0] < 5:
+        return None
+    # Patch releases keep remote-code APIs: 5.5.4 still fits the 5.5.0 default.
+    return (v[0], v[1], 0)
+
+
+def _remote_code_tier(cfg: dict | None) -> str | None:
+    """Default if new enough, else the oldest sidecar at or above the saving version; None if none is."""
+    required = _remote_code_min_version(cfg)
+    if required is None:
+        return None
+    tiers = [
+        ("default", TRANSFORMERS_DEFAULT_VERSION),
+        ("530", TRANSFORMERS_530_VERSION),
+        ("550", TRANSFORMERS_550_VERSION),
+        ("510", TRANSFORMERS_510_VERSION),
+    ]
+    if not _latest_tier_disabled():
+        tiers.append(("latest", latest_venv_pinned_version()))
+    fits = [
+        (tier != "default", v, _TIER_RANK[tier], tier)
+        for tier, ver in tiers
+        if (v := _release_tuple(ver)) is not None and v >= required
+    ]
+    return min(fits)[3] if fits else None
+
+
+def _route_remote_code(
+    model_name: str,
+    cfg: dict | None,
+    above: str | None = None,
+) -> str | None:
+    """Tier for a custom-code config; None falls through, also when ``above`` already satisfies it."""
+    required = _remote_code_min_version(cfg)
+    if required is None or (above is not None and required <= _release_tuple(above)):
+        return None
+    tier = _remote_code_tier(cfg)
+    if tier is None:
+        tier = "latest" if (not _latest_tier_disabled() and latest_venv_pinned_version()) else "510"
+    logger.info(
+        "Transformers tier %s selected for %s (custom code saved by transformers %s)",
+        tier,
+        model_name,
+        _remote_code_saving_version(cfg),
+    )
+    return tier
 
 
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
@@ -1618,6 +1756,30 @@ def get_transformers_tier(
     probe: bool = True,
 ) -> str:
     """Returns 510, 550, 530 or default; local config.json is checked before name heuristics (dir-name false positives); probe=False skips sidecar subprocesses."""
+    tier = _native_transformers_tier(model_name, hf_token, probe)
+    # Raise only; the name fast path fetched no config, so a real load (probe=True) reads it here.
+    if probe and tier != "default":
+        cfg = _load_config_json(model_name, hf_token)
+    else:
+        cfg = _cached_config_json(model_name, hf_token)
+    required = _remote_code_min_version(cfg)
+    current = _release_tuple(_tier_version(tier))
+    if required is not None and current is not None and current < required:
+        return _route_remote_code(model_name, cfg) or tier
+    return tier
+
+
+def _tier_version(tier: str) -> str | None:
+    return {
+        "default": TRANSFORMERS_DEFAULT_VERSION,
+        "457": TRANSFORMERS_457_VERSION,
+        "530": TRANSFORMERS_530_VERSION,
+        "550": TRANSFORMERS_550_VERSION,
+        "510": TRANSFORMERS_510_VERSION,
+    }.get(tier) or (latest_venv_pinned_version() if tier == "latest" else None)
+
+
+def _native_transformers_tier(model_name: str, hf_token: str | None, probe: bool) -> str:
     local_cfg = Path(model_name) / "config.json"
     if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name, hf_token)
@@ -1700,6 +1862,10 @@ def get_transformers_tier(
                     model_name,
                 )
                 return static
+            # The fall-through's 530 floor fits these; routing here would lower them to default.
+            remote_code = _route_remote_code(model_name, cfg, above = TRANSFORMERS_530_VERSION)
+            if remote_code is not None:
+                return remote_code
             local_tc = Path(model_name) / "tokenizer_config.json"
             if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 if not probe:
@@ -1780,6 +1946,9 @@ def get_transformers_tier(
                 model_name,
             )
             return static
+        remote_code = _route_remote_code(model_name, remote_cfg, above = TRANSFORMERS_530_VERSION)
+        if remote_code is not None:
+            return remote_code
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
         if not probe:
             return "530"
