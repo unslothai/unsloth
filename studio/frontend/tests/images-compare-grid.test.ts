@@ -435,7 +435,10 @@ test("the Images page (its own lazy chunk) renders the panel and loops cells thr
   assert.match(page, /generateDiffusionImage\(requestFor\(i\), { id: sequenceId, more: i < runTotal - 1 }\)/);
   assert.match(page, /compare\?\.onImages\(i, res\.images\)/);
   // The lost-response branch also reports the cell, from the records the gallery gained.
-  assert.match(page, /compare\?\.onImages\(i, galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\)\)/);
+  assert.match(
+    page,
+    /const gained = galleryCache\.images\.filter\(\(image\) => !knownIds\.has\(image\.id\)\);\s+compare\?\.onImages\(i, gained\)/,
+  );
   assert.match(page, /workflow === "create"/);
 });
 

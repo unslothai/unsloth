@@ -3692,6 +3692,7 @@ export function ImagesPage({
         const p = await getGenerateProgress();
         // Not denoising yet: the next queue poll (a new jobs array) asks again.
         if (cancelled || !p.active || !isMounted.current) return;
+        resetStopState();
         followingJob.current = queueRunningId;
         runTarget.current = undefined;
         setBusy("generating");
@@ -5562,12 +5563,18 @@ export function ImagesPage({
           if (!isMounted.current) break;
           await loadGallery();
           // A compare cell takes its record from what the gallery gained (matched by seed in compare/).
-          compare?.onImages(i, galleryCache.images.filter((image) => !knownIds.has(image.id)));
+          const gained = galleryCache.images.filter((image) => !knownIds.has(image.id));
+          compare?.onImages(i, gained);
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
-          // The run landed without its records, so Reuse last seed takes the seed it was sent.
-          if (!external) setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
+          // The run landed without its records, so Reuse last seed takes the seed it was sent, unless a queued run
+          // finished after the records this one gained.
+          const gainedAt = Math.max(0, ...gained.map((image) => image.created_at));
+          if (!external && gainedAt >= sessionSeedAt.current) {
+            sessionSeedAt.current = gainedAt;
+            setSessionSeed(compare?.sentSeed(i) ?? runBaseSeed);
+          }
           setGenDone(i + 1);
           continue;
         }
