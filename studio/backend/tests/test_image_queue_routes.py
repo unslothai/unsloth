@@ -534,7 +534,7 @@ def test_stop_during_a_run_that_still_returns_does_not_hold_the_queue(client, mo
 
 
 def test_a_refused_stop_leaves_another_accounts_sequence_hold(client, monkeypatch):
-    monkeypatch.setattr(inference_routes, "_direct_sequence_until", time.monotonic() + 60)
+    monkeypatch.setattr(inference_routes, "_direct_sequences", {"a": time.monotonic() + 60})
     monkeypatch.setattr(inference_routes, "_direct_stops", 7)
     monkeypatch.setattr(
         inference_routes.account_access, "generation_is_foreign", lambda modality: True
@@ -542,7 +542,7 @@ def test_a_refused_stop_leaves_another_accounts_sequence_hold(client, monkeypatc
     with client:
         assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}
     assert inference_routes._direct_stops == 7
-    assert inference_routes._direct_sequence_until > time.monotonic()
+    assert inference_routes._sequence_held()
 
 
 def test_a_running_queued_job_counts_as_inference_for_the_training_guards(gated):
@@ -573,3 +573,59 @@ def test_a_job_waits_for_a_render_it_did_not_start(gated, monkeypatch):
     rendering["active"] = False
     _gate(gates, "after-chat").set()
     _wait(client, lambda jobs: jobs[0]["status"] == "done")
+
+
+def test_another_clients_run_does_not_release_a_sequence_hold(client, monkeypatch):
+    """A1 says more follow; an unrelated B1 ends after it; the queued job still waits for A2."""
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    monkeypatch.setattr(inference_routes, "_DIRECT_RUN_SETTLE_S", 0.2)
+    monkeypatch.setattr(inference_routes, "_direct_sequences", {})
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    order: list[str] = []
+    started = threading.Event()
+
+    def generate(*, prompt = None, **kwargs):
+        order.append(prompt)
+        if prompt == "a1":
+            started.set()
+            time.sleep(0.3)
+        return real_generate(prompt = prompt, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    generate_url = "/api/inference/images/generate"
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        first = threading.Thread(
+            target = client.post,
+            args = (generate_url,),
+            kwargs = {
+                "json": {"prompt": "a1"},
+                "headers": {"X-Unsloth-Run-Sequence": "a", "X-Unsloth-More-Runs": "1"},
+            },
+        )
+        first.start()
+        started.wait(5)
+        assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
+        first.join(10)
+        assert client.post(generate_url, json = {"prompt": "b1"}).status_code == 200
+        time.sleep(0.8)
+        assert order == ["a1", "b1"]
+        assert (
+            client.post(
+                generate_url, json = {"prompt": "a2"}, headers = {"X-Unsloth-Run-Sequence": "a"}
+            ).status_code
+            == 200
+        )
+        _wait(client, lambda jobs: jobs[0]["status"] == "done")
+        assert order == ["a1", "b1", "a2", "queued"]

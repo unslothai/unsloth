@@ -506,10 +506,11 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
-/** `moreRuns`: another run of the same Generate follows, so the server queue holds its next job until it arrives. */
+/** `sequence`: this run belongs to a multi-run Generate; while `more` runs follow, the server queue holds its next job
+ *  until this sequence's next request arrives. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
-  moreRuns = false,
+  sequence?: { id: string; more: boolean },
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
@@ -518,7 +519,11 @@ export async function generateDiffusionImage(
       "/api/inference/images/generate",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(moreRuns && { "X-Unsloth-More-Runs": "1" }) },
+        headers: {
+          "Content-Type": "application/json",
+          ...(sequence && { "X-Unsloth-Run-Sequence": sequence.id }),
+          ...(sequence?.more && { "X-Unsloth-More-Runs": "1" }),
+        },
         body: JSON.stringify(body),
       },
       { retryNetworkErrors: false },

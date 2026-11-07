@@ -3669,6 +3669,16 @@ export function ImagesPage({
     // Busy but not from this page's own Generate (the mount probe, or the queue moving on inside one progress
     // window): what renders is the queue's running job, so Stop targets it by id.
     if (queueRunningId && busy === "generating" && !localRun.current && followingJob.current !== queueRunningId) {
+      // A different job: the previous one's Stop state and in-flight acknowledgement do not carry over.
+      if (followingJob.current !== null) {
+        cancelRequested.current = false;
+        cancelAcked.current = false;
+        cancelInFlight.current = null;
+        cancelAbort.current?.abort();
+        cancelAbort.current = null;
+        runToken.current += 1;
+        setStopping(false);
+      }
       followingJob.current = queueRunningId;
       return;
     }
@@ -5521,6 +5531,8 @@ export function ImagesPage({
     // Captured BEFORE the first POST: settleLostGeneration needs a record outside it as proof.
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
+      // Not crypto.randomUUID: a LAN Studio over plain http is not a secure context.
+      const sequenceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
       for (let i = 0; i < runTotal; i++) {
         // Stop issuing more GPU generations once the page unmounted or Stop was pressed: the backend
         // cancel only reaches the denoise in flight, so a count > 1 request would run on.
@@ -5542,7 +5554,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage(requestFor(i), i < runTotal - 1);
+          res = await generateDiffusionImage(requestFor(i), { id: sequenceId, more: i < runTotal - 1 });
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
           if (!(err instanceof GenerateResponseLostError)) throw err;
