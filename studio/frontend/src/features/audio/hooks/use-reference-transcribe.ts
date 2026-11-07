@@ -3,6 +3,7 @@
 
 import { sttEngineFor } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useVoiceSettingsStore, withSttVariant } from "@/features/settings";
+import { sttContextBody } from "@/features/settings/stores/stt-context";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
@@ -37,6 +38,7 @@ export function useReferenceTranscribe({
       try {
         const voice = useVoiceSettingsStore.getState();
         const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
+        const engine = sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model);
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
@@ -44,9 +46,10 @@ export function useReferenceTranscribe({
             model: sttRepo
               ? model
               : withSttVariant(model, voice.sttGgufVariant),
-            engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
+            engine,
             device: voice.sttDevice,
             purpose,
+            ...sttContextBody(model, engine, voice.sttContextLength),
           },
           controller.signal,
         );

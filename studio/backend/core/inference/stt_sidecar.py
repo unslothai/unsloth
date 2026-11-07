@@ -213,6 +213,14 @@ class SttAudioTooLongError(ValueError):
     """The decoded audio exceeds the bounded transcription duration."""
 
 
+class SttContextSizeError(ValueError):
+    """A recording cannot fit the selected context, or Auto cannot size it reliably."""
+
+
+class SttIncompleteTranscriptionError(ValueError):
+    """The server stopped at a limit instead of completing the transcription."""
+
+
 class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
 

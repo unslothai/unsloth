@@ -585,7 +585,32 @@ class SearchImagesLookupRequest(BaseModel):
     )
 
 
-class TranscribeRequest(BaseModel):
+def validate_stt_context_length(value: Any) -> int:
+    """A zero selects Auto; fixed lengths are multiples of 256, since llama-server pads n_ctx to that."""
+    if type(value) is not int or (value != 0 and not (1024 <= value <= 65536 and value % 256 == 0)):
+        raise ValueError(
+            "Voice context length must be 0 (Auto) or a multiple of 256 from 1024 to 65536."
+        )
+    return value
+
+
+class SttContextSettings(BaseModel):
+    context_length: int = Field(
+        0,
+        ge = 0,
+        le = 65536,
+        description = (
+            "Qwen3-ASR on llama.cpp only: 0 (Auto) sizes context for the recording; "
+            "a multiple of 256 from 1024 to 65536 fixes the context limit. Ignored by other STT engines."
+        ),
+    )
+
+    _validate_context_length = field_validator("context_length", mode = "before")(
+        validate_stt_context_length
+    )
+
+
+class TranscribeRequest(SttContextSettings):
     """Speech-to-text request for the dictation STT sidecar."""
 
     audio: str = Field(..., description = "Base64-encoded audio (any common format)")
@@ -610,7 +635,7 @@ class TranscribeRequest(BaseModel):
     )
 
 
-class SttLoadRequest(BaseModel):
+class SttLoadRequest(SttContextSettings):
     """Warm the STT sidecar with a model without transcribing."""
 
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
@@ -6858,7 +6883,7 @@ class AudioInputRecord(BaseModel):
     expires_at: str
 
 
-class AudioInputTranscribeRequest(BaseModel):
+class AudioInputTranscribeRequest(SttContextSettings):
     model_config = ConfigDict(extra = "forbid")
 
     model: str = Field(..., min_length = 1, max_length = 512)
@@ -6891,7 +6916,7 @@ class TranscribeSourceRef(BaseModel):
         return self
 
 
-class TranscribeSourceRequest(BaseModel):
+class TranscribeSourceRequest(SttContextSettings):
     """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
 
     model_config = ConfigDict(extra = "forbid")
