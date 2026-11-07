@@ -338,21 +338,36 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
     return raw
 
 
+class _LatestMarkdown:
+    # Markdown() parses the whole text when built; build it only when Live draws a frame, not per chunk.
+    def __init__(self):
+        self.text = ""
+        self._built = ("", None)
+
+    def __rich_console__(self, console, options):
+        from rich.markdown import Markdown
+        from rich.text import Text
+
+        text = self.text
+        if self._built[1] is None or self._built[0] is not text:
+            self._built = (text, Markdown(text) if text.strip() else Text(""))
+        yield self._built[1]
+
+
 def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.live import Live
-    from rich.markdown import Markdown
-    from rich.text import Text
 
     raw = ""
+    view = _LatestMarkdown()
     with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
         for chunk in stream:
             if not isinstance(chunk, str):
                 continue
             raw = chunk
-            visible = visible_text(chunk, show_thinking)
-            live.update(Markdown(visible) if visible.strip() else Text(""))
-        visible = visible_text(raw, show_thinking, final = True)
-        live.update(Markdown(visible) if visible.strip() else Text(""))
+            view.text = visible_text(chunk, show_thinking)
+            live.update(view)
+        view.text = visible_text(raw, show_thinking, final = True)
+        live.update(view)
     return raw
 
 
