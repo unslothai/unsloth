@@ -2,24 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Radix modal layers (dialogs, modal menus, selects) write `pointer-events: none` on <body> while
- * open. index.css used to key its modal rules on that inline style (`body[style*=...] X`, and the
- * same on a lower dialog or menu). WebKit cannot tell which descendants such a rule can reach, so
- * every flip of that style walked and re-matched every element under <body>: on a 150-turn chat
- * about 45 ms per open and per close, on top of the inherited restyle itself (which stops at the
- * thread scroller and stays flat at about 20 ms). Chromium narrows it to the named classes.
- *
- * This keeps Radix's write as it is and mirrors the lock onto attributes that never sit above the
- * thread, so the rules keep their meaning and a toggle only reaches the elements they style:
- *   - `data-modal-lock-thread` on each thread root (its cover, a subject-only rule);
- *   - `data-modal-lock-path` on each ancestor of a thread root (subject-only rules);
- *   - `data-modal-lock-region` on every other child of those ancestors, i.e. the rest of the page
- *     split into subtrees that do not contain a thread (descendant rules, as before);
- *   - `data-modal-lock-lower` on a dialog, alert dialog, menu or listbox that a stacked modal layer
- *     has made a lower layer (Radix writes `pointer-events: none` on it).
- * Children added to a thread root's ancestors while the lock is up are picked up by an observer on
- * just those elements; everything else lands inside a region or a thread root. Idempotent: one
- * watcher per document.
+ * Radix writes `pointer-events: none` on <body> while a modal layer is open. Rules keyed on that inline
+ * style (`body[style*=...] X`) made WebKit re-match every element under <body> on each flip, about 45 ms
+ * per open and close on a 150-turn chat. This mirrors the lock onto attributes that never sit above the
+ * thread, so a toggle only reaches the elements the rules style:
+ *   - `data-modal-lock-thread` on each thread root, `data-modal-lock-path` on its ancestors;
+ *   - `data-modal-lock-region` on every other child of those ancestors (the rest of the page);
+ *   - `data-modal-lock-lower` on a dialog, menu or listbox a stacked modal layer pushed below it.
+ * Idempotent: one watcher per document.
  */
 
 export const MODAL_LOCK_THREAD_ATTR = "data-modal-lock-thread";
