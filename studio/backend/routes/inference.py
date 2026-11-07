@@ -49465,11 +49465,23 @@ _xy_grid_stops: list[tuple[Optional[str], Any]] = []
 
 
 def _stop_xy_grids() -> bool:
-    scope = account_access.account_scope()
-    tickets = [ticket for owner, ticket in _xy_grid_stops if owner == scope]
+    account = current_account_id()
+    tickets = [ticket for owner, ticket in _xy_grid_stops if owner == account]
     for ticket in tickets:
         ticket.stop()
     return bool(tickets)
+
+
+def _loaded_diffusion_layer_count() -> int:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import detect_family
+
+    try:
+        name = get_active_diffusion_engine().status().get("family")
+    except Exception:  # noqa: BLE001 -- nothing loaded: the cell run answers that
+        return 0
+    family = detect_family("", name) if name else None
+    return int(getattr(family, "layer_count", 0) or 0)
 
 
 async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGenerateResponse:
@@ -49484,12 +49496,18 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
         plan = diffusion_xy.expand(request)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
+    layers = _loaded_diffusion_layer_count()
+    if layers:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"xy needs one image per cell; the loaded model returns {layers} layers per image",
+        )
     records: list[Optional[GalleryImage]] = [None] * len(plan.cells)
     pictures: list[Any] = [None] * len(plan.cells)
     global _diffusion_persist_active
     # Progress stays active between cells and through the grid save, so a reload does not settle the run early.
     ticket = GenerationTicket()
-    stop = (account_access.account_scope(), ticket)
+    stop = (current_account_id(), ticket)
     _diffusion_persist_active += 1
     try:
         _xy_grid_stops.append(stop)

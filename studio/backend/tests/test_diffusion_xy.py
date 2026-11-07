@@ -440,3 +440,35 @@ def test_stop_after_the_last_cell_ends_the_grid_unsaved(client):
     assert resp.status_code == 409, resp.text
     gallery = client.get("/api/inference/images/gallery").json()["images"]
     assert len(gallery) == 2 and not any(g.get("xy_grid") for g in gallery)
+
+
+def test_layered_model_is_refused_before_any_cell_renders(client, monkeypatch):
+    import core.inference.diffusion as diffusion_module
+    import core.inference.diffusion_engine_router as router
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    backend.generate = lambda **kw: pytest.fail("no cell may render")
+    engine = router.get_active_diffusion_engine()
+    real_status = engine.status
+    monkeypatch.setattr(engine, "status", lambda: {**real_status(), "family": "qwen-image-layered"})
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "xy": {"x": {"field": "steps", "values": [2, 4]}}},
+    )
+    assert resp.status_code == 400 and "2 layers" in resp.json()["detail"], resp.text
+
+
+def test_grid_stop_is_keyed_on_the_stable_account_id(monkeypatch):
+    import routes.inference as routes_inference
+    from core.inference.generation_ticket import GenerationTicket
+
+    ticket = GenerationTicket()
+    monkeypatch.setattr(routes_inference, "_xy_grid_stops", [("owner-id", ticket)])
+    monkeypatch.setattr(routes_inference, "current_account_id", lambda: "owner-id")
+    # Scope moves from None to the owner's id once the first managed account exists.
+    monkeypatch.setattr(routes_inference.account_access, "account_scope", lambda: "something-else")
+    assert routes_inference._stop_xy_grids() is True and ticket.cancelled()
