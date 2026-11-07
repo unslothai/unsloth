@@ -637,8 +637,7 @@ class SdCppServer:
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
-                    # The job error is generic; the cause (OOM, abort) is only in this job's own output, not an
-                    # earlier job's (a stale OOM would mislabel the failure and steer recovery).
+                    # The cause is only in this job's output; an earlier job's stale OOM would mislabel it.
                     lines = list(self._tail)
                     tail = _diagnostic_tail(
                         lines[max(0, len(lines) - (self._lines_seen - job_mark)) :]
