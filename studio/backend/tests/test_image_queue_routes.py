@@ -531,3 +531,15 @@ def test_stop_during_a_run_that_still_returns_does_not_hold_the_queue(client, mo
         first.join(10)
         _wait(client, lambda jobs: jobs[0]["status"] == "done", timeout = 5)
         assert order == ["direct-1", "queued"]
+
+
+def test_a_refused_stop_leaves_another_accounts_sequence_hold(client, monkeypatch):
+    monkeypatch.setattr(inference_routes, "_direct_sequence_until", time.monotonic() + 60)
+    monkeypatch.setattr(inference_routes, "_direct_stops", 7)
+    monkeypatch.setattr(
+        inference_routes.account_access, "generation_is_foreign", lambda modality: True
+    )
+    with client:
+        assert client.post("/api/inference/images/generate/cancel").json() == {"cancelled": False}
+    assert inference_routes._direct_stops == 7
+    assert inference_routes._direct_sequence_until > time.monotonic()

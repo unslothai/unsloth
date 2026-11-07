@@ -1971,6 +1971,8 @@ export function ImagesPage({
   const compareOnce = useRef<CompareRun | null>(null);
   // The queued job this page is following, so Stop ends that job and never the one the queue starts next.
   const followingJob = useRef<string | null>(null);
+  // This page's own direct Generate is in flight.
+  const localRun = useRef(false);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -3641,11 +3643,14 @@ export function ImagesPage({
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
   useEffect(() => {
-    if (busy === null) followingJob.current = null;
+    if (busy !== null) return;
+    followingJob.current = null;
+    localRun.current = false;
   }, [busy]);
   useEffect(() => {
-    // The queue moved on inside one progress window: keep following, now the next job.
-    if (queueRunningId && busy !== null && followingJob.current && followingJob.current !== queueRunningId) {
+    // Busy but not from this page's own Generate (the mount probe, or the queue moving on inside one progress
+    // window): what renders is the queue's running job, so Stop targets it by id.
+    if (queueRunningId && busy === "generating" && !localRun.current && followingJob.current !== queueRunningId) {
       followingJob.current = queueRunningId;
       return;
     }
@@ -5455,6 +5460,7 @@ export function ImagesPage({
       return;
     }
     followingJob.current = null;
+    localRun.current = true;
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);

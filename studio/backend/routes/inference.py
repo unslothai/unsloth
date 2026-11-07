@@ -50728,9 +50728,6 @@ async def cancel_diffusion_generation(
     saved image connection instead."""
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
-    global _direct_sequence_until, _direct_stops
-    _direct_sequence_until = 0.0
-    _direct_stops += 1
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": False}
     mine = account_access.generation_is_mine("diffusion")
@@ -50748,6 +50745,11 @@ async def cancel_diffusion_generation(
         )
     ):
         return {"cancelled": False}
+
+    # Past the account checks: a refused Stop must not end someone else's multi-run sequence.
+    global _direct_sequence_until, _direct_stops
+    _direct_sequence_until = 0.0
+    _direct_stops += 1
 
     # A run still upsampling its prompt has not reached the engine yet.
     from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
