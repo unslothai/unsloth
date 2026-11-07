@@ -28,7 +28,7 @@ def _model_cuda_indices(model: Any) -> set[int]:
 
 
 def _rdna1_aware(original: Any, torch: Any):
-    archs: dict[int, str] = {}
+    rdna1: dict[int, bool] = {}
 
     def gate(hidden_states, weight, *args, **kwargs):
         # The gate is module-wide, so a model on another card in this process keeps the Triton kernel.
@@ -36,9 +36,9 @@ def _rdna1_aware(original: Any, torch: Any):
         if getattr(device, "type", None) != "cuda":
             return False
         index = device.index or 0
-        if index not in archs:
-            archs[index] = _device_gfx_arch(torch, index)
-        if _RDNA1_ARCH.match(archs[index]):
+        if index not in rdna1:
+            rdna1[index] = bool(_RDNA1_ARCH.match(_device_gfx_arch(torch, index)))
+        if rdna1[index]:
             return False
         return original(hidden_states, weight, *args, **kwargs)
 

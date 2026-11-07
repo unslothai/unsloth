@@ -17,8 +17,11 @@ OMNI_TEXT = "transformers_modules.LiquidAI.LFM3_hyphen_Omni_hyphen_2B.def.modeli
 OTHER = "transformers_modules.someone.other.ghi.modeling_other"
 
 
+_KERNEL = object()
+
+
 def _original(hidden_states, weight):
-    return True
+    return _KERNEL
 
 
 def _fake_torch(*, hip, arch):
@@ -126,4 +129,4 @@ def test_gate_stays_on_for_a_non_rdna1_card_in_the_same_process(remote_modules):
     for name in (LFM3, OMNI_TEXT):
         gate = remote_modules[name].can_use_lfm3_conv
         assert gate(_tensor(0), None) is False
-        assert gate(_tensor(1), None) is True
+        assert gate(_tensor(1), None) is _KERNEL
