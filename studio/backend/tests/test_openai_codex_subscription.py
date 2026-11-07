@@ -406,6 +406,105 @@ def test_browser_state_mismatch_does_not_consume_flow(monkeypatch):
         )
 
 
+def _persisted_browser_flow(monkeypatch, flow_id):
+    record = {
+        "marker": "marker",
+        "flow_id": flow_id,
+        "method": "browser",
+        "created_at": time.time(),
+        "expires_at": time.time() + 60,
+        "state": "expected-state",
+        "verifier": "secret-verifier",
+        "redirect_uri": "http://localhost:1455/auth/callback",
+        "status": "pending",
+        "message": "",
+    }
+
+    @asynccontextmanager
+    async def oauth_guard(_provider_id):
+        yield
+
+    def upsert(_kind, _provider_id, value):
+        record.clear()
+        record.update(json.loads(value))
+
+    monkeypatch.setattr(codex_auth, "provider_oauth_write_guard", oauth_guard)
+    monkeypatch.setattr(codex_auth, "_oauth_flow_record", lambda _provider: record.copy())
+    monkeypatch.setattr(codex_auth.credential_secrets, "upsert_secret", upsert)
+    flow = OAuthFlow(
+        id = flow_id,
+        provider_id = "provider",
+        method = "browser",
+        created_at = record["created_at"],
+        expires_at = record["expires_at"],
+        state = "expected-state",
+        verifier = "secret-verifier",
+        redirect_uri = record["redirect_uri"],
+        marker = "marker",
+        persist_bundle = lambda *_args: None,
+    )
+    return flow, record
+
+
+def test_denied_browser_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "browser-denied")
+
+    async def deny():
+        server = await asyncio.start_server(
+            lambda r, w: codex_auth._loopback_handler(flow, r, w), "127.0.0.1", 0
+        )
+        flow.server = server
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with httpx.AsyncClient(trust_env = False) as client:
+                response = await client.get(
+                    f"http://127.0.0.1:{port}/auth/callback",
+                    params = {
+                        "state": "expected-state",
+                        "error": "access_denied",
+                        "error_description": "The user denied the request",
+                    },
+                )
+            rebound = await asyncio.start_server(lambda r, w: None, "127.0.0.1", port)
+            rebound.close()
+            await rebound.wait_closed()
+            return response
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    response = asyncio.run(deny())
+
+    assert flow.server is None
+
+    assert "Authorization failed" in response.text
+    assert flow.status == "error"
+    assert "denied" in flow.message
+    persisted = codex_auth._load_persisted_oauth_flow("provider", flow.id)
+    assert persisted is not None
+    assert persisted.status == "error"
+    assert persisted.message == flow.message
+    assert not record["state"] and not record["verifier"]
+
+
+def test_pasted_denied_callback_fails_the_flow(monkeypatch):
+    flow, record = _persisted_browser_flow(monkeypatch, "pasted-denied")
+    monkeypatch.setitem(codex_auth._flows, flow.id, flow)
+
+    with pytest.raises(codex_auth.CodexAuthError, match = "denied"):
+        asyncio.run(
+            codex_auth.complete_browser_flow(
+                "provider",
+                flow.id,
+                "http://localhost:1455/auth/callback?error=access_denied&state=expected-state",
+            )
+        )
+
+    assert flow.status == "error"
+    assert record["status"] == "error"
+    assert record["message"] == flow.message
+
+
 def _patch_poll_sleep(monkeypatch, record = None):
     """Make the device poll's asyncio.sleep instant, for this test's thread only.
 

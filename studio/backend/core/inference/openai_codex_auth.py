@@ -354,6 +354,18 @@ async def _exchange_code(
         flow.server = None
 
 
+async def _fail_on_callback_error(flow: OAuthFlow, query: dict[str, list[str]]) -> None:
+    if query.get("error") and not flow.consumed:
+        flow.consumed = True
+        flow.status = "error"
+        flow.message = "ChatGPT authorization was denied or failed. Start a new connection."
+        if flow.server:
+            flow.server.close()
+            flow.server = None
+        await _persist_terminal_flow(flow)
+        raise CodexAuthError(flow.message)
+
+
 async def _loopback_handler(
     flow: OAuthFlow, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -364,6 +376,7 @@ async def _loopback_handler(
         query = parse_qs(parsed.query)
         if parsed.path != OPENAI_CODEX_CALLBACK_PATH or query.get("state", [""])[0] != flow.state:
             raise CodexAuthError("Authorization state did not match.")
+        await _fail_on_callback_error(flow, query)
         code = query.get("code", [""])[0]
         if not code or flow.consumed:
             raise CodexAuthError("Authorization callback was invalid or already used.")
@@ -650,6 +663,7 @@ async def complete_browser_flow(provider_id: str, flow_id: str, callback_url: st
     query = parse_qs(parsed.query)
     if not secrets.compare_digest(query.get("state", [""])[0], flow.state):
         raise CodexAuthError("Authorization state did not match.")
+    await _fail_on_callback_error(flow, query)
     code = query.get("code", [""])[0]
     if not code:
         raise CodexAuthError("The callback URL did not contain an authorization code.")
