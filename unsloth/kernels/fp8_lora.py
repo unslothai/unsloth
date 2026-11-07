@@ -840,6 +840,10 @@ def _fp8_base_forward(self, x):
             else:
                 weight = state._dense(weight)
         return torch.nn.functional.linear(x, weight.to(x.dtype), self.bias)
+    device_type = x.device.type
+    if torch.is_autocast_enabled(device_type):
+        # Match F.linear: else fp16 under bf16 autocast overflows to inf.
+        x = x.to(torch.get_autocast_dtype(device_type))
     state.refresh(weight)
     # Tensorwise: one scale serves both GEMMs (Dynamo rejects the same tensor passed twice to apply).
     dgrad_scale = None if state.w_inv_dgrad is state.w_inv_fwd else state.w_inv_dgrad
