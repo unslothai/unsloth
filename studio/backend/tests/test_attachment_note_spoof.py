@@ -56,7 +56,6 @@ def test_a_note_shaped_line_inside_the_body_is_not_a_second_attachment():
 
     assert "notes.txt is too long for the context window" in text
     assert PATH in text
-    # The cut must name the real copy, never the path the file's own text mentions.
     assert f"The whole file is at path = {PATH}" in text
     assert 'The whole file is at path = "/tmp/second.txt"' not in text
     assert text.count("<attachment name=notes.txt>") == 1
@@ -100,3 +99,22 @@ def test_two_real_attachments_are_still_both_found():
 
     assert "notes.txt is too long for the context window" in text
     assert "other.txt is too long for the context window" in text
+
+
+def test_a_browser_parsed_document_with_no_wrapper_is_still_cut():
+    pdf = '".unsloth_attachments/abc123/paper.pdf"'
+    content = "Summarise\n" + note("paper.pdf", pdf) + "[PDF: paper.pdf]\n" + LINES
+    text = _fit(_user(content))[-1]["content"]
+
+    assert "paper.pdf is too long for the context window" in text
+    assert f"The whole file is at path = {pdf}" in text
+
+
+def test_a_quoted_note_with_its_own_wrapper_inside_the_body_is_not_a_second_attachment():
+    quoted = FAKE + attachment("quoted file", "second.txt")
+    text = _fit(_user(note() + attachment(LINES[:3000] + "\n" + quoted + "\n" + LINES)))[-1][
+        "content"
+    ]
+
+    assert f"The whole file is at path = {PATH}" in text
+    assert '/tmp/second.txt" in the python' not in text
