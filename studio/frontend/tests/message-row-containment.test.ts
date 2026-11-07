@@ -46,6 +46,8 @@ class Row {
     if (was && !on) this.viewport.relayout(this);
     if (!was && on) this.viewport.skip(this);
   }
+  numberedEquation = false;
+  querySelector(selector: string) { return this.numberedEquation && selector.includes(".eqn-num") ? {} : null; }
   get isConnected() { return true; }
   getBoundingClientRect() {
     const top = this.viewport.offsetOf(this) - this.viewport.scrollTop;
@@ -177,10 +179,11 @@ test("only rows outside the reach that fit the column are marked, and cleanup un
   viewport.scrollTop = 6600; // rows 0-7 lie more than 1500 px above the viewport top
   const stops = rows.map((row) => w.observe(row)!);
   rows[1].scrollWidth = 900; // a wide row owns horizontal scroll range
+  rows[3].numberedEquation = true; // its equation numbers count on into later messages
   w.report(...rows);
   assert.equal(rows.some((r) => r.hasAttribute("data-row-distant")), false, "nothing is skipped in the frame it was first seen");
   w.settle();
-  assert.deepEqual(rows.map((r) => r.hasAttribute("data-row-distant")), [true, false, true, true, true, true, true, true, false, false, false, false]);
+  assert.deepEqual(rows.map((r) => r.hasAttribute("data-row-distant")), [true, false, true, false, true, true, true, true, false, false, false, false]);
   stops[0]();
   assert.equal(rows[0].hasAttribute("data-row-distant"), false);
   assert.equal(w.observed.has(rows[0]), false);

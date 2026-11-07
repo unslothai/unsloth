@@ -9,6 +9,7 @@ export const ROW_DISTANT_ATTRIBUTE = "data-row-distant";
 export const ROW_REACH_PX = 1500;
 const GATE_ATTRIBUTE = "data-message-row-containment";
 const ROW_SELECTOR = "[data-role][data-message-id]";
+const NUMBERED_EQUATION = ".eqn-num, .mml-eqn-num";
 
 /**
  * The reach must exceed the engine's own content-visibility: auto margin, so a row is released
@@ -91,10 +92,13 @@ function settleLater(viewport: Element, rows: Element[]) {
 function createObserver(viewport: Element, reach: number): IntersectionObserver {
   return new IntersectionObserver((entries) => {
     // Read before writing. A wide row owns horizontal scroll range, which containment would drop.
+    // Numbered equations count across messages; containment would scope their counter to the row
+    // (the same exemption math-block-marker.ts gives a single block).
     const distant = entries.map(({ target, boundingClientRect, rootBounds }) =>
       rootBounds !== null &&
       (boundingClientRect.bottom < rootBounds.top || boundingClientRect.top > rootBounds.bottom) &&
-      target.scrollWidth <= target.clientWidth
+      target.scrollWidth <= target.clientWidth &&
+      target.querySelector(NUMBERED_EQUATION) === null
     );
     const release: Array<[Element, boolean]> = [];
     const skip: Element[] = [];
