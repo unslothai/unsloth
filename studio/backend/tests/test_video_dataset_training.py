@@ -544,3 +544,22 @@ def test_text_only_message_rows_lose_the_arrow_video_key():
         for message in row["messages"]:
             for part in message["content"]:
                 assert None not in part.values(), part
+
+
+def test_a_text_only_first_message_row_still_finds_later_video():
+    text_row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "yo"}]},
+        ]
+    }
+    ds = Dataset.from_list([text_row, _messages_rows()[0]])
+    result = check_dataset_format(ds, is_vlm = True)
+    assert result["is_image"] is True
+    assert not result["requires_manual_mapping"]
+
+
+def test_a_decoded_audio_dict_with_an_mp4_path_is_not_video():
+    from utils.datasets.format_detection import detect_video_columns
+    cell = {"path": "clip.mp4", "array": [0.0], "sampling_rate": 16000}
+    assert detect_video_columns({"audio": cell, "text": "hi"}) == []

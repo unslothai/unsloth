@@ -821,6 +821,9 @@ def _is_hf_video(value) -> bool:
 def _is_video_value(value, extensions = _VIDEO_EXTENSIONS) -> bool:
     if hasattr(value, "_hf_encoded") and not _is_hf_video(value):
         return False
+    # A decoded audio dict (soundfile / PyAV fallback) can keep an .mp4 path.
+    if isinstance(value, dict) and ("array" in value or "sampling_rate" in value):
+        return False
     value = encoded_video(value)
     if isinstance(value, dict):
         value = value.get("path")
@@ -837,18 +840,21 @@ def video_sample(
     """``sample`` with each null or blank cell taken from the next rows, so a sparse first row still shows its columns."""
     import itertools
 
-    def _missing(value):
+    def _missing(key, value):
+        # A text-only messages row says nothing about whether later rows carry video.
+        if key == "messages" and isinstance(value, list):
+            return not video_parts(value)
         return value is None or (isinstance(value, str) and not value.strip())
 
-    if not any(_missing(value) for value in sample.values()):
+    if not any(_missing(k, v) for k, v in sample.items()):
         return sample
     filled = dict(sample)
     try:
         for row in itertools.islice(iter(dataset), 1, rows):
             for key, value in row.items():
-                if _missing(filled.get(key)) and not _missing(value):
+                if _missing(key, filled.get(key)) and not _missing(key, value):
                     filled[key] = value
-            if not any(_missing(value) for value in filled.values()):
+            if not any(_missing(k, v) for k, v in filled.items()):
                 break
     except Exception:  # noqa: BLE001 -- unreadable rows: detect from the first one
         return sample
