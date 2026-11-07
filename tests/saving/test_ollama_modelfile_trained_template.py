@@ -119,6 +119,23 @@ def test_system_message_replaces_the_default_of_a_mapped_model():
     assert "<|im_start|>system" in modelfile
 
 
+def test_qwen_tool_prompt_uses_the_same_system_message_as_the_modelfile():
+    name = "unsloth/Qwen2.5-0.5B-Instruct"
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    tokenizer = get_chat_template(
+        _tokenizer(name), chat_template = "qwen-2.5", system_message = "Be brief."
+    )
+    stock = get_chat_template(_tokenizer(name), chat_template = "qwen-2.5")
+
+    prompt = tokenizer.apply_chat_template(CONVERSATION, tools = tools, tokenize = False)
+
+    assert prompt.startswith("<|im_start|>system\nBe brief.\n\n# Tools")
+    assert create_ollama_modelfile(tokenizer, name, "x.gguf").endswith('SYSTEM """Be brief."""')
+    assert stock.apply_chat_template(CONVERSATION, tools = tools, tokenize = False).startswith(
+        "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.\n\n"
+    )
+
+
 def test_system_message_is_added_when_the_modelfile_has_none():
     tokenizer = get_chat_template(
         _tokenizer("some/model"), chat_template = "llama-3.1", system_message = "Be brief."
