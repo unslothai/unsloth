@@ -137,10 +137,11 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
 # GiB; resident = weights * per_weight + fixed. Generic: the deliberately high fallback for
 # families not measured yet.
 _GENERIC_PROFILE = (2.5, 1.5)
-# family -> (per_weight, fixed, largest package measured): the worst audio.cpp v0.9.3 peak on its
-# CUDA build plus at least 0.9 GiB, every variant measured. Worst inputs: TTS text run past several
-# chunks or to the generation cap, 30 s references; music at each workflow's cap. Families whose
-# peak grows without bound with the input (VibeVoice) stay generic.
+# family -> (per_weight, fixed, largest package measured): the highest audio.cpp v0.9.3 peak observed
+# on its CUDA build with Studio's default options, plus at least 0.9 GiB, every variant measured.
+# Inputs: TTS text run past several chunks or to the default generation cap, 30 s references; music
+# at each workflow's cap. A raised token cap can grow some caches past these. Families whose peak
+# grows without bound with the input (VibeVoice) stay generic.
 _MEASURED_PROFILES = {
     # Peak is a 240 s cover (the longest edit), above a 240 s song.
     "ace_step": (0.98, 6.46, 9.4),
@@ -151,10 +152,10 @@ _MEASURED_PROFILES = {
     "cosyvoice3": (0.6, 2.82, 6.6),
     # Peak is a 240 s song with 20,000 characters of lyrics.
     "heartmula": (2.5, 1.48, 7.2),
-    # Clone at the 2048-token cap of a text chunk.
+    # Clone at the default 2048-token cap of a text chunk; the cache grows with a higher max_tokens.
     "higgs_audio_tts": (1.0, 2.4, 8.0),
-    # Covers the 2.7 GB #16514 measured for Q8_0 as well.
-    "kokoro_tts": (0.0, 3.61, 0.9),
+    # Also covers the 2.74 GiB #16514 measured for Q8_0 (whole device).
+    "kokoro_tts": (0.0, 3.65, 0.9),
     # Flat in length: 10 s and the 80 s cap peak the same.
     "midashenglm_gen": (1.0, 1.69, 3.2),
     # Peak is a 240 s song with 20,000 characters of lyrics.
@@ -168,7 +169,8 @@ _MEASURED_PROFILES = {
     "qwen3_tts": (1.5, 4.44, 4.3),
     # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s).
     "stable_audio": (1.5, 1.17, 5.5),
-    # Kept from #16514, whose peaks (Q8_0 9.7, BF16 13.3) are above these runs; covers Vulkan too.
+    # Kept from #16514, whose peaks (Q8_0 9.66, BF16 13.31 GiB, whole device) are above these runs;
+    # covers Vulkan too.
     "voxcpm2": (2.2, 4.7, 8.9),
     "voxtral_tts": (1.0, 2.0, 7.5),
     # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap.

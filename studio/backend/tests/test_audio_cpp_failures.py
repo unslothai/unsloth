@@ -13,6 +13,15 @@ import pytest
 from core.inference import audio_cpp_failures as af
 from core.inference.audio_cpp_models import AudioCppModel, AudioCppVariant, RepoFile
 
+_REAL_RUNTIME_BACKEND = af._runtime_backend
+
+
+@pytest.fixture(autouse = True)
+def _no_audio_runtime(monkeypatch):
+    """Estimates follow the installed audio.cpp backend, so pin it: unset means none installed (the
+    larger of the two profiles). Tests about one backend set it themselves."""
+    monkeypatch.setattr(af, "_runtime_backend", lambda: None)
+
 
 def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
     variants = tuple(
@@ -135,10 +144,10 @@ def test_estimate_uses_the_measured_family_profile(monkeypatch):
     # Measured below the generic formula.
     assert af.estimate_resident_gb(3 * gb, "chatterbox") == 6.13
     assert af.estimate_resident_gb(int(4.4 * gb), "voxtral_tts") == 6.4
-    # Measured above it: Kokoro q8 peaks at 2.7 GB, VoxCPM2 q8 at 9.7 GB and bf16 at 13.3 GB.
-    assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.61 >= 2.7 + 0.9
-    assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
-    assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
+    # Measured above it (#16514, whole device): Kokoro q8 2.74 GiB, VoxCPM2 q8 9.66 and bf16 13.31.
+    assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.65 >= 2.74 + 0.9
+    assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 >= 9.66 + 0.9
+    assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 >= 13.31 + 0.9
     # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.19 / 14.74 GiB on CUDA.
     assert af.estimate_resident_gb(6185468096, "ace_step") == 12.11 > 11.19 + 0.9
     assert af.estimate_resident_gb(10090406336, "ace_step") == 15.67 > 14.74 + 0.9
@@ -234,15 +243,17 @@ def test_the_runtime_backend_is_the_installed_servers(monkeypatch):
     from core.inference import audio_cpp_server as srv
 
     monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: None)
-    assert af._runtime_backend() is None
+    assert _REAL_RUNTIME_BACKEND() is None
     monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: "/opt/audiocpp_server")
     monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: f"vulkan:{binary}:{force_cpu}")
-    assert af._runtime_backend() == "vulkan:/opt/audiocpp_server:False"
+    assert _REAL_RUNTIME_BACKEND() == "vulkan:/opt/audiocpp_server:False"
 
 
 # YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16.
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
+# Its profile on Vulkan, or with no runtime installed (the larger of the two), and on CUDA.
 MEASURED = (7.73, 9.51, 12.86)
+MEASURED_CUDA = (7.69, 9.23, 12.1)
 GENERIC = (8.33, 12.05, 19.03)
 
 
@@ -263,22 +274,24 @@ def _yue2():
 
 
 @pytest.mark.parametrize(
-    "capabilities, driver, expected",
+    "capabilities, driver, profiled",
     [
-        ({0: (8, 6)}, True, MEASURED),
-        ({0: (8, 9)}, True, MEASURED),
-        ({0: (12, 0)}, True, MEASURED),
-        ({}, False, MEASURED),
-        ({0: (7, 5)}, True, GENERIC),
-        ({0: (8, 9), 1: (7, 5)}, True, GENERIC),
-        ({}, True, GENERIC),
+        ({0: (8, 6)}, True, True),
+        ({0: (8, 9)}, True, True),
+        ({0: (12, 0)}, True, True),
+        ({}, False, True),
+        ({0: (7, 5)}, True, False),
+        ({0: (8, 9), 1: (7, 5)}, True, False),
+        ({}, True, False),
     ],
 )
+@pytest.mark.parametrize("backend, measured", [(None, MEASURED), ("vulkan", MEASURED), ("cuda", MEASURED_CUDA)])
 def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
-    monkeypatch, capabilities, driver, expected
+    monkeypatch, capabilities, driver, profiled, backend, measured
 ):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
     _cards(monkeypatch, capabilities, driver = driver)
-    assert _yue2() == expected
+    assert _yue2() == (measured if profiled else GENERIC)
 
 
 @pytest.mark.parametrize(
