@@ -733,7 +733,9 @@ async def generate_video(
         fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
         if fam is None:
             return
-        validate_video_request_shape(fam, request.width, request.height, request.num_frames)
+        validate_video_request_shape(
+            fam, request.width, request.height, request.num_frames, fps = request.fps
+        )
         h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
             fam,
@@ -1834,6 +1836,8 @@ def _all_videos() -> list[VideoJob]:
 
 
 def _shape_error_param(exc: Exception, body) -> str:
+    if "frame rate" in str(exc):
+        return "fps"
     if "frame count" not in str(exc):
         return "size"
     return "num_frames" if body.num_frames is not None else "seconds"
@@ -2231,7 +2235,7 @@ def _refuse_family_inputs(
         if seconds is not None
         else None
     )
-    validate_video_request_shape(fam, width, height, want_frames)
+    validate_video_request_shape(fam, width, height, want_frames, fps = body.fps)
     ref2va = h3_task == H3_TASK_REFERENCES
     validate_video_keyframe_conditioning(
         fam,

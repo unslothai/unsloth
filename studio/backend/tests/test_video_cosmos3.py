@@ -1259,3 +1259,164 @@ def test_wide_tiles_keep_the_seam_floor_for_cosmos3():
                         tiles = _diffusers_tiles(length, tile, stride)
                         assert G.check_axis(tiles, floor) == [], (family, width, height, plan)
     assert planned
+
+
+# NVIDIA's settings: the pipeline's 256 tier, Edge "12-30 fps", Nano 10/16/24/30 fps (NVIDIA/cosmos models.md).
+_256P = [(320, 192), (192, 320), (256, 256), (320, 256), (256, 320)]
+_480P = [(832, 480), (480, 832), (640, 640), (736, 544), (544, 736)]
+
+
+def test_presets_carry_the_pipelines_256p_and_480p_tiers():
+    edge, nano = _fam("cosmos3-edge"), _fam("cosmos3-nano")
+    assert list(edge.resolution_presets) == _480P + _256P
+    assert list(nano.resolution_presets[:5]) == [
+        (1280, 720),
+        (720, 1280),
+        (960, 960),
+        (1104, 832),
+        (832, 1104),
+    ]
+    assert set(nano.resolution_presets[5:]) == set(_480P) | set(_256P)
+    for fam in (edge, nano):
+        assert len(set(fam.resolution_presets)) == len(fam.resolution_presets)
+        for w, h in fam.resolution_presets:
+            assert w % fam.resolution_multiple == 0 and h % fam.resolution_multiple == 0
+            vf.validate_video_request_shape(fam, w, h)
+
+
+def test_preset_tiers_match_the_pipelines_resolution_bins():
+    pytest.importorskip("diffusers", reason = "Backend CI installs no diffusers")
+    from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import _ACTION_RESOLUTION_BINS
+
+    tier = lambda key: {(w, h) for h, w in _ACTION_RESOLUTION_BINS[key].values()}  # noqa: E731
+    assert set(_256P) == tier("256") and set(_480P) == tier("480")
+    assert set(_fam("cosmos3-nano").resolution_presets[:5]) == tier("720")
+
+
+@pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
+@pytest.mark.parametrize("size", [(320, 192), (448, 256), (256, 448), (256, 256)])
+def test_256p_and_nvidias_jetson_size_are_accepted(name, size):
+    fam = _fam(name)
+    assert vf.video_custom_size_bounds(fam)[0] == 192 * 320
+    vf.validate_video_request_shape(fam, *size)
+
+
+@pytest.mark.parametrize(
+    "name, size, fragment",
+    [
+        ("cosmos3-edge", (176, 176), "61,440"),
+        ("cosmos3-nano", (240, 160), "61,440"),
+        ("cosmos3-edge", (1280, 720), "409,600 pixels"),
+        ("cosmos3-edge", (448, 250), "multiples of 16"),
+    ],
+)
+def test_sizes_below_256p_or_above_the_top_tier_are_refused(name, size, fragment):
+    with pytest.raises(vf.VideoShapeError, match = fragment):
+        vf.validate_video_request_shape(_fam(name), *size)
+
+
+@pytest.mark.parametrize(
+    "name, requested, snapped",
+    [
+        ("cosmos3-edge", 49, 53),
+        ("cosmos3-edge", 50, 53),
+        ("cosmos3-edge", 150, 149),
+        ("cosmos3-edge", 54, 53),
+        ("cosmos3-nano", 400, 397),
+        ("cosmos3-nano", 4, 5),
+    ],
+)
+def test_frames_snap_inside_nvidias_window(name, requested, snapped):
+    assert vf.snap_num_frames(_fam(name), requested) == snapped
+
+
+@pytest.mark.parametrize("frames", [49, 153])
+def test_lattice_counts_outside_the_cards_window_are_refused(frames):
+    with pytest.raises(vf.VideoShapeError, match = "run from 53 to 149"):
+        vf.validate_video_request_shape(_fam("cosmos3-edge"), num_frames = frames)
+
+
+def test_fps_options_follow_nvidias_settings():
+    assert vf.video_family_fps_options(_fam("cosmos3-edge")) == tuple(range(12, 31))
+    assert vf.video_family_fps_options(_fam("cosmos3-nano")) == (10, 16, 24, 30)
+    for name in ("cosmos3-edge", "cosmos3-nano"):
+        assert _fam(name).default_fps == 24
+    others = [f for f in vf._FAMILIES if f.name not in ("cosmos3-edge", "cosmos3-nano")]
+    assert others and all(vf.video_family_fps_options(f) is None for f in others)
+
+
+@pytest.mark.parametrize(
+    "name, fps, ok",
+    [
+        ("cosmos3-edge", 12, True),
+        ("cosmos3-edge", 30, True),
+        ("cosmos3-edge", 17, True),
+        ("cosmos3-edge", 11, False),
+        ("cosmos3-edge", 31, False),
+        ("cosmos3-nano", 10, True),
+        ("cosmos3-nano", 16, True),
+        ("cosmos3-nano", 30, True),
+        ("cosmos3-nano", 12, False),
+        ("cosmos3-nano", 60, False),
+    ],
+)
+def test_fps_is_validated_against_the_family(name, fps, ok):
+    fam = _fam(name)
+    if ok:
+        vf.validate_video_request_shape(fam, fps = fps)
+        return
+    expected = "12 to 30" if name == "cosmos3-edge" else "10, 16, 24, 30"
+    with pytest.raises(
+        vf.VideoShapeError, match = f"{fps} fps is not a supported frame rate.*{expected}"
+    ):
+        vf.validate_video_request_shape(fam, fps = fps)
+
+
+@pytest.mark.parametrize(
+    "fam",
+    [f for f in vf._FAMILIES if vf.video_family_fps_options(f) is None],
+    ids = lambda f: f.name,
+)
+def test_a_family_without_fps_options_takes_any_rate(fam):
+    for fps in (None, 1, 7, 24, 60, 120):
+        vf.validate_video_fps(fam, fps)
+
+
+@pytest.mark.parametrize("seconds, fps, frames", [(5.0, 12, 61), (5.0, 30, 149), (4.0, 24, 97)])
+def test_duration_converts_at_the_chosen_fps(seconds, fps, frames):
+    from routes.video import _frames_for_seconds
+
+    fam = _fam("cosmos3-edge")
+    defaults = {"fps": fps, "frame_step": fam.frame_step, "frame_offset": fam.frame_offset}
+    assert _frames_for_seconds(seconds, defaults) == frames
+    vf.validate_video_request_shape(fam, num_frames = frames, fps = fps)
+
+
+@pytest.mark.parametrize("repo", [NANO, EDGE])
+def test_status_exposes_the_fps_options_and_frame_window(cosmos3_runtime, repo):
+    from models.inference import VideoGenerationDefaults
+
+    _backend, status = _loaded(repo)
+    got = status["defaults"]
+    rng, choices, window = {
+        EDGE: ([12, 30], [], (53, 149)),
+        NANO: (None, [10, 16, 24, 30], (5, 397)),
+    }[repo]
+    assert (got["fps"], got["fps_range"], got["fps_choices"]) == (24, rng, choices)
+    assert (got["min_num_frames"], got["max_num_frames"]) == window
+    assert [320, 192] in got["resolution_presets"] and got["custom_size_min_pixels"] == 61440
+    VideoGenerationDefaults(**got)
+
+
+@pytest.mark.parametrize("repo, fps, bad", [(EDGE, 12, 31), (NANO, 30, 12)])
+def test_generate_renders_and_exports_at_the_chosen_fps(cosmos3_runtime, repo, fps, bad):
+    backend, _status = _loaded(repo)
+    result = backend.generate(prompt = "p", steps = 1, fps = fps, width = 320, height = 192)
+    passed = backend._state.pipe.passed
+    assert passed["fps"] == float(fps) and (passed["width"], passed["height"]) == (320, 192)
+    assert result["fps"] == fps and cosmos3_runtime[-1]["fps"] == fps
+    with pytest.raises(vf.VideoShapeError, match = "frame rate"):
+        backend.begin_generate(prompt = "p", steps = 1, fps = bad)
+    with pytest.raises(vf.VideoShapeError, match = "frame rate"):
+        backend.generate(prompt = "p", steps = 1, fps = bad)
+    assert backend.generate_progress()["active"] is False

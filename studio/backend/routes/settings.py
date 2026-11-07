@@ -299,6 +299,8 @@ class VideoGenerationPresetParams(BaseModel):
     guidance: float = Field(default = 1, ge = 0, le = 20)
     flowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
     audioFlowShift: Optional[float] = Field(default = None, gt = 0, le = 100)
+    # None = the family's default rate; only families with a frame-rate picker store one.
+    fps: Optional[int] = Field(default = None, ge = 1, le = 120)
 
 
 class MediaGenerationPreset(BaseModel):

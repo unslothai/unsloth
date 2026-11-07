@@ -236,6 +236,9 @@ class VideoFamily:
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
+    # Neither set = the rate is fixed.
+    fps_range: Optional[tuple[int, int]] = None
+    fps_choices: tuple[int, ...] = ()
     frame_step: int = 8
     # Offset in the temporal lattice. Existing pipelines use k*step+1; MiniMax-H3 uses 17k+5.
     frame_offset: int = 1
@@ -430,6 +433,8 @@ _COSMOS3_PROFILE = FamilyProfile(
 # Model-card sampling; the shipped scheduler_config.json's flow_shift 1.0 is used by neither card.
 _COSMOS3_NANO_SCHEDULER = (("flow_shift", 10.0),)
 _COSMOS3_EDGE_SCHEDULER = (("flow_shift", 12.0), ("use_karras_sigmas", False))
+# The pipeline's 256 tier: 16:9, 9:16, 1:1, 4:3, 3:4 (NVIDIA runs 448x256 too, which the custom bounds take).
+_COSMOS3_256P = ((320, 192), (192, 320), (256, 256), (320, 256), (256, 320))
 
 
 def local_cosmos3_pipeline_family(path: Optional[str]) -> Optional[str]:
@@ -1022,10 +1027,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 189,
         default_fps = 24,
+        # NVIDIA/cosmos docs/reference/models.md, "Generation settings": 10, 16, 24, 30 FPS.
+        fps_choices = (10, 16, 24, 30),
         frame_step = 4,
         min_num_frames = 5,
         max_num_frames = 397,
         resolution_multiple = 16,
+        # The pipeline's 720 / 480 / 256 tiers (_ACTION_RESOLUTION_BINS, same as cosmos-framework's VIDEO_RES_SIZE_INFO).
         resolution_presets = (
             (1280, 720),
             (720, 1280),
@@ -1034,6 +1042,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (832, 1104),
             (832, 480),  # faster
             (480, 832),  # faster
+            (640, 640),  # faster
+            (736, 544),  # faster
+            (544, 736),  # faster
+            *_COSMOS3_256P,
         ),
         duration_presets = (2.0, 5.0, 7.875),
         bf16_components_gb = (30.4, 0.0, 1.4),
@@ -1055,11 +1067,20 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
+        # Card: "12-30 fps, and 50-150 frames"; 53 and 149 are the 4k+1 counts inside 50-150.
+        fps_range = (12, 30),
         frame_step = 4,
         min_num_frames = 53,
         max_num_frames = 149,
         resolution_multiple = 16,
-        resolution_presets = ((832, 480), (480, 832), (640, 640), (736, 544), (544, 736)),
+        resolution_presets = (
+            (832, 480),
+            (480, 832),
+            (640, 640),
+            (736, 544),
+            (544, 736),
+            *_COSMOS3_256P,
+        ),
         duration_presets = (3.0, 5.0, 6.0),
         bf16_components_gb = (6.7, 0.0, 1.4),
         supports_torch_compile = False,
@@ -1423,6 +1444,31 @@ class VideoShapeError(ValueError):
     widening the 400 it gives every other bad-input ValueError."""
 
 
+def video_family_fps_options(fam: VideoFamily) -> Optional[tuple[int, ...]]:
+    choices = tuple(sorted({int(f) for f in getattr(fam, "fps_choices", ()) or ()}))
+    if choices:
+        return choices
+    bounds = getattr(fam, "fps_range", None)
+    if bounds:
+        return tuple(range(int(bounds[0]), int(bounds[1]) + 1))
+    return None
+
+
+def validate_video_fps(fam: VideoFamily, fps: Optional[int]) -> None:
+    """Refuse a frame rate outside the family's declared ones; a family that declares none is not judged."""
+    options = video_family_fps_options(fam)
+    if fps is None or options is None or int(fps) in options:
+        return
+    if getattr(fam, "fps_choices", ()):
+        supported = ", ".join(str(f) for f in options)
+    else:
+        supported = f"{options[0]} to {options[-1]}"
+    raise VideoShapeError(
+        f"{fps} fps is not a supported frame rate for {fam.name}. Supported: {supported} fps "
+        f"(the default is {fam.default_fps})."
+    )
+
+
 def _validate_custom_video_size(fam: VideoFamily, width: int, height: int) -> None:
     bounds = video_custom_size_bounds(fam)
     if bounds is None:
@@ -1454,6 +1500,7 @@ def validate_video_request_shape(
     width: Optional[int] = None,
     height: Optional[int] = None,
     num_frames: Optional[int] = None,
+    fps: Optional[int] = None,
 ) -> None:
     """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
 
@@ -1462,8 +1509,10 @@ def validate_video_request_shape(
     old silent floor snap let 256x256 through to a size no checkpoint was trained for, so sizes far
     from the presets are refused rather than snapped. A family that declares no presets keeps the
     old SIZE snapping, and ``None`` means "use the family default". The frame lattice has no escape
-    hatch: every family declares a ``frame_step``, so an off-lattice count is always refused.
+    hatch: every family declares a ``frame_step``, so an off-lattice count is always refused. ``fps`` is
+    judged only for a family that declares ``fps_range`` / ``fps_choices``.
     """
+    validate_video_fps(fam, fps)
     presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
     if presets and (width is not None or height is not None):
         # A half-specified request resolves against the default preset, as generate() does. Keyed on None, not
