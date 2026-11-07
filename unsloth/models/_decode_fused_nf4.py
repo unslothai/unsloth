@@ -28,13 +28,22 @@ STATS = {
     "plans": 0,
     "refused": None,
 }
-_PLAN = "_unsloth_fused_nf4_plan"
-_BATCH_PLAN = "_unsloth_fused_nf4_batch_plan"
-_HOMES = "_unsloth_fused_nf4_homes"
+_PLAN, _BATCH_PLAN, _HOMES = _decode_graphs.FUSED_NF4_ATTRS
+
+
+def _backend_ok():
+    # The regular NF4 path's own switches: UNSLOTH_BNB_TRITON=0, or Triton NF4 kernels that are
+    # unavailable or failed (utils._nf4_kernels_failed), keep bitsandbytes for every 4bit op.
+    return os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0" and bool(KU._USE_NF4_KERNELS)
 
 
 def requested():
-    return os.environ.get(ENV, "0") in ("1", "force")
+    return os.environ.get(ENV, "0") in ("1", "force") and _backend_ok()
+
+
+def graph_key():
+    """Part of a captured decode step's key: fused and regular steps never replay each other."""
+    return os.environ.get(ENV, "0") if requested() else "0"
 
 
 def release(model):
@@ -61,8 +70,10 @@ class _ApplyReleasing:
         return type(module)._apply(module, fn, *args, **kwargs)
 
     def __reduce__(self):
-        # Copies and pickle must bind the hook to the restored modules.
-        return type(self), (self.root_ref(), self.module_ref())
+        # Copies and pickle must bind the hook to the restored modules. Only the root's own hook keeps
+        # its owner: pickling a submodule must not serialize the whole model through it.
+        root, module = self.root_ref(), self.module_ref()
+        return type(self), (root if root is module else None, module)
 
     def __deepcopy__(self, memo):
         # Saving a submodule must not clone the rest of the model through its owner hook.
@@ -254,7 +265,11 @@ def _proj_parts(proj, K):
     if A is not None:
         if A.dim() != 2 or A.shape[1] != K or B.shape != (N, A.shape[0]):
             return "LoRA shape"
-        if not (A.is_contiguous() and B.is_contiguous()) or A.device != W.device:
+        if (
+            not (A.is_contiguous() and B.is_contiguous())
+            or A.device != W.device
+            or B.device != W.device
+        ):
             return "LoRA layout"
         if isinstance(S, torch.Tensor):
             if S.is_inference():
@@ -287,8 +302,15 @@ def _site(
             or (qs.state2 is not None) != nested
             or (nested and int(qs.state2.blocksize) != int(st0.state2.blocksize))
             or qs.absmax.dtype != st0.absmax.dtype
+            or (nested and qs.state2.absmax.dtype != st0.state2.absmax.dtype)
         ):
             return "segments differ"
+    # The kernel reads every segment through raw pointers on the launch device.
+    home = Ws[0].device
+    for W, qs in zip(Ws, states):
+        tensors = (W, qs.absmax) + ((qs.state2.absmax,) if nested else ())
+        if any(t.device != home for t in tensors):
+            return "several devices"
     if any(l is None for l in loras) != all(l is None for l in loras):
         return "LoRA on some projections only"
     lora = None
@@ -389,6 +411,9 @@ def _build(model, X):
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
         attn, mlp = layer.self_attn, layer.mlp
+        # Replacing a whole attention / MLP block must invalidate the plan like its projections.
+        bindings.append((layer, "self_attn", attn))
+        bindings.append((layer, "mlp", mlp))
         if (
             getattr(attn, "q_norm", None) is not None
             or getattr(attn, "k_norm", None) is not None
@@ -528,7 +553,7 @@ def _decode_forward(
     attention_core,
     kv_increment,
 ):
-    if torch.is_grad_enabled() or torch.compiler.is_compiling():
+    if torch.is_grad_enabled() or torch.compiler.is_compiling() or not requested():
         return None
     batch = X.shape[0]
     if batch not in (1, 2, 4):
@@ -550,6 +575,8 @@ def _decode_forward(
     if static is not None and getattr(static, "span", None) is not None:
         return None
     layers = model.model.layers
+    if len(layers) == 0:
+        return None
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
     plan = model.__dict__.get(plan_key)
     if (

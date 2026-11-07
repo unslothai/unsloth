@@ -457,15 +457,17 @@ class FusedSite:
             self.B3 = pad([b for _, b in lora])
             self.scaling = float(scaling)
             device = packed.device
-            self.H = torch.zeros(3 * self.rank_pad, device = device, dtype = torch.float32)
             n_rows = self.n_seg * r
             self.block_r = max(16, triton.next_power_of_2(n_rows))
             self.split_k = max(16, min(256, triton.next_power_of_2(K), 16384 // self.block_r))
             self.n_splits = triton.cdiv(K, self.split_k)
-            self.partials = torch.zeros(
-                self.n_splits * (self.block_r + 1), device = device, dtype = torch.float32
-            )
-            self.counter = torch.zeros(1, device = device, dtype = torch.int32)
+            # Workspaces outlive the generate() inference_mode they are built in (as BatchSite's).
+            with torch.inference_mode(False), torch.no_grad():
+                self.H = torch.zeros(3 * self.rank_pad, device = device, dtype = torch.float32)
+                self.partials = torch.zeros(
+                    self.n_splits * (self.block_r + 1), device = device, dtype = torch.float32
+                )
+                self.counter = torch.zeros(1, device = device, dtype = torch.int32)
 
     def seg_bounds(self):
         b = self.bounds + [self.N] * (3 - len(self.bounds))

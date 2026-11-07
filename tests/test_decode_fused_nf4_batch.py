@@ -125,12 +125,16 @@ _CHECKS = textwrap.dedent(
                  rand(n, rank, dtype=dtype) / rank) for n in sizes] if rank else None
         bias = [rand(n, dtype=dtype) * 0.1 for n in sizes] if child and kind == "qkv" else None
         kwargs = dict(bias=bias) if child else {}
-        original = F.FusedSite(kind, q, state.absmax, state.code,
-            torch.tensor(sizes).cumsum(0).tolist(), k, state.blocksize,
-            code2=state.state2.code, absmax2=state.state2.absmax,
-            blocksize2=state.state2.blocksize, seg_offset=torch.stack(offsets),
-            lora=lora, scaling=0.5,
-            segments=[(w, s.absmax, s.state2.absmax) for w, s in pairs], **kwargs)
+        # Built inside generate()'s inference_mode, as plans are: workspaces must stay writable after it.
+        with torch.inference_mode():
+            original = F.FusedSite(kind, q, state.absmax, state.code,
+                torch.tensor(sizes).cumsum(0).tolist(), k, state.blocksize,
+                code2=state.state2.code, absmax2=state.state2.absmax,
+                blocksize2=state.state2.blocksize, seg_offset=torch.stack(offsets),
+                lora=lora, scaling=0.5,
+                segments=[(w, s.absmax, s.state2.absmax) for w, s in pairs], **kwargs)
+        if rank:
+            assert not any(getattr(original, n).is_inference() for n in ("H", "partials", "counter")), "serial workspace"
         with torch.inference_mode():
             batched = F.BatchSite(original, batch)
         for i, (weight, quant) in enumerate(pairs):
