@@ -126,7 +126,7 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
-			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
+			badge={<Badge variant="accent">{t("shell.beta")}</Badge>}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
@@ -138,12 +138,36 @@ export function GlassControls() {
 			{on && (
 				<>
 					<GlassStyleRow />
+					<GlassScopeRow />
 					<MaterialStrengthRow />
 					<LensRow />
 					<MaterialMenusRow />
 				</>
 			)}
 		</SettingsSection>
+	);
+}
+function GlassScopeRow() {
+	const t = useT();
+	const { scope, setScope } = useMaterialStore();
+	return (
+		<SettingsRow label={t("chatBackground.scope")}>
+			<Select
+				value={scope}
+				onValueChange={(next) => setScope(next as BackgroundScope)}
+			>
+				<SelectTrigger aria-label={t("chatBackground.scope")} className="w-52">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{SCOPES.map((option) => (
+						<SelectItem key={option} value={option}>
+							{t(scopeLabels[option])}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</SettingsRow>
 	);
 }
 function MaterialMenusRow() {

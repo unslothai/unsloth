@@ -1027,9 +1027,10 @@ def install_fp8_to_nf4_quantizer() -> bool:
                     _keep_fp8_embeddings(model, plan["modules_to_convert"])
             return super()._process_model_before_weight_loading(model, **kwargs)
 
-        def update_weight_conversions(self, weight_conversions):
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            # transformers 5.21+ also passes the model.
             if self._unsloth_fp8_plan is None or _STATE is None:
-                return super().update_weight_conversions(weight_conversions)
+                return super().update_weight_conversions(weight_conversions, *args, **kwargs)
             model = self._unsloth_fp8_model
             self._unsloth_fp8_model = None
             # Here, not before loading: only now are the caller's key_mapping renamings known.
@@ -1082,7 +1083,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
                 )
             )
             self._unsloth_fp8_rebuilt = rebuilt_from
-            return super().update_weight_conversions(updated)
+            return super().update_weight_conversions(updated, *args, **kwargs)
 
         def _process_model_after_weight_loading(self, model, **kwargs):
             global _STATE

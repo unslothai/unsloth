@@ -12362,7 +12362,8 @@ _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
+# ranked tools hold until a message's best match is listable and not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12373,6 +12374,7 @@ _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = Non
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
 # (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+_MCP_RANKED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
 _MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
@@ -12599,6 +12601,25 @@ def mcp_record_loaded_tools(thread_id, names) -> None:
             _MCP_LOADED_THREADS.popitem(last = False)
 
 
+def _mcp_held_ranking(by_name: dict) -> list[str]:
+    key = _mcp_thread_key()
+    if key is None:
+        return []
+    with _MCP_LOADED_LOCK:
+        return [n for n in _MCP_RANKED_THREADS.get(key, ()) if n in by_name]
+
+
+def _mcp_hold_ranking(names: list[str]) -> None:
+    key = _mcp_thread_key()
+    if key is None:
+        return
+    with _MCP_LOADED_LOCK:
+        _MCP_RANKED_THREADS.pop(key, None)
+        _MCP_RANKED_THREADS[key] = names
+        while len(_MCP_RANKED_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_RANKED_THREADS.popitem(last = False)
+
+
 def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
     specs = [spec for _, _, server_specs in listed for spec in server_specs]
     ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
@@ -12652,14 +12673,30 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     )
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
-    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
-        if by_name[name] in listing:
-            continue
-        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
-        if cost <= room:
-            listing.append(by_name[name])
-            room -= cost
-    return listing
+    ranked = ranked[:_MCP_TOOL_PRELOAD]
+
+    def filled(names: list[str]) -> list[dict]:
+        chosen = list(listing)
+        left = room
+        for name in dict.fromkeys(ran + names):
+            if by_name[name] in chosen:
+                continue
+            cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+            if cost <= left:
+                chosen.append(by_name[name])
+                left -= cost
+        return chosen
+
+    held = _mcp_held_ranking(by_name)
+    chosen = filled(held)
+    held = [name for name in held if by_name[name] in chosen]
+    if ranked and (not held or by_name[ranked[0]] not in chosen):
+        fresh = filled(ranked)
+        # A best match too big to list is not worth dropping the held tools for.
+        if not held or by_name[ranked[0]] in fresh:
+            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
+    _mcp_hold_ranking(held)
+    return chosen
 
 
 def _cached_mcp_catalog() -> list[dict]:
@@ -13294,6 +13331,7 @@ def execute_tool(
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
     mcp_image = None,
+    started_read: "StartedUrlRead | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -13544,6 +13582,8 @@ def execute_tool(
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
             return "No query provided."
+        if started_read is not None:
+            return _fit_result_to_room(started_read.result(), name)
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -14189,6 +14229,16 @@ def _thread_document_ids(thread_id) -> set | None:
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieves the latest turn for models that skip search_knowledge_base. Toggle rag_scope.autoinject or RAG_AUTOINJECT; floor RAG_AUTOINJECT_MIN_SCORE."""
+    try:
+        from core.rag.retrieval import query_vector_memo
+    except Exception:  # noqa: BLE001 - the build reports an unavailable RAG stack itself
+        return _build_rag_autoinject(conversation, rag_scope)
+    # The thread retry, the hybrid retry and the dense probe re-ask the same query: encode it once.
+    with query_vector_memo():
+        return _build_rag_autoinject(conversation, rag_scope)
+
+
+def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None
@@ -14647,6 +14697,10 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
                 return None
             return target
     return None
+
+
+# PyMuPDF is not thread-safe.
+_WEB_PDF_LOCK = threading.Lock()
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -15729,7 +15783,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", content_type
             try:
-                pdf_text = _extract_pdf_text(raw_bytes)
+                queued_at = time.monotonic()
+                with _WEB_PDF_LOCK:
+                    # Time queued behind another read's PDF is not spent on this read.
+                    if deadline is not None:
+                        deadline += time.monotonic() - queued_at
+                    pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
@@ -16296,8 +16355,18 @@ def _fetch_page_text(
     website_policy: dict | None = None,
 ) -> str:
     """Fetches a URL as readable text (HTML to Markdown); blocks private, loopback and link-local hosts"""
-    if max_chars is None:
-        max_chars = _page_char_budget()
+    page = _download_page(
+        url, timeout = timeout, cancel_event = cancel_event, website_policy = website_policy
+    )
+    return _render_page(page, max_chars)
+
+
+def _download_page(
+    url: str,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+):
     # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
@@ -16323,17 +16392,7 @@ def _fetch_page_text(
         )
         # A 200 README body is authoritative even when HTML; fall back only on failure.
         if err is None and body.strip():
-            readme_body = body
-            # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
-            if _looks_like_html_document(body):
-                from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
-                readme_body = converted if converted.strip() else body
-            if readme_body.strip():
-                return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
-                    max_chars,
-                )
+            return ("readme", url, body)
 
     raw_file_url = _github_blob_raw_url(url)
     if raw_file_url:
@@ -16345,7 +16404,7 @@ def _fetch_page_text(
             **policy_kwargs,
         )
         if err is None and body.strip():
-            return _truncate_page_text(body.strip(), max_chars)
+            return ("text", url, body.strip())
 
     meta: dict = {}
     err, body, content_type = _fetch_url_raw(
@@ -16365,13 +16424,33 @@ def _fetch_page_text(
         return err
 
     # Sniff the body when Content-Type is missing or wrong.
-    is_html = "html" in content_type or _looks_like_html(body)
-    if not is_html:
-        # Converting plain text through the HTML renderer would collapse whitespace.
-        return _truncate_page_text(body.strip(), max_chars)
+    if "html" in content_type or _looks_like_html(body):
+        return ("html", url, body)
+    # Converting plain text through the HTML renderer would collapse whitespace.
+    return ("text", url, body.strip())
 
-    # Convert HTML to Markdown with the builtin converter (no external deps).
+
+# Reads the call's budget context vars: run inside execute_tool, never on a prefetch thread.
+def _render_page(page, max_chars: int | None = None) -> str:
+    if isinstance(page, str):
+        return page
+    if max_chars is None:
+        max_chars = _page_char_budget()
+    kind, url, body = page
+    if kind == "text":
+        return _truncate_page_text(body, max_chars)
     from ._html_to_md import SiteLinks, html_to_markdown
+
+    if kind == "readme":
+        readme_body = body
+        # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
+        if _looks_like_html_document(body):
+            converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
+            readme_body = converted if converted.strip() else body
+        return _truncate_page_text(
+            f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+            max_chars,
+        )
 
     site_links = SiteLinks(url)
     # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
@@ -16689,6 +16768,43 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
+class StartedUrlRead:
+    def __init__(self, url: str, timeout, cancel_event, website_policy) -> None:
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, url, timeout, cancel_event, website_policy),
+            name = "web-url-read",
+            daemon = True,
+        ).start()
+
+    def _run(self, url, timeout, cancel_event, website_policy) -> None:
+        try:
+            self._value = _download_page(
+                url,
+                timeout = _url_read_timeout(timeout),
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self) -> str:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return _render_page(self._value)
+
+
+def _url_read_timeout(timeout):
+    return 60 if timeout is None else min(timeout, 60)
+
+
 class _ImageSweep:
     """Image lookup started beside the text search; the caller still decides whether to register it."""
 
@@ -16868,10 +16984,9 @@ def _web_search(
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
-        fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout = fetch_timeout,
+            timeout = _url_read_timeout(timeout),
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
@@ -17355,15 +17470,32 @@ def _check_signal_escape_patterns(code: str):
                 found |= _find_blocked_commands(s)
         return found
 
+    _STAR_EXPORTS = frozenset(fq.split(".", 1)[1] for fq in _SHELL_EXEC_FUNCS) | {"modules"}
+
+    def _module_expr(dotted):
+        # posix and nt are the os module under its platform name.
+        top, _, rest = dotted.partition(".")
+        if top in ("posix", "nt"):
+            dotted = "os" + (f".{rest}" if rest else "")
+        return ast.parse(dotted, mode = "eval").body
+
     class SignalEscapeVisitor(ast.NodeVisitor):
         def __init__(self):
             self.imports_signal = False
             self.signal_aliases = {"signal"}
-            self.os_aliases = {"os"}
-            self.subprocess_aliases = {"subprocess"}
-            # Bare name -> fully-qualified form for from-import tracking (e.g. "system" -> "os.system").
-            self.shell_exec_aliases: dict[str, str] = {}
+            # Name -> every value bound to it anywhere; flow- and scope-insensitive, so it fails closed.
+            self.bindings: dict[str, list] = {}
+            self._final: dict = {}
+            self._cache: dict = {}
+            self._guess: dict = {}
+            self._active: set = set()
+            self._cyclic = False
+            self.collecting = False
             self.loop_depth = 0
+
+        def _bind(self, name, value):
+            if self.collecting:
+                self.bindings.setdefault(name, []).append(value)
 
         def visit_Import(self, node):
             for alias in node.names:
@@ -17371,10 +17503,8 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
-                elif alias.name == "os":
-                    self.os_aliases.add(alias.asname or "os")
-                elif alias.name == "subprocess":
-                    self.subprocess_aliases.add(alias.asname or "subprocess")
+                elif alias.asname or alias.name in ("posix", "nt"):
+                    self._bind(alias.asname or alias.name, _module_expr(alias.name))
             self.generic_visit(node)
 
         def visit_ImportFrom(self, node):
@@ -17392,16 +17522,171 @@ def _check_signal_escape_patterns(code: str):
                         "alarm",
                     ):
                         self.signal_aliases.add(alias.asname or alias.name)
-            elif node.module in ("os", "subprocess"):
-                if node.module == "os":
-                    self.os_aliases.add("os")
-                else:
-                    self.subprocess_aliases.add("subprocess")
-                # Track from-imports of dangerous functions.
+            if node.module and not node.level:
                 for alias in node.names:
-                    fq = f"{node.module}.{alias.name}"
-                    if fq in _SHELL_EXEC_FUNCS:
-                        self.shell_exec_aliases[alias.asname or alias.name] = fq
+                    if alias.name != "*":
+                        names = (alias.name,)
+                    elif node.module in ("os", "posix", "nt", "subprocess", "sys"):
+                        names = _STAR_EXPORTS
+                    else:
+                        continue
+                    for name in names:
+                        self._bind(
+                            alias.asname or name,
+                            ast.Attribute(_module_expr(node.module), name, ast.Load()),
+                        )
+            self.generic_visit(node)
+
+        def _memo(self, kind, node, compute, pending):
+            key = (kind, node.id if isinstance(node, ast.Name) else id(node))
+            if key in self._cache:
+                return self._cache[key]
+            if key in self._active:
+                self._cyclic = True
+                return self._guess.get(key, pending)
+            self._active.add(key)
+            try:
+                self._cache[key] = compute(node)
+            finally:
+                self._active.discard(key)
+            return self._cache[key]
+
+        def _converged(self, query, node):
+            # A self-referential binding (d = d["system"]) reads the previous pass's answer, so repeat
+            # until no answer grows (they are finite sets, so this ends); keep only converged answers.
+            previous, self._guess = None, {}
+            while True:
+                self._cache, self._cyclic = dict(self._final), False
+                result = query(node)
+                if not self._cyclic or self._cache == previous:
+                    self._final = self._cache
+                    return result
+                previous = self._guess = self._cache
+
+        def _resolve(self, node):
+            while isinstance(node, ast.NamedExpr):
+                node = node.value
+            if not isinstance(node, ast.Name):
+                return frozenset((node,))
+            return self._memo("resolve", node, self._values_of, frozenset((node,)))
+
+        def _values_of(self, node):
+            values, seen, todo = [], set(), [node]
+            while todo:
+                value = todo.pop()
+                while isinstance(value, ast.NamedExpr):
+                    value = value.value
+                values.append(value)
+                if isinstance(value, ast.Name) and value.id not in seen:
+                    seen.add(value.id)
+                    todo.extend(self.bindings.get(value.id, ()))
+            return frozenset(values)
+
+        def _lookups(self, node):
+            # (owner, name) for owner.name, getattr(owner, "name"), and owner.__dict__ / vars(owner) by key or .get().
+            return self._memo("lookups", node, self._find_lookups, frozenset())
+
+        def _find_lookups(self, node):
+            found = []
+            for value in self._resolve(node):
+                if isinstance(value, ast.Attribute):
+                    found.append((value.value, value.attr))
+                elif isinstance(value, ast.Subscript):
+                    found.extend(self._namespace_lookup(value.value, value.slice))
+                elif isinstance(value, ast.Call) and value.args:
+                    if len(value.args) >= 2 and self._is_builtin(value.func, "getattr"):
+                        found.append((value.args[0], _folded_str_literal(value.args[1])))
+                    for owner, attr in self._lookups(value.func):
+                        if attr == "get":
+                            found.extend(self._namespace_lookup(owner, value.args[0]))
+            return frozenset(found)
+
+        def _namespace_lookup(self, namespace, key):
+            name = _folded_str_literal(key)
+            found = [
+                (owner, name) for owner, attr in self._lookups(namespace) if attr == "__dict__"
+            ]
+            for value in self._resolve(namespace):
+                if (
+                    isinstance(value, ast.Call)
+                    and len(value.args) == 1
+                    and self._is_builtin(value.func, "vars")
+                ):
+                    found.append((value.args[0], name))
+            return found
+
+        def _is_builtin(self, node, name):
+            # By its own name, an alias, or as an attribute (builtins.getattr, importlib.import_module).
+            return any(
+                isinstance(v, ast.Name) and v.id == name for v in self._resolve(node)
+            ) or any(attr == name for _owner, attr in self._lookups(node))
+
+        def _is_registry(self, node):
+            return any(attr == "modules" for _owner, attr in self._lookups(node))
+
+        @staticmethod
+        def _keyword_arg(call, name):
+            found = None
+            for kw in call.keywords:
+                if kw.arg == name:
+                    found = kw.value
+                elif kw.arg is None and isinstance(kw.value, ast.Dict):
+                    for key, value in zip(kw.value.keys, kw.value.values):
+                        if key is not None and _extract_string_from_node(key) == name:
+                            found = value
+            return found
+
+        def _modules_of(self, node):
+            return self._memo("modules", node, self._find_modules, frozenset())
+
+        def _find_modules(self, node):
+            modules = set()
+            for value in self._resolve(node):
+                name = None
+                if isinstance(value, ast.Name):
+                    name = value.id
+                elif isinstance(value, ast.Call):
+                    if self._is_builtin(value.func, "__import__") or self._is_builtin(
+                        value.func, "import_module"
+                    ):
+                        arg = value.args[0] if value.args else self._keyword_arg(value, "name")
+                        name = None if arg is None else _folded_str_literal(arg)
+                    elif value.args and any(
+                        attr == "get" and self._is_registry(owner)
+                        for owner, attr in self._lookups(value.func)
+                    ):
+                        name = _folded_str_literal(value.args[0])
+                elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
+                    name = _folded_str_literal(value.slice)
+                # __import__("os.path") returns the top-level os package.
+                top = (name or "").split(".")[0]
+                if top in ("os", "subprocess"):
+                    modules.add(top)
+                elif top in ("posix", "nt") and not isinstance(value, ast.Name):
+                    modules.add("os")
+            return frozenset(modules)
+
+        def _shell_func_of(self, node):
+            for owner, attr in self._lookups(node):
+                for module in self._modules_of(owner):
+                    if f"{module}.{attr}" in _SHELL_EXEC_FUNCS:
+                        return f"{module}.{attr}"
+            return None
+
+        def visit_Assign(self, node):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    self._bind(tgt.id, node.value)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None and isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if isinstance(node.target, ast.Name):
+                self._bind(node.target.id, node.value)
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -17415,6 +17700,9 @@ def _check_signal_escape_patterns(code: str):
             self.loop_depth -= 1
 
         def visit_Call(self, node):
+            if self.collecting:
+                self.generic_visit(node)
+                return
             func = node.func
             func_name = None
             if isinstance(func, ast.Attribute):
@@ -17464,16 +17752,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
-            shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
-                # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+            shell_func = self._converged(self._shell_func_of, func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
@@ -17561,7 +17840,7 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
         def visit_ExceptHandler(self, node):
-            if self.loop_depth == 0:
+            if self.collecting or self.loop_depth == 0:
                 self.generic_visit(node)
                 return
             if node.type is None:
@@ -17596,6 +17875,9 @@ def _check_signal_escape_patterns(code: str):
             self.generic_visit(node)
 
     visitor = SignalEscapeVisitor()
+    visitor.collecting = True
+    visitor.visit(tree)
+    visitor.collecting = False
     visitor.visit(tree)
 
     if visitor.imports_signal and not signal_tampering:
@@ -19943,9 +20225,9 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
-def _check_code_safety(code: str) -> str | None:
+def _check_code_safety(code: str, *, host_approved: bool = False) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
-    unsafe, or None if OK."""
+    unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
@@ -19957,7 +20239,11 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
+        network_reasons = [
+            item.get("description", "")
+            for item in info.get("network_calls", [])
+            if not (host_approved and item.get("type") == "untrusted_host_blocked")
+        ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
@@ -21871,7 +22157,10 @@ def _python_exec(
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code)
+        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+        error = _check_code_safety(
+            code, host_approved = host_access_approved and not _api_host_access_refused()
+        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)

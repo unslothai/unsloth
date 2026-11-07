@@ -47,7 +47,11 @@ def h3_phase_need_gb(
     activations = H3_ACTIVATION_GB_PER_MPIXEL_FRAME * width * height * num_frames / 1_000_000
     slack = H3_FRAGMENTATION_FRACTION if fragmentation else 0.0
     denoise = H3_STREAM_WINDOW_GB + top_gb + activations * (1.0 + slack)
-    return max(te_streamed_gb, denoise, H3_VAE_DECODE_GB) + H3_PHASE_OVERHEAD_GB
+    from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
+    # 0.0 unless UNSLOTH_H3_SOL_VAE=1: Sol's weights + one whole-clip decode peak
+    decode = max(H3_VAE_DECODE_GB, sol_decode_need_gb(width, height, num_frames))
+    return max(te_streamed_gb, denoise, decode) + H3_PHASE_OVERHEAD_GB
 
 
 def _tensor_bytes(tensor: Any) -> int:
@@ -126,6 +130,304 @@ def is_resident(group: Any) -> bool:
     return bool(getattr(group, "_unsloth_resident", False))
 
 
+# A resident group's host copy is only read again on demote, so it is released while the group is resident and
+# rebuilt from the device copy (bit-exact) on demote: the H3 L4 load gives those ~11 GB to the conditioner instead.
+H3_RESIDENT_UNPIN_ENV = "UNSLOTH_H3_RESIDENT_UNPIN"
+_RELEASED_ATTR = "_unsloth_host_released"
+# Floor (MiB) of the available host RAM a rebuild leaves; the load's own reserve (``encoder_resident_keep_mib``, what
+# the conditioner share was sized to leave) applies when larger. Below it the host-yield callback gives RAM back first.
+H3_REBUILD_KEEP_MIB = 2048
+
+
+def h3_resident_unpin_enabled() -> bool:
+    return str(os.environ.get(H3_RESIDENT_UNPIN_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _host_leaf_bytes(tensor: Any) -> int:
+    return sum(int(leaf.numel()) * int(leaf.element_size()) for leaf in _host_leaves(tensor))
+
+
+def released_host_bytes(group: Any) -> int:
+    return int(getattr(group, _RELEASED_ATTR, 0) or 0)
+
+
+def release_host_copy(group: Any, logger: Any = None) -> int:
+    """Drop the host copy of a resident ``group`` (its weights live on the device); returns bytes released, 0 if kept.
+    Kept when off, when a background pin still owns the group, or when any weight still reads its host copy."""
+    if not h3_resident_unpin_enabled() or not is_resident(group) or released_host_bytes(group):
+        return 0
+    cpu = getattr(group, "cpu_param_dict", None)
+    if not isinstance(cpu, dict) or not cpu:
+        return 0
+    pinner = getattr(group, "_unsloth_background_pin", None)
+    wait = getattr(pinner, "wait", None)
+    if callable(wait):
+        try:
+            wait(group)
+        except Exception:  # noqa: BLE001 -- unknown pin state: keep the copy
+            return 0
+    tensors = _group_tensors(group)
+    if any(t not in cpu for t in tensors):
+        return 0
+    for t in tensors:
+        host = cpu[t]
+        if getattr(host, "device", None) is None or host.device.type != "cpu" or _reads(t, host):
+            return 0  # a weight still points at its host copy: not on the device
+    nbytes = sum(_host_leaf_bytes(cpu[t]) for t in tensors)
+    group.cpu_param_dict = {}
+    setattr(group, _RELEASED_ATTR, max(1, nbytes))
+    return nbytes
+
+
+def _host_copy_of(tensor: Any) -> Any:
+    """Host copy of a device ``tensor`` in the layout ``_pin_host_tensor`` gives (pinned where CUDA is up)."""
+    import torch
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if is_traceable_wrapper_subclass(tensor):
+        names, ctx = tensor.__tensor_flatten__()
+        inner = {name: _host_copy_of(getattr(tensor, name)) for name in names}
+        return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
+    data = tensor.detach()
+    if type(data) is torch.nn.Parameter:
+        data = data.data
+    host = data.to("cpu", copy = True)
+    if not torch.cuda.is_available():
+        return host
+    return _pin_host_tensor(host)
+
+
+def rebuild_host_copy(
+    group: Any,
+    *,
+    host_yield: Any = None,
+    logger: Any = None,
+) -> int:
+    """Re-create a released group's host copy from its device weights (an exact copy). ``host_yield(nbytes)`` is asked
+    for RAM first when the copy would leave under ``H3_REBUILD_KEEP_MIB`` available. Returns bytes rebuilt."""
+    need = released_host_bytes(group)
+    if not need:
+        return 0
+    import torch
+
+    if host_yield is not None:
+        try:
+            from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
+            total, available = host_ram_mib()
+            if available is not None:
+                keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
+                deficit = (need >> 20) + keep - int(available)
+                if deficit > 0:
+                    host_yield(deficit << 20)
+        except Exception as exc:  # noqa: BLE001 -- rebuild anyway
+            if logger is not None:
+                logger.warning(
+                    "video.h3_residency: host RAM check before a rebuild failed: %s", exc
+                )
+    if torch.cuda.is_available():
+        torch.cuda.current_stream().synchronize()
+    host = {}
+    with torch.no_grad():
+        for t in _group_tensors(group):
+            source = t if _is_wrapper(t) else t.data
+            host[t] = _host_copy_of(source)
+    group.cpu_param_dict = host
+    setattr(group, _RELEASED_ATTR, 0)
+    return need
+
+
+def _is_wrapper(tensor: Any) -> bool:
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+    return is_traceable_wrapper_subclass(tensor)
+
+
+# A slab still alive only for a few small weights of other groups (first-fit packs them into earlier slabs' tails)
+# is compacted: those weights move to their own pinned copies so the slab is freed. Fraction of the slab still used.
+H3_COMPACT_MAX_LIVE_FRACTION = 0.25
+_H3_COMPACT_MIN_SLAB = 64 << 20
+# The compaction's new pinned copies exist before any old slab is freed and pinned pages cannot be reclaimed: an L4 at
+# a 16 GiB budget was OOM-killed when the first request's re-fit re-pinned 13.2 GB of whole weights next to a
+# conditioner share sized to leave only the load's reserve. Priced (default): only the inner tensors that live in the
+# compacted slab move, the move is checked against the load's reserve (the conditioner share yields first) and slabs
+# that do not fit wait for a later re-fit. ``UNSLOTH_H3_COMPACT_PRICED=0`` restores the unpriced whole-weight move.
+H3_COMPACT_PRICED_ENV = "UNSLOTH_H3_COMPACT_PRICED"
+
+
+def h3_compact_priced_enabled() -> bool:
+    return str(os.environ.get(H3_COMPACT_PRICED_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _storage_key(leaf: Any) -> Optional[int]:
+    try:
+        if leaf.device.type != "cpu" or leaf.numel() == 0:
+            return None
+        return int(leaf.untyped_storage().data_ptr())
+    except Exception:  # noqa: BLE001 -- no storage (meta / sparse): never compacted
+        return None
+
+
+def _pin_cost(leaf: Any) -> int:
+    """Pinned bytes ``_pin_host_tensor`` takes for plain ``leaf``: page-exact when registered, else the host
+    allocator's power-of-two block."""
+    import torch
+
+    from .diffusion_pinned_arena import _packable, _pow2_ceil
+
+    nbytes = int(leaf.numel()) * int(leaf.element_size())
+    if type(leaf) is torch.Tensor and _packable(leaf):
+        return -(-nbytes // 4096) * 4096
+    return _pow2_ceil(nbytes)
+
+
+def _repin_leaves_in(
+    src: Any,
+    keys: set,
+    depth: int = 0,
+) -> tuple[Any, int]:
+    """``src`` with only its inner tensors stored in one of ``keys`` re-pinned (exact copies); the others are shared.
+    Returns ``(src, 0)`` when none is."""
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if depth < 4 and is_traceable_wrapper_subclass(src):
+        names, ctx = src.__tensor_flatten__()
+        inner = {}
+        moved = 0
+        for name in names:
+            inner[name], n = _repin_leaves_in(getattr(src, name), keys, depth + 1)
+            moved += n
+        if not moved:
+            return src, 0
+        return type(src).__tensor_unflatten__(inner, ctx, src.size(), src.stride()), moved
+    if _storage_key(src) not in keys:
+        return src, 0
+    return _pin_host_tensor(src), int(src.numel()) * int(src.element_size())
+
+
+def _compact_headroom_bytes(cost: int, host_yield: Any, logger: Any) -> Optional[int]:
+    """Bytes of new pinned copies the host can take above the load's reserve, after asking ``host_yield`` (the
+    conditioner's resident share) for the deficit. None when host RAM is unreadable (no bound)."""
+    from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
+
+    total, available = host_ram_mib()
+    if available is None:
+        return None
+    keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
+    deficit = -(-cost >> 20) + keep - int(available)
+    if deficit > 0 and host_yield is not None:
+        try:
+            host_yield(deficit << 20)
+        except Exception as exc:  # noqa: BLE001 -- price against what is available now
+            if logger is not None:
+                logger.warning(
+                    "video.h3_residency: host RAM yield before a compaction failed: %s", exc
+                )
+        _total, now = host_ram_mib()
+        if now is not None:
+            available = now
+    return max(0, int(available) - keep) << 20
+
+
+def compact_host_slabs(
+    groups: list,
+    logger: Any = None,
+    *,
+    host_yield: Any = None,
+    report: Optional[dict] = None,
+) -> int:
+    """Move the host weights that keep a mostly-released pinned slab alive into fresh pinned copies (exact copies,
+    re-pointed like the arena's own pin), so the slab returns to the OS. Returns bytes of slabs freed (estimated).
+    ``report["deferred"]``: eligible slabs left for a later call because their copies did not fit the host reserve."""
+    from .diffusion_pinned_arena import _repoint
+
+    priced = h3_compact_priced_enabled()
+    live: dict = {}
+    sizes: dict = {}
+    for group in groups:
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        for tensor, host in list(cpu.items()):
+            for leaf in _host_leaves(host):
+                key = _storage_key(leaf)
+                if key is None:
+                    continue
+                sizes[key] = int(leaf.untyped_storage().nbytes())
+                live.setdefault(key, []).append(
+                    (group, tensor, host, int(leaf.numel()) * int(leaf.element_size()), leaf)
+                )
+    eligible = [
+        key
+        for key, entries in live.items()
+        if sizes[key] >= _H3_COMPACT_MIN_SLAB
+        and sum(e[3] for e in entries) <= H3_COMPACT_MAX_LIVE_FRACTION * sizes[key]
+    ]
+    chosen = eligible
+    deferred = 0
+    if priced and eligible:
+        costs = {key: sum(_pin_cost(e[4]) for e in live[key]) for key in eligible}
+        room = _compact_headroom_bytes(sum(costs.values()), host_yield, logger)
+        if room is not None:
+            chosen = []
+            for key in eligible:
+                if costs[key] <= room:
+                    chosen.append(key)
+                    room -= costs[key]
+            deferred = len(eligible) - len(chosen)
+    keys = set(chosen)
+    freed = moved = 0
+    for key in chosen:
+        for group, tensor, host, _n, _leaf in live[key]:
+            cpu = group.cpu_param_dict
+            if cpu.get(tensor) is not host:
+                continue  # already moved through another leaf
+            if priced:
+                new, n = _repin_leaves_in(host, keys)
+            else:
+                new, n = _pin_host_tensor(host), _host_leaf_bytes(host)
+            cpu[tensor] = new
+            if _reads(tensor, host):
+                _repoint(tensor, new)
+            moved += n
+        freed += sizes[key]
+    del live
+    if report is not None:
+        report["deferred"] = deferred
+    if deferred and logger is not None:
+        logger.info(
+            "video.h3_residency: %d pinned slab(s) left for a later re-fit (their copies do not fit the host reserve)",
+            deferred,
+        )
+    if freed:
+        try:
+            from .diffusion_offload_prefetch import bump_placement_epoch
+            bump_placement_epoch()
+        except Exception:  # noqa: BLE001
+            pass
+        if logger is not None:
+            logger.info(
+                "video.h3_residency: compacted %.2f GB of pinned slabs (moved %.1f MB of other blocks' weights)",
+                freed / 1e9,
+                moved / 1e6,
+            )
+    return freed
+
+
+def _host_empty_cache() -> None:
+    try:
+        from .diffusion_memory import _host_empty_cache as empty
+        empty()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def make_resident(group: Any) -> None:
     """Onload ``group`` once and make its hooks' onload / offload no-ops, so it stays on the device."""
     import torch
@@ -150,12 +452,30 @@ def make_resident(group: Any) -> None:
     group._unsloth_resident = True
 
 
-def demote(group: Any) -> None:
-    """Undo ``make_resident``: restore the streaming onload / offload and move the weights back to the host copy."""
+def demote(
+    group: Any,
+    *,
+    host_yield: Any = None,
+    logger: Any = None,
+    rebuild: bool = True,
+) -> None:
+    """Undo ``make_resident``: restore the streaming onload / offload and move the weights back to the host copy.
+    A released host copy is rebuilt from the device first; ``rebuild=False`` (unload) drops the weights instead."""
     import torch
 
     if not is_resident(group):
         return
+    if released_host_bytes(group):
+        if rebuild:
+            nbytes = rebuild_host_copy(group, host_yield = host_yield, logger = logger)
+            if logger is not None:
+                logger.info(
+                    "video.h3_residency: rebuilt a demoted block's host copy from the device (%.2f GB)",
+                    nbytes / 1e9,
+                )
+        else:
+            group._unsloth_resident = False
+            return
     saved_on, saved_off = getattr(group, "_unsloth_saved_io", (None, None))
     for name, saved in (("onload_", saved_on), ("offload_", saved_off)):
         if saved is not None:
@@ -184,6 +504,15 @@ class H3Residency:
         self.top_bytes = group_payload_bytes(self.top) if self.top is not None else 0
         self.block_bytes = [group_payload_bytes(g) for g in self.blocks]
         self.max_blocks = 0
+        # host_yield(nbytes): frees host RAM (the conditioner's resident share) before a demoted block is rebuilt
+        self.host_yield: Any = None
+        # host_top_up(): hands RAM a re-fit released to the conditioner's resident share (after the load only)
+        self.host_top_up: Any = None
+        self.released_bytes = 0
+        self.topped_bytes = 0
+        # bytes of slabs the last ``apply`` compacted; a compaction that could not fit every slab retries next re-fit
+        self.compacted_bytes = 0
+        self.compact_pending = False
 
     @property
     def usable(self) -> bool:
@@ -224,15 +553,34 @@ class H3Residency:
         import torch
 
         for i in range(len(self.blocks) - 1, n - 1, -1):
-            demote(self.blocks[i])
+            demote(self.blocks[i], host_yield = getattr(self, "host_yield", None), logger = self.logger)
         if self.top is not None and not top:
-            demote(self.top)
+            demote(self.top, host_yield = getattr(self, "host_yield", None), logger = self.logger)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if self.top is not None and top:
             make_resident(self.top)
         for i in range(n):
             make_resident(self.blocks[i])
+        # Block groups only: the top-level group keeps its own pinned copy (it is re-pinned by its own path).
+        freed = sum(release_host_copy(self.blocks[i], logger = self.logger) for i in range(n))
+        self.compacted_bytes = 0
+        if freed or getattr(self, "compact_pending", False):
+            groups = list(self.blocks) + ([self.top] if self.top is not None else [])
+            report: dict = {}
+            try:
+                self.compacted_bytes = compact_host_slabs(
+                    groups,
+                    logger = self.logger,
+                    host_yield = getattr(self, "host_yield", None),
+                    report = report,
+                )
+            except Exception as exc:  # noqa: BLE001 -- the released copies are still dropped
+                if self.logger is not None:
+                    self.logger.warning("video.h3_residency: slab compaction skipped: %s", exc)
+            self.compact_pending = bool(report.get("deferred"))
+            _host_empty_cache()
+        self.released_bytes = sum(released_host_bytes(g) for g in self.blocks)
 
     def fit(
         self,
@@ -245,15 +593,29 @@ class H3Residency:
         self.apply(top, n)
         if initial:
             self.max_blocks = n
+        released = getattr(self, "released_bytes", 0)
+        top_up = getattr(self, "host_top_up", None)
+        # A compaction may have taken the conditioner share back to fit its copies: it is re-sized after the pins.
+        compacted = getattr(self, "compacted_bytes", 0) and h3_compact_priced_enabled()
+        if (released > getattr(self, "topped_bytes", 0) or compacted) and callable(top_up):
+            try:
+                top_up()
+            except Exception as exc:  # noqa: BLE001 -- the conditioner stays mapped
+                if self.logger is not None:
+                    self.logger.warning("video.h3_residency: conditioner top-up failed: %s", exc)
+            self.topped_bytes = released
+        elif released < getattr(self, "topped_bytes", 0):
+            self.topped_bytes = released
         if self.logger is not None:
             self.logger.info(
                 "video.h3_residency: %d of %d denoiser blocks resident (+ top-level %s), %.2f GB on the device, "
-                "budget %.2f GB",
+                "budget %.2f GB, %.2f GB of resident host copies released",
                 n,
                 len(self.blocks),
                 "resident" if top else "streamed",
                 self.resident_bytes() / 1e9,
                 budget_bytes / 1e9,
+                self.released_bytes / 1e9,
             )
         return top, n
 
@@ -268,7 +630,7 @@ def release_all(residency: "H3Residency", *, logger: Any = None) -> None:
     for group in groups:
         try:
             if is_resident(group):
-                demote(group)
+                demote(group, host_yield = getattr(residency, "host_yield", None), logger = logger)
             else:
                 group.offload_()
         except Exception as exc:  # noqa: BLE001

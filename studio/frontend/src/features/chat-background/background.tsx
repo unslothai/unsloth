@@ -16,8 +16,9 @@ import {
 	fadeKey,
 	visibilityKey,
 } from "./model";
-import { useMaterialStore } from "./material";
+import { useAppliedMaterial } from "./material";
 import { ComposerGlassLenses } from "./lens";
+import { useWallpaperHostFlags } from "./host-flags";
 import { type ImageTone, glassReadability, measureTone } from "./tone";
 
 type Frame = { url: string; value: ChatBackgroundValue };
@@ -221,7 +222,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 		[],
 	);
 	const shownReady = Boolean(value && active && frames.current);
-	const glass = useMaterialStore((s) => s.material !== "solid");
+	const glass = useAppliedMaterial() !== "solid";
 	const [appWallpaper, setAppWallpaper] = useState<HTMLDivElement | null>(null);
 	const [tone, setTone] = useState<ImageTone | null>(null);
 	const frameUrl = frames.current?.url;
@@ -282,6 +283,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 			setAppWallpaper(null);
 		};
 	}, [shownReady]);
+	useWallpaperHostFlags(host);
 	if (!value || !active) return null;
 	return (
 		<div

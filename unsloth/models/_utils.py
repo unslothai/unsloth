@@ -1107,6 +1107,13 @@ _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") 
 FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
 
 
+def _is_4d(tensor):
+    # Dynamo < 2.10 reads hasattr / getattr on a traced tensor as missing (pytorch/pytorch#167651).
+    if isinstance(tensor, torch.Tensor):
+        return tensor.dim() == 4
+    return callable(getattr(tensor, "dim", None)) and tensor.dim() == 4
+
+
 def _dropped_causal_mask(module, query, key, args, kwargs):
     """A flex call whose causal mask unsloth_zoo dropped (stock flex reads None as bidirectional)."""
     attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
@@ -1115,7 +1122,7 @@ def _dropped_causal_mask(module, query, key, args, kwargs):
     # Vision callers pass None meaning bidirectional, and is_causal=False is a per-call override.
     if getattr(module, "is_causal", None) is not True or kwargs.get("is_causal", None) is False:
         return False
-    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+    if not (_is_4d(query) and key.dim() == 4):
         return False
     return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
 
@@ -1256,9 +1263,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
-                _flex_kernel_options_for_head_dim(query.shape[-1])
-                if hasattr(query, "dim") and query.dim() == 4
-                else None
+                _flex_kernel_options_for_head_dim(query.shape[-1]) if _is_4d(query) else None
             )
         except Exception:
             kernel_options = None
@@ -1268,8 +1273,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         if (
             kernel_options is None
             and small_smem_device_ok
-            and hasattr(query, "dim")
-            and query.dim() == 4
+            and _is_4d(query)
             and (
                 getattr(query, "dtype", None) in (torch.float16, torch.bfloat16)
                 or (
@@ -1312,8 +1316,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         if (
             kernel_options is None
             and tuned_bwd_device_ok
-            and hasattr(query, "dim")
-            and query.dim() == 4
+            and _is_4d(query)
             and _flex_call_needs_backward(query, key, value)
             and _flex_tuned_bwd_fits(args, kwargs)
         ):
@@ -4760,7 +4763,15 @@ elif DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-    if _package_available("flash_attn"):
+    if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
+        # Studio's diffusion-only Triton flash-attn: keep LLM attention on SDPA.
+        import transformers.utils.import_utils
+
+        transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+        import transformers.utils
+
+        transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+    elif _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
         try:
             try:
@@ -6409,7 +6420,7 @@ def patch_gradient_accumulation_fix(Trainer):
             # before anything below splits or shards the model.
             _parallel_capabilities_pre(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_PP_SIZE: trainers / arguments the pipeline step cannot run, refused before the split.
-            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs)
+            _pipeline_parallel_env_refusals(self, _original_trainer_init, args, kwargs, model)
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             tp_env = _tensor_parallel_env_trainer_pre(model)
@@ -6635,6 +6646,59 @@ def _prebuilt_optimizer(trainer, init, args, kwargs):
     return None
 
 
+def _cp_trainer_refusal(trainer_cls, cp) -> str:
+    """Why a trainer class carries no context parallel wrapper under UNSLOTH_CP_SIZE, and what to do."""
+    import sys
+
+    name = trainer_cls.__name__
+    bases = {c.__name__.removeprefix("Unsloth").removeprefix("_CPU") for c in trainer_cls.__mro__}
+    kind = next((k for k in ("SFTTrainer", "DPOTrainer", "GRPOTrainer") if k in bases), None)
+    head = (
+        f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) was requested, but {name} "
+    )
+    if sys.modules.get("unsloth._cpu_init") is not None or getattr(
+        trainer_cls, "_unsloth_cpu", False
+    ):
+        return (
+            head
+            + "runs on Unsloth's CPU backend (no GPU was found), which uses TRL's own trainers and does not "
+            "wire context parallel; every rank would train on the whole sequence. Instead: launch on GPUs "
+            "(torchrun with CUDA devices visible), or drop cp."
+        )
+    if kind is None:
+        return (
+            head
+            + "is not one of the trainers context parallel hooks into (SFTTrainer, DPOTrainer, GRPOTrainer); "
+            "every rank would train on the whole sequence. Instead: use SFTTrainer (it takes a plain Trainer "
+            "script's arguments), or drop cp."
+        )
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        reason = "UNSLOTH_ALLOW_CPU=1 skips Unsloth's trainer patches"
+        fix = "unset UNSLOTH_ALLOW_CPU"
+    else:
+        try:
+            from .rl import PATCHED_TRAINER_BUILD_ERRORS
+        except Exception:
+            PATCHED_TRAINER_BUILD_ERRORS = {}
+        file = {
+            "SFTTrainer": "sft_trainer",
+            "DPOTrainer": "dpo_trainer",
+            "GRPOTrainer": "grpo_trainer",
+        }[kind]
+        built = PATCHED_TRAINER_BUILD_ERRORS.get(file)
+        reason = (
+            f"Unsloth's patched {kind} could not be built ({built})"
+            if built
+            else f"Unsloth's context parallel wrapper was not installed on {name} (import unsloth before trl)"
+        )
+        fix = "import unsloth before trl / transformers, and check the warning above for the build failure"
+    return (
+        head
+        + f"has no context parallel wrapper: {reason}; every rank would train on the whole sequence. "
+        f"Instead: {fix}, or drop cp."
+    )
+
+
 def _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
     """Trainer(optimizer_cls_and_kwargs = (cls, {"params": ...})) carries parameters chosen before __init__."""
     value = kwargs.get("optimizer_cls_and_kwargs")
@@ -6679,11 +6743,7 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
 
     cp = env_cp_size()
     if cp > 1 and not getattr(type(trainer), "__unsloth_context_parallel__", False):
-        raise NotImplementedError(
-            f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) runs through SFTTrainer, "
-            f"DPOTrainer and GRPOTrainer; {type(trainer).__name__} would train every rank on the whole sequence. "
-            "Instead: use SFTTrainer (a plain Trainer script: SFTTrainer takes the same arguments), or drop cp."
-        )
+        raise NotImplementedError(_cp_trainer_refusal(type(trainer), cp))
     from .tp_env import env_layout
 
     layout = env_layout()
@@ -6694,7 +6754,13 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
     check_layout(layout, type(trainer), model, training_args, cp_backend = backend)
 
 
-def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
+def _pipeline_parallel_env_refusals(
+    trainer,
+    init,
+    args,
+    kwargs,
+    model = None,
+):
     if not os.environ.get("UNSLOTH_PP_SIZE"):
         return
     from .tp_env import env_layout
@@ -6704,13 +6770,17 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         return
     training_args = kwargs.get("args")
     compute_loss_func = kwargs.get("compute_loss_func")
-    if training_args is None or (compute_loss_func is None and args):
+    train_dataset = kwargs.get("train_dataset")
+    eval_dataset = kwargs.get("eval_dataset")
+    if training_args is None or args:
         try:
             import inspect
 
             bound = inspect.signature(init).bind_partial(trainer, *args, **kwargs)
             training_args = bound.arguments.get("args", training_args)
             compute_loss_func = bound.arguments.get("compute_loss_func", compute_loss_func)
+            train_dataset = bound.arguments.get("train_dataset", train_dataset)
+            eval_dataset = bound.arguments.get("eval_dataset", eval_dataset)
         except (TypeError, ValueError):
             pass
     if layout.tp > 1 and (
@@ -6727,7 +6797,15 @@ def _pipeline_parallel_env_refusals(trainer, init, args, kwargs):
         )
     from .pp_env import pp_trainer_refusals
 
-    pp_trainer_refusals(type(trainer), training_args, layout, compute_loss_func = compute_loss_func)
+    pp_trainer_refusals(
+        type(trainer),
+        training_args,
+        layout,
+        compute_loss_func = compute_loss_func,
+        model = model,
+        train_dataset = train_dataset,
+        eval_dataset = eval_dataset,
+    )
 
 
 def _tensor_parallel_env_trainer_pre(model):
@@ -10681,26 +10759,7 @@ def _training_reserve_bytes(
     return reserve, seq_len
 
 
-def _skip_aware_flag(cls):
-    # for_training, gradient_checkpointing_enable and the trainer rewrite the flag; a marked layer keeps reading False.
-    if cls.__dict__.get("_unsloth_skip_aware", False):
-        return
-
-    def _get(self):
-        if self.__dict__.get("_unsloth_skip_checkpoint", False) or self.__dict__.get(
-            "_unsloth_every_n_skip", False
-        ):
-            return False
-        # Unmarked layers of the class still hold the flag in their own dict.
-        return self.__dict__.get(
-            "_unsloth_gc_flag", self.__dict__.get("gradient_checkpointing", False)
-        )
-
-    def _set(self, value):
-        self.__dict__["_unsloth_gc_flag"] = value
-
-    cls.gradient_checkpointing = property(_get, _set)
-    cls._unsloth_skip_aware = True
+from .._gc_kwargs import _skip_aware_flag
 
 
 def _gc_keep_layers_env():
@@ -11133,132 +11192,7 @@ def skip_checkpointing(model, layers = 0):
     return chosen
 
 
-def _apply_every_n_layers(model, every_n_layers):
-    """Checkpoint GradientCheckpointingLayer 0, N, 2N...; held by the skip-aware flag so for_training keeps it."""
-    try:
-        from transformers.modeling_layers import GradientCheckpointingLayer
-    except Exception:
-        return []
-    layers = [
-        m
-        for m in model.modules()
-        if isinstance(m, GradientCheckpointingLayer)
-        or "_unsloth_gradient_checkpointing_holder" in m.__dict__
-    ]
-    skipped = []
-    for i, layer in enumerate(layers):
-        if every_n_layers > 1 and i % every_n_layers != 0:
-            if not isinstance(layer, GradientCheckpointingLayer):
-                layer.__dict__["_unsloth_every_n_skip"] = True
-                skipped.append(i)
-                continue
-            if not hasattr(layer, "gradient_checkpointing"):
-                continue
-            current = layer.__dict__.pop("gradient_checkpointing", None)
-            _skip_aware_flag(type(layer))
-            if current is not None:
-                layer.__dict__["_unsloth_gc_flag"] = current
-            layer.__dict__["_unsloth_every_n_skip"] = True
-            skipped.append(i)
-        else:
-            layer.__dict__.pop("_unsloth_every_n_skip", None)
-    return skipped
-
-
-_OFFLOADING_CHECKPOINT_SHIMS = frozenset(
-    {"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"}
-)
-
-
-def _checkpoint_offloads(fn):
-    # Unsloth checkpoint functions that offload set `_unsloth_offloads`; the zoo shims are known by name.
-    return bool(getattr(fn, "_unsloth_offloads", False)) or (
-        getattr(fn, "__name__", "") in _OFFLOADING_CHECKPOINT_SHIMS
-    )
-
-
-_GC_KWARGS_WARNED = set()
-
-
-def _gc_kwargs_note(key, message):
-    if key not in _GC_KWARGS_WARNED:
-        _GC_KWARGS_WARNED.add(key)
-        print(message)
-
-
-def patch_gradient_checkpointing_enable_kwargs():
-    """Pop every_n_layers / offload from gradient_checkpointing_kwargs; offload under Unsloth's offloading shim would double-offload."""
-    try:
-        from transformers import PreTrainedModel
-        import transformers.modeling_utils as hf_modeling_utils
-    except Exception:
-        return
-    original = PreTrainedModel.gradient_checkpointing_enable
-    if getattr(original, "_unsloth_gc_kwargs", False):
-        return
-    try:
-        params = list(inspect.signature(original).parameters)
-    except Exception:
-        return
-    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
-    native_every = "every_n_layers" in params
-    native_offload = "offload" in params
-
-    @functools.wraps(original)
-    def gradient_checkpointing_enable(
-        self,
-        gradient_checkpointing_kwargs = None,
-        *args,
-        **kwargs,
-    ):
-        kwargs.update(zip(positional, args))
-        every = kwargs.pop("every_n_layers", None)
-        offload = kwargs.pop("offload", None)
-        if gradient_checkpointing_kwargs is not None:
-            gc_kwargs = dict(gradient_checkpointing_kwargs)
-            dict_every = gc_kwargs.pop("every_n_layers", None)
-            dict_offload = gc_kwargs.pop("offload", None)
-            every = dict_every if every is None else every
-            offload = dict_offload if offload is None else offload
-            if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
-                gradient_checkpointing_kwargs = gc_kwargs or None
-        every = 1 if every is None else int(every)
-        if every < 1:
-            raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
-        if offload:
-            shim = getattr(hf_modeling_utils, "checkpoint", None)
-            if _checkpoint_offloads(shim):
-                _gc_kwargs_note(
-                    "offload",
-                    "Unsloth: gradient checkpointing already offloads activations to host memory, "
-                    "so transformers' offload=True is ignored.",
-                )
-                offload = False
-            elif not native_offload:
-                _gc_kwargs_note(
-                    "offload_native",
-                    "Unsloth: gradient checkpointing offload=True needs transformers >= 5.17; ignored. "
-                    'use_gradient_checkpointing = "unsloth" offloads activations on any version.',
-                )
-                offload = False
-        if native_offload and offload:
-            kwargs["offload"] = True
-        if native_every:
-            kwargs["every_n_layers"] = 1
-        out = original(self, gradient_checkpointing_kwargs, **kwargs)
-        if every > 1 or any("_unsloth_every_n_skip" in m.__dict__ for m in self.modules()):
-            skipped = _apply_every_n_layers(self, every)
-            if every > 1 and not skipped:
-                _gc_kwargs_note(
-                    "every_n_layers",
-                    f"Unsloth: every_n_layers = {every} found no GradientCheckpointingLayer to skip; "
-                    "every layer stays checkpointed.",
-                )
-        return out
-
-    gradient_checkpointing_enable._unsloth_gc_kwargs = True
-    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
-
+from .._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()
 

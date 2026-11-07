@@ -35,7 +35,9 @@ export function DesktopUpdateControl(): ReactElement | null {
       version: formatDesktopVersion(update.info.version),
     });
     description = update.isExternalServer
-      ? t("settings.about.update.desktopExternalServer")
+      ? t("settings.about.update.desktopExternalServer", {
+          port: update.externalServerPort ?? "",
+        })
       : update.updatePolicyMode === "manual_linux_package"
         ? t("settings.about.update.desktopManualInstall")
         : t("settings.about.update.desktopAvailableDescription");

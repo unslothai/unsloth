@@ -66,6 +66,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
@@ -88,6 +89,7 @@ from .loader_utils import (
     warn_if_bitsandbytes_quantized_nothing,
 )
 from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -97,6 +99,7 @@ from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
     HAS_XFORMERS,
+    context_parallel_attention,
     run_attention,
     SDPA,
     select_attention_backend,
@@ -1092,6 +1095,7 @@ def fast_layernorm_compiled(layernorm, X):
 
 
 # Ported from transformers models/llama/modeling_llama.py#L320
+@context_parallel_attention(rl = True)
 def LlamaAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -2016,6 +2020,9 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # Not a named parameter: HF's find_labels would make it a required eval label.
         shift_labels = kwargs.pop("shift_labels", None)
+        # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
+        if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
+            _decode_graphs.release_if_training(self)
         past_key_values = _cache_as_legacy_tuple(past_key_values)
         if past_key_values is not None and len(past_key_values) == 0:
             past_key_values = None
@@ -2984,6 +2991,30 @@ def _generation_max_len(self, args, kwargs):
         return 0
 
 
+def _generation_plan_len(self, args, kwargs):
+    """_generation_max_len, or a max_length the caller's own GenerationConfig sets explicitly (the call can grow
+    to it; the model's default config is not a request). Sizes both the plan and the cache growth cap."""
+    max_len = _generation_max_len(self, args, kwargs)
+    if max_len or kwargs.get("max_new_tokens", None) is not None:
+        return max_len
+    try:
+        config = kwargs.get("generation_config", None)
+        explicit = config.to_diff_dict() if config is not None else {}
+        if (
+            explicit.get("max_new_tokens", None) is None
+            and explicit.get("max_length", None) is not None
+        ):
+            return int(explicit["max_length"])
+    except Exception:
+        pass
+    return max_len
+
+
+def _generation_input_ids(args, kwargs):
+    ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if args else None))
+    return ids if ids is not None else kwargs.get("inputs_embeds", None)
+
+
 def unsloth_fast_generate(self, *args, **kwargs):
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
@@ -3062,20 +3093,48 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Decided once per call (env / RL generation scope), so the prefill and every decode step agree.
-    graphs = _decode_graphs.enabled()
-    if graphs:
-        _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
-    # Mixed precision autocast.
-    try:
-        with (
-            _get_inference_mode_context_manager(self),
-            torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-        ):
-            output = self._old_generate(*args, **kwargs)
-    finally:
+    # Decided once per call so the prefill and every decode step agree.
+    with _decode_graphs.generate_scope():
+        graphs = _decode_graphs.enabled()
+        plan, token = "graph", None
         if graphs:
-            _decode_graphs.end_generation()
+            plan_len = _generation_plan_len(self, args, kwargs)
+            try:
+                ids = _generation_input_ids(args, kwargs)
+                bsz = _decode_graphs.decode_batch(
+                    int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                )
+                short = _decode_graphs.short_call(self, plan_len, int(ids.shape[1]), bsz)
+                if short and _decode_graphs.HELD not in self.__dict__:
+                    plan, token = "eager", None
+                else:
+                    plan, token = _decode_graphs.plan_call(
+                        self, ids, dtype, KV_CACHE_INCREMENT, plan_len, bsz = bsz, eager = short,
+                    )  # fmt: skip
+                    if short:
+                        plan, token = "eager", None
+            except Exception:
+                plan, token = "graph", None
+            if plan == "eager":
+                graphs = False
+            else:
+                _decode_graphs.start_generation(plan_len)
+        redos = _decode_graphs.EAGER_REDOS
+        # Mixed precision autocast.
+        try:
+            with (
+                _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
+                _get_inference_mode_context_manager(self),
+                torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+            ):
+                output = _decode_graphs.generate_with_fallback(
+                    self, self._old_generate, graphs, args, kwargs
+                )
+        finally:
+            if graphs:
+                _decode_graphs.end_generation()
+        if graphs and _decode_graphs.EAGER_REDOS == redos:
+            _decode_graphs.record_need(self, token)
     if graphs and restore_training_mode:
         # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
         # decode buffers for training.
@@ -3084,6 +3143,16 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # The returned cache views the persistent decode buffers: hand them over, so a later
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
+    elif graphs:
+        # keep_only uses the expanded decode batch.
+        ids = _generation_input_ids(args, kwargs)
+        expected = None
+        if hasattr(ids, "shape") and len(ids.shape) >= 2:
+            expected = _decode_graphs.decode_batch(
+                int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+            )
+        _decode_graphs.keep_only(self, expected)
+        self.__dict__[_decode_graphs.HELD] = True
 
     if restore_training_mode:
         FastLlamaModel.for_training(
@@ -3350,13 +3419,20 @@ def runs_fast_forward(
 ):
     """True when `module` runs Unsloth's `fast` as its class `name`: directly, or through the gate that
     pre_patch installs (which runs `fast` only on modules marked by mark_unsloth_fast_path)."""
+    return fast is not None and running_forward(module, name) is fast
+
+
+def running_forward(module, name = "forward"):
+    """The function `module` runs as `name`; for pre_patch's gate, the wrapped fast forward only on marked modules."""
     method = getattr(type(module), name, None)
     method = getattr(method, "__func__", method)
-    if method is fast:
-        return True
-    if getattr(method, "_unsloth_gated", False) and getattr(method, "__wrapped__", None) is fast:
-        return bool(getattr(module, "_unsloth_fast_path", False))
-    return False
+    if getattr(method, "_unsloth_gated", False):
+        return (
+            getattr(method, "__wrapped__", None)
+            if getattr(module, "_unsloth_fast_path", False)
+            else None
+        )
+    return method
 
 
 def mark_unsloth_fast_path(model):
@@ -3773,6 +3849,16 @@ class FastLlamaModel:
                 revision = revision,
             )
         model_config.model_name = model_name
+        _fp8_backfilled = backfill_fp8_modules_to_convert(
+            model_config,
+            model_name,
+            token,
+            revision,
+            local_files_only = kwargs.get("local_files_only", False),
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         model_max_seq_length = model_config.max_position_embeddings
 
         verify_fp8_support_if_applicable(
@@ -4251,6 +4337,8 @@ class FastLlamaModel:
                     or _ct_requant
                     or _fp8_to_nf4
                     or _block_swap_saved is not None
+                    # Backfilled modules_to_convert lives only on model_config.
+                    or _fp8_backfilled
                 ):
                     # Transformers 5.x @strict init rejects extra kwargs alongside config=, so set overrides on the config instead.
                     if max_position_embeddings is not None:
@@ -4258,7 +4346,9 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
+                    if (
+                        _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
+                    ) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
                         with sync_load_when_quantizing(
@@ -5228,7 +5318,9 @@ class FastLlamaModel:
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
-        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastLlamaModel.patch_peft_model(
+            model, use_gradient_checkpointing, _defer_fp8_lora = True
+        )
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
@@ -5236,6 +5328,7 @@ class FastLlamaModel:
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        enable_fp8_lora(model)
         skip_checkpointing(model, checkpoint_skip_layers)
 
         if ensure_weight_tying:
@@ -5336,7 +5429,11 @@ class FastLlamaModel:
         return model
 
     @staticmethod
-    def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = "unsloth",
+        _defer_fp8_lora = False,
+    ):
         # Persist the GC mode: for_inference() clears it every GRPO step and TrainingArguments defaults
         # it to False, which would silently disable it at train time.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
@@ -5565,6 +5662,8 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        if not _defer_fp8_lora:
+            enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
         _legacy_block_compile(model)
         return model
@@ -5576,6 +5675,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5619,6 +5719,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
@@ -5648,6 +5749,7 @@ class FastLlamaModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)
