@@ -29,11 +29,11 @@ test("the backend's failure reason becomes the toast description", async () => {
 test("fixed backend text and an empty error keep the logged-failure title", async () => {
   const { videoFailureToast } = await import("../src/features/video/generation-failure.ts");
   const oom =
-    "Video generation failed. The renderer stopped unexpectedly. See the server log in Settings > Logs for its output.";
+    "Video generation failed. The renderer crashed. See Settings > Logs.";
   assert.deepEqual(videoFailureToast(oom), {
     title: "Video generation failed.",
     errorType: null,
-    detail: "The renderer stopped unexpectedly. See the server log in Settings > Logs for its output.",
+    detail: "The renderer crashed. See Settings > Logs.",
   });
   for (const empty of [null, undefined, "", "  "]) {
     assert.deepEqual(videoFailureToast(empty), {

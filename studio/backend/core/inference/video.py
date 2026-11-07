@@ -4849,7 +4849,7 @@ _NATIVE_CRASH_NEEDLES = (
 )
 
 
-_FAILURE_REASON_MAX_CHARS = 200
+_FAILURE_REASON_MAX_CHARS = 120
 _PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
 # Absolute POSIX, ~, drive, UNC or file:// paths; a quoted one may hold spaces ("C:\\Users\\Jo Ann").
 # A URL is kept for redact_log_text to scrub.
@@ -4870,7 +4870,8 @@ def _failure_reason(exc: BaseException) -> str:
     text = " ".join(text.split())
     reason = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
     if len(reason) > _FAILURE_REASON_MAX_CHARS:
-        reason = reason[: _FAILURE_REASON_MAX_CHARS - 3].rstrip() + "..."
+        cut = reason[: _FAILURE_REASON_MAX_CHARS - 3]
+        reason = (cut.rsplit(" ", 1)[0] if " " in cut else cut).rstrip(" ,;:") + "..."
     return reason
 
 
@@ -4895,17 +4896,17 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
                     _probe_target(request_shape), request_shape.get("attention_head_dims")
                 )
             ):
-                return f"{VIDEO_GENERATION_FAILED_MSG} {SDPA_MATH_ONLY_MESSAGE}"
+                return (
+                    f"{VIDEO_GENERATION_FAILED_MSG} Out of memory: this device has no fused attention "
+                    "kernel. Lower the resolution or frame count."
+                )
             return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The device ran out of memory. Try a smaller "
-                "resolution, fewer frames, or fewer steps."
+                f"{VIDEO_GENERATION_FAILED_MSG} Out of memory. Try a smaller resolution, fewer "
+                "frames or fewer steps."
             )
         text = str(exc).lower()
         if any(needle in text for needle in _NATIVE_CRASH_NEEDLES):
-            return (
-                f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
-                "server log in Settings > Logs for its output."
-            )
+            return f"{VIDEO_GENERATION_FAILED_MSG} The renderer crashed. See Settings > Logs."
         return f"{VIDEO_GENERATION_FAILED_MSG} {_failure_reason(exc)}"
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass

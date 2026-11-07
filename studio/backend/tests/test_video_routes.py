@@ -600,7 +600,7 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
     monkeypatch.setattr(backend, "generate", _oom)
     progress = _shared_setup_4(client)
     assert progress["error"].startswith("Video generation failed.")
-    assert "ran out of memory" in progress["error"]
+    assert "Out of memory" in progress["error"]
     assert "CUDA" not in progress["error"]
     assert "40.00 GiB" not in progress["error"]
 
@@ -634,7 +634,10 @@ def test_generate_pipeline_exception_reaches_the_progress_error(client, monkeypa
 
     monkeypatch.setattr(backend, "generate", _mismatch)
     progress = _shared_setup_4(client)
-    assert progress["error"] == f"Video generation failed. RuntimeError: {cause}"
+    assert progress["error"] == (
+        "Video generation failed. RuntimeError: Input type (CPUBFloat16Type) and weight type "
+        "(CUDABFloat16Type) should be the same or input should be..."
+    )
 
 
 def test_generate_failure_reason_is_redacted_and_bounded(client, monkeypatch):
@@ -657,7 +660,7 @@ def test_generate_failure_reason_is_redacted_and_bounded(client, monkeypatch):
     assert error.startswith("Video generation failed. OSError: cannot read <path> with")
     for leaked in (home, token, "~/models", "Users", "w.bin", "site-packages", "File "):
         assert leaked not in error
-    assert len(error) <= len("Video generation failed. ") + 200
+    assert len(error) <= len("Video generation failed. ") + 120
     assert error.endswith("...")
 
 
