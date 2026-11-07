@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 import json
+import os
 import asyncio
 import contextvars
 import functools
@@ -1137,7 +1138,48 @@ def _ships_custom_code(snapshot: Path) -> bool:
         return True
 
 
+# The cached-models listing reads every snapshot's README front matter on each request, and
+# yaml.safe_load is pure Python (a few ms per card). Snapshot files are content-addressed blobs, so
+# the parsed result is kept per path while the file's stat is unchanged; a file changed within the
+# settle window is not kept, since a coarse filesystem clock can give a rewrite identical timestamps.
+_CARD_FRONTMATTER: "OrderedDict[str, tuple[tuple, dict]]" = OrderedDict()
+_CARD_FRONTMATTER_MAX = 4096
+_CARD_FRONTMATTER_SETTLE_NS = 2_000_000_000
+_CARD_FRONTMATTER_LOCK = threading.Lock()
+
+
 def _read_model_card_frontmatter(path: Path) -> dict:
+    import copy
+
+    try:
+        st = os.stat(path)
+        key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    except (OSError, ValueError):
+        key = None
+    cache_id = str(path)
+    if key is not None:
+        with _CARD_FRONTMATTER_LOCK:
+            hit = _CARD_FRONTMATTER.get(cache_id)
+            if hit is not None and hit[0] == key:
+                _CARD_FRONTMATTER.move_to_end(cache_id)
+                return copy.deepcopy(hit[1])
+    data = _parse_model_card_frontmatter(path)
+    if key is not None and time.time_ns() - max(key[3], key[4]) > _CARD_FRONTMATTER_SETTLE_NS:
+        try:
+            st = os.stat(path)
+            unchanged = key == (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        except (OSError, ValueError):
+            unchanged = False
+        if unchanged:
+            with _CARD_FRONTMATTER_LOCK:
+                _CARD_FRONTMATTER[cache_id] = (key, copy.deepcopy(data))
+                _CARD_FRONTMATTER.move_to_end(cache_id)
+                while len(_CARD_FRONTMATTER) > _CARD_FRONTMATTER_MAX:
+                    _CARD_FRONTMATTER.popitem(last = False)
+    return data
+
+
+def _parse_model_card_frontmatter(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
     except Exception:
