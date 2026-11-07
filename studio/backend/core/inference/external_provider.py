@@ -1569,7 +1569,9 @@ class ExternalProviderClient:
         from core.inference.providers import validate_provider_base_url
 
         self.base_url = (
-            base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
+            base_url.rstrip("/")
+            if managed_loopback or provider_type == "claude_agent"
+            else validate_provider_base_url(base_url)
         )
         self._managed_loopback = managed_loopback
         # Strip legacy `/openai` suffix from Google bases so pre-switch configs route; custom proxies keep it.
@@ -1744,6 +1746,13 @@ class ExternalProviderClient:
                 tools = safe_tools
 
         if not self._is_openai_compatible():
+            if self.provider_type == "claude_agent":
+                from core.inference.claude_agent import stream_claude_agent
+                async for line in stream_claude_agent(
+                    messages, model, max_tokens, reasoning_effort, enable_thinking
+                ):
+                    yield line
+                return
             # Gemini uses native REST contents/parts; `_stream_gemini` translates it to OpenAI chunk format.
             if self.provider_type == "gemini":
                 async for line in self._stream_gemini(
@@ -7608,6 +7617,9 @@ class ExternalProviderClient:
 
     async def served_context_window(self, model: str) -> Optional[int]:
         """cache served windows and missing results for one minute to limit silent-server reads."""
+        if self.provider_type == "claude_agent":
+            from core.inference.claude_agent import claude_agent_context_window
+            return await claude_agent_context_window(model)
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()

@@ -13,10 +13,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { usePlatformStore } from "@/config/env";
+import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { useEffect, useState } from "react";
 import {
+  type DeveloperModePatch,
   type DeveloperModeSettings,
   loadDeveloperModeSettings,
   updateDeveloperModeSettings,
@@ -28,8 +30,6 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** Owner-only. Developer mode's one switch: experimental video generation on a CPU-only host.
- *  Enabling asks first, with the host's RAM against the minimum; disabling restores the GPU gate. */
 export function DeveloperModeSection() {
   const t = useT();
   const [settings, setSettings] = useState<DeveloperModeSettings | null>(null);
@@ -58,16 +58,18 @@ export function DeveloperModeSection() {
     };
   }, [t]);
 
-  const save = async (videoCpu: boolean) => {
+  const save = async (patch: DeveloperModePatch) => {
     setSaving(true);
     setError(null);
     try {
-      const next = await updateDeveloperModeSettings(videoCpu);
+      const next = await updateDeveloperModeSettings(patch);
       setSettings(next);
-      // Both gates are cached: the sidebar's Video row reads the /api/health verdict and the Video
-      // page /api/system/hardware. Update the one and re-read the other, so neither needs a reload.
-      usePlatformStore.setState({ videoCpuOptIn: next.videoCpu });
-      void refreshHardwareInfo();
+      if (patch.videoCpu !== undefined) {
+        // Sidebar reads /api/health, Video page /api/system/hardware: update one, re-read the other.
+        usePlatformStore.setState({ videoCpuOptIn: next.videoCpu });
+        void refreshHardwareInfo();
+      }
+      if (patch.claudeAgent !== undefined) void bootstrapPersistedCredentials();
     } catch (err) {
       setError(
         err instanceof Error
@@ -84,7 +86,7 @@ export function DeveloperModeSection() {
       setConfirmOpen(true);
       return;
     }
-    void save(false);
+    void save({ videoCpu: false });
   };
 
   const ram = settings
@@ -102,6 +104,7 @@ export function DeveloperModeSection() {
     );
   else if (settings && !settings.videoCpuApplicable)
     note = t("settings.general.developerMode.notApplicable");
+  const claudeAgentForced = settings?.claudeAgentEnvOverride ?? null;
 
   return (
     <>
@@ -130,6 +133,34 @@ export function DeveloperModeSection() {
             checked={settings?.videoCpu ?? false}
             disabled={!settings || saving || envForced !== null}
             onCheckedChange={onToggle}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.developerMode.claudeAgent")}
+          description={
+            <>
+              {t("settings.general.developerMode.claudeAgentDescription")}
+              {claudeAgentForced !== null ? (
+                <span
+                  data-testid="developer-mode-claude-agent-note"
+                  className="mt-1.5 block text-muted-foreground/80"
+                >
+                  {t(
+                    claudeAgentForced
+                      ? "settings.general.developerMode.claudeAgentForcedOnByEnv"
+                      : "settings.general.developerMode.claudeAgentForcedOffByEnv",
+                  )}
+                </span>
+              ) : null}
+            </>
+          }
+        >
+          <Switch
+            data-testid="developer-mode-claude-agent"
+            aria-label={t("settings.general.developerMode.claudeAgent")}
+            checked={settings?.claudeAgent ?? false}
+            disabled={!settings || saving || claudeAgentForced !== null}
+            onCheckedChange={(next) => void save({ claudeAgent: next })}
           />
         </SettingsRow>
       </SettingsSection>
@@ -179,7 +210,7 @@ export function DeveloperModeSection() {
               disabled={saving}
               onClick={() => {
                 setConfirmOpen(false);
-                void save(true);
+                void save({ videoCpu: true });
               }}
               variant="destructive"
             >

@@ -145,3 +145,9 @@ export {
   isModEnter,
   modEnterLabel,
 } from "./lib/keyboard-shortcuts";
+export {
+  type DeveloperModeSettings,
+  loadDeveloperModeSettings,
+  updateDeveloperModeSettings,
+} from "./api/developer-mode";
+export { useCopyButton } from "./components/agent-command-block";

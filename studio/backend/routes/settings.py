@@ -111,7 +111,7 @@ from utils.helper_precache_settings import (
     set_helper_precache_enabled,
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
-from utils import video_cpu_settings
+from utils import claude_agent_settings, video_cpu_settings
 from utils.download_speed_limit import (
     get_download_speed_limit_mbps,
     set_download_speed_limit_mbps,
@@ -794,7 +794,8 @@ class HelperPrecacheResponse(BaseModel):
 
 
 class DeveloperModePayload(BaseModel):
-    video_cpu: StrictBool
+    video_cpu: Optional[StrictBool] = None
+    claude_agent: Optional[StrictBool] = None
 
 
 class DeveloperModeResponse(BaseModel):
@@ -809,6 +810,11 @@ class DeveloperModeResponse(BaseModel):
     video_cpu_applicable: bool
     host_ram_bytes: Optional[int] = None
     min_ram_bytes: int = video_cpu_settings.VIDEO_CPU_MIN_RAM_GB * 1024**3
+    claude_agent: bool = False
+    claude_agent_setting: bool = False
+    default_claude_agent: bool = claude_agent_settings.DEFAULT_CLAUDE_AGENT_ENABLED
+    # True/False when UNSLOTH_CLAUDE_AGENT decides, null when the setting does.
+    claude_agent_env_override: Optional[bool] = None
 
 
 class DownloadTransportPayload(BaseModel):
@@ -1251,6 +1257,9 @@ def _developer_mode_response() -> DeveloperModeResponse:
         video_cpu_env_override = video_cpu_settings.video_cpu_env_override(),
         video_cpu_applicable = applicable,
         host_ram_bytes = video_cpu_settings.host_ram_bytes(),
+        claude_agent = claude_agent_settings.claude_agent_setting_enabled(),
+        claude_agent_setting = claude_agent_settings.get_claude_agent_setting(),
+        claude_agent_env_override = claude_agent_settings.claude_agent_env_override(),
     )
 
 
@@ -1701,8 +1710,21 @@ def get_developer_mode(
 def update_developer_mode(
     payload: DeveloperModePayload, current_subject: str = Depends(get_current_subject)
 ) -> DeveloperModeResponse:
+    if payload.video_cpu is None and payload.claude_agent is None:
+        raise HTTPException(status_code = 400, detail = "No Developer mode setting to change.")
     try:
-        enabled = video_cpu_settings.set_video_cpu_setting(payload.video_cpu)
+        if payload.video_cpu is not None:
+            enabled = video_cpu_settings.set_video_cpu_setting(payload.video_cpu)
+            logger.info(
+                "settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled
+            )
+        if payload.claude_agent is not None:
+            enabled = claude_agent_settings.set_claude_agent_setting(payload.claude_agent)
+            logger.info(
+                "settings.developer_mode_updated subject=%s claude_agent=%s",
+                current_subject,
+                enabled,
+            )
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -1711,7 +1733,6 @@ def update_developer_mode(
             event = "settings.update_developer_mode_failed",
             log = logger,
         ) from exc
-    logger.info("settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled)
     return _developer_mode_response()
 
 

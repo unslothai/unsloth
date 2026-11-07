@@ -591,6 +591,16 @@ class TestSdistOnlyBuildArgs:
         # omegaconf pins antlr4 below the 4.13.2 wheel, so it arrives as an sdist and fails no-build.
         assert "antlr4-python3-runtime" in ips.SDIST_ONLY_PACKAGES
 
+    def test_claude_agent_sdk_never_installs_its_bundled_cli_wheel(self):
+        # Every claude-agent-sdk wheel bundles a ~150 MB Claude Code CLI; the extras step must build the sdist.
+        assert "claude-agent-sdk" in ips.SDIST_ONLY_PACKAGES
+        assert "claude-agent-sdk" in ips._extras_sdist_only_packages()
+        extras = (ips.REQ_ROOT / "extras.txt").read_text(encoding = "utf-8").splitlines()
+        assert any(line.startswith("claude-agent-sdk==") for line in extras)
+        for name in ("studio.txt", "no-torch-runtime.txt", "extras-no-deps.txt"):
+            text = (ips.REQ_ROOT / name).read_text(encoding = "utf-8")
+            assert "claude-agent-sdk" not in text, f"{name} installs without the sdist-only flags"
+
     def test_flags_survive_translation_to_uv(self):
         """uv is the primary path, so the flags must reach _build_uv_cmd intact."""
         cmd = ips._build_uv_cmd(tuple(ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)))

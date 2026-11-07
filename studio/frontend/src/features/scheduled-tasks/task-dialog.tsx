@@ -31,11 +31,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   buildExternalModelId,
   chatLocalModelOptions,
+  connectionModelLabel,
   type ExternalProviderConfig,
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,
   useChatProjects,
   useChatRuntimeStore,
+  useClaudeAgentModelNames,
   useExternalProvidersStore,
 } from "@/features/chat";
 import { useDeviceInventorySources } from "@/features/hub";
@@ -164,13 +166,14 @@ function levelLabel(level: TaskReasoningEffort, modelId: string | undefined): st
 
 type LoadedReasoning = { supportsReasoning: boolean; reasoningStyle: string; reasoningAlwaysOn: boolean };
 
-type ConnectionChoice = { id: string; modelId: string; provider: ExternalProviderConfig };
+type ConnectionChoice = { id: string; modelId: string; label: string; provider: ExternalProviderConfig };
 
 /** Models a task can run on: local and connected providers, never one needing a download. */
 function useModelChoices(current: string | null) {
   const inventory = useDeviceInventorySources(["localModels", "cachedGguf"]);
   const providers = useExternalProvidersStore((state) => state.providers);
   const connectionsEnabled = useExternalProvidersStore((state) => state.connectionsEnabled);
+  const claudeAgentNames = useClaudeAgentModelNames((state) => state.names);
   return useMemo(() => {
     const local = chatLocalModelOptions(inventory.localModels.rows).map(({ id, name }) => ({ id, name }));
     // GGUF only: a run switches back afterwards only to a GGUF.
@@ -182,7 +185,12 @@ function useModelChoices(current: string | null) {
     const connections = (connectionsEnabled ? providers : []).map((provider) => ({
       provider,
       models: provider.models.map(
-        (modelId): ConnectionChoice => ({ id: buildExternalModelId(provider.id, modelId), modelId, provider }),
+        (modelId): ConnectionChoice => ({
+          id: buildExternalModelId(provider.id, modelId),
+          modelId,
+          label: connectionModelLabel(provider.providerType, modelId, claudeAgentNames),
+          provider,
+        }),
       ),
     }));
     const known =
@@ -193,7 +201,7 @@ function useModelChoices(current: string | null) {
     const missing = known ? null : current;
     const connection = connections.flatMap((group) => group.models).find((option) => option.id === current);
     return { local, connections, missing, connection };
-  }, [inventory.localModels.rows, inventory.cachedGguf.rows, providers, connectionsEnabled, current]);
+  }, [inventory.localModels.rows, inventory.cachedGguf.rows, providers, connectionsEnabled, current, claudeAgentNames]);
 }
 
 /** Efforts the task's model takes; all of them for an unloaded model (a run resolves it), empty when none. */
@@ -424,7 +432,7 @@ export function TaskDialog({
                         <SelectLabel>{group.provider.name}</SelectLabel>
                         {group.models.map((option) => (
                           <SelectItem key={option.id} value={option.id}>
-                            {option.modelId}
+                            {option.label}
                           </SelectItem>
                         ))}
                       </SelectGroup>

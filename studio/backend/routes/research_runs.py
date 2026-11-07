@@ -301,6 +301,22 @@ def _contains_sensitive_key(value: object) -> bool:
     return False
 
 
+def _refuse_claude_agent_via_api_key(http_request: Request | None, provider_type: Any) -> None:
+    # The worker swaps in the Deep Research key, which the chat proxy lets through to Claude Agent.
+    if provider_type != "claude_agent" or http_request is None:
+        return
+    from routes.inference import _request_has_api_key
+    if _request_has_api_key(http_request):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Claude Agent is available only to the installation owner in the Studio UI.",
+        )
+
+
+def _run_provider_type(run: dict) -> Any:
+    return ((run.get("config") or {}).get("inferenceRequest") or {}).get("providerType")
+
+
 def _sanitize_config(
     payload: CreateResearchRun,
     thread: dict,
@@ -372,6 +388,7 @@ def _sanitize_config(
                 status_code = 400,
                 detail = "Durable research requires an enabled connection whose provider supports Unsloth tools",
             )
+        _refuse_claude_agent_via_api_key(http_request, saved_provider_type)
         request["providerType"] = saved_provider_type
 
     # "model" is stringified, so a nested dict would evade the sensitive-key scan.
@@ -609,7 +626,7 @@ def approve_research_plan(
     current_subject: str = Depends(get_current_subject),
 ):
     _require_tools_enabled()
-    _require_run(run_id)
+    _refuse_claude_agent_via_api_key(request, _run_provider_type(_require_run(run_id)))
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
     except (db.ResearchConflictError, KeyError) as exc:
@@ -647,7 +664,7 @@ def retry_research_run(
     payload: RetryResearchRun | None = None,
 ):
     _require_tools_enabled()
-    _require_run(run_id)
+    _refuse_claude_agent_via_api_key(request, _run_provider_type(_require_run(run_id)))
     model_timeout = None
     website_policy = None
     if payload is not None:

@@ -618,6 +618,14 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
+  claude_agent: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
 
   openai: {
     temperature: false,
@@ -1307,6 +1315,12 @@ export function getExternalReasoningCapabilities(
     }
     case "minimax":
       return resolveMiniMaxReasoningCapabilities(modelForMatching);
+    case "claude_agent":
+      return withReasoningEffortStyle({
+        supportsReasoning: true,
+        supportsReasoningOff: false,
+        reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      });
     case "gemini": {
       // Compat gateways drop native thinkingConfig, so hide the ladder.
       if (isGeminiCustomOpenAICompatBase(options?.baseUrl)) {

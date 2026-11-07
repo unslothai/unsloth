@@ -44,7 +44,7 @@ test("the form's back arrow still returns to the list", () => {
 
 test("navigating before the sync lands consumes the auto-open", () => {
   const calls = [...dialog.matchAll(/setPage\("(?:list|form)"\)/g)];
-  assert.equal(calls.length, 6);
+  assert.equal(calls.length, 7);
   for (const call of calls) {
     const before = dialog.slice(
       Math.max(0, (call.index ?? 0) - 200),

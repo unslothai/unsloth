@@ -123,6 +123,19 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "openai_compatible": False,
         "notes": "Native Anthropic Messages API. Uses x-api-key header and /v1/messages endpoint with SSE translation.",
     },
+    # Experimental, opt in with UNSLOTH_CLAUDE_AGENT=1: the user's own `claude` CLI, see claude_agent.py.
+    "claude_agent": {
+        "display_name": "Claude Agent",
+        "base_url": "",
+        "default_models": ["opus", "fable", "sonnet", "haiku"],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "base_url_editable": False,
+        "model_list_mode": "curated",
+        "openai_compatible": False,
+    },
     "gemini": {
         "display_name": "Google Gemini",
         # Native Gemini REST, not OpenAI-compatible; translated in `_stream_gemini`.
@@ -567,9 +580,27 @@ def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
 
 
+CLAUDE_AGENT_OFF = (
+    "Claude Agent is off. Turn it on in Settings > System > Developer mode "
+    "(UNSLOTH_CLAUDE_AGENT=1 or 0 overrides that setting)."
+)
+
+
+def claude_agent_enabled() -> bool:
+    from utils.claude_agent_settings import claude_agent_setting_enabled
+    return claude_agent_setting_enabled()
+
+
+def claude_agent_available() -> bool:
+    # It runs on the owner's own Claude login, so managed accounts never see it.
+    return not _managed_account_caller() and claude_agent_enabled()
+
+
 def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
     """Return a user-configurable provider, excluding Studio-managed runtimes."""
     info = PROVIDER_REGISTRY.get(provider_type)
+    if provider_type == "claude_agent" and not claude_agent_available():
+        return None
     return None if info is None or info.get("managed") else info
 
 
@@ -1059,6 +1090,12 @@ def list_available_providers(
             continue
         if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
+        turned_off = False
+        if provider_type == "claude_agent":
+            # The owner sees it while off, so Add connection can offer to turn it on.
+            if _managed_account_caller():
+                continue
+            turned_off = not claude_agent_enabled()
         result.append(
             {
                 "provider_type": provider_type,
@@ -1075,6 +1112,7 @@ def list_available_providers(
                 "auth_kind": info.get("auth_kind", "api_key"),
                 "base_url_editable": info.get("base_url_editable", True),
                 "model_ids_editable": info.get("model_ids_editable", True),
+                "available_but_off": turned_off,
             }
         )
     return result
