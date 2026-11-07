@@ -209,8 +209,16 @@ test("tool changes flip at once, and a late reply can't undo a newer change", ()
   assert.match(save, /await enqueueSave\(\(\) => updateMcpTools\(states\)\)/);
   assert.match(
     SECTION,
-    /const save = saveQueue\.current\.then\(run\);\s+saveQueue\.current = save\.catch\(\(\) => undefined\);/,
+    /const save = saveQueue\.then\(run\);\s+saveQueue = save\.catch\(\(\) => undefined\);/,
   );
+});
+
+test("the save queue outlives a remount, and a fresh mount reads only after pending saves", () => {
+  // A ref would start a new queue on remount while the old mount's PUT is still in flight.
+  const queue = SECTION.indexOf("let saveQueue: Promise<unknown> = Promise.resolve();");
+  assert.ok(queue >= 0 && queue < SECTION.indexOf("export function McpAccessSection("));
+  assert.doesNotMatch(SECTION, /useRef<Promise/);
+  assert.match(SECTION, /enqueueSave\(loadMcpAccess\)\.then\(/);
 });
 
 test("the MCP switch shares the tool saves' queue, so neither full-snapshot reply can undo the other", () => {
