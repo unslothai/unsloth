@@ -44,7 +44,7 @@ test("a stored width is clamped, and junk is ignored", () => {
     getItem: (key: string) => store.get(key) ?? null,
   } as Storage;
   try {
-    const options = { minWidth: 232, maxWidth: 520, storageKey: "w" };
+    const options = { minWidth: 232, maxWidth: 520, defaultWidth: () => 256, storageKey: "w" };
     assert.equal(readPanelWidth(options), null);
     store.set("w", "300");
     assert.equal(readPanelWidth(options), 300);
@@ -64,4 +64,13 @@ test("the stored width is cleared with the stored positions", () => {
   assert.match(monitor, /storageKey: FLOATING_PANEL_POSITION_KEYS\.liveMonitorWidth/);
   assert.match(monitor, /data-edge=\{edge\}/);
   assert.doesNotMatch(monitor, /panel-scale/);
+});
+
+test("drag, nudge and resize never run at once, and a squeezed monitor grows back to its default width", () => {
+  const hook = readSrc("hooks/use-floating-panel-layout.ts");
+  for (const name of ["startDrag", "nudge", "startResize"]) {
+    const body = hook.slice(hook.indexOf(`function ${name}(`)).slice(0, 600);
+    assert.match(body, /dragSessionRef\.current \|\|\s*resizeSessionRef\.current/, name);
+  }
+  assert.match(hook, /widthRef\.current \?\? resizeRef\.current\.defaultWidth\(\)/);
 });

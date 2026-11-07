@@ -101,7 +101,6 @@ def _cpu_usage_percent() -> float:
 _prime_cpu_percent()
 
 
-# Parsing package metadata was ~15% of a /api/system call; versions only move on an upgrade.
 _PACKAGE_VERSIONS_TTL_S = 60.0
 _package_versions_cache: Optional[tuple] = None
 
@@ -110,7 +109,6 @@ def _ml_package_versions(read: Any, not_found: type) -> dict:
     global _package_versions_cache
     now = time.monotonic()
     cached = _package_versions_cache
-    # Keyed on the reader too, so a patched importlib.metadata.version is never served stale.
     if cached is not None and cached[1] is read and now - cached[0] < _PACKAGE_VERSIONS_TTL_S:
         return dict(cached[2])
     packages = {}
@@ -125,8 +123,7 @@ def _ml_package_versions(read: Any, not_found: type) -> dict:
     return dict(packages)
 
 
-# Off Linux, finding the children means psutil reading every process on the host: 60% of a
-# /api/system call on a Mac with ~1,100 processes. The set changes rarely; RSS is still read each call.
+# Off Linux psutil scans every process to find children; reuse the set briefly.
 _DESCENDANTS_TTL_S = 5.0
 _descendants_cache: dict = {}
 
@@ -2515,10 +2512,8 @@ def _schedule_shutdown(request: Request) -> dict:
     return {"status": "shutting_down"}
 
 
-# The Live monitor polls every 1-10 s; at 1 s a 10 s GPU cache left VRAM nine reads stale. A caller may
-# ask for fresher GPU readings, never more than once a second (one probe per second, under the lock).
 _SYSTEM_GPU_MIN_AGE_SECONDS = 1.0
-# Some probes are slow (about 1.5 s on Windows ROCm), so a fast poll waits at least this many probe lengths.
+# Slow probes (about 1.5 s on Windows ROCm) space fast polls out.
 _SYSTEM_GPU_PROBE_SPACING = 4.0
 
 
@@ -2528,8 +2523,6 @@ def _system_gpu_max_age_s(requested: Optional[float]) -> float:
     return min(_SYSTEM_GPU_CACHE_TTL_SECONDS, max(_SYSTEM_GPU_MIN_AGE_SECONDS, float(requested)))
 
 
-# Which llama.cpp build is installed scans the filesystem and settings DB (~10 ms on a Mac). It only
-# changes on an install, so a GPU read faster than the old 10 s cache need not repeat it.
 _gguf_pin_support_cache: Optional[tuple[float, tuple[bool, bool]]] = None
 
 
@@ -2587,7 +2580,6 @@ def _get_cached_system_gpu_info(
             _SYSTEM_GPU_CACHE_TTL_SECONDS,
             max(max_age_s, _SYSTEM_GPU_PROBE_SPACING * _system_gpu_probe_s),
         )
-        # Inside the 10 s window the GGUF pin-support probe is reused; the other probes re-run on every read.
         within_window = (
             not refresh_memory
             and _system_gpu_cache is not None
@@ -2770,7 +2762,6 @@ def _refresh_dense_quant_capability() -> bool:
     return _dense_quant_capability
 
 
-# Re-probed at most this often: the probe runs a device op, and the Live monitor may poll every second.
 _DENSE_QUANT_REPROBE_S = 5.0
 _dense_quant_probed_at: Optional[float] = None
 

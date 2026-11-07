@@ -142,10 +142,8 @@ export function useFloatingPanelLayout(
   const resizeRef = useRef(resize);
   const resizeSessionRef = useRef<ResizeSession | null>(null);
   const [width, setWidth] = useState<number | null>(() => readPanelWidth(resize));
-  // The panel's own style lags a frame behind state, so geometry reads the chosen width from here.
   const widthRef = useRef(width);
   if (resize) {
-    // A resizable panel's floor is the option, not whatever width it was measured at.
     preferredWidthRef.current = resize.minWidth;
   }
 
@@ -185,7 +183,9 @@ export function useFloatingPanelLayout(
 
       scheduleWidthRemeasure(constraintsBox.width);
       const desiredWidth = Math.max(
-        resizeRef.current ? (widthRef.current ?? monitorBox.width) : monitorBox.width,
+        resizeRef.current
+          ? (widthRef.current ?? resizeRef.current.defaultWidth())
+          : monitorBox.width,
         preferredWidthRef.current ?? monitorBox.width,
       );
 
@@ -351,7 +351,12 @@ export function useFloatingPanelLayout(
 
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
-    if (event.button !== 0 || !(monitor && constraintsElement)) {
+    if (
+      event.button !== 0 ||
+      !(monitor && constraintsElement) ||
+      dragSessionRef.current ||
+      resizeSessionRef.current
+    ) {
       return;
     }
 
@@ -423,8 +428,7 @@ export function useFloatingPanelLayout(
       0,
       session.maxTop,
     );
-    // Paint now: deferring to the next frame left the card a frame or more behind a fast pointer.
-    // Pointer events already arrive once per frame, so this is still one transform per frame.
+    // Paint now: a rAF left the card a frame behind a fast pointer.
     paintDrag();
   }
 
@@ -512,7 +516,11 @@ export function useFloatingPanelLayout(
   function nudge(event: KeyboardEvent<HTMLElement>): boolean {
     const delta = nudgeDelta(event.key, event.shiftKey);
     const monitor = monitorRef.current;
-    if (!(delta && monitor && constraintsElement) || dragSessionRef.current) {
+    if (
+      !(delta && monitor && constraintsElement) ||
+      dragSessionRef.current ||
+      resizeSessionRef.current
+    ) {
       return false;
     }
     event.preventDefault();
@@ -546,7 +554,8 @@ export function useFloatingPanelLayout(
     if (
       event.button !== 0 ||
       !(monitor && constraintsElement && options) ||
-      dragSessionRef.current
+      dragSessionRef.current ||
+      resizeSessionRef.current
     ) {
       return;
     }
@@ -566,7 +575,6 @@ export function useFloatingPanelLayout(
       constraintsWidth: constraintsBox.width,
       constraintsHeight: constraintsBox.height,
       hx: edges.x !== 0 ? edges.x : intent.left === null ? -1 : 1,
-      // As the height follows the content, the edge the panel is anchored to stays put.
       vy: edges.y !== 0 ? edges.y : intent.top === null ? -1 : 1,
       edges,
       moved: false,
@@ -598,8 +606,7 @@ export function useFloatingPanelLayout(
     }
     session.moved = true;
     const left = session.hx === -1 ? right - next : session.left;
-    // Write the node first: the panel is a motion.div, whose style props land a frame late, and the
-    // height below has to be read at the new width since text can rewrap.
+    // Write the node first: motion.div style lands a frame late, and text rewraps at the new width.
     monitor.style.maxWidth = `${session.constraintsWidth - left}px`;
     monitor.style.width = `${next}px`;
     monitor.style.left = `${left}px`;
@@ -644,7 +651,6 @@ export function useFloatingPanelLayout(
     if (session.moved) {
       const { width: last, left, top } = session.last;
       const previous = intentRef.current;
-      // An axis stays anchored to the far edge when the far edge did not move.
       intentRef.current = {
         left: previous.left === null && session.hx === -1 ? null : left,
         top: previous.top === null && session.vy === -1 ? null : top,
@@ -653,7 +659,7 @@ export function useFloatingPanelLayout(
       try {
         localStorage.setItem(options.storageKey, String(Math.round(last)));
       } catch {
-        // Storage full or blocked: the width still applies for this session.
+        // Storage blocked: the width still applies this session.
       }
     }
     reconcileRef.current?.();
@@ -665,7 +671,7 @@ export function useFloatingPanelLayout(
     try {
       localStorage.removeItem(options.storageKey);
     } catch {
-      // Nothing stored to clear.
+      // Nothing stored.
     }
     widthRef.current = null;
     setWidth(null);

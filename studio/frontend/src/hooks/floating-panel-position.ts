@@ -108,15 +108,16 @@ function clampWidth(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-/** Opt-in edge resize. Only width is user-set; height follows the content, so it never gains empty space. */
+/** Width only: the height follows the content. */
 export interface PanelResizeOptions {
   minWidth: number;
   maxWidth: number;
-  /** localStorage key for the chosen width. */
+  /** The CSS width when none is chosen; a squeezed panel grows back to it. */
+  defaultWidth: () => number;
   storageKey: string;
 }
 
-/** -1 = left/top edge, 1 = right/bottom edge, 0 = that axis is not grabbed. `y` only picks which edge stays put as the height changes. */
+/** -1 left/top, 1 right/bottom, 0 not grabbed; `y` picks the edge that stays put. */
 export interface ResizeEdges {
   x: -1 | 0 | 1;
   y: -1 | 0 | 1;
@@ -136,7 +137,6 @@ export function readPanelWidth(
   }
 }
 
-/** Width for a pointer delta. Only horizontal movement counts: the height follows the content. */
 export function resizedWidth(
   session: { width: number; edges: ResizeEdges },
   dx: number,

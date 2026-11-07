@@ -90,7 +90,6 @@ export interface SystemInfoResponse {
     available_gb: number;
     percent_used: number;
     process_used_mb: number;
-    /** The server plus its child processes (llama-server, workers). */
     process_tree_used_mb?: number;
   };
   disk: {
@@ -117,7 +116,6 @@ export interface SystemInfoResponse {
 
 let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
-/** The in-flight fetch's GPU freshness bound; undefined is the server's 10 s cache. */
 let systemFetchGpuMaxAgeMs: number | undefined;
 let systemFetchProbesMedia = false;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
@@ -235,7 +233,7 @@ export async function fetchSystemInfo({
 }: {
   force?: boolean;
   refreshMemory?: boolean;
-  /** GPU readings no older than this (the backend clamps to 1-10 s; default is its 10 s cache). */
+  /** The backend clamps to 1-10 s. */
   gpuMaxAgeMs?: number;
   probeMedia?: boolean;
 } = {}): Promise<SystemInfoResponse | null> {
@@ -287,7 +285,6 @@ export async function fetchSystemInfo({
 interface UseSystemInfoOptions {
   pollMs?: number;
   enabled?: boolean;
-  /** Ask for GPU readings as fresh as the poll; otherwise VRAM moves only every 10 s. */
   gpuFollowsPoll?: boolean;
 }
 

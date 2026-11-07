@@ -3,7 +3,6 @@
 
 import type { GpuDevice } from "../hooks/use-system.ts";
 
-// CPU is a core row of the monitor, so it is not a detail option.
 export const MONITOR_DETAIL_METRICS = [
   "gpuLoad",
   "temperature",

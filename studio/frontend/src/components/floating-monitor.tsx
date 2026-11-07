@@ -129,6 +129,9 @@ const RESIZE_HANDLES: { edge: string; edges: ResizeEdges; className: string }[] 
 const MONITOR_RESIZE = {
   minWidth: 232,
   maxWidth: 520,
+  // w-64, in the root font size Studio's text scale sets.
+  defaultWidth: () =>
+    16 * Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
   storageKey: FLOATING_PANEL_POSITION_KEYS.liveMonitorWidth,
 };
 
@@ -262,7 +265,7 @@ function FloatingMonitorPanel({
   const cardsPercent = clampPercent(
     cardsUsedKnown && vram.totalGb > 0 ? (cardsUsed / vram.totalGb) * 100 : 0,
   );
-  // The share split follows Settings: an APU's carve-out still shows as VRAM, but its models are RAM's.
+  // An APU's carve-out shows as VRAM, but its models count in RAM, as in Settings.
   const modelsInVram = discreteVram && holdsModelsInVram(vram.cards);
   const cardLabel =
     vram.cards.length === 1 ? (vram.cards[0]?.name ?? undefined) : undefined;
@@ -273,7 +276,6 @@ function FloatingMonitorPanel({
   );
   const wantsModels = showShare || showBreakdown;
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
-  // Unsloth's server plus its children (llama-server, workers), resident set.
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
   const split = poolSplit({

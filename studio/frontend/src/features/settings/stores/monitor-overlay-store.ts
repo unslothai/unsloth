@@ -24,10 +24,8 @@ interface MonitorOverlayState {
   setIsOpen: (open: boolean) => void;
   toggleMinimized: () => void;
   setShowDetails: (show: boolean) => void;
-  /** Splits the memory bar into Unsloth, other apps and free. */
   showUnslothShare: boolean;
   setShowUnslothShare: (show: boolean) => void;
-  /** Lists each loaded model's memory and the app's own share. */
   showModelBreakdown: boolean;
   setShowModelBreakdown: (show: boolean) => void;
   setDetailMetric: (metric: MonitorDetailMetric, on: boolean) => void;

@@ -11,16 +11,13 @@ import type { GpuDevice } from "../hooks/use-system.ts";
 
 export interface CardUsage {
   key: string;
-  /** "GPU 0": the row label. */
   label: string;
-  /** Short adapter name under the bar; the full one is `title`. */
   name: string;
   title: string;
   usedGb: number | null;
   totalGb: number;
 }
 
-// The vendor prefix is the same on every row and is what truncates first in a 256 px card.
 const VENDOR_PREFIX = /^(?:AMD\s+Radeon(?:\(TM\))?|NVIDIA(?:\s+GeForce)?|Intel(?:\(R\))?\s+Arc(?:\(TM\))?)\s+/i;
 
 export function shortCardName(name: string | undefined): string {
@@ -29,21 +26,15 @@ export function shortCardName(name: string | undefined): string {
 }
 
 export interface VramCards {
-  /** Dedicated cards; every usage device when none is dedicated. */
   cards: GpuDevice[];
   totalGb: number;
   /** null = unknown: one card without a reading must not read as 0. */
   usedGb: number | null;
-  /** One full-size row per card, only when there is more than one. */
   rows: CardUsage[];
-  /** One row over every card: a single card, or an aggregate the per-card rows cannot show (Windows ROCm). */
   showTotal: boolean;
 }
 
-/**
- * The VRAM row counts dedicated cards. An iGPU beside them borrows system RAM, which the RAM row
- * already shows, and its missing reading would otherwise blank the whole total (Windows ROCm).
- */
+/** Dedicated cards only: an iGPU borrows system RAM, and its missing reading would blank the total. */
 export function vramCards(
   devices: GpuDevice[],
   usageGpu: VramReportingGpu | null | undefined,
@@ -70,7 +61,6 @@ export function vramCards(
   return { cards, totalGb: gpuMemoryTotalsGb(cards).total, usedGb, rows, showTotal };
 }
 
-/** Loaded models sit in VRAM only on a card with memory of its own; an APU's carve-out is host RAM. */
 export function holdsModelsInVram(cards: readonly GpuDevice[]): boolean {
   return cards.some((card) => card.shared_memory !== true && card.unified_memory !== true);
 }

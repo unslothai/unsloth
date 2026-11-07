@@ -5,7 +5,7 @@ import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
 import type { LoadedModelEntry } from "@/features/loaded-models";
 import { useEffect } from "react";
 
-/** Polls loaded models for the floating monitor. Lazy, so the startup graph never pulls the chat runtime through it. */
+/** Lazy: keeps the chat runtime out of the startup graph. */
 export default function MonitorLoadedModels({
   onEntries,
 }: {

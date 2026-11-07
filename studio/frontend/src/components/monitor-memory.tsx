@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Memory readouts shared by the floating Live monitor and Settings > System. */
-
 import { Progress } from "@/components/ui/progress";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -31,7 +29,6 @@ export function formatGiB(value: number): string {
   return `${value.toFixed(value >= 10 ? 1 : 2)} GiB`;
 }
 
-/** Label and readout over a bar, with an optional line or legend under it. */
 export function MeterRow({
   label,
   readout,
@@ -88,7 +85,6 @@ function segmentColor(kind: MemorySegment["kind"], modelIndex: number): string {
         STORAGE_COLORS.green,
         STORAGE_COLORS.blue,
       ][Math.min(modelIndex, 3)];
-    // Unsloth reads as "Models" in Settings > Storage, so it keeps that yellow.
     case "unsloth":
       return STORAGE_COLORS.yellow;
     case "app":
@@ -100,13 +96,11 @@ function segmentColor(kind: MemorySegment["kind"], modelIndex: number): string {
   }
 }
 
-/** One pool split by owner, drawn with Settings' storage bar and its inline legend. */
 export function MemoryShareBar({
   segments,
   noModels = false,
 }: {
   segments: MemorySegment[];
-  /** Model split is on with nothing loaded: say so, or the toggle looks dead. */
   noModels?: boolean;
 }) {
   const t = useT();

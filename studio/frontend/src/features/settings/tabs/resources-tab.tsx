@@ -172,7 +172,6 @@ function MetricTile({
   percent: number | null;
   showUsage?: boolean;
   extraDetail?: string;
-  /** Replaces the usage bar, e.g. a bar split by owner. */
   children?: ReactNode;
 }) {
   const percentKnown = isFiniteNumber(percent);
@@ -643,7 +642,6 @@ export function ResourcesTab() {
           shared: formatGiB(metrics.vramShared),
         })
       : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
-  // Dedicated cards only: an iGPU beside them borrows system RAM and would blank the total.
   const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
   const discreteVram =
     hasGpu &&
@@ -783,7 +781,6 @@ export function ResourcesTab() {
           )}
           <MetricTile
             label={t(
-              // Unified memory has no VRAM of its own; it is the GPU's share of system RAM.
               memoryDisplay.sharedOnly || unifiedPool
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",

@@ -11,19 +11,17 @@ export interface ModelShare {
   id: string;
   name: string;
   gb: number;
-  /** Read off the running server (llama.cpp's buffers or RSS), not a load-time estimate. */
   measured?: boolean;
 }
 
 export interface ModelBreakdown {
   models: ModelShare[];
-  /** The rest of Unsloth's share: the server, the UI process, caches. Null when it cannot be told apart. */
+  /** Null when RSS cannot tell the app apart from the models. */
   app: number | null;
 }
 
 const MIB_PER_GIB = 1024;
 
-/** Splits one pool's used memory into Unsloth's and everyone else's. Unsloth never exceeds what is used. */
 export function memoryShare(
   usedGb: number,
   totalGb: number,
@@ -46,10 +44,7 @@ export function inferenceGpuDisjoint(
   return !inferenceBackend.split("+").includes(systemBackend);
 }
 
-/**
- * Loaded models that report a size, largest first. `gpuOnly` (the VRAM split): only models known to sit
- * on the displayed GPUs, so not llama.cpp's when it runs on a separate, other-vendor inference GPU.
- */
+/** `gpuOnly`: only models known to sit on the displayed GPUs. */
 export function modelShares(
   entries: readonly {
     id: string;
@@ -72,7 +67,6 @@ export function modelShares(
     )
     .map((entry) => ({
       id: entry.id,
-      // "unsloth/Qwen3.5-0.8B-GGUF" -> "Qwen3.5-0.8B-GGUF": the owner only eats the row's width.
       name: entry.label || entry.name.split("/").pop() || entry.name,
       gb: (entry.residentMib ?? 0) / MIB_PER_GIB,
       ...(entry.source === "chat" ? { measured: true } : {}),
@@ -80,10 +74,7 @@ export function modelShares(
     .sort((a, b) => b.gb - a.gb);
 }
 
-/**
- * Unsloth's share of a pool. On Apple, Metal buffers are not always counted in RSS, so the process
- * tree can read below the models it holds; the models' own figure is the floor then.
- */
+/** Metal buffers can miss RSS on Apple, so the models' own size is the floor. */
 export function unslothPoolGb(
   processGb: number | null,
   modelsGb: number,
@@ -93,11 +84,6 @@ export function unslothPoolGb(
   return modelsInPool ? Math.max(processGb, modelsGb) : processGb;
 }
 
-/**
- * `modelsInPool`: the models sit inside `unslothGb` (unified memory, or a CPU host), so the app's own
- * share is what is left after them. On a discrete GPU the models are in VRAM and `unslothGb` is RAM,
- * so the app row is the whole RAM figure.
- */
 export function modelBreakdown(
   unslothGb: number | null,
   models: ModelShare[],
@@ -108,7 +94,6 @@ export function modelBreakdown(
   }
   const inPool = modelsInPool ? models.reduce((sum, model) => sum + model.gb, 0) : 0;
   const app = unslothGb - inPool;
-  // Under 10 MiB left means RSS could not tell the app apart from the models: no row beats "0.00 GiB".
   return { models, app: app >= 0.01 ? app : null };
 }
 
@@ -116,19 +101,16 @@ export interface MemorySegment {
   id: string;
   /** "unattributed": in use, owner unknown (VRAM, where only model weights are measured). */
   kind: "model" | "app" | "unsloth" | "other" | "unattributed" | "free";
-  /** Set for models; the rest are labelled by kind. */
   name?: string;
   gb: number;
 }
 
-/** One bar for one pool: Unsloth (or its models and the app, when broken down), other apps, free. */
 export function memorySegments(
   share: MemoryShare,
   breakdown: ModelBreakdown | null,
   /** False on VRAM: the rest may be Unsloth's own KV cache or a training run, not other apps. */
   restIsOtherApps = true,
 ): MemorySegment[] {
-  // Nothing loaded: splitting would only rename Unsloth's segment to "app".
   const parts = breakdown && breakdown.models.length > 0
     ? [
         ...breakdown.models.map((model) => ({
@@ -143,8 +125,7 @@ export function memorySegments(
           : []),
       ]
     : null;
-  // Status can be fresher than the memory sample, and image/video sizes are estimates: fit the split
-  // into the measured share, shrinking the estimates first so an inflated one leaves exact rows alone.
+  // Status can be fresher than the memory sample: shrink estimates before measured rows to fit.
   const sum = (list: { gb: number }[]) => list.reduce((total, part) => total + part.gb, 0);
   const exactGb = sum(parts?.filter((part) => part.measured) ?? []);
   const restGb = sum(parts?.filter((part) => !part.measured) ?? []);
@@ -180,11 +161,9 @@ export interface PoolSplitInput {
 export interface PoolSplit {
   ram: MemorySegment[] | null;
   vram: MemorySegment[] | null;
-  /** A breakdown was asked for and nothing is loaded. */
   noModels: boolean;
 }
 
-/** The share bars the floating monitor and Settings both draw. */
 export function poolSplit(input: PoolSplitInput): PoolSplit {
   const { showShare, showBreakdown, modelsInVram } = input;
   if (!showShare && !showBreakdown) return { ram: null, vram: null, noModels: false };

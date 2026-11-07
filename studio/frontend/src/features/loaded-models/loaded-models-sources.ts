@@ -46,7 +46,6 @@ export type LoadedModelEntry = {
   label?: string;
   servingCheckpoint?: string;
   residentMib?: number;
-  /** `residentMib` is known to sit on the GPUs /api/system reports; only these count toward VRAM. */
   residentOnGpu?: boolean;
   /** One short line: quantisation, family, device. */
   detail: string;
@@ -301,7 +300,6 @@ export function describeInferenceStatus(
   return entries;
 }
 
-/** A kept chat model's size, from its own slot's status; ignored unless that slot answered for it. */
 export function withServingResident(
   entry: LoadedModelEntry,
   status: InferenceStatusResponse | null,
