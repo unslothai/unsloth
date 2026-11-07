@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Inside fsdp2_sharded_loading() or UNSLOTH_FSDP2_SHARDED_LOAD=1, each rank reads only its dim-0
-chunk of nn.Linear weights (not output head); others whole; 16-bit only."""
+chunk of nn.Linear weights (not output head) and stacked experts; others whole; 16-bit only."""
 
 from __future__ import annotations
 
@@ -97,8 +97,28 @@ def _refuse_unsharded_forward(
     )
 
 
+def _guard_expert_lora_shape():
+    """PEFT infers expert count from the parameter, unlike nn.Linear's full-size feature metadata."""
+    from peft.tuners.lora.layer import ParamWrapper
+
+    update = ParamWrapper.update_layer
+    if getattr(update, _GUARD, False):
+        return
+
+    @functools.wraps(update)
+    def full_shape(self, *args, **kwargs):
+        info = _preload(self.get_param())
+        if info is not None and len(info["shape"]) == 3:
+            # Only dim 0 was sliced; the input/output features already have their full sizes.
+            self.num_experts = info["shape"][0]
+        return update(self, *args, **kwargs)
+
+    setattr(full_shape, _GUARD, True)
+    ParamWrapper.update_layer = full_shape
+
+
 def _materialize(model, name, kwargs, mesh, plan, device):
-    """Fill a meta model: nn.Linear weights (not the output head) as this rank's dim-0 chunk, the rest whole."""
+    """Fill linears and 3-D expert parameters with this rank's dim-0 chunk, the rest whole."""
     from .tp_native import _fill_from_checkpoint
 
     world, rank = mesh.size(), mesh.get_local_rank()
@@ -109,10 +129,21 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         for m in model.modules()
         if isinstance(m, nn.Linear) and isinstance(getattr(m, "weight", None), torch.Tensor)
     }
+    experts = {
+        id(p)
+        for name, module in model.named_modules()
+        if name.rsplit(".", 1)[-1] == "experts"
+        for p in module.parameters(recurse = False)
+        if p.ndim == 3
+    }
     owners = {}
 
     def read_local(old, reader, key):
-        if id(old) not in linear or old is head or old.ndim < 2:
+        if (id(old) not in linear and id(old) not in experts) or old is head or old.ndim < 2:
+            if isinstance(key, tuple):
+                raise ValueError(
+                    "Unsloth: stacked checkpoint weights require a 3-D experts parameter."
+                )
             return None
         rows = old.shape[0]
         start, stop = _chunk_rows(rows, world, rank)
@@ -140,6 +171,7 @@ def _materialize(model, name, kwargs, mesh, plan, device):
         read_local,
         label = "native FSDP2",
         fallback = "a full load, then shard_model",
+        stacked_experts = True,
     )
     guards = [model.register_forward_pre_hook(_refuse_unsharded_forward)]
     for module in model.modules():
@@ -158,13 +190,15 @@ def _materialize(model, name, kwargs, mesh, plan, device):
     model.__dict__[_STATS] = stats
     if owners and world > 1:
         _guard_dora_init()
+    if experts:
+        _guard_expert_lora_shape()
     return stats
 
 
 @contextlib.contextmanager
 def fsdp2_sharded_loading(mesh = None):
     """Every transformers `from_pretrained` inside reads only this rank's native FSDP2 shard of the linear
-    weights (see the module docstring). `mesh`: the 1-D DeviceMesh shard_model will use (default: the
+    and expert weights (see the module docstring). `mesh`: the 1-D DeviceMesh shard_model will use (default: the
     world, which is shard_model's default too)."""
     from .tp_native import _sharded_from_pretrained
 
