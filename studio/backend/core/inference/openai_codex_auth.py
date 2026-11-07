@@ -289,15 +289,24 @@ async def _token_request(data: dict[str, Any]) -> dict[str, Any]:
     if response.status_code >= 400:
         error_code = ""
         try:
-            error = response.json().get("error")
-            error_code = error.get("code", "") if isinstance(error, dict) else str(error or "")
+            payload = response.json()
+            error = payload.get("error")
+            error_code = error.get("code") if isinstance(error, dict) else error
+            # Codex CLI falls back to a top-level code and compares case-insensitively.
+            error_code = str(error_code or payload.get("code") or "").lower()
         except Exception:
             pass
-        if data.get("grant_type") == "refresh_token" and error_code in {
-            "invalid_grant",
-            "invalid_refresh_token",
-            "refresh_token_expired",
-        }:
+        if data.get("grant_type") == "refresh_token" and (
+            response.status_code == 401
+            or error_code
+            in {
+                "invalid_grant",
+                "invalid_refresh_token",
+                "refresh_token_expired",
+                "refresh_token_reused",
+                "refresh_token_invalidated",
+            }
+        ):
             raise CodexReauthorizationRequired(
                 "ChatGPT authorization is no longer valid. Please reconnect."
             )
@@ -345,6 +354,18 @@ async def _exchange_code(
         flow.server = None
 
 
+async def _fail_on_callback_error(flow: OAuthFlow, query: dict[str, list[str]]) -> None:
+    if query.get("error") and not flow.consumed:
+        flow.consumed = True
+        flow.status = "error"
+        flow.message = "ChatGPT authorization was denied or failed. Start a new connection."
+        if flow.server:
+            flow.server.close()
+            flow.server = None
+        await _persist_terminal_flow(flow)
+        raise CodexAuthError(flow.message)
+
+
 async def _loopback_handler(
     flow: OAuthFlow, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -355,6 +376,7 @@ async def _loopback_handler(
         query = parse_qs(parsed.query)
         if parsed.path != OPENAI_CODEX_CALLBACK_PATH or query.get("state", [""])[0] != flow.state:
             raise CodexAuthError("Authorization state did not match.")
+        await _fail_on_callback_error(flow, query)
         code = query.get("code", [""])[0]
         if not code or flow.consumed:
             raise CodexAuthError("Authorization callback was invalid or already used.")
@@ -641,6 +663,7 @@ async def complete_browser_flow(provider_id: str, flow_id: str, callback_url: st
     query = parse_qs(parsed.query)
     if not secrets.compare_digest(query.get("state", [""])[0], flow.state):
         raise CodexAuthError("Authorization state did not match.")
+    await _fail_on_callback_error(flow, query)
     code = query.get("code", [""])[0]
     if not code:
         raise CodexAuthError("The callback URL did not contain an authorization code.")

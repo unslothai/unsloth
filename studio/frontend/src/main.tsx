@@ -42,6 +42,7 @@ import { watchClosingDialogFocus } from "./lib/closing-dialog-focus";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
+import { watchModalPointerLock } from "./lib/modal-pointer-lock";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { pinPointerListenerRegions } from "./lib/pointer-listener-pin";
 import { watchSpellCheck } from "./lib/spellcheck";
@@ -94,6 +95,7 @@ watchInputModality(window);
 // Before any panel group mounts: their document pointer listeners then never change WebKit's page-wide set.
 pinPointerListenerRegions(document);
 watchClosingDialogFocus(document);
+watchModalPointerLock(document);
 
 watchSpellCheck(window);
 watchTimeFormat(window);
