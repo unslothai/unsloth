@@ -12,7 +12,9 @@ const FRONTEND_ROOT = path.resolve(__dirname, "../../../../studio/frontend");
 
 // Resolve plugins from the frontend package: Vite loads this config from its own dir,
 // where no node_modules exists up the tree.
-const requireFromFrontend = createRequire(path.join(FRONTEND_ROOT, "package.json"));
+const requireFromFrontend = createRequire(
+  path.join(FRONTEND_ROOT, "package.json"),
+);
 const tailwindcss = requireFromFrontend("@tailwindcss/vite").default;
 const react = requireFromFrontend("@vitejs/plugin-react").default;
 const { defineConfig } = requireFromFrontend("vite");

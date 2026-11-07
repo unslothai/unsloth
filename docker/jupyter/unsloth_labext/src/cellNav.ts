@@ -2,11 +2,11 @@
 // Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
 import {
-  JupyterFrontEnd,
-  JupyterFrontEndPlugin
-} from '@jupyterlab/application';
-import { CodeMirrorEditor } from '@jupyterlab/codemirror';
-import { INotebookTracker } from '@jupyterlab/notebook';
+  type JupyterFrontEnd,
+  type JupyterFrontEndPlugin,
+} from "@jupyterlab/application";
+import { CodeMirrorEditor } from "@jupyterlab/codemirror";
+import { INotebookTracker } from "@jupyterlab/notebook";
 
 /**
  * Colab-style cell navigation: at a cell boundary, move to the next cell and align
@@ -14,14 +14,14 @@ import { INotebookTracker } from '@jupyterlab/notebook';
  * mid-output, and no setting changes that.
  */
 const cellNavPlugin: JupyterFrontEndPlugin<void> = {
-  id: 'unsloth-jupyterlab:cell-nav',
+  id: "unsloth-jupyterlab:cell-nav",
   description:
-    'ArrowDown/ArrowUp move to the TOP of the next/previous cell (command + edit mode).',
+    "ArrowDown/ArrowUp move to the TOP of the next/previous cell (command + edit mode).",
   autoStart: true,
   requires: [INotebookTracker],
   activate: (app: JupyterFrontEnd, tracker: INotebookTracker): void => {
     const handler = (event: KeyboardEvent): void => {
-      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
         return;
       }
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
@@ -36,17 +36,17 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       }
       const targetEl = event.target as HTMLElement | null;
       if (targetEl) {
-        if (targetEl.closest('.jp-OutputArea')) {
+        if (targetEl.closest(".jp-OutputArea")) {
           return;
         }
         const tag = targetEl.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
           return;
         }
       }
       const notebook = panel.content;
-      const direction = event.key === 'ArrowDown' ? 1 : -1;
-      const editing = notebook.mode === 'edit';
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const editing = notebook.mode === "edit";
       if (editing) {
         const editor = notebook.activeCell?.editor;
         if (!editor) {
@@ -54,7 +54,7 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         }
         if (
           document.querySelector(
-            '.jp-Completer:not(.lm-mod-hidden), .cm-tooltip-autocomplete'
+            ".jp-Completer:not(.lm-mod-hidden), .cm-tooltip-autocomplete",
           )
         ) {
           return;
@@ -92,11 +92,11 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
       const cell = notebook.activeCell;
       const targetEditor = cell?.editor;
       if (editing && cell && targetEditor) {
-        notebook.mode = 'edit';
+        notebook.mode = "edit";
         const lastLine = Math.max(0, targetEditor.lineCount - 1);
         targetEditor.setCursorPosition({
           line: direction === 1 ? 0 : lastLine,
-          column: 0
+          column: 0,
         });
       }
       if (cell) {
@@ -104,15 +104,15 @@ const cellNavPlugin: JupyterFrontEndPlugin<void> = {
         // defer, so this wins over JupyterLab's own centering scroll
         requestAnimationFrame(() => {
           try {
-            node.scrollIntoView({ block: 'start' });
+            node.scrollIntoView({ block: "start" });
           } catch {
             /* no-op */
           }
         });
       }
     };
-    document.addEventListener('keydown', handler, true);
-  }
+    document.addEventListener("keydown", handler, true);
+  },
 };
 
 export default cellNavPlugin;

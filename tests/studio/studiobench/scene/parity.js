@@ -13,11 +13,23 @@
   window.__sb = window.__sb || {};
 
   const VOLATILE_ATTRS = new Set([
-    "id", "for", "aria-controls", "aria-labelledby", "aria-describedby", "aria-activedescendant",
-    "style", "data-radix-scroll-area-viewport", "data-testid-instance",
+    "id",
+    "for",
+    "aria-controls",
+    "aria-labelledby",
+    "aria-describedby",
+    "aria-activedescendant",
+    "style",
+    "data-radix-scroll-area-viewport",
+    "data-testid-instance",
     // Two arms are two installs with two databases.
-    "data-thread-id", "data-message-id", "data-attachment-id", "data-part-id", "data-run-id",
-    "data-tool-call-id", "data-checkpoint-id",
+    "data-thread-id",
+    "data-message-id",
+    "data-attachment-id",
+    "data-part-id",
+    "data-run-id",
+    "data-tool-call-id",
+    "data-checkpoint-id",
   ]);
 
   const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot"]);
@@ -26,9 +38,18 @@
   const VIRTUALIZATION_ATTRS = new Set(["aria-posinset", "aria-setsize"]);
 
   // Origin stripped, path kept, so a different asset still moves the digest but the port does not.
-  const URL_ATTRS = new Set(["src", "href", "srcset", "action", "poster", "data-src", "formaction"]);
+  const URL_ATTRS = new Set([
+    "src",
+    "href",
+    "srcset",
+    "action",
+    "poster",
+    "data-src",
+    "formaction",
+  ]);
 
-  const ID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b/gi;
+  const ID_RE =
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b|\b[0-9a-f]{16,}\b/gi;
 
   const normUrl = (s) =>
     (s || "")
@@ -39,7 +60,10 @@
 
   const normText = (s) =>
     (s || "")
-      .replace(/\b\d+(\.\d+)?\s?(ms|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)\b/gi, "#T")
+      .replace(
+        /\b\d+(\.\d+)?\s?(ms|s|sec|secs|second|seconds|min|mins|minute|minutes|hour|hours|day|days)\b/gi,
+        "#T",
+      )
       .replace(/\b(just now|a few seconds ago|yesterday)\b/gi, "#T")
       .replace(/\b\d{1,2}:\d{2}(:\d{2})?\s?(am|pm)?\b/gi, "#T")
       .replace(ID_RE, "#ID")
@@ -96,11 +120,17 @@
     let inBody = false;
     const walk = (el, depth) => {
       // The depth-cap marker stays so deeper content reads as "not walked", not absent.
-      if (depth > 40) { parts.push("<!depth-cap>"); return; }
+      if (depth > 40) {
+        parts.push("<!depth-cap>");
+        return;
+      }
       if (elide && elide.has(el)) {
         parts.push(
-          "<!in-flight " + el.tagName.toLowerCase() +
-          " role=" + ((el.getAttribute && el.getAttribute("data-role")) || "?") + ">"
+          "<!in-flight " +
+            el.tagName.toLowerCase() +
+            " role=" +
+            ((el.getAttribute && el.getAttribute("data-role")) || "?") +
+            ">",
         );
         return;
       }
@@ -150,7 +180,7 @@
       };
       for (const child of el.childNodes) {
         if (child.nodeType === 3) {
-          const v = child.nodeValue == null ? "" : child.nodeValue;
+          const v = child.nodeValue ?? "";
           run += v;
           if (fence !== null) {
             fence.all += v;
@@ -158,7 +188,8 @@
           }
         } else if (child.nodeType === 1) {
           flush();
-          if (fence !== null && inBody && el.tagName === "CODE") fence.body += FENCE_LINE;
+          if (fence !== null && inBody && el.tagName === "CODE")
+            fence.body += FENCE_LINE;
           walk(child, depth + 1);
         }
       }
@@ -181,7 +212,8 @@
     return parts;
   };
 
-  const signature = (root, dropAttrs, elide) => walkParts(root, dropAttrs, elide).join("");
+  const signature = (root, dropAttrs, elide) =>
+    walkParts(root, dropAttrs, elide).join("");
 
   // fences is omitted when a message has none, keeping fence-free payloads byte-identical.
   const messageReading = (el) => {
@@ -216,9 +248,15 @@
   const STYLE_CAP = 64;
   const STYLE_PROPS = ["display", "visibility", "pointer-events"];
   const STYLE_SELECTORS = [
-    '[data-role]', '[data-slot="reasoning-root"]', '[data-slot="tool-group-root"]',
-    ".aui-thread-viewport", ".aui-composer-root", 'button[aria-label="Send message"]',
-    'button[aria-label="Stop generating"]', '[data-slot="dialog-content"]', '[role="menu"]',
+    "[data-role]",
+    '[data-slot="reasoning-root"]',
+    '[data-slot="tool-group-root"]',
+    ".aui-thread-viewport",
+    ".aui-composer-root",
+    'button[aria-label="Send message"]',
+    'button[aria-label="Stop generating"]',
+    '[data-slot="dialog-content"]',
+    '[role="menu"]',
     "[data-radix-popper-content-wrapper]",
   ];
 
@@ -231,26 +269,40 @@
       for (const el of document.querySelectorAll(sel)) {
         if (seen.has(el)) continue;
         seen.add(el);
-        if (n >= STYLE_CAP) { capped = true; continue; }
+        if (n >= STYLE_CAP) {
+          capped = true;
+          continue;
+        }
         n += 1;
         const cs = window.getComputedStyle(el);
         parts.push(sel + "#" + n);
-        for (const prop of STYLE_PROPS) parts.push(":" + prop + "=" + cs.getPropertyValue(prop));
+        for (const prop of STYLE_PROPS)
+          parts.push(":" + prop + "=" + cs.getPropertyValue(prop));
         parts.push(";");
       }
     }
     const sig = parts.join("");
-    return { digest: hash(sig), chars: sig.length, elements: n, capped, props: STYLE_PROPS, sig };
+    return {
+      digest: hash(sig),
+      chars: sig.length,
+      elements: n,
+      capped,
+      props: STYLE_PROPS,
+      sig,
+    };
   };
 
-  const D = () => (window.__sb.dom || {});
+  const D = () => window.__sb.dom || {};
 
   // Visible-region parity: every message visible at any point during the action must match on
   // both arms; differences off screen are allowed. Partial intersection counts as visible (false
   // alarms, never false passes). No geometry calls here: getBoundingClientRect/getClientRects
   // force Chromium to render content-visibility subtrees; IntersectionObserver does not.
   const VIS = {
-    obs: null, mut: null, ever: new Set(), watching: false,
+    obs: null,
+    mut: null,
+    ever: new Set(),
+    watching: false,
     // Only dedupes the diagnostic count; placement is re-read on every offer since rows recycle.
     unplacedSeen: new WeakSet(),
     // Rows with no aria-posinset and not among mounted messages; absent from ever_visible, so counted.
@@ -321,7 +373,8 @@
         if (!t || t.nodeType !== 1) continue;
         if (t.hasAttribute && t.hasAttribute("data-role")) observeOne(t);
         if (t.querySelectorAll) {
-          for (const inner of t.querySelectorAll("[data-role]")) observeOne(inner);
+          for (const inner of t.querySelectorAll("[data-role]"))
+            observeOne(inner);
         }
         continue;
       }
@@ -346,19 +399,23 @@
     watch() {
       try {
         const vp = D().viewport && D().viewport();
-        if (!vp) return { visible_attempted: false, reason: "no thread viewport" };
+        if (!vp)
+          return { visible_attempted: false, reason: "no thread viewport" };
         if (VIS.watching) return { visible_attempted: true, already: true };
         VIS.ever = new Set();
         VIS.unplacedSeen = new WeakSet();
         VIS.unplaced = 0;
         VIS.index = null;
-        VIS.obs = new IntersectionObserver((entries) => {
-          for (const entry of entries) {
-            if (!entry.isIntersecting) continue;
-            const ord = entry.target.__sbOrdinal;
-            if (typeof ord === "number") VIS.ever.add(ord);
-          }
-        }, { root: vp, threshold: 0 });
+        VIS.obs = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              const ord = entry.target.__sbOrdinal;
+              if (typeof ord === "number") VIS.ever.add(ord);
+            }
+          },
+          { root: vp, threshold: 0 },
+        );
         observeAll();
         // No characterData: streamed text must not reach this callback. aria-posinset is watched
         // because a virtualizer renumbers rows in place without a childList mutation.
@@ -379,7 +436,10 @@
     async capture() {
       try {
         if (!VIS.watching) {
-          return { visible_attempted: false, reason: "the visibility observer was never installed" };
+          return {
+            visible_attempted: false,
+            reason: "the visibility observer was never installed",
+          };
         }
         // IntersectionObserver computes during rendering; with no frame in between takeRecords() is empty.
         await new Promise((resolve) => {
@@ -388,14 +448,19 @@
         // Drain queued entries before teardown, or the action's last entries are lost.
         const records = VIS.obs.takeRecords();
         for (const entry of records) {
-          if (entry.isIntersecting && typeof entry.target.__sbOrdinal === "number") {
+          if (
+            entry.isIntersecting &&
+            typeof entry.target.__sbOrdinal === "number"
+          ) {
             VIS.ever.add(entry.target.__sbOrdinal);
           }
         }
         const dom = D();
         const nodes = (dom.messages && dom.messages()) || [];
         // Same node set as the positive control below, read from one call so they cannot disagree.
-        const live = new Set((dom.streamingMessages && dom.streamingMessages()) || []);
+        const live = new Set(
+          (dom.streamingMessages && dom.streamingMessages()) || [],
+        );
         const byOrdinal = {};
         let mounted_ever_visible = 0;
         // Counted directly: unmounted_at_capture can read 0 over a collision because errors cancel.
@@ -403,7 +468,10 @@
         const collided = [];
         for (let i = 0; i < nodes.length; i++) {
           const el = nodes[i];
-          const ord = typeof el.__sbOrdinal === "number" ? el.__sbOrdinal : ordinalOf(el, i + 1);
+          const ord =
+            typeof el.__sbOrdinal === "number"
+              ? el.__sbOrdinal
+              : ordinalOf(el, i + 1);
           if (!VIS.ever.has(ord)) continue;
           mounted_ever_visible += 1;
           // Without aria-posinset/aria-setsize, which readiness.py permits on either the message or a row;
@@ -429,7 +497,9 @@
         const lastPublishes = dom.lastAssistantPublishesStatus
           ? Boolean(dom.lastAssistantPublishesStatus())
           : false;
-        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const anyPublishes = dom.statusHookPresent
+          ? Boolean(dom.statusHookPresent())
+          : true;
         const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
         const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
         return {
@@ -437,7 +507,9 @@
           streaming: generating,
           status_hook_present: anyPublishes,
           // A windowed arm can unmount the streaming message, so live.size can be 0 with intact hooks.
-          in_flight_unplaced: Boolean(generating && live.size === 0 && probeBlind),
+          in_flight_unplaced: Boolean(
+            generating && live.size === 0 && probeBlind,
+          ),
           ever_visible: ever,
           ever_visible_count: ever.length,
           mounted_ever_visible,
@@ -456,7 +528,9 @@
       try {
         if (VIS.obs) VIS.obs.disconnect();
         if (VIS.mut) VIS.mut.disconnect();
-      } catch (e) { /* nothing to do */ }
+      } catch (e) {
+        /* nothing to do */
+      }
       VIS.obs = null;
       VIS.mut = null;
       VIS.watching = false;
@@ -479,14 +553,19 @@
         const rootFn = dom.threadRoot;
         const found = rootFn ? rootFn() : null;
         // threadRoot() falls back to document.body; which root was digested must travel with the digest.
-        const isThread = Boolean(found && found !== document.body &&
-                                 found.classList && found.classList.contains("aui-thread-root"));
+        const isThread = Boolean(
+          found &&
+          found !== document.body &&
+          found.classList &&
+          found.classList.contains("aui-thread-root"),
+        );
         const root = found || document.body;
         const nodes = (dom.messages && dom.messages()) || [];
         // The in-flight message has no defined moment (each arm samples a different point of the same
         // reply, and remend/KaTeX/Shiki output is not monotonic), so it is elided into a marker. The
         // scaffold elides every message, since in-flight status differs per arm.
-        const inFlightNodes = (dom.streamingMessages && dom.streamingMessages()) || [];
+        const inFlightNodes =
+          (dom.streamingMessages && dom.streamingMessages()) || [];
         const inFlight = new Set(inFlightNodes);
         const running = Boolean(dom.isRunning && dom.isRunning());
         // isRunning() is also true while a prompt is queued on an idle thread; generating() is narrower.
@@ -495,7 +574,9 @@
         const lastPublishes = dom.lastAssistantPublishesStatus
           ? Boolean(dom.lastAssistantPublishesStatus())
           : false;
-        const anyPublishes = dom.statusHookPresent ? Boolean(dom.statusHookPresent()) : true;
+        const anyPublishes = dom.statusHookPresent
+          ? Boolean(dom.statusHookPresent())
+          : true;
         const windowedArm = dom.isWindowed ? Boolean(dom.isWindowed()) : false;
         const probeBlind = lastPublishes ? !windowedArm : !anyPublishes;
         const whole = signature(root);
@@ -524,8 +605,13 @@
         }
         // Overlays outside the thread root (dialogs, menus, model picker) the digest above cannot see.
         const overlays = [];
-        for (const sel of ['[data-slot="dialog-content"]', '[role="menu"]', '[role="dialog"]',
-                           ".unsloth-model-selector-menu", "[data-radix-popper-content-wrapper]"]) {
+        for (const sel of [
+          '[data-slot="dialog-content"]',
+          '[role="menu"]',
+          '[role="dialog"]',
+          ".unsloth-model-selector-menu",
+          "[data-radix-popper-content-wrapper]",
+        ]) {
           for (const el of document.querySelectorAll(sel)) {
             const sig = signature(el);
             const row = { sel, digest: hash(sig), chars: sig.length };
@@ -548,13 +634,16 @@
           // Positive control: a renamed data-status hook makes streamingMessages() silently empty, so a
           // disagreement with generating() is carried out and analysis/parity.comparability refuses it.
           in_flight_unplaced: Boolean(
-            generating && inFlightNodes.length === 0 && probeBlind
+            generating && inFlightNodes.length === 0 && probeBlind,
           ),
           status_hook_present: anyPublishes,
           // Includes the dispatched wait ("Stop queued message"), which isRunning() does not match.
           queued_idle: Boolean(
-            (running || (dom.stopQueuedButton ? Boolean(dom.stopQueuedButton()) : false)) &&
-              !generating
+            (running ||
+              (dom.stopQueuedButton
+                ? Boolean(dom.stopQueuedButton())
+                : false)) &&
+            !generating,
           ),
           // Run-state token: separates a scaffold diff from different turn points from a rendering diff.
           composer_control: dom.runStateControl ? dom.runStateControl() : null,
@@ -563,13 +652,17 @@
           styles,
           // Rows are keyed by mounted index, which equals conversation position only when fully mounted.
           mounted_messages: messages.length,
-          thread_total: (dom.threadTotal && dom.threadTotal()) || messages.length,
+          thread_total:
+            (dom.threadTotal && dom.threadTotal()) || messages.length,
         };
         if (want_raw) out.raw = whole;
         return out;
       } catch (err) {
         // An empty digest on error would read as "everything matched".
-        return { parity_attempted: false, reason: String(err && err.message ? err.message : err) };
+        return {
+          parity_attempted: false,
+          reason: String(err && err.message ? err.message : err),
+        };
       }
     },
   };
