@@ -32,6 +32,32 @@ import utils.model_memory_settings as mm_settings  # noqa: E402
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 
 
+def _fit_off_retry_source():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    branches = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(stmt, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "run_cmd" for target in stmt.targets
+            )
+            and isinstance(stmt.value, ast.List)
+            and [getattr(item, "value", None) for item in stmt.value.elts[-2:]] == ["--fit", "off"]
+            for stmt in node.body
+        )
+    ]
+    assert len(branches) == 1
+    return ast.get_source_segment(src, branches[0])
+
+
 @pytest.fixture
 def policy(monkeypatch):
     """Run the policy under a given toggle pair.
@@ -197,9 +223,9 @@ class TestPersistence:
 
 
 class TestMemlockLimit:
-    """mlock cannot exceed RLIMIT_MEMLOCK. Linux commonly defaults to 8 MB,
-    where llama.cpp warns and carries on, so residency silently does nothing.
-    The settings response reports the cap so the UI can say so."""
+    @pytest.fixture(autouse = True)
+    def require_resource(self):
+        pytest.importorskip("resource")
 
     def test_unlimited_reports_none(self, monkeypatch):
         import resource
@@ -237,6 +263,12 @@ class TestMemlockLimit:
 
         monkeypatch.setattr(resource, "getrlimit", boom)
         assert mm.memlock_limit_bytes() is None
+
+
+def test_memlock_limit_is_unavailable_without_resource(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "resource", None)
+    assert mm_settings.memlock_limit_bytes() is None
 
 
 class TestMemoryEnv:
@@ -2280,18 +2312,7 @@ class TestFitOffRetryDropsTheLock:
         assert memory_state_satisfies_settings(state, True, False) is True
 
     def test_the_launch_really_reclassifies_the_fit_off_retry(self):
-        """Source check: the branch must re-ask the gate and clear the
-        bookkeeping, so it cannot drift back to reusing the fitted verdict."""
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
-        assert branch != -1, "the --fit off retry moved"
-        # To the end of the retry block, not a fixed width: the branch grows.
-        end = src.find("return False", branch)
-        assert end != -1
-        tail = src[branch:end]
+        tail = _fit_off_retry_source()
         for needle in (
             "self._weights_in_host_memory(",
             "fully_gpu_offloaded = True",
@@ -2324,24 +2345,17 @@ class TestFitOffRetryClearsPolicyActivity:
         assert self._satisfied(monkeypatch, policy_active = True) is False
 
     def test_the_launch_recomputes_activity_without_the_managed_flag(self):
-        """Source check: the retry must reuse the non-managed half of the launch
-        expression, not leave the first attempt's verdict standing."""
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # Whitespace-normalised so a pre-commit reflow is not read as a behaviour change.
         flat = "".join(src.split())
         assert (
             "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras"
             in flat
         )
         assert "self._memory_policy_extras_touched=_mem_policy_touched_extras" in flat
-        branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
-        assert branch != -1
-        end = src.find("return False", branch)
-        assert end != -1
-        assert "self._memory_policy_active = _mem_policy_touched_extras" in src[branch:end]
+        assert "self._memory_policy_active = _mem_policy_touched_extras" in _fit_off_retry_source()
 
 
 class TestNoDeadMemoryBookkeeping:
