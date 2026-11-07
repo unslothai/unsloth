@@ -5148,6 +5148,7 @@ class ChatPrefsPayload(BaseModel):
     newChatComposerPosition: Optional[int] = Field(None, ge = 0, le = 100)
     showTurnNavigation: Optional[bool] = None
     richTextPaste: Optional[bool] = None
+    generationStatsUpdates: Optional[Literal["settled", "realtime"]] = None
 
 
 _PlusMenuId = Annotated[str, Field(max_length = 64)]

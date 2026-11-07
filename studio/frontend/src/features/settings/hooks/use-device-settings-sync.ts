@@ -96,7 +96,11 @@ function storeSection<S extends object>(
     fallback,
     read: () => prefsOf(store.getState(), skip),
     apply: (remote) => {
-      const saved = prefsFromRemote(remote as Prefs, fallback);
+      // merge() resets absent fields to defaults; a field the record lacks keeps this browser's value.
+      const saved = {
+        ...prefsOf(store.getState(), skip),
+        ...prefsFromRemote(remote as Prefs, fallback),
+      };
       const next =
         store.persist.getOptions().merge?.(saved, store.getState()) ?? saved;
       store.setState(prefsOf(next, skip) as Partial<S>);

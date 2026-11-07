@@ -177,3 +177,15 @@ test("a same-account marker upgrade keeps syncing edits", async () => {
   stop();
   assert.deepEqual(puts, [{ timeFormat: "24h" }]);
 });
+
+test("a field the account record lacks keeps this browser's value", async () => {
+  freshBrowser();
+  useChatPreferencesStore.setState({ generationStatsUpdates: "realtime" });
+  account = { ...empty, saved: true, chat: { sendShortcut: "mod-enter" } };
+  const stop = startClientPreferencesSync();
+  await settle();
+  stop();
+  const chat = useChatPreferencesStore.getState();
+  assert.equal(chat.sendShortcut, "mod-enter");
+  assert.equal(chat.generationStatsUpdates, "realtime");
+});

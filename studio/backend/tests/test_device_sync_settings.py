@@ -72,7 +72,12 @@ def test_client_preferences_reject_out_of_range_values(client):
 
 
 def test_chat_menu_time_and_spellcheck_preferences_follow_the_account(client):
-    chat = {"sendShortcut": "mod-enter", "showReplyTimes": True, "pastedTextMinChars": 8000}
+    chat = {
+        "sendShortcut": "mod-enter",
+        "showReplyTimes": True,
+        "pastedTextMinChars": 8000,
+        "generationStatsUpdates": "realtime",
+    }
     plus_menu = {"pins": {"mcp": True}, "order": ["mcp", "skills"], "pinnedPromptIds": ["p1"]}
     client.put("/api/settings/client-preferences", json = {"chat": chat, "plusMenu": plus_menu})
     client.put("/api/settings/client-preferences", json = {"timeFormat": "24h", "spellcheck": False})
@@ -92,6 +97,7 @@ def test_chat_menu_time_and_spellcheck_preferences_follow_the_account(client):
         {"chat": {"newChatComposerPosition": 101}},
         {"plusMenu": {"order": "mcp"}},
         {"timeFormat": "36h"},
+        {"chat": {"generationStatsUpdates": "live"}},
     ],
 )
 def test_synced_preferences_reject_invalid_values(client, bad):
