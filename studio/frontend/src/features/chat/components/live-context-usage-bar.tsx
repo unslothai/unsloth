@@ -24,8 +24,9 @@ export const LiveContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   const realtime = useChatPreferencesStore(
     (state) => state.generationStatsUpdates === "realtime",
   );
+  // Keyed so a chat switch mid-pass starts a fresh settled tracker for the new thread.
   return realtime ? (
-    <RealtimeContextUsageBar liveThreadKey={liveThreadKey} {...props} />
+    <RealtimeContextUsageBar key={liveThreadKey} liveThreadKey={liveThreadKey} {...props} />
   ) : (
     <ContextUsageBar {...props} />
   );
@@ -43,7 +44,7 @@ const RealtimeContextUsageBar: FC<BarProps & { liveThreadKey: string }> = ({
   tracker.current ??= createPassSettledTracker();
   const usage = liveContextUsage(
     live,
-    tracker.current(live?.decode != null, settled),
+    tracker.current(live?.prefill != null, live?.decode != null, settled),
   );
   if (!usage) return <ContextUsageBar {...props} />;
   return (

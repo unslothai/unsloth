@@ -225,21 +225,47 @@ test("realtime context counts the prompt as it is read, then the prompt plus the
 test("a pass's own context_usage ends the live count, even on a regenerate with the same prompt", () => {
   const settled = createPassSettledTracker<object>();
   const before = { promptTokens: 5316 };
-  assert.equal(settled(false, before), false, "prefill");
+  assert.equal(settled(true, false, before), false, "prefill");
   assert.equal(
-    settled(true, before),
+    settled(true, true, before),
     false,
     "decoding against the previous reply's snapshot",
   );
   const landed = { promptTokens: 5316 };
   assert.equal(
-    settled(true, landed),
+    settled(true, true, landed),
     true,
     "same numbers, new snapshot: this pass settled",
   );
   // The next pass of a tool loop starts over.
-  assert.equal(settled(false, landed), false);
-  assert.equal(settled(true, landed), false);
+  assert.equal(settled(false, false, landed), false);
+  assert.equal(settled(true, true, landed), false);
+});
+
+test("a pass that settles before its first decode frame still shows its exact count", () => {
+  const settled = createPassSettledTracker<object>();
+  const before = { promptTokens: 5316 };
+  assert.equal(settled(true, false, before), false, "prefill of a short tool-call pass");
+  const landed = { promptTokens: 5330 };
+  assert.equal(settled(true, false, landed), true, "its context_usage arrived with no decode frame seen");
+  // Between passes the live progress is cleared; the next pass compares against the new snapshot.
+  assert.equal(settled(false, false, landed), false);
+  assert.equal(settled(true, false, landed), false);
+});
+
+test("a pass that follows a decoded pass without a clear starts over", () => {
+  const settled = createPassSettledTracker<object>();
+  const first = { promptTokens: 100 };
+  settled(true, false, first);
+  settled(true, true, first);
+  const firstLanded = { promptTokens: 100 };
+  assert.equal(settled(true, true, firstLanded), true);
+  assert.equal(settled(true, false, firstLanded), false, "the next pass's prefill re-baselines");
+});
+
+test("the realtime meter keeps one settled tracker per thread", () => {
+  const bar = readSrc("features/chat/components/live-context-usage-bar.tsx");
+  assert.match(bar, /<RealtimeContextUsageBar\s+key=\{liveThreadKey\}/);
 });
 
 test("settled mode keeps today's paths: no live subscription in the meter, the line only with details", () => {

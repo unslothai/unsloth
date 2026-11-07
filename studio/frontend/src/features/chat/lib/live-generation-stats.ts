@@ -74,17 +74,22 @@ export type LiveContextUsage = {
   cached: number;
 };
 
-/** True once the settled snapshot changed while this pass decoded: the pass's own context_usage has
- *  landed and counts the reply exactly, where the last decode frame trails it. Keyed on the snapshot
- *  object, not its numbers, so a regenerate (same prompt as the snapshot) still counts live. */
+/** True once the settled snapshot changed during this pass: its own context_usage has landed and counts
+ *  the reply exactly, where the last decode frame trails it. A pass starts when live progress appears,
+ *  or when prefill follows a decoded pass. Keyed on the snapshot object, not its numbers, so a
+ *  regenerate (same prompt as the snapshot) still counts live. */
 export function createPassSettledTracker<S>(): (
+  active: boolean,
   decoding: boolean,
   snapshot: S,
 ) => boolean {
   let baseline: S | undefined;
   let seeded = false;
-  return (decoding, snapshot) => {
-    if (!decoding || !seeded) {
+  let decoded = false;
+  return (active, decoding, snapshot) => {
+    const newPass = decoded && !decoding;
+    decoded = active && decoding;
+    if (!active || !seeded || newPass) {
       baseline = snapshot;
       seeded = true;
       return false;
