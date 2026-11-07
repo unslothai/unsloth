@@ -66,10 +66,10 @@ test("the clip section renders only for a family that declares it, and a clip an
     page.indexOf('data-testid="video-keyframes"'),
     page.indexOf("{supportsReferences && ("),
   );
-  assert.equal(
-    keyframes.match(/if \(next && continuationClip\) \{\s*setContinuationClip\(null\);/g)?.length,
-    2,
-  );
+  assert.equal(keyframes.match(/if \(next\) dropContinuationClip\(/g)?.length, 2);
+  // Late uploads read the live inputs, not the closure they were started with.
+  assert.match(section, /liveInputs\.current\.firstFrame \|\| liveInputs\.current\.lastFrame/);
+  assert.match(page, /if \(!liveInputs\.current\.continuationClip\) return;\s*setContinuationClip\(null\);/);
   assert.match(page, /if \(status\?\.loaded && !supportsContinuation\) setContinuationClip\(null\);/);
 });
 
@@ -92,7 +92,9 @@ test("a picked clip past the 15 s cap is flagged before Generate; unknown or sho
 
 test("a start frame and a clip replace each other, and the user is told which one went", () => {
   assert.match(page, /Removed the start frame: the clip to continue replaces it/);
-  assert.match(page, /Removed the clip to continue: a start frame replaces it/);
+  assert.match(page, /Removed the clip to continue: \$\{why\}/);
+  assert.match(page, /dropContinuationClip\("a start frame replaces it"\)/);
+  assert.match(page, /dropContinuationClip\("an end frame replaces it"\)/);
 });
 
 test("a staged clip sizes the canvas through Match source, as a start frame does", () => {

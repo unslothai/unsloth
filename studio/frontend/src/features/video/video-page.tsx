@@ -1574,6 +1574,13 @@ function VideoGenerator({
     if (status?.loaded && !supportsLastFrame) setLastFrame(null);
   }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   const supportsContinuation = supportsVideoContinuation(status);
+  const liveInputs = useRef({ firstFrame, lastFrame, continuationClip });
+  liveInputs.current = { firstFrame, lastFrame, continuationClip };
+  const dropContinuationClip = useCallback((why: string) => {
+    if (!liveInputs.current.continuationClip) return;
+    setContinuationClip(null);
+    toast.info(`Removed the clip to continue: ${why}`);
+  }, []);
   useEffect(() => {
     if (status?.loaded && !supportsContinuation) setContinuationClip(null);
   }, [status?.loaded, supportsContinuation]);
@@ -4251,10 +4258,7 @@ function VideoGenerator({
                       value={firstFrame}
                       onChange={(next) => {
                         setFirstFrame(next);
-                        if (next && continuationClip) {
-                          setContinuationClip(null);
-                          toast.info("Removed the clip to continue: a start frame replaces it");
-                        }
+                        if (next) dropContinuationClip("a start frame replaces it");
                       }}
                       label="Click or drop"
                       removeLabel="Remove start frame"
@@ -4268,10 +4272,7 @@ function VideoGenerator({
                       value={lastFrame}
                       onChange={(next) => {
                         setLastFrame(next);
-                        if (next && continuationClip) {
-                          setContinuationClip(null);
-                          toast.info("Removed the clip to continue: an end frame replaces it");
-                        }
+                        if (next) dropContinuationClip("an end frame replaces it");
                       }}
                       label="Click or drop"
                       removeLabel="Remove end frame"
@@ -4584,7 +4585,8 @@ function VideoGenerator({
                 label="Clip to continue"
                 onChange={(next) => {
                   setContinuationClip(next);
-                  if (next && (firstFrame || lastFrame)) {
+                  // Live values, not the closure: an upload that finishes late holds stale ones.
+                  if (next && (liveInputs.current.firstFrame || liveInputs.current.lastFrame)) {
                     setFirstFrame(null);
                     setLastFrame(null);
                     toast.info("Removed the start frame: the clip to continue replaces it");
