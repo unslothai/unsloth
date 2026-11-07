@@ -69,6 +69,13 @@ export function createVoiceSlotOwner(deps: VoiceSlotOwnerDeps): VoiceSlotOwner {
         const { loadVoice, unloadVoice, voiceServing } = await deps.api();
         if (await voiceServing(id)) {
           if (stale()) return false;
+          // Borrowing another voice still releases the one voice mode loaded itself.
+          if (owned && loaded && loaded !== id) {
+            const previous = loaded;
+            loaded = null;
+            owned = false;
+            await unloadVoice(previous).catch(() => {});
+          }
           owned = owned && loaded === id;
           loaded = id;
           deps.setLoaded(true);

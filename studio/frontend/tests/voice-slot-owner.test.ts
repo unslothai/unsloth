@@ -161,3 +161,33 @@ test("a voice the Audio page was already serving is borrowed, never unloaded", a
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(calls, []);
 });
+
+test("switching to a voice already serving still unloads the one voice mode loaded", async () => {
+  const calls: string[] = [];
+  let picked = "kokoro";
+  const owner = createVoiceSlotOwner({
+    api: async () => ({
+      voiceServing: async (id) => id === "piper",
+      loadVoice: async (id) => {
+        calls.push(`load ${id}`);
+      },
+      unloadVoice: async (id) => {
+        calls.push(`unload ${id}`);
+      },
+    }),
+    pickedVoice: () => picked,
+    hasChatModel: () => true,
+    voiceOff: () => false,
+    setLoaded: () => {},
+    setLoading: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
+  assert.equal(await owner.ensure(), true);
+  picked = "piper";
+  assert.equal(await owner.ensure(), true);
+  owner.unloadOwn();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(calls, ["load kokoro", "unload kokoro"]);
+});
