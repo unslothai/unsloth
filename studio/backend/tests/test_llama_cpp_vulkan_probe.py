@@ -338,3 +338,82 @@ def test_windows_probe_sets_the_real_process_error_mode(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+_ACCESS_VIOLATION = 0xC0000005
+
+
+def _layer_retry_host(
+    monkeypatch,
+    *,
+    platform = "win32",
+    vulkan = True,
+    faulted = None,
+):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(LlamaCppBackend, "_vulkan_layers_faulted", faulted)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda binary: vulkan))
+
+
+def test_layer_retry_runs_for_a_windows_vulkan_hard_crash(monkeypatch):
+    _layer_retry_host(monkeypatch)
+    assert LlamaCppBackend._should_retry_without_vulkan_layers("bin", {}, _ACCESS_VIOLATION)
+
+
+@pytest.mark.parametrize(
+    "host, env, returncode",
+    [
+        ({"platform": "linux"}, {}, _ACCESS_VIOLATION),
+        ({"vulkan": False}, {}, _ACCESS_VIOLATION),
+        ({"faulted": True}, {}, _ACCESS_VIOLATION),
+        ({"faulted": False}, {}, _ACCESS_VIOLATION),
+        ({}, {"VK_LOADER_LAYERS_DISABLE": "*steam*"}, _ACCESS_VIOLATION),
+        ({}, {}, 1),
+        ({}, {}, None),
+    ],
+)
+def test_layer_retry_stays_off(monkeypatch, host, env, returncode):
+    _layer_retry_host(monkeypatch, **host)
+    assert not LlamaCppBackend._should_retry_without_vulkan_layers("bin", env, returncode)
+
+
+def test_layer_retry_precedes_the_flash_attention_retry():
+    source = (Path(_BACKEND_DIR) / "core" / "inference" / "llama_cpp.py").read_text(
+        encoding = "utf-8"
+    )
+    assert source.index('label = "-nolayers"') < source.index('label = "-noflash"')
+
+
+def _windows_child_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("HIP_PATH", raising = False)
+    monkeypatch.delenv("ROCM_PATH", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_build_windows_path_dirs", staticmethod(lambda *a: [str(tmp_path)])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_warn_missing_windows_cuda_runtime", staticmethod(lambda *a: None)
+    )
+    binary = tmp_path / "llama-server.exe"
+    binary.write_text("")
+    return LlamaCppBackend._llama_server_env_for_binary(str(binary))
+
+
+def test_windows_launches_opt_out_of_known_overlay_layers(monkeypatch, tmp_path):
+    env = _windows_child_env(monkeypatch, tmp_path)
+    for name in LlamaCppBackend._VULKAN_OVERLAY_LAYER_OPT_OUTS:
+        assert env[name] == "1"
+    assert "VK_LOADER_LAYERS_DISABLE" not in env
+
+
+def test_a_user_value_for_an_overlay_opt_out_is_kept(monkeypatch, tmp_path):
+    monkeypatch.setenv("DISABLE_RTSS_LAYER", "0")
+    assert _windows_child_env(monkeypatch, tmp_path)["DISABLE_RTSS_LAYER"] == "0"
+
+
+def test_other_platforms_get_no_overlay_opt_outs(monkeypatch, tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+    assert not set(LlamaCppBackend._VULKAN_OVERLAY_LAYER_OPT_OUTS) & set(env)

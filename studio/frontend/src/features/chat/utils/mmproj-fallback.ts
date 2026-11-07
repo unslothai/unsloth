@@ -5,7 +5,7 @@ import type { CpuFallbackReason, MmprojFallbackReason } from "../types/api";
 
 /** Shared so both load paths describe a CPU fallback identically. */
 export const CPU_FALLBACK_MESSAGE =
-  "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session.";
+  "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session. Update your GPU driver and restart Unsloth to try Vulkan again. Settings > Logs has the crash details.";
 
 const CPU_FALLBACK_MESSAGES: Record<CpuFallbackReason, string> = {
   vulkan_startup_crash: CPU_FALLBACK_MESSAGE,
