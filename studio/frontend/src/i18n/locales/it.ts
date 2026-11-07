@@ -2042,6 +2042,12 @@ export const it = {
           "Sceglie in base alla macchina e passa a HTTPS se Xet si blocca o fallisce qui.",
         autoCurrently: "Auto sta usando {transport} su questa macchina.",
         xetMissing: "Xet non è disponibile perché hf_xet non è installato.",
+        speedLimit: "Limite di velocità dei download",
+        speedLimitDescription:
+          "Nessun limite finché non viene impostato un valore. Un download limitato usa HTTPS.",
+        speedLimitNoLimit: "Nessun limite",
+        speedLimitInvalid: "Inserisci un numero in Mbit/s oppure lascia il campo vuoto.",
+        speedLimitUsesHttps: "I download usano HTTPS finché è impostato un limite di velocità. I file oltre 50 GB usano comunque Xet, senza il limite.",
       },
       uploads: {
         sectionTitle: "Caricamenti",
@@ -2424,6 +2430,10 @@ export const it = {
         contrast: {
           label: "Contrasto",
         },
+        elementOutline: {
+          label: "Contorno degli elementi",
+          description: "Intensità del bordo di pulsanti, campi, schede e menu.",
+        },
         reduceMotion: {
           label: "Riduci le animazioni",
           description: "Riduci le animazioni o segui il sistema.",
@@ -2517,7 +2527,7 @@ export const it = {
         detecting: "Ricerca di GPU...",
         unreadable: "Impossibile leggere l'hardware di questo server.",
         noGpu:
-          "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
+          "Nessuna GPU dedicata rilevata.",
         noUsableGpu: "Nessuna GPU di questa macchina è utilizzabile da PyTorch.",
         mismatchCpuBuild:
           "PyTorch è una build solo CPU ({version}), quindi le GPU sottostanti non possono essere usate. Ripara l'installazione per ripristinare il supporto GPU.",
@@ -2593,7 +2603,7 @@ export const it = {
           "llama.cpp backend gguf inferenza cuda rocm hip vulkan metal cpu gpu acceleratore prebuilt cambiare motore",
       },
       modelMemory: {
-        title: "Memoria del modello",
+        title: "Caricamento del modello",
         keepResident: "Mantieni il modello nella memoria della GPU",
         keepResidentDescription: "Resta nella VRAM tra un prompt e l'altro.",
         keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e, quando i pesi risiedono davvero nella RAM host (memoria unificata o offload parziale sulla GPU), passa anche --mlock, così il sistema operativo non li pagina per ricaricarli al prompt successivo.",
@@ -2775,7 +2785,7 @@ export const it = {
       configurationDocs: "documentazione",
       configurationFlagsSuffix: "per i flag.",
       modelNote:
-        "Codex richiede un modello GGUF servito da llama-server. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
+        "Claude Code e Codex richiedono un modello GGUF servito da llama-server o un modello MLX. Gli altri agenti possono usare anche modelli basati su transformer; rimuovi --model per usare il modello già caricato in Unsloth.",
       subagent: {
         title: "Usa un modello locale come subagente",
         description:
@@ -2853,6 +2863,8 @@ export const it = {
     },
     chat: {
       groups: {
+        replies: { title: "Risposte" },
+        thinkingTools: { title: "Ragionamento e strumenti" },
         conversations: { title: "Conversazioni" },
         files: { title: "File e incolla" },
         display: { title: "Visualizzazione" },
@@ -2936,11 +2948,20 @@ export const it = {
       showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
       showReplyTimesKeywords:
         "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
-      showGenerationDetails: "Dettagli generazione",
+      showGenerationDetails: "Info dettagliate su velocità e caricamento",
       showGenerationDetailsDescription:
-        "Mostra in tempo reale la velocità del prompt e della risposta con il numero di token, e dove sono stati caricati i livelli di un modello.",
+        "Aggiunge alle letture dal vivo la velocità di lettura del prompt, il conteggio dei token e l'accettazione delle bozze, e mostra dove sono stati caricati i livelli del modello.",
       showGenerationDetailsKeywords:
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Statistiche di velocità e contesto",
+      generationStatsUpdatesDescription:
+        "In tempo reale conta i token al secondo e l'uso del contesto mentre una risposta è in streaming. Al termine li aggiorna quando ogni risposta finisce.",
+      generationStatsUpdatesHint:
+        "In tempo reale aggiorna l'indicatore dei token al secondo sotto una risposta e la barra del contesto in cima alla chat più volte al secondo mentre la risposta viene scritta. Al termine li aggiorna una volta, quando ogni risposta finisce. La modalità in tempo reale può causare rallentamenti o prestazioni inferiori, soprattutto su computer datati o occupati.",
+      generationStatsUpdatesSettled: "Al termine",
+      generationStatsUpdatesRealtime: "In tempo reale",
+      generationStatsUpdatesKeywords:
+        "tempo reale dal vivo aggiorna velocità contesto statistiche realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       turnNavigation: "Navigazione dei turni",

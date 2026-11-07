@@ -2138,6 +2138,45 @@ def test_worker_reports_its_own_memory():
     assert stats.get("host_rss_mib", 0) > 0 and "gpu_peak_allocated_mib" not in stats
 
 
+@pytest.mark.parametrize(
+    "platform, maxrss, has_proc",
+    [("linux", 600 << 10, True), ("darwin", 600 << 20, False), ("win32", None, False)],
+)
+def test_worker_memory_stats_are_mib_on_every_platform(platform, maxrss, has_proc, monkeypatch):
+    """getrusage's ru_maxrss is KiB on Linux and bytes on macOS; Windows has neither it nor /proc."""
+    import builtins
+    import sys as real_sys
+
+    import psutil
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    class _Info:
+        rss = 300 << 20
+        peak_wset = 700 << 20 if platform == "win32" else None
+
+    monkeypatch.setattr(psutil, "Process", lambda: SimpleNamespace(memory_info = lambda: _Info()))
+    monkeypatch.setattr(real_sys, "platform", platform)
+    # A stand-in module either way, so the test runs on Windows, which has no `resource`.
+    fake = (
+        None
+        if maxrss is None
+        else SimpleNamespace(RUSAGE_SELF = 0, getrusage = lambda who: SimpleNamespace(ru_maxrss = maxrss))
+    )
+    monkeypatch.setitem(real_sys.modules, "resource", fake)
+    real_open = builtins.open
+
+    def _open(path, *a, **k):
+        if str(path) == "/proc/self/statm" and not has_proc:
+            raise FileNotFoundError(path)
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _open)
+    stats = worker._memory_stats("cpu")
+    assert stats["host_rss_mib"] == 300
+    assert stats["host_peak_rss_mib"] == (700 if platform == "win32" else 600)
+
+
 class _Planned(Exception):
     pass
 

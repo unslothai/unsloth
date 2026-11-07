@@ -12,7 +12,11 @@ export default mergeConfig(base, {
     emptyOutDir: true,
     outDir: path.resolve(__dirname, "../../.playwright-cli/long-thread-production"),
     rollupOptions: {
-      input: path.resolve(__dirname, "smoke-thread-weight.html"),
+      // The app itself too: the gate's area matrix opens the real chat page from this build.
+      input: {
+        thread: path.resolve(__dirname, "smoke-thread-weight.html"),
+        app: path.resolve(__dirname, "index.html"),
+      },
     },
   },
 });

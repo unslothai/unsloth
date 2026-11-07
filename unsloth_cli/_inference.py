@@ -1154,6 +1154,7 @@ class HttpChatBackend:
             # Accumulate SSE deltas into the full-text-so-far form; re-wrap delta.reasoning_content in think tags for visible_text.
             text = ""
             thinking = False
+            saw_finish = False
             with resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()
@@ -1161,7 +1162,7 @@ class HttpChatBackend:
                         continue
                     data = line[len("data:") :].strip()
                     if data == "[DONE]":
-                        break
+                        return
                     try:
                         parsed = json.loads(data)
                     except ValueError:
@@ -1176,6 +1177,7 @@ class HttpChatBackend:
                         continue
                     # Read before the delta: the finish-reason chunk may carry no content.
                     if choice.get("finish_reason") is not None:
+                        saw_finish = True
                         self.reply_hit_token_limit = choice["finish_reason"] == "length"
                     try:
                         reasoning = choice["delta"].get("reasoning_content")
@@ -1198,6 +1200,8 @@ class HttpChatBackend:
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
                     yield visible.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+            if not saw_finish:
+                raise RuntimeError("Stream ended before the reply completed.")
 
         return cumulative()
 
