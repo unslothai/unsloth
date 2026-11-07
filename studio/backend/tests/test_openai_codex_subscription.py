@@ -1159,6 +1159,9 @@ def test_permanent_refresh_rejection_sets_only_sanitized_reconnect_marker(monkey
         (400, {"error": {"code": "refresh_token_reused"}}, True),
         (401, {"error": {"code": "refresh_token_invalidated"}}, True),
         (401, {"error": {"message": "unknown"}}, True),
+        (400, {"code": "refresh_token_reused"}, True),
+        (400, {"error": "REFRESH_TOKEN_INVALIDATED"}, True),
+        (400, {"error": {"code": "server_error"}}, False),
         (503, {"error": {"code": "server_error"}}, False),
     ],
 )

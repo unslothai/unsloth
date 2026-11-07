@@ -289,8 +289,11 @@ async def _token_request(data: dict[str, Any]) -> dict[str, Any]:
     if response.status_code >= 400:
         error_code = ""
         try:
-            error = response.json().get("error")
-            error_code = error.get("code", "") if isinstance(error, dict) else str(error or "")
+            payload = response.json()
+            error = payload.get("error")
+            error_code = error.get("code") if isinstance(error, dict) else error
+            # Codex CLI falls back to a top-level code and compares case-insensitively.
+            error_code = str(error_code or payload.get("code") or "").lower()
         except Exception:
             pass
         if data.get("grant_type") == "refresh_token" and (
