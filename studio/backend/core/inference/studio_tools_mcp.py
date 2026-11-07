@@ -248,6 +248,11 @@ def call(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not mint an Unsloth Studio chat tools key: %s", exc)
         return f"Error: MCP tool '{name}' failed: Unsloth Studio could not authorize this call."
+    from core.inference.llama_keepwarm import current_request_counted
+    from core.inference.load_policy import forget_counted_parent, note_counted_parent
+
+    if current_request_counted():
+        note_counted_parent(row["id"])
     try:
         # Minting can outlast an edit or delete of the row.
         if config_check is not None and not config_check():
@@ -294,4 +299,5 @@ def call(
         return _flatten_result(_without_nulls(result), ui_resource_uri)
     finally:
         # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
+        forget_counted_parent(row["id"])
         _revoke(row["id"])

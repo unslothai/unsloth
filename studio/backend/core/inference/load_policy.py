@@ -36,6 +36,24 @@ def owner_chat_loads_beside() -> bool:
     )
 
 
+# Chat tools keys whose calling chat is in the keep-warm count, so a switch may discount exactly that chat.
+_counted_parents: set[int] = set()
+
+
+def note_counted_parent(key_id: int) -> None:
+    _counted_parents.add(key_id)
+
+
+def forget_counted_parent(key_id: int) -> None:
+    _counted_parents.discard(key_id)
+
+
+def parent_chat_counted() -> bool:
+    from utils.account_context import current_account
+    account = current_account()
+    return account.key_id in _counted_parents and current_load_policy() is LoadPolicy.BESIDE_ONLY
+
+
 def current_load_policy() -> LoadPolicy:
     from utils.account_context import current_account
     try:

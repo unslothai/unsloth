@@ -320,6 +320,31 @@ def test_stop_while_polling_stops_a_render_an_earlier_call_of_the_turn_started(
     assert not other_video.is_set()
 
 
+@pytest.mark.parametrize("untracked", [False, True])
+def test_the_route_discounts_the_calling_chat_only_when_it_is_counted(
+    server_loop, monkeypatch, untracked
+):
+    from core.inference import llama_keepwarm, load_policy
+
+    seen = []
+
+    async def reads_the_marker(request):
+        seen.append(load_policy.parent_chat_counted())
+        return RUN_PAYLOADS[RUNS]
+
+    studio(monkeypatch, {**RUN_PAYLOADS, RUNS: reads_the_marker})
+    # The chat's own scope, as the keep-warm middleware leaves it; an external-provider chat untracks itself.
+    scope = {llama_keepwarm._TRACKED_SCOPE_KEY: True}
+    if untracked:
+        scope[llama_keepwarm._UNTRACKED_SCOPE_KEY] = True
+    token = llama_keepwarm._current_response_scope.set(scope)
+    try:
+        assert "qwen-lora" in runs()
+    finally:
+        llama_keepwarm._current_response_scope.reset(token)
+    assert seen == [not untracked] and load_policy._counted_parents == set()
+
+
 async def _hang(request):
     await asyncio.sleep(30)
 

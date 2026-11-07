@@ -58,11 +58,11 @@ def chat_busy(count_pending: bool = True) -> bool:
         counted = other_inference_request_count(
             current_request_counted = True, include_pending = count_pending
         )
-        from core.inference.load_policy import LoadPolicy, current_load_policy
+        from core.inference.load_policy import parent_chat_counted
 
-        # A chat tools call (beside-only key) runs inside its chat, which waits on this switch:
-        # that one chat is never its own blocker. Any other chat still is.
-        if current_load_policy() is LoadPolicy.BESIDE_ONLY:
+        # A chat tools call runs inside its chat, which waits on this switch: that chat, when it is
+        # counted at all (an external-provider chat is not), is never its own blocker.
+        if parent_chat_counted():
             counted -= 1
         # counted once, since a request parked on a switch lock is a waiter inside its own switch
         return max(0, counted - max(0, parked - 1)) > 0

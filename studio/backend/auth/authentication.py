@@ -484,6 +484,7 @@ async def _get_current_credential(
                 ).value,
                 ui_chat = bool(record.get("key_internal"))
                 and record.get("key_name") == STUDIO_CHAT_TOOLS_KEY_NAME,
+                key_id = record.get("key_id"),
             )
         )
         return record["username"], generation

@@ -2057,6 +2057,7 @@ def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tu
             "key_name": row["name"],
             "key_purpose": row["purpose"],
             "key_internal": bool(row["is_internal"]),
+            "key_id": row["id"],
         }
         return record, secret
     finally:

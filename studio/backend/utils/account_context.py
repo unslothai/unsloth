@@ -33,6 +33,8 @@ class AccountContext:
     load_policy: str = field(default = "any", compare = False)
     # The chat tools key of a signed-in UI chat, not one an API key started; not part of identity.
     ui_chat: bool = field(default = False, compare = False)
+    # The api_keys row that admitted the request, if any; not part of identity.
+    key_id: Optional[int] = field(default = None, compare = False)
 
     @property
     def is_owner(self) -> bool:

@@ -446,18 +446,30 @@ def test_a_chat_tools_key_switches_media_only_when_the_chat_model_stays(
 
 
 @pytest.mark.parametrize(
-    "key_policy, chats, switched",
-    [("beside_only", 1, True), ("beside_only", 2, False), ("any", 1, False)],
+    "key_policy, parent_counted, chats, switched",
+    [
+        ("beside_only", True, 1, True),  # the one counted chat is the caller's own
+        ("beside_only", True, 2, False),  # another chat is still busy
+        (
+            "beside_only",
+            False,
+            1,
+            False,
+        ),  # an external-provider parent is not counted: the 1 is someone else
+        ("any", True, 1, False),
+    ],
 )
 def test_a_chat_tools_switch_does_not_wait_on_the_chat_that_called_it(
-    flux, enabled, loads, monkeypatch, key_policy, chats, switched
+    flux, enabled, loads, monkeypatch, key_policy, parent_counted, chats, switched
 ):
     from dataclasses import replace
 
+    from core.inference import load_policy
     from utils.account_context import OWNER, run_as
 
-    # The calling chat is in flight for the whole tool call; only another chat should hold the GPU load.
-    key = replace(OWNER, via_api_key = True, load_policy = key_policy)
+    key = replace(OWNER, via_api_key = True, load_policy = key_policy, key_id = 41)
+    if parent_counted:
+        load_policy.note_counted_parent(41)
     monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: True)
     monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: True)
     monkeypatch.setattr(mas, "_DRAIN_WAIT_S", 0.2)
@@ -468,6 +480,8 @@ def test_a_chat_tools_switch_does_not_wait_on_the_chat_that_called_it(
         problem = ""
     except HTTPException as exc:
         problem = (exc.headers or {}).get("X-Unsloth-Problem", str(exc.detail))
+    finally:
+        load_policy.forget_counted_parent(41)
     assert (len(loads) == 1) == switched, problem
 
 
