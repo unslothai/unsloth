@@ -8608,6 +8608,8 @@ class DiffusionBackend:
                     and kind == "pipeline"
                     and pipeline_seed_scheme is None
                     and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    # UNSLOTH_DIFFUSION_ROCM_COMPILE=0 or a failed probe: the fused W8A8 linear would compile anyway.
+                    and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                     else None
                 )
                 if rdna_auto_w8a8 is not None:
