@@ -45,6 +45,11 @@ _last_attended = float("-inf")
 _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "keepwarm_unattended", default = False
 )
+# Set by middleware that must see a request's detached work end (the benchmark load fence):
+# work that outlives its response calls it and runs the returned release when done.
+detached_work_hold: contextvars.ContextVar = contextvars.ContextVar(
+    "detached_work_hold", default = None
+)
 # The (id, quant) idle-unload last freed, so an alias/unknown request that would otherwise 503 against an empty backend
 # can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
 _last_unloaded_model = None

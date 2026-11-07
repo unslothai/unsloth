@@ -356,6 +356,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/change-password",
   "/export",
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Wait for measured admission: redirecting on an initial guess strands healthy hosts on /chat.
