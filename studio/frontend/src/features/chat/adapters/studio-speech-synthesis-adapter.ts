@@ -421,8 +421,6 @@ export function readAloudChunks(text: string): string[] {
   return chunks;
 }
 
-// One synth request for the whole reply played nothing until the last second of audio existed;
-// now the next chunk synthesizes while the current one plays.
 function speakWithBackendAudio(
   generate: (text: string, signal?: AbortSignal) => Promise<string>,
   text: string,
@@ -454,7 +452,7 @@ function speakWithBackendAudio(
 
   const synth = (index: number): Promise<string> => {
     const pending = generate(chunks[index] ?? "", controller.signal);
-    // Read when awaited; this only keeps a chunk dropped by cancel from rejecting unhandled.
+    // Awaited later; a chunk dropped by cancel must not reject unhandled.
     pending.catch(() => {});
     return pending;
   };
