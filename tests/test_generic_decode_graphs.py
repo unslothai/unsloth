@@ -74,6 +74,8 @@ class _Host(GG._Cuda):
     perturb = False
     fail = False
     graphs = []
+    # As a real capture: no host-to-device copies (torch.tensor(..., device=...)) while recording.
+    recording = False
 
     @staticmethod
     def current_device():
@@ -83,9 +85,9 @@ class _Host(GG._Cuda):
     def device(index):
         return contextlib.nullcontext()
 
-    @staticmethod
-    def capturing():
-        return False
+    @classmethod
+    def capturing(cls):
+        return cls.recording
 
     @staticmethod
     def pool():
@@ -106,10 +108,26 @@ class _Host(GG._Cuda):
     @classmethod
     def record(cls, pool, fn, cache):
         if cls.fail:
-            raise RuntimeError("operation not permitted when stream is capturing")
+            error = cls.fail if isinstance(cls.fail, BaseException) else None
+            raise error or RuntimeError("operation not permitted when stream is capturing")
         # A capture launches nothing: host and device length counters are left as they were.
         snapshot = GG._snapshot(cache)
-        outputs = fn()
+        real_tensor = torch.tensor
+
+        def tensor(*args, **kwargs):
+            if kwargs.get("device") is not None:
+                raise RuntimeError(
+                    "Cannot copy between CPU and CUDA tensors during CUDA graph capture unless the CPU tensor is pinned."
+                )
+            return real_tensor(*args, **kwargs)
+
+        cls.recording = True
+        torch.tensor = tensor
+        try:
+            outputs = fn()
+        finally:
+            torch.tensor = real_tensor
+            cls.recording = False
         GG._restore(snapshot)
         graph = _FakeGraph(fn, outputs, cache, cls.perturb)
         cls.graphs.append(graph)
@@ -791,3 +809,82 @@ def test_decode_scope_restores_an_instance_forward():
     with vision._EagerDecodeSteps(m):
         assert m.__dict__["forward"] is not previous
     assert m.__dict__["forward"] is previous
+
+
+def test_full_sliding_window_roll_is_captured_without_host_copies(host, gemma3):
+    # transformers rolls a full window with an index made by torch.tensor(..., device=...), a host-to-device copy a
+    # real capture refuses; the warm-up and recording run that branch on an index made outside the capture.
+    window = gemma3.config.sliding_window
+    ids, mask = _ids(gemma3, 2, length = 3, pad = 1)
+    _fresh(gemma3)
+    new = window + 12
+    eager = _generate(gemma3, ids, mask, False, new)
+    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
+    s = GG.stats(gemma3)
+    assert not s["refusals"], s
+    assert s["captures"] == 2 and s["validations"] == 2, s
+    assert s["replays"] == new - 1 - 2 * 1, s
+    # transformers' own update is back after the capture.
+    for cls, _ in GG._rolling_update_classes():
+        assert not getattr(cls.__dict__["update"], "_unsloth_graphable_roll", False)
+
+
+def test_rolling_update_matches_transformers_rows():
+    classes = GG._rolling_update_classes()
+    assert classes, "no static sliding layer with the host-built roll index in this transformers"
+    for cls, counter in classes:
+        torch.manual_seed(0)
+        layers = []
+        for _ in range(2):
+            try:
+                layer = cls(max_cache_len = 32, sliding_window = 4)
+            except TypeError:
+                layer = cls(sliding_window = 4)
+            layers.append(layer)
+        prefill = torch.randn(2, 3, 6, 8), torch.randn(2, 3, 6, 8)
+        steps = [(torch.randn(2, 3, 1, 8), torch.randn(2, 3, 1, 8)) for _ in range(5)]
+        kwargs = {"cache_position": torch.arange(6)}
+        for layer in layers:
+            layer.update(*prefill, kwargs)
+        for i, (k, v) in enumerate(steps):
+            step_kwargs = {"cache_position": torch.tensor([6 + i])}
+            a = layers[0].update(k, v, step_kwargs)
+            with GG._graphable_rolls():
+                b = layers[1].update(k, v, step_kwargs)
+            assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
+            assert layers[0].__dict__[counter] == layers[1].__dict__[counter]
+
+
+def test_keys_changing_every_step_stop_capturing_for_the_call(host, llama, monkeypatch):
+    # An argument whose shape or value moves every step gives every step a new key: each capture is an eager
+    # warm-up plus a recording that is never replayed. After a few in a row the call decodes eagerly.
+    _fresh(llama)
+    ids, mask = _ids(llama)
+    eager = _generate(llama, ids, mask, False, 16)
+    step = iter(range(10**6))
+    real = GG._window_state
+    monkeypatch.setattr(GG, "_window_state", lambda cache: real(cache) + (next(step),))
+    assert torch.equal(eager, _generate(llama, ids, mask, True, 16))
+    s = GG.stats(llama)
+    assert s["captures"] == GG._MAX_UNREPLAYED_CAPTURES and s["replays"] == 0, s
+    assert s["graphs"] == 0, s
+    assert s["refusals"] == {"graph key changes every step": 15 - GG._MAX_UNREPLAYED_CAPTURES}, s
+    # The next call starts capturing again (and stops again).
+    _generate(llama, ids, mask, True, 16)
+    assert GG.stats(llama)["captures"] == 2 * GG._MAX_UNREPLAYED_CAPTURES
+
+
+def test_out_of_memory_capture_stops_the_call_not_the_key(host, llama):
+    _fresh(llama)
+    ids, mask = _ids(llama)
+    eager = _generate(llama, ids, mask, False)
+    host.fail = torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 MiB")
+    assert torch.equal(eager, _generate(llama, ids, mask, True))
+    s = GG.stats(llama)
+    assert s["captures"] == 0 and s["refused_keys"] == 0, s
+    assert s["refusals"] == {"capture failed: out of memory": 9}, s
+    # Room again: the next call captures the same key.
+    host.fail = False
+    assert torch.equal(eager, _generate(llama, ids, mask, True))
+    s = GG.stats(llama)
+    assert s["captures"] == 1 and s["replays"] == 8, s

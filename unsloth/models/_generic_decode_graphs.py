@@ -58,6 +58,10 @@ MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
 # A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
 _KEEP_MAX_RATIO = 2
+# Captures in a row without a replay in between: the step's key changes every step (an argument whose shape or
+# value moves), so every capture costs an eager warm-up plus a recording and is never replayed. The rest of the
+# call decodes eagerly. A healthy call captures at most twice in a row (window filling, then full).
+_MAX_UNREPLAYED_CAPTURES = 4
 # Per-call plan decisions by reason (tests, benchmarks).
 PLANS = collections.Counter()
 EAGER_REDOS = 0
@@ -659,6 +663,9 @@ class _State:
         self.owner = None
         self.kept_calls = 0
         self.active = False
+        # This call: captures since the last replay, and the reason it stopped capturing (None: it did not).
+        self.unreplayed = 0
+        self.call_stop = None
 
     def clear(self):
         self.graphs.clear()
@@ -710,6 +717,8 @@ def begin(model):
     state.step = 0
     state.check = _new_check()
     state.active = True
+    state.unreplayed = 0
+    state.call_stop = None
     if state.hook is not None:
         # Only needed between calls: no per-step hook while this call decodes.
         state.hook.remove()
@@ -1008,6 +1017,95 @@ def _window_state(cache):
         for layer in cache.layers
         if type(layer) in _SLIDING_LAYERS
     )
+
+
+# transformers 5.x rolls a full static sliding window by one slot per one-token step and indexes the last slot
+# with `torch.tensor([-1], device=...)`: a host-to-device copy, which a CUDA graph capture refuses ("Cannot copy
+# between CPU and CUDA tensors during CUDA graph capture"), so every step past the window stayed eager. While a
+# step is warmed up and recorded, that branch runs with the same ops on an index tensor made outside the
+# capture (identical rows; the first replay is still compared bitwise with the eager step).
+_ROLL_INDEX = {}
+
+
+def _roll_index(device):
+    index = _ROLL_INDEX.get(device)
+    if index is None:
+        if _BACKEND.capturing():
+            return None
+        with G._no_inference_tensors():
+            index = _ROLL_INDEX[device] = torch.tensor([-1], dtype = int, device = device)
+    return index
+
+
+def _rolling_update_classes():
+    """(class, host counter) of the static sliding layers (5.x StaticSlidingWindowLayer, 4.57 SlidingWindowLayer)
+    whose one-token full-window update builds its roll index on the host."""
+    try:
+        import inspect
+        from transformers import cache_utils
+    except Exception:
+        return ()
+    out = []
+    for cls in _SLIDING_LAYERS:
+        try:
+            source = inspect.getsource(cls.__dict__["update"])
+        except Exception:
+            continue
+        counter = next(
+            (c for c in ("cumulative_length_int", "cumulative_length") if f"self.{c} +=" in source),
+            None,
+        )
+        needed = ("roll(-1, dims=-2)", "torch.tensor([-1], dtype=int", "self.keys.copy_(new_keys)")
+        if counter is not None and all(n in source for n in needed):
+            out.append((cls, counter))
+    return tuple(out)
+
+
+_ROLLING_CLASSES = []
+
+
+def _graphable_update(original, counter):
+    def update(self, key_states, value_states, *args, **kwargs):
+        count = self.__dict__.get(counter)
+        if (
+            getattr(self, "is_initialized", False)
+            and key_states.shape[-2] == 1
+            and type(count) is int
+            and count >= self.max_cache_len
+        ):
+            index = _roll_index(self.keys.device)
+            if index is not None:
+                # transformers' one-token full-window branch, op for op.
+                self.__dict__[counter] = count + 1
+                new_keys = self.keys.roll(-1, dims = -2)
+                new_values = self.values.roll(-1, dims = -2)
+                new_keys[:, :, index] = key_states
+                new_values[:, :, index] = value_states
+                self.keys.copy_(new_keys)
+                self.values.copy_(new_values)
+                return self.keys, self.values
+        return original(self, key_states, value_states, *args, **kwargs)
+
+    update._unsloth_graphable_roll = True
+    return update
+
+
+@contextlib.contextmanager
+def _graphable_rolls():
+    if not _ROLLING_CLASSES:
+        _ROLLING_CLASSES.append(_rolling_update_classes())
+    patched = []
+    try:
+        for cls, counter in _ROLLING_CLASSES[0]:
+            original = cls.__dict__.get("update")
+            if original is None or getattr(original, "_unsloth_graphable_roll", False):
+                continue
+            cls.update = _graphable_update(original, counter)
+            patched.append((cls, original))
+        yield
+    finally:
+        for cls, original in reversed(patched):
+            cls.update = original
 
 
 def _host_state(cache):
@@ -1536,6 +1634,14 @@ def decode_step(
     with regions:
         entry = state.graphs.get(key)
         if entry is None:
+            if state.call_stop is None and state.unreplayed >= _MAX_UNREPLAYED_CAPTURES:
+                state.call_stop = "graph key changes every step"
+                # Its graphs were never replayed: free them (and their pool) for the eager rest of the call.
+                sig = state.cache_sig
+                state.clear()
+                state.cache_sig = sig
+            if state.call_stop is not None:
+                return _refusal(state, state.call_stop)
             return _capture(state, key, forward, kwargs, leaves, cache)
         for buffer, leaf in zip(entry.leaves, leaves):
             buffer.copy_(_compact(leaf))
@@ -1544,6 +1650,7 @@ def decode_step(
         _replay(state, entry)
         _advance(cache, 1)
         state.replays += 1
+        state.unreplayed = 0
         return _map_outputs(entry.outputs, torch.Tensor.clone)
 
 
@@ -1629,6 +1736,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         with (
             _BACKEND.stream(stream),
             _BACKEND.on_streams(side) if side else contextlib.nullcontext(),
+            _graphable_rolls(),
         ):
             # Warm-up: JIT, cuBLAS workspaces and lazy caches built outside the capture.
             outputs = forward(**static_kwargs)
@@ -1656,6 +1764,18 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         if graph is None:
             # The eager step itself failed: as without graphs.
             raise
+        if isinstance(error, torch.cuda.OutOfMemoryError):
+            # Out of memory while recording: free every graph of this call and decode the rest of it eagerly.
+            # Not refused for the process (the next call may have the room).
+            reason = "capture failed: out of memory"
+            if len(state.capture_errors) < 4:
+                state.capture_errors.append((reason, _where(error)))
+            sig = state.cache_sig
+            state.clear()
+            state.cache_sig = sig
+            state.call_stop = reason
+            state.refusals[reason] += 1
+            return outputs
         message = " ".join(str(error).split())[:200]
         reason = f"capture failed: {type(error).__name__}: {message}"
         if len(state.capture_errors) < 4:
@@ -1671,6 +1791,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         _BACKEND.current_stream().wait_stream(stream)
     state.graphs[key] = _Entry(graph, buffers, static_outputs, key in state.validated)
     state.captures += 1
+    state.unreplayed += 1
     state.key_captures[hash(key)] += 1
     return outputs
 
@@ -1690,6 +1811,7 @@ def _validate(state, key, entry, forward, kwargs, cache):
         entry.validated = True
         state.validated.add(key)
         state.replays += 1
+        state.unreplayed = 0
         return eager
     reason = "validation mismatch"
     state.refused[key] = reason
