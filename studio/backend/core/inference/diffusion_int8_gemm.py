@@ -60,9 +60,7 @@ _ARCH_CONFIG = {
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 # Measured slower than cuBLAS: not probed unless forced.
 _UNLISTED_SKIP = ((10, 0), (10, 3))
-# Unlisted archs that pass the fallback's probe and latency check then race these tiles (the listed archs' own) against
-# it once per device and keep the fastest; each must pass the same bit-exact probe first (a tile that overflows the
-# part's shared memory fails to compile there and drops out).
+# Raced against the fallback on unlisted archs; a tile overflowing shared memory fails the probe and drops out.
 _UNLISTED_RACE_TILES = (
     (128, 128, 128, 8, 4, 3),
     (256, 128, 128, 8, 8, 3),
@@ -588,8 +586,7 @@ _UNLISTED_OK: dict = {}
 _UNLISTED_TIMING: dict = {}
 # (M, N, K): Qwen-Image-2.1 attention projection, MLP in, MLP down
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096, 4096), (2048, 12288, 4096), (2048, 4096, 12288))
-# The tile race runs the same projections at a 1024^2 image's 4096 tokens, held under load for this long per tile
-# (and as long again timed): long enough for a power-capped part (L4: 72 W) to settle at the clock that tile sustains.
+# Hold per tile (then as long timed): long enough for a power-capped part (L4: 72 W) to settle its clock.
 _UNLISTED_RACE_SHAPES = tuple((4096, n, k) for _m, n, k in _UNLISTED_LATENCY_SHAPES)
 _RACE_HOLD_S = 0.3
 
@@ -613,9 +610,8 @@ def _int_mm_stock(a: Any, w: Any) -> Any:
 
 
 def _unlisted_race(index: int, cfgs: tuple) -> dict:
-    """{tile: us} for each tile in ``cfgs`` at a 1024^2 image's rows, each held under load (``_RACE_HOLD_S`` to settle,
-    then as long again timed) one after another: a power-capped part clocks down under a tile that draws more, so a
-    short best-of-N burst ranks the tiles by their boost-clock speed, not by the speed a render runs at."""
+    """{tile: us}, each held under load: a power-capped part clocks down under a tile that draws more, so a short
+    burst would rank tiles by boost-clock speed, not render speed."""
     fns = {}
     for cfg in cfgs:
         fns[cfg] = lambda a, w, xs, ws, cfg = cfg: _launch(a, w, xs, ws, None, cfg).amax()
@@ -628,8 +624,7 @@ def _graph_latency(
     shapes: tuple = _UNLISTED_LATENCY_SHAPES,
     hold_s: float = 0.0,
 ) -> dict:
-    """{name: us} over ``shapes`` for each ``fns`` arm, captured in a CUDA graph and replayed: best of seven interleaved
-    rounds, or with ``hold_s`` each arm replayed back to back for ``hold_s`` before timing ``hold_s`` more."""
+    """{name: us} per CUDA-graph arm: best of seven interleaved rounds, or held ``hold_s`` then timed ``hold_s``."""
     import torch
     from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
 
@@ -705,9 +700,8 @@ def _held_us(graph: Any, hold_s: float, start: Any, end: Any) -> float:
 
 
 def unlisted_config(index: int) -> Optional[tuple]:
-    """Unlisted sm80+ card: once ``_FALLBACK_CONFIG`` passed the bit-exact probe (once per device), the tile
-    ``_unlisted_tile`` keeps (the race winner), when it passes the latency check against cuBLAS (once per (device,
-    mode)); else None. Force skips both the race and the check and runs the fallback. Outside any trace / capture."""
+    """Unlisted sm80+ card: the race winner if the fallback passed the probe and the winner the latency check, else
+    None. Force skips race and check and runs the fallback. Outside any trace / capture."""
     import torch
 
     mode = unlisted_mode()
@@ -817,10 +811,8 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
 
 
 def _unlisted_tile(index: int) -> tuple:
-    """Once per device: ``_FALLBACK_CONFIG`` raced against the ``_UNLISTED_RACE_TILES`` that pass the bit-exact probe
-    (``_unlisted_race``, held under load); the fastest wins (ties keep the fallback). The winner is kept per card and
-    toolchain across processes. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback. The latency
-    check against cuBLAS then runs on the kept tile."""
+    """Once per device: fastest probe-passing tile vs the fallback (ties keep the fallback), persisted per card and
+    toolchain. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback."""
     if index not in _UNLISTED_TILE:
         best = _FALLBACK_CONFIG
         try:

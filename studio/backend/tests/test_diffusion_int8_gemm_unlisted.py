@@ -42,7 +42,6 @@ def _reset():
 def _clean(monkeypatch, tmp_path):
     for name in _ENVS:
         monkeypatch.delenv(name, raising = False)
-    # the race winner's cross-process file lives in a per-test directory, keyed by a fixed card
     monkeypatch.setattr(g8, "_race_cache_file", lambda: tmp_path / g8._RACE_CACHE_NAME)
     monkeypatch.setattr(g8, "_race_key", lambda index: f"card{index}")
     _reset()
@@ -61,7 +60,7 @@ class _Fake:
     ):
         self.probes, self.timed, self.raced = [], [], []
         self.timing = timing if timing is not None else {"fused": 10.0, "stock": 20.0}
-        # race: {tile: us} for the race tiles that pass their probe (None: every race tile fails it)
+        # None: every race tile fails its probe
         self.race = race
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: cap)
@@ -143,7 +142,6 @@ def test_latency_gate(monkeypatch, timing, ok):
     fake = _Fake(monkeypatch, (8, 6), timing = timing)
     assert g8.device_config(0) == (g8._FALLBACK_CONFIG if ok else None)
     assert fake.probes[0] == g8._FALLBACK_CONFIG and fake.timed == [g8._FALLBACK_CONFIG]
-    # the race tiles are probed (none passes here, so the fallback is the tile the check times)
     assert fake.probes[1:] == list(g8._UNLISTED_RACE_TILES)
     assert g8._DEVICE_TILES[0] == ()
 
@@ -332,14 +330,13 @@ def test_race_keeps_the_fastest_probed_tile(monkeypatch):
     fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 9.0, _L4_TILE: 7.0})
     assert g8.device_config(0) == _L4_TILE
     assert fake.raced == [(g8._FALLBACK_CONFIG, _A100_TILE, _L4_TILE)]
-    # the latency check's own numbers stay; the race is logged beside them
     assert g8._UNLISTED_TIMING[0]["tile"] == _L4_TILE and g8._UNLISTED_TIMING[0]["fused"] == 10.0
     assert g8._UNLISTED_TIMING[0]["race"] == {
         g8._FALLBACK_CONFIG: 10.0,
         _A100_TILE: 9.0,
         _L4_TILE: 7.0,
     }
-    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1  # raced once per device
+    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1
 
 
 def test_race_tie_keeps_the_fallback(monkeypatch):
@@ -368,7 +365,7 @@ def test_failed_race_keeps_the_fallback(monkeypatch):
 def test_the_race_winner_still_needs_the_latency_check(monkeypatch):
     fake = _Fake(monkeypatch, (8, 6), timing = {"fused": 30.0, "stock": 20.0}, race = {_L4_TILE: 1.0})
     assert g8.device_config(0) is None
-    assert fake.timed == [_L4_TILE]  # the check times the tile the card would run
+    assert fake.timed == [_L4_TILE]
 
 
 def test_a_faster_tile_can_pass_the_check_the_fallback_fails(monkeypatch):
@@ -499,7 +496,7 @@ def test_held_timing_skips_the_settle_window(monkeypatch):
     # a part that runs 1 us per replay for the first 50 ms, then 2 us (clocked down): the held time is the slow one
     import time
 
-    clock = [0.0]  # GPU us
+    clock = [0.0]
     wall = [0.0]
     monkeypatch.setattr(time, "perf_counter", lambda: wall[0])
 
