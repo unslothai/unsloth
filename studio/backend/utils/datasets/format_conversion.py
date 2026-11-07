@@ -851,9 +851,7 @@ class _HubClips:
         dataset_name,
         revision = None,
     ):
-        # The revision load_dataset read, so a pinned run trains on that revision's clips.
         self.repo, self.revision, self.files = dataset_name, revision, None
-        # A repo id only: "local" and local folders have nothing to list.
         if (
             not isinstance(dataset_name, str)
             or dataset_name.count("/") != 1
@@ -885,7 +883,6 @@ class _HubClips:
                     name = os.path.basename(f)
                     # A name in several folders resolves to its list, refused below: one copy is a guess.
                     self.files.setdefault(name, f if len(ambiguous[name]) == 1 else ambiguous[name])
-                    # A full repo path is exact, so a root-level clip.mp4 is its own path, not a guess.
                     self.files[f] = f
         if path not in self.files:
             return None
@@ -941,7 +938,7 @@ def own_message_videos(
     dataset_name = None,
     dataset_revision = None,
 ):
-    """Check every video path in VLM messages rows the way image paths are checked; returns the rows as a list."""
+    """VLM messages rows as a list, every video path checked like an image path."""
     from utils.account_context import current_account
     from .format_detection import video_parts
 
@@ -975,7 +972,7 @@ def convert_video_to_vlm_format(
     dataset_name = None,
     dataset_revision = None,
 ):
-    """Flat video + text rows to VLM messages, one video part per clip column; the collator decodes the clip, so the path stays a path."""
+    """Flat video + text rows to VLM messages; clips stay paths for the collator to decode."""
     from utils.account_context import current_account
 
     from .format_detection import _holds_images, _is_image_value
@@ -983,7 +980,6 @@ def convert_video_to_vlm_format(
     account = current_account()
     hub = _HubClips(dataset_name, dataset_revision)
     answer_feature = (getattr(dataset, "features", None) or {}).get(text_column)
-    # A ClassLabel column stores ids; train on the class name.
     as_label = getattr(answer_feature, "int2str", None)
     default_instruction = instruction or "Describe this video."
     converted = []

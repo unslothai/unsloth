@@ -665,8 +665,7 @@ def detect_multimodal_dataset(dataset):
         audio_set = set(audio_columns)
         multimodal_columns = [c for c in multimodal_columns if c not in audio_set]
 
-    # Video trains on the vision path too; a {"bytes","path"} video cell would otherwise read as an image.
-    # A column named video wins over the audio match a .webm path gets.
+    # A {"bytes","path"} video cell would otherwise read as an image, a .webm one as audio.
     video_columns = detect_video_columns(video_sample(dataset, sample))
     audio_columns = [c for c in audio_columns if c not in video_columns]
     if video_columns:
@@ -812,12 +811,10 @@ def encoded_video(value):
 
 
 def _is_hf_video(value) -> bool:
-    # A decoded datasets Video cell is video whatever it holds, a path or only embedded bytes.
     return isinstance(getattr(value, "_hf_encoded", None), dict)
 
 
 def _is_video_value(value, extensions = _VIDEO_EXTENSIONS) -> bool:
-    """A video file path or URL, or an undecoded {"path": ...} or decoded ``Video`` cell naming one."""
     value = encoded_video(value)
     if isinstance(value, dict):
         value = value.get("path")
@@ -857,7 +854,6 @@ def video_sample(
 
 
 def video_parts(messages) -> list:
-    """The {"type": "video"} parts of a ChatML message list."""
     if not isinstance(messages, list):
         return []
     return [
@@ -870,7 +866,6 @@ def video_parts(messages) -> list:
 
 
 def detect_video_columns(sample: dict) -> list:
-    """Columns holding videos: a flat path column, or messages carrying video parts."""
     columns = []
     for col_name, value in sample.items():
         if _is_video_value(value) or video_parts(value) or _is_hf_video(value):
@@ -883,7 +878,6 @@ def detect_video_columns(sample: dict) -> list:
 
 
 def detect_video_structure(sample: dict):
-    """The VLM structure of a video dataset, or None when it holds no video."""
     if video_parts(sample.get("messages")):
         return {
             "format": "vlm_messages",
@@ -900,7 +894,6 @@ def detect_video_structure(sample: dict):
     def _pick(keywords, scalars = False):
         for keyword in keywords:
             for col_name, value in sample.items():
-                # An answer may be a number or ClassLabel id; the conversion stringifies it.
                 usable = (isinstance(value, str) and value.strip()) or (
                     scalars and isinstance(value, (int, float)) and not isinstance(value, bool)
                 )
