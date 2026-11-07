@@ -451,3 +451,16 @@ def test_a_parse_under_another_model_does_not_hold_a_batch(monkeypatch):
     assert time.monotonic() - started < 5
     queue.unexpect("other-model")
     assert not queue._expected
+
+
+def test_a_gpu_choice_that_loaded_on_cpu_keeps_per_document_calls(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda model_name = None: False)
+    monkeypatch.setattr(embeddings, "_device", lambda: "cuda")
+    monkeypatch.setattr(embeddings, "_model", None)
+    assert _real_gate(None)
+    monkeypatch.setattr(embeddings, "_model", SimpleNamespace(device = "cpu"))
+    assert not _real_gate(None)
+    monkeypatch.setattr(embeddings, "_model", SimpleNamespace(device = "cuda:0"))
+    assert _real_gate(None)
