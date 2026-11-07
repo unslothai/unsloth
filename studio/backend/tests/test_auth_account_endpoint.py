@@ -1,7 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The account endpoint reports the authenticated identity without exposing credentials."""
-
 import importlib.util
 import secrets
 from pathlib import Path
@@ -52,13 +50,17 @@ def test_account_endpoint_uses_the_api_keys_account(account_client, name):
     assert current_account().is_owner
 
 
+@pytest.mark.parametrize("route", ["account", "model-access"])
 @pytest.mark.parametrize("key", [None, "sk-unsloth-invalid"])
-def test_account_endpoint_requires_authentication(account_client, key):
+def test_picker_routes_require_authentication(account_client, route, key):
     client, _, _ = account_client
     headers = {"Authorization": f"Bearer {key}"} if key else {}
-    response = client.get("/api/auth/account", headers = headers)
+    if route == "account":
+        response = client.get("/api/auth/account", headers = headers)
+    else:
+        response = client.post("/api/auth/model-access", json = ["org/Allowed"], headers = headers)
     assert response.status_code == 401
-    assert "account_id" not in response.json()
+    assert "account_id" not in response.json() and "allowed" not in response.json()
 
 
 @pytest.mark.parametrize(
@@ -123,11 +125,3 @@ def test_model_access_does_not_probe_network_paths(account_client, monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {"allowed": []}
-
-
-@pytest.mark.parametrize("key", [None, "sk-unsloth-invalid"])
-def test_model_access_requires_authentication(account_client, key):
-    client, _, _ = account_client
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    response = client.post("/api/auth/model-access", json = ["org/Allowed"], headers = headers)
-    assert response.status_code == 401
