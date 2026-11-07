@@ -140,7 +140,7 @@ def test_torch_that_hands_workers_its_tag_is_left_alone(monkeypatch):
 
 
 def _calls(path: Path, func: str) -> set:
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == func:
             return {

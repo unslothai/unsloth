@@ -60,7 +60,7 @@ def test_kill_switch(calls, monkeypatch):
 
 
 def test_load_starts_it_only_for_a_compiled_cuda_load():
-    tree = ast.parse(VIDEO.read_text())
+    tree = ast.parse(VIDEO.read_text(encoding = "utf-8"))
     gates = []
     for node in ast.walk(tree):
         if isinstance(node, ast.If) and any(
