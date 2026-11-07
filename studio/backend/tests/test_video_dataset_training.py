@@ -600,3 +600,21 @@ def test_vlm_question_aliases_are_video_questions(name):
     ds = Dataset.from_dict({"video": CLIPS, name: [QUESTION] * 2, "answer": ANSWERS})
     for row in _format(ds):
         assert row["messages"][0]["content"][-1] == {"type": "text", "text": QUESTION}
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_network_share_clips_are_refused_before_any_stat(monkeypatch, embedded):
+    import os
+
+    import utils.datasets.format_conversion as fc
+
+    stats = []
+    monkeypatch.setattr(fc, "is_network_share", lambda p: p.startswith("\\\\"))
+    monkeypatch.setattr(fc, "private_sources_allowed", lambda: False)
+    monkeypatch.setattr(os.path, "exists", lambda p: stats.append(p) or False)
+    monkeypatch.setattr(os.path, "isfile", lambda p: stats.append(p) or False)
+    clip = "\\\\host\\share\\clip.mp4"
+    cell = {"path": clip, "bytes": b"x"} if embedded else clip
+    with pytest.raises(OSError, match = "network share"):
+        fc._own_video_part(cell, None, fc._HubClips("someone/clips"))
+    assert clip not in stats

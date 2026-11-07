@@ -929,6 +929,12 @@ def _own_video_part(
     embedded = isinstance(video, dict) and bool(video.get("bytes"))
     if isinstance(video, dict):
         video = video.get("path")
+    # Before any stat: probing a UNC path can already contact the share.
+    if isinstance(video, str) and is_network_share(video) and not private_sources_allowed():
+        raise OSError(
+            f"Refusing a video path on a network share: {video}. "
+            "Set UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1 to load videos from shares you trust."
+        )
     # An embedded clip's path is often just its original filename, with no file behind it.
     if embedded and not (isinstance(video, str) and os.path.isfile(video)):
         resolved = (
