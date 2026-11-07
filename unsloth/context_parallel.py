@@ -1276,14 +1276,16 @@ def _check_cp_model(
         or not _uses_unsloth_attention(model)
         and _generic_hf_attention(model)
     ):
-        # Fast forwards not declared for RL (Qwen3) and generic HF attention: SFTTrainer only.
+        # Fast forwards not declared for RL (Mistral, Granite, Cohere) and generic HF attention: SFTTrainer only.
         raise NotImplementedError(
-            "Unsloth: DPO / GRPO context parallelism supports Unsloth's Llama-style attention only; generic "
-            "Ulysses on other Hugging Face attention models is verified for SFTTrainer."
+            "Unsloth: DPO / GRPO context parallelism supports Unsloth's Llama-style and Qwen3 attention only; "
+            "Unsloth's Mistral / Granite / Cohere attention and generic Ulysses on other Hugging Face attention "
+            "models are verified for SFTTrainer."
         )
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
-            "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3) with either backend, "
+            "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3, Mistral, Granite, "
+            "Cohere) with either backend, "
             "and with Ulysses any Hugging Face attention model (attention through ALL_ATTENTION_FUNCTIONS) "
             "and the Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids."
         )
