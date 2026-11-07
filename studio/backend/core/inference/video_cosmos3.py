@@ -216,6 +216,12 @@ CONTINUATION_MAX_SECONDS = 15.0
 CONTINUATION_MAX_SIDE = 4096
 
 
+def _upright(image: Any, frame: Any) -> Any:
+    # PyAV's rotation is counterclockwise degrees, the same sense as PIL's rotate (matches ffmpeg autorotate).
+    rotation = int(getattr(frame, "rotation", 0) or 0) % 360
+    return image.rotate(rotation, expand = True) if rotation else image
+
+
 def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
     """The ``count`` frames at the ``keep`` end of an uploaded clip, as RGB PIL images on the output's ``fps`` clock.
 
@@ -282,7 +288,10 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
                 _take(held, max(stamp - origin, 0.0) + 1 / source_fps)
         except av.error.FFmpegError as exc:
             raise ValueError("That clip could not be decoded.") from exc
-        frames = [frame.to_image().convert("RGB") for frame in list(picked)[:count]]
+        # Upright as a player shows it: phones store portrait clips landscape with a display rotation.
+        frames = [
+            _upright(frame.to_image().convert("RGB"), frame) for frame in list(picked)[:count]
+        ]
     if len(frames) < count:
         raise ValueError(
             f"This clip has {len(frames)} frames at {fps} fps, and continuing it needs at least {count}. "

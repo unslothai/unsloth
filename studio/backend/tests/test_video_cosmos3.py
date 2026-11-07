@@ -1476,6 +1476,39 @@ def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
         vc3.decode_continuation_clip(b"not a video", keep = "last", fps = 24, count = 5)
 
 
+@pytest.mark.parametrize("rotation, size", [(90, (120, 208)), (-90, (120, 208)), (180, (208, 120))])
+def test_a_phone_clip_is_upright_as_a_player_shows_it(tmp_path, rotation, size):
+    # Phones store portrait clips landscape with a display rotation; ffmpeg's autorotate is the reference.
+    import shutil
+    import subprocess
+
+    import numpy as np
+    from PIL import Image
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("needs the ffmpeg CLI to tag a display rotation")
+    plain, rotated, ref = tmp_path / "plain.mp4", tmp_path / "rot.mp4", tmp_path / "ref.png"
+    av = pytest.importorskip("av")
+    with av.open(str(plain), "w", format = "mp4") as container:
+        stream = container.add_stream("mpeg4", rate = 24)
+        stream.width, stream.height = 208, 120
+        stream.pix_fmt = "yuv420p"
+        pixels = np.zeros((120, 208, 3), np.uint8)
+        pixels[:40, :64] = 255
+        for _ in range(6):
+            for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format = "rgb24")):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+    run = lambda *a: subprocess.run(["ffmpeg", "-loglevel", "error", "-y", *a], check = True)
+    run("-display_rotation", str(rotation), "-i", str(plain), "-c", "copy", str(rotated))
+    run("-i", str(rotated), "-frames:v", "1", str(ref))
+    frames = vc3.decode_continuation_clip(rotated.read_bytes(), keep = "first", fps = 24, count = 5)
+    assert frames[0].size == size
+    want = np.asarray(Image.open(ref).convert("RGB"), np.int16)
+    assert np.abs(np.asarray(frames[0], np.int16) - want).mean() < 8
+
+
 def test_frames_are_cropped_to_the_canvas_aspect_only_when_it_differs():
     from PIL import Image
 
