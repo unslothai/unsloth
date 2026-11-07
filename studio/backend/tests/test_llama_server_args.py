@@ -486,6 +486,28 @@ def test_parse_gpu_layers_override(args, expected):
     assert parse_gpu_layers_override(args) == expected
 
 
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value,expected", [("auto", -1), ("all", 2**31 - 1)])
+def test_gpu_layer_keywords_are_preserved_and_resolved(flag, value, expected):
+    args = [flag, value]
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["-ngl", "all", "--gpu-layers", "auto"], -1),
+        (["-ngl", "auto", "--n-gpu-layers", "all"], 2**31 - 1),
+        (["-ngl", "all", "--gpu-layers", "0"], 0),
+        (["-ngl", "12", "--gpu-layers", "all"], 2**31 - 1),
+    ],
+)
+def test_gpu_layer_keywords_respect_last_override(args, expected):
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -1546,3 +1568,73 @@ def test_translate_ngram_mod_does_not_consume_a_following_flag(chain_with_mtp):
     out = translate_ngram_mod_args(args, "legacy", chain_with_mtp = chain_with_mtp)
     assert out[-2:] == ["--top-k", "/restricted/model.gguf"]
     validate_extra_args(out)
+
+
+@pytest.mark.parametrize(
+    "argv, env, auto",
+    [
+        ([], {}, True),
+        (["--load-mode", "auto"], {}, True),
+        (["--load-mode=auto"], {}, True),
+        (["--load-mode", "none", "--load-mode", "auto"], {}, True),
+        ([], {"LLAMA_ARG_LOAD_MODE": "auto"}, True),
+        (["--load-mode", "auto"], {"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
+        (["--load-mode", "mmap"], {}, False),
+        (["--load-mode", "none"], {}, False),
+        ([], {"LLAMA_ARG_LOAD_MODE": "mmap"}, False),
+        (["--mlock"], {}, False),
+        (["--mmap"], {}, False),
+        (["--no-mmap"], {}, False),
+        ([], {"LLAMA_ARG_NO_MMAP": "0"}, False),
+        ([], {"LLAMA_ARG_DIO": "1"}, False),
+        (["--load-mode"], {}, True),
+    ],
+)
+def test_load_mode_left_auto(argv, env, auto):
+    assert _lsa.load_mode_left_auto(argv, env) is auto
+
+
+def test_auto_reserves_ram_only_where_llama_cpp_resolves_it_to_none():
+    assert _lsa.resolve_effective_load_state([], {}) == (False, False, False)
+    assert _lsa.resolve_effective_load_state([], {}, auto_unmapped = True) == (False, True, False)
+    assert _lsa.resolve_effective_memory_state(["--load-mode", "auto"], {}, auto_unmapped = True) == (
+        False,
+        True,
+    )
+    assert _lsa.resolve_effective_load_state(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
+        False,
+        False,
+        False,
+    )
+    assert _lsa.resolve_effective_load_state(["--load-mode", "dio"], {}, auto_unmapped = True) == (
+        False,
+        False,
+        True,
+    )
+
+
+def test_the_pageable_rewrite_maps_an_unselected_mode_on_an_igpu():
+    out, overridden = _lsa.force_pageable_load(["--fit", "on"], {}, auto_unmapped = True)
+    assert out == ["--fit", "on", "--load-mode", "mmap"] and overridden
+    assert _lsa.resolve_effective_memory_state(out, {}, auto_unmapped = True) == (False, False)
+    # An inherited LLAMA_ARG_LOAD_MODE=auto loses to the appended argv.
+    env = {"LLAMA_ARG_LOAD_MODE": "auto"}
+    out, _ = _lsa.force_pageable_load([], env, auto_unmapped = True)
+    assert _lsa.resolve_effective_memory_state(out, env, auto_unmapped = True) == (False, False)
+    for argv, env in (
+        (["--load-mode", "none"], {}),
+        (["--no-mmap"], {}),
+        ([], {"LLAMA_ARG_NO_MMAP": "1"}),
+    ):
+        out, overridden = _lsa.force_pageable_load(argv, env, auto_unmapped = True)
+        assert overridden and out[-2:] == ["--load-mode", "mmap"], (argv, env, out)
+        assert _lsa.resolve_effective_memory_state(out, env, auto_unmapped = True) == (False, False)
+    assert _lsa.force_pageable_load(["--load-mode", "mlock"], {}, auto_unmapped = True)[0] == [
+        "--load-mode",
+        "mmap+mlock",
+    ]
+    assert _lsa.force_pageable_load([], {}) == ([], [])
+    assert _lsa.force_pageable_load(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
+        ["--load-mode", "mmap"],
+        [],
+    )

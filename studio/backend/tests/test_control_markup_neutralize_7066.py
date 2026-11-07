@@ -2814,7 +2814,7 @@ _CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
 
 # studio_tool_loop.py is a known gap; keyed by site count, so adding or removing a controller fails
 _CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(
-    {("core/inference/studio_tool_loop.py", "stream_with_studio_tools", 1)}
+    {("core/inference/studio_tool_loop.py", "_stream_with_studio_tools", 1)}
 )
 
 _CONTROLLER_MODULE_PATHS = frozenset({f"core/inference/{module}" for module in _CONTROLLER_MODULES})
@@ -4469,7 +4469,7 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     gate = "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice"
     assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
-        "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
+        "StreamToolCallHealer(_sf_heal, _sf_healing_tools,",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools,",
         "nudge_should_retry(_data, _sf_heal, _sf_healing_tools)",
         "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools,",

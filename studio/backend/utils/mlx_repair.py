@@ -34,7 +34,7 @@ _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.4",
     "mlx-lm": ">=0.31.3,<=0.32.2",
-    "mlx-vlm": ">=0.4.4,<=0.7.11",
+    "mlx-vlm": ">=0.4.4,<=0.7.12",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 

@@ -1206,7 +1206,7 @@ export function ResourcesTab() {
           >
             {hfCache?.isCustom ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 disabled={cacheSaving}
                 onClick={() => void saveCacheFolder(null)}

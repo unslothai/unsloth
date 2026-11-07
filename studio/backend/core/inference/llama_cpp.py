@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import ast
 import atexit
 import bisect
+import collections
 import weakref
 import contextlib
 import contextvars
@@ -83,6 +84,7 @@ from core.inference.context_window import (
     turn_is_servable,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
+from core.inference.llama_video_input import video_tools
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
@@ -128,6 +130,7 @@ from core.inference.llama_server_args import (
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
+    load_mode_left_auto,
     memory_env_selects_load_mode,
     memory_state_satisfies_settings,
     fit_is_effectively_on,
@@ -367,13 +370,38 @@ def _fit_rolling_remembered(messages, kwargs):
     return fitted, truncation
 
 
+def _once(on_compacting):
+    """``on_compacting`` at most once per fit, never raising: a progress report must not break a fit."""
+    fired = False
+
+    def fire() -> None:
+        nonlocal fired
+        if fired:
+            return
+        fired = True
+        try:
+            on_compacting()
+        except Exception:  # noqa: BLE001
+            logger.debug("compaction progress report failed", exc_info = True)
+
+    return fire
+
+
+def _compaction_reporter(perf_callback):
+    report = getattr(perf_callback, "compacting", None)
+    return report if callable(report) else None
+
+
 def _fit_with_instruction_pins(
     messages,
     *,
     anchor_ids = None,
+    on_compacting = None,
     **kwargs,
 ):
     """Pins are recomputed each fit (inline recall swaps the user dict), dropped if they block a fit, and must never mutate the anchor set the caller passed."""
+    if on_compacting is not None:
+        kwargs["on_evict"] = _once(on_compacting)
     anchors = set(anchor_ids or ())
     try:
         from core.inference import instruction_pin
@@ -503,6 +531,7 @@ from utils import gguf_names as _gguf_names
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
     is_audio_cpp_gguf_architecture,
+    is_foreign_asr_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -2175,8 +2204,10 @@ def _archive_and_recall(
     branch_messages: Optional[list[dict]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
     background: bool = False,
+    query_messages: Optional[list[dict]] = None,
 ) -> dict:
-    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks."""
+    """Never raises: any failure falls back to the plain fitted messages. Recall runs at most once per request or refits stack recall blocks.
+    ``query_messages`` is the client's transcript: a tool loop's live branch ends on its own notices, not the user's question."""
     result = {
         "conversation": conversation,
         "events": [],
@@ -2237,6 +2268,9 @@ def _archive_and_recall(
                 break
             attempt_k = max(1, attempt_k // 2)
 
+        recall_kwargs = {"branch_messages": branch_messages}
+        if query_messages is not None:
+            recall_kwargs["query_messages"] = query_messages
         # Retries re-ask the same queries: encode each once and reuse lexical passes and branch checks.
         with query_vector_memo(), conversation_archive.recall_session():
             for index, k in enumerate(attempts):
@@ -2245,7 +2279,7 @@ def _archive_and_recall(
                     thread_id,
                     style = style,
                     top_k = k,
-                    branch_messages = branch_messages,
+                    **recall_kwargs,
                 )
                 if not recall:
                     result["counts"] = counts
@@ -2312,6 +2346,10 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
 
 # Transport errors can beat the child to reapable; a request cannot wait the 5s MTP reload spends.
 _RESPAWN_REAP_GRACE_S = 1.0
+# Extra --fit-target per mid-session GPU OOM of one load: an identical respawn hits the same
+# allocation once the conversation is replayed (#16177).
+_GPU_OOM_HEADROOM_STEP_MIB = 1024.0
+_GPU_OOM_HEADROOM_MAX_STRIKES = 3
 
 
 def _finalize_reasoning_only_cumulative(
@@ -2436,6 +2474,13 @@ _MAX_IDENTICAL_TOOL_RESULTS = 3
 _UNSET = object()
 
 
+def _with_template_extras(reasoning_kw: Optional[dict], extras: Optional[dict]) -> Optional[dict]:
+    """The caller's other template tags (e.g. verification) under Studio's resolved reasoning keys."""
+    if not extras:
+        return reasoning_kw
+    return {**extras, **(reasoning_kw or {})}
+
+
 # A result with this tail is the window's answer, not the tool's.
 _WINDOW_NOTICE_MARKER = "chars for the model;"
 # Zero-budget results use _zero_room_stub, which lacks the marker above; missing it lets a model re-read slices forever, so catch it too.
@@ -2544,24 +2589,30 @@ def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     return ""
 
 
-def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
+def _is_rehearsal_prefix(
+    stripped: str,
+    active_tools: list[dict],
+    *,
+    _names: Optional[list] = None,
+) -> bool:
     """Execution-class names stream rather than being held; otherwise it mirrors the safetensors loop."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
-    for name in _gguf_active_tool_names(active_tools):
+    for name in _gguf_active_tool_names(active_tools) if _names is None else _names:
         # Use the shared gate, which also refuses mcp__* names.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
 
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Holds a trailing bare tool name back while its [ARGS] may still arrive, including a bare-Gemma call:NAME{ prefix that the signal scan misses until its brace."""
+    names = _gguf_active_tool_names(active_tools)
     # A tail longer than every NAME[ARGS] cannot be a prefix, so the scan stops there (CJK has no spaces).
     limit = max(
-        (len(name) for name in _gguf_active_tool_names(active_tools) if isinstance(name, str)),
+        (len(name) for name in names if isinstance(name, str)),
         default = 0,
     ) + len("[ARGS]")
     i = len(text)
@@ -2570,11 +2621,11 @@ def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
         i -= 1
     tail = text[i:]
     held = (
-        len(tail) if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools) else 0
+        len(tail)
+        if tail and len(tail) <= limit and _is_rehearsal_prefix(tail, active_tools, _names = names)
+        else 0
     )
-    return max(
-        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: set(names)))
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -3037,6 +3088,17 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
+
+
+def _reasoning_effort_allowlist(chat_template: str) -> list:
+    match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
+    return _extract_reasoning_effort_levels(match.group(1)) if match else []
+
+
 # Log each substitution once per (levels, requested) pair.
 _REASONING_EFFORT_CLAMPS_LOGGED: set = set()
 
@@ -3055,6 +3117,27 @@ def _clamp_reasoning_effort_to_levels(effort: Optional[str], levels) -> Optional
     rank = _REASONING_EFFORT_SCALE.index(effort)
     below = [level for level in offered if _REASONING_EFFORT_SCALE.index(level) < rank]
     return below[-1] if below else offered[0]
+
+
+def _fit_reasoning_effort_to_template(
+    chat_template: Optional[str],
+    effort,
+    thinking_off: bool = False,
+):
+    """A level the template's raising allowlist rejects becomes one it accepts, so the render cannot fail."""
+    allowed = _reasoning_effort_allowlist(chat_template or "")
+    if not allowed or effort in allowed:
+        return effort
+    if thinking_off and "none" in allowed:
+        return "none"
+    return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
+
+
+def _rendered_chat_template(backend) -> Optional[str]:
+    # getattr: test doubles skip __init__ and borrow backend methods unbound.
+    return getattr(backend, "_chat_template_override", None) or getattr(
+        backend, "_chat_template", None
+    )
 
 
 # Keyed on identity, not name, so a rebuilt GGUF at the same path is logged again.
@@ -3139,7 +3222,10 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
         scanned = _extract_reasoning_effort_levels(tpl)
-        if "low" in scanned and "high" in scanned:
+        allowed = _reasoning_effort_allowlist(tpl)
+        if any(level != "none" for level in allowed):
+            flags["reasoning_effort_levels"] = allowed
+        elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
         _log(
             f"{prefix}model supports reasoning "
@@ -4040,6 +4126,15 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
+# Extra --fit-target for a load paged on a Windows iGPU, whose GPU share and mapped pages share one
+# memory: on a Strix Halo 8 GiB still aborted at warm-up, 16 GiB ran. Linux runs slower with it.
+_IGPU_PAGED_FIT_HEADROOM_MIB = 15360
+
+
+def _paged_load_needs_fit_headroom() -> bool:
+    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
+    return sys.platform == "win32"
+
 
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -5660,6 +5755,7 @@ _LLAMA_VIDEO_FPS = "1"
 _VIDEO_FPS_ENV_VAR = "LLAMA_ARG_VIDEO_FPS"
 _LLAMA_SERVER_DEFAULT_VIDEO_FPS = 4.0
 _VIDEO_TIMESTAMP_ENV_VAR = "LLAMA_ARG_VIDEO_TIMESTAMP_INTERVAL"
+_VIDEO_FFMPEG_DIR_ENV_VAR = "LLAMA_ARG_VIDEO_FFMPEG_DIR"
 
 
 def _video_fps_flags(
@@ -5695,6 +5791,33 @@ def _video_fps_flags(
     return flags
 
 
+def _video_ffmpeg_dir_flags(
+    server_caps: Mapping[str, object],
+    env: Optional[Mapping[str, str]] = None,
+    extra_args: Optional[Sequence[str]] = None,
+) -> tuple[list[str], Optional[str]]:
+    if not server_caps.get("supports_video_ffmpeg_dir"):
+        return [], None
+    source = os.environ if env is None else env
+    try:
+        chosen = _last_flag_value(extra_args, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    except ValueError:
+        chosen = None
+    chosen = chosen or source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) or None
+    if chosen:
+        return [], chosen
+    # CreateProcess searches the server's directory before PATH.
+    if sys.platform == "win32":
+        return [], None
+    tools = video_tools()
+    if tools is None:
+        return [], None
+    ffmpeg_dir = os.path.dirname(tools[0])
+    if os.path.dirname(tools[1]) != ffmpeg_dir:
+        return [], None
+    return ["--video-ffmpeg-dir", ffmpeg_dir], ffmpeg_dir
+
+
 def requested_video_fps(
     extra_args: Optional[Sequence[str]] = None, env: Optional[Mapping[str, str]] = None
 ) -> Optional[float]:
@@ -5720,25 +5843,35 @@ def requested_video_fps(
     return rate if rate > 0 else None
 
 
+def _video_tools_search(
+    cmd: Sequence[str],
+    env: Optional[Mapping[str, str]] = None,
+    cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
+) -> str:
+    source = os.environ if env is None else env
+    bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}), preserve_raw = True)
+    search = bin_dir or (source.get(_VIDEO_FFMPEG_DIR_ENV_VAR) if supports_ffmpeg_dir else None)
+    if not search:
+        search = source.get("PATH", os.defpath)
+        if sys.platform == "win32":
+            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
+            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
+    return search
+
+
 def _video_tools_reachable(
     cmd: Sequence[str],
     env: Optional[Mapping[str, str]] = None,
     cwd: Optional[str] = None,
+    supports_ffmpeg_dir: bool = True,
 ) -> bool:
     """Whether the child can launch ffmpeg and ffprobe, which /props' video modality never checks (#16065)."""
-    source = os.environ if env is None else env
     try:
-        bin_dir = _last_flag_value(cmd, frozenset({"--video-ffmpeg-dir"}))
+        search = _video_tools_search(cmd, env, cwd, supports_ffmpeg_dir)
     except Exception:
         return True
-    search = bin_dir or source.get("LLAMA_ARG_VIDEO_FFMPEG_DIR")
     names = ("ffmpeg.exe", "ffprobe.exe") if sys.platform == "win32" else ("ffmpeg", "ffprobe")
-    if not search:
-        search = source.get("PATH", os.defpath)
-        if sys.platform == "win32":
-            # CreateProcess also searches the binary's folder and the working directory.
-            launch_dir = os.path.dirname(str(cmd[0])) if cmd else ""
-            search = os.pathsep.join(d for d in (launch_dir, cwd or os.getcwd(), search) if d)
     return all(shutil.which(name, path = search) for name in names)
 
 
@@ -7656,6 +7789,11 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
+# The override where nobody chose the mode (auto is none on an iGPU); lazy and fit flags are logged.
+_PAGEABLE_AUTO_OVERRIDE_NOTE = (
+    " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
+    "integrated GPU."
+)
 # The override is reported, not undone: the running server is already memory-mapped.
 _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "This model was set to load without memory mapping, and with its vision projector "
@@ -7663,6 +7801,13 @@ _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "mapping instead. The projector then failed to start and this session is text-only, "
     "which the weights alone would have fit. The running server keeps the memory "
     "mapping it started with; load the model again to run it as you asked."
+)
+_PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE = (
+    "With its vision projector in system RAM this model could run out of memory without "
+    "memory mapping, llama.cpp's default on this integrated GPU, so Unsloth loaded it with "
+    "memory mapping instead. The projector then failed to start and this session is "
+    "text-only, which the weights alone would have fit. The running server keeps the "
+    "memory mapping it started with."
 )
 _CGROUP_ROOT = "/sys/fs/cgroup"
 _PROC_SELF_CGROUP = "/proc/self/cgroup"
@@ -7801,15 +7946,42 @@ def _load_probe_memo_scope():
     prev = (
         getattr(_LOAD_PROBE_STATE, "metal_transient", None),
         getattr(_LOAD_PROBE_STATE, "logged", None),
+        getattr(_LOAD_PROBE_STATE, "companion_listings", None),
     )
     _LOAD_PROBE_STATE.metal_transient = {}
     _LOAD_PROBE_STATE.logged = set()
+    _LOAD_PROBE_STATE.companion_listings = {}
     try:
         yield
     finally:
         _LOAD_PROBE_STATE.armed = False
         _LOAD_PROBE_STATE.rows = None
-        _LOAD_PROBE_STATE.metal_transient, _LOAD_PROBE_STATE.logged = prev
+        (
+            _LOAD_PROBE_STATE.metal_transient,
+            _LOAD_PROBE_STATE.logged,
+            _LOAD_PROBE_STATE.companion_listings,
+        ) = prev
+
+
+def _companion_repo_files(hf_repo: str, hf_token: Optional[str]) -> list[str]:
+    """One load's companion lookups share a listing until a download; failures are never kept."""
+    from huggingface_hub import list_repo_files
+
+    store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
+    key = (hf_repo, hf_token)
+    if store is not None and key in store:
+        return list(store[key])
+    files = list(call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo))
+    if store is not None:
+        store[key] = tuple(files)
+    return files
+
+
+def _forget_companion_listings() -> None:
+    """A download can take minutes, so later lookups list again."""
+    store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
+    if store:
+        store.clear()
 
 
 def _info_once_per_load(msg: str, *args) -> None:
@@ -8010,6 +8182,62 @@ class CountAborted(Exception):
 # Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
 _COUNT_TIMEOUT_FLOOR_S = 10.0
 _COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+# Identical prompts recounted within a tool round; keyed per llama-server process.
+_COUNT_MEMO_INIT_LOCK = threading.Lock()
+_COUNT_MEMO_SIZE = 8
+
+
+def _count_memo_key(backend, *parts) -> Optional[bytes]:
+    """Digest of everything the server render sees, scoped to the running llama-server process."""
+    process = getattr(backend, "_process", None)
+    try:
+        payload = json.dumps(
+            [
+                getattr(backend, "base_url", None),
+                getattr(backend, "_model_identifier", None),
+                id(process),
+                getattr(process, "pid", None),
+                *parts,
+            ],
+            sort_keys = True,
+            ensure_ascii = False,
+        )
+    except Exception:  # unserialisable content: count it, never guess a key
+        return None
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).digest()
+
+
+def _count_memo(backend):
+    memo = vars(backend).get("_count_memo_state")
+    if memo is None:
+        with _COUNT_MEMO_INIT_LOCK:
+            memo = vars(backend).setdefault(
+                "_count_memo_state", (threading.Lock(), collections.OrderedDict())
+            )
+    return memo
+
+
+def _count_memo_get(backend, key) -> Optional[int]:
+    if key is None:
+        return None
+    lock, memo = _count_memo(backend)
+    with lock:
+        count = memo.get(key)
+        if count is not None:
+            memo.move_to_end(key)
+        return count
+
+
+def _count_memo_put(backend, key, count) -> None:
+    if key is None or type(count) is not int or count <= 0:
+        return
+    lock, memo = _count_memo(backend)
+    with lock:
+        memo[key] = count
+        memo.move_to_end(key)
+        while len(memo) > _COUNT_MEMO_SIZE:
+            memo.popitem(last = False)
 
 
 def _count_timeout(messages, system_text, tools) -> float:
@@ -8354,6 +8582,9 @@ class LlamaCppBackend:
         # (load key, count) of Metal OOM retirements, and the key that stopped respawning.
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        # (load key, count) of mid-session GPU OOM deaths, and the child that logged one.
+        self._gpu_oom_strikes = None
+        self._gpu_oom_process = None
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # Wakes the health probe on subprocess readiness/exit, not left to the 500 ms fallback poll.
@@ -8414,6 +8645,8 @@ class LlamaCppBackend:
         self._has_audio_input: bool = False
         # Needs mmproj, build and ffmpeg to align; the GGUF alone cannot tell.
         self._has_video_input: bool = False
+        self._video_needs_ffmpeg: bool = False
+        self._video_ffmpeg_dir: Optional[str] = None
         self._mmproj_has_audio: bool = False  # clip.has_audio_encoder, set at load
         # clip.projector_type set at load; the family whose image-token ceiling KV admission sizes images against.
         self._mmproj_projector_type: Optional[str] = None
@@ -9024,9 +9257,13 @@ class LlamaCppBackend:
             # GLM-5.2 style: enable_thinking is the on/off gate; when on, keep the template's default effort.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
+            effort = _fit_reasoning_effort_to_template(
+                _rendered_chat_template(self),
+                effort or ("high" if enable_thinking else "low"),
+                thinking_off = not effort and not enable_thinking,
+            )
             return _coerce_reasoning_effort(
-                getattr(self, "_architecture", None),
-                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
+                getattr(self, "_architecture", None), {"reasoning_effort": effort}
             )
         return {"enable_thinking": enable_thinking}
 
@@ -9174,6 +9411,8 @@ class LlamaCppBackend:
                     kwargs["reasoning_effort"] = effort
             elif self._reasoning_style == "reasoning_effort":
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
+                _template = _rendered_chat_template(self)
+                reasoning_effort = _fit_reasoning_effort_to_template(_template, reasoning_effort)
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
                 ):
@@ -9181,7 +9420,11 @@ class LlamaCppBackend:
                 elif reasoning_effort == "minimal":
                     kwargs["reasoning_effort"] = "low"
                 elif enable_thinking is not None:
-                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+                    kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
+                        _template,
+                        "high" if enable_thinking else "low",
+                        thinking_off = not enable_thinking,
+                    )
             else:
                 if enable_thinking is not None:
                     kwargs["enable_thinking"] = enable_thinking
@@ -10143,7 +10386,9 @@ class LlamaCppBackend:
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_video_timestamp_interval": False,
+                "supports_video_ffmpeg_dir": None,
                 "supports_load_mode": False,
+                "supports_load_mode_auto": False,
                 "supports_moe_cache": False,
                 "supports_moe_cache_auto": False,
                 "supports_lazy_mode": False,
@@ -10213,7 +10458,9 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_video_fps = False
         supports_video_timestamp_interval = False
+        supports_video_ffmpeg_dir = None
         supports_load_mode = False
+        supports_load_mode_auto = False
         supports_moe_cache = False
         supports_moe_cache_auto = False
         supports_lazy_mode = False
@@ -10422,9 +10669,20 @@ class LlamaCppBackend:
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             supports_video_fps = _is_real("--video-fps")
             supports_video_timestamp_interval = _is_real("--video-timestamp-interval")
+            supports_video_ffmpeg_dir = (
+                _is_real("--video-ffmpeg-dir") if probe_ok and blocks else None
+            )
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            # "auto: mmap, unless a device does not support it": without it, mmap is the default everywhere.
+            supports_load_mode_auto = bool(
+                supports_load_mode
+                and re.search(
+                    r"(?<![a-z0-9_+-])auto(?![a-z0-9_+-])",
+                    (blocks.get("--load-mode") or "").lower(),
+                )
+            )
             # "auto" is a fork addition; upstream builds exit on it, so fail closed.
             supports_moe_cache = bool(probe_ok and _is_real("--moe-cache-mib"))
             supports_moe_cache_auto = bool(
@@ -10536,7 +10794,9 @@ class LlamaCppBackend:
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
             "supports_video_timestamp_interval": supports_video_timestamp_interval,
+            "supports_video_ffmpeg_dir": supports_video_ffmpeg_dir,
             "supports_load_mode": supports_load_mode,
+            "supports_load_mode_auto": supports_load_mode_auto,
             "supports_moe_cache": supports_moe_cache,
             "supports_moe_cache_auto": supports_moe_cache_auto,
             "supports_lazy_mode": supports_lazy_mode,
@@ -14398,6 +14658,10 @@ class LlamaCppBackend:
         """Free/total per NVIDIA GPU via NVML in a child for hosts whose nvidia-smi is absent or hung; a row without memory voids the answer."""
         if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
             return []
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and not cvd.strip():
+            # Hides every GPU: _nvml_rows_visible keeps no row, and other _NVML_ROWS readers need a non-blank mask.
+            return []
         script = LlamaCppBackend._nvidia_probe_script()
         if script is None:
             return []
@@ -15440,12 +15704,131 @@ class LlamaCppBackend:
             "yes",
         )
 
+    def _auto_load_mode_unmapped(
+        self,
+        server_caps: Optional[Mapping[str, object]],
+        *,
+        child_has_no_gpu: bool = False,
+        **devices,
+    ) -> bool:
+        """Whether llama.cpp resolves ``--load-mode auto`` to ``none`` here: a device lacking
+        ``mmap_support`` turns both auto modes off (``load_tensors``); ``devices`` go to
+        ``_lazy_auto_resolves_off``."""
+        if child_has_no_gpu or not (server_caps or {}).get("supports_load_mode_auto"):
+            return False
+        try:
+            return bool(self._lazy_auto_resolves_off(**devices))
+        except Exception as e:  # noqa: BLE001 -- unknown devices: keep the launch as is
+            logger.debug("Could not tell whether llama.cpp maps this load: %s", e)
+            return False
+
+    def _paged_lookup_table_flags(
+        self,
+        model_path: Optional[str],
+        caps: Optional[Mapping[str, object]],
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> list[str]:
+        """``[<lazy flag>, "on"]`` to stream the tables auto streams elsewhere: mmap prefetch skips
+        only lazy ranges (llama-mmap.cpp). Empty when a lazy mode is set or nothing would stream."""
+        caps = caps or {}
+        if not model_path or not caps.get("supports_lazy_mode"):
+            return []
+        flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
+        source_env = os.environ if env is None else env
+        flags, env_name = _LAZY_MODE_SPELLINGS.get(flag, (frozenset({flag}), ""))
+        argv = list(argv or ())
+        if (env_name and str(source_env.get(env_name) or "").strip()) or _extra_args_set_any_flag(
+            argv, flags
+        ):
+            return []
+        if self._lazy_read_host_bytes(model_path, caps = caps, extra_args = argv, env = source_env) <= 0:
+            return []
+        return [flag, "on"]
+
+    @staticmethod
+    def _paged_fit_headroom_flags(
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        user_args: Optional[Iterable[str]],
+        gpu_count: int = 1,
+    ) -> list[str]:
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
+        Empty off Windows, with the fitter off, a user margin, a per-device list, or a second
+        device, which the broadcast margin would starve."""
+        args = [str(a) for a in argv or ()]
+        if not _paged_load_needs_fit_headroom() or gpu_count > 1:
+            return []
+        if (
+            _extra_args_device(args, {"--rpc"})
+            or str((env or {}).get("LLAMA_ARG_RPC") or "").strip()
+        ):
+            return []
+        devices = _extra_args_device(args, {"--device", "-dev"})
+        if devices is None:
+            devices = str((env or {}).get("LLAMA_ARG_DEVICE") or "")
+        if (
+            len(
+                [
+                    d
+                    for d in devices.split(",")
+                    if d.strip().lower() not in ("", *_CPU_DEVICE_VALUES)
+                ]
+            )
+            > 1
+        ):
+            return []
+        if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
+            return []
+        raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+        if (
+            raw is not None
+            and len([p for p in str(raw).replace("/", ",").split(",") if p.strip()]) > 1
+        ):
+            return []
+        have = _single_device_fit_margin(args, None)
+        base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
+        return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
+
+    @staticmethod
+    def _margins_with_paged_headroom(
+        margins: Optional[Mapping[int, float]],
+        headroom: Iterable[str],
+        sign: int = 1,
+    ) -> Optional[Mapping[int, float]]:
+        """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
+        if not margins or not list(headroom):
+            return margins
+        return {i: m + sign * _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+
+    @staticmethod
+    def _withdraw_paged_headroom(
+        cmd: list[str], margins: Optional[Mapping[int, float]], headroom: list[str]
+    ) -> tuple[list[str], Optional[Mapping[int, float]]]:
+        """``cmd`` and ``margins`` without the iGPU paging headroom, for a respawn off the iGPU."""
+        return (
+            LlamaCppBackend._without_flag_pairs(cmd, headroom),
+            LlamaCppBackend._margins_with_paged_headroom(margins, headroom, sign = -1),
+        )
+
     def _page_an_oversized_unmapped_load(
-        self, cmd: Iterable[str], env: Optional[dict], oversized
+        self,
+        cmd: Iterable[str],
+        env: Optional[dict],
+        oversized,
+        *,
+        auto_unmapped: bool = False,
+        lazy_table_flags: Optional[Callable[[list], list]] = None,
+        fit_headroom_flags: Optional[Callable[[list], list]] = None,
     ) -> tuple[list, Optional[str]]:
-        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks."""
+        """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks.
+
+        ``auto_unmapped``: auto is none for this child, so an unset mode is rewritten too, and
+        ``lazy_table_flags(argv)`` / ``fit_headroom_flags(argv)`` are appended."""
         original = cmd if isinstance(cmd, list) else list(cmd or ())
-        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(original, env)
+        _mlock_now, _reserves_ram_now = resolve_effective_memory_state(
+            original, env, auto_unmapped = auto_unmapped
+        )
         if not _reserves_ram_now:
             return original, None
         try:
@@ -15455,15 +15838,33 @@ class LlamaCppBackend:
             # Advisory pricing: an unreadable host or GGUF leaves the launch alone.
             logger.debug("Could not price the load for a pageable override.", exc_info = True)
             return original, None
-        paged, overridden = force_pageable_load(original, env)
+        from_auto = auto_unmapped and load_mode_left_auto(original, env)
+        paged, overridden = force_pageable_load(original, env, auto_unmapped = auto_unmapped)
         if not overridden:
             return original, None
+        lazy: list = []
+        if auto_unmapped and lazy_table_flags is not None:
+            try:
+                lazy = list(lazy_table_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping alone still lets the load finish
+                logger.debug("Lookup tables: could not price lazy reads.", exc_info = True)
+        paged = [*paged, *lazy]
+        headroom: list = []
+        if auto_unmapped and fit_headroom_flags is not None:
+            try:
+                headroom = list(fit_headroom_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping still applies without the margin
+                logger.debug("Fit headroom: could not read the launch's margin.", exc_info = True)
+        paged = [*paged, *headroom]
         logger.warning(
             "Overriding the unmapped load mode (%s) for an oversized model: it would "
-            "allocate the whole model in host RAM instead of paging it in.",
+            "allocate the whole model in host RAM instead of paging it in.%s%s",
             ", ".join(overridden),
+            f" Lookup tables: {' '.join(lazy)}." if lazy else "",
+            f" GPU headroom: {' '.join(headroom)}." if headroom else "",
         )
-        return paged, _PAGEABLE_OVERRIDE_NOTE
+        note = _PAGEABLE_AUTO_OVERRIDE_NOTE if from_auto else _PAGEABLE_OVERRIDE_NOTE
+        return paged, note
 
     @property
     def last_load_warning(self) -> Optional[str]:
@@ -15519,7 +15920,11 @@ class LlamaCppBackend:
             # The discrete guard never charged the projector, so its verdict stands.
             self._last_load_warning = host_msg + suffix
         elif suffix.strip():
-            self._last_load_warning = _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            self._last_load_warning = (
+                _PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE
+                if _PAGEABLE_AUTO_OVERRIDE_NOTE in suffix
+                else _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE
+            )
         else:
             self._last_load_warning = None
         logger.info(
@@ -18185,6 +18590,9 @@ class LlamaCppBackend:
                         if level.group(1) == "E":
                             if any(m in line for m in _DRAFT_CONTEXT_FAILURE_MARKERS):
                                 metal_poison["draft"] = True
+                            # Startup OOM has its own retries; this one is a served child's.
+                            if startup_len is not None and self._is_gpu_memory_start_failure(line):
+                                self._gpu_oom_process = proc
                             if not device_lost_seen and any(
                                 marker in line for marker in _GPU_DEVICE_LOST_MARKERS
                             ):
@@ -19352,6 +19760,7 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._metal_oom_strikes = None
         self._metal_oom_terminal_key = None
+        self._gpu_oom_strikes = None
         # Record the applied split and reset the other knobs so status and reload dedup agree.
         self._gpu_memory_mode = gpu_memory_mode if manual_ngl is not None else "auto"
         self._gpu_layers = manual_ngl if manual_ngl is not None else -1
@@ -19708,16 +20117,12 @@ class LlamaCppBackend:
         listing_answered = False
         # Retryable failure; a permanent error also leaves the listing unanswered.
         listing_failed = False
-        from huggingface_hub import list_repo_files
-
         # Retry transient listing errors only; offline raises at once and falls through to cache.
         for attempt in range(3):
             if cancel_event.is_set():
                 return None
             try:
-                target = _pick_from(
-                    call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
-                )
+                target = _pick_from(_companion_repo_files(hf_repo, hf_token))
                 listing_answered = True
                 listing_failed = False
                 break
@@ -19794,6 +20199,7 @@ class LlamaCppBackend:
                 outcome["listed"] = False
                 outcome["listed_live"] = False
             return None
+        _forget_companion_listings()
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             # Same policy; companions are best-effort (caller below swallows failures to None).
@@ -20517,6 +20923,7 @@ class LlamaCppBackend:
             arch not in self._DIFFUSION_ARCHES
             and not is_speech_gguf_architecture(arch)
             and not is_audio_cpp_gguf_architecture(arch)
+            and not is_foreign_asr_gguf_architecture(arch)
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
@@ -20528,6 +20935,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which cannot run as "
                     "a chat model. Open it from the Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"This is a '{arch}' speech-recognition GGUF (parakeet.cpp / LocalAI), which "
+                    "llama.cpp cannot load. Updating llama.cpp will not help. For Parakeet in "
+                    "Unsloth, open the Audio page and use the curated audio.cpp model "
+                    "(Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Points at the Transformers build: the Audio page cannot list a speech GGUF either.
@@ -21114,6 +21528,32 @@ class LlamaCppBackend:
                 secrets,
             )
 
+        # Projectors, drafters and shards fail this way too: never name the main GGUF.
+        if "data is not within the file bounds" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "A model file appears incomplete or damaged. Check that the download finished.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        if "failed to open gguf file" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't open a model file. Check it exists and Unsloth has permission to read it.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # GPU evidence on the allocation line itself: a host allocation failure keeps the fallback.
+        if LlamaCppBackend._is_gpu_memory_start_failure(scan_tail):
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't allocate memory. Try lowering the context length or choosing a smaller model.",
+                output,
+                log_path,
+                secrets,
+            )
+
         # Detect Ollama first so the arch branch keeps the Ollama hint.
         gguf = gguf_path or ""
         is_ollama = (
@@ -21131,6 +21571,13 @@ class LlamaCppBackend:
                 return (
                     "This is an audio GGUF (speech, music or transcription), which llama-server "
                     "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
+                )
+            if is_foreign_asr_gguf_architecture(arch):
+                return (
+                    f"'{arch}' is a speech-recognition GGUF for parakeet.cpp / LocalAI, which "
+                    "llama-server cannot run as a chat/completion model. Updating llama.cpp will "
+                    "not add support for it. For Parakeet in Unsloth, open the Audio page and use "
+                    "the curated audio.cpp model (Parakeet-TDT-0.6B-v3-GGUF)."
                 )
             if is_speech_gguf_architecture(arch):
                 # Name the build that runs it, not a page this file will not appear on.
@@ -21195,8 +21642,9 @@ class LlamaCppBackend:
             # Includes an arch the installed build predates.
             return (
                 f"The installed llama.cpp does not recognise this GGUF's model "
-                f"architecture ('{arch}'). The file is valid. If the model is newer "
-                "than this llama.cpp build, updating llama.cpp may add support for it."
+                f"architecture ('{arch}'). Check the model card for its required runtime. "
+                "If the model is newer than this llama.cpp build, updating llama.cpp may "
+                "add support; a model requiring a custom runtime may still be incompatible."
             )
 
         # Other Ollama compat failures, only when the output shows a GGUF compat issue.
@@ -21218,11 +21666,11 @@ class LlamaCppBackend:
         if missing_key:
             return LlamaCppBackend._with_startup_diagnostics(
                 f"This GGUF is missing the metadata key '{_short(missing_key.group(1))}', "
-                "which the installed llama.cpp requires to load it. The file was made "
-                "for a different llama.cpp version of this model's format, usually an "
-                "older or pre-release one; this is not a memory problem. Download an "
-                "updated GGUF of this model, or update llama.cpp if the file is newer "
-                "than this build.",
+                "which the installed llama.cpp requires to load it; this is not a memory problem. "
+                "This can happen with an incompatible conversion, incomplete metadata, or "
+                "an adapter selected as a full model. Check the model card for its required "
+                "runtime and whether it needs a base model. Use a compatible full or updated "
+                "GGUF, or update llama.cpp if the model requires a newer build.",
                 output,
                 log_path,
                 secrets,
@@ -22100,6 +22548,48 @@ class LlamaCppBackend:
             return []
         return discrete if 0 < len(discrete) < len(_selected) else []
 
+    _CURRENT_DEVICE_RE = re.compile(r"current device:\s*(\d+)")
+
+    @classmethod
+    def _unpinned_arch_crash_retry(
+        cls,
+        output: str,
+        enumerated,
+        child_ids: Optional[Sequence[int]] = None,
+    ) -> tuple[list[int], list[int]]:
+        """``(crashed, remaining)`` physical ids from the child's "current device: N", or ``([], [])``.
+        ``child_ids`` maps the child's ordinals when Studio masked it."""
+        if not cls._host_torch_is_rocm():
+            return [], []  # an unmasked CUDA child orders devices by speed, not by our ids
+        matches = cls._CURRENT_DEVICE_RE.findall(output or "")
+        if not matches:
+            return [], []
+        ordinal = int(matches[-1])
+        # Ordinals we cannot map back to physical ids; guessing could expose a hidden card.
+        if cls._gpu_device_ordinal_active() or (
+            child_ids is None
+            and (cls._visibility_mask_is_unmappable() or cls._rocm_visibility_masks_are_stacked())
+        ):
+            return [], []
+        physical_ids = (
+            list(child_ids) if child_ids is not None else cls._resolve_visible_physical_ids()
+        )
+        if physical_ids is not None:
+            if ordinal >= len(physical_ids):
+                return [], []
+            ordinal = physical_ids[ordinal]
+        _enumerated = sorted(set(enumerated or ()))
+        if ordinal not in _enumerated:
+            return [], []
+        remaining = [i for i in _enumerated if i != ordinal]
+        # A shared-memory iGPU is the usual second uncovered arch; kept only when nothing else is left.
+        try:
+            unified = cls._rocm_unified_memory_gpu_ids()
+            discrete = [i for i in remaining if i not in unified]
+        except Exception:
+            discrete = []
+        return [ordinal], (discrete or remaining)
+
     @staticmethod
     def _cache_tuning_target_unknown(
         extra_args: Optional[Iterable[str]], device_flags_owned: bool, env: Mapping[str, str]
@@ -22943,10 +23433,11 @@ class LlamaCppBackend:
                 "UNSLOTH_LLAMA_CPP_BACKEND=cpu unsloth studio update."
             )
         if backend == "hip":
+            var = "HIP_VISIBLE_DEVICES" if sys.platform == "win32" else "ROCR_VISIBLE_DEVICES"
             return base + (
                 "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
-                "with ROCR_VISIBLE_DEVICES (e.g. ROCR_VISIBLE_DEVICES=0 exposes only "
-                "the first GPU) before launching Unsloth Studio."
+                f"with {var} (e.g. {var}=0 exposes only the first GPU) before "
+                "launching Unsloth Studio."
             )
         if backend == "cuda":
             return base + (
@@ -23210,6 +23701,8 @@ class LlamaCppBackend:
             _fit_target_delta_by_idx: Optional[dict[int, float]] = None
             # Studio's emitted margins per card, spelled into --fit-target at spawn.
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
+            # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
+            _paged_headroom: list = []
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -24148,6 +24641,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                _moe_table_bytes = 0
+                _moe_cache_lazy_table = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
                 # The discrete-first tier; accounting keeps _integrated_gpus.
@@ -24484,6 +24979,23 @@ class LlamaCppBackend:
                                 int(_idx): (_CTX_FIT_VRAM_FRACTION - _vram_frac)
                                 * (_total if _total and _total > 0 else _free)
                                 for _idx, _free, _total in _gpu_mem
+                            }
+
+                    # Each card keeps its own margin plus the headroom a mid-session OOM earned.
+                    _oom_headroom_mib = self._gpu_oom_headroom_mib(intent)
+                    if _oom_headroom_mib:
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB
+                            if gpu_memory_mode == "manual" and gpu_layers < 0
+                            else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
+                        _fit_target_delta_mib = (
+                            max(_min_delta, _fit_target_delta_mib) + _oom_headroom_mib
+                        )
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: max(_min_delta, _delta) + _oom_headroom_mib
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
                             }
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
@@ -26770,6 +27282,42 @@ class LlamaCppBackend:
                             if need_mib > budget_mib:
                                 _metal_alongside_shortfall = (need_mib, budget_mib)
 
+                    elif (
+                        not explicit_ctx
+                        and gpu_memory_mode != "manual"
+                        and effective_ctx > 0
+                        and (_arch_gate_forced_cpu or self._binary_ships_no_gpu_backend(binary))
+                        and not (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                        and not str(os.environ.get("LLAMA_ARG_RPC", "")).strip()
+                    ):
+                        # -c is emitted, so --fit cannot shrink it to host RAM. An empty probe is not
+                        # CPU-only (SYCL is never probed), and --rpc places KV on remote devices.
+                        effective_ctx = min(
+                            effective_ctx,
+                            _APPLE_AUTO_CTX if self._can_estimate_kv() else _FIT_MIN_CTX,
+                        )
+                        _host_avail_mib = self._available_system_memory_mib()
+                        if _host_avail_mib is not None:
+                            effective_ctx = self._fit_context_to_vram(
+                                effective_ctx,
+                                _host_avail_mib - _HOST_RAM_HEADROOM_MIB,
+                                model_size_fit,
+                                cache_type_kv,
+                                min_ctx = _FIT_MIN_CTX,
+                                swa_full = swa_full,
+                                n_parallel = n_parallel,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = _effective_ubatch,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                compute_ctx_bytes_fn = _cc_bytes,
+                                budget_frac = 1.0,
+                                pooled = True,
+                                total_mib = None,
+                                ctx_checkpoints = _fit_ctx_checkpoints,
+                            )
+
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
                     # offloads layers to host and decode collapses ~3x (#6718). Retry the fit
@@ -27902,6 +28450,8 @@ class LlamaCppBackend:
                             binary = binary,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
+                        # Kept resident by --lazy-mode off; the MoE cache below may want it lazy.
+                        _moe_table_bytes = _fit_lazy_bytes
                         if _fit_load_mode_kwargs["model_size"]:
                             _fit_load_mode_kwargs["model_size"] = max(
                                 1, _fit_load_mode_kwargs["model_size"] - _fit_lazy_bytes
@@ -27965,6 +28515,31 @@ class LlamaCppBackend:
                             )
                             == self._FIT_LOAD_MODE
                         )
+                        if not _moe_cache_ram_ok and _moe_table_bytes > 0 and _moe_expert_bytes > 0:
+                            # Reading the resident table lazily frees the RAM to pin the experts; the cache beats the --fit split.
+                            _moe_cache_ram_ok = bool(
+                                _moe_prompt_cache_bytes is not None
+                                and self._fit_derived_load_mode(
+                                    **{
+                                        **_fit_load_mode_kwargs,
+                                        "model_size": max(
+                                            1,
+                                            _fit_load_mode_kwargs["model_size"] - _moe_expert_bytes,
+                                        ),
+                                        "host_only_bytes": max(
+                                            0,
+                                            _fit_load_mode_kwargs["host_only_bytes"]
+                                            - _moe_table_bytes,
+                                        )
+                                        + _moe_expert_bytes
+                                        + _moe_prompt_cache_bytes,
+                                        "announce": False,
+                                    }
+                                )
+                                == self._FIT_LOAD_MODE
+                            )
+                            # --lazy-mode off goes only where the cache is really added below.
+                            _moe_cache_lazy_table = _moe_cache_ram_ok
                         if not _moe_cache_ram_ok:
                             logger.info(
                                 "MoE cache: system RAM cannot hold the %.1f GB of routed "
@@ -27980,7 +28555,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _managed_lazy_flags = None
-                    _moe_cache_candidate = _moe_cache_ram_ok = False
+                    _moe_cache_candidate = _moe_cache_ram_ok = _moe_cache_lazy_table = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -28356,6 +28931,10 @@ class LlamaCppBackend:
                 # On every launch, not only where Studio emits --mmproj: a projector
                 # from the extras or LLAMA_ARG_MMPROJ takes video too.
                 cmd.extend(_video_fps_flags(server_caps, extra_args = extra_args))
+                _ffmpeg_flags, self._video_ffmpeg_dir = _video_ffmpeg_dir_flags(
+                    server_caps, extra_args = extra_args
+                )
+                cmd.extend(_ffmpeg_flags)
 
                 # Report the public model id, not the raw -m path.
                 from core.inference.model_ids import public_model_id
@@ -29499,6 +30078,16 @@ class LlamaCppBackend:
                     and _placed_by_fitter
                     and _argv_loads_pinned(cmd, _fit_load_mode_env_view)
                 ):
+                    if _moe_cache_lazy_table and self._lazy_mode_flags:
+                        # These flags sit after the spec block, so removing them leaves _spec_start valid.
+                        cmd = _without_subsequence(cmd, self._lazy_mode_flags)
+                        self._lazy_mode_flags = []
+                        logger.info(
+                            "MoE cache: reading the %.1f GB lookup table lazily so system "
+                            "RAM can pin the %.1f GB of routed experts.",
+                            _moe_table_bytes / (1024**3),
+                            _moe_expert_bytes / (1024**3),
+                        )
                     self._moe_cache_flags = list(_MOE_CACHE_AUTO_TOKENS)
                     cmd.extend(self._moe_cache_flags)
                     logger.info(
@@ -30184,8 +30773,38 @@ class LlamaCppBackend:
                         )
                     )
 
+                # On an iGPU auto is none; same devices as the guard above.
+                _launch_auto_unmapped = self._auto_load_mode_unmapped(
+                    server_caps,
+                    child_has_no_gpu = _child_has_no_gpu,
+                    gpu_indices = [row[0] for row in _reachable_gpus] or None,
+                    detected_gpus = _reachable_gpus,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    is_vulkan_backend = is_vulkan_backend,
+                    probe_integrated_cuda = False,
+                    extra_args = cmd,
+                    env = env,
+                    device_list = False,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
+                )
+                _paged_headroom = []
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
-                    cmd, env, _launch_is_oversized
+                    cmd,
+                    env,
+                    _launch_is_oversized,
+                    auto_unmapped = _launch_auto_unmapped,
+                    lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                        model_path, server_caps, argv, env
+                    ),
+                    fit_headroom_flags = lambda argv: _paged_headroom.extend(
+                        self._paged_fit_headroom_flags(
+                            argv, env, extra_args, gpu_count = len(_reachable_gpus)
+                        )
+                    )
+                    or _paged_headroom,
+                )
+                _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                    _fit_target_margins_by_idx, _paged_headroom
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -31381,22 +32000,51 @@ class LlamaCppBackend:
                             "update llama.cpp to use tensor parallelism with a "
                             "quantized cache."
                         )
-                # Auto-pinned device has no kernels in this binary: retry once on a narrowed set, since the gate cannot see custom builds; explicit picks keep their error.
+                # A launched device has no kernels in this binary: retry once on a narrowed set (the gate cannot see custom builds or unreadable coverage); explicit picks keep their error.
+                _arch_crash_tail = "\n".join(self._stdout_lines[-80:])
                 if (
                     not healthy
                     and not _load_cancelled()
                     and not gpu_ids
                     and not is_vulkan_backend
-                    and gpu_indices
-                    and self._kernel_image_invalid("\n".join(self._stdout_lines[-80:]))
+                    and self._kernel_image_invalid(_arch_crash_tail)
                 ):
-                    _crashed = sorted(set(gpu_indices))
                     # _detected_gpus, not gpus: the post-picker enumeration this launch
                     # planned against, and unlike `gpus` it survives the manual mode that
                     # empties the pool to bypass the planner.
-                    _remaining = self._arch_crash_retry_gpu_ids(
-                        gpu_indices, [i for i, _free in _detected_gpus]
-                    )
+                    _enumerated = [i for i, _free in _detected_gpus]
+                    if gpu_indices:
+                        _crashed = sorted(set(gpu_indices))
+                        _remaining = self._arch_crash_retry_gpu_ids(gpu_indices, _enumerated)
+                    elif (
+                        _cache_target_unknown
+                        or str(env.get("LLAMA_ARG_MAIN_GPU", "")).strip()
+                        or _GPU_DEVICE_TOKEN_RE.match(
+                            str(env.get("MTMD_BACKEND_DEVICE", "")).strip()
+                        )
+                    ):
+                        # A user --device / --main-gpu / projector device env numbers cards by the unnarrowed set.
+                        _crashed, _remaining = [], []
+                    else:
+                        # Unpinned (manual split, or unreadable coverage): only the child's "current device" names the card.
+                        _crashed, _remaining = self._unpinned_arch_crash_retry(
+                            _arch_crash_tail, _enumerated, _child_gpu_physical_ids
+                        )
+                        if (
+                            _remaining
+                            and _companion_fit_mask is None
+                            and any(
+                                _flag_name(str(tok)) in flags
+                                for tok in cmd
+                                for flags in _COMPANION_DEVICE_FLAG_GROUPS
+                            )
+                        ):
+                            # Companion ROCm<n> tokens number this child's devices; the refit below remaps them.
+                            _companion_fit_mask = (
+                                list(_child_gpu_physical_ids)
+                                if _child_gpu_physical_ids is not None
+                                else self._resolve_visible_physical_ids() or sorted(_enumerated)
+                            )
                     if _remaining:
                         # Earlier notices priced the crashed selection; re-price on the respawn set, since first notice wins.
                         _retry_wants_unified = self._amd_apu_wants_unified_memory(_remaining)
@@ -31537,7 +32185,6 @@ class LlamaCppBackend:
                             env, ",".join(str(i) for i in _retry_mask), prefer_rocr = True
                         )
                         _child_gpu_physical_ids = tuple(int(i) for i in _retry_mask)
-                        # No ratio record here: _tensor_split is set only in manual mode, where gpu_indices stays None.
                         self._clear_split_placement_env(env)
                         # The mask re-indexes survivors, so drop a --tensor-split sized for the crashed set.
                         _arch_retry_cmd = self._without_tensor_split(cmd)
@@ -31548,9 +32195,9 @@ class LlamaCppBackend:
                                 "devices and the narrowed set re-indexes them."
                             )
                             cmd = _arch_retry_cmd
-                            # No ratio record, unlike the proactive gate: _tensor_split
-                            # is non-None only in manual mode, which leaves gpu_indices
-                            # None, and this arm needs it truthy.
+                            # Recorded like the proactive gate, or the next Apply sees a different server and reloads.
+                            if self._tensor_split:
+                                self._arch_gate_dropped_tensor_split = tuple(self._tensor_split)
                             self._tensor_split = None
                             # The auto twin, which this arm CAN reach: an auto
                             # tensor-parallel fallback emits its ratio with
@@ -31740,8 +32387,41 @@ class LlamaCppBackend:
                                 )
                             )
 
+                        _retry_auto_unmapped = self._auto_load_mode_unmapped(
+                            server_caps,
+                            gpu_indices = [row[0] for row in _retry_rows] or None,
+                            detected_gpus = _retry_rows,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                            probe_integrated_cuda = False,
+                            extra_args = cmd,
+                            env = env,
+                            device_list = False,
+                            integrated_gpu_ids = _vulkan_igpu_ids,
+                        )
+                        if _paged_headroom and not _retry_auto_unmapped:
+                            cmd, _fit_target_margins_by_idx = self._withdraw_paged_headroom(
+                                cmd, _fit_target_margins_by_idx, _paged_headroom
+                            )
+                            _paged_headroom = []
+                        _retry_headroom: list = []
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
-                            cmd, env, _retry_is_oversized
+                            cmd,
+                            env,
+                            _retry_is_oversized,
+                            auto_unmapped = _retry_auto_unmapped,
+                            lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
+                                model_path, server_caps, argv, env
+                            ),
+                            fit_headroom_flags = lambda argv: _retry_headroom.extend(
+                                self._paged_fit_headroom_flags(
+                                    argv, env, extra_args, gpu_count = len(_retry_rows)
+                                )
+                            )
+                            or _retry_headroom,
+                        )
+                        _fit_target_margins_by_idx = self._margins_with_paged_headroom(
+                            _fit_target_margins_by_idx, _retry_headroom
                         )
                         if _retry_pageable_note:
                             # Onto whichever notice first-notice-wins kept above; a
@@ -32521,10 +33201,22 @@ class LlamaCppBackend:
                 # -- the length --fit chose, or a --parallel slot split -- so the
                 # Adopt the context the server allocated (--fit or slot split); clear video state first, or a swap to a model without video inherits the old answer.
                 self._has_video_input = False
+                self._video_needs_ffmpeg = False
                 # Use _extra_args_as_requested: the drafter-drop snapshot would restore the Metal zero-context strip.
                 self._reconcile_effective_ctx_with_server(ctx_override or 0)
                 if self._has_video_input:
-                    self._has_video_input = _video_tools_reachable(_last_spawn_cmd, env, _spawn_cwd)
+                    _supports_dir = server_caps.get("supports_video_ffmpeg_dir") is not False
+                    self._has_video_input = _video_tools_reachable(
+                        _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                    )
+                    self._video_needs_ffmpeg = not self._has_video_input
+                    if self._has_video_input:
+                        try:
+                            self._video_ffmpeg_dir = _video_tools_search(
+                                _last_spawn_cmd, env, _spawn_cwd, supports_ffmpeg_dir = _supports_dir
+                            )
+                        except Exception:
+                            pass
                     if not self._has_video_input:
                         logger.warning(
                             "Video input disabled: llama-server decodes video with ffmpeg and "
@@ -32594,6 +33286,7 @@ class LlamaCppBackend:
                     # the strike count.
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
+                    self._gpu_oom_strikes = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -33513,6 +34206,7 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._metal_oom_strikes = None
             self._metal_oom_terminal_key = None
+            self._gpu_oom_strikes = None
             self._hf_variant = None
             self._is_vision = False
             self._disable_vision = False
@@ -33522,6 +34216,7 @@ class LlamaCppBackend:
             self._audio_probed = False
             self._has_audio_input = False
             self._has_video_input = False
+            self._video_needs_ffmpeg = False
             self._mmproj_has_audio = False
             self._mmproj_accepts_image = True
             self._port = None
@@ -34755,6 +35450,7 @@ class LlamaCppBackend:
                 timeout = timeout,
                 headers = self._auth_headers,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
@@ -34983,6 +35679,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot {slot} save failed: {e}")
@@ -35051,6 +35748,7 @@ class LlamaCppBackend:
                     headers = self._auth_headers,
                     timeout = _SLOT_SAVE_HTTP_TIMEOUT,
                     trust_env = False,
+                    verify = _local_ssl_context(),
                 )
             except Exception as e:
                 logger.debug(f"slot restore failed: {e}")
@@ -35768,7 +36466,13 @@ class LlamaCppBackend:
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.
-            resp = httpx.get(url, headers = self._auth_headers, timeout = 5.0, trust_env = False)
+            resp = httpx.get(
+                url,
+                headers = self._auth_headers,
+                timeout = 5.0,
+                trust_env = False,
+                verify = _local_ssl_context(),
+            )
             if resp.status_code != 200:
                 return None
             props = resp.json()
@@ -36308,6 +37012,8 @@ class LlamaCppBackend:
                     f"llama-server for '{self._model_identifier}' exited "
                     f"(code {proc.returncode}); respawning to recover the session"
                 )
+                if self._died_of_gpu_oom(proc):
+                    self._note_gpu_oom_strike(intent)
                 try:
                     with _automatic_recovery_load():
                         started = bool(self.load_model(intent))
@@ -36447,6 +37153,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 10.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             if resp.status_code < 500:
                 return False
@@ -36470,6 +37177,36 @@ class LlamaCppBackend:
             return replace(intent, speculative_type = None, verified_gguf = None)
         except TypeError:
             return intent
+
+    def _died_of_gpu_oom(self, proc) -> bool:
+        """Whether the dead served child logged a GPU out-of-memory error before exiting."""
+        drain = getattr(self, "_stdout_thread", None)
+        if drain is not None and drain is not threading.current_thread():
+            # Its last lines can still be in the pipe when the exit status lands.
+            drain.join(timeout = 2)
+        return proc is not None and getattr(self, "_gpu_oom_process", None) is proc
+
+    def _note_gpu_oom_strike(self, intent) -> None:
+        key = self._metal_oom_key(intent)
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        strikes = prior[1] + 1 if prior is not None and prior[0] == key else 1
+        strikes = min(strikes, _GPU_OOM_HEADROOM_MAX_STRIKES)
+        self._gpu_oom_strikes = (key, strikes)
+        try:
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' ran out of GPU memory; "
+                f"respawning it with {int(strikes * _GPU_OOM_HEADROOM_STEP_MIB)} MiB more "
+                "free VRAM kept (--fit-target)."
+            )
+        except Exception:
+            pass
+
+    def _gpu_oom_headroom_mib(self, intent) -> float:
+        """Extra --fit-target for a reload of the load that ran out of GPU memory; 0 otherwise."""
+        prior = getattr(self, "_gpu_oom_strikes", None)
+        if prior is None or intent is None or prior[0] != self._metal_oom_key(intent):
+            return 0.0
+        return prior[1] * _GPU_OOM_HEADROOM_STEP_MIB
 
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
@@ -36628,6 +37365,7 @@ class LlamaCppBackend:
                 headers = self._auth_headers,
                 timeout = 2.0,
                 trust_env = False,
+                verify = _local_ssl_context(),
             )
             response.raise_for_status()
             result = response.json()
@@ -36672,6 +37410,7 @@ class LlamaCppBackend:
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -36720,9 +37459,10 @@ class LlamaCppBackend:
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
-        # Per-request enable_thinking / reasoning_effort / preserve_thinking
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        # Per-request enable_thinking / reasoning_effort / preserve_thinking, plus the caller's other tags
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
@@ -36756,6 +37496,7 @@ class LlamaCppBackend:
                 )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -36895,6 +37636,7 @@ class LlamaCppBackend:
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
                 compact_context = compact_context,
+                chat_template_kwargs = chat_template_kwargs,
                 _allow_respawn_retry = False,
             )
 
@@ -37115,6 +37857,7 @@ class LlamaCppBackend:
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
         live_permissions = None,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -37139,8 +37882,11 @@ class LlamaCppBackend:
             search_images_kwargs,
             stream_tool_execution,
         )
+        from core.inference.studio_tool_loop import _WEB_FETCH_CONCURRENCY, _web_fetch_host
         from core.inference.tools import (
+            StartedUrlRead,
             build_rag_autoinject,
+            compaction_receipt_field,
             execute_tool,
             has_text_only_provisional_card,
             is_high_risk_tool_call,
@@ -37156,6 +37902,7 @@ class LlamaCppBackend:
             needs_tool_confirmation,
             normalize_sandbox_level,
             normalize_tool_permissions,
+            require_tool_access,
             requires_os_isolation,
             runs_without_os_sandbox,
             tool_call_may_prompt,
@@ -37185,6 +37932,8 @@ class LlamaCppBackend:
         _conversation_recall_done = False
         # Apply the sticky boundary once; refits run on already-fitted history.
         _sticky_boundary_applied = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Estimator misses the tool catalogue and template framing; the offset corrects it.
         _prompt_token_offset: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
@@ -37685,8 +38434,11 @@ class LlamaCppBackend:
                 neutralize_control_markup_in_messages,
             )
 
-            _reasoning_kw = self._request_reasoning_kwargs(
-                _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+            _reasoning_kw = _with_template_extras(
+                self._request_reasoning_kwargs(
+                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+                ),
+                chat_template_kwargs,
             )
             # On a continuation only the remainder of the caller's cap; read before the payload.
             _iteration_max_tokens = (
@@ -37718,6 +38470,7 @@ class LlamaCppBackend:
                     )
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -37738,7 +38491,7 @@ class LlamaCppBackend:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -37750,6 +38503,7 @@ class LlamaCppBackend:
                     )
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -37761,6 +38515,7 @@ class LlamaCppBackend:
                             conversation,
                             _before_fit,
                             branch_messages = _extend_live_branch(_before_fit),
+                            query_messages = _request_branch,
                             thread_id = thread_id,
                             # Forge a tool exchange only when search_conversation is advertised.
                             style = (
@@ -37842,12 +38597,25 @@ class LlamaCppBackend:
             if logit_bias:
                 payload["logit_bias"] = logit_bias
             # An empty list would still advertise tool use.
-            if safe_tools:
-                payload["tools"] = llama_grammar_tools(safe_tools)
-                payload["tool_choice"] = requested_choice
-                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if safe_tools:
+                grammar_tools = safe_tools
+                if not forced_name and requested_choice != "none":
+                    grammar_tools = neutralize_tool_descriptions(
+                        tool_controller.active_tools(include_deferred = True),
+                        _markup_cache,
+                        self.markup_profile,
+                    )
+                payload["tools"] = llama_grammar_tools(grammar_tools)
+                payload["tool_choice"] = requested_choice
+                if grammar_tools != safe_tools:
+                    # The parser needs discovered names; the template keeps its cached declaration.
+                    payload["chat_template_kwargs"] = {
+                        **(_reasoning_kw or {}),
+                        "tools": llama_grammar_tools(safe_tools),
+                    }
+                _last_sent_tools = safe_tools
             if thinking_budget_tokens is not None:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
@@ -37878,7 +38646,7 @@ class LlamaCppBackend:
             _respawn_truncations: list[dict] = []
 
             def _refit_iteration_after_respawn() -> None:
-                nonlocal conversation
+                nonlocal conversation, _loop_cut
                 _before_respawn_fit = conversation
                 if (
                     _preflight_context_length is None
@@ -37894,6 +38662,7 @@ class LlamaCppBackend:
                 try:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -37914,7 +38683,7 @@ class LlamaCppBackend:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
                             thread_id,
                             _backend_supports_tools(self),
@@ -37923,6 +38692,7 @@ class LlamaCppBackend:
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     # Record here: the reopened stream raises before forwarding sees the refusal.
                     from core.inference import context_refusal  # noqa: PLC0415
 
@@ -38834,8 +39604,9 @@ class LlamaCppBackend:
                             )
                             _cap_left_l = _loop_budget_left(_spent_l)
                             # Recompute kwargs with thinking off so admission prices the real request.
-                            _off_kw_l = self._request_reasoning_kwargs(
-                                False, None, preserve_thinking
+                            _off_kw_l = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
                             )
                             # Counted ONCE normally: eviction below runs only on a candidate already found too large.
                             _fits_l = _cap_left_l != 0 and _loop_continuation_fits(
@@ -39214,6 +39985,67 @@ class LlamaCppBackend:
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
+                _started_reads: dict = {}
+
+                def _start_following_reads(_call_index, _host, _key):
+                    # Network only: approvals, pricing, the fit and the record stay in call order.
+                    _hosts = {_host, *(_started[1] for _started in _started_reads.values())}
+                    _keys = {_key, *(_started[0].key for _started in _started_reads.values())}
+                    _next = max(_started_reads, default = _call_index) + 1
+                    while _next < len(tool_calls) and len(_hosts) < _WEB_FETCH_CONCURRENCY:
+                        _function = tool_calls[_next].get("function") or {}
+                        # By raw name first: preparing an MCP call can load tools.
+                        if str(_function.get("name") or "").strip() != "web_search":
+                            return
+                        _spec = tool_controller.prepare_call(tool_calls[_next])
+                        _next_host = _web_fetch_host(_spec.tool_name, _spec.arguments)
+                        if (
+                            not _spec.should_execute
+                            or _next_host is None
+                            or _next_host in _hosts
+                            or _spec.key in _keys
+                            or compaction_receipt_field(_spec.arguments) is not None
+                        ):
+                            return
+                        _mode, _bypass = live_permissions.apply(permission_mode, bypass_permissions)
+                        try:
+                            require_tool_access(disable_sandbox = _bypass)
+                        except Exception:
+                            return
+                        if needs_tool_confirmation(
+                            confirm_tool_calls = bool(confirm_tool_calls),
+                            bypass_permissions = _bypass,
+                            permission_mode = _mode,
+                            name = _spec.tool_name,
+                            arguments = _spec.arguments,
+                            is_high_risk = is_high_risk_tool_call,
+                            never_needs = never_needs_approval,
+                            sandbox_level = sandbox_level,
+                            session_id = session_id,
+                        ) or requires_os_isolation(
+                            confirm_tool_calls = bool(confirm_tool_calls),
+                            bypass_permissions = _bypass,
+                            permission_mode = _mode,
+                            name = _spec.tool_name,
+                            arguments = _spec.arguments,
+                            prompted = False,
+                            is_high_risk = is_high_risk_tool_call,
+                            sandbox_level = sandbox_level,
+                        ):
+                            return
+                        _started_reads[_next] = (
+                            _spec,
+                            _next_host,
+                            StartedUrlRead(
+                                _spec.arguments["url"].strip(),
+                                None if tool_call_timeout >= 9999 else tool_call_timeout,
+                                cancel_event,
+                                website_policy,
+                            ),
+                        )
+                        _hosts.add(_next_host)
+                        _keys.add(_spec.key)
+                        _next += 1
 
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
@@ -39602,12 +40434,32 @@ class LlamaCppBackend:
 
                         # Only a call the user answered: the executor lets it reach the host paths it names.
                         _host_access_approved = _decision not in (None, "deny")
+                        _started_spec, _, _started_read = _started_reads.pop(
+                            _call_index, (None, None, None)
+                        )
+                        if (
+                            _started_spec is None
+                            or _started_spec.key != decision.key
+                            or needs_confirm
+                            or strict_isolation
+                        ):
+                            _started_read = None
+                        _read_host = _web_fetch_host(decision.tool_name, decision.arguments)
+                        if (
+                            _read_host is not None
+                            and not forced_name
+                            and mcp_image is None
+                            and not (cancel_event is not None and cancel_event.is_set())
+                            and accepts_kwarg(execute_tool, "started_read")
+                        ):
+                            _start_following_reads(_call_index, _read_host, decision.key)
 
                         def _invoke_tool(
                             _output_callback,
                             _decision = decision,
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
+                            _read = _started_read,
                         ):
                             # Bound top_k to the room left: the result lands in the protected tool exchange, so an oversized top_k ends the turn in an unrecoverable context error.
                             kwargs = dict(
@@ -39847,6 +40699,8 @@ class LlamaCppBackend:
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             if image_share is not None:
                                 kwargs["mcp_image"] = image_share["image"]
+                            if _read is not None:
+                                kwargs["started_read"] = _read
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,
@@ -40005,7 +40859,7 @@ class LlamaCppBackend:
                 # Loop-ending turn offers no tools, so this notice must not ask for a retry; it rides the result.
                 _over_cap_final = bool(_over_cap) and (
                     tool_controller.force_final_answer
-                    or not tool_controller.active_tools()
+                    or not tool_controller.has_active_tools()
                     or (_turn_executed_real_tool and _tool_iters_done + 1 >= max_tool_iterations)
                     # Fold feedback only into a result from the SAME tool, since templates label the block with the tool name; a retry notice for skipped calls is never folded.
                     or iteration + 1 >= max_tool_iterations + _extra + _continuation_credits
@@ -40138,7 +40992,7 @@ class LlamaCppBackend:
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
-                if tool_controller.force_final_answer or not tool_controller.active_tools():
+                if tool_controller.force_final_answer or not tool_controller.has_active_tools():
                     _append_budget_exhausted_nudge = False
                     break
                 # Only real tool turns use the cap, so reserved re-prompt slots never add rounds (GGUF parity).
@@ -40208,8 +41062,9 @@ class LlamaCppBackend:
         _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         _final_max_tokens = (
             max_tokens
@@ -40243,6 +41098,7 @@ class LlamaCppBackend:
                 )
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -40257,7 +41113,7 @@ class LlamaCppBackend:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _final_sticky,
@@ -40270,6 +41126,8 @@ class LlamaCppBackend:
                         conversation,
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
+                        # The budget nudge and loop notices are user turns; search for the user's question.
+                        query_messages = _request_branch,
                         thread_id = thread_id,
                         # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
@@ -40399,6 +41257,7 @@ class LlamaCppBackend:
             try:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -40413,7 +41272,7 @@ class LlamaCppBackend:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
@@ -40844,7 +41703,10 @@ class LlamaCppBackend:
                                 _candidate_r, None, self.markup_profile
                             )
                             # Admit with thinking-off kwargs, matching the request actually sent.
-                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
+                            _off_kw = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
+                            )
                             _next_cap_r = _remaining_output_budget()
                             # Protect the current user turn and recovery tail.
                             _recovery_tail = _candidate_r[-2:]
@@ -41031,6 +41893,35 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
+            from core.inference.mcp_images import prepare_image_turn_boundaries
+
+            template_messages = prepare_image_turn_boundaries(
+                list(messages) if messages else [],
+                getattr(self, "_chat_template_override", None)
+                or getattr(self, "_chat_template", None),
+            )
+            if system_text:
+                template_messages = [{"role": "system", "content": system_text}] + template_messages
+            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            memo_key = (
+                None
+                if prefer_native
+                else _count_memo_key(
+                    self,
+                    template_messages,
+                    tools,
+                    {
+                        key: template_options[key]
+                        for key in ("tool_choice", "parallel_tool_calls", "response_format")
+                        if template_options and key in template_options
+                    },
+                    chat_template_kwargs,
+                    continue_final_message,
+                )
+            )
+            cached = _count_memo_get(self, memo_key)
+            if cached is not None:
+                return cached
             with httpx.Client(
                 timeout = httpx.Timeout(
                     _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
@@ -41057,18 +41948,6 @@ class LlamaCppBackend:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                from core.inference.mcp_images import prepare_image_turn_boundaries
-
-                template_messages = prepare_image_turn_boundaries(
-                    list(messages) if messages else [],
-                    getattr(self, "_chat_template_override", None)
-                    or getattr(self, "_chat_template", None),
-                )
-                if system_text:
-                    template_messages = [
-                        {"role": "system", "content": system_text}
-                    ] + template_messages
-
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
                     try:
@@ -41143,6 +42022,7 @@ class LlamaCppBackend:
                         if count is not None:
                             self._empty_chat_render_refused = True
                 if count is not None:
+                    _count_memo_put(self, memo_key, count)
                     return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
@@ -41223,7 +42103,12 @@ class LlamaCppBackend:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        with httpx.Client(timeout = 10, headers = self._auth_headers, trust_env = False) as client:
+        with httpx.Client(
+            timeout = 10,
+            headers = self._auth_headers,
+            trust_env = False,
+            verify = _local_ssl_context(),
+        ) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means marker not in vocab; transport/JSON errors still raise.

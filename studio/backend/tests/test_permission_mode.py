@@ -1192,6 +1192,119 @@ def test_python_high_risk_classifier(code, high_risk):
     assert is_high_risk_tool_call("python", {"code": code}) is high_risk
 
 
+@pytest.mark.parametrize(
+    "name, arguments, high_risk",
+    [
+        ("python", {"code": "__import__('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "__import__('posix').system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import importlib\nimportlib.import_module('os').system('rm -rf ~')"},
+            True,
+        ),
+        ("python", {"code": "import sys\nsys.modules['os'].system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf = os.system\nf('rm -rf ~')"}, True),
+        ("python", {"code": "import subprocess as sp\nr = sp.run\nr(['rm', '-rf', '/'])"}, True),
+        ("python", {"code": "m = __import__('os')\nm.system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import os\nm = os\nimport subprocess as m\nm.run(['rm', '-rf', '/'])"},
+            True,
+        ),
+        ("python", {"code": "import nt\nnt.system('rm -rf ~')"}, True),
+        ("python", {"code": "(f := __import__('os').system)('rm -rf ~')"}, True),
+        ("python", {"code": "(m := __import__('os'))\nm.system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf: object = os.system\nf('rm -rf ~')"}, True),
+        ("python", {"code": "from posix import system\nsystem('rm -rf ~')"}, True),
+        ("python", {"code": "from os import *\nsystem('rm -rf ~')"}, True),
+        ("python", {"code": "import sys\nsys.modules.get('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "from sys import modules as m\nm['os'].system('rm -rf ~')"}, True),
+        ("python", {"code": "from sys import *\nmodules['os'].system('rm -rf ~')"}, True),
+        (
+            "python",
+            {
+                "code": "import importlib\nload = getattr(importlib, 'import_module')\nload('os').system('rm -rf ~')"
+            },
+            True,
+        ),
+        ("python", {"code": "import os\ngetattr(os, 'sys' + 'tem')('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf = getattr(os, 'system')\nf('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nvars(os)['system']('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import subprocess\nsubprocess.__dict__['run'](['rm', '-rf', '/'])"},
+            True,
+        ),
+        ("python", {"code": "__import__(name='os').system('rm -rf ~')"}, True),
+        ("python", {"code": "__import__('os.path').system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "__import__(**{'name': 'math', 'name': 'os'}).system('rm -rf ~')"},
+            True,
+        ),
+        ("python", {"code": "import os\nos.__dict__.get('system')('rm -rf ~')"}, True),
+        ("python", {"code": "import os\ngetattr(os, '__dict__')['system']('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nd = os.__dict__\nd['system']('rm -rf ~')"}, True),
+        (
+            "python",
+            {
+                "code": "import os\nfrom builtins import getattr as attr\nattr(os, 'system')('rm -rf ~')"
+            },
+            True,
+        ),
+        ("python", {"code": "import builtins, os\nbuiltins.vars(os)['system']('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nx = os\nx = x.system\nx('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nd = os.__dict__\nd = d['system']\nd('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "from importlib import import_module as load\nload('os').system('rm -rf ~')"},
+            True,
+        ),
+        (
+            "python",
+            {"code": "from builtins import __import__ as load\nload('os').system('rm -rf ~')"},
+            True,
+        ),
+        (
+            "python",
+            {"code": "def go():\n    sp.run(['rm', '-rf', '/'])\nimport subprocess as sp\ngo()"},
+            True,
+        ),
+        (
+            "python",
+            {
+                "code": "def go():\n    r(['rm', '-rf', '/'])\ndef setup():\n    global r\n    r = sp.run\nimport subprocess as sp\nsetup()\ngo()"
+            },
+            True,
+        ),
+        ("python", {"code": "(load := __import__)('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nm = os\nm = os.system\nf = m\nf('rm -rf ~')"}, True),
+        ("python", {"code": "cmd = input()\n__import__('os').system(cmd)"}, True),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('rm -rf ~')\""}, True),
+        ("python", {"code": "__import__('os').system('ls')"}, False),
+        ("python", {"code": "print(__import__('os').getcwd())"}, False),
+        ("python", {"code": "import sys\nprint(sys.modules['os'].getcwd())"}, False),
+        ("python", {"code": "import os\nf = os.getcwd\nprint(f())"}, False),
+        ("python", {"code": "import os\nprint(getattr(os, 'getcwd')())"}, False),
+        ("python", {"code": "import os\ngetattr(os, 'system')('ls')"}, False),
+        ("python", {"code": "d = {'system': print}\nd['system']('rm -rf ~')"}, False),
+        (
+            "python",
+            {"code": "import os\nd = os.__dict__\nd = d.get('__dict__', d)\nprint(len(d))"},
+            False,
+        ),
+        (
+            "python",
+            {"code": "class M:\n    def run(self, c): ...\nm = M()\ngetattr(m, 'run')(input())"},
+            False,
+        ),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('ls')\""}, False),
+    ],
+)
+def test_shell_command_through_any_os_module_handle_is_high_risk(name, arguments, high_risk):
+    assert is_high_risk_tool_call(name, arguments) is high_risk
+
+
 def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False

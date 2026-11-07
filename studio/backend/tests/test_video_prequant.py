@@ -1037,7 +1037,7 @@ def _moe_fam(**kwargs):
     return _fam(
         is_moe = True,
         prequant_repos = (("nvfp4", "org/test-quantized"),),
-        prequant_filenames = (("nvfp4", "transformer_2", "test-transformer_2-NVFP4.pt"),),
+        prequant_filenames = (("nvfp4", "transformer_2", "test-transformer_2-NVFP4.safetensors"),),
         **kwargs,
     )
 
@@ -1049,21 +1049,16 @@ def test_the_components_a_family_seeds_are_its_denoisers():
 
 
 def test_the_second_expert_is_addressed_through_the_task_slot():
-    """The second expert is addressed through the task slot; its only fallback is its own .pt container."""
+    """The second expert is addressed through the task slot; nvfp4 resolves no .pt container at all."""
     from core.inference.video_denoiser_prequant import denoiser_prequant_sources
 
     sources = denoiser_prequant_sources(_moe_fam(), "nvfp4", "org/test-video")
     assert set(sources) == {"transformer", "transformer_2"}
     from core.inference.diffusion_prequant import candidate_filenames_of
 
-    assert candidate_filenames_of(sources["transformer"]) == (
-        "test-NVFP4.safetensors",
-        "test-NVFP4.pt",
-        "transformer_nvfp4.pt",
-    )
+    assert candidate_filenames_of(sources["transformer"]) == ("test-NVFP4.safetensors",)
     assert candidate_filenames_of(sources["transformer_2"]) == (
         "test-transformer_2-NVFP4.safetensors",
-        "test-transformer_2-NVFP4.pt",
     )
 
 

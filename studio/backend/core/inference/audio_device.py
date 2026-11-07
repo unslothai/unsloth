@@ -8,14 +8,17 @@ accelerator (a failed load still retries on CPU). Values match RAG_EMBED_DEVICE
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 __all__ = [
     "AUDIO_DEVICE_CHOICES",
     "audio_device_default",
+    "audio_device_env_locked",
     "audio_device_forces_cpu",
     "mask_accelerators_for_cpu_audio",
     "normalize_audio_device",
+    "stt_device_default",
+    "stt_device_forces_cpu",
 ]
 
 AUDIO_DEVICE_CHOICES = ("auto", "cpu", "gpu")
@@ -46,6 +49,29 @@ def audio_device_default() -> str:
     return normalize_audio_device(os.environ.get("UNSLOTH_AUDIO_DEVICE"))
 
 
+def audio_device_env_locked() -> bool:
+    """Whether ``UNSLOTH_AUDIO_DEVICE`` names a device, which Settings then cannot override."""
+    return bool(str(os.environ.get("UNSLOTH_AUDIO_DEVICE") or "").strip())
+
+
+def stt_device_default() -> str:
+    """Use the saved STT choice unless the environment overrides it; TTS is unaffected."""
+    if audio_device_env_locked():
+        return audio_device_default()
+    try:
+        from utils.stt_device_settings import get_stored_stt_device
+        return get_stored_stt_device()
+    except Exception:  # noqa: BLE001 - store unavailable: detect as before
+        return "auto"
+
+
+def stt_device_forces_cpu(value: Optional[str]) -> bool:
+    """``audio_device_forces_cpu`` with ``None`` read through ``stt_device_default``."""
+    if value is None:
+        return stt_device_default() == "cpu"
+    return normalize_audio_device(value) == "cpu"
+
+
 def audio_device_forces_cpu(value: Optional[str]) -> bool:
     """None falls back to the environment default, so older callers still honour a server-wide setting."""
     if value is None:
@@ -53,10 +79,15 @@ def audio_device_forces_cpu(value: Optional[str]) -> bool:
     return normalize_audio_device(value) == "cpu"
 
 
-def audio_load_runs_on_cpu(audio_type: Optional[str], value: Optional[str]) -> bool:
+def audio_load_runs_on_cpu(
+    audio_type: Optional[str],
+    value: Optional[str],
+    model: Any = None,
+) -> bool:
     """True when a native audio load of this type ends up in CPU RAM: asked for, or a GGUF
-    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU)."""
-    if audio_device_forces_cpu(value):
+    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU).
+    A CPU-only audio.cpp package (``model``, TQ2_1) runs on the CPU too."""
+    if audio_device_forces_cpu(value) or getattr(model, "cpu_only", False):
         return True
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
 
