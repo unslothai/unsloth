@@ -47,6 +47,10 @@ import torch.nn.functional as F
 from torch import nn
 
 class Cfg:
+    # A PretrainedConfig in the hub code: PEFT 0.18 reads model.config.to_dict().
+    def to_dict(self):
+        return dict(vars(self))
+
     def __init__(self):
         self.hidden_size = 16; self.n_routed_experts = 8; self.num_experts_per_tok = 2
         self.moe_intermediate_size = 8; self.n_shared_experts = 1; self.routed_scaling_factor = 2.5

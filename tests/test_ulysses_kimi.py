@@ -293,6 +293,12 @@ def _hub_kimi_moe_module(name = "transformers_modules.tiny_kimi_cp.modeling_kimi
     return module
 
 
+class _Config(types.SimpleNamespace):
+    # Stands in for a PretrainedConfig: PEFT 0.18 reads model.config.to_dict().
+    def to_dict(self):
+        return dict(vars(self))
+
+
 def _acc(x):
     # fp32 math for low precision, fp64 kept for the fp64 reference.
     return torch.promote_types(x.dtype, torch.float32)
@@ -504,7 +510,7 @@ class _KimiForCausalLM(nn.Module):
     ):
         super().__init__()
         self.gc = gc
-        self.config = types.SimpleNamespace(
+        self.config = _Config(
             _attn_implementation = attn,
             num_attention_heads = HEADS,
             num_key_value_heads = HEADS,
