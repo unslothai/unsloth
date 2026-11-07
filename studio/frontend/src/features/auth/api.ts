@@ -325,17 +325,14 @@ function refreshRetryDelay(response: Response): number {
 async function peerRotated(
   refreshToken: string,
   startGeneration: number,
-  sessionMark: string | null,
+  sessionMark: string,
 ): Promise<boolean> {
   const deadline = Date.now() + REFRESH_PEER_WAIT_MS;
-  let mark = sessionMark;
   for (;;) {
-    const currentMark = getAuthSessionMark();
-    mark ??= currentMark;
     if (
       startGeneration !== logoutGeneration ||
       accountTransitionPending() ||
-      currentMark !== mark
+      getAuthSessionMark() !== sessionMark
     )
       return false;
     const current = getRefreshToken();
@@ -348,8 +345,8 @@ async function peerRotated(
 async function runRefresh(
   refreshToken: string,
   preserveSessionMark = false,
-  // No Web Locks: a peer tab may spend this token first. null: mark read at the 401.
-  peerSessionMark?: string | null,
+  // No Web Locks: a peer tab may spend this token first. Only a rotation under this mark is theirs.
+  peerSessionMark?: string,
 ): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
   const startedAt = Date.now();
@@ -417,8 +414,8 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
 
   const generation = logoutGeneration;
   const locks = typeof window !== "undefined" ? window.navigator?.locks : undefined;
-  const priorMark = getAuthSessionMark();
-  const sessionMark = ensureAuthSessionMark();
+  // Without a mark at refresh start, a peer's backfill cannot be told from a logout and sign-in.
+  const sessionMark = locks ? ensureAuthSessionMark() : getAuthSessionMark();
   if (getRefreshToken() !== refreshToken) return "unavailable";
   const promise = locks
     ? (async (): Promise<RefreshOutcome> => {
@@ -446,8 +443,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
           clearTimeout(timer);
         }
       })()
-    : // A mark minted here may lose a peer's write, so it is not proof of a switch.
-      runRefresh(refreshToken, false, priorMark === null ? null : sessionMark);
+    : runRefresh(refreshToken, false, sessionMark ?? undefined);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {
