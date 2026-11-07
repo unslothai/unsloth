@@ -1150,7 +1150,6 @@ def format_and_template_dataset(
                 }
 
         elif vlm_structure["format"] == "unknown" and vlm_structure.get("video_column"):
-            # Rows left flat would otherwise be reported as formatted VLM messages.
             errors.append(
                 f"Found videos in '{vlm_structure['video_column']}' but no answer column; name the answer column with one of these words: "
                 + ", ".join(_VIDEO_TEXT_KEYWORDS)

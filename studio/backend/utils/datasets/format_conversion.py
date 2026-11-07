@@ -981,7 +981,7 @@ def own_message_videos(
             content = message.get("content") if isinstance(message, dict) else None
             if not isinstance(content, list):
                 continue
-            # Arrow fills absent keys with None, and the collator reads any "image" key as an image.
+            # Arrow fills absent keys with None; templates and the collator read key presence.
             content[:] = [
                 {k: v for k, v in part.items() if v is not None} if isinstance(part, dict) else part
                 for part in content
