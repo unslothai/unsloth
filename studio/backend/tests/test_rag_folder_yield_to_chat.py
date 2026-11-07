@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from contextlib import closing
 from pathlib import Path
 
@@ -53,7 +52,8 @@ def test_indexing_waits_for_a_local_chat_then_resumes(rag_home, stub_embeddings)
     folder = _folder(rag_home, files = 3)
     with active_generations.ActiveGeneration(threading.Event(), kind = "chat"):
         thread, out = _start_sync(folder)
-        time.sleep(1.5)
+        # Without the yield the three documents index well inside this window.
+        thread.join(timeout = 4)
         assert thread.is_alive()
         assert _indexed(folder) == 0
     thread.join(timeout = 30)
@@ -115,7 +115,8 @@ def test_unlink_ends_the_wait(rag_home, stub_embeddings):
     folder = _folder(rag_home)
     with active_generations.ActiveGeneration(threading.Event(), kind = "chat"):
         thread, _ = _start_sync(folder)
-        time.sleep(1.0)
+        thread.join(timeout = 2)
+        assert thread.is_alive()
         assert folder_sync.delete_folder(folder["id"]) is True
         thread.join(timeout = 30)
         assert not thread.is_alive()
