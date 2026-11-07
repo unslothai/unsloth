@@ -108,7 +108,18 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
     count, limit = embeddings.token_counter(model), embeddings.max_tokens(model)
     texts = []
     clipped = 0
-    for row in rows:
+    count_many = getattr(count, "many", None)
+    # One batched count (one /tokenize request per batch on llama-server) instead of one per chunk;
+    # only chunks over the limit go through the clip, which counts the same way.
+    fits = (
+        [n <= limit for n in count_many([row["text"] for row in rows])]
+        if limit and count_many is not None and len(rows) > 1
+        else None
+    )
+    for i, row in enumerate(rows):
+        if fits is not None and fits[i]:
+            texts.append(row["text"])
+            continue
         text, was_clipped = _clip(row["text"], count, limit)
         texts.append(text)
         clipped += was_clipped

@@ -380,3 +380,38 @@ def test_a_swap_committed_mid_search_cannot_pass_an_old_space_score(models, tmp_
     with _connect() as c:
         hits = retrieval.retrieve_dense(c, scope, "text a", k = 5, model_name = NEWER)
     assert hits == []
+
+
+def test_a_many_chunk_document_counts_its_chunks_in_one_batch(models, tmp_path, monkeypatch):
+    words = [f"w{i}" for i in range(1700)]
+    document_id = _ingest(tmp_path, store.kb_scope("K9"), "long.txt", " ".join(words))
+    _, chunks = _row(document_id)
+    assert len(chunks) > 2
+    calls = {"many": [], "single": 0}
+
+    def _counter(model_name = None):
+        def _count(text):
+            calls["single"] += 1
+            return len(text.split())
+
+        def _many(texts):
+            calls["many"].append(len(texts))
+            return [len(t.split()) for t in texts]
+
+        _count.many = _many
+        return _count
+
+    sizes = sorted(len(text.split()) for _, text in chunks)
+    limit = sizes[0]  # the shortest chunk fits, the longer ones are clipped
+    assert sizes[0] < sizes[-1]
+    monkeypatch.setattr(embeddings, "token_counter", _counter)
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: limit)
+    word_count = lambda t: len(t.split())
+    expected = [embeddings.clip_to_limit(text, word_count, limit) for _, text in chunks]
+    assert any(cut for _, cut in expected) and not all(cut for _, cut in expected)
+    models["model"] = NEW
+    status = _run_job()
+    sent = [t for m, t in models["encoded"] if m == NEW]
+    assert sent == [[text for text, _ in expected]]
+    assert status["clipped_chunks"] == sum(cut for _, cut in expected)
+    assert calls["many"] == [len(chunks)]
