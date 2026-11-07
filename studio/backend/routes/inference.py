@@ -49516,7 +49516,6 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                 xy_grid = {
                     **plan.describe([request.xy.x, request.xy.y]),
                     "cells": [r.id for r in records],
-                    # width / height are the grid's pixels; reusing the recipe restores the cell size.
                     "cell_width": first.width,
                     "cell_height": first.height,
                 },

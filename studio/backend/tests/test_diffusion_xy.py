@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""X/Y grid on /images/generate: cell expansion, validation, the labelled grid image, and the route, renderer faked."""
+"""X/Y grid on /images/generate, renderer faked."""
 
 from __future__ import annotations
 
@@ -95,7 +95,6 @@ def test_lora_weight_axis_targets_one_entry_and_zero_drops_it():
         [("a", 1.0)],
         [("a", 1.0), ("b", 1.0)],
     ]
-    # Adapter-free cells render last.
     assert plan.order == [1, 0]
 
 
@@ -165,7 +164,6 @@ def test_compose_grid_lays_out_headers_and_cells():
     grid = diffusion_xy.compose_grid(_cells(plan), plan)
     left, top = 64 * 3 // 4, grid.height - 3 * 48
     assert grid.width == left + 3 * 64 and top > 0
-    # Cell (ix=2, iy=1) sits at its slot; the header bands are white paper with dark text on it.
     assert grid.getpixel((left + 2 * 64 + 32, top + 48 + 24)) == (80, 40, 200)
     band = grid.crop((left, 0, grid.width, top))
     assert band.convert("L").getextrema()[0] < 128
@@ -186,7 +184,6 @@ def test_compose_grid_scales_down_past_the_pixel_budget(monkeypatch):
         )
     )
     grid = diffusion_xy.compose_grid(_cells(plan), plan)
-    # 64x48 cells halve to 32x24, the row band to 3/4 of that.
     assert grid.width == 24 + 2 * 32
 
 

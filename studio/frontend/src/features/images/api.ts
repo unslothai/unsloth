@@ -277,7 +277,6 @@ export interface XYAxisSpec {
     | "strength" | "clip_skip" | "cfg_rescale" | "variation_seed" | "variation_strength" | "lora_weight"
     | "prompt_sr";
   values: Array<number | string>;
-  // lora_weight only: which `loras` entry.
   index?: number;
 }
 
@@ -388,7 +387,6 @@ export interface GalleryImage {
   hires_base_width?: number | null;
   hires_base_height?: number | null;
   created_at: number;
-  // Set on a server-made X/Y grid image: its axes and the cell ids row by row.
   xy_grid?: {
     x: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
     y?: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
@@ -403,7 +401,6 @@ export interface GalleryImage {
 
 export interface DiffusionGenerateResponse {
   images: GalleryImage[];
-  // xy only: the labelled grid, also in the gallery.
   grid?: GalleryImage | null;
 }
 

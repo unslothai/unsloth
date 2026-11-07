@@ -5136,7 +5136,6 @@ class LocalizedEditSpec(BaseModel):
 # All images of one request, base64: ten maximal uploads would otherwise buffer ~320 MiB.
 _MAX_CONDITION_PAYLOAD = 128 * 1024 * 1024
 
-# One X/Y grid's cell ceiling, the same as the Images page Compare grid.
 MAX_XY_CELLS = 64
 
 XYAxisField = Literal[

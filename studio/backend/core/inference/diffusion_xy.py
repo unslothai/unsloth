@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""X/Y grid over /images/generate (AUTOMATIC1111's X/Y plot): the cell requests an `xy` spec expands to, and the
-labelled grid image composed from the rendered cells. Pure apart from Pillow, so tests drive it without a model."""
+"""X/Y grid over /images/generate (AUTOMATIC1111's X/Y plot): cell requests and the labelled grid image."""
 
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ from typing import Any, Optional
 
 from pydantic import ValidationError
 
-# The client's Compare grid holds its canvas to the same budget.
 MAX_GRID_PIXELS = 32 * 1024 * 1024
 
 _LABELS = {
@@ -47,7 +45,7 @@ class XYPlan:
     ny: int
     x_labels: list[str]
     y_labels: list[str]
-    order: list[int]  # the order the cells render in
+    order: list[int]
 
     def describe(self, axes: list[Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
