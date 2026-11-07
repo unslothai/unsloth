@@ -680,6 +680,20 @@ def test_generate_failure_reason_hides_a_quoted_path_with_spaces(client, monkeyp
     )
 
 
+def test_generate_failure_reason_hides_a_double_quoted_path_with_an_apostrophe(client, monkeypatch):
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    def _missing(**kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "/models/O'Brien/w.safetensors")
+
+    monkeypatch.setattr(backend, "generate", _missing)
+    error = _shared_setup_4(client)["error"]
+    assert error == (
+        'Video generation failed. FileNotFoundError: [Errno 2] No such file or directory: "<path>"'
+    )
+
+
 def test_generate_native_crash_points_at_the_log(client, monkeypatch):
     backend = video_module.get_video_backend()
     backend.loaded = True

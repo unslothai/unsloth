@@ -4854,7 +4854,7 @@ _PATH_START = r"(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)"
 # Absolute paths (quoted ones may hold spaces); URLs are left for redact_log_text.
 _FAILURE_PATH_RE = re.compile(
     r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
-    rf"|(?P<q>['\"`]){_PATH_START}[^'\"`\n]*(?P=q)"
+    rf"|(?P<q>['\"`]){_PATH_START}[^\n]*?(?P=q)"
     rf"|(?<![\w/~]){_PATH_START}[^\s\"'`,;]+"
 )
 
