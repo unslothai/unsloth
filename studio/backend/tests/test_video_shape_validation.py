@@ -50,7 +50,10 @@ def test_every_declared_preset_is_accepted(fam):
 @pytest.mark.parametrize("fam", _FAMILIES, ids = lambda f: f.name)
 def test_256x256_is_rejected_and_the_message_names_the_real_presets(fam):
     """The QA report's case. 256 divides both 16 and 32, so the snap left it alone;
-    no family lists it, so every family must now refuse it by name."""
+    a family that does not list it must refuse it by name (Cosmos3's 256p tier lists it)."""
+    if (256, 256) in fam.resolution_presets:
+        validate_video_request_shape(fam, width = 256, height = 256)
+        return
     with pytest.raises(ValueError) as excinfo:
         validate_video_request_shape(fam, width = 256, height = 256)
     message = str(excinfo.value)
