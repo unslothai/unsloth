@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from core.inference.generation_ticket import GenerationTicket
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -53,6 +54,8 @@ class ImageJob:
     error: Optional[str] = None
     image_ids: list[str] = field(default_factory = list)
     cancel_requested: bool = False
+    # Stops this job's render only, queued behind another or running; never whichever render holds the engine.
+    ticket: GenerationTicket = field(default_factory = GenerationTicket)
 
 
 class ImageGenerationQueue:
@@ -96,7 +99,7 @@ class ImageGenerationQueue:
         return job
 
     def cancel(self, account_id: str, job_id: str) -> Optional[ImageJob]:
-        """A queued job is cancelled here; a running one is only flagged, the caller stops the engine."""
+        """A queued job is cancelled here; a running one has its own render stopped and ends when that unwinds."""
         job = self.get(account_id, job_id)
         if job is None:
             return None
@@ -104,6 +107,7 @@ class ImageGenerationQueue:
             self._finish(job, CANCELLED)
         elif job.status == RUNNING:
             job.cancel_requested = True
+            job.ticket.stop()
         return job
 
     def move(self, account_id: str, job_id: str, index: int) -> Optional[ImageJob]:

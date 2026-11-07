@@ -50777,6 +50777,7 @@ async def _wait_for_direct_image_runs() -> None:
 async def _run_queued_image_job(job) -> list[str]:
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.generation_ticket import generation_ticket
     from core.inference.image_queue import JobCancelled
 
     async def _run() -> list[str]:
@@ -50784,8 +50785,11 @@ async def _run_queued_image_job(job) -> list[str]:
         status = await asyncio.to_thread(get_active_diffusion_engine().status)
         if _resident_load(status) != job.load:
             raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG)
+        if job.ticket.cancelled():
+            raise JobCancelled()
         try:
-            response = await _generate_diffusion_image_core(job.request)
+            with generation_ticket(job.ticket):
+                response = await _generate_diffusion_image_core(job.request)
         except HTTPException as exc:
             if exc.status_code == 409 and exc.detail == DIFFUSION_CANCELLED_MSG:
                 raise JobCancelled() from exc
@@ -50887,14 +50891,10 @@ async def list_diffusion_queue(current_subject: str = Depends(get_current_subjec
 async def cancel_diffusion_queue_job(
     job_id: str, current_subject: str = Depends(get_current_subject)
 ):
-    """Cancel one job. A queued job never runs; the running one stops like Stop does, and the queue moves on."""
-    from core.inference.image_queue import RUNNING
-
+    """Cancel one job. A queued job never runs; the running one stops its own render, and the queue moves on."""
     queue = _get_image_queue()
     job = _queued_job_or_404(queue, job_id)
     queue.cancel(job.account_id, job.id)
-    if job.status == RUNNING:
-        await cancel_diffusion_generation(target = None, current_subject = current_subject)
     return _image_queue_job(queue, job)
 
 

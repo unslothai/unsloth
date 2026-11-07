@@ -35,13 +35,20 @@ def gated(client, monkeypatch):
 
     def generate(*, prompt = None, **kwargs):
         order.append(prompt)
-        gates.setdefault(prompt, threading.Event()).wait(10)
+        stop = threading.Event()
+        bind_generation_cancel(stop)
+        gate = gates.setdefault(prompt, threading.Event())
+        deadline = time.monotonic() + 10
+        while not gate.wait(0.02) and time.monotonic() < deadline:
+            if stop.is_set():
+                raise RuntimeError(cancelled_msg)
         if backend.cancel_next:
             backend.cancel_next = False
             raise RuntimeError(cancelled_msg)
         return real_generate(prompt = prompt, **kwargs)
 
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG as cancelled_msg
+    from core.inference.generation_ticket import bind_generation_cancel
 
     backend.cancel_next = False
 
@@ -184,3 +191,80 @@ def test_unknown_job_is_a_404_and_a_running_job_cannot_move(gated):
     assert client.post(f"{QUEUE}/{running}/move", json = {"index": -1}).status_code == 422
     _gate(gates, "a").set()
     _wait(client, lambda jobs: jobs[0]["status"] == "done")
+
+
+def test_cancelling_a_queued_job_waiting_for_the_engine_leaves_the_render_ahead_alone(
+    client, monkeypatch
+):
+    """A chat image holds the engine; Stop on the queued job behind it must not stop the chat image."""
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.generation_ticket import bind_generation_cancel
+    from models.inference import DiffusionGenerateRequest
+
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    slot = threading.Lock()
+    active: list[threading.Event] = []
+    chat_gate = threading.Event()
+    ran: list[str] = []
+
+    def generate(*, prompt = None, **kwargs):
+        cancel = threading.Event()
+        bind_generation_cancel(cancel)
+        while True:
+            if cancel.is_set():
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            if slot.acquire(timeout = 0.02):
+                break
+        try:
+            # Admission rechecks under the slot, as the engine does.
+            if cancel.is_set():
+                raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+            active.append(cancel)
+            ran.append(prompt)
+            while prompt == "chat" and not chat_gate.is_set():
+                if cancel.is_set():
+                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                time.sleep(0.02)
+            return real_generate(prompt = prompt, **kwargs)
+        finally:
+            active.pop()
+            slot.release()
+
+    def cancel_generate(**kwargs):
+        # Like the engine: Stop reaches the generation holding the slot, not a waiter.
+        if not active:
+            return False
+        active[-1].set()
+        return True
+
+    monkeypatch.setattr(backend, "generate", generate)
+    monkeypatch.setattr(backend, "cancel_generate", cancel_generate)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        chat = client.portal.start_task_soon(
+            inference_routes._generate_diffusion_image_core,
+            DiffusionGenerateRequest(prompt = "chat"),
+        )
+        deadline = time.monotonic() + 5
+        while ran != ["chat"] and time.monotonic() < deadline:
+            time.sleep(0.02)
+        queued = client.post(QUEUE, json = {"prompt": "queued"}).json()["id"]
+        _wait(client, lambda jobs: jobs[0]["status"] == "running")
+        assert client.post(f"{QUEUE}/{queued}/cancel").status_code == 200
+        chat_gate.set()
+        assert len(chat.result(timeout = 10).images) == 1
+        jobs = _wait(client, lambda jobs: jobs[0]["status"] in ("done", "failed", "cancelled"))
+        assert ran == ["chat"]
+        assert jobs[0]["status"] == "cancelled"
