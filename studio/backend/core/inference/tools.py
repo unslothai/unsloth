@@ -41,6 +41,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import unicodedata
 import zlib
 from contextvars import ContextVar
 
@@ -104,6 +105,8 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils.host_policy import _literal_ip_address
+from core.inference.providers import _metadata_host as _provider_metadata_host
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
@@ -18327,9 +18330,17 @@ def _check_signal_escape_patterns(code: str):
         return h
 
     def _is_metadata_host(host: str) -> bool:
-        h = _normalize_host(host)
+        h = _normalize_host(unicodedata.normalize("NFKC", host or ""))
         if not h:
             return False
+        if _provider_metadata_host(h):
+            return True
+        try:
+            ip = _literal_ip_address(h)
+        except ValueError:
+            return True
+        if ip is not None:
+            h = str(ip)
         if h in _METADATA_HOST_LITERALS:
             return True
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):

@@ -193,6 +193,50 @@ class TestApprovedHostLiftsOnlyTheAllowlist:
         assert msg is not None and phrase in msg, msg
         assert "host not in sandbox allowlist" not in msg
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "2852039166",
+            "0xa9fea9fe",
+            "0251.0376.0251.0376",
+            "[::ffff:169.254.169.254]",
+            "[::ffff:a9fe:a9fe]",
+            "[fd00:ec2:0::254]",
+            "[::ffff:100.100.100.200]",
+            "[fd00:ec2::254%1]",
+            "[fd20:ce::254]",
+            "[2002:a9fe:a9fe::]",
+            "metadata.goog",
+            "instance-data.ec2.internal",
+        ],
+    )
+    def test_approved_call_blocks_other_spellings_of_a_metadata_host(self, host):
+        code = f'import urllib.request; urllib.request.urlopen("http://{host}/")'
+        msg = _check_code_safety(code, host_approved = True)
+        assert msg is not None and "Blocked: cloud-metadata host" in msg, msg
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "fd00:ec2::254%1",
+            "169\u3002254\u3002169\u3002254",
+            "\uff11\uff16\uff19.\uff12\uff15\uff14.\uff11\uff16\uff19.\uff12\uff15\uff14",
+            "169.254.169.254\\x00",
+        ],
+    )
+    def test_approved_socket_call_blocks_a_metadata_host(self, host):
+        code = f'import socket; socket.create_connection(("{host}", 80))'
+        msg = _check_code_safety(code, host_approved = True)
+        assert msg is not None and "Blocked: cloud-metadata host" in msg, msg
+        assert is_high_risk_tool_call("python", {"code": code})
+
+    @pytest.mark.parametrize(
+        "host", ["1.1.1.1", "10.0.0.1", "127.0.0.1", "[2606:4700:4700::1111]", "huggingface.co"]
+    )
+    def test_approved_call_allows_an_ordinary_host(self, host):
+        code = f'import urllib.request; urllib.request.urlopen("http://{host}/")'
+        assert _check_code_safety(code, host_approved = True) is None
+
     def test_executor_lifts_it_for_an_approved_call_only(self, tmp_path, monkeypatch):
         from core.inference import tools
         from utils.account_context import OWNER, as_api_caller, bind_account, reset_account
