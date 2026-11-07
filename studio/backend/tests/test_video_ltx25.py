@@ -3077,16 +3077,20 @@ def _park_pipe():
     torch.manual_seed(0)
     connectors = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.LayerNorm(8))
     connectors.register_buffer("table", torch.arange(4.0))
-    vae = torch.nn.Linear(4, 4)
+    vocoder = torch.nn.Linear(4, 4)
     hooked = torch.nn.Linear(4, 4)
     hooked._hf_hook = object()
-    transformer = torch.nn.Linear(16, 16)
+    nested = torch.nn.Sequential(torch.nn.Linear(4, 4))
+    nested[0]._diffusers_hook = object()
     return SimpleNamespace(
         components = {
             "connectors": connectors,
-            "vae": vae,
-            "vocoder": hooked,
-            "transformer": transformer,
+            "vocoder": vocoder,
+            "vae": torch.nn.Linear(4, 4),
+            "audio_vae": torch.nn.Linear(4, 4),
+            "hooked": hooked,
+            "nested": nested,
+            "transformer": torch.nn.Linear(16, 16),
             "scheduler": object(),
         }
     )
@@ -3102,8 +3106,8 @@ def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monke
     monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes, fill = None: None)
     pipe = _park_pipe()
     names = [name for name, _m, _mib in v25._parkable_components(pipe, "cpu")]
-    # no transformer (it lends blocks), no hooked module, no non-module
-    assert sorted(names) == ["connectors", "vae"]
+    # no transformer (it lends blocks), no VAE (compiled decode), no hook on the module or a child, no non-module
+    assert names == ["connectors", "vocoder"]
     connectors = pipe.components["connectors"]
     params = list(connectors.parameters())
     before = [t.detach().clone() for t in params] + [connectors.table.clone()]
@@ -3111,11 +3115,11 @@ def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monke
     for _ in range(2):
         restore = v25._park_for_encode(pipe, "cpu", 1)
         assert callable(restore)
-        # largest first, and only as much as asked: the connectors went, the VAE stayed
+        # largest first, and only as much as asked: the connectors went, the vocoder stayed
         kept = connectors.__dict__[v25._PARK_HOST_ATTR][1]
         host = {k.data_ptr() for k in kept}
         assert {t.data_ptr() for t in params} | {connectors.table.data_ptr()} == host
-        assert pipe.components["vae"].weight.data_ptr() not in host
+        assert v25._PARK_HOST_ATTR not in pipe.components["vocoder"].__dict__
         restore()
         assert all(t is p for t, p in zip(connectors.parameters(), params))
         assert all(

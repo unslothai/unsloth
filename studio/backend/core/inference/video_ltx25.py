@@ -857,8 +857,13 @@ def _parkable_components(pipe: Any, device: Any) -> list:
             not isinstance(module, torch.nn.Module)
             or str(name) in _NEVER_PARKED
             or str(name).startswith("text_encoder")
-            or getattr(module, "_hf_hook", None) is not None
-            or getattr(module, "_diffusers_hook", None) is not None
+            # The VAE decode is compiled and keeps fused weight copies, so its storage must not move under it.
+            or "vae" in str(name).lower()
+            or any(
+                getattr(sub, "_hf_hook", None) is not None
+                or getattr(sub, "_diffusers_hook", None) is not None
+                for sub in module.modules()
+            )
         ):
             continue
         tensors = _module_tensors(module)
@@ -876,7 +881,7 @@ def _parkable_components(pipe: Any, device: Any) -> list:
                 break
         if on_card:
             nbytes = sum(t.numel() * t.element_size() for _tb, _k, t in tensors)
-            out.append((str(name), module, nbytes >> 20))
+            out.append((str(name), module, -(-nbytes // (1 << 20))))
     out.sort(key = lambda item: -item[2])
     return out
 
@@ -894,6 +899,7 @@ def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
         _PIN_RESERVE_MIN_BYTES,
         _available_system_memory_mib,
         _host_ram_capacity_mib,
+        _windows_commit_headroom_mib,
         registered_pinned_empty,
     )
 
@@ -902,6 +908,9 @@ def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
     available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
     if available is None or total is None:
         return None
+    commit = _windows_commit_headroom_mib()
+    if commit is not None:
+        available = min(int(available), int(commit))
     reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
     if (int(available) << 20) - need < reserve:
         return None
@@ -1010,8 +1019,9 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         weights = int(info.get("weights_mib") or 0)
         whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
         streamed = info.get("stream_need_mib")
-        if whole is not None and room < whole <= room + held + parkable:
-            target = whole
+        # Companions are parked only to reach the streamed need: a whole onload is worth only the blocks it frees.
+        if whole is not None and room < whole <= room + held:
+            target, parkable = whole, 0
         elif streamed is not None and room < int(streamed) <= room + held + parkable:
             target = int(streamed)
         elif streamed is not None and room < int(streamed) and held > 0:

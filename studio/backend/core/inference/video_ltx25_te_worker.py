@@ -909,20 +909,34 @@ def _encode_on(
         return_tensors = "pt",
     )
     config["_streamed"] = stream is not None
+    oom: Optional[str] = None
     try:
         embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
     except Exception as exc:
         if resident or device == "cpu" or not _is_out_of_memory(exc):
             raise
-        # Another tenant outgrew the planned room: fall back to the CPU encode.
+        oom = str(exc)
+    if oom is not None:
+        # Outside the handler, so the failed attempt's card tensors are gone before the CPU encode; then hand the
+        # card back, since the server plans the denoise against it.
+        _empty_accelerator_cache(device)
         print(
-            f"video.ltx25_te: out of memory encoding on {device} ({exc}); encoding on the CPU",
+            f"video.ltx25_te: out of memory encoding on {device} ({oom}); encoding on the CPU",
             file = sys.stderr,
             flush = True,
         )
         device, config["_streamed"] = "cpu", False
         embeds_host, mask_host = _run_encode(model, config, inputs, device, None)
     return embeds_host, mask_host, device
+
+
+def _empty_accelerator_cache(device: Any) -> None:
+    import torch
+
+    kind = str(device).split(":", 1)[0]
+    accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
+    if accel is not None and accel.is_available():
+        accel.empty_cache()
 
 
 def _is_out_of_memory(exc: BaseException) -> bool:
@@ -976,10 +990,7 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             model.to("cpu")
         # Return the encode's activations (and, onloaded, the weights) to the card: a resident worker otherwise keeps
         # ~1.7 GB cached through the denoise, an onloaded one the whole encoder.
-        kind = str(device).split(":", 1)[0]
-        accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
-        if accel is not None and accel.is_available():
-            accel.empty_cache()
+        _empty_accelerator_cache(device)
     return embeds_host, mask_host
 
 
