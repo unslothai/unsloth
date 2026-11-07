@@ -123,6 +123,14 @@ _ULYSSES_OWN_MASK_LAYER_TYPES = {
 }
 
 
+# Model types whose Ulysses mixers refuse packed batches, for a model ID string (no modules to walk yet).
+_ULYSSES_HYBRID_PACKING_MODEL_TYPES = {
+    "kimi_linear": "KimiDeltaAttention",
+    "kimi_k3": "KimiDeltaAttention",
+    "minimax": "MiniMaxLightningAttention",
+}
+
+
 def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
     """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
     MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them.
@@ -137,6 +145,8 @@ def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
         for model_type in model_types or ():
             if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
                 return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
+            if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
+                return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
