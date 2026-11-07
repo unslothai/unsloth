@@ -31,9 +31,11 @@ from core.inference.claude_agent import (
     _user_blocks,
     build_prompt,
     clamp_effort,
+    cli_version,
     ensure_catalog,
     failure,
     image_url,
+    outdated_message,
     remember_models,
     thinking_config,
 )
@@ -228,6 +230,10 @@ class ClaudeAgentTransport:
         cli = shutil.which("claude")
         if cli is None:
             yield _error_sse_line(503, CLI_MISSING, PROVIDER_TYPE)
+            return
+        outdated = outdated_message(await cli_version(cli))
+        if outdated:
+            yield _error_sse_line(503, outdated, PROVIDER_TYPE)
             return
         max_tokens = self._max_tokens
         if self._fitter is not None:

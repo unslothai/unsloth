@@ -729,6 +729,38 @@ def test_status_explains_what_is_missing(monkeypatch, tmp_path, kwargs, message,
     assert status["problem"] == problem
 
 
+def _cli_prints(tmp_path, text):
+    (tmp_path / "bin" / "claude").write_text(f"#!/bin/sh\necho '{text}'\n")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "fake CLI is a shell script")
+def test_cli_older_than_verbatim_prompts_is_refused_before_it_starts(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
+    _cli_prints(tmp_path, "2.1.247 (Claude Code)")
+
+    status = asyncio.run(claude_agent.claude_agent_status())
+    lines = _stream([{"role": "user", "content": "/cost"}])
+
+    assert status["ready"] is False
+    assert status["problem"] == "failed"
+    assert status["version"] == "2.1.247"
+    assert "claude update" in status["message"]
+    assert "2.1.247 is too old" in _error(lines)["message"]
+    assert sdk.clients == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "fake CLI is a shell script")
+def test_cli_version_comes_from_the_cli_when_initialize_omits_it(monkeypatch, tmp_path):
+    info = {key: value for key, value in INFO.items() if key != "claude_code_version"}
+    _install(monkeypatch, tmp_path, server_info = info)
+    _cli_prints(tmp_path, "2.1.248 (Claude Code)")
+
+    status = asyncio.run(claude_agent.claude_agent_status())
+
+    assert status["ready"] is True
+    assert status["version"] == "2.1.248"
+
+
 def test_status_without_the_sdk_names_the_install_command(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
