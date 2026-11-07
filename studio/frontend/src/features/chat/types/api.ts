@@ -628,6 +628,8 @@ export interface OpenAIChatCompletionsRequest {
   repetition_penalty?: number;
   presence_penalty?: number;
   seed?: number;
+  /** Stop sequences; character chats stop a reply at another speaker's line. */
+  stop?: string[];
   image_base64?: string;
   audio_base64?: string;
   extra_audio_base64?: string[];

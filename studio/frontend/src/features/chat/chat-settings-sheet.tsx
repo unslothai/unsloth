@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { RoleplayPanel, useIsCharacterChat } from "@/features/characters/chat/roleplay-panel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -487,6 +488,8 @@ export function ChatSettingsPanel({
   const t = useT();
   const params = useChatRuntimeStore((s) => s.params);
   const setParams = useChatRuntimeStore((s) => s.setParams);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const characterChat = useIsCharacterChat(activeThreadId);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -849,7 +852,6 @@ export function ChatSettingsPanel({
       activeExternalProvider.providerType,
       externalSelection?.modelId,
     );
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const openAiApiKeyForSection =
     activeExternalProvider && !activeExternalProvider.hasApiKey
       ? getExternalProviderApiKey(activeExternalProvider.id) || null
@@ -1144,8 +1146,13 @@ export function ChatSettingsPanel({
         )}
       >
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
+        {characterChat && activeThreadId ? (
+          <CollapsibleSection label={t("characters.panel.title")} defaultOpen={true} first={true}>
+            <RoleplayPanel threadId={activeThreadId} />
+          </CollapsibleSection>
+        ) : null}
         {(hasModelContent || modelConfig) && (
-              <CollapsibleSection label="Model" defaultOpen={true} first={true}>
+              <CollapsibleSection label="Model" defaultOpen={true} first={!characterChat}>
             <div className="flex flex-col gap-5">
               {modelConfig}
               {showSpecFallback && (

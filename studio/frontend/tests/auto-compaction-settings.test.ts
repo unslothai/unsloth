@@ -19,6 +19,26 @@ test("auto-compact on sends truncate_oldest and no policy of its own", () => {
   );
 });
 
+test("a character chat compacts by dropping its oldest turns, without a checkpoint", () => {
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true, rolling: true }),
+    { context_overflow: "truncate_oldest", context_policy: "rolling" },
+  );
+  // Off stays off, and /compact is still the user's own checkpoint.
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: false, rolling: true }),
+    { context_overflow: "error" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true, rolling: true, compactNow: true }),
+    { context_overflow: "truncate_oldest", compact_context: true },
+  );
+  // The reply and the context meter's count both send it, so the meter prices the same prompt.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /rolling: characterRun != null/);
+  assert.match(adapter, /rolling: isKnownCharacterChat\(threadId\)/);
+});
+
 test("auto-compact off sends an explicit error overflow policy", () => {
   assert.deepEqual(
     ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: false }),

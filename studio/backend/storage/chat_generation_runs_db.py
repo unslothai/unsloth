@@ -15,7 +15,7 @@ import time
 import weakref
 from functools import partial
 from pathlib import Path
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, Optional, Union
 
 from storage.studio_db import get_connection, on_wal_keeper_closed
 from utils.account_context import current_account_id
@@ -509,6 +509,7 @@ def create_run(
     user_message_id: str,
     assistant_message_id: str,
     request_payload: dict[str, Any],
+    reply_metadata: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], bool]:
     request_json, request_hash = canonical_request(
         thread_id = thread_id,
@@ -562,6 +563,7 @@ def create_run(
             raise ChatGenerationConflictError("This thread already has an active generation")
 
         metadata = {
+            **(reply_metadata or {}),
             "generationRunId": run_id,
             "generationSeq": 0,
             "generationStatus": "queued",

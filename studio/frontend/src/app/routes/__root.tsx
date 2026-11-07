@@ -373,6 +373,8 @@ function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
     return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
+  // Characters only need a chat model, which a chat-only host runs.
+  if (pathname === "/characters" || pathname.startsWith("/characters/")) return true;
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;

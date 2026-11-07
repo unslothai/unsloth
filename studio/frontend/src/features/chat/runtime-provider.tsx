@@ -1410,6 +1410,8 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
           ...(m.metadata?.createdAtEstimated === true ? { createdAtEstimated: true } : {}),
           ...(m.metadata?.scheduledTask ? { scheduledTask: m.metadata.scheduledTask } : {}),
           ...(typeof m.metadata?.revision === "number" ? { revision: m.metadata.revision } : {}),
+          // A character chat's hidden opening and turn markers must stay hidden after a reload.
+          ...(m.metadata?.roleplay ? { roleplay: m.metadata.roleplay } : {}),
         },
       },
     };

@@ -27,7 +27,11 @@ test("scrolling restyles no rail markers: no colour transition, no inherited fad
 
 test("turn navigation is on by default and stays off once turned off", async () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  assert.match(thread, /<TurnNavigator viewportRef=\{viewportElRef\} \/>\s*\{\/\* Drop-in for ThreadPrimitive\.Messages/);
+  // A character chat hides it; everywhere else it sits right before the messages.
+  assert.match(
+    thread,
+    /(?:\{roleplayThread \? null : )?<TurnNavigator viewportRef=\{viewportElRef\} \/>\}?\s*\{\/\* Drop-in for ThreadPrimitive\.Messages/,
+  );
   const prefs = readSrc("features/chat/stores/chat-preferences-store.ts");
   assert.match(prefs, /showTurnNavigation: true,/);
   assert.match(prefs, /showTurnNavigation: saved\?\.showTurnNavigation !== false,/);

@@ -697,7 +697,7 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-export const UserMessageAttachments: FC = () => {
+export const UserMessageAttachments: FC<{ align?: "start" | "end" }> = ({ align = "end" }) => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
   );
@@ -708,16 +708,16 @@ export const UserMessageAttachments: FC = () => {
   const layout = sentAttachmentLayout(setting, count);
   return (
     <SentAttachmentLayoutContext.Provider value={layout}>
-      <div className="aui-user-message-attachments-end flex w-full flex-col items-end gap-2">
-        <div className="aui-user-message-attachment-images flex max-w-full flex-row flex-wrap justify-end gap-2 empty:hidden">
+      <div className={cn("aui-user-message-attachments-end flex w-full flex-col gap-2", align === "end" ? "items-end" : "items-start")}>
+        <div className={cn("aui-user-message-attachment-images flex max-w-full flex-row flex-wrap gap-2 empty:hidden", align === "end" ? "justify-end" : "justify-start")}>
           <MessagePrimitive.Attachments components={SENT_IMAGE_COMPONENTS} />
         </div>
         <div
           className={cn(
             "aui-user-message-attachment-files max-w-full empty:hidden",
             layout === "list"
-              ? "flex flex-col items-end gap-2"
-              : "flex flex-row flex-wrap justify-end gap-2",
+              ? cn("flex flex-col gap-2", align === "end" ? "items-end" : "items-start")
+              : cn("flex flex-row flex-wrap gap-2", align === "end" ? "justify-end" : "justify-start"),
           )}
         >
           <MessagePrimitive.Attachments components={SENT_FILE_COMPONENTS} />

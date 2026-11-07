@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isKnownCharacterChat, prepareCharacterRun } from "@/features/characters/chat-runtime";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
@@ -2187,11 +2188,24 @@ export async function buildLocalTokenCountHistory(
     localMarkers: activeModel?.isGguf === false,
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
-  const outboundMessages = survivingMessages
+  // Counted as it would be sent, so a character chat's meter includes the cards.
+  const characterRun = await prepareCharacterRun({ threadId, messages: survivingMessages }).catch(
+    () => null,
+  );
+  const outboundMessages = (characterRun ? characterRun.messages : survivingMessages)
     .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
+  if (characterRun) {
+    outboundMessages.unshift({ role: "system", content: characterRun.system });
+    return {
+      messages: outboundMessages as OpenAIChatMessage[],
+      ...studioToolHistoryRequestFieldsAfterReplay(
+        survivingMessages as unknown as ToolHistoryMessage[],
+      ),
+    };
+  }
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -2303,6 +2317,7 @@ export async function buildLocalTokenCountExtras(
       isMlx: state.loadedIsMlx === true,
       isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
+      rolling: isKnownCharacterChat(threadId),
     }),
   };
   if (!supportsTools) {
@@ -5243,6 +5258,14 @@ export function createOpenAIStreamAdapter(
         externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
+      // A character chat sends its own prompt: the cast's cards, the persona and the scene.
+      const characterRun = await prepareCharacterRun({
+        threadId: resolvedThreadId,
+        messages: survivingMessages,
+        runConfig,
+        revalidate: true,
+      });
+      const roleplayCustom = characterRun ? { roleplay: characterRun.replyMeta } : {};
       const { messages: renderedMessages, sandboxAttachments } =
         supportsStudioToolsForThisTurn &&
         studioLocalCodeTools.includes("python")
@@ -5250,9 +5273,11 @@ export function createOpenAIStreamAdapter(
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
       let outboundMessages = renderedMessages
+        .filter((message) => !characterRun || characterRun.sends(message.id))
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
-            message,
+            // A character chat's turns carry the speaker names, notes and turn instructions.
+            characterRun ? characterRun.shape(message) : message,
             replayReasoning,
             externalProvider?.providerType === "gemini",
           );
@@ -5384,13 +5409,15 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      const combinedSystemPrompt = await resolveChatInstructions(
-        resolvedThreadId,
-        params.systemPrompt,
-        params.systemVariables,
-        readThreadRecord,
-        { agentsMd: true },
-      );
+      const combinedSystemPrompt = characterRun
+        ? characterRun.system
+        : await resolveChatInstructions(
+            resolvedThreadId,
+            params.systemPrompt,
+            params.systemVariables,
+            readThreadRecord,
+            { agentsMd: true },
+          );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
           role: "system",
@@ -5917,6 +5944,7 @@ export function createOpenAIStreamAdapter(
           ),
         },
         ...generationCustom(),
+        ...roleplayCustom,
       });
       let incompleteReason: IncompleteReason | null = null;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
@@ -6948,6 +6976,7 @@ export function createOpenAIStreamAdapter(
               isMlx: isMlxForCompaction,
               isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              rolling: characterRun != null,
               compactNow,
             }),
             temperature: params.temperature,
@@ -7075,6 +7104,8 @@ export function createOpenAIStreamAdapter(
                 retriedWithRefreshedKey,
               );
               if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
+              // Stops a reply that runs on into another speaker's line.
+              if (characterRun) requestPayload = { ...requestPayload, stop: characterRun.stop };
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -7118,6 +7149,7 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...(characterRun ? { assistantRoleplay: characterRun.replyMeta } : {}),
                         ...tabCloseRunFields(
                           runtime.keepRunningWhenTabClosed,
                         ),
@@ -8934,6 +8966,7 @@ export function createOpenAIStreamAdapter(
               responseDetails: buildResponseDetails(finishedAt),
               timing: finalTiming,
               ...generationCustom(),
+              ...roleplayCustom,
             },
           },
         };
@@ -9107,6 +9140,7 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 resumeTiming: passSoFar ? addPass(priorTiming, passSoFar()) : priorTiming,
                 ...generationCustom(),
+                ...roleplayCustom,
               },
             },
           };
