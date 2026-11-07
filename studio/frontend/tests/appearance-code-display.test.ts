@@ -73,7 +73,6 @@ test("Expand code lifts one block's cap and is offered only while the block over
   assert.match(actions, /expanded \? "Collapse code" : "Expand code"/);
   const css = readSrc("index.css");
   assert.match(css, /\[data-code-expanded\] \[data-streamdown="code-block-body"\] \{\s*max-height: none;\s*mask-image: none;/);
-  // The scrollbar never changes the code's width, and never fades with the code.
   assert.match(css, /scrollbar-gutter: stable;/);
   assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;/);
 });

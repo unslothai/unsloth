@@ -130,8 +130,7 @@ const wrapStroke = {
   strokeWidth: "1.5",
 } as const;
 
-// Hugeicons line-wrap and line-wrap-disable (stroke rounded, MIT), traced from hugeicons.com until
-// @hugeicons/core-free-icons ships them (not in 4.4.0). Off: |-> ; on: <-| hooking back.
+// Hugeicons line-wrap / line-wrap-disable (MIT), traced until @hugeicons/core-free-icons ships them (not in 4.4.0).
 export const LineWrapIcon: IconSvgElement = [
   ["path", { d: "M5 3V21", ...wrapStroke, key: "0" }],
   ["path", { d: "M9 12H20", ...wrapStroke, key: "1" }],

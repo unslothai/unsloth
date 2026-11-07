@@ -1709,8 +1709,7 @@ const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } 
 
 const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 type BodyScroll = { top: number; atBottom: boolean; at: number };
-// A finished stream remounts its body at the first line: the streamed body's place goes to that remount
-// only (once, soon after), so blocks that merely open with the same text never share one.
+// A finished stream's remount takes the streamed body's place once, soon after; same-text blocks never share one.
 const bodyScrolls = new Map<string, BodyScroll>();
 const BODY_SCROLLS_KEPT = 16;
 

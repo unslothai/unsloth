@@ -4153,7 +4153,6 @@ html[data-chat-font] .aui-root {
 		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1)) !important;
 		max-height: var(--unsloth-code-block-max-height, min(30rem, 55vh));
 		overflow-y: auto;
-		/* Lines up with the language label's ml-1. */
 		padding-left: var(--spacing) !important;
 		/* Bleeds into the block's padding so the scrollbar hugs its edge. */
 		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
@@ -4176,7 +4175,6 @@ html[data-chat-font] .aui-root {
 		mask-image: none;
 	}
 
-	/* The body's own bottom padding spaces short code. */
 	.aui-thread-root [data-streamdown="code-block"] {
 		padding-top: calc(0.25rem * var(--ui-space-scale, 1));
 		padding-bottom: 0;
@@ -5754,7 +5752,6 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	height: round(var(--icon-size), 2px);
 }
 
-/* One even step smaller (14px by default). */
 .aui-root.aui-thread-root [data-code-block-actions] .aui-chat-icon-btn svg {
 	width: round(var(--icon-size) - 2px, 2px);
 	height: round(var(--icon-size) - 2px, 2px);
