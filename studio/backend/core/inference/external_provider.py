@@ -190,8 +190,10 @@ def _merge_concatenated_wav_segments(
 def _append_provider_path(base_url: str, endpoint: str) -> str:
     """Append an API path without moving it behind a base URL's query string."""
     parts = urlsplit(base_url)
-    path = f"{parts.path.rstrip('/')}/{endpoint.lstrip('/')}"
-    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+    endpoint_path, _, endpoint_query = endpoint.partition("?")
+    path = f"{parts.path.rstrip('/')}/{endpoint_path.lstrip('/')}"
+    query = "&".join(q for q in (parts.query, endpoint_query) if q)
+    return urlunsplit((parts.scheme, parts.netloc, path, query, parts.fragment))
 
 
 def caches_at_the_last_block(
@@ -2225,7 +2227,7 @@ class ExternalProviderClient:
         reasoning_effort: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Two requests: first is internal; second echoes tool args verbatim as the server runs the search."""
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -3148,7 +3150,7 @@ class ExternalProviderClient:
         if fast_mode_active:
             body["speed"] = "fast"
 
-        url = f"{self.base_url}/messages"
+        url = _append_provider_path(self.base_url, "/messages")
         completion_id = f"chatcmpl-anthropic-{model.replace('/', '-')}"
 
         # Log outgoing config keys (not messages) to prove which thinking / effort fields reached the wire.
@@ -4863,7 +4865,7 @@ class ExternalProviderClient:
             body["cachedContent"] = enable_prompt_caching
 
         # Model id is validated at the top of _stream_gemini, so the URL path cannot be traversed.
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = _append_provider_path(self.base_url, f"/models/{model}:streamGenerateContent?alt=sse")
         completion_id = f"chatcmpl-gemini-{model.replace('/', '-')}"
 
         logger.info(
@@ -7443,7 +7445,7 @@ class ExternalProviderClient:
                 return cached[1]
             try:
                 response = await _client().get(
-                    f"{self.base_url}/models",
+                    _append_provider_path(self.base_url, "/models"),
                     headers = self._auth_headers(),
                     timeout = self._timeout,
                 )
@@ -7764,7 +7766,7 @@ class ExternalProviderClient:
         router answer /models without one, so that check alone passes any key. Errors other than
         401/403 count as not rejected."""
         if self.provider_type == "openrouter":
-            url = f"{self.base_url}/key"
+            url = _append_provider_path(self.base_url, "/key")
         elif (
             self.provider_type == "huggingface"
             and (urlparse(self.base_url).hostname or "").lower() == "router.huggingface.co"
@@ -7793,7 +7795,7 @@ class ExternalProviderClient:
         them). Only valid against api.openai.com (caller guards is_openai_cloud).
         """
         response = await _client().get(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             headers = self._container_headers(),
             timeout = self._timeout,
         )
@@ -7819,7 +7821,7 @@ class ExternalProviderClient:
             },
         }
         response = await _client().post(
-            f"{self.base_url}/containers",
+            _append_provider_path(self.base_url, "/containers"),
             json = body,
             headers = self._container_headers(),
             timeout = self._timeout,
@@ -7829,7 +7831,7 @@ class ExternalProviderClient:
 
     async def delete_openai_container(self, container_id: str) -> None:
         """Fresh client, since shared-pool DELETEs left containers alive; body must report deleted:true."""
-        url = f"{self.base_url}/containers/{container_id}"
+        url = _append_provider_path(self.base_url, f"/containers/{container_id}")
         headers = self._container_headers()
         logger.info(
             "openai_container_delete.outbound url=%s has_auth=%s openai_beta=%s",

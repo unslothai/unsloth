@@ -150,6 +150,48 @@ def test_base_url_query_survives_model_list_and_non_stream_calls(monkeypatch):
     ]
 
 
+def test_base_url_query_survives_native_provider_calls(monkeypatch):
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json = {"data": []})
+        return httpx.Response(200, json = {})
+
+    async def drain(client, model):
+        async for _ in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "ping"}], model = model
+        ):
+            pass
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            monkeypatch.setattr(ep, "_openrouter_catalog", {})
+            await drain(
+                ExternalProviderClient("anthropic", "https://gw.example/v1?tenant=a", "k"),
+                "claude-sonnet-4-5",
+            )
+            await drain(
+                ExternalProviderClient(
+                    "gemini", "https://generativelanguage.googleapis.com/v1beta?tenant=a", "k"
+                ),
+                "gemini-2.5-flash",
+            )
+            router = ExternalProviderClient("openrouter", "https://gw.example/api/v1?tenant=a", "k")
+            await router.list_models()
+            await router.api_key_rejected()
+
+    asyncio.run(run())
+    assert [(r.url.path, r.url.query.decode()) for r in sent] == [
+        ("/v1/messages", "tenant=a"),
+        ("/v1beta/models/gemini-2.5-flash:streamGenerateContent", "tenant=a&alt=sse"),
+        ("/api/v1/models", "tenant=a"),
+        ("/api/v1/key", "tenant=a"),
+    ]
+
+
 @pytest.mark.parametrize(
     "base_url,api_type,key,expected",
     [
