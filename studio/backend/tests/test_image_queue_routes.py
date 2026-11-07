@@ -462,3 +462,72 @@ def test_a_failed_run_marked_more_runs_does_not_hold_the_queue(client, monkeypat
         first.join(10)
         _wait(client, lambda jobs: jobs[0]["status"] == "done", timeout = 5)
         assert order == ["direct-1", "queued"]
+
+
+def test_a_checkpoint_pin_refuses_another_quant_at_engine_admission():
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError,
+        load_identity,
+        pin_checkpoint,
+        require_pinned_checkpoint,
+    )
+
+    loaded = load_identity("unsloth/Z-Image-Turbo-GGUF", "unsloth/Z-Image-base", "z-image")
+    require_pinned_checkpoint(loaded, "z-image-turbo-Q8_0.gguf")  # no pin: any checkpoint
+    with pin_checkpoint("z-image-turbo-Q4_K_S.gguf"):
+        require_pinned_checkpoint(loaded, "z-image-turbo-Q4_K_S.gguf")
+        with pytest.raises(DiffusionModelReplacedError):
+            require_pinned_checkpoint(loaded, "z-image-turbo-Q8_0.gguf")
+    # Every engine checks the pin beside its expected_load admission.
+    for module in ("diffusion", "sd_cpp_backend", "mlx_diffusion_backend"):
+        source = (
+            Path(__file__).resolve().parents[1] / "core" / "inference" / f"{module}.py"
+        ).read_text()
+        assert "require_pinned_checkpoint(loaded_id, " in source, module
+
+
+def test_stop_during_a_run_that_still_returns_does_not_hold_the_queue(client, monkeypatch):
+    """A Detailer keeps its render on Stop, so the run returns; the page sends no next run."""
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    monkeypatch.setattr(inference_routes, "_DIRECT_RUN_SETTLE_S", 0.2)
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    order: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def generate(*, prompt = None, **kwargs):
+        order.append(prompt)
+        if prompt == "direct-1":
+            started.set()
+            release.wait(5)
+        return real_generate(prompt = prompt, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    # The render keeps going and returns, as a Detailer pass does after Stop.
+    monkeypatch.setattr(backend, "cancel_generate", lambda **kwargs: True)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        first = threading.Thread(
+            target = client.post,
+            args = ("/api/inference/images/generate",),
+            kwargs = {"json": {"prompt": "direct-1"}, "headers": {"X-Unsloth-More-Runs": "1"}},
+        )
+        first.start()
+        started.wait(5)
+        assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
+        client.post("/api/inference/images/generate/cancel")
+        release.set()
+        first.join(10)
+        _wait(client, lambda jobs: jobs[0]["status"] == "done", timeout = 5)
+        assert order == ["direct-1", "queued"]

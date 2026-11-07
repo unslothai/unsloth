@@ -67,6 +67,7 @@ from .diffusion_families import (
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
     DiffusionModelReplacedError,  # re-exported: callers import it from either module
+    require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
     local_pipeline_components_are_complete,
@@ -14193,6 +14194,7 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)
                     begin_attention_run(state)
