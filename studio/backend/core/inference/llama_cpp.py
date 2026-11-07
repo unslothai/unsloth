@@ -15769,12 +15769,24 @@ class LlamaCppBackend:
 
     @staticmethod
     def _margins_with_paged_headroom(
-        margins: Optional[Mapping[int, float]], headroom: Iterable[str]
+        margins: Optional[Mapping[int, float]],
+        headroom: Iterable[str],
+        sign: int = 1,
     ) -> Optional[Mapping[int, float]]:
         """The spawn respells ``--fit-target`` per device from ``margins``, so they carry the headroom too."""
         if not margins or not list(headroom):
             return margins
-        return {i: m + _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+        return {i: m + sign * _IGPU_PAGED_FIT_HEADROOM_MIB for i, m in margins.items()}
+
+    @staticmethod
+    def _withdraw_paged_headroom(
+        cmd: list[str], margins: Optional[Mapping[int, float]], headroom: list[str]
+    ) -> tuple[list[str], Optional[Mapping[int, float]]]:
+        """``cmd`` and ``margins`` without the iGPU paging headroom, for a respawn off the iGPU."""
+        return (
+            LlamaCppBackend._without_flag_pairs(cmd, headroom),
+            LlamaCppBackend._margins_with_paged_headroom(margins, headroom, sign = -1),
+        )
 
     def _page_an_oversized_unmapped_load(
         self,
@@ -23623,6 +23635,8 @@ class LlamaCppBackend:
             _fit_target_delta_by_idx: Optional[dict[int, float]] = None
             # Studio's emitted margins per card, spelled into --fit-target at spawn.
             _fit_target_margins_by_idx: Optional[dict[int, float]] = None
+            # --fit-target pair a paged iGPU launch appended, withdrawn if a retry leaves the iGPU.
+            _paged_headroom: list = []
             # Set only if that margin actually reached the command line, which is
             # what makes the child budget-priced in a mode the planner skipped.
             _fit_target_priced = False
@@ -30707,7 +30721,7 @@ class LlamaCppBackend:
                     device_list = False,
                     integrated_gpu_ids = _vulkan_igpu_ids,
                 )
-                _paged_headroom: list = []
+                _paged_headroom = []
                 cmd, _pageable_note = self._page_an_oversized_unmapped_load(
                     cmd,
                     env,
@@ -32277,23 +32291,29 @@ class LlamaCppBackend:
                                 )
                             )
 
+                        _retry_auto_unmapped = self._auto_load_mode_unmapped(
+                            server_caps,
+                            gpu_indices = [row[0] for row in _retry_rows] or None,
+                            detected_gpus = _retry_rows,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                            probe_integrated_cuda = False,
+                            extra_args = cmd,
+                            env = env,
+                            device_list = False,
+                            integrated_gpu_ids = _vulkan_igpu_ids,
+                        )
+                        if _paged_headroom and not _retry_auto_unmapped:
+                            cmd, _fit_target_margins_by_idx = self._withdraw_paged_headroom(
+                                cmd, _fit_target_margins_by_idx, _paged_headroom
+                            )
+                            _paged_headroom = []
                         _retry_headroom: list = []
                         cmd, _retry_pageable_note = self._page_an_oversized_unmapped_load(
                             cmd,
                             env,
                             _retry_is_oversized,
-                            auto_unmapped = self._auto_load_mode_unmapped(
-                                server_caps,
-                                gpu_indices = [row[0] for row in _retry_rows] or None,
-                                detected_gpus = _retry_rows,
-                                shared_gpu_ids = _shared_gpu_ids,
-                                is_vulkan_backend = is_vulkan_backend,
-                                probe_integrated_cuda = False,
-                                extra_args = cmd,
-                                env = env,
-                                device_list = False,
-                                integrated_gpu_ids = _vulkan_igpu_ids,
-                            ),
+                            auto_unmapped = _retry_auto_unmapped,
                             lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                                 model_path, server_caps, argv, env
                             ),

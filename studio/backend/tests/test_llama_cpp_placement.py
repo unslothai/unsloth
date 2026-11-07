@@ -2868,6 +2868,26 @@ def test_the_igpu_fit_headroom_survives_the_per_device_margin(tmp_path, monkeypa
     ), cmd
 
 
+def test_a_retry_off_the_igpu_withdraws_the_paging_headroom():
+    """The arch-crash respawn on a discrete sibling must not keep the iGPU's 15 GiB margin."""
+    import inspect
+
+    headroom = ["--fit-target", "16384"]
+    cmd = ["-m", "x.gguf", "--fit-target", "1024", "--load-mode", "mmap", *headroom]
+    added = LlamaCppBackend._margins_with_paged_headroom({0: 1024.0, 1: 2048.0}, headroom)
+    assert added == {0: 16384.0, 1: 17408.0}
+    out, margins = LlamaCppBackend._withdraw_paged_headroom(cmd, added, headroom)
+    assert out == ["-m", "x.gguf", "--fit-target", "1024", "--load-mode", "mmap"]
+    assert margins == {0: 1024.0, 1: 2048.0}
+    assert LlamaCppBackend._withdraw_paged_headroom(cmd, None, []) == (cmd, None)
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    retry = src[src.index("_retry_auto_unmapped = self._auto_load_mode_unmapped(") :]
+    withdraw = retry.index("if _paged_headroom and not _retry_auto_unmapped:")
+    assert withdraw < retry.index("self._page_an_oversized_unmapped_load(")
+    assert "auto_unmapped = _retry_auto_unmapped" in retry
+
+
 def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024, table = 0)
 
