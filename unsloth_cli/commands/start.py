@@ -2961,7 +2961,6 @@ def _preflight_agent_gguf(
     asks_gguf = _asks_gguf_quant(variant) or repo.lower().endswith(".gguf")
     if files is not None and not files and (asks_gguf or not _this_host_loads_mlx()):
         _fail_agent_needs_gguf(agent, repo)
-    # A missing precision folder would load the root checkpoint instead.
     if files is not None and not files and variant:
         names = _hub_repo_files(repo)
         if names is not None and f"{variant.strip()}/config.json" not in names:

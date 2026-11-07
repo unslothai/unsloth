@@ -11529,7 +11529,6 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
         start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:8BIT")
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
-    # The real answer for a precision-folder repo: its folders, with only downloaded ones loadable.
     mlx_answer = {
         "variants": [
             {"quant": "6-bit", "filename": "6-bit/"},
