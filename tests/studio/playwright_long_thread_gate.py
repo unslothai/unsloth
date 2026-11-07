@@ -597,6 +597,17 @@ def main() -> int:
                 details += pin_down(browser, base)
                 details.append("  " + HINT)
             if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
+                # One reading on a shared runner can catch the page mid-settle (a Windows leg read 125 ms
+                # where the same build reads 14 ms on every other leg); a real regression reads high twice.
+                again = measure(browser, base, LARGE)
+                print(
+                    f"  dialog/menu lock {large['lock_ms']:.0f} ms is over budget; measured again on a fresh "
+                    f"page: {again.get('lock_ms', float('nan')):.0f} ms",
+                    flush = True,
+                )
+                if again.get("lock_ms") is not None:
+                    large["lock_ms"] = min(large["lock_ms"], again["lock_ms"])
+            if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
                 failures.append(
                     f"opening or closing a dialog or menu costs {large['lock_ms']:.0f} ms of style recalc at "
                     f"{LARGE} turns, budget {MAX_LOCK_MS:.0f} ms ({large['lock_ms'] / MAX_LOCK_MS:.1f}x over). "
