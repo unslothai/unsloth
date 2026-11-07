@@ -78,6 +78,8 @@ def _read_cli_version(cli: str) -> Optional[str]:
                 [cli, "-v"],
                 capture_output = True,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 15,
                 **windows_hidden_subprocess_kwargs(),
             ).stdout

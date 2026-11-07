@@ -466,6 +466,8 @@ def test_two_shards_do_not_share_one_screenshot_identity(tmp_path):
 NOT_GATED: dict[str, str] = {
     "studio/backend/auth/authentication.py": "session plumbing shared by every route in the app; "
     "routes/auth.py already gates the endpoints studiobench actually calls",
+    "studio/backend/core/inference/claude_agent.py": "Claude Agent status probe only; studiobench "
+    "posts a custom provider, which never starts the local claude CLI",
     "studio/backend/core/inference/key_exchange.py": "encrypts stored credentials. studiobench "
     "posts its provider without one, so this code is not on the measured path",
     "studio/backend/core/inference/pricing.py": "cost figures, which the scene never renders",
