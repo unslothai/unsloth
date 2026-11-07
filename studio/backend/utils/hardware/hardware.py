@@ -48,12 +48,14 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch on Apple Silicon, or on a host whose GPU inventory shows a card a PyTorch GPU build could use, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled (on "no_gpu", trains_on_cpu() says whether Train runs on the CPU backend instead). "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change (off Mac the full install trains on the GPU, or on the CPU backend when there is none); "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac, where Train runs on the CPU backend when PyTorch is installed; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
 # (reason, hint) from the last detection pass that found a torch mismatch.
 _CHAT_ONLY_HINT: Optional[tuple[Optional[str], Optional[str]]] = None
+# Verdict under which training runs on the CPU backend (unsloth/_cpu_init.py): "no_gpu" with PyTorch, "no_torch" with no card a GPU build could use, else None. Read via trains_on_cpu().
+_CPU_TRAINING_REASON: Optional[str] = None
 # The vendors whose cards established the two mismatch reasons, empty otherwise: current_chat_only_verdict() freezes a mismatch while the inventory cannot answer, and without this a detached AMD eGPU stays "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
 CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
@@ -100,12 +102,13 @@ def owning_detection_epoch(epoch: Optional[int]):
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global CHAT_ONLY_MISMATCH_VENDORS
+    global CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_REASON
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
+    _CPU_TRAINING_REASON = None
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -1555,11 +1558,19 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
 def detect_hardware() -> DeviceType:
     """Detect the best compute device and set the module-level DEVICE global; call once at FastAPI lifespan startup, idempotent. Order: XPU only on an unambiguous "prefer XPU" signal (CUDA hidden or unavailable, or UNSLOTH_FORCE_XPU=1) AND a non-empty ZE_AFFINITY_MASK AND torch.xpu reporting a device, since a stray inherited mask must not beat CUDA on hybrid hosts; then CUDA, XPU, MLX, CPU."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, DETECTION_GENERATION
+    global _CPU_TRAINING_REASON
     with _DETECT_LOCK:
         # A forced pass mutates the globals partway through; leaving the event set lets /api/health serve that as settled, so the sidebar MLX poll caches reason=None, stops, and leaves Train hidden on a repaired host.
         was_complete = DETECTION_COMPLETE.is_set()
         # Snapshot the whole verdict, not just the event: a raise mid-pass leaves a half-written answer the autorepair path swallows, and losing "mlx_unavailable" stops the sidebar poll for good.
-        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM)
+        published = (
+            DEVICE,
+            CHAT_ONLY,
+            CHAT_ONLY_REASON,
+            CHAT_ONLY_DETAIL,
+            IS_ROCM,
+            _CPU_TRAINING_REASON,
+        )
         # Owning epoch first, current only as a fallback: the MLX self-heal calls this after a pip install that can outlast the lifespan, and reading current would adopt the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips its own detection.
         epoch = getattr(_OWNING_EPOCH, "value", None)
         if epoch is None:
@@ -1575,7 +1586,9 @@ def detect_hardware() -> DeviceType:
                 # Shutdown ran mid-pass. Restoring would put back the verdict it just cleared, and the next lifespan would treat that as measured.
                 _discard_detection_locked()
                 raise
-            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM = published
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, _CPU_TRAINING_REASON = (
+                published
+            )
             # Restore rather than leave it clear: start_background_detection() declines once DEVICE is set, so an unset event keeps health provisional forever.
             if was_complete:
                 DETECTION_COMPLETE.set()
@@ -1668,7 +1681,7 @@ def _configure_rocm_miopen(torch) -> None:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
-    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS
+    global _MLX_BLOCKERS_MEASURED, CHAT_ONLY_MISMATCH_VENDORS, _CPU_TRAINING_REASON
     global _gfx_candidates_cache, _gfx_detect_epoch
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     # A forced detection asks the ROCm CLIs again, and an older probe cannot publish.
@@ -1682,6 +1695,7 @@ def _detect_hardware_locked() -> DeviceType:
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
     CHAT_ONLY_MISMATCH_VENDORS = frozenset()
+    _CPU_TRAINING_REASON = None
     _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
@@ -1834,6 +1848,8 @@ def _detect_hardware_locked() -> DeviceType:
         # torch imported cleanly and reported no accelerator, which is NOT "this host has no GPU": a Windows update installs PyPI's 2.11.0+cpu over cu124 while nvidia-smi lists every card (#8473). Ask the OS before blaming hardware.
         CHAT_ONLY_REASON = "no_gpu"
         if torch_ok:
+            # Only "no_gpu" trains here (trains_on_cpu()): a GPU this PyTorch cannot use still gets its repair message.
+            _CPU_TRAINING_REASON = "no_gpu"
             _build_reason, _build_detail = _mismatch_verdict_for_this_host()
             if _build_reason is not None:
                 CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
@@ -1846,10 +1862,10 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
-        elif _installed_without_torch() and _a_gpu_build_would_train_here():
-            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
-            # Without such a GPU it stays no_gpu: the Desktop offers the full install on no_torch.
+        elif _installed_without_torch():
+            # GGUF-only by request; the full install trains on the GPU, or on the CPU backend without one.
             CHAT_ONLY_REASON = "no_torch"
+            _CPU_TRAINING_REASON = None if _a_gpu_build_would_train_here() else "no_torch"
             _record_chat_only_hint("no_torch", None)
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
@@ -1916,6 +1932,11 @@ def _uncertainty_could_hide_the_frozen_mismatch(inventory: Dict[str, Any]) -> bo
     if not unanswered:
         return True
     return bool(unanswered & CHAT_ONLY_MISMATCH_VENDORS)
+
+
+def trains_on_cpu(reason: Optional[str]) -> bool:
+    """Whether ``reason`` (from current_chat_only_verdict()) trains on the CPU backend; CHAT_ONLY stays True either way."""
+    return reason is not None and reason == _CPU_TRAINING_REASON
 
 
 def current_chat_only_verdict() -> tuple[Optional[str], Optional[str]]:
@@ -2136,6 +2157,13 @@ def export_capability() -> dict:
             "Hardware detection failed on this host, so export is disabled. The server log records "
             "the underlying error; restart Unsloth Studio to retry detection."
         )
+    elif verdict[0] == "no_torch" and trains_on_cpu("no_torch"):
+        # The full install would train here on CPU only, so it does not bring export either.
+        reason = "no_accelerator"
+        message = (
+            "Export requires an NVIDIA, AMD, or Intel GPU, or Apple Silicon (MLX). No supported "
+            "accelerator was found on this host."
+        )
     elif verdict[0] == "no_torch":
         reason = "no_torch"
         blocker = _no_torch_mac_without_mlx_wheels()
@@ -2334,8 +2362,11 @@ def _clear_mps_cache() -> None:
     """Return torch's MPS reservations to the shared pool: Apple Silicon also runs torch MPS, whose caching allocator keeps freed buffers reserved, and those bytes read as used system memory, so the next load budgets against a pool that looks smaller than it is."""
     try:
         import torch
+
         empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
-        if callable(empty_cache):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        # Without a usable Metal device (a macOS VM's paravirtual GPU) empty_cache segfaults rather than raising.
+        if callable(empty_cache) and mps_backend is not None and mps_backend.is_available():
             empty_cache()
     except Exception as e:
         logger.debug("Failed to clear MPS cache: %s", e)
@@ -7864,6 +7895,14 @@ def dataset_map_num_proc(
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
     return _bounded_by_the_shared_policy(desired, serial_as_none)
+
+
+def light_map_num_proc(dataset, desired: Optional[int] = None) -> Optional[int]:
+    """num_proc for a cheap row map: in process for an in-memory Dataset, since a pool pickles every shard both ways (20k Alpaca rows: 0.13 s here vs 1.3 s over 8 workers). An explicit count, the env hatch or cache files keep the pool."""
+    asked = type(desired) is int
+    if not asked and not getattr(dataset, "cache_files", None) and not _num_proc_override_is_set():
+        return None
+    return dataset_map_num_proc(desired if asked else None)
 
 
 # sys.modules key for the copy loaded off disk below. Not "unsloth.dataset_num_proc": that name belongs to the package, and claiming it would make a later real import of unsloth return this module instead.

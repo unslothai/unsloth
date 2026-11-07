@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
+    sizingPosition: "Tamaño y posición de imagen",
     fill: "Rellenar",
     fit: "Ajustar",
     stretch: "Estirar",
     original: "Tamaño original",
+    fitWidth: "Ajustar al ancho",
+    fitHeight: "Ajustar a la altura",
     zoom: "Zoom",
     outline: "Contorno del campo de mensaje",
     fade: "Desvanecer hacia el fondo",
@@ -28,11 +38,18 @@ export const es = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
+    horizontal: "Posición horizontal",
+    vertical: "Posición vertical",
+    scope: "Mostrar en",
+    scopeNewChat: "Página de chat nuevo",
+    scopeChats: "Chats",
+    scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nuevo chat",
-    conversation: "Conversación",
+    newChat: "Vista previa del chat nuevo",
+    conversation: "Vista previa de la conversación",
     prompt: "¿Qué te gustaría explorar?",
     response: "Tu conversación sigue siendo legible sobre el fondo.",
     storageError: "No se pudo guardar el fondo. Comprueba el almacenamiento del navegador.",
@@ -40,6 +57,26 @@ export const es = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Vidrio del sistema macOS",
+    materialMacosNote: "Usa el material de ventana translúcido de macOS, así que se ve tu escritorio a través.",
+    materialNativeFailed: "Esta versión de Unsloth Desktop no puede usar el material de macOS. Actualiza la aplicación para activarlo.",
+    glassTheme: "Tema de cristal",
+    materialStyle: "Estilo",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
+    lens: "Lente de vidrio",
+    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensOff: "Desactivado",
+    lensMagnify: "Ampliar",
+    lensShrink: "Reducir",
   },
 
   linkMenu: {
@@ -161,12 +198,16 @@ export const es = {
         history: "Leyendo tu historial de navegación",
         move: "Moviendo el ratón",
         drag: "Arrastrando",
+        tabs: "Revisando las pestañas",
+        readFile: "Leyendo el archivo",
+        editFile: "Editando el archivo",
       },
     },
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -290,18 +331,24 @@ export const es = {
     downloadLocationReset: "Restablecer",
     askBeforeDownloadingSetting: "Preguntar antes de descargar",
     askBeforeDownloadingSettingDescription: "Confirma los archivos de sitios web antes de guardarlos.",
+    askBeforeProgramDownloadsSetting: "Preguntar antes de descargar programas",
+    askBeforeProgramDownloadsSettingDescription: "Confirma los archivos que pueden ejecutar programas, como .exe o .dmg, aunque las demás descargas no pregunten.",
     downloadSitesSetting: "Permisos de descarga por sitio",
     downloadSitesSettingDescription: "Sitios cuyas descargas elegiste permitir o bloquear siempre.",
     downloadSitesNone: "Marca Recordar para la próxima vez cuando se te pregunte y el sitio aparecerá aquí.",
     downloadSitesFor: "Descargas de {host}",
     downloadSitesRemove: "Olvidar {host}",
     downloadSiteAllow: "Permitir siempre",
+    downloadSiteAllowAll: "Permitir también programas",
     downloadSiteBlock: "Bloquear siempre",
     downloadPrompt: {
       title: "¿Descargar este archivo?",
       description: "{host} quiere guardar {name} en tu equipo.",
       dangerous: "Archivos como este pueden ejecutar programas en tu equipo. Descárgalo solo si confías en {host}.",
       remember: "Recordar para la próxima vez",
+      once: "Preguntar la próxima vez",
+      site: "Siempre para {host}",
+      all: "Descargar siempre, desde cualquier sitio",
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
@@ -343,6 +390,12 @@ export const es = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al lateral",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -615,6 +668,8 @@ export const es = {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
     plainTextDescription: "Mantener el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Pega enlaces, tablas y formato como Markdown. {shortcut} pega texto sin formato. Pronto, un editor de texto enriquecido completo.",
     showContext: "Mostrar uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",
@@ -715,38 +770,6 @@ export const es = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
-  halloween: {
-    navLabel: "Truco o trato…",
-    title: "¡¿Truco o trato?!",
-    description:
-      "Hemos preparado algunos sustos para Unsloth, disponibles hasta finales de octubre.",
-    chooseTheme: "Elige un tema terrorífico",
-    spookyGreetings: "Saludos terroríficos",
-    spookyGreetingsDescription:
-      "El perezoso recibe los chats nuevos con un susto.",
-    decorations: "Arañas y murciélagos",
-    decorationsDescription:
-      "Telarañas en las esquinas y alguna araña o murciélago de vez en cuando con un tema de Halloween.",
-    surprise: "¡Truco o trato!",
-    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
-    themesTitle: "Temas terroríficos",
-    back: "Atrás",
-    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
-    removeNow: "Quitar ahora",
-    hideFromSidebar: "Ocultar de la barra lateral",
-    greeting: {
-      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
-      brewing: "¡A preparar la poción!",
-      trickOrTreat: "¿Truco o trato?",
-      manor: "Te damos la bienvenida a la mansión",
-      manorName: "Te damos la bienvenida a la mansión, {name}",
-      happyHalloween: "¡Feliz Halloween!",
-      happyHalloweenName: "¡Feliz Halloween, {name}!",
-      spirits: "Los espíritus están escuchando…",
-      mysteries: "¿Qué misterios descubriremos esta noche?",
-      conjure: "¿Qué puedo conjurar para ti?",
-    },
-  },
   welcome: {
     goodToSeeYou: "Me alegra verte",
     goodToSeeYouName: "Me alegra verte, {name}",
@@ -770,6 +793,8 @@ export const es = {
   picker: {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint: "Puede cargarse con un contexto más corto o ir más lento en este Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint: "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -972,7 +997,7 @@ export const es = {
       deleteProjects: "Eliminar proyectos",
       deleteProjectsTitle: "Eliminar proyectos",
       deleteProjectsDescription:
-        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+        "Se eliminarán permanentemente {count} proyectos y todos sus chats. Esta acción no se puede deshacer.",
       deleteProjectsFilesDescription:
         "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
       countSelected: "{count} seleccionados",
@@ -983,7 +1008,7 @@ export const es = {
       markRead: "Marcar como leído",
       deleteChats: "Eliminar chats",
       deleteTitle: "Eliminar chats",
-      deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+      deleteDescription: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
       deleteFilesDescription:
         "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       deleteFilesLabel: "Eliminar archivos y carpeta de espacio aislado",
@@ -1031,7 +1056,7 @@ export const es = {
     dialog: {
       deleteChat: {
         title: "Eliminar chat",
-        description: '¿Seguro que quieres eliminar este chat "{name}"?',
+        description: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
       },
       deleteRun: {
         title: "Eliminar ejecución de entrenamiento",
@@ -1057,6 +1082,7 @@ export const es = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de añadir otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
@@ -1082,6 +1108,9 @@ export const es = {
       modelAccessHint: "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -1873,6 +1902,26 @@ export const es = {
       autoTitleNewChats: "Titular automáticamente los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título breve a partir del primer mensaje.",
+      mlWarmup: {
+        sectionTitle: "Rendimiento al iniciar",
+        description: "Prepara las funciones seleccionadas para acelerar su primer uso. Todas están desactivadas por defecto. Estas opciones pueden cargar dependencias compartidas y aumentar el uso de RAM en reposo.",
+        restartRequired: "Los cambios se aplican después de reiniciar Unsloth.",
+        hardwareLabel: "Detección de hardware",
+        hardwareDescription: "Detectar las GPU y preparar PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar el soporte de Transformers para modelos de texto.",
+        datasetsLabel: "Preparación de conjuntos de datos",
+        datasetsDescription: "Preparar Datasets y sus dependencias para las vistas previas y el procesamiento.",
+        mediaLabel: "Modelos de imagen y vídeo",
+        mediaDescription: "Preparar Diffusers y las dependencias compartidas de los modelos.",
+        advanced: "Avanzado",
+        quantizationLabel: "Comprobaciones previas de cuantización de imagen",
+        quantizationDescription: "Comprobar la compatibilidad antes de cargar por primera vez un modelo de imagen cuantizado. Puede aumentar brevemente el uso de RAM.",
+        requiredBySelections: "Necesario para las opciones seleccionadas.",
+        disabledByEnv: "Desactivado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM en el entorno del backend.",
+        loadError: "No se pudo cargar la configuración de preparación al iniciar.",
+        saveError: "No se pudo guardar la configuración de preparación al iniciar.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Precargar el LLM auxiliar al iniciar",
@@ -1929,6 +1978,7 @@ export const es = {
         saveError:
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError: "Introduce 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se ha guardado.",
         autoDownload: "Descargar los modelos que falten",
         autoDownloadDescription:
           "Descarga un GGUF que se indique en una solicitud de la API y que aún no esté descargado. Cualquiera con una clave de API podría así consumir disco y ancho de banda.",
@@ -1985,6 +2035,14 @@ export const es = {
           "No se pudo cargar la configuración de conexiones de las cuentas gestionadas.",
         saveError:
           "No se pudo guardar la configuración de conexiones de las cuentas gestionadas.",
+      },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
       },
       notifications: {
         sectionTitle: "Notificaciones",
@@ -2061,6 +2119,12 @@ export const es = {
           "Elige según la máquina y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta máquina.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Introduce un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2162,10 +2226,14 @@ export const es = {
         label: "Tipo de instalación",
         description:
           "Solo chat (GGUF). La instalación completa añade entrenamiento, exportación, vídeo, modelos safetensors y más funciones de generación de imágenes.",
+        descriptionCpu:
+          "Solo chat (GGUF). No se ha encontrado una GPU compatible, así que la instalación completa añade entrenamiento en la CPU.",
         action: "Actualizar a la instalación completa",
         confirmTitle: "¿Actualizar a la instalación completa?",
         confirmDescription:
           "Esta instalación de solo chat ejecuta modelos GGUF. La instalación completa añade PyTorch para la GPU de este equipo, lo que habilita el entrenamiento, la exportación, el vídeo, los modelos safetensors y más funciones de generación de imágenes. Descarga varios gigabytes (al menos 5 GB de espacio en disco) y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
+        confirmDescriptionCpu:
+          "Esta instalación de solo chat ejecuta modelos GGUF. No se ha encontrado una GPU compatible en este equipo, así que la instalación completa añade PyTorch para la CPU, lo que habilita el entrenamiento en la CPU. Entrenar en la CPU es mucho más lento que en una GPU. Necesita al menos 5 GB de espacio en disco y reinicia el servidor. Se conservan las conversaciones, los modelos y los ajustes. Puede tardar varios minutos.",
         confirmAction: "Actualizar",
         keywords:
           "full install upgrade tipo de instalación instalación completa actualizar solo chat chat only gguf add training entrenamiento entrenar train fine-tune pytorch torch exportar vídeo generación de imágenes safetensors",
@@ -2240,6 +2308,13 @@ export const es = {
       pictureOptions: "Opciones de la foto de perfil",
       greetingSloth: "Saludo",
       greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
+      greetingDefault: "Predeterminado",
+      greetingCustom: "Personalizado",
+      greetingImage: "Imagen",
+      greetingText: "Texto del saludo",
+      greetingTextDescription: "Déjalo vacío para usar los saludos integrados.",
+      greetingFileError: "Elige un PNG, JPEG, WebP o GIF de menos de 10 MB.",
+      greetingImageError: "No se pudo usar esta imagen. Prueba con una más pequeña.",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
       stats: {
@@ -2346,21 +2421,32 @@ export const es = {
         label: "Tema",
         description: "Colores usados en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
-        classic: "Clásica",
-        minimal: "Minimalista",
         moreThemes: "Más temas",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Truco o trato",
-        description:
-          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+      composer: {
+        title: "Editor",
+      },
+      code: {
+        title: "Código",
+        fontDescription: "Bloques de código en el chat, vistas previas de archivos y ejemplos de la API.",
+        lineNumbers: {
+          label: "Números de línea",
+          description: "Numerar las líneas de los bloques de código en el chat.",
+        },
+        wordWrap: {
+          label: "Ajuste de línea",
+          description: "Ajustar las líneas largas en los bloques de código en lugar de desplazarse en horizontal.",
+        },
+        ligatures: {
+          label: "Ligaduras tipográficas",
+          description: "Unir símbolos como => y != en un solo glifo cuando la fuente de código lo admite.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Ancho del chat",
           description: "Ancho de los mensajes y del cuadro de texto.",
-          standard: "Estándar",
+          standard: "Predeterminado",
           wide: "Amplio",
           full: "Ancho completo",
         },
@@ -2438,6 +2524,10 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -2532,7 +2622,7 @@ export const es = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se ha detectado una GPU dedicada.",
         noUsableGpu: "Ninguna GPU de esta máquina se puede usar con PyTorch.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
@@ -2608,7 +2698,7 @@ export const es = {
           "llama.cpp backend gguf inferencia cuda rocm hip vulkan metal cpu gpu acelerador prebuilt cambiar motor",
       },
       modelMemory: {
-        title: "Memoria del modelo",
+        title: "Carga del modelo",
         keepResident: "Mantener el modelo en la memoria de la GPU",
         keepResidentDescription: "Permanece en la VRAM entre mensajes.",
         keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y, cuando los pesos sí residen en la RAM del host (memoria unificada o descarga parcial a la GPU), también pasa --mlock para que el sistema operativo no los pagine ni los vuelva a subir en tu siguiente mensaje.",
@@ -2792,7 +2882,7 @@ export const es = {
       configurationDocs: "documentación",
       configurationFlagsSuffix: "para ver los flags.",
       modelNote:
-        "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
+        "Claude Code y Codex requieren un modelo GGUF servido por llama-server o un modelo MLX. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
       subagent: {
         title: "Usar un modelo local como subagente",
         description:
@@ -2869,6 +2959,8 @@ export const es = {
     },
     chat: {
       groups: {
+        replies: { title: "Respuestas" },
+        thinkingTools: { title: "Razonamiento y herramientas" },
         conversations: { title: "Conversaciones" },
         files: { title: "Archivos y pegado" },
         display: { title: "Visualización" },
@@ -2944,6 +3036,8 @@ export const es = {
         "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
       replyNotificationKeywords:
         "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado notify notification alert done finished reply background",
+      showLinkPreviews: "Vistas previas de enlaces",
+      showLinkPreviewsDescription: "Mostrar vistas previas al pasar el cursor sobre los enlaces a fuentes.",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -2951,15 +3045,26 @@ export const es = {
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
-      showGenerationDetails: "Detalles de generación",
+      showGenerationDetails: "Información detallada de velocidad y carga",
       showGenerationDetailsDescription:
-        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
+        "Añade a las lecturas en directo la velocidad de lectura del prompt, el recuento de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
       showGenerationDetailsKeywords:
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estadísticas de velocidad y contexto",
+      generationStatsUpdatesDescription:
+        "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando acaba cada respuesta.",
+      generationStatsUpdatesHint:
+        "En tiempo real actualiza el indicador de tokens por segundo bajo una respuesta y la barra de contexto en la parte superior del chat varias veces por segundo mientras se escribe la respuesta. Al terminar los actualiza una vez, cuando acaba cada respuesta. En tiempo real puede causar retrasos o menor rendimiento, sobre todo en equipos antiguos u ocupados.",
+      generationStatsUpdatesSettled: "Al terminar",
+      generationStatsUpdatesRealtime: "En tiempo real",
+      generationStatsUpdatesKeywords:
+        "tiempo real en directo actualizar velocidad contexto estadísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
-      composerAtBottom: "Cuadro de texto abajo",
-      composerAtBottomDescription: "Empieza los chats nuevos con el cuadro de texto abajo en lugar de en el centro.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
+      composerPosition: "Posición del cuadro de texto",
+      composerPositionDescription: "Dónde aparece el cuadro de texto al empezar un chat nuevo, desde la parte superior de la página hasta abajo.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Comparte los nuevos archivos adjuntos con todos los chats del proyecto.",
@@ -3226,9 +3331,9 @@ export const es = {
         movedChatsToRecents: "Chats movidos a Recientes: {count}",
         moveFailed: "No se pudieron mover los chats",
         deleteChatsTitle: "Eliminar chats ({count})",
-        deleteChatsWarning: "¿Eliminar los chats seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteChatsWarning: "Se eliminarán permanentemente {count} chats y sus mensajes. Esta acción no se puede deshacer.",
         deleteArchivedTitle: "Eliminar {count} chats archivados",
-        deleteArchivedWarning: "¿Eliminar los chats archivados seleccionados ({count})? Esta acción no se puede deshacer.",
+        deleteArchivedWarning: "Se eliminarán permanentemente {count} chats archivados y sus mensajes. Esta acción no se puede deshacer.",
         deleting: "Eliminando...",
       },
       title: "Datos",
@@ -3438,6 +3543,9 @@ export const es = {
         docs: "Documentación",
         docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
         enableRemoteDescription: "Atiende /v1/systemone.",
@@ -3583,8 +3691,6 @@ export const es = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde él:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o instalar una actualización aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Comprueba si hay disponible una versión más reciente de la app de escritorio.",
@@ -3595,7 +3701,7 @@ export const es = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en un terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",
@@ -3630,6 +3736,8 @@ export const es = {
     imageTraining: "Entrenamiento de imagen",
     goToImageTraining: "Entrenar LoRA de imagen",
     routeTitle: "Entrenar",
+    cpuTrainingNotice:
+      "No se ha encontrado ninguna GPU, así que el entrenamiento se ejecuta en la CPU. Es mucho más lento que en una GPU y solo admite modelos de texto (LoRA o ajuste fino completo).",
     wizard: {
       modelTitle: "Modelo",
       modelDescription: "Selecciona el modelo y el método de entrenamiento",
@@ -3915,8 +4023,6 @@ export const es = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          appleSilicon:
-            "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",
@@ -4748,8 +4854,8 @@ export const es = {
       },
       dialog: {
         renameChat: "Renombrar chat",
-        deleteChatDescription: "Este chat se eliminará de forma permanente. Esta acción no se puede deshacer.",
-        deleteProjectDescription: "El proyecto y sus chats ({count}) se eliminarán de forma permanente. Esta acción no se puede deshacer.",
+        deleteChatDescription: "Se eliminarán permanentemente el chat y sus mensajes. Esta acción no se puede deshacer.",
+        deleteProjectDescription: "Se eliminarán permanentemente el proyecto y sus chats ({count}). Esta acción no se puede deshacer.",
         deleteFilesMany: "Eliminar también los archivos y carpetas de sandbox que crearon estos chats.",
         deleteProjectFilesLabel: "Eliminar la carpeta de trabajo del proyecto",
         deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
@@ -5108,6 +5214,8 @@ export const es = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Añadir nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5205,14 +5313,14 @@ export const es = {
     renameChat: "Renombrar chat",
     chatName: "Nombre del chat",
     deleteChat: "Eliminar chat",
-    deleteChatDescription: "¿Seguro que quieres eliminar {name}? Sus mensajes se eliminarán de forma permanente.",
+    deleteChatDescription: 'Se eliminarán permanentemente el chat "{name}" y sus mensajes. Esta acción no se puede deshacer.',
     importChats: "Importar chats",
     importDestination: "Elige dónde importar {name}:",
     selectDestination: "Seleccionar destino",
     recents: "Recientes",
     import: "Importar",
     deleteProject: "Eliminar proyecto",
-    deleteProjectDescription: "¿Seguro que quieres eliminar {name}? Sus chats se eliminarán de forma permanente.",
+    deleteProjectDescription: 'Se eliminarán permanentemente el proyecto "{name}" y todos sus chats. Esta acción no se puede deshacer.',
     deleteProjectFiles: "La carpeta de trabajo del proyecto se eliminará del disco.",
     deleteAll: "Eliminar todo",
     projectFallback: "proyecto",
@@ -5295,6 +5403,18 @@ export const es = {
     flaggedIntro: "Nuestro analizador automático detectó problemas, entre ellos:",
     nothingFlagged:
       "Nuestro analizador automático no detectó archivos preocupantes, pero compruébalo tú también.",
+    unscannedTitle: "No se pudieron analizar los archivos del modelo",
+    unscannedBody: "{model} incluye pesos pickle, que pueden ejecutar código al cargarse, y no hay ningún análisis de malware disponible para ellos, por lo que no se puede cargar. {note}",
+    unscannedIntro: "Archivos que no se pudieron analizar:",
+    switchSourceNote: "Cambia la fuente de modelos a Hugging Face en Ajustes para cargarlo.",
+    reconnectNote: "Conéctate a Hugging Face para poder leer su análisis e inténtalo de nuevo.",
+    managedTitle: "El código personalizado está desactivado en esta cuenta",
+    managedNote: "Está desactivado en las cuentas administradas. Pide al propietario de la instalación que lo active.",
+    notFoundTitle: "No se encontró en {source}",
+    notFoundBody: "{model} no se encontró en {source}, por lo que no se pudieron ejecutar sus comprobaciones de seguridad. Revisa el nombre o configura un token con acceso si el repositorio es privado.",
+    notOnModelScopeBody: "{model} no está disponible en ModelScope, por lo que no se pudieron ejecutar sus comprobaciones de seguridad y no se puede cargar desde allí. Cambia la fuente de modelos a Hugging Face en Ajustes para usarlo.",
+    checksFailedTitle: "No se pudieron ejecutar las comprobaciones de seguridad",
+    checksFailedBody: "No se pudo leer {model} desde {source}, así que sus comprobaciones de seguridad no pudieron terminar y no se puede cargar. Revisa tu conexión y tu token e inténtalo de nuevo. {note}",
     enableAndContinue: "Habilitar y continuar",
   },
   tour: {
@@ -5459,7 +5579,7 @@ export const es = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster: "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5468,8 +5588,8 @@ export const es = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate: "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates: "Ocultar las actualizaciones de {components} hasta que se vuelva a abrir Unsloth",
     whatsNew: "Novedades",
@@ -5477,5 +5597,61 @@ export const es = {
     later: "Más tarde",
     update: "Actualizar",
     undo: "Deshacer",
+  },
+  generationStats: {
+    working: "Procesando...",
+    processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
+    timeLeft: "quedan {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "borrador {accepted}/{drafted} aceptados ({percent}%)",
+    timing: {
+      trigger: "Tiempos del mensaje",
+      firstToken: "Primer token",
+      speedInStep: "Velocidad (por paso)",
+      effective: "Efectiva",
+      output: "Salida",
+      denoising: "Eliminación de ruido",
+      stepsOne: "{count} paso",
+      steps: "{count} pasos",
+      blocksOne: "{count} bloque",
+      blocks: "{count} bloques",
+      canvas: "Lienzo",
+      generation: "Generación",
+      answerTokens: "Tokens de respuesta",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragmentos",
+      promptEval: "Evaluación del prompt",
+      promptSpeed: "Velocidad del prompt",
+      speed: "Velocidad",
+      tokens: "Tokens",
+      draftAccepted: "Borrador aceptado",
+      denoisingSteps: "Pasos de eliminación de ruido",
+      blocksLabel: "Bloques",
+      cacheHits: "Aciertos de caché",
+      cacheWrites: "Escrituras en caché",
+      stopReason: "Motivo de parada",
+      stoppedByYou: "Detenido por ti",
+      endOfTurn: "Fin del turno",
+      lengthLimit: "Límite de longitud",
+      toolCall: "Llamada a herramienta",
+      contentFilter: "Filtro de contenido",
+    },
+    placement: {
+      title: "Ubicación de los pesos",
+      allOnCpu: "Las {total} capas en la CPU",
+      split: "{gpu} de {total} capas en la GPU, {cpu} en la CPU",
+      allOnGpu: "Las {total} capas en la GPU",
+      expertCache: "Las {total} capas en la GPU, todos los expertos en RAM ({amount} de caché de expertos en la GPU)",
+      expertSpillOne: "Las {total} capas en la GPU, pesos de expertos de {count} capa en RAM",
+      expertSpill: "Las {total} capas en la GPU, pesos de expertos de {count} capas en RAM",
+      inUnifiedMemory: "{amount} en memoria unificada",
+      inSharedMemory: "{amount} en memoria compartida",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

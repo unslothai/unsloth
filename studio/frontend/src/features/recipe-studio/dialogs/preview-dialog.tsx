@@ -19,7 +19,7 @@ import { Switch } from "@/components/ui/switch";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CheckmarkCircle02Icon,
   CookBookIcon,
   TestTube01Icon,
@@ -221,7 +221,7 @@ function ValidationResultPanel({
         >
           <HugeiconsIcon
             icon={
-              validateResult.valid ? CheckmarkCircle02Icon : AlertCircleIcon
+              validateResult.valid ? CheckmarkCircle02Icon : Alert02Icon
             }
             className="size-4"
           />
@@ -654,7 +654,7 @@ function RunDialogBody({
           <div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">
             <div className="flex items-center gap-2">
               <HugeiconsIcon
-                icon={AlertCircleIcon}
+                icon={Alert02Icon}
                 className="size-4 text-destructive"
               />
               <Badge

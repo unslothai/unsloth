@@ -1630,11 +1630,18 @@ class SwapWorld:
         from utils import openai_auto_switch_settings
 
         self.loaded = earlier
-        self.unloaded, self.stashed, self.reloads = [], [], []
+        self.unloaded, self.stashed, self.reloads, self.launches = [], [], [], []
+        self.launch = None
         self.idle = idle
         monkeypatch.setattr(llama_keepwarm, "idle_for", lambda seconds: self.idle)
         monkeypatch.setattr(llama_keepwarm, "loaded_identity", lambda: self.loaded)
-        monkeypatch.setattr(llama_keepwarm, "stash_for_reload", self.stashed.append)
+        monkeypatch.setattr(llama_keepwarm, "launch_to_replay", lambda: self.launch)
+
+        def stash(identity, launch = None):
+            self.stashed.append(identity)
+            self.launches.append(launch)
+
+        monkeypatch.setattr(llama_keepwarm, "stash_for_reload", stash)
         monkeypatch.setattr(
             inference_routes,
             "_loaded_satisfies",
@@ -1709,6 +1716,14 @@ def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypat
     assert world.stashed == [SwapWorld.EARLIER]
     assert world.reloads == [(inference_routes._RELOAD_ONLY_MODEL, True)]
     assert world.loaded == SwapWorld.EARLIER
+
+
+def test_a_scheduled_run_restores_the_earlier_model_with_its_launch_settings(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    world.launch = {"kwargs": {"max_seq_length": 8192, "cache_type_kv": "q8_0"}}
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
+    assert world.stashed == [SwapWorld.EARLIER]
+    assert world.launches == [world.launch]
 
 
 def test_a_scheduled_run_stays_off_a_model_the_user_loaded_while_it_waited(monkeypatch):

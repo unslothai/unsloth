@@ -8,6 +8,7 @@ import logging
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -315,6 +316,85 @@ def reset_schema_state_for_tests() -> None:
         _schema_ready.clear()
 
 
+class _ReusedConnection(sqlite_gate.GatedConnection):
+    """Shared by a reuse_connections() block: close() rolls back the uncommitted rest (what a real close
+    discards) and keeps the connection open."""
+
+    _reuse_slot = None
+
+    def close(self) -> None:
+        slot = self._reuse_slot
+        if slot is None or slot.conn is not self:
+            super().close()
+            return
+        if not slot.checked_out:
+            return
+        slot.checked_out = False
+        try:
+            self.rollback()
+        except Exception:  # noqa: BLE001 - a real close would not raise here either
+            slot.discard()
+
+
+class _ReuseSlot:
+    __slots__ = ("conn", "db_path", "checked_out")
+
+    def __init__(self) -> None:
+        self.conn = None
+        self.db_path = None
+        self.checked_out = False
+
+    def checkout(self, db_path: Path):
+        conn = self.conn
+        if conn is None or self.checked_out or self.db_path != db_path:
+            return None
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:  # noqa: BLE001 - unusable now, so the caller opens a new one
+            self.discard()
+            return None
+        self.checked_out = True
+        return conn
+
+    def discard(self) -> None:
+        conn, self.conn, self.db_path, self.checked_out = self.conn, None, None, False
+        if conn is not None:
+            conn._reuse_slot = None
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not close a reused rag.db connection", exc_info = True)
+
+
+_reuse_state = threading.local()
+
+
+def release_reused() -> None:
+    """Close this thread's idle shared connection before file work or waits, so an account rename on
+    Windows sees the same open handles as without the block. No-op outside a block or while checked out."""
+    slot = getattr(_reuse_state, "slot", None)
+    if slot is not None and slot.conn is not None and not slot.checked_out:
+        slot.discard()
+
+
+@contextmanager
+def reuse_connections():
+    """On this thread, get_connection() reuses one connection (a fresh open costs ~0.5 ms) unless it is
+    still checked out, then opens a normal one. Callers commit and close as before. Nested blocks share
+    the outer one, which closes it."""
+    if getattr(_reuse_state, "slot", None) is not None:
+        yield
+        return
+    slot = _ReuseSlot()
+    _reuse_state.slot = slot
+    try:
+        yield
+    finally:
+        _reuse_state.slot = None
+        slot.discard()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
     global _extension_loaded
@@ -323,18 +403,28 @@ def get_connection() -> sqlite3.Connection:
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite_gate.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
-    conn.execute("PRAGMA busy_timeout = 5000")
-    try:
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
-    except Exception as exc:  # noqa: BLE001
-        conn.close()
-        _warn_unavailable_once(exc)
-        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+    slot = getattr(_reuse_state, "slot", None)
+    conn = slot.checkout(db_path) if slot is not None else None
+    if conn is None:
+        adopt = slot is not None and slot.conn is None
+        if adopt:
+            conn = sqlite_gate.connect(db_path, factory = _ReusedConnection)
+        else:
+            conn = sqlite_gate.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        # Wait for a lock instead of erroring: figure-heavy ingests hold connections across many seconds.
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            _warn_unavailable_once(exc)
+            raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+        if adopt:
+            slot.conn, slot.db_path, slot.checked_out = conn, db_path, True
+            conn._reuse_slot = slot
     # Set before the schema step: the library loaded, whatever the db does next. Monotonic, no lock.
     _extension_loaded = True
 

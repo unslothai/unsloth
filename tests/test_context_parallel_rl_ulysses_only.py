@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""DPO / GRPO context parallelism shards Llama-style decoders only: models whose attention runs
-only on the Hugging Face Ulysses path (MiniMax-M2, and every other ULYSSES_ATTENTION_CLASSES entry)
-must be refused there, while SFT accepts them and Llama-style RL stays accepted."""
+"""DPO / GRPO context parallelism shards Unsloth's Llama-style decoders only: MiniMax-M2 runs on main's
+generic Hugging Face Ulysses route and the MiniMax-M1 Lightning hybrid on its mixer route, so both must
+be refused there, while SFT accepts them and Llama-style RL stays accepted."""
 
 import types
 
@@ -13,11 +13,11 @@ import torch
 import unsloth  # noqa: F401
 from unsloth import context_parallel as cp
 from unsloth.models.llama import LlamaAttention_fast_forward
-from unsloth.utils import ulysses_hybrid as uh
 
 transformers = pytest.importorskip("transformers")
 
-RL_REFUSAL = "DPO / GRPO context parallelism supports Llama-style attention only"
+RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style attention only"
+RL_HYBRID_REFUSAL = "DPO / GRPO context parallelism does not support linear attention hybrids"
 
 
 def _trainer():
@@ -59,6 +59,23 @@ def _llama_style():
     )
 
 
+def _minimax_m1():
+    config = transformers.MiniMaxConfig(
+        vocab_size = 64,
+        hidden_size = 32,
+        intermediate_size = 32,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
+        num_local_experts = 2,
+        num_experts_per_tok = 1,
+        layer_types = ["linear_attention", "full_attention"],
+        block_size = 4,
+    )
+    return transformers.MiniMaxForCausalLM(config)
+
+
 def _minimax_m2():
     config = transformers.MiniMaxM2Config(
         vocab_size = 64,
@@ -74,38 +91,29 @@ def _minimax_m2():
     return transformers.MiniMaxM2ForCausalLM(config)
 
 
-# Every attention class the Hugging Face Ulysses wrapper serves; upper layers extend the tuple.
-ULYSSES_ONLY = sorted(uh.ULYSSES_ATTENTION_CLASSES)
-
-
-@pytest.mark.parametrize("name", ULYSSES_ONLY)
-def test_rl_refuses_ulysses_only_attention(name):
-    model = _fake_model(type(name, (torch.nn.Module,), {}))
-    assert cp._runs_hf_ulysses_attention(model, "ulysses")
-    _sft(model)
-    with pytest.raises(NotImplementedError, match = RL_REFUSAL):
-        _rl(model)
-
-
 @pytest.mark.skipif(not hasattr(transformers, "MiniMaxM2Config"), reason = "no MiniMax-M2")
 def test_rl_refuses_real_minimax_m2_and_sft_accepts_it():
     model = _minimax_m2()
     assert not cp._stateful_mixers(model)
+    # main's generic route: every attention layer goes through ALL_ATTENTION_FUNCTIONS.
+    assert cp._generic_hf_attention(model)
     _sft(model)
     with pytest.raises(NotImplementedError, match = RL_REFUSAL):
         _rl(model)
-    # The reference model is checked too.
     with pytest.raises(NotImplementedError, match = RL_REFUSAL):
         cp._check_cp_trainer(_trainer(), 2, "ulysses", [_llama_style(), model])
 
 
+@pytest.mark.skipif(not hasattr(transformers, "MiniMaxConfig"), reason = "no MiniMax")
+def test_rl_refuses_the_minimax_m1_lightning_hybrid():
+    model = _minimax_m1()
+    assert cp._stateful_mixers(model)
+    with pytest.raises(NotImplementedError, match = RL_HYBRID_REFUSAL):
+        _rl(model)
+
+
 def test_rl_keeps_accepting_llama_style_attention():
     model = _llama_style()
-    assert not cp._runs_hf_ulysses_attention(model, "ulysses")
+    assert not cp._generic_hf_attention(model)
     _rl(model)
     _sft(model)
-
-
-def test_ring_backend_is_not_flagged_as_ulysses_attention():
-    model = _fake_model(type("MiniMaxM2Attention", (torch.nn.Module,), {}))
-    assert not cp._runs_hf_ulysses_attention(model, "ring")

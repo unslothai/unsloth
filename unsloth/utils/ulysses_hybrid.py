@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Ulysses context parallelism for hybrid models (Gated DeltaNet, Kimi delta and MiniMax Lightning
-attention): scans need the full sequence, so they run on heads."""
+"""Ulysses context parallelism for Hugging Face attention (any model whose attention calls ALL_ATTENTION_FUNCTIONS
+runs its own attention function after the exchange) and for hybrid models (Gated DeltaNet, Kimi delta and MiniMax
+Lightning attention), whose scans need the full sequence so they run on heads."""
 
+import builtins
 import functools
 import inspect
 
@@ -11,13 +13,10 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from .ulysses import _AllToAll, ulysses_attention
+from .ulysses import _AllToAll
 
 __all__ = [
     "GATED_DELTA_ATTENTION_CLASSES",
-    "KIMI_DELTA_ATTENTION_CLASSES",
-    "HYBRID_ATTENTION_CLASSES",
-    "ULYSSES_ATTENTION_CLASSES",
     "is_ulysses_gated_delta",
     "is_ulysses_kimi_delta",
     "is_ulysses_lightning",
@@ -30,6 +29,8 @@ __all__ = [
     "wrap_gated_delta_forward",
     "wrap_ulysses_mixer_forward",
     "install_hf_attention_wrapper",
+    "is_hf_registry_attention",
+    "hf_attention_forward",
 ]
 
 # Hybrid full attention layers: Hugging Face forwards that call ALL_ATTENTION_FUNCTIONS after RoPE.
@@ -37,20 +38,6 @@ GATED_DELTA_ATTENTION_CLASSES = (
     "Qwen3NextAttention",
     "Qwen3_5Attention",
     "Qwen3_5MoeAttention",
-)
-# Kimi-Linear's full attention layers are MLA; value heads are narrower than query / key heads.
-KIMI_DELTA_ATTENTION_CLASSES = ("KimiMLAAttention",)
-HYBRID_ATTENTION_CLASSES = (
-    GATED_DELTA_ATTENTION_CLASSES + KIMI_DELTA_ATTENTION_CLASSES + ("MiniMaxAttention",)
-)
-# Attention-only models whose Hugging Face attention runs under Ulysses without a stateful mixer.
-# DeepSeek V2 / V3 MLA (Moonlight) pass a YaRN-scaled softmax scale and narrower value heads.
-# Gemma 4 passes its sliding window per layer and a softmax scale of 1.0.
-ULYSSES_ATTENTION_CLASSES = HYBRID_ATTENTION_CLASSES + (
-    "MiniMaxM2Attention",
-    "DeepseekV2Attention",
-    "DeepseekV3Attention",
-    "Gemma4TextAttention",
 )
 
 
@@ -330,8 +317,10 @@ def _torch_kda(q, k, v, g, beta):
 
     q, k, g [B, T, H, K]; v [B, T, H, V]; beta [B, T, H].
     """
-    q = F.normalize(q.float(), dim = -1) * q.shape[-1] ** -0.5
-    k = F.normalize(k.float(), dim = -1)
+    # fla's use_qk_l2norm_in_kernel: x * rsqrt(sum(x ** 2) + 1e-6), not F.normalize.
+    q, k = q.float(), k.float()
+    q = q * torch.rsqrt(q.pow(2).sum(-1, keepdim = True) + 1e-6) * q.shape[-1] ** -0.5
+    k = k * torch.rsqrt(k.pow(2).sum(-1, keepdim = True) + 1e-6)
     v, g, beta = v.float(), g.float(), beta.float()
     state = q.new_zeros(q.shape[0], q.shape[2], q.shape[3], v.shape[3])
     outs = []
@@ -365,6 +354,17 @@ def _kda_scan(q, k, v, g, beta):
     return _torch_kda(q, k, v, g, beta).to(v.dtype)
 
 
+def _caller_pad_lengths(manager, bsz, total):
+    lookup = getattr(manager, "caller_pad_lengths", None)
+    return lookup(bsz, total) if callable(lookup) else None
+
+
+def _real_positions(lengths, positions):
+    # [bsz, len(positions)] True where the position is one of the row's caller tokens.
+    limit = torch.tensor(lengths, device = positions.device)
+    return positions[None, :] < limit[:, None]
+
+
 def ulysses_kimi_delta_forward(
     module,
     hidden_states,
@@ -372,9 +372,12 @@ def ulysses_kimi_delta_forward(
     cache_params = None,
     *,
     group,
+    caller_lengths = None,
     **kwargs,
 ):
-    """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard."""
+    """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard.
+    caller_lengths (per row, the real length of the whole sequence): the output is zero past it, as the
+    hub layer's pad_input leaves caller padding when it unpads on the 2D mask."""
     if cache_params is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
@@ -427,7 +430,11 @@ def ulysses_kimi_delta_forward(
     out = _AllToAll.apply(out.reshape(bsz, total, heads, dim), 1, 2, group)
 
     out = module.o_norm(out, gate.reshape(bsz, local_len, -1, dim))
-    return module.o_proj(out.reshape(bsz, local_len, -1))
+    out = module.o_proj(out.reshape(bsz, local_len, -1))
+    if caller_lengths is not None:
+        local = torch.arange(rank * local_len, (rank + 1) * local_len, device = out.device)
+        out = out.masked_fill(~_real_positions(caller_lengths, local)[..., None], 0)
+    return out
 
 
 def ulysses_lightning_forward(
@@ -506,6 +513,12 @@ def _wrap_ulysses_forward(module, get_cp_manager, name) -> None:
             packed = getattr(manager, "packed_seq_lengths", None)
             if packed is not None:
                 kwargs["packed_seq_lengths"] = packed
+        if name == "ulysses_kimi_delta_forward":
+            hidden = kwargs.get("hidden_states", args[0] if args else None)
+            if isinstance(hidden, torch.Tensor) and hidden.ndim == 3:
+                kwargs["caller_lengths"] = _caller_pad_lengths(
+                    manager, hidden.shape[0], hidden.shape[1] * manager.size
+                )
         # Looked up per call so tests can substitute the exchange.
         return globals()[name](module, *args, group = manager.group, **kwargs)
 
@@ -525,181 +538,288 @@ def wrap_ulysses_mixer_forward(module, get_cp_manager) -> None:
     return wrap_gated_delta_forward(module, get_cp_manager)
 
 
-# flash-attn 2's forward / backward stop at head_dim 256.
-_FLASH_ATTN_MAX_HEAD_DIM = 256
-_SLIDING_BLOCK_MASKS = {}
-_FLEX = {}
-# Flex outcome per call class: True once it ran (with its backward when training), False once it
-# failed. A failure on one class (dtype, head size, block alignment) keeps flex for the others.
-_FLEX_STATUS = {}
-_FLEX_BLOCK = 128
+# Keyword arguments that describe the local sequence shard: rebuilt for the whole sequence after the exchange.
+_SHARD_LOCAL_KWARGS = (
+    "position_ids",
+    "cu_seq_lens_q",
+    "cu_seq_lens_k",
+    "max_length_q",
+    "max_length_k",
+    "packed_seq_lengths",
+)
 
 
-def _flex_sliding_attention(*, config, context, Q, K, V, window, scale):
-    """Causal sliding-window attention over the gathered sequence with a block-sparse flex mask.
-
-    SDPA has no window, so the dense path would build a [S, S] mask and compute every block;
-    flex skips the blocks outside the window like the stock (non-CP) Gemma 4 path does.
-    """
-    from torch.nn.attention.flex_attention import create_block_mask, flex_attention
-
-    if "fn" not in _FLEX:
-        _FLEX["fn"] = torch.compile(flex_attention, dynamic = False)
-    seq = context.q_len
-    cache_key = (seq, window, Q.device)
-    block_mask = _SLIDING_BLOCK_MASKS.get(cache_key)
-    if block_mask is None:
-
-        def keep(b, h, q, k):
-            return (q >= k) & (q - k < window)
-
-        if len(_SLIDING_BLOCK_MASKS) >= 8:
-            _SLIDING_BLOCK_MASKS.clear()
-        block_mask = create_block_mask(keep, None, None, seq, seq, device = Q.device)
-        _SLIDING_BLOCK_MASKS[cache_key] = block_mask
-    out = _FLEX["fn"](Q, K, V, block_mask = block_mask, scale = scale, enable_gqa = config.n_groups != 1)
-    return out.transpose(1, 2)
-
-
-def _flex_device_ok(query) -> bool:
-    # flex_attention has no CPU backward and the dense path is the CPU reference.
-    return query.is_cuda
+def _registry_caller(function, hops = 1):
+    """`function` or the single function it delegates to (unsloth_zoo's compiled `<Class>_forward`) that reads
+    ALL_ATTENTION_FUNCTIONS, else None. A forward calling several functions is not a delegate (fast forwards)."""
+    try:
+        function = inspect.unwrap(function)
+    except Exception:
+        return None
+    code = getattr(function, "__code__", None)
+    if code is None:
+        return None
+    if "ALL_ATTENTION_FUNCTIONS" in code.co_names:
+        return function
+    if hops <= 0:
+        return None
+    globs = getattr(function, "__globals__", {})
+    callees = {
+        name for name in code.co_names if callable(globs.get(name)) or name in vars(builtins)
+    }
+    if len(callees) != 1:
+        return None
+    callee = globs.get(callees.pop())
+    if callee is None or callee is function or not inspect.isfunction(callee):
+        return None
+    return _registry_caller(callee, hops - 1)
 
 
-def _flex_or_dense(*, config, context, Q, K, V, window, scale):
-    """Flex sliding attention, or the dense windowed SDPA path for a call class flex cannot run."""
-    from .attention_dispatch import _run_attention
+def _calls_attention_registry(function) -> bool:
+    return _registry_caller(function) is not None
 
-    needs_backward = bool(context.training) and not torch.is_inference_mode_enabled()
-    key = (
-        Q.device.type,
-        Q.dtype,
-        Q.shape[-1],
-        config.n_groups != 1,
-        window,
-        context.q_len % _FLEX_BLOCK == 0,
-        needs_backward,
+
+def hf_attention_forward(module):
+    """The Hugging Face forward of this attention class that calls ALL_ATTENTION_FUNCTIONS (eager falls back to
+    the modeling module's eager_attention_forward): the class forward, or the original unsloth_zoo stashed when
+    it patched the class (`_original_<module>_<Class>_forward`, e.g. Gemma3's fp32 SDPA forward). None for
+    Unsloth's fast forwards and custom kernels."""
+    cls = type(module)
+    forward = getattr(cls, "forward", None)
+    if _calls_attention_registry(forward):
+        return forward
+    for klass in cls.__mro__:
+        for name, value in vars(klass).items():
+            if (
+                name.startswith("_original_")
+                and name.endswith(f"_{klass.__name__}_forward")
+                and _calls_attention_registry(value)
+            ):
+                return value
+    return None
+
+
+def is_hf_registry_attention(module) -> bool:
+    return hf_attention_forward(module) is not None
+
+
+def _forward_globals(module) -> dict:
+    return getattr(_registry_caller(hf_attention_forward(module)), "__globals__", {})
+
+
+def _route_hf_forward(module, get_cp_manager) -> None:
+    """When the class forward is unsloth_zoo's replacement, run the stashed Hugging Face forward on this module
+    while a Ulysses manager is active (so attention goes through the registry), and the class forward otherwise."""
+    hf_forward = hf_attention_forward(module)
+    if hf_forward is None or hf_forward is getattr(type(module), "forward", None):
+        return
+    if "_unsloth_cp_hf_forward" in vars(module):
+        return
+    import types
+
+    default = module.forward
+    hf_bound = types.MethodType(hf_forward, module)
+
+    @functools.wraps(default)
+    def forward(*args, **kwargs):
+        manager = get_cp_manager()
+        if manager is not None and manager.backend == "ulysses":
+            return hf_bound(*args, **kwargs)
+        return default(*args, **kwargs)
+
+    module._unsloth_cp_hf_forward = hf_bound
+    module.forward = forward
+
+
+class _HeadShard:
+    """The attention module as its own attention function sees it on a head shard: the local key / value
+    group count and the local heads' sinks; everything else is the module's."""
+
+    # Plain attribute access only: torch.compile cannot trace object.__getattribute__ / object.__setattr__.
+    def __init__(self, module, **overrides):
+        self._unsloth_module = module
+        # One attribute at a time: torch < 2.13 cannot trace self.__dict__.update (graph break).
+        for name, value in overrides.items():
+            setattr(self, name, value)
+
+    def __getattr__(self, name):
+        # Only called for names the shard does not hold itself.
+        if name == "_unsloth_module":
+            raise AttributeError(name)
+        return getattr(self._unsloth_module, name)
+
+
+def _sliding_window(module, kwargs):
+    window = (
+        kwargs["sliding_window"]
+        if "sliding_window" in kwargs
+        else getattr(module, "sliding_window", None)
     )
-    if _FLEX_STATUS.get(key) is not False:
-        flex = functools.partial(
-            _flex_sliding_attention, config = config, context = context, window = window, scale = scale
+    return (
+        window if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+    )
+
+
+def _refuse_non_causal(module, is_causal = None) -> None:
+    # The rebuilt whole-sequence mask is causal, and bidirectional windows differ per model (Gemma3 `<`, the
+    # generic overlay `<=`), so non-causal attention would silently train causal.
+    if is_causal is None:
+        is_causal = getattr(module, "is_causal", True)
+    if is_causal is False:
+        raise NotImplementedError(
+            f"Unsloth: Ulysses context parallelism only supports causal attention, but {type(module).__name__} "
+            "is bidirectional (for example use_bidirectional_attention = True). Turn off context parallelism "
+            "for this model."
         )
-        try:
-            if key not in _FLEX_STATUS and needs_backward:
-                # The backward compiles on the first loss.backward(), past any fallback here (head
-                # sizes whose backward exceeds shared memory): run it once per class now. Also
-                # under reentrant checkpointing, whose first forward runs without grad.
-                q, k, v = (t.detach().requires_grad_() for t in (Q, K, V))
-                with torch.enable_grad():
-                    torch.autograd.grad(flex(Q = q, K = k, V = v).sum(), (q, k, v))
-                del q, k, v
-            out = flex(Q = Q, K = K, V = V)
-            _FLEX_STATUS[key] = True
-            return out
-        except torch.OutOfMemoryError:
-            raise
-        except Exception as error:
-            # A compile failure (old torch, unsupported head size or dtype) keeps the dense path.
-            _FLEX_STATUS[key] = False
-            print(f"Unsloth: Ulysses flex sliding attention unavailable ({error}); using SDPA.")
-    return _run_attention(config = config, context = context, Q = Q, K = K, V = V)
 
 
-def _ulysses_hf_attention(module, query, key, value, attention_mask, *, group, **kwargs):
-    from .attention_dispatch import (
-        FLASH_DENSE,
-        FLASH_VARLEN,
-        SDPA,
-        AttentionConfig,
-        AttentionContext,
-        _run_attention,
-        select_attention_backend,
-    )
+def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
+    """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
+    as transformers' masks), and packed documents closed off from one another (padding past
+    cu_seqlens[-1] is one more segment)."""
+    idx = torch.arange(total, device = device)
+    allowed = idx[None, :] <= idx[:, None]
+    if window is not None:
+        allowed = allowed & (idx[:, None] - idx[None, :] < window)
+    if cu_seqlens is not None:
+        doc = torch.bucketize(idx, cu_seqlens[1:].to(device = device, dtype = idx.dtype), right = True)
+        allowed = allowed & (doc[:, None] == doc[None, :])
+    mask = torch.zeros(total, total, device = device, dtype = dtype)
+    return mask.masked_fill_(~allowed, torch.finfo(dtype).min)[None, None]
+
+
+def _is_flash(implementation) -> bool:
+    # flash_attention_2 / 3, and hub kernels ("kernels-community/...") that take transformers' flash kwargs.
+    return "flash" in str(implementation) or "/" in str(implementation)
+
+
+def _ulysses_hf_attention(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    *,
+    group,
+    attention_fn,
+    implementation,
+    packed_seq_lengths = None,
+    caller_lengths = None,
+    **kwargs,
+):
+    """Ulysses around the model's own attention function: q / k / v go from sequence shards to head shards,
+    the function runs over the whole sequence with its own scaling, softcap, sliding window and the local
+    heads' sinks, and the output goes back to sequence shards."""
     from .packing import get_packed_info_from_kwargs
+    from .ulysses import head_to_seq, seq_to_head, ulysses_head_plan
 
-    bsz, n_heads, q_len, head_dim = query.shape
-    scaling = kwargs.get("scaling")
-    # DeepSeek MLA folds YaRN's mscale into the scale; every backend below takes an explicit one.
-    custom_scale = scaling is not None and abs(scaling * head_dim**0.5 - 1) > 1e-6
-    scale_kwargs = {"softmax_scale": scaling} if custom_scale else {}
     if module.training and kwargs.get("dropout"):
         raise NotImplementedError(
             "Unsloth: Ulysses context parallelism does not support attention dropout."
         )
-    seq_info = get_packed_info_from_kwargs(kwargs, query.device)
-    v_dim = value.shape[-1]
-    if v_dim > head_dim:
-        raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism needs value heads no wider than query heads."
-        )
-    if v_dim < head_dim:
-        # MLA (Kimi-Linear, DeepSeek): pad value heads to the query width like HF's flash path.
-        value = F.pad(value, (0, head_dim - v_dim))
-    n_kv_heads = key.shape[1]
-    backend = select_attention_backend(use_varlen = seq_info is not None)
-    if backend in (FLASH_DENSE, FLASH_VARLEN) and head_dim > _FLASH_ATTN_MAX_HEAD_DIM:
-        # Gemma 4's global layers (head_dim 512): flash-attn raises, SDPA runs them.
-        backend = SDPA
-    window = kwargs.get("sliding_window")
-    if window is not None and window <= 0:
-        window = None
-    # flash-attn takes the window as kwargs (the dispatcher passes them through as given): keys in
-    # [i - (window - 1), i], the same keys as `q - k < window`.
-    flash_window = {} if window is None else {"window_size": (window - 1, 0)}
-    config = AttentionConfig(
-        backend = backend,
-        n_kv_heads = n_kv_heads,
-        n_groups = n_heads // n_kv_heads,
-        flash_dense_kwargs = {"causal": True, **scale_kwargs, **flash_window},
-        flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True, **scale_kwargs, **flash_window},
-        sdpa_kwargs = {"scale": scaling} if custom_scale else None,
-        xformers_kwargs = {"scale": scaling} if custom_scale else None,
+    _refuse_non_causal(module, kwargs.get("is_causal"))
+    bsz, n_heads, local_len, _ = query.shape
+    size = dist.get_world_size(group)
+    rank = dist.get_rank(group)
+    plan = ulysses_head_plan(n_heads, key.shape[1], size)
+    if plan.kv_replication > 1:
+        # Consecutive copies keep query head h on kv head h // n_groups after the split.
+        key = key.repeat_interleave(plan.kv_replication, dim = 1)
+        value = value.repeat_interleave(plan.kv_replication, dim = 1)
+    query, key, value = (seq_to_head(x, group) for x in (query, key, value))
+    total = local_len * size
+    heads = slice(rank * plan.local_heads, (rank + 1) * plan.local_heads)
+
+    for name in _SHARD_LOCAL_KWARGS:
+        kwargs.pop(name, None)
+    seq_info = (
+        None
+        if packed_seq_lengths is None
+        else get_packed_info_from_kwargs({"packed_seq_lengths": packed_seq_lengths}, query.device)
     )
-    context = AttentionContext(
-        bsz = bsz,
-        q_len = q_len,
-        kv_seq_len = key.shape[2],
-        n_heads = n_heads,
-        head_dim = head_dim,
-        requires_grad = query.requires_grad,
-        seq_info = seq_info,
-        attention_mask = None,
-        causal_mask = None,
-        # After the exchange each rank holds the full sequence, so the window applies unchanged.
-        sliding_window = window,
-        # Keeps training SDPA off cuDNN attention on SM100 (#15019) on the Ulysses path too.
-        training = module.training,
-    )
-    window = context.sliding_window
-    run = _run_attention
-    if (
-        config.backend == SDPA
-        and window is not None
-        and 0 < window < q_len * dist.get_world_size(group)
-        and seq_info is None
-        and _flex_device_ok(query)
-    ):
-        run = functools.partial(_flex_or_dense, window = window, scale = scaling)
+    cu_seqlens = None if seq_info is None else seq_info[1]
 
-    out = ulysses_attention(run, config, context, query, key, value, group)
-    return (out if v_dim == head_dim else out[..., :v_dim]), None
+    overrides = {"num_key_value_groups": plan.local_groups}
+    sinks = getattr(module, "sinks", None)
+    if isinstance(sinks, torch.Tensor) and sinks.ndim >= 1 and sinks.shape[0] == n_heads:
+        overrides["sinks"] = sinks[heads]
+    s_aux = kwargs.get("s_aux")
+    if isinstance(s_aux, torch.Tensor) and s_aux.ndim >= 1 and s_aux.shape[0] == n_heads:
+        kwargs["s_aux"] = s_aux[heads]
+    shard = _HeadShard(module, **overrides)
 
-
-def install_hf_attention_wrapper(module, implementation, get_cp_manager) -> None:
-    """Route this module's ALL_ATTENTION_FUNCTIONS[implementation] call through Ulysses while active."""
-    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
-
-    # "eager" is a per-model function some transformers releases call without the registry.
-    current = None if implementation == "eager" else ALL_ATTENTION_FUNCTIONS.get(implementation)
-    if current is None:
-        raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism for hybrid models needs attn_implementation "
-            f"'sdpa' or a flash attention backend, not {implementation!r}."
+    window = _sliding_window(module, kwargs)
+    if _is_flash(implementation):
+        # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
+        mask = None
+        if cu_seqlens is not None:
+            if int(cu_seqlens[-1]) < total:
+                # Padding to the cp multiple sits after the last document: its own segment.
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
+            cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
+            longest = int((cu[1:] - cu[:-1]).max())
+            kwargs.update(
+                cu_seq_lens_q = cu, cu_seq_lens_k = cu, max_length_q = longest, max_length_k = longest
+            )
+    elif implementation == "sdpa" and cu_seqlens is None and window is None:
+        mask = None  # sdpa's is_causal path
+    else:
+        # No data-dependent padding check here: it graph-broke compiled packed attention.
+        mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
+    out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
+    # [B, T, H / N, D] -> [B, T / N, H, D]
+    out = out.reshape(bsz, total, plan.local_heads, -1)
+    if caller_lengths is not None and cu_seqlens is None:
+        out = _caller_padding_rows(
+            out,
+            shard,
+            query,
+            key,
+            value,
+            caller_lengths,
+            window,
+            implementation,
+            attention_fn,
+            kwargs,
         )
-    module._unsloth_cp_ulysses_attention = True
-    if getattr(current, "_unsloth_cp_ulysses", False):
-        return
+    return head_to_seq(out, group), None
 
+
+def _caller_padding_rows(
+    out, shard, query, key, value, lengths, window, implementation, attention_fn, kwargs
+):
+    """The rows of right padded positions as one process computes them from the caller's 2D mask, so
+    the MoE routes them alike (real rows never attend padding, so they are unchanged). Flash unpads:
+    padding rows are zero. sdpa / eager mask the padded keys: a padding query attends the row's real
+    keys only. Left as is: a row without real tokens, and sdpa / eager with a sliding window (a
+    padding query past the window has no key at all, which softmax turns into NaN)."""
+    total = out.shape[1]
+    if _is_flash(implementation):
+        real = _real_positions(lengths, torch.arange(total, device = out.device))
+        return out.masked_fill(~real[:, :, None, None], 0)
+    if window is not None:
+        return out
+    rows = []
+    for row, length in enumerate(lengths):
+        if length <= 0 or length >= total:
+            rows.append(out[row])
+            continue
+        # Every real key precedes the padding queries: no mask and is_causal = False, so no
+        # [pad, real] mask is materialised (sdpa and eager both honour the explicit flag).
+        pad, _ = attention_fn(
+            shard,
+            query[row : row + 1, :, length:],
+            key[row : row + 1, :, :length],
+            value[row : row + 1, :, :length],
+            None,
+            **{**kwargs, "is_causal": False},
+        )
+        pad = pad.reshape(total - length, out.shape[2], -1)
+        rows.append(torch.cat([out[row, :length], pad.to(out.dtype)], dim = 0))
+    return torch.stack(rows, dim = 0)
+
+
+def _ulysses_attention_wrapper(current, implementation, get_cp_manager):
     @functools.wraps(current)
     def attention(module, query, key, value, attention_mask, *args, **kwargs):
         manager = get_cp_manager()
@@ -711,9 +831,58 @@ def install_hf_attention_wrapper(module, implementation, get_cp_manager) -> None
             return current(module, query, key, value, attention_mask, *args, **kwargs)
         if args:
             raise TypeError("Unsloth: Ulysses attention expects keyword arguments after the mask.")
+        if kwargs.get("packed_seq_lengths") is None:
+            # Some decoders do not forward packed_seq_lengths to the attention layers.
+            kwargs["packed_seq_lengths"] = getattr(manager, "packed_seq_lengths", None)
         return _ulysses_hf_attention(
-            module, query, key, value, attention_mask, group = manager.group, **kwargs
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            group = manager.group,
+            attention_fn = current,
+            implementation = implementation,
+            caller_lengths = _caller_pad_lengths(
+                manager, query.shape[0], query.shape[2] * manager.size
+            ),
+            **kwargs,
         )
 
     attention._unsloth_cp_ulysses = True
-    ALL_ATTENTION_FUNCTIONS[implementation] = attention
+    return attention
+
+
+def install_hf_attention_wrapper(module, implementation, get_cp_manager) -> None:
+    """Route this module's attention function (ALL_ATTENTION_FUNCTIONS[implementation], or the modeling
+    module's eager_attention_forward for "eager") through Ulysses while a Ulysses manager is active."""
+    _refuse_non_causal(module)
+    _route_hf_forward(module, get_cp_manager)
+    if implementation == "eager":
+        globs = _forward_globals(module)
+        current = globs.get("eager_attention_forward")
+        if current is None:
+            raise NotImplementedError(
+                "Unsloth: Ulysses context parallelism found no eager_attention_forward for "
+                f"{type(module).__name__}; use attn_implementation = 'sdpa'."
+            )
+        if not getattr(current, "_unsloth_cp_ulysses", False):
+            globs["eager_attention_forward"] = _ulysses_attention_wrapper(
+                current, implementation, get_cp_manager
+            )
+        module._unsloth_cp_ulysses_attention = True
+        return
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    current = ALL_ATTENTION_FUNCTIONS.get(implementation)
+    if current is None or implementation == "flex_attention":
+        raise NotImplementedError(
+            "Unsloth: Ulysses context parallelism needs attn_implementation 'sdpa', 'eager' or a flash "
+            f"attention backend, not {implementation!r}."
+        )
+    module._unsloth_cp_ulysses_attention = True
+    if getattr(current, "_unsloth_cp_ulysses", False):
+        return
+    ALL_ATTENTION_FUNCTIONS[implementation] = _ulysses_attention_wrapper(
+        current, implementation, get_cp_manager
+    )

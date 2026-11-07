@@ -625,7 +625,7 @@ def _laya_decide(
     max_len = int(config.get("max_len", 512))
     items, keys = [], []
     for name, question in questions.items():
-        internal = _internal(question)
+        internal = _internal(question, name)
         ids, markers = common.build_sequence(
             tokenizer, _parsed(state), internal, max_len, int(config.get("head_max_len", 192))
         )
@@ -1267,6 +1267,8 @@ class DecisionTrainer(Trainer):
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
+            if hasattr(args, "activation_checkpointing"):
+                args.activation_checkpointing = False
             if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
@@ -1795,7 +1797,7 @@ class FastDecisionModel:
                 try:
                     if validate is not None:
                         validate(name, question)
-                    internal = _internal(question)
+                    internal = _internal(question, name)
                     target, label = _target(internal, _parsed(gold[name]))
                     ids, markers = common.build_sequence(
                         tokenizer, state, internal, max_len, head_max_len
@@ -1831,6 +1833,8 @@ class FastDecisionModel:
                 "max_seq_length to train on all of it."
             )
         return items, report
+
+    rows_problem = staticmethod(_rows_problem)
 
     @staticmethod
     def split_holdout(

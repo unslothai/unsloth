@@ -36,7 +36,7 @@ from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.providers import ProviderReasoningConfig
+from models.providers import ProviderReasoningConfig, normalize_provider_extra_headers
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 # A 24 MB reference audio as a base64 data URL, with room for its header.
@@ -222,6 +222,15 @@ class LoadRequest(BaseModel):
             "GPU for faster prompt processing. Lossy: the Neural Engine uses int8 weights, so "
             "outputs change slightly. Applied only when the model supports it and the split is "
             "measured faster here; the status reports the reason otherwise."
+        ),
+    )
+    mlx_fast_verify: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: verify a drafter's tokens on faster kernels during speculative "
+            "decoding. Changes decode output slightly against plain greedy decoding, repeatably. "
+            "Applied only when the load attaches a drafter and the model supports it; the status "
+            "reports the reason otherwise. Decided at load: changing it reloads the model."
         ),
     )
     mlx_ple_offload: MlxOffload = Field(
@@ -1211,6 +1220,27 @@ class AnePrefillAvailabilityResponse(BaseModel):
     )
 
 
+class FastVerifyAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX Fast Verify."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class FastVerifyAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX Fast Verify, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('no_lane_kernel', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
+
+
 class MlxDraftersRequest(BaseModel):
     model_path: str = Field(..., description = "Model identifier or local path of the target")
 
@@ -1676,6 +1706,10 @@ class _InferenceRuntimeFields(BaseModel):
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
     )
+    audio_clone: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Clone rules (transcript, emotion clip, voice description); None when it does not clone.",
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -1872,6 +1906,16 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Why requested Neural Engine prefill is not active, as unsloth_zoo reports it "
         "(for example no_neural_engine, no_eligible_mlps, no_gain, not_enough_memory or released)",
+    )
+    mlx_fast_verify: Optional[bool] = Field(
+        None, description = "Whether MLX Fast Verify is active for the loaded model"
+    )
+    mlx_fast_verify_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX Fast Verify"
+    )
+    mlx_fast_verify_reason: Optional[str] = Field(
+        None,
+        description = "Why requested Fast Verify is not active: no_drafter, unsupported_zoo, or unsloth_zoo's reason",
     )
     mlx_offload: Optional[MlxOffloadStatus] = Field(None, description = "MLX: weights read from disk")
     chat_template: Optional[str] = Field(
@@ -2801,7 +2845,9 @@ class SandboxAttachment(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """Accept unknown fields so future OpenAI fields are not dropped before route code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest."""
+    """OpenAI-compatible chat completion request.
+
+    Non-OpenAI extension fields are marked with 'x-unsloth'."""
 
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
@@ -3226,6 +3272,22 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    extra_headers: Optional[dict[str, str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Extra request headers when the request carries an API key. "
+            "Saved connections send these from the stored record instead, so an "
+            "explicit key cannot bind saved metadata."
+        ),
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_chat_extra_headers(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
     enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -3549,6 +3611,13 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
             "[x-unsloth] The thread being counted. A thread with a conversation archive puts "
             "search_conversation and its compaction nudge in the prompt, so the count needs "
             "the same id the completion sends to price them."
+        ),
+    )
+    session_id: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] The tool session the completion sends. A project's chosen working "
+            "folder adds a sentence to the tool nudge, so the count needs it to price that."
         ),
     )
     rag_scope: Optional[dict] = Field(
@@ -3938,7 +4007,7 @@ class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
     Covers ``reasoning`` items and future types, so unrelated turns don't 422.
-    Normalisation replays reasoning text and drops every other unknown item.
+    Normalisation replays reasoning text, refuses ``item_reference``, drops the rest.
     """
 
     type: str
@@ -5508,6 +5577,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    generation_seconds: Optional[float] = Field(
+        None,
+        description = "Elapsed generation seconds until images are ready to save, shared by the request",
+    )
+    generation_count: Optional[int] = Field(
+        None, description = "Number of images in the timed request; absent on older records"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
     engine: Optional[str] = Field(
@@ -5538,6 +5614,11 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where this generation's denoiser ran: resident | partial | "
+        "streamed (streamed blocks move from CPU on every step). Null for other policies and older records.",
     )
     speed_mode: Optional[str] = Field(
         None,
@@ -5904,6 +5985,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
         "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
+    hosted_denoiser: bool = Field(
+        False,
+        description = "This checkpoint entry holds a hosted denoiser replacing the pipeline's "
+        "dense weights, which a pinned snapshot of that pipeline does not contain.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
@@ -6009,6 +6095,11 @@ class DiffusionStatusResponse(BaseModel):
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where the denoiser lives now: resident (only the text encoders "
+        "stream) | partial | streamed (blocks move from CPU on every step). Null for other policies.",
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
@@ -6919,6 +7010,11 @@ class AudioCatalogModel(BaseModel):
     languages: Optional[List[str]] = None
     status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
     size_bytes: Optional[int] = None
+    # GiB of GPU memory the load check requires for size_bytes; set per request (it reads the GPUs).
+    estimated_resident_gb: Optional[float] = None
+    # The smallest variant a GPU runs: a row fits a card when that variant does.
+    smallest_size_bytes: Optional[int] = None
+    smallest_estimated_resident_gb: Optional[float] = None
     downloaded: bool = False
     unsupported_reason: Optional[str] = None
 

@@ -3463,6 +3463,50 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch, fresh_cut_memory):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    rounds = 16
+    streams = [
+        _structured_tool_call("python", {"code": f"print(open('f{i}').read())"}, f"call_{i}")
+        for i in range(rounds)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._effective_context_length = 8192
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(len(str(m.get("content") or "")) for m in candidate),
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "x" * 1200
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "system", "content": "agent"}, {"role": "user", "content": "read every file"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = rounds,
+        max_tokens = 512,
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+
+    heads = [json.dumps(payload["messages"][:3]) for payload in payloads]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(payloads) // 2, moves
+
+
 def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     """Unpriced media must not disable compaction that the text alone requires."""
     backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
@@ -3641,6 +3685,64 @@ def test_media_compaction_recall_recount_uses_the_stripped_view(monkeypatch, wit
         if isinstance(part, dict)
     )
     assert payloads[0]["messages"][-1] == audio_turn
+
+
+def test_recall_searches_the_users_question_not_the_loops_own_notices(monkeypatch):
+    """Repeated calls leave user-role notices at the end of the loop; the compacting final pass
+    must still search the archive for what the user asked (#16187)."""
+    from core.rag import conversation_archive
+
+    rounds = 4
+    payloads: list[dict] = []
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "a"}, f"c{r}a", index = 0),
+            _tool_call_sse("web_search", {"query": "b"}, f"c{r}b", index = 1),
+            _finish("tool_calls"),
+            _done(),
+        ]
+        for r in range(rounds)
+    ] + [[_sse({"content": "answer"}), _finish("stop"), _done()]]
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    _record_tool_calls(monkeypatch, "R" * 500)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(conversation_archive, "note_branch", lambda *_args, **_kwargs: None)
+    queries: list[str] = []
+
+    def fake_recall(_thread_id, query, **_kwargs):
+        queries.append(query)
+        return None
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    question = "what did the VULPINE search find"
+
+    events = _run_tool_loop(
+        backend,
+        [
+            {"role": "user", "content": "u" * 1200},
+            {"role": "assistant", "content": "a" * 1200},
+            {"role": "user", "content": question},
+        ],
+        [_web_search_tool()],
+        max_tool_iterations = rounds,
+        max_tokens = 200,
+        context_overflow = "truncate_oldest",
+        thread_id = "recall-query",
+    )
+
+    assert any(event.get("type") == "context_truncated" for event in events)
+    final = payloads[-1]["messages"]
+    assert final[-1]["role"] == "user" and question not in final[-1]["content"]
+    assert queries and set(queries) == {question}
 
 
 def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monkeypatch):
@@ -7035,7 +7137,7 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
 
 
 def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
-    """Loading deferred MCP tools is not a tool round (#10997)."""
+    """Search preserves the execution budget and rendered prefix while expanding the decoding grammar."""
     from core.inference import tools as tools_mod
 
     ping = {
@@ -7046,7 +7148,7 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
             "parameters": {"type": "object"},
         },
     }
-    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_tool_spec", lambda name: ping)
     monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
     monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
     streams = [
@@ -7055,7 +7157,12 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
         [_sse({"content": "Pinged."}), _done()],
     ]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
-    calls = _record_tool_calls(monkeypatch, "ok")
+    calls = _record_tool_calls(
+        monkeypatch,
+        lambda name: "Loaded 1 MCP tool.\n  schema: " + json.dumps(ping)
+        if name == "mcp_tool_search"
+        else "ok",
+    )
 
     _run_tool_loop(
         backend,
@@ -7065,7 +7172,9 @@ def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeyp
     )
 
     assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
-    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+    assert payloads[1]["tools"] == payloads[0]["tools"] + [ping]
+    assert payloads[1]["chat_template_kwargs"]["tools"] == payloads[0]["tools"]
+    assert payloads[2]["tools"] == payloads[0]["tools"]
 
 
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):

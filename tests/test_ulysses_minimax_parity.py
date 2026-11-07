@@ -31,6 +31,11 @@ transformers = pytest.importorskip("transformers")
 if not hasattr(transformers, "MiniMaxConfig"):
     pytest.skip("transformers without MiniMax", allow_module_level = True)
 HAS_M2 = hasattr(transformers, "MiniMaxM2Config")
+# transformers 5 fuses the experts into 3D weights; 4.x keeps per-expert modules (refused under CP).
+FUSED_EXPERTS = hasattr(
+    getattr(getattr(transformers.models, "minimax", None), "modeling_minimax", None),
+    "MiniMaxExperts",
+)
 
 TOL = dict(rtol = 1e-8, atol = 1e-10)
 # A broken variant must fail on numbers (assert_close with these names), not crash on a shape.
@@ -79,10 +84,27 @@ def _config(
     return transformers.MiniMaxM2Config(**common), transformers.MiniMaxM2ForCausalLM
 
 
+def _float64_router(router):
+    """The stock routers take their sigmoid / softmax in fp32 (router_logits.float()). Elementwise fp32 kernels
+    round the vectorised body and the scalar tail differently, so a shard (a different token count)
+    can move a routing weight by one fp32 ulp, about 1e-7 relative after backward: far above the
+    float64 tolerance and unrelated to CP. Keep this one cast in the router's own dtype."""
+    cls = type(router)
+    src = textwrap.dedent(inspect.getsource(cls.forward))
+    if "router_logits.float()" not in src:
+        return
+    if "_float64_forward" not in cls.__dict__:
+        namespace = dict(vars(inspect.getmodule(cls)))
+        exec(src.replace("router_logits.float()", "router_logits"), namespace)
+        cls._float64_forward = namespace["forward"]
+    router.forward = types.MethodType(cls._float64_forward, router)
+
+
 def _model(
     kind,
     lora = False,
     checkpoint = None,
+    attn = "sdpa",
     **config_kwargs,
 ):
     torch.manual_seed(0)
@@ -91,17 +113,30 @@ def _model(
     if checkpoint is not None:
         # The recompute repeats every all-to-all in backward, in the same order on each rank.
         model.gradient_checkpointing_enable({"use_reentrant": checkpoint == "reentrant"})
-    model.config._attn_implementation = "sdpa"
+    model.config._attn_implementation = attn
     for module in model.modules():
         if hasattr(module, "set_experts_implementation"):
             module.set_experts_implementation("eager")
+        if type(module).__name__ in ("MiniMaxTopKRouter", "MiniMaxM2TopKRouter"):
+            _float64_router(module)
     if lora:
         from peft import LoraConfig, get_peft_model
+
         targets = ["q_proj", "k_proj", "v_proj", "o_proj", "qkv_proj", "out_proj", "output_gate"]
+        extra = {}
+        if lora == "experts":
+            # LoRA on the routed experts too: the fused 3D expert weights.
+            extra["target_parameters"] = ["experts.gate_up_proj", "experts.down_proj"]
         # init_lora_weights = False: B is random, so the adapters change the forward.
         model = get_peft_model(
             model,
-            LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False),
+            LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, init_lora_weights = False, **extra),
+        )
+    if lora == "experts":
+        # Engaged: the fused expert weights carry adapters (PEFT matches no parameter silently).
+        assert any(
+            "experts" in name and "lora_" in name and param.requires_grad
+            for name, param in model.named_parameters()
         )
     return model.double()
 
@@ -278,7 +313,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
     shift = [F.pad(b["labels"], (0, 1), value = -100)[:, 1:] for b in batches]
     count = sum(int(s.ne(-100).sum()) for s in shift)
 
-    # Upstream full-sequence forward, one process, float64.
     ref_logits = []
     ref_loss = 0
     for b, s in zip(batches, shift):
@@ -394,9 +428,8 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
         param.grad = grad
         if not ref_grad.any():
             assert not grad.any(), f"{name}: zero in the reference, nonzero under CP"
-        torch.testing.assert_close(grad, ref_grad, **TOL, msg = name)
+        torch.testing.assert_close(grad, ref_grad, **TOL, msg = lambda m: f"{name}: {m}")
 
-    # One AdamW step with weight decay from the reduced gradients.
     trainable = lambda m: [p for p in m.parameters() if p.requires_grad]
     for m in (model, reference):
         torch.optim.AdamW(trainable(m), lr = 1e-2, weight_decay = 0.1).step()
@@ -418,6 +451,42 @@ MODEL_CASES = {
     "m2_cp4_gqa": ("m2", 4, 4, False, {}),
     "m2_cp2_mqa": ("m2", 2, 2, False, {"kv_heads": 1}),
     "m2_dp2_cp2": ("m2", 2, 4, False, {}),
+    # MiniMax with full attention layers only: no Lightning mixer, so main's generic Ulysses route alone.
+    "m1_full_attention_only_cp2": ("m1", 2, 2, False, {"layer_types": ["full_attention"] * 2}),
+    # The parallel_capabilities MoE x cp cells (aux loss off): eager attention, HF checkpointing,
+    # full finetuning, attention LoRA and LoRA on the fused experts, CP 2 and DP2 x CP2.
+    "m1_cp2_eager_checkpoint": (
+        "m1",
+        2,
+        2,
+        False,
+        {"attn": "eager", "checkpoint": "non_reentrant"},
+    ),
+    "m1_cp2_lora_eager": ("m1", 2, 2, True, {"attn": "eager"}),
+    "m1_cp2_lora_experts": ("m1", 2, 2, "experts", {}),
+    "m1_dp2_cp2_lora_experts_eager_checkpoint": (
+        "m1",
+        2,
+        4,
+        "experts",
+        {"attn": "eager", "checkpoint": "non_reentrant"},
+    ),
+    "m2_cp2_eager_checkpoint": (
+        "m2",
+        2,
+        2,
+        False,
+        {"attn": "eager", "checkpoint": "non_reentrant"},
+    ),
+    "m2_cp2_lora_eager": ("m2", 2, 2, True, {"attn": "eager"}),
+    "m2_cp2_lora_experts": ("m2", 2, 2, "experts", {}),
+    "m2_dp2_cp2_lora_experts_eager_checkpoint": (
+        "m2",
+        2,
+        4,
+        "experts",
+        {"attn": "eager", "checkpoint": "non_reentrant"},
+    ),
 }
 
 
@@ -426,6 +495,10 @@ def test_minimax_model_matches_upstream(case):
     kind, cp_size, world, lora, kwargs = MODEL_CASES[case]
     if kind == "m2" and not HAS_M2:
         pytest.skip("transformers without MiniMax-M2")
+    if lora == "experts" and not FUSED_EXPERTS:
+        pytest.skip(
+            "transformers without fused MiniMax experts (target_parameters has nothing to match)"
+        )
     _spawn(_model_worker, world, kind, cp_size, lora, None, kwargs)
 
 

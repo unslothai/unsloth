@@ -37,10 +37,11 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
 # The base must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker: hosts the mirror does
-# not build (ROCm) install it from upstream. master-968, the previous base, predates MOSS-Image (master-975,
-# split-QKV GGUF loading in the same release); master-951 before it predated FLUX.3 Image Klein (master-968), and
-# master-813 Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-ud331c66"
+# not build (ROCm) install it from upstream. -ud331c66, the previous pin on this base, ignores the MOSS-Image
+# moss_uncond_skip* sample args; master-968 predates MOSS-Image (master-975, split-QKV GGUF loading in the same
+# release); master-951 before it predated FLUX.3 Image Klein (master-968), and master-813 Qwen-Image-2.1 (master-883)
+# and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
+DEFAULT_TAG = "master-982-0518b34-uaba3a1c"
 
 REPO = DEFAULT_REPO
 
@@ -461,12 +462,45 @@ def _download(
     *,
     timeout: float = 300.0,
 ) -> None:
-    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
-    import shutil
+    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token.
 
-    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
-    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
-        shutil.copyfileobj(resp, f)
+    A transient failure (HTTP 5xx / 429, a reset or timed-out socket) is retried with backoff before it is raised: one
+    gateway 504 from the asset CDN otherwise fails the GPU bundle and the caller steps down the accelerator ladder, so
+    a CUDA host ends up rendering on the CPU build. A 4xx other than 429 is permanent and raised at once. Once the
+    attempts so far have used ``timeout`` in all (a stalled route), the failure is raised without another attempt, so a
+    dead route fails in about the time it did before the retries."""
+    import shutil
+    import time
+
+    last: Optional[BaseException] = None
+    start = time.monotonic()
+    for attempt in range(_DOWNLOAD_ATTEMPTS):
+        if attempt:
+            if time.monotonic() - start >= timeout:
+                break
+            time.sleep(_DOWNLOAD_BACKOFF_S * (2 ** (attempt - 1)))
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+        try:
+            with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+                shutil.copyfileobj(resp, f)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 and exc.code < 500:
+                raise
+            last = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = exc
+        print(
+            f"download of {url} failed ({last}); attempt {attempt + 1} of {_DOWNLOAD_ATTEMPTS}",
+            flush = True,
+        )
+    assert last is not None
+    raise last
+
+
+# Transient download failures (5xx / 429 / socket) retried this many times in all, backoff 2, 4, 8 s.
+_DOWNLOAD_ATTEMPTS = 4
+_DOWNLOAD_BACKOFF_S = 2.0
 
 
 # PATH_MAX: a larger link payload is a decompression bomb.
@@ -701,7 +735,12 @@ _WINDOWS_LOADER_FAILURES = {
     0xC0000139: "a DLL it imports is the wrong build",  # STATUS_ENTRYPOINT_NOT_FOUND
     0xC0000142: "a DLL it imports failed to initialise",  # STATUS_DLL_INIT_FAILED
 }
-_POSIX_LOADER_MARKERS = ("error while loading shared libraries", "Library not loaded")
+# glibc elf/dl-version.c exits before main without the shared-libraries error prefix.
+_POSIX_LOADER_MARKERS = (
+    "error while loading shared libraries",
+    "Library not loaded",
+    "' not found (required by ",
+)
 
 
 def verify_install_enabled() -> bool:

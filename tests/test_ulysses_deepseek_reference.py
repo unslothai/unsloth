@@ -2,9 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """DeepSeek Ulysses context parallelism against independent fp64 single-process references, on CPU gloo
-ranks: the explicit softmax scale through the attention dispatcher, V3.2's global top-k indexer, V4
-sliding / CSA / HCA sink attention at release compression ratios, right-padded batches, a rank with no
-labels, a label across the shard seam, CP = 2 / 4 and DP 2 x CP 2, LoRA, one AdamW step, and negative
+ranks: V2 / V3 MLA (YaRN softmax scale, narrower value heads) on main's generic route, V3.2's global top-k
+indexer, V4 sliding / CSA / HCA sink attention at release compression ratios, sdpa / eager, HF checkpointing, right-padded batches, a rank with no
+labels, a label across the shard seam, CP = 2 / 4 and DP 2 x CP 2, LoRA (also on the fused experts), one AdamW step, and negative
 controls that must fail."""
 
 import math
@@ -99,75 +99,7 @@ def _manager(cp_size, group):
 
 
 # ---------------------------------------------------------------------------------------------
-# 1. Explicit softmax scale through _ulysses_hf_attention -> ulysses_attention -> _run_attention.
-# ---------------------------------------------------------------------------------------------
-
-
-def _scale_worker(rank, world, scaling, packed, control):
-    ad.HAS_FLASH_ATTENTION = False
-    ad.HAS_XFORMERS = False
-    if control:
-        # Broken variant: the dispatcher drops the explicit scale (SDPA falls back to 1/sqrt(d)).
-        real = ad._run_attention
-
-        def dropped(*, config, **kw):
-            config.sdpa_kwargs = None
-            return real(config = config, **kw)
-
-        ad._run_attention = dropped
-    g = torch.Generator().manual_seed(3)
-    bsz, heads, seq, qk_dim, v_dim = (1 if packed else 2), 4, 16, 24, 16
-    q = torch.randn(bsz, heads, seq, qk_dim, generator = g, dtype = torch.float64)
-    k = torch.randn(bsz, heads, seq, qk_dim, generator = g, dtype = torch.float64)
-    v = torch.randn(bsz, heads, seq, v_dim, generator = g, dtype = torch.float64)
-    grad_out = torch.randn(bsz, seq, heads, v_dim, generator = g, dtype = torch.float64)
-    lengths = torch.tensor([5, 7, 4]) if packed else None
-
-    # Independent reference: softmax(scale * QK^T + mask) V, block-causal for packed rows.
-    pos = torch.arange(seq)
-    keep = pos[:, None] >= pos[None, :]
-    if packed:
-        doc = torch.repeat_interleave(torch.arange(len(lengths)), lengths)
-        keep = keep & (doc[:, None] == doc[None, :])
-    leaves = [x.clone().requires_grad_() for x in (q, k, v)]
-    logits = torch.matmul(leaves[0], leaves[1].transpose(-1, -2)) * scaling
-    logits = logits.masked_fill(~keep, float("-inf"))
-    ref = torch.matmul(torch.softmax(logits, -1), leaves[2]).transpose(1, 2)
-    (ref * grad_out).sum().backward()
-
-    local = seq // world
-    sl = slice(rank * local, (rank + 1) * local)
-    parts = [x[:, :, sl].clone().requires_grad_() for x in (q, k, v)]
-    kwargs = {"scaling": scaling}
-    if packed:
-        kwargs["packed_seq_lengths"] = lengths
-    module = types.SimpleNamespace(training = True)
-    out, _ = uh._ulysses_hf_attention(module, *parts, None, group = dist.group.WORLD, **kwargs)
-    (out * grad_out[:, sl]).sum().backward()
-    torch.testing.assert_close(out, ref[:, sl], rtol = 1e-10, atol = 1e-10, msg = _named("output"))
-    for name, part, leaf in zip("qkv", parts, leaves):
-        torch.testing.assert_close(
-            part.grad, leaf.grad[:, :, sl], rtol = 1e-10, atol = 1e-10, msg = _named(name)
-        )
-
-
-SCALES = {"yarn_v3_release": _yarn_scale(24), "far_from_default": 0.03, "default": 24**-0.5}
-
-
-@pytest.mark.parametrize("packed", [False, True], ids = ["dense", "packed"])
-@pytest.mark.parametrize("scale", list(SCALES))
-def test_explicit_scale_sdpa_numerics(scale, packed):
-    _spawn(_scale_worker, 2, SCALES[scale], packed, False)
-
-
-@pytest.mark.parametrize("packed", [False, True], ids = ["dense", "packed"])
-def test_dropped_scale_is_wrong(packed):
-    with pytest.raises(Exception, match = "AssertionError"):
-        _spawn(_scale_worker, 2, SCALES["yarn_v3_release"], packed, True)
-
-
-# ---------------------------------------------------------------------------------------------
-# 2. Model-level parity: V3 (registry path), V3.2 (indexer), V4 (sliding / CSA / HCA).
+# 1. Model-level parity: V2 / V3 (main's generic route), V3.2 (indexer), V4 (sliding / CSA / HCA).
 # ---------------------------------------------------------------------------------------------
 
 
@@ -198,6 +130,8 @@ def _mla(**extra):
 
 def _build(kind, v4_topk):
     t = transformers
+    if kind == "v2":
+        return t.DeepseekV2ForCausalLM(t.DeepseekV2Config(**_mla()))
     if kind == "v3":
         return t.DeepseekV3ForCausalLM(t.DeepseekV3Config(**_mla()))
     if kind == "v32":
@@ -255,14 +189,21 @@ def _model(
     kind,
     v4_topk = 16,
     lora = False,
+    attn = None,
+    checkpoint = False,
 ):
     torch.manual_seed(0)
     model = _build(kind, v4_topk).double().train()
-    model.config._attn_implementation = "eager" if kind in ("v32", "v4") else "sdpa"
+    if attn is None:
+        attn = "eager" if kind in ("v32", "v4") else "sdpa"
+    model.config._attn_implementation = attn
     model.config.use_cache = False
     for module in model.modules():
         if hasattr(module, "set_experts_implementation"):
             module.set_experts_implementation("eager")
+    if checkpoint:
+        # HF gradient checkpointing: every decoder layer (and its CP forward) is recomputed in backward.
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
     if lora:
         from peft import LoraConfig, get_peft_model
 
@@ -271,7 +212,13 @@ def _model(
             if kind == "v4"
             else ["q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "o_proj"]
         )
-        model = get_peft_model(model, LoraConfig(r = 4, lora_alpha = 8, target_modules = targets))
+        extra = {}
+        if lora == "experts":
+            # LoRA on the routed experts too: the fused 3D expert weights.
+            extra["target_parameters"] = ["experts.gate_up_proj", "experts.down_proj"]
+        model = get_peft_model(
+            model, LoraConfig(r = 4, lora_alpha = 8, target_modules = targets, **extra)
+        )
         g = torch.Generator().manual_seed(5)
         with torch.no_grad():
             for name, p in model.named_parameters():
@@ -380,7 +327,21 @@ def _parity_worker(rank, world, case):
 def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
     import copy
 
-    model = _model(kind, case.get("v4_topk", 16), case.get("lora", False))
+    model = _model(
+        kind,
+        case.get("v4_topk", 16),
+        case.get("lora", False),
+        case.get("attn"),
+        case.get("checkpoint", False),
+    )
+    if kind in ("v2", "v3"):
+        # The MLA cases exercise what the generic route must carry: a non-default softmax scale and value
+        # heads narrower than query / key heads.
+        attn = next(m for n, m in model.named_modules() if n.endswith("self_attn"))
+        assert abs(attn.scaling * attn.qk_head_dim**0.5 - 1) > 0.1, attn.scaling
+        assert attn.v_head_dim < attn.qk_head_dim
+        if kind == "v3":
+            assert abs(attn.scaling - _yarn_scale(attn.qk_head_dim)) < 1e-12, attn.scaling
     reference = copy.deepcopy(model)
     seq, lengths = case["seq"], case["lengths"]
     ids, mask, labels = _batch(seq, lengths, case.get("labels", "all"), cp_size)
@@ -407,6 +368,20 @@ def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
     manager = _manager(cp_size, group)
     manager.attach_attention_hooks(model)
     _controls(model, kind, case.get("control"), monkey)
+    calls = []
+    # Engagement: the CP path runs once per layer (twice under checkpointing), no silent fallback.
+    owner, fn_name = (
+        (ud, f"ulysses_deepseek_{kind}_forward")
+        if kind in ("v32", "v4")
+        else (uh, "_ulysses_hf_attention")
+    )
+    real_fn = getattr(owner, fn_name)
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return real_fn(*args, **kwargs)
+
+    monkey(owner, fn_name, counted)
     inputs = {
         "input_ids": ids[rows].clone(),
         "attention_mask": mask[rows].clone(),
@@ -421,6 +396,10 @@ def _parity_body(rank, world, case, kind, cp_size, dp, group, monkey):
         )
         local_ce = _sum_ce(out.logits, inputs["shift_labels"])
         (local_ce / count).backward()
+    if case.get("control") is None:
+        runs = 2 if case.get("checkpoint") else 1
+        layers = model.config.num_hidden_layers
+        assert len(calls) == runs * layers, (len(calls), runs, layers)
     if case.get("labels") == "late_rank_empty" and dist.get_rank(group) == cp_size - 1:
         assert inputs["shift_labels"].ne(-100).sum() == 0
     logits = torch.cat(dist_all_gather(out.logits.detach(), group), dim = 1)
@@ -476,16 +455,29 @@ V32 = dict(kind = "v32", seq = 23, lengths = [23, 17])
 # the CP = 2 seam (199) sits inside HCA block 1, the CP = 4 seams (100, 200, 300) inside blocks 0-2.
 V4 = dict(kind = "v4", seq = 397, lengths = [397, 290])
 V3 = dict(kind = "v3", seq = 23, lengths = [23, 17])
+V2 = dict(V3, kind = "v2")
 
 CASES = {
+    "v2_cp2": dict(V2, cp = 2, world = 2),
+    "v2_cp4": dict(V2, cp = 4, world = 4),
+    "v2_dp2cp2": dict(V2, cp = 2, world = 4),
+    "v2_cp2_eager_checkpoint": dict(V2, cp = 2, world = 2, attn = "eager", checkpoint = True),
+    "v2_cp2_lora": dict(V2, cp = 2, world = 2, lora = True),
+    "v2_cp2_lora_experts": dict(V2, cp = 2, world = 2, lora = "experts"),
     "v3_cp2": dict(V3, cp = 2, world = 2),
+    "v3_cp4": dict(V3, cp = 4, world = 4),
     "v3_dp2cp2": dict(V3, cp = 2, world = 4),
+    "v3_cp2_eager_checkpoint": dict(V3, cp = 2, world = 2, attn = "eager", checkpoint = True),
+    "v3_cp2_lora": dict(V3, cp = 2, world = 2, lora = True),
+    "v3_cp2_lora_experts": dict(V3, cp = 2, world = 2, lora = "experts"),
     "v32_cp2": dict(V32, cp = 2, world = 2),
     "v32_cp2_chunk1": dict(V32, cp = 2, world = 2, chunk = 1),
     "v32_cp2_chunk5": dict(V32, cp = 2, world = 2, chunk = 5),
     "v32_cp4_late_rank_empty": dict(V32, cp = 4, world = 4, labels = "late_rank_empty"),
     "v32_dp2cp2": dict(V32, cp = 2, world = 4),
     "v32_cp2_lora": dict(V32, cp = 2, world = 2, lora = True),
+    "v32_cp2_lora_experts": dict(V32, cp = 2, world = 2, lora = "experts"),
+    "v32_cp2_sdpa_checkpoint": dict(V32, cp = 2, world = 2, attn = "sdpa", checkpoint = True),
     "v4_cp2": dict(V4, cp = 2, world = 2),
     "v4_cp2_topk512": dict(V4, cp = 2, world = 2, v4_topk = 512),
     "v4_cp2_chunk1": dict(V4, cp = 2, world = 2, chunk = 1),
@@ -493,11 +485,14 @@ CASES = {
     "v4_cp4_late_rank_empty": dict(V4, cp = 4, world = 4, labels = "late_rank_empty", chunk = 37),
     "v4_dp2cp2": dict(V4, cp = 2, world = 4, chunk = 64),
     "v4_cp2_lora": dict(V4, cp = 2, world = 2, lora = True, chunk = 50),
+    "v4_cp2_lora_experts": dict(V4, cp = 2, world = 2, lora = "experts", chunk = 50),
+    "v4_cp2_checkpoint": dict(V4, cp = 2, world = 2, checkpoint = True, chunk = 64),
 }
 
 CONTROLS = {
     "v32_local_topk": dict(V32, cp = 2, world = 2, control = "local_topk"),
     "v32_default_scale": dict(V32, cp = 2, world = 2, control = "default_scale"),
+    "v2_default_scale": dict(V2, cp = 2, world = 2, control = "default_scale"),
     "v3_default_scale": dict(V3, cp = 2, world = 2, control = "default_scale"),
     "v4_shard_local": dict(V4, cp = 2, world = 2, control = "shard_local"),
     "v4_dropped_window": dict(V4, cp = 2, world = 2, control = "dropped_window"),
@@ -519,7 +514,7 @@ def test_deepseek_cp_negative_control_fails(name):
 
 
 # ---------------------------------------------------------------------------------------------
-# 3. V3.2 indexer: global causal top-k vs transformers' full-sequence indexer.
+# 2. V3.2 indexer: global causal top-k vs transformers' full-sequence indexer.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -576,7 +571,7 @@ def test_v32_global_topk_matches_full_sequence_indexer(world):
 
 
 # ---------------------------------------------------------------------------------------------
-# 4. Chunked sink attention custom backward vs an independent fp64 reference.
+# 3. Chunked sink attention custom backward vs an independent fp64 reference.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -644,20 +639,26 @@ def test_chunked_sink_attention_dropping_a_chunk_is_wrong(chunk, monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------
-# 5. The own-mask exemption covers only layer types and the window.
+# 4. The own-mask exemption covers only layer types and the window.
 # ---------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("kind", ["v32", "v4"])
 def test_own_mask_exemption_is_narrow(kind):
     config = _model(kind).config
-    assert cp._unsupported_attention(config, "ulysses") is None
-    assert cp._unsupported_attention(config, "ring") is not None
-    config.attn_logit_softcapping = 30.0
-    assert cp._unsupported_attention(config, "ulysses") == "attention logit softcapping"
-    config.attn_logit_softcapping = None
-    config.attention_chunk_size = 64
-    assert cp._unsupported_attention(config, "ulysses") == "chunked attention"
-    config.attention_chunk_size = None
-    config.layer_types = ["chunked_attention"] * config.num_hidden_layers
-    assert cp._unsupported_attention(config, "ulysses") is not None
+    # generic = True is what _check_cp_model passes for them (their attention calls the registry).
+    for generic in (False, True):
+        config = _model(kind).config
+        assert cp._unsupported_attention(config, "ulysses", generic = generic) is None
+        assert cp._unsupported_attention(config, "ring", generic = generic) is not None
+        config.attn_logit_softcapping = 30.0
+        assert (
+            cp._unsupported_attention(config, "ulysses", generic = generic)
+            == "attention logit softcapping"
+        )
+        config.attn_logit_softcapping = None
+        config.attention_chunk_size = 64
+        assert cp._unsupported_attention(config, "ulysses", generic = generic) == "chunked attention"
+        config.attention_chunk_size = None
+        config.layer_types = ["chunked_attention"] * config.num_hidden_layers
+        assert cp._unsupported_attention(config, "ulysses", generic = generic) is not None

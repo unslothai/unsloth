@@ -144,7 +144,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
         toastOptions={{
           classNames: {
             // an open modal dialog sets pointer-events:none on body, which toasts would otherwise inherit.
-            toast: "cn-toast pointer-events-auto",
+            toast: "cn-toast modal-pe-live pointer-events-auto",
             description: "!text-muted-foreground",
           },
         }}

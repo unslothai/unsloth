@@ -23,10 +23,12 @@ interface AudioVoicesState {
     patch: Pick<AudioVoice, "name" | "transcript" | "language">,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  confirmGone: (id: string) => Promise<boolean>;
 }
 
 // Bumped by each save, rename and delete: a list fetched across one is stale and is fetched again.
 let mutations = 0;
+let listing: Promise<void> | null = null;
 
 const message = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
@@ -36,25 +38,29 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   loaded: false,
   loading: false,
   error: null,
-  refresh: async () => {
-    if (get().loading) return;
-    set({ loading: true });
-    const started = mutations;
-    try {
-      const voices = await listVoices();
-      if (started !== mutations) {
-        set({ loading: false });
-        return get().refresh();
+  // Callers share one request, so awaiting it always sees the list it fetched.
+  refresh: () =>
+    (listing ??= (async () => {
+      set({ loading: true });
+      try {
+        for (;;) {
+          const started = mutations;
+          const voices = await listVoices();
+          if (started === mutations) {
+            set({ voices, loaded: true, loading: false, error: null });
+            return;
+          }
+        }
+      } catch (error) {
+        set({
+          loading: false,
+          loaded: true,
+          error: message(error, "Could not list saved voices."),
+        });
+      } finally {
+        listing = null;
       }
-      set({ voices, loaded: true, loading: false, error: null });
-    } catch (error) {
-      set({
-        loading: false,
-        loaded: true,
-        error: message(error, "Could not list saved voices."),
-      });
-    }
-  },
+    })()),
   save: async (request) => {
     const voice = await createVoice(request);
     mutations += 1;
@@ -95,6 +101,10 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
     try {
       await deleteVoice(id);
       mutations += 1;
+      // A list fetched before the delete landed may have brought it back.
+      set((state) => ({
+        voices: state.voices.filter((voice) => voice.id !== id),
+      }));
     } catch (error) {
       // Put back only this voice: another deletion may have finished meanwhile.
       const failed = before[index];
@@ -108,5 +118,12 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
       }
       throw error;
     }
+  },
+  // Another window may have saved this voice after our list was fetched, so check a fresh list.
+  confirmGone: async (id) => {
+    if (get().loading) await get().refresh();
+    await get().refresh();
+    const { voices, error } = get();
+    return !error && !voices.some((voice) => voice.id === id);
   },
 }));

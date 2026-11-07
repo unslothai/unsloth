@@ -50,10 +50,10 @@ if triton is not None:
         q_ptr,
         sf_ptr,
         M,
-        K: tl.constexpr,
-        NCB: tl.constexpr,
-        ROWS: tl.constexpr,
-        G: tl.constexpr,
+        K: tl.constexpr,  # in features
+        NCB: tl.constexpr,  # scale tile columns (K/16/4)
+        ROWS: tl.constexpr,  # rows per program
+        G: tl.constexpr,  # 16-element blocks per program
     ):
         # One program: ROWS rows x G blocks of 16 elements, held as [ROWS, G, 8] even / odd halves so each packed
         # byte is (even | odd << 4) with no reshape or split (layout conversions some tile shapes miscompiled).
@@ -125,13 +125,12 @@ def _set_compile_cache_tag(tag: str | None) -> None:
         import torch.compiler.config as _cc
     except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
         return
-    current = getattr(_cc, "cache_key_tag", None)
-    if not isinstance(current, str):
+    if not isinstance(getattr(_cc, "cache_key_tag", None), str):
         return
-    from .diffusion_compile_config import canonical_compile_cache_tag
+    from .diffusion_compile_config import set_compile_cache_tag
 
     try:
-        _cc.cache_key_tag = canonical_compile_cache_tag(current, _CACHE_TAG_PREFIX, tag)
+        set_compile_cache_tag(_CACHE_TAG_PREFIX, tag)
     except Exception:  # noqa: BLE001
         pass
 

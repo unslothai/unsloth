@@ -85,6 +85,7 @@ def decoder(request):
         # The cache and scratch buffers come from the real helpers; only the captured path is out.
         "_decode_graphs": _decode_graphs_module(source),
         "_decode_attention_core": _captured_attention_only,
+        "_decode_attention_span": _captured_attention_only,
     }
     # The decode paths share llama.py's grouped KV helpers (qwen3 imports them from there).
     llama_source = source.with_name("llama.py")
