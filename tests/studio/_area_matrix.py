@@ -70,15 +70,14 @@ RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # `length:area=ratio` or `count:area=elements` (elements restyled at LONG turns, replacing the length
 # ratio for that area). Each ceiling is about 1.2-1.3x the highest reading, so these may not get
 # worse while a new mode or area meets MAX_RATIO / LENGTH_RATIO. Glass: CPU raster of the
-# backdrop-filter on every repaint (Settings scrolling 7.7-12.2x, thread scrolling and the API
-# monitor up to 5.8x). No area restyles the whole thread on open any more, so none needs a count
-# ceiling. Lower or drop an entry when its cause is fixed; LONG_THREAD_AREAS_KNOWN="" holds main to
-# the plain limits.
+# backdrop-filter on every repaint (on GitHub runners, main reads up to 13.5x scrolling Settings and
+# 7.8x on small areas). No area needs a count ceiling. Lower or drop an entry when its cause is fixed;
+# LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
 KNOWN_DEFAULT = ",".join(
-    [f"{m}:*={r}" for m, r in (("frosted", 7), ("blurred", 7), ("liquid", 7), (GLASS, 7))]
+    [f"{m}:*={r}" for m, r in (("frosted", 10), ("blurred", 10), ("liquid", 10), (GLASS, 10))]
     + [
         f"{m}:settings_scroll={r}"
-        for m, r in (("frosted", 12), ("blurred", 15), ("liquid", 13), (GLASS, 12))
+        for m, r in (("frosted", 18), ("blurred", 18), ("liquid", 18), (GLASS, 18))
     ]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
