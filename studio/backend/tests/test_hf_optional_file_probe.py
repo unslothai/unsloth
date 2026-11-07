@@ -43,12 +43,8 @@ _GUARDED = {
         "_read_raw_config_json": "hf_file_definitely_absent",
         "get_base_model_from_lora_identifier": "hf_file_definitely_absent",
     },
-    "utils/security/consent.py": {"_load_remote_code_configs": "hf_file_definitely_absent"},
     "utils/security/file_security.py": {"_indexed_shard_paths": "hf_file_definitely_absent"},
-    "utils/security/remote_code_scan.py": {
-        "external_auto_map_repos": "hf_file_definitely_absent",
-        "repo_remote_code_files": "hf_file_definitely_absent",
-    },
+    "utils/security/remote_code_scan.py": {"hub_config_path": "hf_file_definitely_absent"},
 }
 
 

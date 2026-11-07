@@ -20,7 +20,7 @@ test("the speculator seeds the same cache key the demanded path reads, and only 
   assert.match(DEFER, /const SPECULATION_IN_FLIGHT = 3;/);
   assert.match(DEFER, /busy: \(\) => streamActive\(\) \|\| highlightWorkerState\(\) === "stalled"\s*\|\| inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0,/, "a worker that is late pauses speculation instead of dropping every candidate, so it resumes on the ready message");
   assert.match(DEFER, /fenceMode\(\) !== "off" && highlightWorkerState\(\) !== "unavailable",/, "only a worker that failed turns speculation off");
-  assert.match(DEFER, /const rect = gate\.node\.getBoundingClientRect\(\);/);
+  assert.match(DEFER, /rect \?\?= gate\.node\.getBoundingClientRect\(\);/, "ranked by the fence itself, or by its row while the row is skipped");
   assert.equal(DEFER.includes("gate.anchor"), false);
   const speculate = MARKDOWN.slice(MARKDOWN.indexOf("const speculate = useCallback("), MARKDOWN.indexOf("const reached = useFenceReached("));
   assert.ok(speculate.indexOf("code.cached(options) !== null") < speculate.indexOf("requestFullHighlight("));

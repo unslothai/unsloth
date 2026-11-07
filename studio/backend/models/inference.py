@@ -36,7 +36,7 @@ from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.providers import ProviderReasoningConfig
+from models.providers import ProviderReasoningConfig, normalize_provider_extra_headers
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 # A 24 MB reference audio as a base64 data URL, with room for its header.
@@ -3272,6 +3272,22 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    extra_headers: Optional[dict[str, str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Extra request headers when the request carries an API key. "
+            "Saved connections send these from the stored record instead, so an "
+            "explicit key cannot bind saved metadata."
+        ),
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_chat_extra_headers(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
     enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -3991,7 +4007,7 @@ class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
     Covers ``reasoning`` items and future types, so unrelated turns don't 422.
-    Normalisation replays reasoning text and drops every other unknown item.
+    Normalisation replays reasoning text, refuses ``item_reference``, drops the rest.
     """
 
     type: str
@@ -5599,6 +5615,11 @@ class GalleryImage(BaseModel):
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
     )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where this generation's denoiser ran: resident | partial | "
+        "streamed (streamed blocks move from CPU on every step). Null for other policies and older records.",
+    )
     speed_mode: Optional[str] = Field(
         None,
         description = "Speed profile engaged for this generation (eager | default | max | off), after "
@@ -6074,6 +6095,11 @@ class DiffusionStatusResponse(BaseModel):
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where the denoiser lives now: resident (only the text encoders "
+        "stream) | partial | streamed (blocks move from CPU on every step). Null for other policies.",
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
@@ -6984,6 +7010,11 @@ class AudioCatalogModel(BaseModel):
     languages: Optional[List[str]] = None
     status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
     size_bytes: Optional[int] = None
+    # GiB of GPU memory the load check requires for size_bytes; set per request (it reads the GPUs).
+    estimated_resident_gb: Optional[float] = None
+    # The smallest variant a GPU runs: a row fits a card when that variant does.
+    smallest_size_bytes: Optional[int] = None
+    smallest_estimated_resident_gb: Optional[float] = None
     downloaded: bool = False
     unsupported_reason: Optional[str] = None
 

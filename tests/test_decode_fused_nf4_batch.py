@@ -176,6 +176,13 @@ _CHECKS = textwrap.dedent(
         serial = torch.empty_like(out)
         for b in range(batch): call(False, original, x[b], serial[b], epi=F.EPI_PLAIN)
         assert torch.equal(out, serial), "batch_plain serial"
+        if not compiled:
+            # A row stride other than K (a column slice) must read the same rows.
+            wide = torch.zeros(batch, 2 * k, device=device, dtype=dtype)
+            wide[:, :k] = x
+            strided = torch.full_like(out, float("nan"))
+            call(True, batched, wide[:, :k], strided, epi=F.EPI_PLAIN)
+            assert torch.equal(strided, out), "batch_plain strided input"
         if batched.lora:
             assert not torch.count_nonzero(batched.counter), "batch_plain counter"
 

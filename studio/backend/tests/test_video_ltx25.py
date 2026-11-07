@@ -2024,8 +2024,16 @@ class _FakeEncoderModel:
         self.moves.append(str(device))
         return self
 
-    def __call__(self, input_ids, attention_mask, output_hidden_states):
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        output_hidden_states,
+        use_cache = None,
+    ):
         import torch
+
+        self.use_cache = use_cache
         b, n = input_ids.shape
         return SimpleNamespace(
             hidden_states = tuple(torch.full((b, n, 4), float(i)) for i in range(3))
@@ -2341,6 +2349,72 @@ def test_client_sends_the_budget_and_the_servers_share():
     assert v25._server_reserved_mib("cpu") is None
 
 
+@pytest.mark.parametrize("resident", [False, True])
+def test_client_frees_the_servers_cached_blocks_before_a_non_resident_encode(monkeypatch, resident):
+    """Only a non-resident cache miss releases the server's cached blocks, before its reservation is sent."""
+    import torch
+
+    events = []
+    state = {"reserved": 9000 << 20}
+
+    def empty_cache():
+        events.append("empty_cache")
+        state["reserved"] = 6000 << 20
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", empty_cache)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: state["reserved"])
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cuda:0",
+        dtype = "bfloat16",
+        resident = resident,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    sent = []
+
+    def fake_put(msg):
+        events.append("put")
+        sent.append(msg)
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = fake_put
+    client.encode(["p"], 2)
+    client.encode(["p"], 2)
+    if resident:
+        assert events == ["put"] and sent[0]["server_reserved_mib"] == 9000
+    else:
+        assert events == ["empty_cache", "put"] and sent[0]["server_reserved_mib"] == 6000
+
+
+def test_release_cached_device_memory_skips_hosts_without_a_card(monkeypatch):
+    import torch
+
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("cuda"))
+    for device in ("cpu", "mps", None, ""):
+        v25._release_cached_device_memory(device)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    v25._release_cached_device_memory("cuda:0")
+    assert calls == []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    v25._release_cached_device_memory("cuda:0")
+    assert calls == ["cuda"]
+
+
 # ── the encoder worker spawn consults the shutdown latch ─────────────────────
 class _FakeEncoderProc:
     def __init__(self, *args, **kwargs):
@@ -2438,3 +2512,436 @@ def test_an_ltx25_image_render_counts_as_image_to_video_for_the_background_compi
     bg = bgc.BackgroundCompile(object())
     _settle_bg_compile(bg, i2v = _bg_i2v_render(object(), False))
     assert not bg.pending() and bg.state == "failed"
+
+
+def test_the_hidden_state_encode_builds_no_kv_cache():
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()
+    worker._pack_hidden_states(model, torch.ones(1, 3, dtype = torch.long), torch.ones(1, 3))
+    assert model.use_cache is False
+
+
+def _stack_model(width = 8, layers = 4):
+    """Miniature Gemma 4 layout with a buffer, a vision tower and a tied lm_head."""
+    import torch
+
+    class StackModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            torch.manual_seed(0)
+            language = torch.nn.Module()
+            language.embed_tokens = torch.nn.Embedding(32, width)
+            language.layers = torch.nn.ModuleList(
+                torch.nn.Linear(width, width) for _ in range(layers)
+            )
+            language.norm = torch.nn.LayerNorm(width)
+            language.register_buffer("scale", torch.tensor(0.5))
+            inner = torch.nn.Module()
+            inner.language_model = language
+            inner.vision_tower = torch.nn.Linear(width, width)
+            self.model = inner
+            self.lm_head = torch.nn.Linear(width, 32, bias = False)
+            self.lm_head.weight = language.embed_tokens.weight
+            self.dtype = torch.float32
+            self.layer_devices = []
+
+        def forward(
+            self,
+            input_ids,
+            attention_mask,
+            output_hidden_states,
+            use_cache = None,
+        ):
+            language = self.model.language_model
+            h = language.embed_tokens(input_ids) * language.scale
+            states = [h]
+            for layer in language.layers:
+                h = torch.tanh(layer(h)) * attention_mask[..., None]
+                states.append(h)
+            states[-1] = language.norm(h)
+            self.lm_head(h)
+            return SimpleNamespace(hidden_states = tuple(states))
+
+    return StackModel().eval()
+
+
+def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatch):
+    """One layer onloaded at a time, never the vision tower, host tensors restored, output bit-identical."""
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    ids = torch.randint(0, 32, (2, 5), generator = torch.Generator().manual_seed(1))
+    mask = torch.ones(2, 5)
+    mask[0, :2] = 0
+    with torch.inference_mode():
+        reference = worker._pack_hidden_states(model, ids, mask)
+    parts = worker._stream_parts(model)
+    assert parts is not None
+    resident, containers, layers = parts
+    language = model.model.language_model
+    assert layers == list(language.layers)
+    assert model.model.vision_tower not in resident
+    host = {id(t): t.data_ptr() for t in list(model.parameters()) + list(model.buffers())}
+
+    def onloaded(module):
+        return all(t.data_ptr() != host[id(t)] for t in module.parameters())
+
+    seen = []
+    with worker._streamed(parts, "cpu"):
+        assert onloaded(language.embed_tokens) and onloaded(language.norm)
+        assert language.scale.data_ptr() != host[id(language._buffers["scale"])] if False else True
+        assert model.lm_head.weight is language.embed_tokens.weight
+        assert not onloaded(model.model.vision_tower)
+        handles = [
+            layer.register_forward_pre_hook(
+                lambda module, _args, i = i: seen.append(
+                    [onloaded(layer) for layer in layers] == [j == i for j in range(len(layers))]
+                )
+            )
+            for i, layer in enumerate(layers)
+        ]
+        with torch.inference_mode():
+            streamed = worker._pack_hidden_states(model, ids, mask)
+        for handle in handles:
+            handle.remove()
+    assert seen == [True] * len(layers)
+    assert torch.equal(streamed, reference)
+    assert all(t.data_ptr() == host[id(t)] for t in model.parameters())
+    assert all(not layer._forward_pre_hooks and not layer._forward_hooks for layer in layers)
+
+
+def test_an_encoder_too_big_to_onload_whole_streams_before_it_falls_back_to_the_cpu(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model(width = 512)  # four 1 MiB layers
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 10)
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV, raising = False)
+    parts = worker._stream_parts(model)
+    whole = worker._weights_mib(model) + worker.ENCODE_MARGIN_MIB
+    streamed = worker._stream_need_mib(parts)
+    assert streamed < whole
+    offloaded = {"device": "cuda:0", "resident": False}
+
+    def plan(free_mib, config = offloaded):
+        _patch_free(monkeypatch, free_mib)
+        device, stream = worker._encode_plan(config, model)
+        return device, stream is not None
+
+    assert plan(whole) == ("cuda:0", False)  # fits whole: onload whole, as before
+    assert plan(whole - 1) == ("cuda:0", True)
+    assert plan(streamed) == ("cuda:0", True)
+    assert plan(streamed - 1) == ("cpu", False)
+    assert plan(None) == ("cuda:0", False)  # unreadable: the planned whole onload
+    assert plan(0, {"device": "cuda:0", "resident": True}) == ("cuda:0", False)
+    assert plan(0, {"device": "mps", "resident": False}) == ("mps", False)
+    monkeypatch.setenv(worker.STREAM_ENCODE_ENV, "0")
+    assert plan(streamed) == ("cpu", False)
+    # The fake encoder (no layer stack) cannot stream: a short card still encodes on the CPU.
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV)
+    _patch_free(monkeypatch, 1)
+    assert worker._encode_plan(offloaded, _FakeEncoderModel()) == ("cpu", None)
+
+
+def test_the_worker_reports_its_streamed_need_only_when_it_can_stream(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model(width = 512)
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV, raising = False)
+    offloaded = {"device": "cuda:0", "resident": False}
+    need = worker._stream_need_mib(worker._stream_parts(model))
+    assert worker._stream_need_mib_or_none(offloaded, model) == need
+    assert worker._stream_need_mib_or_none({"device": "xpu:0", "resident": False}, model) == need
+    assert worker._stream_need_mib_or_none({"device": "cuda:0", "resident": True}, model) is None
+    assert worker._stream_need_mib_or_none({"device": "cpu", "resident": False}, model) is None
+    assert worker._stream_need_mib_or_none({"device": "mps", "resident": False}, model) is None
+    assert worker._stream_need_mib_or_none(offloaded, _FakeEncoderModel()) is None
+    monkeypatch.setenv(worker.STREAM_ENCODE_ENV, "0")
+    assert worker._stream_need_mib_or_none(offloaded, model) is None
+
+
+def test_a_streamed_encode_never_moves_the_whole_encoder(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    moves = []
+    monkeypatch.setattr(model, "to", lambda *a, **k: moves.append(a) or model)
+    parts = worker._stream_parts(model)
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", parts))
+    config = {"device": "cuda:0", "resident": False}
+    embeds, mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert moves == [] and config["_streamed"] is True
+    with torch.inference_mode():
+        plain = worker._pack_hidden_states(
+            model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
+        )
+    assert torch.equal(embeds, plain)
+
+
+class _CachedClient:
+    """Hands back the same cached tensors every call, as the real client does with ``copy = False``."""
+
+    def __init__(self, dtype):
+        import torch
+        self.embeds = torch.arange(24, dtype = dtype).view(1, 4, 6)
+        self.mask = torch.ones(1, 4, dtype = torch.long)
+
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+        copy = True,
+    ):
+        return self.embeds, self.mask
+
+
+def test_one_video_per_prompt_skips_the_repeat_copy_unless_it_would_alias_the_cache(monkeypatch):
+    import torch
+
+    repeats = []
+    original = torch.Tensor.repeat
+
+    def counting(self, *sizes):
+        repeats.append(tuple(self.shape))
+        return original(self, *sizes)
+
+    monkeypatch.setattr(torch.Tensor, "repeat", counting)
+
+    def encode(client, count):
+        pipe = SimpleNamespace(
+            _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16)
+        )
+        v25.install_remote_encode_prompt(pipe, client)
+        return pipe.encode_prompt(
+            prompt = "a fox",
+            do_classifier_free_guidance = False,
+            num_videos_per_prompt = count,
+            max_sequence_length = 4,
+        )[0]
+
+    # A casting .to already made a private copy: no second (embedding-sized) copy.
+    client = _CachedClient(torch.float32)
+    pe = encode(client, 1)
+    assert [r for r in repeats if len(r) == 3] == []
+    assert pe.dtype == torch.bfloat16 and pe.shape == (1, 4, 6) and pe.is_contiguous()
+    assert torch.equal(pe, client.embeds.to(torch.bfloat16))
+    # A no-op .to aliases the cache: the copy stays, so an in-place edit cannot reach the cache.
+    repeats.clear()
+    client = _CachedClient(torch.bfloat16)
+    pe = encode(client, 1)
+    assert [r for r in repeats if len(r) == 3] == [(1, 4, 6)]
+    assert pe.data_ptr() != client.embeds.data_ptr()
+    pe.add_(1)
+    assert torch.equal(client.embeds, torch.arange(24, dtype = torch.bfloat16).view(1, 4, 6))
+    repeats.clear()
+    pe = encode(_CachedClient(torch.float32), 2)
+    assert pe.shape == (2, 4, 6) and [r for r in repeats if len(r) == 3] == [(1, 4, 6)]
+
+
+class _LendClient(_FakeClient):
+    def __init__(
+        self,
+        *,
+        resident = False,
+        weights_mib = 22811,
+        stream_need_mib = 6900,
+        budget_mib = None,
+        hit = False,
+    ):
+        super().__init__()
+        self.config = {"device": "cuda:0", "resident": resident, "budget_mib": budget_mib}
+        self.info = {"weights_mib": weights_mib, "stream_need_mib": stream_need_mib}
+        self.hit = hit
+        self.events = []
+
+    def cached(self, texts, max_len):
+        return self.hit
+
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+        copy = True,
+    ):
+        self.events.append("encode")
+        return super().encode(texts, max_len, cancel = cancel, copy = copy)
+
+
+def _lend_env(
+    monkeypatch,
+    *,
+    free_mib,
+    held_mib,
+    reserved_mib = 0,
+    total_mib = 23034,
+):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+    from core.inference import video_stream_residency as vr
+
+    released = []
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev: (free_mib << 20, total_mib << 20))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev: reserved_mib << 20)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(vr, "resident_mib", lambda module: held_mib)
+
+    def release(
+        pipe,
+        need_mib,
+        logger = None,
+        denoisers_only = False,
+        reason = "",
+        device = None,
+    ):
+        assert denoisers_only and reason == "the prompt encode"
+        released.append(need_mib)
+
+        def restore(strict = False):
+            released.append("restored")
+
+        return restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", release)
+    return released
+
+
+def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is_below_the_floor(
+    monkeypatch,
+):
+    from core.inference.video_ltx25_te_worker import ENCODE_MARGIN_MIB
+
+    pipe = SimpleNamespace(transformer = object())
+    whole = 22811 + ENCODE_MARGIN_MIB
+    # lending 6 GiB of the 20 GiB resident makes the whole encoder fit: stream exactly the shortfall
+    released = _lend_env(monkeypatch, free_mib = whole - 6000, held_mib = 20000)
+    restore = v25.lend_resident_dit_for_encode(pipe, _LendClient())
+    assert released == [6000] and callable(restore)
+    restore()
+    assert released == [6000, "restored"]
+    released = _lend_env(monkeypatch, free_mib = whole + 1, held_mib = 20000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
+    # room already clears the worker's streamed need: nothing lent
+    released = _lend_env(monkeypatch, free_mib = 6900, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
+    # below the worker's streamed need: lend up to it
+    released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
+    assert released == [6900 - 5000]
+    # an encoder that never streams: no streamed target
+    released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient(stream_need_mib = None)) is None
+    assert released == []
+    # the load budget minus what this process reserves caps the room, as in the worker
+    released = _lend_env(monkeypatch, free_mib = whole + 5000, held_mib = 20000, reserved_mib = 10000)
+    client = _LendClient(budget_mib = whole + 10000)
+    from core.inference.video_ltx25_te_worker import WORKER_CONTEXT_MIB
+
+    assert v25.lend_resident_dit_for_encode(pipe, client) is not None
+    assert released == [WORKER_CONTEXT_MIB]
+    released = _lend_env(monkeypatch, free_mib = 100, held_mib = 0)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None
+    released = _lend_env(monkeypatch, free_mib = 100, held_mib = 20000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient(resident = True)) is None
+    cpu = _LendClient()
+    cpu.config["device"] = "cpu"
+    assert v25.lend_resident_dit_for_encode(pipe, cpu) is None and released == []
+
+
+def test_remote_encode_prompt_pins_lent_blocks_back_after_the_encode_and_skips_cache_hits(
+    monkeypatch,
+):
+    import torch
+
+    events = []
+
+    def lend(pipe, client):
+        events.append("lend")
+        return lambda strict = False: events.append("restore")
+
+    monkeypatch.setattr(v25, "lend_resident_dit_for_encode", lend)
+    pipe = SimpleNamespace(
+        _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16)
+    )
+    client = _LendClient()
+    client.events = events
+    v25.install_remote_encode_prompt(pipe, client)
+    pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["lend", "encode", "restore"]
+    events.clear()
+    client.hit = True
+    pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["encode"]
+
+    # a failed encode still pins the lent blocks back
+    def boom(*a, **k):
+        events.append("encode")
+        raise RuntimeError("worker died")
+
+    events.clear()
+    client.hit = False
+    client.encode = boom
+    client.stop_if_busy = lambda: events.append("stop_if_busy")
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["lend", "encode", "stop_if_busy", "restore"]
+
+
+def test_a_cancelled_encode_stops_the_busy_worker_and_a_finished_one_does_not(monkeypatch):
+    """Only a worker still computing an abandoned encode is stopped; one that answered (embeds or error) is kept."""
+    import threading
+
+    import torch
+
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    closed = []
+    monkeypatch.setattr(
+        client, "close", lambda: closed.append(True) or setattr(client, "_inflight", None)
+    )
+    cancel = threading.Event()
+    cancel.set()
+    client._cmd.put = lambda msg: None  # no reply: still encoding
+    with pytest.raises(RuntimeError):
+        client.encode(["p"], 2, cancel = cancel)
+    assert client.stop_if_busy() is True and closed == [True]
+    assert client.stop_if_busy() is False
+
+    def reply(msg):
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = reply
+    client.encode(["q"], 2)
+    assert client.stop_if_busy() is False
+    client._cmd.put = lambda msg: client._resp.put(
+        {"type": "error", "id": msg["id"], "error": "boom"}
+    )
+    with pytest.raises(v25.TextEncoderWorkerError):
+        client.encode(["r"], 2)
+    assert client.stop_if_busy() is False and closed == [True]

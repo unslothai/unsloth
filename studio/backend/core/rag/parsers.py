@@ -58,6 +58,7 @@ _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_RAW_TEXT = frozenset("iframe noembed noframes textarea title xmp".split())
 _HTML_LIST_TAGS = frozenset(("dir", "menu", "ol", "ul"))
 _HTML_LIST_FORMATS = {
     "1": "decimal",
@@ -67,6 +68,52 @@ _HTML_LIST_FORMATS = {
     "I": "upperRoman",
 }
 _HTML_TABLE_DEPTH = 32
+_HTML_VOID_TAGS = frozenset(
+    "area base br col embed hr img input link meta param source track wbr".split()
+)
+# includes the SVG / MathML integration points, whose HTML children keep their own scope
+_HTML_P_SCOPE = frozenset(
+    "annotation-xml applet button caption desc foreignobject html marquee mi mn mo ms mtext"
+    " object select table td template th title".split()
+)
+_HTML_TABLE_SCOPE = frozenset(("table", "template"))
+_HTML_CELL_CLOSERS = frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS
+# optional end tags: open element -> (start tags that end it, ancestors that stop the search)
+_HTML_IMPLIED_END = {
+    "p": (
+        frozenset(
+            "address article aside blockquote center dd details dialog dir div dl dt fieldset"
+            " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main"
+            " menu nav ol p pre search section summary table ul".split()
+        ),
+        _HTML_P_SCOPE,
+    ),
+    "li": (frozenset(("li",)), _HTML_LIST_TAGS | _HTML_P_SCOPE),
+    "dt": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "dd": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "tr": (frozenset(("tr",)) | _HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "td": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "th": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "thead": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tbody": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tfoot": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "caption": (
+        frozenset(("caption", "col", "colgroup", "td", "th", "tr")) | _HTML_ROW_GROUPS,
+        _HTML_TABLE_SCOPE,
+    ),
+    "option": (
+        frozenset(("option", "optgroup", "hr")),
+        frozenset(("select", "datalist", "template")),
+    ),
+}
+_HTML_IMPLIED_BY = {
+    tag: tuple(
+        (name, scope) for name, (closers, scope) in _HTML_IMPLIED_END.items() if tag in closers
+    )
+    for tag in frozenset().union(*(closers for closers, _ in _HTML_IMPLIED_END.values()))
+}
+# other optional-end elements have no tracked end, so a hidden one would swallow the rest
+_HTML_HIDDEN_IGNORED = frozenset("body colgroup head html optgroup rb rp rt rtc".split())
 
 
 class _HtmlPre(str):
@@ -99,12 +146,23 @@ def _html_span(attrs, name: str, limit: int) -> int:
     return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
+def _html_hidden(tag: str, attrs) -> bool:
+    # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
+    for name, value in attrs:
+        if name == "hidden":
+            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+    return False
+
+
 class _Stripper(HTMLParser):
     """collect visible text, one line per block element."""
 
     def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
+        self._hidden_at: int | None = None
+        self._open_tags: list[str] = []
+        self._tag_positions: dict[str, list[int]] = {}
         self._pre = 0
         self._templates: list[bool] = []
         self._line: list[str] = []
@@ -230,7 +288,50 @@ class _Stripper(HTMLParser):
         if text.strip():
             self.out.append(_HtmlPre(text) if self._pre else text)
 
+    def _pop_tags(self, index: int) -> None:
+        while len(self._open_tags) > index:
+            self._tag_positions[self._open_tags.pop()].pop()
+        if self._hidden_at is not None and self._hidden_at >= index:
+            self._hidden_at = None
+
+    def _close_implied(self, tag: str, preserve_boundary: bool) -> None:
+        implied = _HTML_IMPLIED_BY.get(tag)
+        if not implied:
+            return
+        index = len(self._open_tags)
+        for name, barriers in implied:
+            positions = self._tag_positions.get(name)
+            if positions and positions[-1] < index:
+                barrier = max(
+                    (self._tag_positions[b][-1] for b in barriers if self._tag_positions.get(b)),
+                    default = -1,
+                )
+                if positions[-1] > barrier:
+                    index = positions[-1]
+        if index == len(self._open_tags):
+            return
+        if preserve_boundary and (self._hidden_at is None or index < self._hidden_at):
+            self.handle_endtag(self._open_tags[index])
+        else:
+            self._pop_tags(index)
+
     def handle_starttag(self, tag, attrs):
+        # markup inside raw text is literal text, even where older HTMLParsers parse it
+        hidden = _html_hidden(tag, attrs) and not any(
+            self._tag_positions.get(raw) for raw in _HTML_RAW_TEXT
+        )
+        self._close_implied(tag, self._hidden_at is not None or hidden)
+        if tag not in _HTML_VOID_TAGS:
+            index = len(self._open_tags)
+            self._tag_positions.setdefault(tag, []).append(index)
+            self._open_tags.append(tag)
+            if hidden and self._hidden_at is None:
+                self._hidden_at = index
+        if self._hidden_at is not None or hidden:
+            if tag in _HTML_RAW_TEXT:
+                # older HTMLParser versions parse these as markup, so hidden tags inside could end the scope
+                self.set_cdata_mode(tag)
+            return
         if tag == "template":
             # declarative shadow roots render; other templates are inert
             inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
@@ -278,7 +379,24 @@ class _Stripper(HTMLParser):
             # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
 
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag in _HTML_RAW_TEXT:
+            self.clear_cdata_mode()
+        # no synthesized </br> or </input> end for a hidden void element
+        if tag not in _HTML_VOID_TAGS or not _html_hidden(tag, attrs):
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag):
+        positions = self._tag_positions.get(tag)
+        if positions:
+            index = positions[-1]
+            muted = self._hidden_at is not None and index >= self._hidden_at
+            self._pop_tags(index)
+            if muted:
+                return
+        elif self._hidden_at is not None:
+            return
         if tag == "template":
             if self._templates and self._templates.pop() and self._skip:
                 self._skip -= 1
@@ -311,7 +429,7 @@ class _Stripper(HTMLParser):
             self._line.append(" ")
 
     def handle_data(self, data):
-        if not self._skip:
+        if not self._skip and self._hidden_at is None:
             if self._label and data.strip():
                 self._line.append(self._label)
                 self._label = None

@@ -169,6 +169,31 @@ def _plan_stale(plan):
     )
 
 
+def _same_tables(a, b):
+    """Equal copied NF4 tables (codes, absmax2 codes, nested offsets): a re-quantized weight can reuse every
+    address of the old one, so equal pointers alone do not mean equal values. Once per sequence."""
+    differs = []
+    for ea, eb in zip(a.layers, b.layers):
+        for kind, sa in ea.sites.items():
+            sb = eb.sites[kind]
+            if sa.nested != sb.nested:
+                return False
+            for name in ("code", "code2", "seg_offset") if sa.nested else ("code",):
+                ta, tb = getattr(sa, name), getattr(sb, name)
+                if ta is tb:
+                    continue
+                if ta.shape != tb.shape or ta.device != tb.device:
+                    return False
+                differs.append((ta != tb).any())
+    # One host sync for the whole model.
+    return not differs or not bool(torch.stack(differs).any())
+
+
+def _reusable(plan, built):
+    # Keep the previous plan (and the graphs that captured its buffers) only for identical weights.
+    return built.signature == plan.signature and _same_tables(built, plan)
+
+
 def _signature(plan):
     # An equal signature permits reusing the buffers captured by the previous step.
     return (
@@ -632,7 +657,7 @@ def _decode_forward(
             STATS["refused"] = built
             built = plan if isinstance(plan, _Refused) and plan.reason == built else _Refused(built)
         if isinstance(plan, _Plan) and isinstance(built, _Plan):
-            if built.signature == plan.signature:
+            if _reusable(plan, built):
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 plan.bindings = built.bindings
                 plan.tensor_bindings = built.tensor_bindings

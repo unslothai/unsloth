@@ -49,7 +49,7 @@ test("the picker reads one fit per variant, companions included", () => {
   assert.notEqual(at, -1, "getVariantFit is missing");
   assert.match(
     PICKERS.slice(at, at + 400),
-    /ggufVariantFitSizeBytes\(variant\)|classifyGgufFitWithLookupTables\(getGgufFit, variant\)/,
+    /ggufVariantFitSizeBytes\(variant\)|classifyGgufFitWithLookupTables\(getGgufFit, variant\)|classifyVariantFitOnCard\(getGgufFit, variant, cardGb\)/,
   );
   assert.equal(PICKERS.match(/getVariantFit\(v\)/g)?.length, 2);
 });

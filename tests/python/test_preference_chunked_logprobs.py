@@ -8,6 +8,7 @@ import ast
 import functools
 import importlib.util
 import os
+import sys
 import textwrap
 import types
 
@@ -146,6 +147,19 @@ class _ToyLM(torch.nn.Module):
         return cap * torch.tanh(z / cap)
 
 
+def _pin_stock_peft_lora(monkeypatch):
+    """The reference is TRL on stock PEFT. An Unsloth load earlier in the worker swaps PEFT's LoRA forwards for the
+    whole process, which moves these gradients past the tolerance below."""
+    for name, module in list(sys.modules.items()):
+        if not name.startswith("peft.tuners.lora") or module is None:
+            continue
+        for cls in list(vars(module).values()):
+            forward = vars(cls).get("forward") if isinstance(cls, type) else None
+            original = getattr(forward, "_unsloth_original_forward", None)
+            if original is not None:
+                monkeypatch.setattr(cls, "forward", original)
+
+
 def _qwen_lora():
     transformers = pytest.importorskip("transformers")
     peft = pytest.importorskip("peft")
@@ -250,6 +264,8 @@ def test_matches_trl(kind, kwargs, model_name, monkeypatch):
     ), "rewrite did not recognise the installed TRL concatenated_forward"
     stock, patched = _compile(source), _compile(patched_source, rows_per_chunk = 5)
 
+    if model_name == "qwen3_lora":
+        _pin_stock_peft_lora(monkeypatch)
     lm = _qwen_lora() if model_name == "qwen3_lora" else _ToyLM()
     model = _HiddenStatesLM(lm)
     params = [p for p in model.parameters() if p.requires_grad]

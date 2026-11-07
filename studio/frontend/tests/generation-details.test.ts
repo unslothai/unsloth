@@ -4,12 +4,14 @@
 // Live prefill / decode figures, the Generation details setting, and the loaded placement readout.
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
 import type { LiveDecodeProgress, LivePrefillProgress } from "../src/features/chat/stores/chat-runtime-store.ts";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
+register("./thread-sampling-resolver.mjs", import.meta.url);
 const {
   formatLiveDecode,
   formatPrefillDetails,
@@ -19,6 +21,7 @@ const {
   prefillSecondsLeft,
   withPrefillFit,
   readGenerationProgress,
+  betweenToolRounds,
 } = await import("../src/features/chat/lib/generation-progress.ts");
 const { describePlacement, loadedPlacementFrom } = await import(
   "../src/features/chat/lib/partial-offload.ts"
@@ -186,6 +189,76 @@ test("malformed frames are dropped rather than drawn as NaN", () => {
   assert.equal(readGenerationProgress({ phase: "prefill", processed: "12" }), null);
   assert.equal(readGenerationProgress({ phase: "decode", tokens: 0 }), null);
   assert.equal(readGenerationProgress({ phase: "warmup" }), null);
+});
+
+test("a compaction frame reads as its own phase and survives a persisted run", () => {
+  assert.deepEqual(readGenerationProgress({ phase: "compacting" }), { phase: "compacting" });
+  const frame = { type: "generation_progress", phase: "compacting" };
+  const normalized = normalizeChatGenerationChunkPayload(frame) as { _generationProgress?: unknown };
+  assert.deepEqual(normalized._generationProgress, frame);
+  assert.equal(generationChunkCountsTowardTiming(normalized), false);
+});
+
+test("compaction shows until the pass's context_truncated or first prefill sample, live or followed", async () => {
+  await import("./helpers/store-stubs/settings-http.ts");
+  await import("./helpers/store-stubs/chat-history-storage.ts");
+  const { useChatRuntimeStore } = await import("../src/features/chat/stores/chat-runtime-store.ts");
+  const runtime = useChatRuntimeStore.getState();
+  const live = () => useChatRuntimeStore.getState().liveGenerationByThreadId.t;
+  runtime.setLiveDecode("t", { tokens: 5, tokPerS: 9 } as LiveDecodeProgress);
+  runtime.setLiveCompacting("t", true);
+  assert.deepEqual(live(), { prefill: null, prefillShown: false, decode: null, compacting: true });
+  runtime.setLiveCompacting("t", false);
+  assert.equal(live()?.compacting, false);
+  runtime.setLiveCompacting("t", true);
+  runtime.setLivePrefill("t", { processed: 1, total: 10 } as LivePrefillProgress);
+  assert.notEqual(live()?.compacting, true);
+  runtime.setLiveCompacting("t", true);
+  runtime.setLiveDecode("t", { tokens: 6, tokPerS: 9 } as LiveDecodeProgress);
+  assert.notEqual(live()?.compacting, true);
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /update\?\.phase === "compacting"\) \{\s*runtime\.setLiveCompacting\(liveThreadKey\(serverCancel\), true\);/);
+  assert.match(adapter, /if \(chunk\.context_truncated\) \{\s*runtime\.setLiveCompacting\(liveThreadKey\(serverCancel\), false\);/);
+  const provider = readSrc("features/chat/runtime-provider.tsx");
+  assert.match(provider, /progress\?\.phase === "compacting"\) \{\s*store\.setLiveCompacting\(threadId, true\);/);
+  assert.match(provider, /if \(chunk\.context_truncated\) \{\s*useChatRuntimeStore\.getState\(\)\.setLiveCompacting\(threadId, false\);/);
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const status = thread.slice(thread.indexOf("const GeneratingStatus"), thread.indexOf("// Placeholder when stop fires"));
+  assert.match(status, /t\("generationStats\.compactingContext"\)/);
+  assert.doesNotMatch(status, />\s*Compacting/);
+});
+
+test("a tool result drops the last pass's figures, live or followed, so the next round starts at Working", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /toolEvent\.type === "tool_end"\) \{\s*\/\/[^\n]*\n\s*runtime\.clearLiveGenerationForThread\(liveThreadKey\(serverCancel\)\);/,
+  );
+  const provider = readSrc("features/chat/runtime-provider.tsx");
+  assert.match(
+    provider,
+    /caughtUp\(update\.run\) &&\s*\(chunk as \{ _toolEvent\?: \{ type\?: unknown \} \}\)\._toolEvent\?\.type === "tool_end"\s*\) \{\s*useChatRuntimeStore\.getState\(\)\.clearLiveGenerationForThread\(threadId\);/,
+  );
+});
+
+test("the status line comes back between tool rounds, after the finished call", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));
+  assert.match(indicator, /betweenToolRounds\(message\.status\?\.type === "running", message\.content\)/);
+  assert.match(indicator, /<GeneratingStatus \/>/);
+  // After the parts, so it sits under the call it follows rather than above the reply.
+  assert.match(thread, /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>\s*<NextRoundIndicator \/>/);
+});
+
+test("a finished call shows the next round's status, past the sources a recovered reply ends with", () => {
+  const done = { type: "tool-call", result: "ok" };
+  const source = { type: "source" };
+  assert.equal(betweenToolRounds(true, [done]), true);
+  assert.equal(betweenToolRounds(true, [done, source, source]), true);
+  assert.equal(betweenToolRounds(false, [done]), false);
+  assert.equal(betweenToolRounds(true, [{ type: "tool-call" }, source]), false, "still running");
+  assert.equal(betweenToolRounds(true, [done, { type: "text" }, source]), false, "the next pass streamed");
+  assert.equal(betweenToolRounds(true, [source]), false);
 });
 
 test("decode frames keep draft acceptance only when both counts are there", () => {

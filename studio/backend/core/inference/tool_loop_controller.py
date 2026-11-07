@@ -884,6 +884,12 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
         return "Moving the mouse"
     if tool_name == "browser_drag":
         return "Dragging"
+    if tool_name == "browser_tabs":
+        return "Switching tabs" if text("tab") else "Listing browser tabs"
+    if tool_name == "browser_read_file":
+        return "Reading the file"
+    if tool_name == "browser_edit_file":
+        return "Editing the file"
     return f"Calling: {tool_name}"
 
 

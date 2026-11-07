@@ -107,6 +107,50 @@ def test_h3_conditioner_pin_in_place_uses_registered_arenas(fake_registered):
         assert torch.equal(v, expect[k]), k
 
 
+def test_h3_conditioner_pin_fills_each_arena_before_registering(fake_registered, monkeypatch):
+    """The copies write the arena before it is registered (they fault its pages, no separate zero pass); the bytes
+    no tensor uses are zeroed, as the zero fill left them."""
+    from core.inference import video_minimax_h3_te as te
+
+    zeroed = []
+    real_zero = torch.Tensor.zero_
+    monkeypatch.setattr(
+        torch.Tensor, "zero_", lambda self: (zeroed.append(self.numel()), real_zero(self))[1]
+    )
+    m = torch.nn.Sequential(torch.nn.Linear(16, 32), torch.nn.Linear(32, 8))
+    m.register_buffer("q", torch.arange(-32, 32, dtype = torch.int8).view(8, 8))
+    expect = {k: v.detach().clone() for k, v in m.state_dict().items()}
+    seen = {}
+
+    def register(holder):
+        seen[id(holder)] = holder._arr.copy()
+
+    monkeypatch.setattr(_FakeHolder, "register", register)
+    te.pin_module_in_place(m, arena_bytes = 1 << 14)
+    assert len(fake_registered) == 1
+    arr = fake_registered[0]._arr
+    assert np.array_equal(seen[id(fake_registered[0])], arr), "registered before the copies landed"
+    for k, v in m.state_dict().items():
+        assert torch.equal(v, expect[k]), k
+    unused = np.ones(arr.size, dtype = bool)
+    base = arr.ctypes.data
+    for v in m.state_dict().values():
+        start = v.data_ptr() - base
+        unused[start : start + v.numel() * v.element_size()] = False
+    assert sum(zeroed) == unused.sum() > 0
+    assert not arr[unused].any(), "a byte no tensor uses kept the dirty fill"
+
+
+def test_registered_fill_errors_propagate(fake_registered):
+    def boom(buf):
+        raise RuntimeError("copy failed")
+
+    with pytest.raises(RuntimeError, match = "copy failed"):
+        dm.registered_pinned_empty(4096, fill = boom)
+    buf = dm.registered_pinned_empty(4096, fill = lambda b: b.fill_(3))
+    assert bool((buf == 3).all()) and fake_registered[-1].registered_after_zero is False
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_real_registered_slab_is_pinned_and_uploads_exactly(monkeypatch):
     monkeypatch.delenv(dm.REGISTERED_SLAB_ENV, raising = False)

@@ -361,6 +361,7 @@ function createGgufVariantMenuItems(
   resources: {
     gpuGb?: number;
     gpuCount?: number;
+    audioCppCardGb?: number;
     systemRamGb?: number;
     budgetFraction?: number;
     unifiedLoadBudgetGb?: number | null;
@@ -676,6 +677,7 @@ export function GgufDownloadCard({
   isLoadingThisModel,
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
   unifiedLoadBudgetGb,
   cachePath,
@@ -696,6 +698,7 @@ export function GgufDownloadCard({
   isLoadingThisModel: boolean;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
@@ -760,6 +763,7 @@ export function GgufDownloadCard({
     return sortDownloadableGgufVariants(variants, {
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       systemRamGb,
       budgetFraction,
       unifiedLoadBudgetGb,
@@ -768,6 +772,7 @@ export function GgufDownloadCard({
     variants,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
     budgetFraction,
     unifiedLoadBudgetGb,
@@ -822,6 +827,7 @@ export function GgufDownloadCard({
         {
           gpuGb,
           gpuCount,
+          audioCppCardGb,
           systemRamGb,
           budgetFraction,
           unifiedLoadBudgetGb,
@@ -831,6 +837,7 @@ export function GgufDownloadCard({
     [
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       sortedVariants,
       systemRamGb,
       budgetFraction,
@@ -926,6 +933,7 @@ export function GgufDownloadCard({
     ? classifyGgufVariantFit(selected, {
         gpuGb,
         gpuCount,
+        audioCppCardGb,
         systemRamGb,
         budgetFraction,
         unifiedLoadBudgetGb,

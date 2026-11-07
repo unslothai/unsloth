@@ -1384,3 +1384,29 @@ def test_nf4_merge_unload_invalidates_restored_projection_weights(plan_key):
         after = projection(x).float()
     assert torch.isfinite(after).all() and (after - before).abs().max() > 1
     assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize("changed", [None, "code", "code2", "seg_offset"])
+def test_requantized_weights_at_reused_addresses_rebuild_the_plan(changed):
+    # Equal pointers (the allocator reused every address) with different copied NF4 tables: the old
+    # plan's code / absmax2 code / nested offsets copies are stale, so it must not be kept.
+    D = _driver()
+
+    def plan(tables):
+        site = types.SimpleNamespace(nested = True, **tables)
+        return types.SimpleNamespace(
+            signature = ("same",), layers = [types.SimpleNamespace(sites = {"qkv": site})]
+        )
+
+    tables = {
+        "code": torch.linspace(-1, 1, 16),
+        "code2": torch.linspace(-1, 1, 256),
+        "seg_offset": torch.tensor([0.25, 0.5, 0.5]),
+    }
+    new = {k: v.clone() for k, v in tables.items()}
+    if changed is not None:
+        new[changed][1] += 1
+    assert D._reusable(plan(tables), plan(new)) is (changed is None)
+    other = plan(new)
+    other.signature = ("other",)
+    assert not D._reusable(plan(tables), other)

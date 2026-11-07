@@ -1972,3 +1972,23 @@ def test_the_unload_answers_are_declared_in_the_schema(token_client):
     named = client.post("/api/inference/video/unload", json = {"expected_load_id": "t2"}).json()
     assert set(named) == set(plain) | {"unloaded", "outcome"}
     assert (named["unloaded"], named["outcome"]) == (True, "unloaded")
+
+
+def test_status_builds_the_backend_off_the_event_loop(client, monkeypatch):
+    import asyncio
+
+    on_loop = []
+    real = video_module.get_video_backend
+
+    def backend():
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real()
+
+    monkeypatch.setattr(video_module, "get_video_backend", backend)
+    body = client.get("/api/inference/video/status").json()
+    assert body["loaded"] is False
+    assert on_loop == [False]
