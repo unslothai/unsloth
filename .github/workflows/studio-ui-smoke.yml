@@ -198,8 +198,7 @@ jobs:
         run: |
           pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
-          # Browser builds are per OS release (the ubuntu-24.04 and 26.04 builds differ), so the key names
-          # it: a build restored onto another release exits at launch, whatever libraries are installed.
+          # Browser builds differ per OS release; one restored onto another release exits at launch.
           echo "os=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
 
       # Keyed on the OS release and the resolved Playwright version, which decide the browser builds.
@@ -833,8 +832,7 @@ jobs:
         run: |
           pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
-          # Browser builds are per OS release (the ubuntu-24.04 and 26.04 builds differ), so the key names
-          # it: a build restored onto another release exits at launch, whatever libraries are installed.
+          # Browser builds differ per OS release; one restored onto another release exits at launch.
           echo "os=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
 
       # Keyed on the OS release and the resolved Playwright version, which decide the browser builds.
