@@ -5,6 +5,7 @@
 runs its own attention function after the exchange) and for hybrid models, whose scans need the full sequence so
 they run on heads."""
 
+import builtins
 import functools
 import inspect
 
@@ -241,13 +242,34 @@ _SHARD_LOCAL_KWARGS = (
 )
 
 
-def _calls_attention_registry(function) -> bool:
+def _registry_caller(function, hops = 1):
+    """`function` or the single function it delegates to (unsloth_zoo's compiled `<Class>_forward`) that reads
+    ALL_ATTENTION_FUNCTIONS, else None. A forward calling several functions is not a delegate (fast forwards)."""
     try:
         function = inspect.unwrap(function)
     except Exception:
-        return False
+        return None
     code = getattr(function, "__code__", None)
-    return code is not None and "ALL_ATTENTION_FUNCTIONS" in code.co_names
+    if code is None:
+        return None
+    if "ALL_ATTENTION_FUNCTIONS" in code.co_names:
+        return function
+    if hops <= 0:
+        return None
+    globs = getattr(function, "__globals__", {})
+    callees = {
+        name for name in code.co_names if callable(globs.get(name)) or name in vars(builtins)
+    }
+    if len(callees) != 1:
+        return None
+    callee = globs.get(callees.pop())
+    if callee is None or callee is function or not inspect.isfunction(callee):
+        return None
+    return _registry_caller(callee, hops - 1)
+
+
+def _calls_attention_registry(function) -> bool:
+    return _registry_caller(function) is not None
 
 
 def hf_attention_forward(module):
@@ -275,7 +297,7 @@ def is_hf_registry_attention(module) -> bool:
 
 
 def _forward_globals(module) -> dict:
-    return getattr(inspect.unwrap(hf_attention_forward(module)), "__globals__", {})
+    return getattr(_registry_caller(hf_attention_forward(module)), "__globals__", {})
 
 
 def _route_hf_forward(module, get_cp_manager) -> None:
@@ -309,7 +331,9 @@ class _HeadShard:
     # Plain attribute access only: torch.compile cannot trace object.__getattribute__ / object.__setattr__.
     def __init__(self, module, **overrides):
         self._unsloth_module = module
-        self.__dict__.update(overrides)
+        # One attribute at a time: torch < 2.13 cannot trace self.__dict__.update (graph break).
+        for name, value in overrides.items():
+            setattr(self, name, value)
 
     def __getattr__(self, name):
         # Only called for names the shard does not hold itself.
@@ -344,7 +368,8 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
-    as transformers' masks), and packed documents closed off from one another."""
+    as transformers' masks), and packed documents closed off from one another (padding past
+    cu_seqlens[-1] is one more segment)."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
     if window is not None:
@@ -405,9 +430,6 @@ def _ulysses_hf_attention(
         else get_packed_info_from_kwargs({"packed_seq_lengths": packed_seq_lengths}, query.device)
     )
     cu_seqlens = None if seq_info is None else seq_info[1]
-    if cu_seqlens is not None and int(cu_seqlens[-1]) < total:
-        # Padding to the cp multiple sits after the last document: its own segment.
-        cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
 
     overrides = {"num_key_value_groups": plan.local_groups}
     sinks = getattr(module, "sinks", None)
@@ -423,6 +445,9 @@ def _ulysses_hf_attention(
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
+            if int(cu_seqlens[-1]) < total:
+                # Padding to the cp multiple sits after the last document: its own segment.
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
             cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
             longest = int((cu[1:] - cu[:-1]).max())
             kwargs.update(
@@ -431,6 +456,7 @@ def _ulysses_hf_attention(
     elif implementation == "sdpa" and cu_seqlens is None and window is None:
         mask = None  # sdpa's is_causal path
     else:
+        # No data-dependent padding check here: it graph-broke compiled packed attention.
         mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
     out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]

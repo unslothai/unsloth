@@ -16,6 +16,10 @@ import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useId, useState } from "react";
 import {
+  loadDownloadSpeedLimitSettings,
+  subscribeDownloadSpeedLimitSettings,
+} from "../api/download-speed-limit";
+import {
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
   subscribeDownloadTransportSettings,
@@ -70,6 +74,28 @@ export function DownloadTransportRow() {
     return unsubscribe;
   }, []);
 
+  const [speedLimited, setSpeedLimited] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let changed = false;
+    const unsubscribe = subscribeDownloadSpeedLimitSettings((next) => {
+      changed = true;
+      setSpeedLimited(next.mbps !== null);
+    });
+    loadDownloadSpeedLimitSettings()
+      .then((next) => {
+        if (!(cancelled || changed)) {
+          setSpeedLimited(next.mbps !== null);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   // Unknown counts as unavailable while loading, or Xet could be stored and silently ignored.
   const xetUnavailable = capabilityPending || settings?.xetAvailable === false;
   // Localized string first; the backend reason is English prose.
@@ -79,8 +105,9 @@ export function DownloadTransportRow() {
       ? t("settings.general.downloads.xetMissing")
       : serverReason;
 
-  const status =
-    !capabilityPending && xetUnavailable && mode === "xet"
+  const status = speedLimited
+    ? t("settings.general.downloads.speedLimitUsesHttps")
+    : !capabilityPending && xetUnavailable && mode === "xet"
       ? xetReason
       : mode === "auto" && settings
         ? t("settings.general.downloads.autoCurrently", {
@@ -96,7 +123,7 @@ export function DownloadTransportRow() {
   // something to explain (stalls, low RAM, an env switch); on Xet the reason is bookkeeping
   // like "Xet download succeeded" or "no cached verdict; defaulting to Xet".
   const statusReason =
-    mode === "auto" && settings?.autoResolvesTo === "http"
+    !speedLimited && mode === "auto" && settings?.autoResolvesTo === "http"
       ? (settings.autoReason ?? null)
       : null;
 

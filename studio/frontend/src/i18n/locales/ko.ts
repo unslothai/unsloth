@@ -207,6 +207,7 @@ export const ko = {
     tabs: "브라우저 탭",
     newTab: "새 탭",
     newTabFullView: "전체 보기로 새 탭",
+    newTabFloating: "플로팅 창에서 새 탭",
     closeTab: "탭 닫기",
     close: "브라우저 닫기",
     show: "브라우저 표시",
@@ -389,6 +390,12 @@ export const ko = {
       openChat: "전체 보기로 열기",
       moveLeft: "왼쪽 창으로 이동",
       moveRight: "오른쪽 창으로 이동",
+    },
+    floating: {
+      enter: "플로팅 창",
+      dock: "옆에 고정",
+      close: "플로팅 창 닫기",
+      handle: "창 이동. 화살표 키로 이동하고 Shift와 화살표 키로 크기를 바꿉니다.",
     },
     annotate: {
       countOne: "주석 1개",
@@ -785,6 +792,8 @@ export const ko = {
   picker: {
     unifiedTightFit: "빠듯함",
     unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
+    residentToRun: "실행에 필요",
+    residentToRunHint: "실행 중 로드 검사가 요구하는 GPU 메모리",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",
@@ -1095,6 +1104,9 @@ export const ko = {
       modelAccessHint: "한 줄에 모델 하나씩 입력합니다. 예: unsloth/Qwen3-4B-GGUF, 조직 전체는 unsloth/*. 비워 두면 모든 모델을 허용합니다.",
       modelAccessSave: "저장",
       modelAccessLimited: "모델 접근 제한됨",
+      rename: "이름 변경",
+      renameTitle: "{username} 이름 변경",
+      renameDescription: "이 계정이 로그인할 때 사용할 이름을 선택하세요. 채팅, 파일, API 키는 계정에 그대로 남습니다. 사용자는 로그아웃되며 새 이름과 현재 비밀번호로 다시 로그인합니다.",
       empty: "아직 다른 계정이 없습니다",
       setupCode: "설정 코드",
       setupFor: "{username}의 설정 코드",
@@ -2085,6 +2097,12 @@ export const ko = {
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+        speedLimit: "다운로드 속도 제한",
+        speedLimitDescription:
+          "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
+        speedLimitNoLimit: "제한 없음",
+        speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",
@@ -2477,6 +2495,10 @@ export const ko = {
         contrast: {
           label: "대비",
         },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
+        },
         reduceMotion: {
           label: "동작 줄이기",
           description: "애니메이션을 줄이거나 시스템 설정을 따릅니다.",
@@ -2567,7 +2589,7 @@ export const ko = {
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
-        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noGpu: "전용 GPU가 감지되지 않았습니다.",
         noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
         mismatchCpuBuild:
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
@@ -2643,7 +2665,7 @@ export const ko = {
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
       modelMemory: {
-        title: "모델 메모리",
+        title: "모델 로딩",
         keepResident: "모델을 GPU 메모리에 유지",
         keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
         keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고, 가중치가 실제로 호스트 RAM에 있는 경우(통합 메모리 또는 부분 GPU 오프로드)에는 --mlock도 전달하여 운영체제가 가중치를 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
@@ -2826,7 +2848,7 @@ export const ko = {
       configurationDocs: "문서를",
       configurationFlagsSuffix: "참고하세요.",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
+        "Claude Code와 Codex에는 llama-server가 제공하는 GGUF 모델 또는 MLX 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:
@@ -2900,6 +2922,8 @@ export const ko = {
     },
     chat: {
       groups: {
+        replies: { title: "응답" },
+        thinkingTools: { title: "생각과 도구" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
@@ -2982,11 +3006,20 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "생성 세부 정보",
+      showGenerationDetails: "자세한 속도 및 로딩 정보",
       showGenerationDetailsDescription:
-        "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "속도 및 컨텍스트 통계",
+      generationStatsUpdatesDescription:
+        "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",
+      generationStatsUpdatesHint:
+        "실시간은 응답이 작성되는 동안 응답 아래의 초당 토큰 표시와 채팅 상단의 컨텍스트 막대를 초당 몇 번씩 새로 고칩니다. 완료 시는 각 응답이 끝난 뒤 한 번만 업데이트합니다. 실시간은 특히 오래되었거나 바쁜 기기에서 지연이나 성능 저하를 일으킬 수 있습니다.",
+      generationStatsUpdatesSettled: "완료 시",
+      generationStatsUpdatesRealtime: "실시간",
+      generationStatsUpdatesKeywords:
+        "실시간 라이브 업데이트 속도 컨텍스트 통계 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
@@ -5464,7 +5497,7 @@ export const ko = {
     skippedVersion: "{component} {version}을(를) 이번에는 건너뛰었습니다",
     skippedUpdate: "{component} 업데이트를 이번에는 건너뛰었습니다",
     skippedUpdates: "{components} 업데이트를 이번에는 건너뛰었습니다",
-    vulkanFaster: "Vulkan이 ROCM보다 10% 이상 빠릅니다. 다시 시작할 필요 없음",
+    vulkanFaster: "10% 이상 빠름",
     noRestart: "다시 시작할 필요 없음",
     downloadSize: "{size} 다운로드",
     backendChange: "{change} 백엔드",
@@ -5473,8 +5506,8 @@ export const ko = {
     installingPhase: "{component} 설치 중 ({current}/{total})...",
     installingCount: "업데이트 {count}개 설치 중...",
     bundleTitle: "런타임 업데이트 {count}개",
-    newBackend: "새 {component} 백엔드",
-    newUpdate: "새 {component} 업데이트",
+    newBackend: "새 런타임 백엔드",
+    newUpdate: "새 런타임 업데이트",
     hideUpdate: "Unsloth를 다시 열 때까지 {component} 업데이트 숨기기",
     hideUpdates: "Unsloth를 다시 열 때까지 {components} 업데이트 숨기기",
     whatsNew: "새로운 기능",

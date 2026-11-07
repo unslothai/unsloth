@@ -923,6 +923,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         " ON scheduled_task_runs(finished_at)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_thread ON scheduled_task_runs(thread_id)"
+    )
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_runs (
             id TEXT NOT NULL PRIMARY KEY,
@@ -1093,6 +1096,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_research_runs_lease "
         "ON research_runs(status, lease_expires_at)"
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_runs_thread ON research_runs(thread_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_user_message "
+        "ON research_runs(user_message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_assistant_message "
+        "ON research_runs(assistant_message_id)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_research_sources_run ON research_sources(run_id, id)"
     )
@@ -1154,6 +1166,20 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_thread_status "
         "ON chat_generation_runs(thread_id, status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_user_message "
+        "ON chat_generation_runs(user_message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_assistant_message "
+        "ON chat_generation_runs(assistant_message_id)"
+    )
+    # Partial on the reconcile sweep's exact status list, so the periodic sweep skips terminal rows.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_active "
+        "ON chat_generation_runs(created_at, id) "
+        "WHERE status IN ('queued','running','cancelling')"
     )
     conn.execute(
         """
@@ -4398,18 +4424,27 @@ def sync_chat_messages(
         )
         # Computed before the upsert to tell forced relinks from edits; research ids are excluded since their delete is exempt, or the reseat skips a surviving parent.
         pruned: set = set()
+        unseen_ids: set = set()
         if prune_missing:
-            pruned = (
-                {
-                    str(row["id"])
-                    for row in conn.execute(
-                        "SELECT id FROM chat_messages WHERE thread_id = ?",
-                        (thread_id,),
-                    ).fetchall()
-                }
-                - requested_ids
-                - prune_protected_ids
-            )
+            stored_rows = conn.execute(
+                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+            unseen_ids = {str(row["id"]) for row in stored_rows} - requested_ids
+            pruned = unseen_ids - prune_protected_ids
+            if explicitly_deleted_ids:
+                # Deleting a user message also deletes its replies, including ones this window never saw.
+                deleted_user_ids = {
+                    str(row["id"]) for row in stored_rows if row["role"] == "user"
+                } & explicitly_deleted_ids
+                pruned &= explicitly_deleted_ids | (
+                    {
+                        str(row["id"])
+                        for row in stored_rows
+                        if row["role"] == "assistant" and row["parent_id"] in deleted_user_ids
+                    }
+                    - managed_ids
+                )
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
@@ -4422,7 +4457,7 @@ def sync_chat_messages(
         ]
         # Repair research parents the prune deletes, walking the stored chain (dangling parent breaks import).
         # Batch-written ids are excluded so an authorized reparent is not overwritten.
-        reseat_candidates = managed_ids - {str(m["id"]) for m in messages}
+        reseat_candidates = (managed_ids | unseen_ids) - pruned - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
@@ -4496,15 +4531,7 @@ def sync_chat_messages(
                 content_json,
             )
         if prune_missing:
-            existing_ids = {
-                row["id"]
-                for row in conn.execute(
-                    "SELECT id FROM chat_messages WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchall()
-            }
-            # Update permission is not delete permission: these ids are prune-exempt even for allow_research_update callers.
-            missing_ids = sorted(existing_ids - requested_ids - prune_protected_ids)
+            missing_ids = sorted(pruned)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)

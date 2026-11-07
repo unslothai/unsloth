@@ -594,15 +594,23 @@ def _load_download_repos(
             mapped = mlx_bnb_base_repo(str(base))
         else:
             try:
-                from unsloth.models import loader
-                from unsloth.models.loader_utils import get_model_name
+                from unsloth.models import loader, loader_utils
 
                 quantized = (
                     load_in_4bit
                     and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
-                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                # Unknown names resolve to themselves; get_model_name would fetch the remote mapper for nothing.
+                mapped = str(base)
+                name = mapped.lower()
+                tables = (
+                    loader_utils.FLOAT_TO_INT_MAPPER,
+                    loader_utils.INT_TO_FLOAT_MAPPER,
+                    loader_utils.MAP_TO_UNSLOTH_16bit,
+                )
+                if name in loader_utils.BAD_MAPPINGS or any(name in t for t in tables):
+                    mapped = loader_utils.get_model_name(str(base), load_in_4bit = quantized)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
@@ -885,6 +893,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "precision_folder",
                         "audio_workflows",
                         "audio_reference_text",
                         "audio_required_inputs",
@@ -2508,7 +2517,11 @@ def run_inference_process(
     import json as _json
 
     _ensure_backend_on_path()
-    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+    from utils.transformers_version import (
+        _remote_lora_base,
+        _resolve_base_model,
+        remote_lora_base_scope,
+    )
 
     _hf_token = _config_hf_token(config)
     _lora_base = None
@@ -2523,23 +2536,25 @@ def run_inference_process(
             )
         except Exception:
             _lora_base = None
-    if not _lora_base:
-        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
-    # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
-    _base = _lora_base or _resolve_base_model(model_name)
+    # One adapter_config.json answer serves this lookup and activation's own.
+    with remote_lora_base_scope():
+        if not _lora_base:
+            _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
+        _base = _lora_base or _resolve_base_model(model_name)
 
-    try:
-        _activate_transformers_version(_base, _hf_token)
-    except Exception as exc:
-        _send_response(
-            resp_queue,
-            {
-                "type": "error",
-                "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
-        return
+        try:
+            _activate_transformers_version(_base, _hf_token)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"Failed to activate transformers version: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                },
+            )
+            return
 
     # Gates (model and genuine LoRA base only, never a full fine-tune's base), then SSM kernels, both before the transformers import, which snapshots backends.
     _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)

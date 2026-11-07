@@ -129,6 +129,20 @@ def plain_safetensors_supported() -> bool:
     return True
 
 
+def _unviewed(tensor: Any) -> Any:
+    """``tensor`` as a base-less alias of the same storage (no copy). safetensors hands back views of one whole-file
+    mapping; a view keeps that base alive through ``.data =`` (which is how a streamed buffer is re-pointed at its
+    pinned copy), so one buffer would keep the full file mapped for the life of the model."""
+    if getattr(tensor, "_base", None) is None or type(tensor).__name__ != "Tensor":
+        return tensor
+    import torch
+
+    out = torch.empty(0, dtype = tensor.dtype, device = tensor.device)
+    return out.set_(
+        tensor.untyped_storage(), tensor.storage_offset(), tensor.size(), tensor.stride()
+    )
+
+
 def load_plain_prequant_safetensors(
     path: str,
     *,
@@ -169,9 +183,11 @@ def load_plain_prequant_safetensors(
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
         skip = frozenset(skip_names)
-        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
+        state_dict = {
+            name: _unviewed(handle.get_tensor(name)) for name in names if name not in skip
+        }
         state_dict.update(
-            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+            (key[len(UNSLOTH_ROOT_PREFIX) :], _unviewed(handle.get_tensor(key))) for key in roots
         )
     return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 

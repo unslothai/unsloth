@@ -224,6 +224,12 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
         return result
 
 
+@router.put("/{account_id}/username", response_model = AccountResponse)
+def rename_account(account_id: str, payload: CreateAccountRequest):
+    with _account_errors():
+        return storage.rename_account(account_id, payload.username)
+
+
 @router.put("/{account_id}/model-access", response_model = AccountResponse)
 def set_account_model_access(account_id: str, payload: AccountModelAccessRequest):
     with _account_errors():

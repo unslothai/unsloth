@@ -838,7 +838,10 @@ def _layer_call_format(decoder, layers_name):
                 and any(var in ast.unparse(a) for a in node.args)
                 and "checkpoint" in ast.unparse(node.func).lower()
             ):
-                if "GradientCheckpointingLayer" not in text:
+                if (
+                    "GradientCheckpointingLayer" not in text
+                    and "ActivationCheckpointingLayer" not in text
+                ):
                     formats.add("checkpointed")
     if "checkpointed" in formats:
         if getattr(decoder, "gradient_checkpointing", False):

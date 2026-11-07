@@ -207,6 +207,7 @@ export const de = {
     tabs: "Browser-Tabs",
     newTab: "Neuer Tab",
     newTabFullView: "Neuer Tab in Vollansicht",
+    newTabFloating: "Neuer Tab in schwebendem Fenster",
     closeTab: "Tab schließen",
     close: "Browser schließen",
     show: "Browser anzeigen",
@@ -389,6 +390,12 @@ export const de = {
       openChat: "In Vollansicht öffnen",
       moveLeft: "In linken Bereich verschieben",
       moveRight: "In rechten Bereich verschieben",
+    },
+    floating: {
+      enter: "Schwebendes Fenster",
+      dock: "Seitlich andocken",
+      close: "Schwebendes Fenster schließen",
+      handle: "Fenster verschieben. Pfeiltasten verschieben es, Umschalt und Pfeiltasten ändern seine Größe.",
     },
     annotate: {
       countOne: "1 Anmerkung",
@@ -786,6 +793,8 @@ export const de = {
   picker: {
     unifiedTightFit: "Knapp",
     unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
+    residentToRun: "zum Ausführen",
+    residentToRunHint: "GPU-Speicher, den die Ladeprüfung während der Ausführung verlangt",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",
@@ -1100,6 +1109,9 @@ export const de = {
       modelAccessHint: "Ein Modell pro Zeile, zum Beispiel unsloth/Qwen3-4B-GGUF, oder unsloth/* für eine ganze Organisation. Leer lassen, um alle Modelle zu erlauben.",
       modelAccessSave: "Speichern",
       modelAccessLimited: "Eingeschränkter Modellzugriff",
+      rename: "Umbenennen",
+      renameTitle: "{username} umbenennen",
+      renameDescription: "Wähle den Namen, mit dem sich dieses Konto anmeldet. Chats, Dateien und API-Schlüssel bleiben beim Konto. Die Person wird abgemeldet und meldet sich mit dem neuen Namen und ihrem bisherigen Passwort wieder an.",
       empty: "Noch keine weiteren Konten",
       setupCode: "Einrichtungscode",
       setupFor: "Einrichtungscode für {username}",
@@ -2112,6 +2124,12 @@ export const de = {
           "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
         autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
         xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+        speedLimit: "Download-Geschwindigkeitslimit",
+        speedLimitDescription:
+          "Kein Limit, solange kein Wert gesetzt ist. Ein begrenzter Download verwendet HTTPS.",
+        speedLimitNoLimit: "Kein Limit",
+        speedLimitInvalid: "Gib eine Zahl in Mbit/s ein oder lass das Feld leer.",
+        speedLimitUsesHttps: "Solange ein Geschwindigkeitslimit gesetzt ist, verwenden Downloads HTTPS. Dateien über 50 GB verwenden weiterhin Xet, ohne das Limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2512,6 +2530,10 @@ export const de = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Umrandung der Elemente",
+          description: "Stärke der Ränder von Schaltflächen, Feldern, Karten und Menüs.",
+        },
         reduceMotion: {
           label: "Bewegung reduzieren",
           description: "Animationen reduzieren oder Systemeinstellung übernehmen.",
@@ -2605,7 +2627,7 @@ export const de = {
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
         noGpu:
-          "Keine sichtbare GPU erkannt. Oben werden nur die CPU-Ressourcen angezeigt.",
+          "Keine dedizierte GPU erkannt.",
         noUsableGpu: "Auf diesem Rechner ist keine GPU für PyTorch nutzbar.",
         mismatchCpuBuild:
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
@@ -2681,7 +2703,7 @@ export const de = {
           "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
       },
       modelMemory: {
-        title: "Modellspeicher",
+        title: "Modell laden",
         keepResident: "Modell im GPU-Speicher behalten",
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
@@ -2866,7 +2888,7 @@ export const de = {
       configurationDocs: "Dokumentation",
       configurationFlagsSuffix: "zu den Flags.",
       modelNote:
-        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
+        "Claude Code und Codex benötigen ein GGUF-Modell, das von llama-server bereitgestellt wird, oder ein MLX-Modell. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
       subagent: {
         title: "Ein lokales Modell als Subagent verwenden",
         description:
@@ -2946,6 +2968,8 @@ export const de = {
     },
     chat: {
       groups: {
+        replies: { title: "Antworten" },
+        thinkingTools: { title: "Denken und Werkzeuge" },
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
@@ -3030,11 +3054,20 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
-      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetails: "Detaillierte Geschwindigkeits- und Ladeinfos",
       showGenerationDetailsDescription:
-        "Prompt- und Antwortgeschwindigkeit live mit Tokenzahlen anzeigen, und wo die Schichten eines Modells geladen wurden.",
+        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme und zeigt, wo die Schichten eines Modells geladen wurden.",
       showGenerationDetailsKeywords:
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
+      generationStatsUpdatesDescription:
+        "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",
+      generationStatsUpdatesHint:
+        "Echtzeit aktualisiert die Anzeige der Token pro Sekunde unter einer Antwort und die Kontextleiste oben im Chat mehrmals pro Sekunde, während die Antwort geschrieben wird. Nach Abschluss aktualisiert sie einmal, wenn jede Antwort fertig ist. Echtzeit kann zu Verzögerungen oder geringerer Leistung führen, besonders auf älteren oder ausgelasteten Geräten.",
+      generationStatsUpdatesSettled: "Nach Abschluss",
+      generationStatsUpdatesRealtime: "Echtzeit",
+      generationStatsUpdatesKeywords:
+        "Echtzeit live aktualisieren Geschwindigkeit Kontext Statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       turnNavigation: "Rundennavigation",
@@ -5547,7 +5580,7 @@ export const de = {
     skippedVersion: "{component} {version} vorerst übersprungen",
     skippedUpdate: "Das {component}-Update vorerst übersprungen",
     skippedUpdates: "Die Updates für {components} vorerst übersprungen",
-    vulkanFaster: "Vulkan ist >10 % schneller als ROCM. Kein Neustart nötig",
+    vulkanFaster: "Über 10 % schneller",
     noRestart: "Kein Neustart nötig",
     downloadSize: "{size} Download",
     backendChange: "Backend {change}",
@@ -5556,8 +5589,8 @@ export const de = {
     installingPhase: "{component} wird installiert ({current} von {total})...",
     installingCount: "{count} Updates werden installiert...",
     bundleTitle: "{count} Laufzeit-Updates",
-    newBackend: "Neues {component}-Backend",
-    newUpdate: "Neues {component}-Update",
+    newBackend: "Neues Laufzeit-Backend",
+    newUpdate: "Neues Laufzeit-Update",
     hideUpdate: "Das {component}-Update ausblenden, bis Unsloth erneut geöffnet wird",
     hideUpdates: "Die Updates für {components} ausblenden, bis Unsloth erneut geöffnet wird",
     whatsNew: "Neuigkeiten",

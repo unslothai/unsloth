@@ -216,6 +216,7 @@ export const es419 = {
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -435,6 +436,12 @@ export const es419 = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al costado",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -891,6 +898,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1212,6 +1222,9 @@ export const es419 = {
         "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -2322,6 +2335,12 @@ export const es419 = {
           "Elige según la computadora y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta computadora.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Ingresa un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2719,6 +2738,10 @@ export const es419 = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
+        },
         reduceMotion: {
           label: "Reducir el movimiento",
           description:
@@ -2817,7 +2840,7 @@ export const es419 = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se detectó una GPU dedicada.",
         noUsableGpu: "PyTorch no puede usar ninguna GPU de esta computadora.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), así que las GPU de abajo no se pueden usar. Repara la instalación para restaurar la compatibilidad con GPU.",
@@ -2905,7 +2928,7 @@ export const es419 = {
           "llama.cpp backend gguf inferencia inference cuda rocm hip vulkan metal cpu gpu acelerador accelerator prebuilt precompilado cambiar switch motor engine personalizado custom ruta path carpeta folder directorio directory llama-server ejecutable executable binario binary",
       },
       modelMemory: {
-        title: "Memoria del modelo",
+        title: "Carga del modelo",
         keepResident: "Mantener el modelo en la memoria de GPU",
         keepResidentDescription: "Permanece en la VRAM entre prompts.",
         keepResidentHint:
@@ -3106,7 +3129,7 @@ export const es419 = {
       configurationDocs: "documentación",
       configurationFlagsSuffix: "para ver las opciones.",
       modelNote:
-        "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
+        "Claude Code y Codex requieren un modelo GGUF servido por llama-server o un modelo MLX. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
       subagent: {
         title: "Usar un modelo local como subagente",
         description:
@@ -3184,6 +3207,8 @@ export const es419 = {
     },
     chat: {
       groups: {
+        replies: { title: "Respuestas" },
+        thinkingTools: { title: "Razonamiento y herramientas" },
         conversations: {
           title: "Conversaciones",
         },
@@ -3282,11 +3307,20 @@ export const es419 = {
         "Muestra debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora reloj fecha cuándo terminó llegó respuesta mensaje timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Detalles de generación",
+      showGenerationDetails: "Información detallada de velocidad y carga",
       showGenerationDetailsDescription:
-        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
+        "Agrega a las lecturas en vivo la velocidad de lectura del prompt, el conteo de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
       showGenerationDetailsKeywords:
         "detallado desarrollador estadísticas velocidad capas trasladar expertos verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estadísticas de velocidad y contexto",
+      generationStatsUpdatesDescription:
+        "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando termina cada respuesta.",
+      generationStatsUpdatesHint:
+        "En tiempo real actualiza el indicador de tokens por segundo bajo una respuesta y la barra de contexto en la parte superior del chat varias veces por segundo mientras se escribe la respuesta. Al terminar los actualiza una vez, cuando termina cada respuesta. En tiempo real puede causar lentitud o menor rendimiento, sobre todo en equipos antiguos u ocupados.",
+      generationStatsUpdatesSettled: "Al terminar",
+      generationStatsUpdatesRealtime: "En tiempo real",
+      generationStatsUpdatesKeywords:
+        "tiempo real en vivo actualizar velocidad contexto estadísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription:
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
@@ -5966,8 +6000,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5976,8 +6009,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:
