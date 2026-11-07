@@ -167,14 +167,21 @@ export interface PoolSplit {
 export function poolSplit(input: PoolSplitInput): PoolSplit {
   const { showShare, showBreakdown, modelsInVram } = input;
   if (!showShare && !showBreakdown) return { ram: null, vram: null, noModels: false };
-  const models = modelShares(input.entries, modelsInVram, input.inferenceGpuElsewhere);
-  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
-  const unslothRamGb = unslothPoolGb(input.processGb, modelsGb, !modelsInVram);
-  const breakdown = showBreakdown
-    ? modelBreakdown(modelsInVram ? null : unslothRamGb, models, !modelsInVram)
-    : null;
+  const sum = (list: ModelShare[]) => list.reduce((total, model) => total + model.gb, 0);
+  // On a GPU host each model goes to the pool it sits in; a proven CPU model stays in RAM.
+  const vramModels = modelsInVram
+    ? modelShares(input.entries, true, input.inferenceGpuElsewhere)
+    : [];
+  const ramModels = modelShares(
+    modelsInVram ? input.entries.filter((entry) => entry.residentOnGpu === false) : input.entries,
+  );
+  const unslothRamGb = unslothPoolGb(input.processGb, sum(ramModels), true);
+  const ramBreakdown =
+    showBreakdown && (!modelsInVram || ramModels.length > 0)
+      ? modelBreakdown(unslothRamGb, ramModels, true)
+      : null;
   const ramShare =
-    showShare || (breakdown && !modelsInVram)
+    showShare || ramBreakdown
       ? memoryShare(input.ramUsedGb, input.ramTotalGb, unslothRamGb)
       : null;
   // A model with no size (transformers chat, most embedders) or an unknown pool (Vulkan) would read as
@@ -187,11 +194,13 @@ export function poolSplit(input: PoolSplitInput): PoolSplit {
   );
   const vramShare =
     modelsInVram && !unsized && input.vramUsedGb !== null
-      ? memoryShare(input.vramUsedGb, input.vramTotalGb, modelsGb)
+      ? memoryShare(input.vramUsedGb, input.vramTotalGb, sum(vramModels))
       : null;
   return {
-    ram: ramShare && memorySegments(ramShare, modelsInVram ? null : breakdown),
-    vram: vramShare && memorySegments(vramShare, breakdown, false),
-    noModels: breakdown !== null && input.entries.length === 0,
+    ram: ramShare && memorySegments(ramShare, ramBreakdown),
+    vram:
+      vramShare &&
+      memorySegments(vramShare, showBreakdown ? { models: vramModels, app: null } : null, false),
+    noModels: showBreakdown && input.entries.length === 0,
   };
 }

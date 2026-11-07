@@ -98,7 +98,7 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
     memorySegments(share, null, false).map((segment) => segment.kind),
     ["unsloth", "unattributed", "free"],
   );
-  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, breakdown, false\)/);
+  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, showBreakdown \? \{ models: vramModels, app: null \} : null, false\)/);
 });
 
 test("the VRAM split counts only models known to sit on the reported GPUs", () => {
@@ -114,7 +114,7 @@ test("the VRAM split counts only models known to sit on the reported GPUs", () =
     assert.match(src, /inferenceGpuDisjoint\(\s*systemInfo\.gpu\?\.backend,\s*separateInferenceGpu\?\.backend,?\s*\)/);
   }
   // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
-  assert.match(readSrc("components/monitor-share.ts"), /noModels: breakdown !== null && input\.entries\.length === 0/);
+  assert.match(readSrc("components/monitor-share.ts"), /noModels: showBreakdown && input\.entries\.length === 0/);
 });
 
 test("a model size ahead of the memory sample is scaled into the measured share", () => {
@@ -221,4 +221,19 @@ test("a model whose pool is unknown (Vulkan) leaves the VRAM bar unsplit; a prov
   assert.equal(poolSplit({ ...base, entries: vulkan }).vram, null);
   const cpu = [{ ...vulkan[0], residentOnGpu: false }];
   assert.notEqual(poolSplit({ ...base, entries: cpu }).vram, null);
+});
+
+test("on a GPU host a proven CPU model is broken down in RAM, a GPU one in VRAM", () => {
+  const split = poolSplit({
+    entries: [
+      { id: "g", name: "org/G-GGUF", source: "chat", residentMib: 4096, residentOnGpu: true },
+      { id: "c", name: "org/C", source: "image", residentMib: 2048, residentOnGpu: false },
+    ],
+    showShare: false, showBreakdown: true, modelsInVram: true, inferenceGpuElsewhere: false,
+    processGb: 6, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24,
+  });
+  assert.deepEqual(split.ram?.map((s) => [s.kind, s.name ?? null, s.gb]), [
+    ["model", "C", 2], ["app", null, 4], ["other", null, 14], ["free", null, 12],
+  ]);
+  assert.deepEqual(split.vram?.map((s) => [s.kind, s.gb]), [["model", 4], ["unattributed", 6], ["free", 14]]);
 });
