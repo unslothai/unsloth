@@ -72,10 +72,14 @@ def test_redirects_after_a_heredoc_are_still_rewritten():
     assert _rewrite(command) == "cat <<EOF > run.bat\ndir 2>nul\nEOF\nrun.bat 2>/dev/null"
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+# System32 bash.exe on Windows is the WSL launcher; use the Git Bash the Terminal runs.
+_BASH = tools._windows_bash() if sys.platform == "win32" else shutil.which("bash")
+
+
+@pytest.mark.skipif(_BASH is None, reason = "needs bash")
 def test_rewritten_command_leaves_no_file_and_keeps_its_output(tmp_path):
     out = subprocess.run(
-        ["bash", "-c", _rewrite("echo hidden > nul 2>&1; ls missing 2>nul; echo shown")],
+        [_BASH, "-c", _rewrite("echo hidden > nul 2>&1; ls missing 2>nul; echo shown")],
         cwd = tmp_path,
         capture_output = True,
         text = True,
