@@ -92,7 +92,7 @@ def load(monkeypatch):
     ):
         monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **k: vision)
         monkeypatch.setattr(
-            trainer_mod, "is_vision_model_checked", lambda *a, **k: (vision, vision_known)
+            trainer_mod, "audio_vlm_vision_checked", lambda *a, **k: (vision, vision_known)
         )
         if returns is not None:
             calls["returns"] = returns

@@ -73,7 +73,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, is_vision_model_checked, detect_audio_type_checked
+from utils.models import is_vision_model, audio_vlm_vision_checked, detect_audio_type_checked
 from utils.models.diffusion_lm import (
     diffusion_lm_profile_for_model,
     loaded_diffusion_profile,
@@ -1273,10 +1273,10 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
-            # A transient probe failure reads as no vision; only a definitive no takes the multimodal class.
+            # An unreadable config reads as no vision; only a definitive no from config.json takes the multimodal class.
             audio_vlm_has_vision = vision
             if self.is_audio_vlm and not vision:
-                vision_now, vision_known = is_vision_model_checked(
+                vision_now, vision_known = audio_vlm_vision_checked(
                     metadata_name,
                     hf_token = hf_token,
                     local_files_only = local_files_only,

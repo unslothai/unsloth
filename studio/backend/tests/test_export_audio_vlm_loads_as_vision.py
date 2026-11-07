@@ -51,7 +51,7 @@ def _load(
         monkeypatch.setattr(mod, name, type(name, (), {}), raising = False)
     monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: audio_type)
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: is_vision)
-    monkeypatch.setattr(mod, "is_vision_model_checked", lambda *a, **k: (is_vision, vision_known))
+    monkeypatch.setattr(mod, "audio_vlm_vision_checked", lambda *a, **k: (is_vision, vision_known))
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
     monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})

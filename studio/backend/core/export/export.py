@@ -31,7 +31,7 @@ from huggingface_hub import HfApi, ModelCard
 from hub.utils.hf_tokens import HfTokenArg, apply_token_to_child_env, is_anonymous, normalize_token
 from utils.hardware import clear_gpu_cache
 
-from utils.models import is_vision_model, is_vision_model_checked, get_base_model_from_lora
+from utils.models import is_vision_model, audio_vlm_vision_checked, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import (
     detect_audio_type,
@@ -1075,10 +1075,10 @@ class ExportBackend:
                 self.is_vision = self._audio_type in (None, "audio_vlm") and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
-                # A transient probe failure reads as no vision; only a definitive no takes the multimodal load below.
+                # An unreadable config reads as no vision; only a definitive no from config.json takes the multimodal load below.
                 audio_vlm_without_vision = False
                 if self._audio_type == "audio_vlm" and not self.is_vision:
-                    vision_now, vision_known = is_vision_model_checked(
+                    vision_now, vision_known = audio_vlm_vision_checked(
                         model_id, hf_token = probe_token, local_files_only = local_files_only
                     )
                     audio_vlm_without_vision = vision_known and not vision_now
