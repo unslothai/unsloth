@@ -40,6 +40,10 @@ if not hasattr(autotune_cache.AutotuneCache, "_prepare_key"):
 @pytest.fixture(autouse = True)
 def _restore(monkeypatch):
     raw = autotune_cache.AutotuneCache.__dict__["_prepare_key"]
+    if getattr(
+        raw.__func__, "_unsloth_worker_tag", False
+    ):  # pinned by an earlier test in this process
+        autotune_cache.AutotuneCache._prepare_key = staticmethod(raw.__func__.__wrapped__)
     tag = cconfig.cache_key_tag
     monkeypatch.delenv("TORCH_COMPILE_CACHE_KEY_TAG", raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN", raising = False)
