@@ -553,3 +553,120 @@ def test_ulysses_deepseek_checkpointing_with_block_compile():
     forward split each compiled decoder layer, the MoE layer's post-attention part failed to compile,
     and the dense layer that ran it compiled recomputed it eagerly in backward."""
     _spawn(_block_compile_checkpoint_worker, 2)
+
+
+@pytest.mark.parametrize("packing", [False, True])
+@pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v3", "v32", "v4")])
+def test_ulysses_sft_string_model_gets_the_instance_outcome(kind, packing, monkeypatch, caplog):
+    """A model ID string defers the module walk, so the Ulysses packing check must classify the
+    resolved config instead: V3.2 kept packed / padding-free batches from a string and the
+    attention wrapper raised NotImplementedError on the first CP step, while an instance trained."""
+    import logging
+    from types import SimpleNamespace
+
+    import unsloth.trainer as trainer_module
+
+    for name in ("enable_padding_free_metadata", "enable_sample_packing"):
+        monkeypatch.setattr(trainer_module, name, lambda model, trainer: None)
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    built = _build(kind)
+
+    class _StringStub(_PackingStubTrainer):
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            **kwargs,
+        ):
+            super().__init__(model = built if isinstance(model, str) else model, args = args)
+
+    module = SimpleNamespace(SFTTrainer = type("SFTTrainer", (_StringStub,), {}))
+    trainer_module._patch_sft_trainer_auto_packing(module)
+
+    def config(cp_size):
+        return SimpleNamespace(
+            packing = packing,
+            padding_free = None,
+            max_length = 64,
+            context_parallel_size = cp_size,
+            context_parallel_backend = "ulysses",
+            eval_packing = True,
+        )
+
+    with tempfile.TemporaryDirectory() as path:
+        built.config.save_pretrained(path)
+        outcomes = []
+        for model in (path, built):
+            args = config(2)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                module.SFTTrainer(model = model, args = args)
+            outcomes.append((args.packing, args.padding_free is False, args.eval_packing))
+            if kind == "v32" and packing and model is path:
+                assert "DeepseekV32Attention refuses packed batches" in caplog.text
+        # The string ends where the instance does.
+        assert outcomes[0] == outcomes[1], outcomes
+        if kind in ("v32", "v4"):
+            assert outcomes[0] == (False, True, False)
+        else:
+            assert outcomes[0][1] is False
+        # Without CP a string trains packed as before (V4 stays off for its own boundary reason).
+        args = config(1)
+        module.SFTTrainer(model = path, args = args)
+        if kind != "v4":
+            assert args.padding_free is not False
+
+
+def _load_ulysses_deepseek_copy(path, name):
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(f"unsloth.utils.{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    return module
+
+
+@pytest.mark.parametrize("device", ["cuda", "xpu"])
+def test_ulysses_deepseek_imports_on_torch_without_amp_custom_fwd(device, monkeypatch):
+    """torch.amp.custom_fwd / custom_bwd are 2.4+, and this module is imported by plain `import
+    unsloth` (models/llama.py -> context_parallel). A class-body decorator using them raised
+    AttributeError at import on torch 2.1 - 2.3; the module must fall back to torch.cuda.amp."""
+    import unsloth.device_type as device_type
+    from unsloth.utils import ulysses_deepseek as ud
+
+    seen = []
+
+    def fake_amp(kind):
+        def factory(
+            *args,
+            device_type = None,
+            **kwargs,
+        ):
+            seen.append((kind, device_type))
+            return lambda fn: fn
+
+        return factory
+
+    monkeypatch.setattr(device_type, "DEVICE_TYPE_TORCH", device)
+    monkeypatch.setattr(torch.amp, "custom_fwd", fake_amp("fwd"), raising = False)
+    monkeypatch.setattr(torch.amp, "custom_bwd", fake_amp("bwd"), raising = False)
+    modern = _load_ulysses_deepseek_copy(ud.__file__, "_ud_amp_modern")
+    # The repo's device branch: XPU autocast is replayed on xpu, CUDA / HIP on cuda.
+    assert seen == [("fwd", device), ("bwd", device)]
+
+    monkeypatch.delattr(torch.amp, "custom_fwd")
+    monkeypatch.delattr(torch.amp, "custom_bwd")
+    # torch 2.1 - 2.3: torch.cuda.amp holds the real decorators (newer ones forward to torch.amp).
+    legacy_fwd, legacy_bwd = (lambda fn: fn), (lambda fn: fn)
+    monkeypatch.setattr(torch.cuda.amp, "custom_fwd", legacy_fwd)
+    monkeypatch.setattr(torch.cuda.amp, "custom_bwd", legacy_bwd)
+    legacy = _load_ulysses_deepseek_copy(ud.__file__, "_ud_amp_legacy")
+    assert legacy._custom_fwd is legacy_fwd and legacy._custom_bwd is legacy_bwd
+    for module in (modern, legacy):
+        assert issubclass(module._ChunkedSinkAttention, torch.autograd.Function)
+        assert issubclass(module._ChunkedSparseMLA, torch.autograd.Function)

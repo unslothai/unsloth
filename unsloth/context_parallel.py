@@ -123,13 +123,20 @@ _ULYSSES_OWN_MASK_LAYER_TYPES = {
 }
 
 
-def ulysses_packing_blocker(model) -> Optional[str]:
+def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
     """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
-    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them."""
-    from .utils.ulysses_deepseek import DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them.
+    A model ID string (TRL builds it later) is classified by its config's model types instead."""
+    from .utils.ulysses_deepseek import (
+        DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+        DEEPSEEK_ULYSSES_MODEL_TYPES,
+    )
     from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
 
     if not isinstance(model, torch.nn.Module):
+        for model_type in model_types or ():
+            if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
+                return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
         return None
     for module in model.modules():
         if (
