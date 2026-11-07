@@ -30,10 +30,44 @@ export const MCP_TOOL_LABEL_KEYS: Readonly<Record<string, TranslationKey>> = {
   cancel: "settings.mcp.toolLabels.cancel",
 };
 
+// What each tool does, shown on hover above its raw name.
+export const MCP_TOOL_DESCRIPTION_KEYS: Readonly<Record<string, TranslationKey>> = {
+  studio_status: "settings.mcp.toolDescriptions.studioStatus",
+  list_models: "settings.mcp.toolDescriptions.listModels",
+  load_model: "settings.mcp.toolDescriptions.loadModel",
+  unload_model: "settings.mcp.toolDescriptions.unloadModel",
+  plan_load: "settings.mcp.toolDescriptions.planLoad",
+  download_model: "settings.mcp.toolDescriptions.downloadModel",
+  chat: "settings.mcp.toolDescriptions.chat",
+  embed: "settings.mcp.toolDescriptions.embed",
+  system_one: "settings.mcp.toolDescriptions.systemOne",
+  generate_image: "settings.mcp.toolDescriptions.generateImage",
+  generate_audio: "settings.mcp.toolDescriptions.generateAudio",
+  transcribe: "settings.mcp.toolDescriptions.transcribe",
+  analyze_audio: "settings.mcp.toolDescriptions.analyzeAudio",
+  generate_video: "settings.mcp.toolDescriptions.generateVideo",
+  run_recipe: "settings.mcp.toolDescriptions.runRecipe",
+  get_job: "settings.mcp.toolDescriptions.getJob",
+  datasets: "settings.mcp.toolDescriptions.datasets",
+  start_training: "settings.mcp.toolDescriptions.startTraining",
+  list_training_runs: "settings.mcp.toolDescriptions.listTrainingRuns",
+  export_model: "settings.mcp.toolDescriptions.exportModel",
+  list_media: "settings.mcp.toolDescriptions.listMedia",
+  voices: "settings.mcp.toolDescriptions.voices",
+  cancel: "settings.mcp.toolDescriptions.cancel",
+};
+
 /** A tool this build doesn't know yet gets null, and shows its raw name. */
 export function mcpToolLabelKey(name: string): TranslationKey | null {
   return Object.hasOwn(MCP_TOOL_LABEL_KEYS, name)
     ? MCP_TOOL_LABEL_KEYS[name]
+    : null;
+}
+
+/** What a tool does, or null for a tool this build doesn't know yet. */
+export function mcpToolDescriptionKey(name: string): TranslationKey | null {
+  return Object.hasOwn(MCP_TOOL_DESCRIPTION_KEYS, name)
+    ? MCP_TOOL_DESCRIPTION_KEYS[name]
     : null;
 }
 

@@ -73,7 +73,10 @@ export function McpAccessSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
-  const [toolsSaving, setToolsSaving] = useState(false);
+  // Newest save (switch or tools); each reply is a full snapshot, so an older one must not land last.
+  const saveRequest = useRef(0);
+  // Saves go one at a time: the server may finish two in-flight writes in either order.
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [toolsError, setToolsError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -112,15 +115,28 @@ export function McpAccessSection({
     };
   }, []);
 
+  const enqueueSave = (run: () => Promise<McpAccessSettings>) => {
+    const save = saveQueue.current.then(run);
+    saveQueue.current = save.catch(() => undefined);
+    return save;
+  };
+
   const apply = async (enabled: boolean) => {
+    const request = ++saveRequest.current;
     setBusy(true);
     setError(null);
     try {
-      setSettings(await updateMcpAccess(enabled));
+      const next = await enqueueSave(() => updateMcpAccess(enabled));
+      if (request === saveRequest.current) {
+        setSettings(next);
+      }
     } catch (err) {
       // resync because a rejected update may leave the server value unknown.
       try {
-        setSettings(await loadMcpAccess());
+        const next = await loadMcpAccess();
+        if (request === saveRequest.current) {
+          setSettings(next);
+        }
       } catch (refreshError) {
         console.warn(
           "Couldn't refresh agent access settings after a rejected change.",
@@ -144,14 +160,33 @@ export function McpAccessSection({
   }, [consumeScrollTarget, scrollTarget, loaded]);
 
   const saveTools = async (states: Record<string, boolean>) => {
-    setToolsSaving(true);
+    const request = ++saveRequest.current;
     setToolsError(null);
+    // Flip the chips at once; the server reply (or a resync) settles the real state.
+    setSettings((current) =>
+      current?.tools
+        ? {
+            ...current,
+            tools: current.tools.map((tool) =>
+              Object.hasOwn(states, tool.name)
+                ? { ...tool, enabled: states[tool.name] }
+                : tool,
+            ),
+          }
+        : current,
+    );
     try {
-      setSettings(await updateMcpTools(states));
+      const next = await enqueueSave(() => updateMcpTools(states));
+      if (request === saveRequest.current) {
+        setSettings(next);
+      }
     } catch (err) {
       // resync because a rejected update may leave the server value unknown.
       try {
-        setSettings(await loadMcpAccess());
+        const next = await loadMcpAccess();
+        if (request === saveRequest.current) {
+          setSettings(next);
+        }
       } catch (refreshError) {
         console.warn(
           "Couldn't refresh the MCP tools after a rejected change.",
@@ -159,8 +194,6 @@ export function McpAccessSection({
         );
       }
       setToolsError(errorMessage(err) ?? t("settings.mcp.tools.saveError"));
-    } finally {
-      setToolsSaving(false);
     }
   };
 
@@ -357,7 +390,6 @@ export function McpAccessSection({
           open={toolsOpen}
           onOpenChange={setToolsOpen}
           tools={settings.tools}
-          saving={toolsSaving}
           error={toolsError}
           onSave={(states) => void saveTools(states)}
           footnote={chatNote}
