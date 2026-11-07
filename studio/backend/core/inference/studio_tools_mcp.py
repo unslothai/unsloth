@@ -144,9 +144,8 @@ async def _call(
 
 
 async def _follow_video(caller: Any, created: Any, follow_until: float) -> Any:
-    """Follows a chat's video to the end in its own call, as the built-in generate_video tool does,
-    so a Stop reaches the render. Read directly, not through get_job, which Settings can turn off.
-    Past the call's limit it is left running, never cancelled, as the built-in tool leaves it."""
+    """Follows a chat's video to the end inside its call, as the built-in tool does, so Stop reaches it;
+    read directly (Settings can turn get_job off), and left running past the call's limit."""
     from studio_mcp import jobs
     from studio_mcp.loading import WAIT_S_LIMIT
 
@@ -210,8 +209,7 @@ def _without_nulls(result: Any) -> Any:
     return result
 
 
-# A render an earlier call of this turn left running (generate_video returns its job at once) is
-# stopped with the turn: a Stop while get_job polls it would otherwise leave it on the GPU.
+# Renders earlier calls of a turn left running are stopped by a Stop during a later call of it.
 _turn_tickets: "weakref.WeakKeyDictionary[Any, list[GenerationTicket]]" = (
     weakref.WeakKeyDictionary()
 )
@@ -243,8 +241,8 @@ def _still_running(result: Any) -> bool:
 
 
 def _watch_turn(cancel_event: Any, ticket: GenerationTicket) -> None:
-    """A video still rendering when its call returns is stopped with its chat. Only a Stop or an
-    aborted turn sets this per-request event; a turn that ends normally leaves it unset."""
+    """Stops a video still rendering after its call when the chat is stopped: only a Stop or an aborted
+    turn sets this per-request event."""
     if not callable(getattr(cancel_event, "wait", None)):
         return
 
