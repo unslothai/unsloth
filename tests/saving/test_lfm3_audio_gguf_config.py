@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """GGUF conversion of LFM3-Audio reads the release config.json layout: llama.cpp's converter registers
 Lfm3AudioForConditionalGeneration through an hparams loader that matches only `lfm` / `encoder` /
 `depthformer`, while the remote config class saves `text_config` / `audio_encoder_config` /
