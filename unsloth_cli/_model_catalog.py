@@ -466,7 +466,6 @@ def _gguf_variant_entry(
     *,
     cached_repo: Optional[str] = None,
 ) -> Optional[ModelEntry]:
-    """Resolve the selector against the original row and carry the exact loadable file forward."""
     from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
 
     source = source.absolute()

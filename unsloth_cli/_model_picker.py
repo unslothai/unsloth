@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Numbered picker over the models on this device, shared by `unsloth chat` and `unsloth start`."""
-
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -55,7 +53,6 @@ def pick_model_entry(
     keep: Optional[Callable[[object], bool]] = None,
     entries: Optional[List] = None,
 ) -> ModelEntry:
-    # Callers run ensure_studio_backend_path first: the catalog reads the Studio inventory.
     from unsloth_cli._model_catalog import list_chat_models
 
     if entries is None:

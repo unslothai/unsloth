@@ -4981,7 +4981,7 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
 
 
 def _can_ask_for_model() -> bool:
-    # Both ends must be a terminal: a piped stdin cannot answer, and a captured stdout hides the list.
+    # A piped stdin cannot answer, and a captured stdout would hide the list.
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -5023,7 +5023,7 @@ def _ask_for_local_model(
 ) -> tuple[str, LoadOptions]:
     from rich.console import Console
 
-    # No cache seeding: its pins would reach the agent and an auto-started server as if user-set, and the catalog resolves the cache without them.
+    # No cache seeding: its pins would reach the agent and an auto-started server as if user-set.
     ensure_studio_backend_path(seed_cache_env = False)
     from unsloth_cli._model_picker import _is_gguf_entry, pick_model_entry, quiet_inventory_logs
 
@@ -5073,10 +5073,9 @@ def _pick_model_to_auto_start(
     gguf_only: bool,
     load: LoadOptions = LoadOptions(),
 ) -> Optional[tuple[str, LoadOptions]]:
-    """With no server running, the pick replaces --model so the auto-start path serves it."""
     if not (serve and launch and _can_ask_for_model()):
         return None
-    # Same gate as _require_studio's auto-start: anywhere else there is no server to load into.
+    # Mirrors _require_studio's auto-start gate.
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     if not is_loopback_url(expected) or urlparse(expected).scheme != "http":
         return None
@@ -5129,7 +5128,6 @@ def _pick_model_for_idle_server(
     gguf_only: bool,
     load: LoadOptions = LoadOptions(),
 ) -> Optional[tuple[str, LoadOptions]]:
-    """With a local server serving no chat model, the pick replaces --model and is loaded into it."""
     if not _can_ask_for_model():
         return None
     # The picker lists THIS machine's files, which only a local Studio of ours can open.

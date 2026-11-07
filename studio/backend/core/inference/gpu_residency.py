@@ -893,7 +893,6 @@ def media_fit_kwargs(
 
 
 def _evict_or_refuse_locked(names, policy, allow_evict, acting, evicted) -> None:
-    """Apply the same eviction permission at admission and after a load's footprint is known."""
     if not names:
         return
     if policy == "always":
@@ -907,11 +906,9 @@ def _evict_or_refuse_locked(names, policy, allow_evict, acting, evicted) -> None
 
 
 def settle_unpriced_chat_beside_media(policy: str, *, allow_evict: bool = True) -> None:
-    """Settle an unpriced Metal chat load under the permission used at admission."""
     if policy not in ("fit", "always") or not _on_metal():
         return
     from utils.account_context import current_account_id
-
     with arb._lock:
         arb._sync_from_view()
         media = [name for name in MEDIA_OWNERS if name in arb._residents]
