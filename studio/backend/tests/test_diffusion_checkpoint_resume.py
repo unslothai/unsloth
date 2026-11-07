@@ -2772,3 +2772,29 @@ def test_a_bundle_written_inside_the_settle_window_is_read_every_time(run_dir, m
     for _ in range(2):
         assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True
     assert len(reads) == 2
+
+
+def test_a_passing_failure_to_load_is_not_remembered(run_dir, monkeypatch):
+    """A refusal can come from a passing condition (out of memory while a model is resident), so
+    the next listing must read the bundle again instead of hiding a healthy run."""
+    monkeypatch.setattr(
+        dc, "_LOADABLE_VERDICTS", __import__("collections").OrderedDict(), raising = False
+    )
+    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1, raising = False)
+    _Run(run_dir).save(5)
+    real = dc.LoadedCheckpoint.tensors
+    fail = {"on": True}
+
+    def _flaky(
+        self,
+        role,
+        device = "cpu",
+    ):
+        if fail["on"]:
+            raise MemoryError("transient")
+        return real(self, role, device)
+
+    monkeypatch.setattr(dc.LoadedCheckpoint, "tensors", _flaky)
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is False
+    fail["on"] = False
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True

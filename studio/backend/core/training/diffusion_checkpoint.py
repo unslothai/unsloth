@@ -1281,7 +1281,7 @@ _UNRESUMABLE_STATUS = {
 
 # The run listing asks _fully_loadable for every stopped run on each request, and _assert_loadable
 # reads every state file in full (adapter, EMA, optimizer moments). Its verdict depends only on the
-# bytes of those files, so it is kept per bundle while none of them changed. Files changed within
+# bytes of those files, so a pass is kept per bundle while none of them changed. Files changed within
 # the settle window are not kept: a coarse filesystem clock can give a same-size rewrite identical
 # timestamps. The resume preflight calls _assert_loadable directly and never reads this.
 _LOADABLE_VERDICTS: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
@@ -1327,8 +1327,10 @@ def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
     settled = key is not None and all(
         time.time_ns() - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key
     )
-    # A write during the read changes the stat, so that read is not kept.
-    if settled and _loadable_key(path, manifest) == key:
+    # Only a pass is kept: a refusal can come from a passing condition (out of memory, too many open
+    # files), so it is read again next time. A write during the read changes the stat, so that read is
+    # not kept either.
+    if verdict and settled and _loadable_key(path, manifest) == key:
         with _LOADABLE_VERDICTS_LOCK:
             _LOADABLE_VERDICTS[cache_id] = (key, verdict)
             _LOADABLE_VERDICTS.move_to_end(cache_id)
