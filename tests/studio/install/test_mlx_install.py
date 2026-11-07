@@ -110,6 +110,7 @@ def _repair_specs():
 
 # The MLX grammar engine slot (11d) runs after the harness stops; it shares the Apple Silicon gate.
 _GRAMMAR_ENGINE_SLOT = 1
+_HNSW_SLOT = 1
 
 
 def _progress_calls(nodes) -> int:
@@ -202,6 +203,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
             + 2 * int(enabled)
             + int(no_torch and not skip_base)
             + _GRAMMAR_ENGINE_SLOT * int(platform == "macos_arm")
+            + _HNSW_SLOT
         )
     if enabled:
         # --upgrade-package takes a bare NAME, not a pin: skip its argument.
@@ -341,7 +343,8 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
     # Skipped steps still spend their slots, including the re-resolve, 11c and 11d slots.
     assert (
-        stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT
+        stack._TOTAL
+        == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT + _HNSW_SLOT
     )
 
 

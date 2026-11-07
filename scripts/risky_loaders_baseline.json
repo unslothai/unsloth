@@ -475,6 +475,14 @@
       "reason": "Iterates fixed packaging / pip._vendor.packaging module names."
     },
     {
+      "file": "studio/install_python_stack.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "86a4baabc0246936",
+      "count": 1,
+      "reason": "Loads studio/install_hnsw_prebuilt.py from the fixed sibling path HNSW_INSTALLER (derived from __file__); no caller or Hub input selects the module name or path."
+    },
+    {
       "file": "unsloth/__init__.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",

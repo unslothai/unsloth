@@ -221,6 +221,8 @@ jobs:
           pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
           # torchao: the pre-quant allowlist imports its tensor constructors; CPU-only is fine.
           pip install torchao
+          # usearch is not in studio.txt: installing via Studio's installer also tests that path.
+          python studio/install_hnsw_prebuilt.py --strict --json
 
       - name: Collect the bubblewrap install
         wait: bubblewrap

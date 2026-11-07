@@ -11089,8 +11089,14 @@ def _installed_index_digest() -> "str | None":
         return None
     digest = hashlib.sha256()
     for name in sorted(index):
+        # The HNSW pair is also installed at runtime (--no-deps): must not void the evidence.
+        if name in _HNSW_DISTRIBUTIONS:
+            continue
         digest.update(f"{name}=={index[name][0]}\n".encode("utf-8"))
     return digest.hexdigest()
+
+
+_HNSW_DISTRIBUTIONS = frozenset({"usearch", "numkong"})
 
 
 def _installed_index() -> "dict | None":
@@ -11782,6 +11788,45 @@ def _prefetch_diffusers_main() -> int:
     return 0
 
 
+HNSW_INSTALLER = SCRIPT_DIR / "install_hnsw_prebuilt.py"
+_HNSW_OK = {"ready", "already", "disabled"}
+
+
+def _hnsw_auto_install_disabled() -> bool:
+    return os.environ.get("RAG_VEC_ANN_AUTO_INSTALL", "1").strip().lower() in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _hnsw_prebuilt_step() -> None:
+    """11e. Optional HNSW pair; never fails the install (RAG falls back to exact search)."""
+    if _hnsw_auto_install_disabled():
+        _progress("HNSW search (disabled)")
+        _record_step("hnsw-prebuilt", "disabled")
+        return
+    _progress("HNSW search")
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_unsloth_install_hnsw_prebuilt", HNSW_INSTALLER
+        )
+        module = importlib.util.module_from_spec(spec)
+        # Registered first: dataclasses resolve string annotations through sys.modules.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        result = module.ensure(sys.executable)
+        status, detail = str(result.get("status")), str(result.get("detail") or "")
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - an optional accelerator
+        status, detail = "failed", f"{type(exc).__name__}: {exc}"
+    _record_step("hnsw-prebuilt", status)
+    if status not in _HNSW_OK:
+        _note(
+            f"HNSW search unavailable ({status}: {detail}); large knowledge bases use exact search"
+        )
+
+
 def _diffusers_main_step() -> None:
     """Install the pinned Diffusers commit, or leave the release pin alone.
 
@@ -12158,7 +12203,7 @@ def install_python_stack() -> int:
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
-    # Includes lettered steps 8b, 8c (Windows), 11b, 11c, 13b; 11c always spends its slot.
+    # Includes lettered steps 8b, 8c (Windows), 11b, 11c, 11e, 13b; 11c and 11e always spend their slot.
     base_total = 14 if IS_WINDOWS else 15
     if IS_WINDOWS:
         base_total += 1  # 8c, gated exactly as the step is
@@ -12177,6 +12222,7 @@ def install_python_stack() -> int:
         base_total += 1  # MLX stack re-resolve
     if IS_MAC_ARM:
         base_total += 1  # MLX grammar engine (step 11d), same gate as the step itself
+    base_total += 1  # HNSW pair (step 11e), every platform
     if NO_TORCH and not skip_base:
         # no-torch runtime deps get their own slot inside the core step.
         base_total += 1
@@ -12652,6 +12698,8 @@ def install_python_stack() -> int:
                 )
             except SystemExit:
                 _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
+
+    _hnsw_prebuilt_step()
 
     # 12. Patch metadata for single-env compatibility
     _finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()

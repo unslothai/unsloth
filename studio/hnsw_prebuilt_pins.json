@@ -1,0 +1,604 @@
+{
+ "format": 1,
+ "mirror": "https://github.com/unslothai/unsloth/releases/download/HNSW-Wheels/",
+ "packages": {
+  "numkong": {
+   "version": "7.8.6",
+   "wheels": [
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-macosx_10_9_x86_64.whl",
+     "sha256": "99b863823f1d05522f4b915ffe4aa0042461c7bb89f68788d941ecf2f774f8aa",
+     "size": 858141,
+     "url": "https://files.pythonhosted.org/packages/89/64/57e77a316549bbaf86d66ac50613d5c8c07735325086afa068821af63cfa/numkong-7.8.6-cp311-cp311-macosx_10_9_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-macosx_11_0_arm64.whl",
+     "sha256": "e45573337af50d664ec4723149815edab323441012bab0f14b7d57806ca93b70",
+     "size": 817084,
+     "url": "https://files.pythonhosted.org/packages/94/35/ba5ee9e8661dc9bf876c5f919ec8ceb03b3565ae6a35df619f2df98669ce/numkong-7.8.6-cp311-cp311-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl",
+     "sha256": "ffe846f02817171a7e03541e5aeaa109811cded373bda925d212669cc974566e",
+     "size": 2277127,
+     "url": "https://files.pythonhosted.org/packages/08/bb/782d487a610b198d7dbb85d43b5c9e417458ce448fe6b49636ba59ef3300/numkong-7.8.6-cp311-cp311-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+     "sha256": "d062d00ef1b834f5b62ccfbe64337a0be73f92f1af140a2701440c54496e6ef1",
+     "size": 2906431,
+     "url": "https://files.pythonhosted.org/packages/7a/e5/391005f7bb93c65a047de559925a41749a4bee9ad626fb5adf3144530001/numkong-7.8.6-cp311-cp311-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+     "sha256": "4bfae45e00160d17f8e25d3f62bf6f5029b674fce5c70793829165d7b0763a1e",
+     "size": 2513960,
+     "url": "https://files.pythonhosted.org/packages/4b/7c/3ddeea0c03d2fa73d7922a54aeae621daf9804c9735e19569702f1da49f8/numkong-7.8.6-cp311-cp311-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux_2_28_aarch64.whl",
+     "sha256": "40e9d663a3b8dfbacb5a420134d170a17abf9be0974e1e26fac6a9625e307821",
+     "size": 5400582,
+     "url": "https://files.pythonhosted.org/packages/36/1b/a8c71af5a9b3247fa889ce9f00adea09dd645dc5fc3fdd2613d107203500/numkong-7.8.6-cp311-cp311-manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux_2_28_x86_64.whl",
+     "sha256": "15a467dd99f8fb1ba2890f66b7cfd8e31177557d3c5a1c08c5fde5cc6000d5e6",
+     "size": 10592189,
+     "url": "https://files.pythonhosted.org/packages/fc/db/072571d274cfe2aa65afbd6ac91f5778dc4c55ef5e4b5e46d120e1388f96/numkong-7.8.6-cp311-cp311-manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+     "sha256": "4a322bbe9cad00d9de404c9bebcf7106abba619314a903ec4c44b634aac634af",
+     "size": 2657337,
+     "url": "https://files.pythonhosted.org/packages/d6/08/87885b4a305e007a1a175cf0223934afaa2ef1a0740d5c9c79489ca21c97/numkong-7.8.6-cp311-cp311-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-musllinux_1_2_aarch64.whl",
+     "sha256": "b5196dcf0f1f396bafe8fcd69ef4ec47bea22ad10d4239424ae923e8a9900858",
+     "size": 5347358,
+     "url": "https://files.pythonhosted.org/packages/0c/c4/a96c68f47f7c8785ff45ef0bde0c12ed0f43d596c24067a0abe81064b97a/numkong-7.8.6-cp311-cp311-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-musllinux_1_2_i686.whl",
+     "sha256": "ba4d57f6d432cb4c43a8a90ff02a546eedce29d04c821e01c0713222b94120b5",
+     "size": 2334565,
+     "url": "https://files.pythonhosted.org/packages/ae/ab/6fc5c56c14eb3cef66fbbb43a5f7da4f13ab771799d157449cc43c4555c8/numkong-7.8.6-cp311-cp311-musllinux_1_2_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-musllinux_1_2_ppc64le.whl",
+     "sha256": "f16eec83994d3c2a3bb3fd402c3765927a9b4d7edf2ad94740cb16fb2987da98",
+     "size": 2891967,
+     "url": "https://files.pythonhosted.org/packages/97/0d/0ab943fe38ffb60787e895ef51314ae3949daa150a78eeeb152230f97dbd/numkong-7.8.6-cp311-cp311-musllinux_1_2_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-musllinux_1_2_s390x.whl",
+     "sha256": "f69a4e7d0023758694eaca630debb2e84910ef93c22efd3b7b06ffb7dbef5e51",
+     "size": 2412462,
+     "url": "https://files.pythonhosted.org/packages/91/00/dbb123796ccfde2d82ac4cee095f19d03bdab7ad279ba77e865b36e309e0/numkong-7.8.6-cp311-cp311-musllinux_1_2_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-musllinux_1_2_x86_64.whl",
+     "sha256": "730a2d85d9f92bb0ef6aec485474ce2f57694c5f3e595038abd916b1c8529cfd",
+     "size": 10432257,
+     "url": "https://files.pythonhosted.org/packages/a5/bc/2ae81131de86c9e7f607adea2700555a95a62c9efef9cf452a6cb61268ce/numkong-7.8.6-cp311-cp311-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-win_amd64.whl",
+     "sha256": "7a9c250cc634ce4df68a09b5b93a7987a67b9a3db636ffc5bb56b6e8e810493d",
+     "size": 494906,
+     "url": "https://files.pythonhosted.org/packages/55/ea/5bc920ebf05eaedb8fec779186ea135fc8916c478e606ace0f2343e51f88/numkong-7.8.6-cp311-cp311-win_amd64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp311-cp311-win_arm64.whl",
+     "sha256": "f5ba34bd1bb8164bf803be6988432d62c9cae7c1b5ac045da52d6d2d561cfc17",
+     "size": 433301,
+     "url": "https://files.pythonhosted.org/packages/7a/a6/5bace8f80f8caad4af7e0215a60345f5a9dc6a53bd4ed04372caf5cb5e86/numkong-7.8.6-cp311-cp311-win_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-macosx_10_13_x86_64.whl",
+     "sha256": "083b4522f36a5333cae0087cbd41700f13b70e86dfe72d460813be538b4e6f40",
+     "size": 857679,
+     "url": "https://files.pythonhosted.org/packages/db/09/3b95108f9426e456bf8a9b6f86bd248949c862391cfbbc616f45ed9a3998/numkong-7.8.6-cp312-cp312-macosx_10_13_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-macosx_11_0_arm64.whl",
+     "sha256": "0d1cd5332a6fe84e5878e6ed8852b0fbfdc9011abf75a632ae00e41c49bdca09",
+     "size": 817531,
+     "url": "https://files.pythonhosted.org/packages/f0/89/14dd88d80c8d4d9933685057b2f22d115863b86f2999246d5c1895632c86/numkong-7.8.6-cp312-cp312-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl",
+     "sha256": "5e222f27cc334ee2910310e9f2b94562defe0b24c8d70e1458abe0e401bfa49d",
+     "size": 2277543,
+     "url": "https://files.pythonhosted.org/packages/6e/4d/63d7a73959d3bec7b8bf1fc4cb003a8dd8dc1c27d73178d8ef82977a2812/numkong-7.8.6-cp312-cp312-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+     "sha256": "218f5999a0db89d610392ac986cd3fc78e586e70b3e2a6999ceda96b229dd374",
+     "size": 2907415,
+     "url": "https://files.pythonhosted.org/packages/d1/f3/40cbc715886869435b06bbe1ddaab7e81e89c5d56eae2246c8b626e76bb9/numkong-7.8.6-cp312-cp312-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+     "sha256": "c0ae59588a99e909619e6f52e0e39dfe6e0af0355281c24a0823c1640755aace",
+     "size": 2517868,
+     "url": "https://files.pythonhosted.org/packages/41/d3/a58b623c99bcf0d3864a8e854cab8b4e630f28f4bde6e243ab0182cd10b2/numkong-7.8.6-cp312-cp312-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux_2_28_aarch64.whl",
+     "sha256": "b767cd85d4fc571655f83df6d3d3f2a0f7912d59c9b3ecf9c424684ef05cccf2",
+     "size": 5402595,
+     "url": "https://files.pythonhosted.org/packages/9b/83/94ef7f0cb9ce736af3e88d1f3456613d85cf9163b00fceaa9f3b479a7949/numkong-7.8.6-cp312-cp312-manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux_2_28_x86_64.whl",
+     "sha256": "d56e78e07a9cc80c469617899cca53b2e106d2d4fd0ba73246849cb29caacd8e",
+     "size": 10590962,
+     "url": "https://files.pythonhosted.org/packages/3a/cd/c1479bd08031f925ff1f378d9cb203812bcbb5d55c9f046c993b5cba0d36/numkong-7.8.6-cp312-cp312-manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+     "sha256": "bc9493187059a742a11a62c526c0cd6296c75ce053124f91ddbed1d7cd101fa1",
+     "size": 2657675,
+     "url": "https://files.pythonhosted.org/packages/7b/04/7747632b09529c57220e6440a05dff3ef390295e198b48242ce467e4d1f1/numkong-7.8.6-cp312-cp312-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-musllinux_1_2_aarch64.whl",
+     "sha256": "986d6d855ba069fc73c48993f950f025794f72ac5d27f16370427f3d363ce0cd",
+     "size": 5348986,
+     "url": "https://files.pythonhosted.org/packages/07/60/de7b1269e5a5e7631408ea390733bb925fde8933e526c1954153b8b59a09/numkong-7.8.6-cp312-cp312-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-musllinux_1_2_i686.whl",
+     "sha256": "2958979ac7ae7f8479b68fb2e237581afd93676034ea7159ba4290d351efed7b",
+     "size": 2336541,
+     "url": "https://files.pythonhosted.org/packages/2e/d3/b2cb3a7748fc041da28aa7cfd7b52edf75114cb70188e1db32e1de8f3354/numkong-7.8.6-cp312-cp312-musllinux_1_2_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-musllinux_1_2_ppc64le.whl",
+     "sha256": "3182a4ca6d6058f58dc16dfa6fca825a74c9d20634aacb6abc9e322b198b020d",
+     "size": 2895523,
+     "url": "https://files.pythonhosted.org/packages/5d/56/f03caf2f511008b8051c4f4ae1871cc8aeb4566f0f8dba0562a047c5a720/numkong-7.8.6-cp312-cp312-musllinux_1_2_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-musllinux_1_2_s390x.whl",
+     "sha256": "09ccff5adcc0b83be4680e7c745affc1b4266ff0d0dd42984777a04f03f964b9",
+     "size": 2416663,
+     "url": "https://files.pythonhosted.org/packages/3d/e5/5773fec1bf0efcd11ce821a432a80dac32596af48130eb239dd9f107bffd/numkong-7.8.6-cp312-cp312-musllinux_1_2_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-musllinux_1_2_x86_64.whl",
+     "sha256": "7c69e853589ae74162a67bf5b3a00a4be92332127b968f6c38617fa82f1801f1",
+     "size": 10430816,
+     "url": "https://files.pythonhosted.org/packages/c2/a9/3b869688f801c0b90c523ee422b1c7449d70f0aceaffe8071f033755850d/numkong-7.8.6-cp312-cp312-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-win_amd64.whl",
+     "sha256": "93e2ee76e8b251e523b2039e9fb00fe17c59ebefc232330d097e567dd0523448",
+     "size": 495270,
+     "url": "https://files.pythonhosted.org/packages/dd/c5/2b4c8ffd84bac31853c1ca70def2d53a05dea900b6b484574da4837be19f/numkong-7.8.6-cp312-cp312-win_amd64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp312-cp312-win_arm64.whl",
+     "sha256": "e076972399d3f7f4b5618caee0c2ef38c12ad6aece45c78c0a6adcc0d18a9c86",
+     "size": 434049,
+     "url": "https://files.pythonhosted.org/packages/71/32/ee4c988ff1e59b6249186d50c3a9abd05fc890f94fe0e0a99d571923b604/numkong-7.8.6-cp312-cp312-win_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-macosx_10_13_x86_64.whl",
+     "sha256": "aaa26e079b69754dba1732990d32d6b1f504c439e08f8f3113d1a63eef0bfa88",
+     "size": 857683,
+     "url": "https://files.pythonhosted.org/packages/43/12/a0a0e73459f228871a7d9ec319f977b4b8d3754a2d25141f0d1e95c975ff/numkong-7.8.6-cp313-cp313-macosx_10_13_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-macosx_11_0_arm64.whl",
+     "sha256": "fb746b12970d8891f43f777d6e47c2f7b35c55769340b6e8d6b2631d2633d9e7",
+     "size": 817522,
+     "url": "https://files.pythonhosted.org/packages/02/0f/2ef51f47cef07b738c021ff6408759727dabafd39c7e32cb39f2719527c6/numkong-7.8.6-cp313-cp313-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl",
+     "sha256": "9071360ce4376fc5247875c74f451baaf3c0f157c049358249fbb588454180c8",
+     "size": 2277871,
+     "url": "https://files.pythonhosted.org/packages/7c/b2/e37f148ba918ce71a2e0611b0215d957dc7d93e69831f9368ae4eeb56397/numkong-7.8.6-cp313-cp313-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+     "sha256": "a06dd389184a13dddafbcd1cdce30f61cd6c722fdcf91717b78b0d3e0d8490fe",
+     "size": 2907690,
+     "url": "https://files.pythonhosted.org/packages/a7/84/f60b18064d0c658246bb8960b4ff0929971172a9d9593e95cc4d27323660/numkong-7.8.6-cp313-cp313-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+     "sha256": "43dbb7a3bc18b24600ecbb66ecf078a9dbaf6b7b7ba3ee925f0d7bfd4cc1769b",
+     "size": 2518127,
+     "url": "https://files.pythonhosted.org/packages/a3/c2/fcd4bc1881fd2f898ebb5a85ca9bd83b4b4ba3718483da6ea7f0b5a98d3b/numkong-7.8.6-cp313-cp313-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux_2_28_aarch64.whl",
+     "sha256": "7b24e43e2346d7db020a75c5661f30f695d25531e73c3af1b64873742ff85139",
+     "size": 5403220,
+     "url": "https://files.pythonhosted.org/packages/62/12/b3116bd435a6fbb8bfe4c668c4da257c52fd54e0a2aa482a208512e8d767/numkong-7.8.6-cp313-cp313-manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux_2_28_x86_64.whl",
+     "sha256": "9e4dbbf8b2d23ba7947956e5526f4114f9beee4d374787c0685fe3733154cb8f",
+     "size": 10591085,
+     "url": "https://files.pythonhosted.org/packages/c0/08/64a2270549fed3c79b81b7defd447daa0884e37b94b6b50ff4ef85e1f0ad/numkong-7.8.6-cp313-cp313-manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+     "sha256": "aa159c72b61ef6ee97721b80816c4803589ac7c23b615289cfc1419a6292a2bd",
+     "size": 2657783,
+     "url": "https://files.pythonhosted.org/packages/db/9c/90f02797522d0386b741c8cd0d798740e01d8578ebe41c7e55d1f5115183/numkong-7.8.6-cp313-cp313-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-musllinux_1_2_aarch64.whl",
+     "sha256": "175f7f56722cfbba270c56759e9c867f7aa9bccb7eb8dce1a1f718615383acdf",
+     "size": 5349071,
+     "url": "https://files.pythonhosted.org/packages/e6/c1/50083b05d119314398861b817652b2827b2d2522516a149d8ea44409acc5/numkong-7.8.6-cp313-cp313-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-musllinux_1_2_i686.whl",
+     "sha256": "6f632c227feba6404c1a91404c433072daa1665e741a5a8a8d798632e79779c3",
+     "size": 2336711,
+     "url": "https://files.pythonhosted.org/packages/51/1b/7a68511abe71f26fa610165cd1ccbcea41a26db6136b9b10dfc0d2e792ac/numkong-7.8.6-cp313-cp313-musllinux_1_2_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-musllinux_1_2_ppc64le.whl",
+     "sha256": "41db64b3aa028b9ab46312918ecde8a300f1dc43d67de121f5c95f8599512fac",
+     "size": 2895608,
+     "url": "https://files.pythonhosted.org/packages/a4/fa/d3a11e87957aa190a10297ac8e23491e06b2267df6e390b9f55544f64a64/numkong-7.8.6-cp313-cp313-musllinux_1_2_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-musllinux_1_2_s390x.whl",
+     "sha256": "e3a8cdcff989e0aa243024c414a1a8e60dde98e54476ecbc3eae8b3065154a74",
+     "size": 2416957,
+     "url": "https://files.pythonhosted.org/packages/43/60/664de7162ece8fb4def5d6c9adf5dc30d7885911194eb83c89b4c72c3c32/numkong-7.8.6-cp313-cp313-musllinux_1_2_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-musllinux_1_2_x86_64.whl",
+     "sha256": "5d59d83a63b844d6c5b6d88f2f533b93f57718714264f51b9a23672bb8baefab",
+     "size": 10431059,
+     "url": "https://files.pythonhosted.org/packages/5d/b5/bb4eff0092452b196161e005a76f22718bd2b52c15915df7eb34105c7796/numkong-7.8.6-cp313-cp313-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-pyemscripten_2025_0_wasm32.whl",
+     "sha256": "8125515b935c1ef25e0e4b54a10f521406d2482fc0ce5484ba59944a5912be0c",
+     "size": 383080,
+     "url": "https://files.pythonhosted.org/packages/2c/3f/0ab49aab43c900b866b4f4ecf14cb8e26d91aae72c82a58c42f5fc0aef69/numkong-7.8.6-cp313-cp313-pyemscripten_2025_0_wasm32.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-win_amd64.whl",
+     "sha256": "e5c1b877f05145b809f65513bcde1f1c03b586a3fe29eac645774064bdfb33ed",
+     "size": 495272,
+     "url": "https://files.pythonhosted.org/packages/18/a3/a90b6219635c141b0b198aacc7adf3088232b92ac6f54cf866fa69bd130a/numkong-7.8.6-cp313-cp313-win_amd64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp313-cp313-win_arm64.whl",
+     "sha256": "11ca6a75a8bc9ee9c5ca39df852a82973faf59e8132d949b00e84206221c4f07",
+     "size": 434052,
+     "url": "https://files.pythonhosted.org/packages/46/3f/7638b7a5742d6a4f170b71d1575b0fa32c0b718235d85f7c6e86adb300c3/numkong-7.8.6-cp313-cp313-win_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-macosx_10_15_x86_64.whl",
+     "sha256": "920c4b170ed84f1884f73f347aa2d92f6cb6e902913d212f6c2cdc90fc86fad4",
+     "size": 857820,
+     "url": "https://files.pythonhosted.org/packages/d8/8b/1f9f835822a7a9bef3b5971e27341d44d5d6d3164b4e10f73a53c06e0b80/numkong-7.8.6-cp314-cp314-macosx_10_15_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-macosx_11_0_arm64.whl",
+     "sha256": "58bb93d621207dc9004bd253a53a98c33bc61e2c0463e1755d730f6319c724d4",
+     "size": 817646,
+     "url": "https://files.pythonhosted.org/packages/d8/9c/2b0d8c3e33738b2ad81f9f92e7a7f76e48a6da16e34ddeec7dd6baa6108c/numkong-7.8.6-cp314-cp314-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl",
+     "sha256": "244ede9eff62f8ad757d7dd2a0a4644af0c0e26183a98d0e5f510a7a80327304",
+     "size": 2278496,
+     "url": "https://files.pythonhosted.org/packages/3c/0f/7f4e24ff8bbd6425648ee36fec5aaef02f2cbe86b86f32485c0e21cd0b0b/numkong-7.8.6-cp314-cp314-manylinux2014_i686.manylinux_2_17_i686.manylinux_2_28_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl",
+     "sha256": "4942b0d1bf5510ca8e55335d1a61f83bcfc06c6c381d2e121076b720d912e80f",
+     "size": 2909345,
+     "url": "https://files.pythonhosted.org/packages/61/7e/1e45222fe24c66e6767c2ff99d96b60768d6775426b5bde3da3921acd503/numkong-7.8.6-cp314-cp314-manylinux2014_ppc64le.manylinux_2_17_ppc64le.manylinux_2_28_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl",
+     "sha256": "f3be875f5911297857be93ac60f8dc1ea13ac9220e93bec66963c9b00a189c17",
+     "size": 2518656,
+     "url": "https://files.pythonhosted.org/packages/f8/86/d7bff340624c5b640feb6c0b6c3d894f918ecc7eda26e7c88c9ae4881a3e/numkong-7.8.6-cp314-cp314-manylinux2014_s390x.manylinux_2_17_s390x.manylinux_2_28_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux_2_28_aarch64.whl",
+     "sha256": "79595ffbaffb47cf3801da7fd1d382250696d937b4ca19180ec5dd4c4b86aad1",
+     "size": 5404536,
+     "url": "https://files.pythonhosted.org/packages/42/dd/3f7f5efcf4fc3ac75466b6c0926eec764fde823896485e3a48d52473fefe/numkong-7.8.6-cp314-cp314-manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux_2_28_x86_64.whl",
+     "sha256": "de0ed751903810639645043dcc90b5e13bbdbbcbed59412df4662d09b674ec3c",
+     "size": 10592307,
+     "url": "https://files.pythonhosted.org/packages/2f/20/c02e17bab9528c0bd00b1a0bbc127551d4844098e1e79f920415765e7d76/numkong-7.8.6-cp314-cp314-manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl",
+     "sha256": "bb98acecd418c7a9969eb4fc3e7d40758676fae2d3321e899df2847a3c452cde",
+     "size": 2657516,
+     "url": "https://files.pythonhosted.org/packages/7d/4c/eefc31bc58f3b9c4e9649a75e8e9e93f520b4df782559da388ccda8d1230/numkong-7.8.6-cp314-cp314-manylinux_2_38_riscv64.manylinux_2_39_riscv64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-musllinux_1_2_aarch64.whl",
+     "sha256": "5a498252306eb646a1609bce9e1ec7e8f66d3bbe61860be899acff4705dc39d2",
+     "size": 5349728,
+     "url": "https://files.pythonhosted.org/packages/c7/fd/93c52baf69f8b94d6553c4136538707130988972b0aae94a3d91ba44a6bd/numkong-7.8.6-cp314-cp314-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-musllinux_1_2_i686.whl",
+     "sha256": "b066ceeeffd2aeb59f4761de35b1fd74ef790cf32cd1001c46639e386adaad03",
+     "size": 2337687,
+     "url": "https://files.pythonhosted.org/packages/a8/b4/ced0b3ca6e4d941c0c76cce8e4f71aa177ae5d2ca5469c1b9c41098b44b8/numkong-7.8.6-cp314-cp314-musllinux_1_2_i686.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-musllinux_1_2_ppc64le.whl",
+     "sha256": "1b3fd4a8b4ffc7f2806919efa6ce370663641f021e2cde5f48dc85364130343b",
+     "size": 2897123,
+     "url": "https://files.pythonhosted.org/packages/96/a2/632200f0a1105d1fc15aba6aa29c177ec858b8d958ae535d4508bf85b4a2/numkong-7.8.6-cp314-cp314-musllinux_1_2_ppc64le.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-musllinux_1_2_s390x.whl",
+     "sha256": "2b031dbe83c43d2ff35d9c800957d9234954555759a246dc3d5e85ee383f8d38",
+     "size": 2417409,
+     "url": "https://files.pythonhosted.org/packages/8d/e3/a1bc38e56cc303b6185b7db843ee790b2630a55fc642d695846782b6a89f/numkong-7.8.6-cp314-cp314-musllinux_1_2_s390x.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-musllinux_1_2_x86_64.whl",
+     "sha256": "fb78521186491da0d677146f727aadc33283ca2c50e09a5b3fea3d8b36472c3f",
+     "size": 10430777,
+     "url": "https://files.pythonhosted.org/packages/a2/ee/231e9dcbb45853f702f09c6c63fcd419a0643713ac867419db79eb79dc23/numkong-7.8.6-cp314-cp314-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-pyemscripten_2026_0_wasm32.whl",
+     "sha256": "4d6f97de88213b01109ed877f9a67e75713d4756a1fa45e8b58a6f16d5563d72",
+     "size": 380422,
+     "url": "https://files.pythonhosted.org/packages/bd/48/89ef777a116e03c41d1fff53fc113be28ef363e949a76950961852a56332/numkong-7.8.6-cp314-cp314-pyemscripten_2026_0_wasm32.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-win_amd64.whl",
+     "sha256": "45a827fd8a25f6d92f461187b59cc99e611d97a3d9b52419b9e9c6d6ec265466",
+     "size": 510652,
+     "url": "https://files.pythonhosted.org/packages/e2/73/d2ed872c1a29c39bf8f5bc4dd94e3ab718e58d941ef2c3d7f00d7e615565/numkong-7.8.6-cp314-cp314-win_amd64.whl"
+    },
+    {
+     "filename": "numkong-7.8.6-cp314-cp314-win_arm64.whl",
+     "sha256": "461fc4836cc0507763053b08a4bfeb65da725f5fefc738f19c89744f00ff872a",
+     "size": 455353,
+     "url": "https://files.pythonhosted.org/packages/44/3c/f1cac0bdd0be26dde20b0f00e1a6f0ea80b8a9701e9d0433312b54f0713f/numkong-7.8.6-cp314-cp314-win_arm64.whl"
+    }
+   ]
+  },
+  "usearch": {
+   "version": "2.26.6",
+   "wheels": [
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-macosx_10_9_universal2.whl",
+     "sha256": "f4719c44e2c5dcdf064e9f405405c8ccbce92089e551311b710b9c2f4e923cee",
+     "size": 869241,
+     "url": "https://files.pythonhosted.org/packages/40/d9/ef6abdaea3439513fefc0c2ba4094e5460568f6fcba381e70bd8c0fcc600/usearch-2.26.6-cp311-cp311-macosx_10_9_universal2.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-macosx_10_9_x86_64.whl",
+     "sha256": "ab77ef69b6e11e6ddd127458bcb6c3dc962b56b0c7091e28b3e3f741a4213a11",
+     "size": 468473,
+     "url": "https://files.pythonhosted.org/packages/b7/b8/242e474283ebf22bce14b61f46570a0fb6180e6ba381c842f2a57daac5d1/usearch-2.26.6-cp311-cp311-macosx_10_9_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-macosx_11_0_arm64.whl",
+     "sha256": "cdfb4a39fa904ee9b2c31f37cc7823cf4dda218a7b6b071403b80edd637486be",
+     "size": 450905,
+     "url": "https://files.pythonhosted.org/packages/35/d2/ff76d574bf4919470a852ba17b071601da80cb9439c18228413f4a0576b6/usearch-2.26.6-cp311-cp311-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+     "sha256": "e4c6d0eee99d2268f5e57a200fb1e70c5363b73937226797c4191e0d711924c3",
+     "size": 2240688,
+     "url": "https://files.pythonhosted.org/packages/13/d0/3e098446992d21ba2e98484c715272e5d30072df0e629eeeacbdc423aec7/usearch-2.26.6-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+     "sha256": "72662c65290c7e55bf95382d70edc018e8f4743cf2f1b65dfc97a031ef674c2d",
+     "size": 2328758,
+     "url": "https://files.pythonhosted.org/packages/2f/44/3a32b25e5361d640d67dabc1c0b20b246f52cd387d048a1dc946ea2ddcef/usearch-2.26.6-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-musllinux_1_2_aarch64.whl",
+     "sha256": "d6489d21cfa592427848243cf04ed6e11fe06885415110e6f138436262486306",
+     "size": 2292506,
+     "url": "https://files.pythonhosted.org/packages/e9/3b/239994b2da40148e4f58d2994d6ad145396d24dbb21fd2c4a7301e98e93e/usearch-2.26.6-cp311-cp311-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-musllinux_1_2_x86_64.whl",
+     "sha256": "fd246b6baf403b892266ddd1e7358f998244743ad20aa5e1dbd569724457c81e",
+     "size": 2387763,
+     "url": "https://files.pythonhosted.org/packages/60/b7/d029404f73d8f163a81fcbc24efca55e845eac54dd495ae138ec5c260d36/usearch-2.26.6-cp311-cp311-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-win_amd64.whl",
+     "sha256": "c4ff6a57a33e4bc20095e8111f6693f3e4df712927be8c8ccb6627db4fdbeb9a",
+     "size": 344881,
+     "url": "https://files.pythonhosted.org/packages/75/4d/33ec7528730acdfe6dba399a3b43a17d687adb78bf00c4e1bd1c505a3151/usearch-2.26.6-cp311-cp311-win_amd64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp311-cp311-win_arm64.whl",
+     "sha256": "cc1cfc18527205a4db0f8b77c680113b29a3c0f91a3cc0818c11b152d3b1bcab",
+     "size": 339848,
+     "url": "https://files.pythonhosted.org/packages/65/7f/d13e6f4d87a690959d784d75f461501f34225ef74faf32c05c4b8c1cef17/usearch-2.26.6-cp311-cp311-win_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-macosx_10_13_universal2.whl",
+     "sha256": "e740949e92b5de4f39bb0bfb27216bb5c1889a556ce754b2ce4748a03c6b903a",
+     "size": 887038,
+     "url": "https://files.pythonhosted.org/packages/49/28/59e9e3be440dfb9da6c8fa9cd0cbd0c7f2dfcc6ddf9aa2250277c6bce8e2/usearch-2.26.6-cp312-cp312-macosx_10_13_universal2.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-macosx_10_13_x86_64.whl",
+     "sha256": "351be9dc47636325460aa936a7833723fd56de6b102f672d26ed137391703773",
+     "size": 478236,
+     "url": "https://files.pythonhosted.org/packages/ef/2f/214af8b00090d057dccd8321bde8c323c5187850d71153d2ea2624b0e667/usearch-2.26.6-cp312-cp312-macosx_10_13_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-macosx_11_0_arm64.whl",
+     "sha256": "641eb30cd60a22cd09930087061768cb3a8a55828596791b67c96fcb5416ac17",
+     "size": 455223,
+     "url": "https://files.pythonhosted.org/packages/d9/36/2f8c9f7dc10ab3568c6ae01372f37699f2d05b65f0004dfc791da08e01fc/usearch-2.26.6-cp312-cp312-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+     "sha256": "4c2d4dc7c855fca328ea7f6b0e9a06ab8da09de832727bc496460240b4500c95",
+     "size": 2264725,
+     "url": "https://files.pythonhosted.org/packages/04/ac/e2a059a7312ebded76b56da068f1a3a17555a427e4b6dd1616b9c66c35b4/usearch-2.26.6-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+     "sha256": "87eb3dca11c131497a146d8098ed548610f38787a7b37675781572564cb391d1",
+     "size": 2354614,
+     "url": "https://files.pythonhosted.org/packages/51/11/716f573035c96bc63d71b28cd8c5e0e543d6afaab743c9b748f3adb86036/usearch-2.26.6-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-musllinux_1_2_aarch64.whl",
+     "sha256": "44dd0edc8b43ec5f64acef353e1b2953dcfcccf7dcb0151272b1bf58404c4463",
+     "size": 2321825,
+     "url": "https://files.pythonhosted.org/packages/ed/e8/8083f3a17560409e6327127d7d2a70804ca8068755681e52539d660e17f7/usearch-2.26.6-cp312-cp312-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-musllinux_1_2_x86_64.whl",
+     "sha256": "8e6aaedd8849afcb15002a3ea77a11ae758f2cd0b2d69ed17aa716e110936b2a",
+     "size": 2412950,
+     "url": "https://files.pythonhosted.org/packages/6a/b2/b48779c03332d13853aa8e8d9b48a26b2c6af64ae7e421e7ed24130d25c0/usearch-2.26.6-cp312-cp312-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-win_amd64.whl",
+     "sha256": "054693b65c8f5b8d506cc6a442b28a86a7d3e408c69b013b2cbd7a5094b903c4",
+     "size": 347574,
+     "url": "https://files.pythonhosted.org/packages/c1/e7/d1587753c05936f82bc431d141df56d4696ee21a44e2dbfb2d82e961803f/usearch-2.26.6-cp312-cp312-win_amd64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp312-cp312-win_arm64.whl",
+     "sha256": "4658bfa5bf8a4ef34aed5e5cbab441b96b67d18043c6fde2a306a639342b9cea",
+     "size": 341897,
+     "url": "https://files.pythonhosted.org/packages/11/95/b45b64aac79599da49e44389c305b1ebd44913cbdb4bcf8f371efb238139/usearch-2.26.6-cp312-cp312-win_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-macosx_10_13_universal2.whl",
+     "sha256": "c52d545dc557b58ec804061eb187cef36f3cf3b0a4cbd46fb288ec380abaa047",
+     "size": 887094,
+     "url": "https://files.pythonhosted.org/packages/00/d1/71d3de00e2aa01ad02881461f80312477759d8e3ee5114edaf76a453277f/usearch-2.26.6-cp313-cp313-macosx_10_13_universal2.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-macosx_10_13_x86_64.whl",
+     "sha256": "b110e143a991b32bfdacacdb4cf396a0eca27e7536114180c08115bab7df39a5",
+     "size": 478312,
+     "url": "https://files.pythonhosted.org/packages/77/bc/b37d89c539db15e633a8e31ec0dd379e5c9dc1bdc230009bf1bde264ec3a/usearch-2.26.6-cp313-cp313-macosx_10_13_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-macosx_11_0_arm64.whl",
+     "sha256": "9803ae36ab7ba67d2273e81761092ab4fb98556318c9f12755f4427e5332f2a7",
+     "size": 455223,
+     "url": "https://files.pythonhosted.org/packages/78/79/31d0beb3ab81003499c7a06edba7273cbe04d00ceebf71a75f873420a0d4/usearch-2.26.6-cp313-cp313-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+     "sha256": "5ebc125f0974547b1090b929e78313d022308bae8b40554c8166beacc2f2b2cb",
+     "size": 2264332,
+     "url": "https://files.pythonhosted.org/packages/5b/a6/64fa2fca6755b2e15a98b4cca9992eee482cb3e176ce0988ca45e664efc2/usearch-2.26.6-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+     "sha256": "6b8ab886ca02ffdfd11ee8ed97fc4d9bdccba283f25860b5e75d597f7a01fde2",
+     "size": 2354913,
+     "url": "https://files.pythonhosted.org/packages/43/f0/7ff76fb2d4844573d070a398e2b8e77dc107fa86cfc7eba90fc61ebc7afe/usearch-2.26.6-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-musllinux_1_2_aarch64.whl",
+     "sha256": "2a8e014907da36137f0915a14dd9388afb77ede196a043b99ddfcbbedec837db",
+     "size": 2321941,
+     "url": "https://files.pythonhosted.org/packages/78/f7/fe76560b22e658c8fbc7d2addd092327ef4b23e0ae265ba16634d1150553/usearch-2.26.6-cp313-cp313-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-musllinux_1_2_x86_64.whl",
+     "sha256": "feada96278046f6691e7c27f009ea6b871f32eceebf24b8c3617530dab595f76",
+     "size": 2412943,
+     "url": "https://files.pythonhosted.org/packages/e1/79/0c9bea85bfcc3dd170663fb8df00a76b2b24528afc0687fe3a9ef293feee/usearch-2.26.6-cp313-cp313-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-win_amd64.whl",
+     "sha256": "6c1558c8f45a69ad5d41a6caa1dae0ead1894a16d830e1e96780b95654a03adc",
+     "size": 347639,
+     "url": "https://files.pythonhosted.org/packages/80/f6/cf8abdddd0d3d3c353503aecc918355493429f66650c65c53da81a04557c/usearch-2.26.6-cp313-cp313-win_amd64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp313-cp313-win_arm64.whl",
+     "sha256": "e99ba08ca8c6ac283693f0c0879dfb58ec47aeb5e57f2efcfe1dd6a09669e4f4",
+     "size": 341968,
+     "url": "https://files.pythonhosted.org/packages/2d/39/8022d186a6b830d335e93067866aa911d319359b0fdaaa18299842b1957c/usearch-2.26.6-cp313-cp313-win_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-macosx_10_15_universal2.whl",
+     "sha256": "91e6432ca09b581657de0d65b5f2180dbb78b261f924ce7f4737b05f56868f23",
+     "size": 884582,
+     "url": "https://files.pythonhosted.org/packages/14/a8/84143eeea40f9e6d18b0c4a641c46ee8161a032aac42b9a67414954fd8a4/usearch-2.26.6-cp314-cp314-macosx_10_15_universal2.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-macosx_10_15_x86_64.whl",
+     "sha256": "4d291b23b9a7005d3b33a29cb65c117e9658bb3d8a67f459dfeda17e203dcc33",
+     "size": 476846,
+     "url": "https://files.pythonhosted.org/packages/8e/08/516fa676fcecf16c9441c8984ec91fbc558e79dd66dc5516016621123e34/usearch-2.26.6-cp314-cp314-macosx_10_15_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-macosx_11_0_arm64.whl",
+     "sha256": "87354fa349efa59e6037681259d6537ca9d90a7b80f81140e58d94abc0cb521c",
+     "size": 454173,
+     "url": "https://files.pythonhosted.org/packages/7f/83/46802267dbf0a0683c608663bb86124a0c74fe4f08acd9a16dc764e29cd6/usearch-2.26.6-cp314-cp314-macosx_11_0_arm64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl",
+     "sha256": "d823151817b7f9e8979f8b34a23dec53c99ae3059beb6db546352efbb1e2dce7",
+     "size": 2267181,
+     "url": "https://files.pythonhosted.org/packages/f1/b9/e766873fd3f294188532ec659fa9695968719bf5fa4fd6249f0d16f8c1b2/usearch-2.26.6-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+     "sha256": "c1a3421fe87928ee589e06a20073d1245855b1ab05222a80643f77cb1298eb95",
+     "size": 2356199,
+     "url": "https://files.pythonhosted.org/packages/7a/24/294edb2ab0ce38f1a5d975b356a538a56898e1e7a95f2654b807e07b2a85/usearch-2.26.6-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-musllinux_1_2_aarch64.whl",
+     "sha256": "347676e0dead4257ffe3a7ce239b0b4c2922ce4cc8586afd2799d4369f972863",
+     "size": 2323393,
+     "url": "https://files.pythonhosted.org/packages/1e/b0/0b2347d7d73a14897a4b785e958e70c02d8d3957683a8aa9349cdfe508b9/usearch-2.26.6-cp314-cp314-musllinux_1_2_aarch64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-musllinux_1_2_x86_64.whl",
+     "sha256": "9cfa91060880129ea3e84946e4d1fdeb32d448cd434b87b28d2aa1d128e19191",
+     "size": 2414247,
+     "url": "https://files.pythonhosted.org/packages/5a/c5/689c93718c865265c52a57fa0298eae956da4a4da2a20ba94c41cfc82d54/usearch-2.26.6-cp314-cp314-musllinux_1_2_x86_64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-win_amd64.whl",
+     "sha256": "d527376c7c8fc80a7089c6701d050785d67070a3ff515cfa9157cb6cb0008ba6",
+     "size": 357943,
+     "url": "https://files.pythonhosted.org/packages/cf/65/ceb53bd7ca5557b90322459a157e9b1b0e7fbee6c884ec527fc968683528/usearch-2.26.6-cp314-cp314-win_amd64.whl"
+    },
+    {
+     "filename": "usearch-2.26.6-cp314-cp314-win_arm64.whl",
+     "sha256": "7a33a84306bc196cb5789d2386a2bfbaf38e4ef519b1870e17819c30cf5b82f4",
+     "size": 351567,
+     "url": "https://files.pythonhosted.org/packages/c4/cc/9e456aa34e892722885d4fd5ce4b928c899c95394d654534d1f01bcffcec/usearch-2.26.6-cp314-cp314-win_arm64.whl"
+    }
+   ]
+  }
+ }
+}

@@ -293,21 +293,21 @@ class TestStepTotals:
         # no-torch case also gets the runtime-deps slot an update announces separately. Both also
         # carry the diffusers main slot (11c), which is spent on every path including opting out.
         # causal-conv1d and mamba-ssm have no slot: they install when a model needs them.
-        assert _base_total(IS_WINDOWS = True) == 18
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
+        assert _base_total(IS_WINDOWS = True) == 19
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 17
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 18),  # Linux, torch
-            ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
+            ({}, 19),  # Linux, torch
+            ({"NO_TORCH": True}, 17),  # Linux, GGUF-only (incl. the no-torch runtime step)
             # Two MLX slots (install + re-resolve) plus the grammar engine (11d).
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 17),  # Apple Silicon
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 18),  # Apple Silicon
             (
                 {"IS_MACOS": True, "IS_MAC_ARM": True, "NO_TORCH": True},
-                16,
+                17,
             ),  # Apple Silicon, GGUF-only
-            ({"IS_MACOS": True}, 14),  # Intel Mac
+            ({"IS_MACOS": True}, 15),  # Intel Mac
         ],
     )
     def test_the_other_platform_totals_include_torchcodec(self, flags, total):
