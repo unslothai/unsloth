@@ -378,6 +378,7 @@ export interface InferenceStatusResponse {
   serving?: string[];
   serving_checkpoints?: string[];
   resident_mib?: number | null;
+  resident_on_gpu?: boolean | null;
   /** Keep multiple models loaded, as saved on the server. Absent from older servers. */
   multi_model_mode?: "off" | "fit" | "always";
   inference?: {

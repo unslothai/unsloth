@@ -9010,10 +9010,12 @@ async def _reap_exited_workers() -> None:
         await asyncio.to_thread(_reap_dead_workers, exited)
 
 
-async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
+async def _route_to_extra_slot(
+    requested: Optional[str], touch: bool = True
+) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
     await _reap_exited_workers()
-    return await model_slots.route(requested, _loaded_satisfies)
+    return await model_slots.route(requested, _loaded_satisfies, touch)
 
 
 def _model_key(request: LoadRequest) -> str:
@@ -22394,10 +22396,10 @@ async def inference_status(
 
 async def get_status(current_subject: str, model: Optional[str] = None):
     """Status of the slot serving ``model`` (the primary one by default), listing every loaded model."""
-    slot = await _route_to_extra_slot(model)
+    slot = await _route_to_extra_slot(model, touch = False)
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse) and response.is_gguf:
-        response.resident_mib = _llama_resident_mib()
+        response.resident_mib, response.resident_on_gpu = _llama_resident()
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22420,13 +22422,26 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     return response
 
 
-def _llama_resident_mib() -> Optional[int]:
-    """The routed slot's llama-server footprint; None when not loaded or unreadable."""
+def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
+    """The routed slot's llama-server footprint, and whether it is model buffers on the GPUs /api/system
+    reports: True (parsed buffers), False (a CPU-only build's RSS), None (unknown)."""
     try:
         llama = get_llama_cpp_backend()
-        return llama.resident_memory_mib() if getattr(llama, "is_loaded", False) else None
+        if not getattr(llama, "is_loaded", False):
+            return None, None
+        mib = llama.resident_memory_mib()
+        if mib is None:
+            return None, None
+        # resident_memory_mib() reports these buffers when there are any, else falls back to RSS.
+        buffers = getattr(llama, "reclaimable_gpu_memory_gb", None)
+        if callable(buffers) and buffers():
+            return mib, True
+        from core.inference.llama_cpp import LlamaCppBackend as _Llama
+
+        # No parsed buffers proves nothing (Vulkan, SYCL); only a CPU-only build is a CPU run.
+        return mib, (False if _Llama._backend_lacks_gpu_lib() else None)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
-        return None
+        return None, None
 
 
 def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
