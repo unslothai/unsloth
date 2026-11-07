@@ -524,6 +524,7 @@ _RUN_ALIAS: dict[str, str] = {}
 _ALIAS_CREATED: dict[str, int] = {}
 # Persisted ns stamp: orders jobs created in the same second, also after a restart.
 _ALIAS_CREATED_NS: dict[str, int] = {}
+_last_created_ns = 0
 
 _aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
@@ -1012,7 +1013,10 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
-    _ALIAS_CREATED_NS[entry.alias] = time.time_ns()
+    global _last_created_ns
+    # Strictly increasing: Windows clocks can tick every ~16 ms.
+    _last_created_ns = max(time.time_ns(), _last_created_ns + 1)
+    _ALIAS_CREATED_NS[entry.alias] = _last_created_ns
     _ensure_drainer()
     return entry
 

@@ -714,6 +714,20 @@ def test_an_alias_table_from_an_older_build_loads_and_gains_the_ns_column(queue)
     assert [tuple(r) for r in rows] == [("ftjob_qnew", 7), ("ftjob_qold", None)]
 
 
+def test_jobs_created_within_one_clock_tick_list_newest_submitted_first(queue, monkeypatch):
+    client, _calls, _live, _gpu = queue
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+    monkeypatch.setattr(openai_fine_tuning.time, "time_ns", lambda: 1_700_000_000 * 10**9)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "abc"]
+        return jobs, await client.fine_tuning.jobs.list()
+
+    jobs, listed = _run(flow())
+    assert [j.id for j in listed.data] == [j.id for j in jobs[::-1]]
+
+
 def test_cancelling_a_job_whose_start_is_in_flight_stops_it(queue, monkeypatch):
     client, calls, live, gpu = queue
     release = asyncio.Event()
