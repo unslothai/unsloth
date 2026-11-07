@@ -135,15 +135,17 @@ def expand(request: Any, rng: Optional[random.Random] = None) -> XYPlan:
             _apply(data, spec.x, x_value)
             if spec.y is not None:
                 _apply(data, spec.y, y_value)
-            if data.get("loras"):
-                # Weight 0 drops the adapter, as the Images page sends it.
-                data["loras"] = [l for l in data["loras"] if l["weight"] != 0] or None
             try:
                 cell = DiffusionGenerateRequest.model_validate(data)
             except ValidationError as exc:
                 err = exc.errors()[0]
                 where = ".".join(str(p) for p in err.get("loc", ())) or "request"
                 raise ValueError(f"xy cell ({label}): {where}: {err.get('msg')}") from None
+            if cell.loras:
+                # Weight 0 drops the adapter, as the Images page sends it; read after validation parsed "0".
+                active = [l for l in cell.loras if l.weight != 0]
+                if len(active) != len(cell.loras):
+                    cell = cell.model_copy(update = {"loras": active or None})
             cells.append(XYCell(ix, iy, label, cell))
     # Adapter-free cells last: Speed Auto may compile on an adapter-free run, and a compiled load refuses LoRA after.
     order = sorted(range(len(cells)), key = lambda i: not cells[i].request.loras)
@@ -158,6 +160,24 @@ def _font(size: int):
         return ImageFont.load_default()
 
 
+def fit_cell(image: Any, plan: XYPlan) -> Any:
+    """``image`` scaled to its share of MAX_GRID_PIXELS, so a 64-cell grid holds no full-size renders meanwhile."""
+    budget = MAX_GRID_PIXELS / (plan.nx * plan.ny)
+    if image.width * image.height <= budget:
+        return image
+    from PIL import Image
+
+    scale = math.sqrt(budget / (image.width * image.height))
+    small = image.copy()
+    small.thumbnail(
+        (max(1, int(image.width * scale)), max(1, int(image.height * scale))), Image.LANCZOS
+    )
+    return small
+
+
+_MAX_LABEL_LINES = 3
+
+
 def _wrap(text: str, width: float, font) -> list[str]:
     lines: list[str] = []
     line = ""
@@ -170,6 +190,9 @@ def _wrap(text: str, width: float, font) -> list[str]:
             line = nxt
     if line:
         lines.append(line)
+    if len(lines) > _MAX_LABEL_LINES:
+        lines = lines[:_MAX_LABEL_LINES]
+        lines[-1] += " ..."
     return lines
 
 
@@ -178,19 +201,24 @@ def compose_grid(images: list[Any], plan: XYPlan):
     band 3/4 of a cell wide, font size (w + h) / 25. Cells are scaled down to keep the grid under MAX_GRID_PIXELS."""
     from PIL import Image, ImageDraw
 
-    cw = max(im.width for im in images)
-    ch = max(im.height for im in images)
-    scale = min(1.0, math.sqrt(MAX_GRID_PIXELS / (plan.nx * plan.ny * cw * ch)))
-    if scale < 1.0:
-        cw, ch = max(1, int(cw * scale)), max(1, int(ch * scale))
-    font_size = max(12, (cw + ch) // 25)
-    font = _font(font_size)
-    line_h = int(font_size * 1.25)
+    full_w = max(im.width for im in images)
+    full_h = max(im.height for im in images)
     has_rows = any(plan.y_labels)
-    left = cw * 3 // 4 if has_rows else 0
-    col_lines = [_wrap(t, cw - font_size, font) for t in plan.x_labels]
-    row_lines = [_wrap(t, left - font_size, font) for t in plan.y_labels] if has_rows else []
-    top = max(len(l) for l in col_lines) * line_h + font_size if any(col_lines) else 0
+    scale = min(1.0, math.sqrt(MAX_GRID_PIXELS / (plan.nx * plan.ny * full_w * full_h)))
+    # The label bands count too: shrink again until the whole canvas fits.
+    for _ in range(4):
+        cw, ch = max(1, int(full_w * scale)), max(1, int(full_h * scale))
+        font_size = max(12, (cw + ch) // 25)
+        font = _font(font_size)
+        line_h = int(font_size * 1.25)
+        left = cw * 3 // 4 if has_rows else 0
+        col_lines = [_wrap(t, cw - font_size, font) for t in plan.x_labels]
+        row_lines = [_wrap(t, left - font_size, font) for t in plan.y_labels] if has_rows else []
+        top = max(len(l) for l in col_lines) * line_h + font_size if any(col_lines) else 0
+        total = (left + plan.nx * cw) * (top + plan.ny * ch)
+        if total <= MAX_GRID_PIXELS:
+            break
+        scale *= math.sqrt(MAX_GRID_PIXELS / total)
     grid = Image.new("RGB", (left + plan.nx * cw, top + plan.ny * ch), "white")
     draw = ImageDraw.Draw(grid)
 

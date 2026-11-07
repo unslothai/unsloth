@@ -178,14 +178,14 @@ def test_compose_grid_without_y_has_no_left_band():
 
 
 def test_compose_grid_scales_down_past_the_pixel_budget(monkeypatch):
-    monkeypatch.setattr(diffusion_xy, "MAX_GRID_PIXELS", 4 * 32 * 24)
+    monkeypatch.setattr(diffusion_xy, "MAX_GRID_PIXELS", 4 * 640 * 480)
     plan = diffusion_xy.expand(
         _req(
             xy = {"x": {"field": "steps", "values": [4, 8]}, "y": {"field": "seed", "values": [1, 2]}}
         )
     )
-    grid = diffusion_xy.compose_grid(_cells(plan), plan)
-    assert grid.width == 24 + 2 * 32
+    grid = diffusion_xy.compose_grid(_cells(plan, size = (1280, 960)), plan)
+    assert grid.width * grid.height <= 4 * 640 * 480 and grid.width < 2 * 640 * 1.75
 
 
 def test_route_renders_each_cell_and_saves_a_labelled_grid(client):
@@ -367,3 +367,41 @@ def test_stop_reaches_a_cell_still_waiting_for_the_engine(client):
     )
     assert resp.status_code == 409, resp.text
     assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_string_zero_lora_weight_drops_the_adapter_and_renders_last():
+    plan = diffusion_xy.expand(
+        _req(
+            loras = [{"id": "a", "weight": 1}],
+            xy = {"x": {"field": "lora_weight", "index": 0, "values": ["0", "1"]}},
+        )
+    )
+    assert [c.request.loras for c in plan.cells][0] is None
+    assert plan.order == [1, 0]
+
+
+def test_long_labels_and_big_cells_stay_inside_the_pixel_budget():
+    from PIL import Image
+
+    long = " ".join(["word"] * 600)
+    plan = diffusion_xy.expand(
+        _req(
+            prompt = "a red sloth",
+            xy = {
+                "x": {"field": "prompt_sr", "values": ["red", long] + [f"c{i}" for i in range(62)]}
+            },
+        )
+    )
+    cells = [Image.new("RGB", (720, 720), "gray") for _ in plan.cells]
+    grid = diffusion_xy.compose_grid(cells, plan)
+    assert grid.width * grid.height <= diffusion_xy.MAX_GRID_PIXELS
+
+
+def test_fit_cell_keeps_each_render_to_its_share_of_the_budget():
+    from PIL import Image
+
+    plan = diffusion_xy.expand(_req(xy = {"x": {"field": "seed", "values": list(range(64))}}))
+    small = diffusion_xy.fit_cell(Image.new("RGB", (2048, 2048)), plan)
+    assert small.width * small.height <= diffusion_xy.MAX_GRID_PIXELS / 64
+    same = Image.new("RGB", (512, 512))
+    assert diffusion_xy.fit_cell(same, plan) is same
