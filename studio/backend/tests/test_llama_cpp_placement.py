@@ -2833,6 +2833,10 @@ def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
         (["--fit", "on", "--fit-target", "1024,2048"], {}, [], []),
         (["--fit", "on", "--fit-target", "4096"], {}, ["--fit-target", "4096"], []),
         (["--fit", "on"], {"LLAMA_ARG_FIT_TARGET": "2048"}, [], []),
+        (["--fit", "on", "--device", "Vulkan0,Vulkan1"], {}, [], []),
+        (["--fit", "on"], {"LLAMA_ARG_DEVICE": "Vulkan0,Vulkan1"}, [], []),
+        (["--fit", "on", "--device", "Vulkan0,none"], {}, [], ["--fit-target", "16384"]),
+        (["--fit", "on", "--rpc", "host:50052"], {}, [], []),
     ],
     ids = [
         "default",
@@ -2841,11 +2845,16 @@ def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
         "per-device-list",
         "user-argv",
         "user-env",
+        "mixed-device-list",
+        "mixed-device-env",
+        "one-device-and-cpu",
+        "rpc",
     ],
 )
 def test_the_igpu_fit_headroom(monkeypatch, argv, env, user, expected):
     monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
     assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == expected
+    assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user, gpu_count = 2) == []
     monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: False)
     assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == []
 

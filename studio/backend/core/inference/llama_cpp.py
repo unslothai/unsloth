@@ -15748,12 +15748,35 @@ class LlamaCppBackend:
 
     @staticmethod
     def _paged_fit_headroom_flags(
-        argv: Iterable[str], env: Optional[Mapping[str, str]], user_args: Optional[Iterable[str]]
+        argv: Iterable[str],
+        env: Optional[Mapping[str, str]],
+        user_args: Optional[Iterable[str]],
+        gpu_count: int = 1,
     ) -> list[str]:
         """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
-        Empty off Windows, with the fitter off, a user margin, or a per-device list."""
+        Empty off Windows, with the fitter off, a user margin, a per-device list, or a second
+        device, which the broadcast margin would starve."""
         args = [str(a) for a in argv or ()]
-        if not _paged_load_needs_fit_headroom():
+        if not _paged_load_needs_fit_headroom() or gpu_count > 1:
+            return []
+        if (
+            _extra_args_device(args, {"--rpc"})
+            or str((env or {}).get("LLAMA_ARG_RPC") or "").strip()
+        ):
+            return []
+        devices = _extra_args_device(args, {"--device", "-dev"})
+        if devices is None:
+            devices = str((env or {}).get("LLAMA_ARG_DEVICE") or "")
+        if (
+            len(
+                [
+                    d
+                    for d in devices.split(",")
+                    if d.strip().lower() not in ("", *_CPU_DEVICE_VALUES)
+                ]
+            )
+            > 1
+        ):
             return []
         if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
             return []
@@ -30731,7 +30754,9 @@ class LlamaCppBackend:
                         model_path, server_caps, argv, env
                     ),
                     fit_headroom_flags = lambda argv: _paged_headroom.extend(
-                        self._paged_fit_headroom_flags(argv, env, extra_args)
+                        self._paged_fit_headroom_flags(
+                            argv, env, extra_args, gpu_count = len(_reachable_gpus)
+                        )
                     )
                     or _paged_headroom,
                 )
@@ -32318,7 +32343,9 @@ class LlamaCppBackend:
                                 model_path, server_caps, argv, env
                             ),
                             fit_headroom_flags = lambda argv: _retry_headroom.extend(
-                                self._paged_fit_headroom_flags(argv, env, extra_args)
+                                self._paged_fit_headroom_flags(
+                                    argv, env, extra_args, gpu_count = len(_retry_rows)
+                                )
                             )
                             or _retry_headroom,
                         )
