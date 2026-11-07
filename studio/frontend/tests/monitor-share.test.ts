@@ -11,6 +11,7 @@ import {
   memoryShare,
   modelBreakdown,
   modelShares,
+  poolSplit,
 } from "../src/components/monitor-share.ts";
 import { readSrc } from "./helpers/kit.ts";
 
@@ -97,9 +98,7 @@ test("on VRAM the rest is unattributed: Unsloth's KV cache and training land the
     memorySegments(share, null, false).map((segment) => segment.kind),
     ["unsloth", "unattributed", "free"],
   );
-  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
-    assert.match(readSrc(file), /memorySegments\(vramShare, breakdown, false\)/);
-  }
+  assert.match(readSrc("components/monitor-share.ts"), /memorySegments\(vramShare, breakdown, false\)/);
 });
 
 test("the VRAM split counts only models known to sit on the reported GPUs", () => {
@@ -112,10 +111,10 @@ test("the VRAM split counts only models known to sit on the reported GPUs", () =
   assert.deepEqual(modelShares(entries).map((model) => model.id), ["gpu", "other"]);
   for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
     const src = readSrc(file);
-    assert.match(src, /inferenceGpuDisjoint\(systemInfo\.gpu\?\.backend, separateInferenceGpu\?\.backend\)/);
-    // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
-    assert.match(src, /noModels=\{breakdown !== null && loadedModels\.length === 0\}/);
+    assert.match(src, /inferenceGpuDisjoint\(\s*systemInfo\.gpu\?\.backend,\s*separateInferenceGpu\?\.backend,?\s*\)/);
   }
+  // "No model loaded" only when nothing is loaded, not when a model sits outside this pool.
+  assert.match(readSrc("components/monitor-share.ts"), /noModels: breakdown !== null && input\.entries\.length === 0/);
 });
 
 test("a model size ahead of the memory sample is scaled into the measured share", () => {
@@ -181,4 +180,24 @@ test("kept chat models are sized by routing on their checkpoint, not a public na
     readSrc("features/loaded-models/loaded-models-api.ts"),
     /readInferenceStatus\(signal, entry\.servingCheckpoint\)/,
   );
+});
+
+test("one split serves the floating monitor and Settings, models in the pool that holds them", () => {
+  const entries = [{ id: "a", name: "org/A-GGUF", source: "chat", residentMib: 4096, residentOnGpu: true }];
+  const base = {
+    entries, showShare: true, showBreakdown: true, inferenceGpuElsewhere: false,
+    processGb: 6, ramUsedGb: 20, ramTotalGb: 32, vramUsedGb: 10, vramTotalGb: 24,
+  };
+  const off = poolSplit({ ...base, showShare: false, showBreakdown: false, modelsInVram: true });
+  assert.deepEqual(off, { ram: null, vram: null, noModels: false });
+  const discrete = poolSplit({ ...base, modelsInVram: true });
+  assert.deepEqual(discrete.ram?.map((s) => s.kind), ["unsloth", "other", "free"]);
+  assert.deepEqual(discrete.vram?.map((s) => [s.kind, s.gb]), [["model", 4], ["unattributed", 6], ["free", 14]]);
+  const unified = poolSplit({ ...base, modelsInVram: false });
+  assert.equal(unified.vram, null);
+  assert.deepEqual(unified.ram?.map((s) => [s.kind, s.gb]), [["model", 4], ["app", 2], ["other", 14], ["free", 12]]);
+  assert.equal(poolSplit({ ...base, entries: [], modelsInVram: false }).noModels, true);
+  for (const file of ["components/floating-monitor.tsx", "features/settings/tabs/resources-tab.tsx"]) {
+    assert.match(readSrc(file), /poolSplit\(\{/, file);
+  }
 });

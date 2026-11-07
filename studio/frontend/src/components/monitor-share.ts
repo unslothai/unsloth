@@ -163,3 +163,48 @@ export function memorySegments(
     { id: "free", kind: "free", gb: share.free },
   ];
 }
+
+export interface PoolSplitInput {
+  entries: Parameters<typeof modelShares>[0];
+  showShare: boolean;
+  showBreakdown: boolean;
+  modelsInVram: boolean;
+  inferenceGpuElsewhere: boolean;
+  processGb: number | null;
+  ramUsedGb: number;
+  ramTotalGb: number;
+  vramUsedGb: number | null;
+  vramTotalGb: number;
+}
+
+export interface PoolSplit {
+  ram: MemorySegment[] | null;
+  vram: MemorySegment[] | null;
+  /** A breakdown was asked for and nothing is loaded. */
+  noModels: boolean;
+}
+
+/** The share bars the floating monitor and Settings both draw. */
+export function poolSplit(input: PoolSplitInput): PoolSplit {
+  const { showShare, showBreakdown, modelsInVram } = input;
+  if (!showShare && !showBreakdown) return { ram: null, vram: null, noModels: false };
+  const models = modelShares(input.entries, modelsInVram, input.inferenceGpuElsewhere);
+  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
+  const unslothRamGb = unslothPoolGb(input.processGb, modelsGb, !modelsInVram);
+  const breakdown = showBreakdown
+    ? modelBreakdown(modelsInVram ? null : unslothRamGb, models, !modelsInVram)
+    : null;
+  const ramShare =
+    showShare || (breakdown && !modelsInVram)
+      ? memoryShare(input.ramUsedGb, input.ramTotalGb, unslothRamGb)
+      : null;
+  const vramShare =
+    modelsInVram && input.vramUsedGb !== null
+      ? memoryShare(input.vramUsedGb, input.vramTotalGb, modelsGb)
+      : null;
+  return {
+    ram: ramShare && memorySegments(ramShare, modelsInVram ? null : breakdown),
+    vram: vramShare && memorySegments(vramShare, breakdown, false),
+    noModels: breakdown !== null && input.entries.length === 0,
+  };
+}

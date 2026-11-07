@@ -74,17 +74,8 @@ import {
   monitorRefreshMs,
 } from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
-import {
-  MemoryShareBar,
-} from "@/components/monitor-memory";
-import {
-  memorySegments,
-  memoryShare,
-  modelBreakdown,
-  inferenceGpuDisjoint,
-  modelShares,
-  unslothPoolGb,
-} from "@/components/monitor-share";
+import { MemoryShareBar } from "@/components/monitor-memory";
+import { inferenceGpuDisjoint, poolSplit } from "@/components/monitor-share";
 import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
 import { holdsModelsInVram, vramCards } from "@/components/monitor-cards";
 import {
@@ -659,35 +650,25 @@ export function ResourcesTab() {
     !unifiedPool &&
     !memoryDisplay.sharedOnly &&
     holdsModelsInVram(vram.cards);
-  const models = modelShares(
-    loadedModels,
-    discreteVram,
-    inferenceGpuDisjoint(systemInfo.gpu?.backend, separateInferenceGpu?.backend),
-  );
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
-  const unslothRamGb = unslothPoolGb(
-    !hostUnread && processMb !== undefined ? processMb / 1024 : null,
-    models.reduce((sum, model) => sum + model.gb, 0),
-    !discreteVram,
-  );
-  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
-  // The model split lives in the pool that holds the models: Memory/RAM, or VRAM on a discrete GPU.
-  const breakdown = showModelBreakdown
-    ? modelBreakdown(discreteVram ? null : unslothRamGb, models, !discreteVram)
-    : null;
-  const ramShare =
-    showUnslothShare || (breakdown && !discreteVram)
-      ? memoryShare(metrics.ramUsed, metrics.ramTotal, unslothRamGb)
-      : null;
-  const ramSegments = ramShare
-    ? memorySegments(ramShare, discreteVram ? null : breakdown)
-    : null;
-  const vramShare =
-    wantsModels && discreteVram && vram.usedGb !== null
-      ? memoryShare(vram.usedGb, vram.totalGb, modelsGb)
-      : null;
-  const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
+  const split = poolSplit({
+    entries: loadedModels,
+    showShare: showUnslothShare,
+    showBreakdown: showModelBreakdown,
+    modelsInVram: discreteVram,
+    inferenceGpuElsewhere: inferenceGpuDisjoint(
+      systemInfo.gpu?.backend,
+      separateInferenceGpu?.backend,
+    ),
+    processGb: !hostUnread && processMb !== undefined ? processMb / 1024 : null,
+    ramUsedGb: metrics.ramUsed,
+    ramTotalGb: metrics.ramTotal,
+    vramUsedGb: vram.usedGb,
+    vramTotalGb: vram.totalGb,
+  });
+  const ramSegments = split.ram;
+  const vramSegments = split.vram;
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -874,7 +855,7 @@ export function ResourcesTab() {
               >
                 <MemoryShareBar
                   segments={ramSegments}
-                  noModels={!discreteVram && breakdown !== null && loadedModels.length === 0}
+                  noModels={!discreteVram && split.noModels}
                 />
               </MetricTile>
             )}
@@ -887,7 +868,7 @@ export function ResourcesTab() {
               >
                 <MemoryShareBar
                   segments={vramSegments}
-                  noModels={breakdown !== null && loadedModels.length === 0}
+                  noModels={split.noModels}
                 />
               </MetricTile>
             )}

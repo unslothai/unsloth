@@ -22,14 +22,7 @@ import {
   usageIndicatorClass,
   usageTextClass,
 } from "./monitor-memory";
-import {
-  memorySegments,
-  memoryShare,
-  modelBreakdown,
-  inferenceGpuDisjoint,
-  modelShares,
-  unslothPoolGb,
-} from "./monitor-share";
+import { inferenceGpuDisjoint, poolSplit } from "./monitor-share";
 import type { LoadedModelEntry } from "@/features/loaded-models";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
@@ -280,37 +273,26 @@ function FloatingMonitorPanel({
   );
   const wantsModels = showShare || showBreakdown;
   const [loadedModels, setLoadedModels] = useState<LoadedModelEntry[]>([]);
-  const models = wantsModels ? modelShares(
-    loadedModels,
-    modelsInVram,
-    inferenceGpuDisjoint(systemInfo.gpu?.backend, separateInferenceGpu?.backend),
-  ) : [];
-  const modelsGb = models.reduce((sum, model) => sum + model.gb, 0);
   // Unsloth's server plus its children (llama-server, workers), resident set.
   const processMb =
     systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
-  const unslothRamGb = unslothPoolGb(
-    ramKnown && processMb !== undefined ? processMb / 1024 : null,
-    modelsGb,
-    !modelsInVram,
-  );
-  // The model split lives in the pool that holds the models: Memory/RAM, or VRAM on a discrete GPU.
-  const breakdown = showBreakdown
-    ? modelBreakdown(modelsInVram ? null : unslothRamGb, models, !modelsInVram)
-    : null;
-  const ramShare =
-    showShare || (breakdown && !modelsInVram)
-      ? memoryShare(ramUsed, ramTotal, unslothRamGb)
-      : null;
-  const ramSegments = ramShare
-    ? memorySegments(ramShare, modelsInVram ? null : breakdown)
-    : null;
-  // On a discrete GPU the models are what Unsloth holds in VRAM.
-  const vramShare =
-    wantsModels && modelsInVram && cardsUsedKnown
-      ? memoryShare(cardsUsed, vram.totalGb, modelsGb)
-      : null;
-  const vramSegments = vramShare ? memorySegments(vramShare, breakdown, false) : null;
+  const split = poolSplit({
+    entries: loadedModels,
+    showShare,
+    showBreakdown,
+    modelsInVram,
+    inferenceGpuElsewhere: inferenceGpuDisjoint(
+      systemInfo.gpu?.backend,
+      separateInferenceGpu?.backend,
+    ),
+    processGb: ramKnown && processMb !== undefined ? processMb / 1024 : null,
+    ramUsedGb: ramUsed,
+    ramTotalGb: ramTotal,
+    vramUsedGb: vram.usedGb,
+    vramTotalGb: vram.totalGb,
+  });
+  const ramSegments = split.ram;
+  const vramSegments = split.vram;
   const ramAmount = ramKnown
     ? `${formatGiB(ramUsed)} / ${formatGiB(ramTotal)}`
     : "-- / --";
@@ -516,7 +498,7 @@ function FloatingMonitorPanel({
               {ramSegments ? (
                 <MemoryShareBar
                   segments={ramSegments}
-                  noModels={!modelsInVram && breakdown !== null && loadedModels.length === 0}
+                  noModels={!modelsInVram && split.noModels}
                 />
               ) : (
                 <UsageBar percent={ramKnown ? ramPercent : null} />
@@ -539,7 +521,7 @@ function FloatingMonitorPanel({
                 {vramSegments ? (
                   <MemoryShareBar
                     segments={vramSegments}
-                    noModels={breakdown !== null && loadedModels.length === 0}
+                    noModels={split.noModels}
                   />
                 ) : (
                   <UsageBar percent={cardsUsedKnown ? cardsPercent : null} />
