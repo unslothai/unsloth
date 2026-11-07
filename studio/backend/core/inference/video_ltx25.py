@@ -824,9 +824,168 @@ def _encode_room_mib(client: Any) -> Optional[int]:
     return worker_room(client.config, _server_reserved_mib(device))
 
 
+# Pipeline modules the prompt encode never runs and that may step off the card for it; the denoisers lend blocks
+# instead, and an in-process text encoder is the encode itself.
+_NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
+# Kept on a parked module between requests: its host copy, refreshed from the card at every park.
+_PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
+# "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
+PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
+
+
+def _module_tensors(module: Any) -> list:
+    """``(table, key, tensor)`` per distinct parameter / buffer, each listed once (tied weights share one entry)."""
+    seen: set = set()
+    out = []
+    for sub in module.modules():
+        for table in (sub._parameters, sub._buffers):
+            for key, tensor in table.items():
+                if tensor is None or id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                out.append((table, key, tensor))
+    return out
+
+
+def _parkable_components(pipe: Any, device: Any) -> list:
+    """``[(name, module, MiB)]``, largest first: plain modules wholly on the encode's card (no offload hooks, plain
+    tensors only), which the encode never runs. The connectors (6 GB) and VAEs stay resident under ``streaming``."""
+    import torch
+
+    dev = torch.device(str(device))
+    out = []
+    for name, module in (getattr(pipe, "components", {}) or {}).items():
+        if (
+            not isinstance(module, torch.nn.Module)
+            or str(name) in _NEVER_PARKED
+            or str(name).startswith("text_encoder")
+            or getattr(module, "_hf_hook", None) is not None
+            or getattr(module, "_diffusers_hook", None) is not None
+        ):
+            continue
+        tensors = _module_tensors(module)
+        if not tensors:
+            continue
+        on_card = True
+        for _table, _key, tensor in tensors:
+            data = tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor
+            if (
+                type(data) is not torch.Tensor
+                or data.device.type != dev.type
+                or (dev.index is not None and data.device.index != dev.index)
+            ):
+                on_card = False
+                break
+        if on_card:
+            nbytes = sum(t.numel() * t.element_size() for _tb, _k, t in tensors)
+            out.append((str(name), module, nbytes >> 20))
+    out.sort(key = lambda item: -item[2])
+    return out
+
+
+def _park_host_copy(module: Any, tensors: list) -> Optional[list]:
+    """The module's kept host copy (one tensor per entry of ``tensors``), allocated on the first park: registered
+    (page-locked) memory where the host-RAM reserve allows, else pageable; None when the host cannot hold it."""
+    import torch
+
+    shapes = [(tuple(t.shape), t.dtype) for _tb, _k, t in tensors]
+    kept = module.__dict__.get(_PARK_HOST_ATTR)
+    if kept is not None and kept[0] == shapes:
+        return kept[1]
+    from .diffusion_memory import (
+        _PIN_RESERVE_FRACTION,
+        _PIN_RESERVE_MIN_BYTES,
+        _available_system_memory_mib,
+        _host_ram_capacity_mib,
+        registered_pinned_empty,
+    )
+
+    sizes = [t.numel() * t.element_size() for _tb, _k, t in tensors]
+    need = sum(sizes)
+    available, total = _available_system_memory_mib(), _host_ram_capacity_mib()
+    if available is None or total is None:
+        return None
+    reserve = max(_PIN_RESERVE_MIN_BYTES, int((int(total) << 20) * _PIN_RESERVE_FRACTION))
+    if (int(available) << 20) - need < reserve:
+        return None
+    slab = registered_pinned_empty(need)
+    views = []
+    offset = 0
+    for (_tb, _k, tensor), size in zip(tensors, sizes):
+        if slab is not None:
+            view = slab[offset : offset + size].view(tensor.dtype).view(tensor.shape)
+            offset += size
+        else:
+            view = torch.empty(tensor.shape, dtype = tensor.dtype, device = "cpu")
+        views.append(view)
+    module.__dict__[_PARK_HOST_ATTR] = (shapes, views)
+    return views
+
+
+def _park_for_encode(pipe: Any, device: Any, need_mib: int) -> Optional[Callable[[], None]]:
+    """Move plain-resident companions off the card, largest first, until ``need_mib`` is freed; returns the restore
+    that copies them back (same bytes, so the output is unchanged), or None when nothing moved. A park copies the
+    card's tensors into the kept host copy and points the module at it; the restore uploads that copy again."""
+    if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() == "0" or need_mib <= 0:
+        return None
+    import torch
+
+    # (table, key, parameter or None, card device, host copy) per tensor of each parked module.
+    parked: list = []
+
+    def restore() -> None:
+        while parked:
+            for table, key, param, home, host in parked.pop():
+                moved = host.to(home, copy = True, non_blocking = host.is_pinned())
+                if param is not None:
+                    param.data = moved
+                else:
+                    table[key] = moved
+
+    left = int(need_mib)
+    try:
+        for name, module, mib in _parkable_components(pipe, device):
+            if left <= 0:
+                break
+            tensors = _module_tensors(module)
+            hosts = _park_host_copy(module, tensors)
+            if hosts is None:
+                continue
+            for (_table, _key, tensor), host in zip(tensors, hosts):
+                host.copy_(tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor)
+            # Every copy has landed before the card's tensors are dropped.
+            if torch.device(str(device)).type == "cuda":
+                torch.cuda.synchronize(torch.device(str(device)))
+            entries = []
+            for (table, key, tensor), host in zip(tensors, hosts):
+                is_param = isinstance(tensor, torch.nn.Parameter)
+                entries.append((table, key, tensor if is_param else None, tensor.device, host))
+                if is_param:
+                    tensor.data = host
+                else:
+                    table[key] = host
+            parked.append(entries)
+            del tensors
+            left -= mib
+            logger.info(
+                "video.ltx25_te: %s (%d MiB) steps off the card for the prompt encode", name, mib
+            )
+    except Exception as exc:  # noqa: BLE001 -- whatever moved goes back; the encode still runs, maybe on the CPU
+        logger.warning("video.ltx25_te: parking companions for the encode failed (%s)", exc)
+        restore()
+        return None
+    if not parked:
+        return None
+    if torch.device(str(device)).type == "cuda":
+        torch.cuda.empty_cache()
+    return restore
+
+
 def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
-    """Stream resident denoiser blocks again so the encoder fits on the card (whole if lending makes it fit, else the
-    worker's ``stream_need_mib``); returns the restore that pins them back, or None when nothing was lent."""
+    """Make room on the card for a non-resident encode (whole if lending makes it fit, else the worker's
+    ``stream_need_mib``): stream resident denoiser blocks again, then, if that is still short, move the plain-resident
+    companions the encode never runs (connectors, VAEs) to the host. Returns the restore that pins and uploads them
+    back, or None when nothing was lent."""
     config = getattr(client, "config", None) or {}
     if (
         not config
@@ -842,7 +1001,10 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         from .video_stream_residency import resident_mib
 
         held = resident_mib(getattr(pipe, "transformer", None))
-        if held <= 0:
+        parkable = 0
+        if (os.environ.get(PARK_COMPANIONS_ENV) or "").strip() != "0":
+            parkable = sum(mib for _n, _m, mib in _parkable_components(pipe, config["device"]))
+        if held + parkable <= 0:
             return None
         torch.cuda.empty_cache()
         room = _encode_room_mib(client)
@@ -852,18 +1014,37 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         weights = int(info.get("weights_mib") or 0)
         whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
         streamed = info.get("stream_need_mib")
-        if whole is not None and room < whole <= room + held:
+        if whole is not None and room < whole <= room + held + parkable:
             target = whole
-        elif streamed is not None and room < int(streamed):
+        elif streamed is not None and room < int(streamed) <= room + held + parkable:
             target = int(streamed)
+        elif streamed is not None and room < int(streamed) and held > 0:
+            # Short even with everything lent: blocks still go (as before), the companions stay.
+            target, parkable = int(streamed), 0
         else:
             return None
-        restore = release_resident_groups(
-            pipe, target - room, logger, denoisers_only = True, reason = "the prompt encode"
-        )
-        if restore is not None:
-            torch.cuda.empty_cache()
-        return restore
+        restores: list = []
+        if held > 0:
+            restore = release_resident_groups(
+                pipe, target - room, logger, denoisers_only = True, reason = "the prompt encode"
+            )
+            if restore is not None:
+                restores.append(restore)
+                torch.cuda.empty_cache()
+                room = _encode_room_mib(client)
+        if parkable and room is not None and room < target:
+            restore = _park_for_encode(pipe, config["device"], target - room)
+            if restore is not None:
+                restores.append(restore)
+        if not restores:
+            return None
+
+        def restore_all() -> None:
+            # Companions back first (the connectors run next), then the denoiser's blocks.
+            for undo in reversed(restores):
+                undo()
+
+        return restore_all
     except Exception as exc:  # noqa: BLE001 -- the encode still runs, maybe on the CPU
         logger.warning("video.ltx25_te: lending resident blocks skipped (%s)", exc)
         return None

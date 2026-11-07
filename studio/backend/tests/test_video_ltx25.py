@@ -2615,6 +2615,141 @@ def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatc
     assert all(not layer._forward_pre_hooks and not layer._forward_hooks for layer in layers)
 
 
+def test_a_whole_onload_keeps_the_host_copy_and_restores_it_without_a_copy(monkeypatch):
+    """Each new prompt copies the encoder up and points back at the same host tensors after it (no device-to-host
+    copy into fresh memory, no ``model.to``), with the same output as an encode on the host."""
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    moves = []
+    monkeypatch.setattr(model, "to", lambda *a, **k: moves.append(a) or model)
+    # A distinct device string the onload path takes, while the compute stays on the host.
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
+    host = {id(t): t.data_ptr() for t in list(model.parameters()) + list(model.buffers())}
+    seen = []
+    handle = model.model.language_model.layers[0].register_forward_pre_hook(
+        lambda module, _args: seen.append(module.weight.data_ptr() != host[id(module.weight)])
+    )
+    config = {"device": "cuda:0", "resident": False}
+    try:
+        for _ in range(2):
+            embeds, _mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+            assert device == "cpu:0" and config["_streamed"] is False
+    finally:
+        handle.remove()
+    assert moves == [] and seen == [True, True]
+    assert all(
+        t.data_ptr() == host[id(t)] for t in list(model.parameters()) + list(model.buffers())
+    )
+    assert model.lm_head.weight is model.model.language_model.embed_tokens.weight
+    with torch.inference_mode():
+        plain = worker._pack_hidden_states(
+            model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
+        )
+    assert torch.equal(embeds, plain)
+
+
+def test_a_module_with_its_own_apply_onloads_through_model_to(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    class Odd(torch.nn.Linear):
+        def _apply(
+            self,
+            fn,
+            recurse = True,
+        ):
+            return super()._apply(fn, recurse)
+
+    model = _stack_model()
+    assert worker._onloads_whole(model)
+    model.model.language_model.norm = Odd(8, 8)
+    assert not worker._onloads_whole(model)
+    assert not worker._onloads_whole(object())
+
+
+def test_the_host_copy_is_pinned_once_before_the_first_card_encode(monkeypatch):
+    from core.inference import diffusion_memory
+    from core.inference import video_ltx25_te_worker as worker
+
+    calls = []
+
+    def _pin(
+        module,
+        host,
+        logger,
+        buffer_host = None,
+        layout = None,
+        exact = False,
+        device = None,
+    ):
+        calls.append((sorted(host), sorted(buffer_host or {}), exact, device))
+        return 3 << 20
+
+    monkeypatch.setattr(diffusion_memory, "_pin_host_weights", _pin)
+    monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: True)
+    model = _stack_model()
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
+    config = {"device": "cuda:0", "resident": False}
+    for _ in range(2):
+        worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert len(calls) == 1 and calls[0][2] is True and calls[0][3] == "cuda:0"
+    assert "model.language_model.layers.0.weight" in calls[0][0]
+    assert calls[0][1] == ["model.language_model.scale"]
+    assert config["_pinned_bytes"] == 3 << 20
+    # A CPU encode, a resident encoder, the kill switch and a platform without registered pins never pin.
+    calls.clear()
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", None))
+    worker._encode_on(
+        _FakeTokenizer(), model, {"device": "cuda:0", "resident": False}, ["a fox"], 6
+    )
+    assert worker._pin_host_copy(model, {"device": "cuda:0", "resident": True}) == 0
+    assert worker._pin_host_copy(model, {"device": "xpu:0", "resident": False}) == 0
+    monkeypatch.setenv(worker.PIN_HOST_ENV, "0")
+    assert worker._pin_host_copy(model, {"device": "cuda:0", "resident": False}) == 0
+    monkeypatch.delenv(worker.PIN_HOST_ENV)
+    monkeypatch.setattr(diffusion_memory, "_exact_pin_supported", lambda device = None: False)
+    assert worker._pin_host_copy(model, {"device": "cuda:0", "resident": False}) == 0
+    assert calls == []
+
+
+def test_an_encode_out_of_memory_on_the_card_retries_on_the_cpu(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cuda:0", None))
+    real = worker._run_encode
+    tried = []
+
+    def _run(model, config, inputs, device, stream):
+        tried.append(device)
+        if device != "cpu":
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return real(model, config, inputs, device, stream)
+
+    monkeypatch.setattr(worker, "_run_encode", _run)
+    config = {"device": "cuda:0", "resident": False}
+    embeds, _mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert tried == ["cuda:0", "cpu"] and device == "cpu" and config["_streamed"] is False
+    with torch.inference_mode():
+        plain = worker._pack_hidden_states(
+            model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
+        )
+    assert torch.equal(embeds, plain)
+
+    def _broken(model, config, inputs, device, stream):
+        raise ValueError("not a memory error")
+
+    monkeypatch.setattr(worker, "_run_encode", _broken)
+    with pytest.raises(ValueError):
+        worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+
+
 def test_an_encoder_too_big_to_onload_whole_streams_before_it_falls_back_to_the_cpu(monkeypatch):
     from core.inference import video_ltx25_te_worker as worker
 
@@ -2854,6 +2989,118 @@ def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is
     cpu = _LendClient()
     cpu.config["device"] = "cpu"
     assert v25.lend_resident_dit_for_encode(pipe, cpu) is None and released == []
+
+
+def _park_pipe():
+    import torch
+
+    torch.manual_seed(0)
+    connectors = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.LayerNorm(8))
+    connectors.register_buffer("table", torch.arange(4.0))
+    vae = torch.nn.Linear(4, 4)
+    hooked = torch.nn.Linear(4, 4)
+    hooked._hf_hook = object()
+    transformer = torch.nn.Linear(16, 16)
+    return SimpleNamespace(
+        components = {
+            "connectors": connectors,
+            "vae": vae,
+            "vocoder": hooked,
+            "transformer": transformer,
+            "scheduler": object(),
+        }
+    )
+
+
+def test_parking_moves_only_plain_companions_and_restores_the_same_tensors(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 << 10)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 128 << 10)
+    monkeypatch.setattr(dm, "registered_pinned_empty", lambda nbytes, fill = None: None)
+    pipe = _park_pipe()
+    names = [name for name, _m, _mib in v25._parkable_components(pipe, "cpu")]
+    # no transformer (it lends blocks), no hooked module, no non-module
+    assert sorted(names) == ["connectors", "vae"]
+    connectors = pipe.components["connectors"]
+    params = list(connectors.parameters())
+    before = [t.detach().clone() for t in params] + [connectors.table.clone()]
+    ptrs = [t.data_ptr() for t in params]
+    for _ in range(2):
+        restore = v25._park_for_encode(pipe, "cpu", 1)
+        assert callable(restore)
+        # largest first, and only as much as asked: the connectors went, the VAE stayed
+        kept = connectors.__dict__[v25._PARK_HOST_ATTR][1]
+        host = {k.data_ptr() for k in kept}
+        assert {t.data_ptr() for t in params} | {connectors.table.data_ptr()} == host
+        assert pipe.components["vae"].weight.data_ptr() not in host
+        restore()
+        assert all(t is p for t, p in zip(connectors.parameters(), params))
+        assert all(
+            torch.equal(a, b)
+            for a, b in zip(list(connectors.parameters()) + [connectors.table], before)
+        )
+        assert not ({t.data_ptr() for t in connectors.parameters()} & host)
+    assert ptrs  # the module still runs
+    connectors(torch.ones(1, 8))
+    # The kill switch, nothing asked, or a host that cannot hold the copy: nothing moves.
+    monkeypatch.setenv(v25.PARK_COMPANIONS_ENV, "0")
+    assert v25._park_for_encode(pipe, "cpu", 10) is None
+    monkeypatch.delenv(v25.PARK_COMPANIONS_ENV)
+    assert v25._park_for_encode(pipe, "cpu", 0) is None
+    fresh = _park_pipe()
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 1)
+    assert v25._park_for_encode(fresh, "cpu", 10) is None
+    assert v25._PARK_HOST_ATTR not in fresh.components["connectors"].__dict__
+
+
+def test_lend_parks_companions_only_when_blocks_alone_leave_the_stream_short(monkeypatch):
+    """The 16 GiB A100 case: 2264 MiB of blocks lent still leaves 4894 MiB against a 6938 MiB stream need, so the
+    connectors step off the card; blocks alone enough or nothing to lend keeps the old behaviour."""
+    pipe = SimpleNamespace(transformer = object(), components = {})
+    events = []
+    monkeypatch.setattr(
+        v25, "_parkable_components", lambda pipe, device: [("connectors", None, 6050)]
+    )
+
+    def park(pipe, device, need):
+        events.append(("park", need))
+        return lambda: events.append("unpark")
+
+    monkeypatch.setattr(v25, "_park_for_encode", park)
+    released = _lend_env(monkeypatch, free_mib = 2566, held_mib = 2264)
+    rooms = iter([2566, 4894])
+    monkeypatch.setattr(v25, "_encode_room_mib", lambda client: next(rooms))
+    restore = v25.lend_resident_dit_for_encode(pipe, _LendClient())
+    assert released == [6900 - 2566] and events == [("park", 6900 - 4894)]
+    restore()
+    # companions back before the blocks are pinned again
+    assert events[-1] == "unpark" and released[-1] == "restored"
+    # nothing resident in the denoiser (the first encode): the connectors alone make the room
+    events.clear()
+    released = _lend_env(monkeypatch, free_mib = 4914, held_mib = 0)
+    monkeypatch.setattr(v25, "_encode_room_mib", lambda client: 4914)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
+    assert released == [] and events == [("park", 6900 - 4914)]
+    # blocks alone are enough: nothing parks
+    events.clear()
+    released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
+    rooms = iter([5000, 6900])
+    monkeypatch.setattr(v25, "_encode_room_mib", lambda client: next(rooms))
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
+    assert released == [1900] and events == []
+    # even everything lent is short: blocks go as before, the companions stay
+    monkeypatch.setattr(v25, "_parkable_components", lambda pipe, device: [("vae", None, 1000)])
+    released = _lend_env(monkeypatch, free_mib = 100, held_mib = 2000)
+    monkeypatch.setattr(v25, "_encode_room_mib", lambda client: 100)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
+    assert released == [6800] and events == []
+    # the kill switch keeps the companions
+    monkeypatch.setenv(v25.PARK_COMPANIONS_ENV, "0")
+    released = _lend_env(monkeypatch, free_mib = 4914, held_mib = 0)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and events == []
 
 
 def test_remote_encode_prompt_pins_lent_blocks_back_after_the_encode_and_skips_cache_hits(
