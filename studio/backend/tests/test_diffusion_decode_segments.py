@@ -270,6 +270,8 @@ def test_cuda_device_maps_the_decode_into_an_expandable_segment(monkeypatch):
     vae = _Vae()
     D.enable(vae)
     z = torch.zeros(1, device = "cuda")
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()  # a cached fixed block would serve the allocation below
 
     def expandable(t):
         ptr = t.data_ptr()
