@@ -10,15 +10,12 @@ import type {
 
 const cancelledAdds = new WeakSet<File>();
 
-// Native consumers can park the original intent after cancellation. A normal
-// picker simply discards an attachment abandoned with its unsent draft.
+// Native consumers requeue a cancelled intent; a picker add just drops with its draft.
 export function wasAttachmentAddCancelled(file: File): boolean {
   return cancelledAdds.has(file);
 }
 
-/** The runtime reuses its blank thread for successive drafts. Clearing its
- * attachments does not cancel adapter reads: a late promise or generator yield
- * would otherwise put an old draft's file into the new one. */
+// The runtime reuses its blank thread for successive drafts and clearing does not cancel adapter reads.
 export class DraftScopedAttachmentAdapter implements AttachmentAdapter {
   private readonly delegate: AttachmentAdapter;
   private readonly captureCurrent: () => () => boolean;
@@ -79,17 +76,15 @@ export class DraftScopedAttachmentAdapter implements AttachmentAdapter {
       if (!isCurrent()) cancel();
     } catch (error) {
       if (isCurrent()) throw error;
-      // Throwing after a running yield makes assistant-ui upsert it again with
-      // error status, resurrecting a chip the new-draft switch already cleared.
+      // Throwing after a running yield would make assistant-ui resurrect the cleared chip as an error.
       cancel();
     } finally {
       if (cancelled && last) {
-        // Adapters own caches, staged upload slots and object URLs. Removal is
-        // idempotent, including when the switch already removed a running chip.
+        // Frees adapter caches, upload slots and object URLs; removal is idempotent.
         try {
           await this.delegate.remove(last);
         } catch {
-          // Cleanup cannot turn cancellation into a stale error yield either.
+          // Cleanup must not become a stale error yield.
         }
       }
     }

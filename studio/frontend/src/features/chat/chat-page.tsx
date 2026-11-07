@@ -3499,9 +3499,7 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
-  // A project can open successive drafts without changing its route. Keep late
-  // native file reads bound to the draft that received the drop.
-  // Keep the same queue when a saved project chat opens on its thread route.
+  // Per draft: a project reuses its route for successive drafts. A saved project chat keeps it on its thread route.
   const nativeAttachmentTargetKey =
     view.mode === "project"
       ? `project:${view.projectId}:${projectNewThreadNonce}`
@@ -3578,9 +3576,7 @@ export function ChatPage({
     projectChat.nonce === projectNewThreadNonce
       ? projectChat.threadId
       : null;
-  // A project draft keeps its owner when it is saved and opened through its
-  // thread route. Remember each saved chat, so revisiting it after another
-  // project cannot adopt that project's pending files.
+  // Remembered per saved chat, so a revisit after another project cannot adopt that project's files.
   if (projectChatShownId) {
     nativeAttachmentScopesByThread.current.set(
       projectChatShownId,

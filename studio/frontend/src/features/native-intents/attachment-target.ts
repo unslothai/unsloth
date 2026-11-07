@@ -7,8 +7,7 @@ export const NativeAttachmentDragContext = createContext(false);
 
 export const NativeAttachmentTargetContext = createContext<string | null>(null);
 
-// The runtime can reuse its local thread ID for successive unsent drafts.
-// Keep their ownership distinct even when a consumer remounts or re-keys.
+// Distinguishes successive unsent drafts that reuse one local thread ID.
 export const NativeAttachmentOwnerScopeContext = createContext<string | null>(null);
 
 export function useNativeAttachmentTargetKey(): string | null {

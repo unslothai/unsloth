@@ -2151,8 +2151,7 @@ function createStudioDbAdapter(
     },
 
     initialize(threadId: string) {
-      // Initialization gives this blank runtime its own saved identity. Record it
-      // synchronously: a pending attachment may finish after several later drafts.
+      // Recorded synchronously: a pending attachment may finish after several later drafts.
       const attachmentDraft = getAttachmentDraft(newThreadSwitchStateRef?.current, threadId);
       // Tracked, not awaited: assistant-ui withholds the first message until this resolves.
       const claim = readThreadCreationClaim(threadId);
@@ -3123,8 +3122,7 @@ function useStudioRuntimeAdapters(
           if (remoteId) return true;
           const latest = newThreadSwitchStateRef?.current;
           if (latest?.attempt === attempt) return true;
-          // Keep the original generation's initialization, independently of the
-          // latest route. A blank runtime saved by a later draft cannot qualify.
+          // Only this add's own draft saving qualifies, not a later draft reusing the runtime.
           return Boolean(current.remoteId && draft?.initialized);
         };
       },
@@ -3197,8 +3195,7 @@ type NewThreadSwitchState = {
   hasSwitched: boolean;
   // Bumped per switch: two switches for the same nonce can be in flight.
   attempt: number;
-  // Only the current draft is retained here. Pending adds keep their captured token,
-  // so later saves cannot revoke their ownership or grow a permanent thread-ID map.
+  // Current draft only: pending adds hold their captured token, so no thread-ID map grows.
   attachmentDraft?: AttachmentDraft;
   // One entry per switch started, matched by id, not id shape.
   pendingSavedThreadIds: PendingSavedThreadSwitch[];

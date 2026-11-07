@@ -3500,7 +3500,7 @@ const Composer: FC<{
   }, [videoDropFailures]);
   // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
-    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
+    // aui.composer() is still the previous chat until the runtime reaches this route's thread.
     if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
@@ -3563,7 +3563,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                // Same owner and key means the destination refused it: retry once, never spin.
                 const sameDestination =
                   stillThisComposer() &&
                   nativeAttachmentTargetKeyRef.current === targetKey;
@@ -3627,7 +3627,6 @@ const Composer: FC<{
 
   // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
-    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
     if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
@@ -3642,7 +3641,6 @@ const Composer: FC<{
 
     const stillThisComposer = () =>
       nativeAttachmentOwnerRef.current === identityAtSetup;
-    // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -3688,7 +3686,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                // Same owner and key means the destination refused it: retry once, never spin.
                 const sameDestination =
                   stillThisComposer() &&
                   nativeAttachmentTargetKeyRef.current === targetKey;
@@ -3747,7 +3745,6 @@ const Composer: FC<{
   }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   useEffect(() => {
-    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
     if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
@@ -3819,7 +3816,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                // Same owner and key means the destination refused it: retry once, never spin.
                 const sameDestination =
                   stillThisComposer() &&
                   nativeAttachmentTargetKeyRef.current === targetKey;
@@ -3891,7 +3888,6 @@ const Composer: FC<{
     };
   }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   useEffect(() => {
-    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
     if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
@@ -3951,7 +3947,7 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                // Same owner and key means the destination refused it: retry once, never spin.
                 const sameDestination =
                   stillThisComposer() &&
                   nativeAttachmentTargetKeyRef.current === targetKey;
