@@ -9,7 +9,16 @@ export type ClientPreferences = {
   updatedAt: number | null;
   interfaceScale: number | null;
   browser: Record<string, unknown> | null;
+  chat: Record<string, unknown> | null;
+  plusMenu: Record<string, unknown> | null;
+  material: Record<string, unknown> | null;
+  timeFormat: "system" | "12h" | "24h" | null;
+  spellcheck: boolean | null;
 };
+
+export type ClientPreferencesUpdate = Partial<
+  Omit<ClientPreferences, "saved" | "updatedAt">
+>;
 
 export type ChatBackgroundRecord = {
   saved: boolean;
@@ -31,7 +40,7 @@ export async function loadClientPreferences(): Promise<ClientPreferences> {
 }
 
 export async function saveClientPreferences(
-  data: Partial<Pick<ClientPreferences, "interfaceScale" | "browser">>,
+  data: ClientPreferencesUpdate,
 ): Promise<ClientPreferences> {
   return json(
     await authFetch("/api/settings/client-preferences", {

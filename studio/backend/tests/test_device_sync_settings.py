@@ -71,6 +71,41 @@ def test_client_preferences_reject_out_of_range_values(client):
     assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
 
 
+def test_client_preferences_keep_chat_menu_material_time_and_spellcheck(client):
+    client.put("/api/settings/client-preferences", json = {"interfaceScale": 110})
+    sections = {
+        "chat": {"sendShortcut": "modEnter", "showReplyTimes": True, "pastedTextMinChars": 2000},
+        "plusMenu": {
+            "pins": {"mcp": True, "skills": False},
+            "order": ["skills", "mcp"],
+            "pinnedPromptIds": ["prompt-1"],
+        },
+        "material": {"material": "liquid-3d", "strength": {"light": 60, "dark": 20}},
+        "timeFormat": "24h",
+        "spellcheck": False,
+    }
+    client.put("/api/settings/client-preferences", json = sections)
+    body = client.get("/api/settings/client-preferences").json()
+    for key, value in sections.items():
+        assert body[key] == value
+    assert body["interfaceScale"] == 110
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"timeFormat": "13h"},
+        {"spellcheck": "no"},
+        {"chat": {"sendShortcut": {"nested": {"too": "deep"}}}},
+        {"chat": {"x" * 65: True}},
+        {"plusMenu": {"order": ["mcp"] * 501}},
+        {"material": {f"k{i}": 1 for i in range(65)}},
+    ],
+)
+def test_client_preferences_reject_malformed_sections(client, bad):
+    assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
+
+
 def test_background_image_round_trips_and_follows_its_own_bytes(client):
     assert client.get("/api/settings/chat-background").json()["saved"] is False
     put = client.put(

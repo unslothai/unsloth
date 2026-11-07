@@ -9,7 +9,13 @@ import {
   INTERFACE_SCALE_RANGE,
   useInterfaceScaleStore,
 } from "../stores/interface-scale-store";
-import { type Pending, readPending, writePending } from "../lib/client-prefs-pending";
+import {
+  type Pending,
+  anyPending,
+  readPending,
+  writePending,
+} from "../lib/client-prefs-pending";
+import { SYNCED_SECTIONS } from "../lib/synced-preferences";
 
 const PUSH_DEBOUNCE_MS = 800;
 
@@ -65,16 +71,22 @@ export function useDeviceSettingsSync(enabled: boolean): void {
         saving = saving
           .then(async () => {
             const sent = edits;
-            if (!touched.scale && !touched.browser) return;
+            if (!anyPending(touched)) return;
+            const sections = Object.fromEntries(
+              SYNCED_SECTIONS.filter((section) => touched[section.pending]).map(
+                (section) => [section.field, section.read()],
+              ),
+            );
             await saveClientPreferences({
               interfaceScale: touched.scale
                 ? useInterfaceScaleStore.getState().scale
                 : undefined,
               browser: touched.browser ? browserPrefs() : undefined,
+              ...sections,
             });
             if (edits === sent) {
-              touched.scale = false;
-              touched.browser = false;
+              for (const section of Object.keys(touched) as (keyof Pending)[])
+                touched[section] = false;
               writePending(touched);
             }
           })
@@ -95,6 +107,13 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       touch("browser");
       if (loaded) pushAll();
     });
+    const stopSections = SYNCED_SECTIONS.map((section) =>
+      section.subscribe(() => {
+        if (applying) return;
+        touch(section.pending);
+        if (loaded) pushAll();
+      }),
+    );
 
     void loadClientPreferences()
       .then((remote) => {
@@ -106,6 +125,15 @@ export function useDeviceSettingsSync(enabled: boolean): void {
         if (remote.browser && !touched.browser)
           useBrowserPrefsStore.setState(browserPrefsFromRemote(remote.browser));
         lastBrowser = browserPrefs();
+        for (const section of SYNCED_SECTIONS) {
+          const value = remote[section.field];
+          if (value === null || value === undefined || touched[section.pending]) continue;
+          try {
+            section.apply(value);
+          } catch {
+            // A record this build cannot read leaves the local value in place.
+          }
+        }
         applying = false;
         const scale = useInterfaceScaleStore.getState().scale;
         const missingScale =
@@ -115,7 +143,13 @@ export function useDeviceSettingsSync(enabled: boolean): void {
           !remote.browser && !sameBrowserPrefs(lastBrowser, DEFAULT_BROWSER_PREFS);
         if (missingScale) touch("scale");
         if (missingBrowser) touch("browser");
-        if (touched.scale || touched.browser) pushAll();
+        // A value set here before the account had one is uploaded, never a default over a saved one.
+        for (const section of SYNCED_SECTIONS) {
+          const value = remote[section.field];
+          if ((value === null || value === undefined) && !section.isDefault())
+            touch(section.pending);
+        }
+        if (anyPending(touched)) pushAll();
       })
       .catch(() => {
         loaded = true;
@@ -126,6 +160,7 @@ export function useDeviceSettingsSync(enabled: boolean): void {
       clearTimeout(timer);
       stopScale();
       stopBrowser();
+      for (const stop of stopSections) stop();
       stopBackground();
     };
   }, [enabled]);

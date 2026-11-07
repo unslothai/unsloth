@@ -5123,9 +5123,25 @@ class BrowserPrefsPayload(BaseModel):
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
+_PrefKey = Annotated[str, StringConstraints(max_length = 64)]
+_PrefLeaf = Union[StrictBool, int, float, Annotated[str, StringConstraints(max_length = 256)]]
+_PrefValue = Union[
+    _PrefLeaf,
+    Annotated[dict[_PrefKey, _PrefLeaf], Field(max_length = 64)],
+    Annotated[list[_PrefLeaf], Field(max_length = 500)],
+]
+# A store's persisted fields; the client normalises each value again when it applies them.
+_PrefsSection = Annotated[dict[_PrefKey, _PrefValue], Field(max_length = 64)]
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
+    chat: Optional[_PrefsSection] = None
+    plusMenu: Optional[_PrefsSection] = None
+    material: Optional[_PrefsSection] = None
+    timeFormat: Optional[Literal["system", "12h", "24h"]] = None
+    spellcheck: Optional[StrictBool] = None
 
 
 class ClientPreferencesResponse(ClientPreferencesPayload):
@@ -5135,7 +5151,7 @@ class ClientPreferencesResponse(ClientPreferencesPayload):
 
 def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
     response = ClientPreferencesResponse.model_validate(
-        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+        {k: stored.get(k) for k in (*ClientPreferencesPayload.model_fields, "updatedAt")}
     )
     response.saved = bool(stored)
     return response
