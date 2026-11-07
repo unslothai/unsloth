@@ -233,7 +233,7 @@ export default function FindBar({
       role="search"
       aria-label={t("shell.find.label")}
       data-scoped={targets.length > 0 ? "" : undefined}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-4.5 data-scoped:w-[calc(27.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(33.75rem*var(--ui-space-scale,1))]"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset, 0)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-4.5 data-scoped:w-[calc(27.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(33.75rem*var(--ui-space-scale,1))]"
     >
       <HugeiconsIcon
         icon={Search01Icon}

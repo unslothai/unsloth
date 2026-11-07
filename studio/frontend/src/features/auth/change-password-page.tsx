@@ -11,7 +11,7 @@ export function ChangePasswordPage() {
   return (
     <div
       data-auth-wallpaper=""
-      className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10"
+      className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height, 0))] items-center justify-center overflow-hidden bg-background px-4 py-8 sm:px-6 sm:py-10 md:px-10"
     >
       <ChatBackground backdrop image={personal} />
       <Card className="relative z-10 w-full max-w-sm rounded-3xl px-5 py-6 shadow-[0_4px_18px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[var(--composer-shadow)] sm:px-6 sm:py-8">
