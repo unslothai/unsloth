@@ -2801,7 +2801,7 @@ export const vi = {
         detecting: "Đang kiểm tra GPU...",
         unreadable: "Không thể đọc thông tin phần cứng của máy chủ này.",
         noGpu:
-          "Không phát hiện GPU nào. Tài nguyên chỉ dành cho CPU được hiển thị ở trên.",
+          "Không phát hiện GPU rời.",
         noUsableGpu: "Không có GPU nào trên máy này mà PyTorch có thể sử dụng.",
         mismatchCpuBuild:
           "PyTorch là bản dựng chỉ dành cho CPU ({version}), nên không thể dùng các GPU bên dưới. Hãy sửa chữa bản cài đặt để khôi phục hỗ trợ GPU.",
@@ -2888,7 +2888,7 @@ export const vi = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary suy luận tăng tốc chuyển đổi công cụ tùy chỉnh đường dẫn thư mục tệp thực thi",
       },
       modelMemory: {
-        title: "Bộ nhớ mô hình",
+        title: "Tải mô hình",
         keepResident: "Giữ mô hình trong bộ nhớ GPU",
         keepResidentDescription: "Giữ trong VRAM giữa các lời nhắc.",
         keepResidentHint:
@@ -3160,6 +3160,8 @@ export const vi = {
     },
     chat: {
       groups: {
+        replies: { title: "Phản hồi" },
+        thinkingTools: { title: "Suy nghĩ và công cụ" },
         conversations: {
           title: "Cuộc trò chuyện",
         },
@@ -3259,11 +3261,20 @@ export const vi = {
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message dấu thời gian giờ ngày hoàn tất trả lời tin nhắn",
-      showGenerationDetails: "Chi tiết quá trình tạo",
+      showGenerationDetails: "Thông tin chi tiết về tốc độ và tải",
       showGenerationDetailsDescription:
-        "Hiển thị trực tiếp tốc độ xử lý lời nhắc và tốc độ trả lời kèm số token, cùng vị trí nạp các lớp của mô hình.",
+        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp, và cho biết các lớp của mô hình được tải ở đâu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+      generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
+      generationStatsUpdatesDescription:
+        "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",
+      generationStatsUpdatesHint:
+        "Thời gian thực làm mới chỉ số token mỗi giây dưới phản hồi và thanh ngữ cảnh ở đầu cuộc trò chuyện vài lần mỗi giây trong khi phản hồi đang được viết. Khi xong cập nhật chúng một lần, sau khi mỗi phản hồi kết thúc. Thời gian thực có thể gây giật hoặc giảm hiệu năng, nhất là trên máy cũ hoặc đang bận.",
+      generationStatsUpdatesSettled: "Khi xong",
+      generationStatsUpdatesRealtime: "Thời gian thực",
+      generationStatsUpdatesKeywords:
+        "thời gian thực trực tiếp cập nhật tốc độ ngữ cảnh thống kê realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",

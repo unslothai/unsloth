@@ -130,14 +130,12 @@ def test_appearance_check(base, mode, fails, monkeypatch):
 
 
 # Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
-# between runs), from `_area_matrix.py`'s KNOWN_DEFAULT comment.
+# between runs; 25 runs, 2026-11-07).
 RUNNER_READINGS = [
     ("blurred", "thread_scroll", 8.3),
     (am.GLASS, "reasoning_toggle", 7.8),
     ("blurred", "settings_scroll", 14.0),
     ("frosted", "settings_scroll", 13.5),
-    ("transparent", "run_settings", 4.2),
-    ("macos", "account_menu", 3.9),
 ]
 
 

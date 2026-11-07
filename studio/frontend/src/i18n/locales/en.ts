@@ -2612,7 +2612,7 @@ export const en = {
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
-        noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noGpu: "No dedicated GPU detected.",
         noUsableGpu: "No GPU on this machine is usable by PyTorch.",
         mismatchCpuBuild:
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
@@ -2689,7 +2689,7 @@ export const en = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Model memory",
+        title: "Model loading",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
         keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
@@ -2946,6 +2946,8 @@ export const en = {
     },
     chat: {
       groups: {
+        replies: { title: "Replies" },
+        thinkingTools: { title: "Thinking and tools" },
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
@@ -3027,11 +3029,20 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Generation details",
+      showGenerationDetails: "Detailed speed and loading info",
       showGenerationDetailsDescription:
-        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts, and shows where a model's layers loaded.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "generation details verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Speed and context stats",
+      generationStatsUpdatesDescription:
+        "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesHint:
+        "Realtime refreshes the tokens per second readout under a reply and the context bar at the top of the chat a few times a second while the reply is written. When done updates them once, after each reply finishes. Realtime may cause lag or slower performance, especially on older or busy machines.",
+      generationStatsUpdatesSettled: "When done",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
