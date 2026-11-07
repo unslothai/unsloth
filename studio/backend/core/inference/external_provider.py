@@ -19,7 +19,7 @@ import uuid
 import weakref
 import wave
 from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
 import structlog
@@ -1156,6 +1156,8 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 # cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_anthropic_output_caps: dict[tuple[str, str, str], Optional[int]] = {}
+_ANTHROPIC_DEFAULT_MAX_TOKENS = 32000
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -2559,6 +2561,30 @@ class ExternalProviderClient:
                 self.provider_type,
             )
 
+    async def _anthropic_output_cap(self, model: str) -> Optional[int]:
+        key = (self.base_url, self._credential_digest(), model)
+        if key not in _anthropic_output_caps:
+            try:
+                response = await _client().get(
+                    _append_provider_path(self.base_url, f"/models/{quote(model, safe = '')}"),
+                    headers = self._auth_headers(),
+                    timeout = 10,
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    return None
+                cap = response.json().get("max_tokens") if response.is_success else None
+            except httpx.HTTPError:
+                return None
+            except (ValueError, AttributeError):
+                cap = None
+            # The full cap (up to 128k) plus a long prompt can exceed the context window, which Claude rejects.
+            _anthropic_output_caps[key] = (
+                min(cap, _ANTHROPIC_DEFAULT_MAX_TOKENS)
+                if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0
+                else None
+            )
+        return _anthropic_output_caps[key]
+
     async def _stream_anthropic(
         self,
         messages: list[dict[str, Any]],
@@ -2884,7 +2910,7 @@ class ExternalProviderClient:
         body: dict[str, Any] = {
             "model": model,
             "messages": filtered,
-            "max_tokens": max_tokens or 1024,  # required by Anthropic
+            "max_tokens": max_tokens or await self._anthropic_output_cap(model) or 1024,
             "stream": True,
         }
         if not sampling_removed:
