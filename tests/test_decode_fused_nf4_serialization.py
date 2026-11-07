@@ -11,7 +11,7 @@ import torch
 from .test_decode_fused_nf4 import _driver
 
 
-def _model():
+def _model(qkv_bias = False):
     bnb = pytest.importorskip("bitsandbytes")
     model = torch.nn.Module()
     with torch.random.fork_rng(devices = []):
@@ -29,7 +29,7 @@ def _model():
                 bnb.nn.Linear4bit(
                     k,
                     n,
-                    bias = False,
+                    bias = qkv_bias and name in ("q_proj", "k_proj", "v_proj"),
                     quant_type = "nf4",
                     compress_statistics = True,
                 )
@@ -92,10 +92,16 @@ def _decoded(weight):
 def _sites(model, monkeypatch):
     driver = _driver()
 
-    def parts(projection, width):
+    def parts(
+        projection,
+        width,
+        allow_bias = False,
+    ):
         weight = projection.weight
         assert weight.quant_state.shape[1] == width
-        return weight, weight.quant_state, weight.quant_state.shape[0], None
+        if projection.bias is not None and not allow_bias:
+            return "bias"
+        return weight, weight.quant_state, weight.quant_state.shape[0], None, projection.bias
 
     def capture(kind, packed, absmax, code, bounds, width, blocksize, **kwargs):
         return types.SimpleNamespace(
@@ -104,6 +110,7 @@ def _sites(model, monkeypatch):
             absmax2 = kwargs["absmax2"],
             segments = kwargs["segments"],
             bounds = bounds,
+            bias = kwargs["bias"],
         )
 
     monkeypatch.setattr(driver, "_proj_parts", parts)
@@ -115,15 +122,18 @@ def _sites(model, monkeypatch):
         ("down", ("down_proj",), 512),
     ):
         projections = [getattr(model, name) for name in names]
-        site = driver._site(model, kind, kind, projections, width)
+        site = driver._site(model, kind, kind, projections, width, allow_bias = kind == "qkv")
         assert not isinstance(site, str), site
         assert len(site.segments) == len(projections)
-        assert len(site.tensor_bindings) == len(projections)
-        for (bound_projection, name, bound_weight), projection in zip(
-            site.tensor_bindings, projections
+        expected_bindings = [(projection, "weight") for projection in projections]
+        # Absent biases are bound too, so adding one later rebuilds the plan.
+        expected_bindings += [(projection, "bias") for projection in projections]
+        assert len(site.tensor_bindings) == len(expected_bindings)
+        for (owner, name, tensor), (projection, expected_name) in zip(
+            site.tensor_bindings, expected_bindings
         ):
-            assert bound_projection is projection and name == "weight"
-            assert bound_weight is projection.weight
+            assert owner is projection and name == expected_name
+            assert tensor is getattr(projection, expected_name)
         for segment, projection in zip(site.segments, projections):
             weight = projection.weight
             assert segment[0] is weight
@@ -133,6 +143,10 @@ def _sites(model, monkeypatch):
         assert site.packed is first
         assert site.absmax is first.quant_state.absmax
         assert site.absmax2 is first.quant_state.state2.absmax
+        if projections[0].bias is not None:
+            assert all(bias is projection.bias for bias, projection in zip(site.bias, projections))
+        else:
+            assert site.bias is None
 
 
 def _snapshot(model):
@@ -209,9 +223,10 @@ def _save_load(model, folder, api):
 
 
 @pytest.mark.parametrize("api", ["accelerate", "hub", "safetensors", "torch"])
-def test_fused_nf4_checkpoints_keep_every_key_and_reload(tmp_path, monkeypatch, api):
+@pytest.mark.parametrize("qkv_bias", [False, True])
+def test_fused_nf4_checkpoints_keep_every_key_and_reload(tmp_path, monkeypatch, api, qkv_bias):
     bnb = pytest.importorskip("bitsandbytes")
-    model = _model()
+    model = _model(qkv_bias)
     expected = {key: value.clone() for key, value in model.state_dict().items()}
     baseline = _save_load(model, tmp_path / "base", api)
     original = _snapshot(model)

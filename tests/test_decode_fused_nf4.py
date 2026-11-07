@@ -185,6 +185,61 @@ _CHECKS = textwrap.dedent(
                 gy = Wgu @ rms64(residual, big)
                 act_ref = torch.nn.functional.silu(gy[:I]) * gy[I:]
                 assert torch.isfinite(act).all() and rel(act, act_ref) < tol, ("big residual", rank)
+    # Qwen2 (qkv bias) and Qwen3 (per-head q / k RMSNorm before RoPE) on the qkv site.
+    for dt, tol in ((torch.bfloat16, 2e-2), (torch.float16, 4e-3)):
+        for rank in (0, R):
+            g = torch.Generator().manual_seed(31 + rank)
+            qkv, Wqkv = site("qkv", [NH * D, NKV * D, NKV * D], H, g, rank)
+            ln1 = (1 + 0.1 * torch.randn(H, generator = g)).to(dt).to(device)
+            emb = torch.randn(H, generator = g).to(dt).to(device)
+            ang = torch.arange(L)[:, None].double() * (1.0 / 10000 ** (torch.arange(0, D, 2).double() / D))[None]
+            ang = torch.cat((ang, ang), -1)
+            cos, sin = ang.cos().to(dt).to(device), ang.sin().to(dt).to(device)
+            pos_i, slot_i = 7, 3
+            pos = torch.tensor([pos_i], device = device)
+            slot = torch.tensor([slot_i], device = device)
+            c64, s64 = cos[pos_i].double(), sin[pos_i].double()
+            xn = rms64(emb, ln1)
+            biases = [(0.5 * torch.randn(n, generator = g)).to(dt).to(device) for n in (NH * D, NKV * D, NKV * D)]
+            # Qwen2: bias added before RoPE.
+            paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
+            kc, vc = paged[:, 0], paged[:, 1]
+            q_out = torch.empty(NH * D, dtype = dt, device = device)
+            F.fused_site(qkv, emb.float().clone(), q_out, epi = F.EPI_ROPE_KV, pre = F.PRE_INLOOP, capability = CAP,
+                         norm_weight = ln1, eps = EPS, k_cache = kc, v_cache = vc,
+                         cache_strides = (kc.stride(2), kc.stride(0)), cos = cos, sin = sin, pos = pos, slot = slot,
+                         head_dim = D, bias = biases)
+            y = Wqkv @ xn + torch.cat(biases).double()
+            assert rel(q_out, rot(y[: NH * D].view(NH, D), c64, s64).reshape(-1)) < tol, ("q bias", dt, rank)
+            kr = rot(y[NH * D : NH * D + NKV * D].view(NKV, D), c64, s64)
+            assert rel(kc[slot_i, 0], kr) < tol, ("k bias", dt, rank)
+            assert rel(vc[slot_i, 0], y[NH * D + NKV * D :].view(NKV, D)) < tol, ("v bias", dt, rank)
+            # https://triton-lang.org/main/programming-guide/chapter-3/debugging.html#limitations
+            if device == "cpu" and dt == torch.bfloat16:
+                print("BF16_QK_INTERPRETER_UNSUPPORTED", flush = True)
+                continue
+            # Qwen3: raw q|k|v, then the per-head norm + RoPE + cache-write launch.
+            paged = torch.zeros((L, 2, 1, NKV, D), dtype = dt, device = device)
+            kc, vc = paged[:, 0], paged[:, 1]
+            raw = torch.empty(qkv.N, dtype = dt, device = device)
+            F.fused_site(qkv, emb.float().clone(), raw, epi = F.EPI_PLAIN, pre = F.PRE_INLOOP, capability = CAP,
+                         norm_weight = ln1, eps = EPS)
+            y = Wqkv @ xn
+            assert rel(raw, y) < tol, ("raw qkv", dt, rank)
+            wq = (1 + 0.1 * torch.randn(D, generator = g)).to(dt).to(device)
+            wk = (1 + 0.1 * torch.randn(D, generator = g)).to(dt).to(device)
+            F.qk_norm_rope_kv(raw, q_out, wq, wk, 1e-6, 1e-6, cos, sin, pos, slot, kc, vc, NH, NKV, D)
+            r64 = raw.double()
+
+            def hn(x, w):
+                return x * torch.rsqrt(x.pow(2).mean(-1, keepdim = True) + 1e-6) * w.double()
+
+            qr = rot(hn(r64[: NH * D].view(NH, D), wq), c64, s64).reshape(-1)
+            kr = rot(hn(r64[NH * D : NH * D + NKV * D].view(NKV, D), wk), c64, s64)
+            assert rel(q_out, qr) < tol, ("q norm", dt, rank, rel(q_out, qr))
+            assert rel(kc[slot_i, 0], kr) < tol, ("k norm", dt, rank)
+            assert torch.equal(vc[slot_i, 0], raw[NH * D + NKV * D :].view(NKV, D)), ("v copy", dt, rank)
+            assert kc[slot_i - 1].abs().max() == 0 and vc[slot_i + 1].abs().max() == 0, "cache row must be `slot`"
     print("FUSED OK")
     """
 )
@@ -240,6 +295,96 @@ def test_call_sites_match_fp64_on_gpu(negative_control, separate):
         assert proc.returncode != 0 and "AssertionError" in proc.stderr, proc.stdout + proc.stderr
     else:
         assert proc.returncode == 0 and "FUSED OK" in proc.stdout, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("norm_dtype", ["float16", "float32"])
+def test_qk_norm_matches_stock_precision_in_the_interpreter(tmp_path, norm_dtype):
+    pytest.importorskip("triton")
+    script = textwrap.dedent(
+        '''
+        import ast, importlib.util, pathlib, sys
+        from types import SimpleNamespace
+        import torch
+
+        root, scratch = map(pathlib.Path, sys.argv[1:3])
+        norm_dtype = getattr(torch, sys.argv[3])
+        def extract(path, name):
+            source = (root / path).read_text(encoding="utf-8")
+            node = next(n for n in ast.parse(source).body
+                        if isinstance(n, ast.FunctionDef) and n.name == name)
+            return ast.get_source_segment(source, node)
+
+        kernel = extract("unsloth/kernels/nf4_decode_fused.py", "_qk_norm_rope_kv_kernel")
+        helper = extract("unsloth/kernels/qk_norm_rope.py", "_norm_rope_fwd_block")
+        wrapper = """
+        @triton.jit
+        def stock(Y, X, W, R, C, S, n, eps, HD:tl.constexpr, NH:tl.constexpr):
+            j = tl.arange(0, HD // 2)
+            _norm_rope_fwd_block(Y, X, 0, HD, W, R, 0, tl.arange(0, NH), n,
+                                tl.load(C + j), tl.load(S + j), j, eps, HD, True)
+        """
+        import textwrap
+        file = scratch / "precision_kernels.py"
+        file.write_text("import triton\\nimport triton.language as tl\\n@triton.jit\\n"
+                        + helper + "\\n@triton.jit\\n" + kernel + "\\n"
+                        + textwrap.dedent(wrapper), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("precision_kernels", file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        scope = {"torch": torch}
+        exec(extract("unsloth/models/llama.py", "fast_rms_layernorm_inference"), scope)
+        regular = scope["fast_rms_layernorm_inference"]
+        for hd in (32, 64, 128):
+            torch.manual_seed(3407)
+            nh, nk = 2, 1
+            raw = (2 * torch.randn((nh + 2 * nk) * hd)).half()
+            weights = [(1 + 0.3 * torch.randn(hd)).to(norm_dtype) for _ in range(2)]
+            angle = torch.arange(8)[:, None].double() / (
+                10000 ** (torch.arange(0, hd, 2).double() / hd))[None]
+            angle = torch.cat((angle, angle), -1)
+            cos, sin = angle.cos().half(), angle.sin().half()
+            refs = []
+            for src, weight, eps, heads in (
+                (raw[:nh * hd], weights[0], 1e-6, nh),
+                (raw[nh * hd:(nh + nk) * hd], weights[1], 1e-5, nk),
+            ):
+                if norm_dtype == torch.float16:
+                    ref = torch.empty(heads, hd, dtype=torch.float16)
+                    module.stock[(1,)](ref, src, weight, torch.empty(heads),
+                                       cos[5, :hd // 2], sin[5, :hd // 2], heads, eps,
+                                       HD=hd, NH=heads)
+                else:
+                    ref = regular(SimpleNamespace(weight=weight, variance_epsilon=eps),
+                                  src.view(1, 1, heads, hd).clone()).transpose(1, 2)
+                    rotated = torch.cat((-ref[..., hd // 2:], ref[..., :hd // 2]), -1)
+                    ref.mul_(cos[5].view(1, 1, 1, hd))
+                    ref.addcmul_(rotated, sin[5].view(1, 1, 1, hd))
+                refs.append(ref.flatten())
+            q = torch.empty(nh * hd, dtype=torch.float16)
+            k = torch.zeros(8, 1, nk, hd, dtype=torch.float16)
+            v = k.clone()
+            options = dict(HEAD_DIM=hd, EPS_Q=1e-6, EPS_K=1e-5)
+            if "ROUND_ROPE" in module._qk_norm_rope_kv_kernel.arg_names:
+                options["ROUND_ROPE"] = norm_dtype == torch.float32
+            module._qk_norm_rope_kv_kernel[(nh + 2 * nk,)](
+                raw, *weights, cos, sin, torch.tensor([5]), torch.tensor([3]),
+                q, k, v, nh, nk, hd, k.stride(2), k.stride(0), **options)
+            actual, expected = torch.cat((q, k[3, 0].flatten())), torch.cat(refs)
+            assert torch.equal(actual, expected), (hd, norm_dtype,
+                int((actual != expected).sum()), float((actual - expected).abs().max()))
+            assert torch.equal(v[3, 0].flatten(), raw[(nh + nk) * hd:])
+        assert not torch.cuda.is_initialized()
+        print("STOCK PRECISION OK")
+        '''
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(REPO), str(tmp_path), norm_dtype],
+        env = dict(os.environ, TRITON_INTERPRET = "1"),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0 and "STOCK PRECISION OK" in proc.stdout, proc.stdout + proc.stderr
 
 
 def _driver():
@@ -346,8 +491,8 @@ def test_every_segment_must_share_the_launch_device(monkeypatch):
                 absmax = torch.empty(4, device = device),
                 code = torch.empty(16),
             )
-            parts.append((torch.empty(64, 1, dtype = torch.uint8, device = device), qs, 8, None))
-    monkeypatch.setattr(D, "_proj_parts", lambda proj, K: parts.pop(0))
+            parts.append((torch.empty(64, 1, dtype = torch.uint8, device = device), qs, 8, None, None))
+    monkeypatch.setattr(D, "_proj_parts", lambda proj, K, *args: parts.pop(0))
     assert (
         D._site(types.SimpleNamespace(), (0, "qkv"), "qkv", [object(), object()], 16)
         == "several devices"
@@ -533,6 +678,178 @@ def test_whole_step_graph_capture_keeps_the_regular_path(monkeypatch):
         assert D._decode_forward(model, torch.zeros(1, 1, 8), *([None] * 6)) is None
 
 
+def _family_plan(
+    monkeypatch,
+    family,
+    qk_state = None,
+    biased = False,
+    capability = (8, 0),
+    graphs = False,
+):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    monkeypatch.setattr(D.torch.version, "hip", None)
+    monkeypatch.setattr(D.torch.cuda, "get_device_capability", lambda device: capability)
+    monkeypatch.setattr(D._decode_graphs, "ENABLED", graphs)
+    monkeypatch.setattr(D.F, "supported_capability", lambda capability: True, raising = False)
+    monkeypatch.setattr(D, "_signature", lambda plan: ())
+    monkeypatch.setattr(D, "_track_moves", lambda model: None)
+    calls = []
+    device = torch.device("cuda", 0)
+    with FakeTensorMode():
+
+        def norm(size, stride = 1):
+            return types.SimpleNamespace(
+                weight = torch.empty_strided((size,), (stride,), device = device, dtype = torch.float16),
+                variance_epsilon = 1e-6,
+            )
+
+        def projection(size):
+            return types.SimpleNamespace(bias = torch.empty(size, device = device) if biased else None)
+
+        config = types.SimpleNamespace(
+            model_type = family,
+            hidden_size = 64,
+            intermediate_size = 128,
+            num_attention_heads = 2,
+            num_key_value_heads = 1,
+            sliding_window = 4,
+        )
+        attn = types.SimpleNamespace(
+            head_dim = 32,
+            rotary_emb = object(),
+            config = config,
+            q_proj = projection(64),
+            k_proj = projection(32),
+            v_proj = projection(32),
+            o_proj = types.SimpleNamespace(bias = None),
+        )
+        if family == "qwen3" or qk_state == "extra":
+            attn.q_norm, attn.k_norm = norm(32), norm(32)
+            if qk_state == "missing_k":
+                attn.k_norm = None
+            elif qk_state == "strided":
+                attn.q_norm = norm(32, 2)
+            elif qk_state == "wrong_shape":
+                attn.q_norm = norm(16)
+            elif qk_state == "no_eps":
+                attn.q_norm = types.SimpleNamespace(weight = attn.q_norm.weight)
+        layer = types.SimpleNamespace(
+            self_attn = attn,
+            mlp = types.SimpleNamespace(gate_proj = object(), up_proj = object(), down_proj = object()),
+            input_layernorm = norm(64),
+            post_attention_layernorm = norm(64),
+        )
+        layers = [layer]
+        if qk_state == "second_head_dim":
+            other = types.SimpleNamespace(**vars(attn))
+            other.head_dim = 64
+            layers.append(types.SimpleNamespace(**dict(vars(layer), self_attn = other)))
+        model = types.SimpleNamespace(
+            config = config, model = types.SimpleNamespace(layers = layers, norm = norm(64))
+        )
+        packed = torch.empty(1, device = device, dtype = torch.uint8)
+        bounds = {"qkv": [64, 96, 128], "o": [64], "gate_up": [128, 256], "down": [64]}
+
+        def site(
+            model,
+            key,
+            kind,
+            projs,
+            width,
+            allow_bias = False,
+        ):
+            calls.append((kind, allow_bias))
+            if any(getattr(proj, "bias", None) is not None for proj in projs) and not allow_bias:
+                return "bias"
+            return types.SimpleNamespace(packed = packed, bounds = bounds[kind], N = bounds[kind][-1])
+
+        monkeypatch.setattr(D, "_site", site)
+        plan = D._build(model, torch.empty((1, 1, 64), device = device, dtype = torch.float16))
+    return D, plan, model, calls
+
+
+@pytest.mark.parametrize("family", ["llama", "mistral", "qwen2", "qwen3"])
+def test_families_build_compatible_plans(monkeypatch, family):
+    D, plan, model, calls = _family_plan(monkeypatch, family, biased = family == "qwen2")
+    assert isinstance(plan, D._Plan)
+    assert (getattr(plan.layers[0], "qk_norm", None) is not None) == (family == "qwen3")
+    assert calls == [("qkv", family == "qwen2"), ("o", False), ("gate_up", False), ("down", False)]
+    assert plan.layers[0].attn is model.model.layers[0].self_attn
+    assert plan.layers[0].attn.config.sliding_window == 4
+
+
+@pytest.mark.parametrize("family", ["llama", "mistral", "qwen2", "qwen3"])
+@pytest.mark.parametrize("capability", [(7, 5), (8, 0), (8, 9)])
+@pytest.mark.parametrize("graphs", [False, True])
+@pytest.mark.parametrize("flag", ["1", "force"])
+def test_t4_qwen3_prefers_regular_graphs(monkeypatch, family, capability, graphs, flag):
+    monkeypatch.setenv("UNSLOTH_DECODE_FUSED_NF4", flag)
+    D, plan, _, calls = _family_plan(
+        monkeypatch,
+        family,
+        capability = capability,
+        graphs = graphs,
+    )
+    # Families with Unsloth decode CUDA graphs (Qwen2 since #16753) keep them on T4.
+    if (
+        family in D._decode_graphs._SUPPORTED_MODEL_TYPES
+        and capability == (7, 5)
+        and graphs
+        and flag == "1"
+    ):
+        assert not isinstance(plan, D._Plan)
+        assert calls == []
+    else:
+        assert isinstance(plan, D._Plan)
+        assert len(calls) == 4
+
+
+@pytest.mark.parametrize(
+    "family,qk_state,reason",
+    [
+        ("qwen3", "missing_k", "attention type"),
+        ("qwen3", "strided", "q / k norm weight"),
+        ("qwen3", "wrong_shape", "q / k norm weight"),
+        ("llama", "extra", "attention type"),
+    ],
+)
+def test_incompatible_qk_norms_keep_the_regular_path(monkeypatch, family, qk_state, reason):
+    _, plan, _, _ = _family_plan(monkeypatch, family, qk_state = qk_state)
+    assert plan == reason
+
+
+def test_projection_bias_is_opt_in_and_checks_real_tensor_layout(monkeypatch):
+    from .test_decode_fused_nf4_serialization import _model
+
+    D = _driver()
+    model = _model(qkv_bias = True)
+    projection = model.q_proj
+    for name in (
+        "_has_non_lora_adapter",
+        "_has_multiple_active_adapters",
+        "_has_active_dora_adapter",
+        "_has_active_lora_bias",
+        "_has_packed_qweight",
+    ):
+        monkeypatch.setattr(D.KU, name, lambda p: False, raising = False)
+    monkeypatch.setattr(D.KU, "_quant_state_dtype", lambda qs: qs.dtype, raising = False)
+    monkeypatch.setattr(
+        D.KU,
+        "get_lora_parameters_bias",
+        lambda p: (p.weight, p.weight.quant_state, None, None, None, p.bias),
+        raising = False,
+    )
+    assert D._proj_parts(projection, 256) == "bias"
+    parts = D._proj_parts(projection, 256, allow_bias = True)
+    assert parts[0] is projection.weight and parts[4] is projection.bias
+    projection.bias = torch.nn.Parameter(torch.empty(512)[::2])
+    assert D._proj_parts(projection, 256, allow_bias = True) == "bias layout"
+    projection.bias = torch.nn.Parameter(torch.empty(255))
+    assert D._proj_parts(projection, 256, allow_bias = True) == "bias layout"
+
+
 def _norm_plan(
     monkeypatch,
     strided = False,
@@ -589,7 +906,13 @@ def _norm_plan(
         monkeypatch.setattr(
             D,
             "_site",
-            lambda model, key, kind, projs, width, **kwargs: types.SimpleNamespace(
+            lambda model,
+            key,
+            kind,
+            projs,
+            width,
+            allow_bias = False,
+            **kwargs: types.SimpleNamespace(
                 packed = packed, bounds = bounds[kind], N = bounds[kind][-1], lora = False
             ),
         )
@@ -736,7 +1059,7 @@ def test_plan_goes_stale_when_peft_is_unloaded(monkeypatch):
         monkeypatch.setattr(
             D,
             "_site",
-            lambda model, key, kind, projs, width: types.SimpleNamespace(
+            lambda model, key, kind, projs, width, allow_bias = False: types.SimpleNamespace(
                 packed = packed, bounds = bounds[kind], N = bounds[kind][-1]
             ),
         )
@@ -805,10 +1128,12 @@ def test_signature_follows_saved_norm_weights():
 
     wrapper = peft_other.ModulesToSaveWrapper(Norm(), "default")
     t = torch.zeros(4)
-    site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4])
+    site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4], bias = None)
 
-    def plan():
-        entry = types.SimpleNamespace(ln1 = wrapper.weight, ln2 = wrapper.weight, sites = {"o": site})
+    def plan(qk_norm = None):
+        entry = types.SimpleNamespace(
+            ln1 = wrapper.weight, ln2 = wrapper.weight, sites = {"o": site}, qk_norm = qk_norm
+        )
         return types.SimpleNamespace(
             device = t.device, dtype = torch.bfloat16, hidden = 8, intermediate = 16, eps = 1e-5,
             final_norm = wrapper.weight, layers = [entry],
@@ -820,6 +1145,65 @@ def test_signature_follows_saved_norm_weights():
     wrapper.enable_adapters(False)
     assert D._signature(plan()) != on
     assert D._adapter_key(wrapper) != before
+    # Qwen3: a saved q_norm / k_norm keys the plan the same way.
+    wrapper.enable_adapters(True)
+    k = torch.ones(8)
+    q_on = D._signature(plan((wrapper.weight, k, 1e-6, 1e-6)))
+    wrapper.enable_adapters(False)
+    assert D._signature(plan((wrapper.weight, k, 1e-6, 1e-6))) != q_on
+
+
+def test_qk_norm_alone_keys_the_signature():
+    peft_other = pytest.importorskip("peft.utils.other")
+    D = _driver()
+
+    class Norm(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.ones(8))
+            self.variance_epsilon = 1e-6
+
+        def forward(self, x):
+            return (
+                x
+                * torch.rsqrt(x.square().mean(-1, keepdim = True) + self.variance_epsilon)
+                * self.weight
+            )
+
+    qn = peft_other.ModulesToSaveWrapper(Norm(), "default")
+    with torch.no_grad():
+        qn.modules_to_save["default"].weight.fill_(2.0)
+    plain = torch.ones(8)
+    k_norm = torch.ones(8)
+    t = torch.zeros(4)
+    site = types.SimpleNamespace(packed = t, absmax = t, absmax2 = t, lora = None, bounds = [4], bias = None)
+
+    def plan():
+        entry = types.SimpleNamespace(
+            ln1 = plain,
+            ln2 = plain,
+            sites = {"o": site},
+            qk_norm = (qn.weight, k_norm, 1e-6, 1e-6),
+        )
+        return types.SimpleNamespace(
+            device = t.device,
+            dtype = torch.bfloat16,
+            hidden = 8,
+            intermediate = 16,
+            eps = 1e-5,
+            final_norm = plain,
+            layers = [entry],
+        )
+
+    qn.enable_adapters(True)
+    before = qn(torch.ones(1, 8)).detach().clone()
+    watched = types.SimpleNamespace(watch = [qn], adapter_state = D._adapter_state([qn]))
+    on = D._signature(plan())
+    assert D._signature(plan()) == on
+    qn.enable_adapters(False)
+    assert not torch.equal(before, qn(torch.ones(1, 8)))
+    assert D._plan_stale(watched)
+    assert D._signature(plan()) != on
 
 
 def test_plan_goes_stale_when_a_tensor_scale_changes_in_place():
@@ -1155,3 +1539,76 @@ def test_requantized_weights_at_reused_addresses_rebuild_the_plan(changed):
     other = plan(new)
     other.signature = ("other",)
     assert not D._reusable(plan(tables), other)
+
+
+def test_mixed_qkv_bias_dtypes_are_refused(monkeypatch):
+    # The kernel selects each segment's bias pointer from one typed vector: fp32 next to fp16 crashes.
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    D = _driver()
+    with FakeTensorMode():
+        device = torch.device("cuda", 0)
+        parts = []
+        for dtype in (torch.float32, torch.float16, torch.float16):
+            qs = types.SimpleNamespace(
+                state2 = None,
+                blocksize = 64,
+                absmax = torch.empty(4, device = device),
+                code = torch.empty(16),
+            )
+            parts.append(
+                (
+                    torch.empty(64, 1, dtype = torch.uint8, device = device),
+                    qs,
+                    8,
+                    None,
+                    torch.empty(8, device = device, dtype = dtype),
+                )
+            )
+    monkeypatch.setattr(D, "_proj_parts", lambda proj, K, *args: parts.pop(0))
+    site = D._site(types.SimpleNamespace(), (0, "qkv"), "qkv", [object()] * 3, 16, True)
+    assert site == "bias dtypes differ"
+
+
+def test_a_bias_added_later_makes_the_plan_stale(monkeypatch):
+    D = _driver()
+    projs = [types.SimpleNamespace(bias = None) for _ in range(3)]
+    bindings = D._bias_bindings(projs, [None] * 3)
+    plan = types.SimpleNamespace(watch = [], adapter_state = (), tensor_bindings = bindings)
+    assert not D._plan_stale(plan)
+    projs[1].bias = torch.zeros(4)
+    assert D._plan_stale(plan)
+
+
+def test_qwen3_qk_norm_eps_changes_make_the_plan_stale(monkeypatch):
+    D, plan, model, _ = _family_plan(monkeypatch, "qwen3")
+    assert isinstance(plan, D._Plan) and not D._plan_stale(plan)
+    model.model.layers[0].self_attn.k_norm.variance_epsilon = 1e-3
+    assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize(
+    "qk_state,reason",
+    [("no_eps", "q / k norm eps"), ("second_head_dim", "head dim differs across layers")],
+)
+def test_qwen3_plans_refuse_unknown_eps_and_per_layer_head_dims(monkeypatch, qk_state, reason):
+    D, plan, _, _ = _family_plan(monkeypatch, "qwen3", qk_state = qk_state)
+    assert plan == reason
+
+
+def test_rope_tables_must_share_device_and_dtype():
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    D = _driver()
+    with FakeTensorMode():
+        device = torch.device("cuda", 0)
+        cos = torch.empty(16, 32, device = device, dtype = torch.float16)
+        assert D._rope_ok(cos, torch.empty(16, 32, device = device, dtype = torch.float16), 32, device)
+        assert not D._rope_ok(
+            cos,
+            torch.empty(16, 32, device = torch.device("cuda", 1), dtype = torch.float16),
+            32,
+            device,
+        )
+        assert not D._rope_ok(
+            cos, torch.empty(16, 32, device = device, dtype = torch.float32), 32, device
+        )
