@@ -162,11 +162,11 @@ def test_with_nothing_to_unload_the_refusal_reads_the_cards_free_memory(monkeypa
         # 7.3 GB free is an 8 GB card under a desktop session.
         ("voxtral_tts", 3, 7.3, True),
         ("chatterbox", 3, 7.3, True),
-        ("qwen3_tts", 3, 7.3, False),
+        ("neutts", 3, 7.3, False),
         ("vibevoice", 3, 7.3, False),
         # Families whose measured peak is above the generic formula are refused where it fit.
         ("voxcpm2", 2.75, 9.5, False),
-        ("qwen3_tts", 2.75, 9.5, True),
+        ("neutts", 2.75, 9.5, True),
         ("kokoro_tts", 0.18, 3.0, False),
         # ACE-Step1.5 Q8_0 on a 16 GB card: measured 11.2 GB, the generic formula said 15.9.
         ("ace_step", 5.76, 15.0, True),

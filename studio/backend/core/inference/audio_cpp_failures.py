@@ -134,29 +134,79 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
+# GiB; resident = weights * per_weight + fixed. Generic: the deliberately high fallback for
+# families not measured yet.
 _GENERIC_PROFILE = (2.5, 1.5)
-# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 peak plus at least
-# 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
+# family -> (per_weight, fixed, largest package measured): the worst audio.cpp v0.9.3 peak on its
+# CUDA build plus at least 0.9 GiB, every variant measured. Worst inputs: TTS text run past several
+# chunks or to the generation cap, 30 s references; music at each workflow's cap. Families whose
+# peak grows without bound with the input (VibeVoice) stay generic.
 _MEASURED_PROFILES = {
-    # Peak is a 240 s cover (the longest edit), above a 240 s song; BF16 highest on Vulkan.
-    "ace_step": (1.15, 5.55, 9.4),
-    "chatterbox": (1.0, 3.5, 3.5),
-    # Peak is a 240 s song with 20,000 characters of lyrics, above the generic formula on Vulkan.
-    "heartmula": (2.5, 2.7, 7.2),
-    "higgs_audio_tts": (1.0, 2.0, 4.8),
-    "kokoro_tts": (1.0, 3.5, 0.2),
+    # Peak is a 240 s cover (the longest edit), above a 240 s song.
+    "ace_step": (0.98, 6.46, 9.4),
+    # Clone; flat in text length from 5,400 to 21,600 characters.
+    "breeze_tts": (0.55, 5.18, 6.9),
+    # Clone, or convert of a source up to 30 s; longer sources grow fast (60 s peaks at 12.7 GiB).
+    "chatterbox": (0.05, 5.98, 3.5),
+    "cosyvoice3": (0.6, 2.82, 6.6),
+    # Peak is a 240 s song with 20,000 characters of lyrics.
+    "heartmula": (2.5, 1.48, 7.2),
+    # Clone at the 2048-token cap of a text chunk.
+    "higgs_audio_tts": (1.0, 2.4, 8.0),
+    # Covers the 2.7 GB #16514 measured for Q8_0 as well.
+    "kokoro_tts": (0.0, 3.61, 0.9),
     # Flat in length: 10 s and the 80 s cap peak the same.
+    "midashenglm_gen": (1.0, 1.69, 3.2),
+    # Peak is a 240 s song with 20,000 characters of lyrics.
+    "minimax_music3": (0.7, 8.49, 12.7),
+    # Flat in text length from 4,800 to 21,600 characters.
+    "moss_tts_v15": (0.95, 0.74, 19.2),
+    # Clone run to the generation cap.
+    "omnivoice": (0.05, 5.29, 1.6),
+    # Grows with the audio: 8,000 characters run to the 655 s generation cap. Steeper than the
+    # tightest fit so 0.6B Q8_0 stays loadable on an 8 GB card (7.2 GB).
+    "qwen3_tts": (1.5, 4.44, 4.3),
+    # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s).
+    "stable_audio": (1.5, 1.17, 5.5),
+    # Kept from #16514, whose peaks (Q8_0 9.7, BF16 13.3) are above these runs; covers Vulkan too.
+    "voxcpm2": (2.2, 4.7, 8.9),
+    "voxtral_tts": (1.0, 2.0, 7.5),
+    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap.
+    "yue2": (1.03, 4.88, 7.1),
+}
+# The same input on audio.cpp's Vulkan build, which AMD hosts run, measured on an RTX 3090 and a
+# Radeon 8060S (Strix Halo): mostly 0.5 to 4 GiB higher. Used when the installed runtime is not CUDA.
+_VULKAN_PROFILES = {
+    "ace_step": (1.15, 5.55, 9.4),
+    # Flat: Q8_0 clone at 5,400 characters peaks above BF16.
+    "breeze_tts": (0.0, 12.1, 6.9),
+    "chatterbox": (0.25, 5.25, 3.5),
+    "cosyvoice3": (0.6, 4.38, 6.6),
+    # Above the generic formula.
+    "heartmula": (2.5, 2.7, 7.2),
+    "higgs_audio_tts": (0.95, 2.94, 8.0),
+    "kokoro_tts": (0.1, 3.89, 0.9),
     "midashenglm_gen": (1.0, 2.25, 3.2),
-    # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s); F16 highest on Vulkan.
+    # Q4_0 peaks higher on the 8060S than on either NVIDIA card.
+    "minimax_music3": (0.45, 11.4, 12.7),
+    "moss_tts_v15": (1.0, 2.63, 19.2),
+    "omnivoice": (0.05, 7.67, 1.6),
+    # Above the generic formula, which allowed loads that then ran out of memory.
+    "qwen3_tts": (1.1, 8.87, 4.3),
     "stable_audio": (1.8, 0.65, 5.5),
-    "voxcpm2": (2.2, 4.7, 4.5),
-    "voxtral_tts": (1.0, 2.0, 4.4),
-    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap, highest on Vulkan.
+    "voxtral_tts": (1.7, -0.64, 7.5),
     "yue2": (1.2, 4.45, 7.1),
 }
 # Families measured far higher on pre-Ampere NVIDIA cards (YuE2 on a T4): the generic formula there.
 _NOT_BEFORE_AMPERE = frozenset({"yue2"})
+
+
+def _runtime_backend() -> Optional[str]:
+    """The installed audio.cpp's backend ("cuda", "vulkan", ...), or None when none is installed."""
+    from core.inference.audio_cpp_server import find_audio_cpp_server_binary, select_backend
+
+    binary = find_audio_cpp_server_binary()
+    return select_backend(binary, False) if binary else None
 
 
 def _may_have_pre_ampere_nvidia_card() -> bool:
@@ -191,8 +241,15 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     profile = _MEASURED_PROFILES.get(family or "")
     if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
         return round(generic, 2)
-    per_weight, fixed, measured_up_to_gb = profile
-    measured = weights_gb * per_weight + fixed
+    profiles = [profile]
+    if family in _VULKAN_PROFILES:
+        backend = _runtime_backend()
+        # Not installed yet, or a build measured on neither (HIP, CPU): the larger of the two.
+        profiles = {"cuda": [profile], "vulkan": [_VULKAN_PROFILES[family]]}.get(
+            backend, [profile, _VULKAN_PROFILES[family]]
+        )
+    measured = max(weights_gb * per_weight + fixed for per_weight, fixed, _largest in profiles)
+    measured_up_to_gb = min(largest for _per_weight, _fixed, largest in profiles)
     return round(measured if weights_gb <= measured_up_to_gb else max(measured, generic), 2)
 
 
