@@ -12128,3 +12128,18 @@ def test_hermes_carries_only_referenced_mcp_secrets_into_the_session_env(
     fresh.mkdir()
     start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
     assert (fresh / ".env").read_text() == "MCP_REMOTE_API_KEY=rotated\nMCP_LOCAL_API_KEY=mine\n"
+
+    # A key removed at the origin is not revived from the saved home's copy.
+    (source_home / ".env").write_text("OTHER=1\n")
+    start.write_hermes_config("http://x", MODEL, fresh / "config.yaml", keep_mcp_servers = True)
+    assert (fresh / ".env").read_text() == "MCP_LOCAL_API_KEY=mine\n"
+
+    # A server kept in the saved home still gets a key it shares with a dropped origin server.
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    (source_home / ".env").write_text("MCP_REMOTE_API_KEY=shared\n")
+    (source_home / "config.yaml").write_text("mcp_servers: {}\n")
+    (home / "config.yaml").write_text(
+        config.replace("${MCP_LOCAL_API_KEY}", "${MCP_REMOTE_API_KEY}")
+    )
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    assert "MCP_REMOTE_API_KEY=shared" in (home / ".env").read_text().splitlines()

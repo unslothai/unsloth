@@ -5980,7 +5980,8 @@ def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
         config["mcp_servers"] = {**kept, **servers}
     else:
         config.pop("mcp_servers", None)
-    owned = _carry_hermes_mcp_env(home, servers, (source, built), _hermes_mcp_manifest(home)[2])
+    sources = ((source, set()), (built, _hermes_mcp_manifest(built)[2] if built else set()))
+    owned = _carry_hermes_mcp_env(home, config.get("mcp_servers", {}), sources)
     (home / _HERMES_MCP_MANIFEST).write_text(
         json.dumps({"origin": configured, "servers": sorted(servers), "env": owned}) + "\n",
         encoding = "utf-8",
@@ -5991,29 +5992,32 @@ def _hermes_env_key(line: str) -> str:
     return line.strip().removeprefix("export ").partition("=")[0].strip()
 
 
-def _carry_hermes_mcp_env(home: Path, servers: dict, sources: tuple, owned: set) -> list:
+def _carry_hermes_mcp_env(home: Path, servers: dict, sources: tuple) -> list:
     # Hermes fills ${VAR} in mcp_servers from HERMES_HOME/.env (hermes mcp add --auth bearer keeps tokens there): copy only those lines, verbatim, so Hermes parses them itself.
+    path = home / ".env"
+    try:
+        current = path.read_text(encoding = "utf-8").splitlines()
+    except (OSError, ValueError):
+        current = []
+    owned = _hermes_mcp_manifest(home)[2]
+    found = {_hermes_env_key(line) for line in current} - owned
     wanted = set()
     for ref in re.findall(r"\$\{([^}]+)\}", json.dumps(servers)):
         ref = ref.strip()
         wanted.add(ref[4:].strip() if ref.startswith("env:") else ref)
-    carried, found = [], set()
-    for source in sources:
+    carried, local = [], set(found)
+    # A saved home's own copies are skipped so a key removed at the origin stays removed.
+    for source, skip in sources:
         if source is None or source.resolve(strict = False) == home.resolve(strict = False):
             continue
         try:
             lines = (source / ".env").read_text(encoding = "utf-8").splitlines()
         except (OSError, ValueError):
             continue
-        keys = {_hermes_env_key(line) for line in lines} & (wanted - found)
+        keys = {_hermes_env_key(line) for line in lines} & (wanted - found - skip)
         carried += [line for line in lines if _hermes_env_key(line) in keys]
         found |= keys
-    path = home / ".env"
-    try:
-        current = path.read_text(encoding = "utf-8").splitlines()
-    except (OSError, ValueError):
-        current = []
-    lines = [line for line in current if _hermes_env_key(line) not in owned | found] + carried
+    lines = [line for line in current if _hermes_env_key(line) in local] + carried
     if lines != current:
         if lines:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -6021,7 +6025,7 @@ def _carry_hermes_mcp_env(home: Path, servers: dict, sources: tuple, owned: set)
                 handle.write("\n".join(lines) + "\n")
         else:
             path.unlink(missing_ok = True)
-    return sorted(found)
+    return sorted(found - local)
 
 
 def write_hermes_config(
