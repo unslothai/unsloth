@@ -7352,6 +7352,67 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
   }
 }
 
+/* Glass in motion, only with software compositing (data-glass-motion on <html>, set once by WindowMaterialMount
+   when the page has no GPU WebGL renderer; with a GPU nothing here applies and glass looks and moves as before).
+   data-glass-moving is set by glass-motion.ts on each surface while something opens, closes or
+   scrolls: every frame drawn then would compute every backdrop-filter on screen again, so for those frames the
+   moving surface and the standing glass (sidebar, composer) take a near-opaque fill of their own colour instead,
+   and the blur returns in one frame (data-glass-settling) once nothing has moved for 200 ms. A Radix surface
+   closing (data-state="closed") is in motion until it unmounts. Keyed on the surface, never on <html>, so the flag
+   restyles only the surface and its own sticky bars. No descendant rule keys on data-state: Chromium would then
+   search the subtree of every element whose data-state changes (the sidebar, collapsibles in the chat). */
+html[data-glass][data-glass-motion] [data-glass-moving],
+html[data-glass][data-glass-motion] [data-glass-moving]::before,
+html[data-glass][data-glass-motion] [data-glass-moving] .sticky,
+html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"],
+html[data-glass][data-glass-motion] [data-slot$="-content"][data-state="closed"]::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+/* A transition outranks !important, and Radix content transitions every property (duration-100 with the initial
+   transition-property: all), which would fade the blur out, and later back in, over the very frames this saves. */
+html[data-glass][data-glass-motion] [data-slot$="-content"]:is([data-glass-moving], [data-glass-settling], [data-state="closed"]) {
+  transition: none !important;
+}
+html[data-glass][data-glass-motion][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"][data-glass-moving],
+html[data-glass][data-glass-motion][data-chat-wallpaper-workspace-ready] [data-windows-glass-frame][data-glass-moving]::before {
+  background-color: color-mix(in srgb, var(--glass-sidebar-fill) 96%, transparent) !important;
+}
+html[data-glass][data-glass-motion] :is([data-wallpaper-workspace], [data-chat-content-root])[data-wallpaper-ready][data-wallpaper-ready] :is(.unsloth-composer-surface, .unsloth-files-panel)[data-glass-moving],
+html[data-glass="macos"][data-glass-motion] :is(.unsloth-composer-surface, .unsloth-files-panel)[data-glass-moving] {
+  background-color: color-mix(in srgb, var(--glass-composer-fill) 96%, transparent) !important;
+}
+html[data-glass][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  background-color: color-mix(in srgb, var(--glass-page-popover) 96%, transparent) !important;
+}
+html[data-glass][data-glass-menus][data-glass-motion] :is(.tooltip-compact, .tooltip-rich)[data-glass-moving] {
+  background-color: var(--tooltip-bg) !important;
+}
+html[data-glass][data-glass-menus][data-glass-motion] [data-slot="dialog-content"]:is([data-glass-moving], [data-state="closed"]),
+html[data-glass][data-glass-motion] [data-slot="dialog-content"][data-glass-moving] .sticky {
+  background-color: color-mix(in srgb, var(--glass-page-bg) 96%, transparent) !important;
+}
+html[data-glass][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface)[data-glass-moving] .sticky {
+  background-color: var(--glass-page-popover) !important;
+}
+/* Liquid 3D's wide blurred inner glows are painted again with every repaint inside the surface (a Settings pane
+   scrolling); while it moves they give way to the 1 px rim, as on the WebKitGTK path. Set on the dialog directly,
+   so its large subtree is not restyled; menus pin their shadow in a layer, so there the rim variables change. */
+html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion] [data-slot="dialog-content"]:is([data-glass-moving], [data-state="closed"]) {
+  box-shadow: inset 0 1px 1px rgb(255 255 255 / .347) !important;
+}
+html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion].dark [data-slot="dialog-content"]:is([data-glass-moving], [data-state="closed"]) {
+  box-shadow: inset 0 1px 1px rgb(255 255 255 / .109) !important;
+}
+html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .347);
+  --glass-lift: 0 6px 14px -8px rgb(0 0 0 / .19), 0 2px 6px -4px rgb(0 0 0 / .075);
+}
+html[data-glass="liquid-3d"][data-glass-menus][data-glass-motion].dark :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface):is([data-glass-moving], [data-slot$="-content"][data-state="closed"]) {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .109);
+  --glass-lift: 0 0 8px 0 color-mix(in srgb, var(--background) 75%, transparent);
+}
+
 /* WebKitGTK only (data-glass-cpu, set by WindowMaterialMount): it runs every backdrop-filter again on
    each composite, on the CPU, so a caret blink, a scrolled line or a menu frame re-blurred every glass
    surface on screen and glass typing, scrolling and menus cost far more than solid. There only the
