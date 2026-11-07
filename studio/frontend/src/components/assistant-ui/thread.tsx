@@ -3505,6 +3505,7 @@ const Composer: FC<{
       .claimAudioAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
@@ -3556,8 +3557,18 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                requeue(intents.slice(index));
-                return;
+                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
               }
             } catch {
               // The adapter toasted. Keep going: a later, smaller clip may still fit.
@@ -3620,6 +3631,7 @@ const Composer: FC<{
       .claimVideoAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
       nativeAttachmentOwnerRef.current === identityAtSetup;
@@ -3669,8 +3681,18 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                requeue(intents.slice(index));
-                return;
+                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
               }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
@@ -3728,6 +3750,7 @@ const Composer: FC<{
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     // A fresh chat re-keys from "single:new" to its thread id under the same composer, so follow it.
     const stillThisComposer = () =>
@@ -3788,8 +3811,18 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                requeue(intents.slice(index));
-                return;
+                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
               }
             } catch {
               // Chat-wide failure and the adapter already toasted: stop quietly.
@@ -3860,6 +3893,7 @@ const Composer: FC<{
       .claimImageAttachments(identityAtSetup, targetKey);
     let disposed = false;
     let draining = false;
+    const cancelledOnce = new Set<string>();
 
     const stillThisComposer = () =>
       nativeAttachmentOwnerRef.current === identityAtSetup;
@@ -3908,8 +3942,18 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
               if (wasAttachmentAddCancelled(file)) {
-                requeue(intents.slice(index));
-                return;
+                // Same owner and key: the destination itself refused (e.g. a deleted chat). Retry once, never spin.
+                const sameDestination =
+                  stillThisComposer() &&
+                  nativeAttachmentTargetKeyRef.current === targetKey;
+                if (!sameDestination || !cancelledOnce.has(intent.id)) {
+                  if (sameDestination) cancelledOnce.add(intent.id);
+                  requeue(intents.slice(index));
+                  return;
+                }
+                cancelledOnce.delete(intent.id);
+                cancelQueuedSendRef.current?.();
+                continue;
               }
             } catch {
               if (stillThisComposer()) cancelQueuedSendRef.current?.();

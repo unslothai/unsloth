@@ -131,7 +131,7 @@ async function settle() {
 
 function harness(
   kind: Kind,
-  stage: "native read" | "adapter add" = "native read",
+  stage: "native read" | "adapter add" | "destination refused" = "native read",
   initial = original,
 ) {
   const { useNativeIntentStore: store } = loadWithStubs<
@@ -172,6 +172,10 @@ function harness(
           addAttempts <= 3,
           "a cancelled add must not loop through the same drain",
         );
+        if (stage === "destination refused") {
+          cancelledAdds.add(file);
+          return;
+        }
         const owner = ownerFor(destination);
         if (firstAdd && stage === "adapter add") {
           firstAdd = false;
@@ -347,4 +351,19 @@ for (const kind of ["Image", "OpenDocument", "Audio", "Video"] as const) {
       });
     }
   }
+}
+
+for (const kind of ["Image", "OpenDocument", "Audio", "Video"] as const) {
+  test(`${kind}: a destination that keeps refusing the add is retried once, not looped`, async () => {
+    const h = harness(kind, "destination refused");
+    try {
+      await h.finishRead();
+      assert.equal(h.addAttempts, 2);
+      assert.deepEqual(h.attached, []);
+      assert.deepEqual(h.pending(original.key), []);
+      assert.deepEqual(h.cancelled, [original.key]);
+    } finally {
+      h.cleanup();
+    }
+  });
 }
