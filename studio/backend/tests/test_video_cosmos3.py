@@ -406,9 +406,8 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
         for part in (
             f"'{NANO}'",
             "pip install cosmos-guardrail",
-            _GUARDRAIL_REPO,
-            "hf auth login",
-            "HF_TOKEN",
+            f"https://huggingface.co/{_GUARDRAIL_REPO}",
+            "token in Settings",
             f"{_OPT_OUT_ENV}=0",
         ):
             assert part in refusal, part
@@ -806,16 +805,65 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
     for part in (
         f"'{NANO}'",
         f"https://huggingface.co/{_GUARDRAIL_REPO}",
-        "hf auth login",
-        "HF_TOKEN",
+        "token in Settings",
         f"{_OPT_OUT_ENV}=0",
     ):
         assert part in message, part
-    assert "401 Client Error" not in message
+    assert "401 Client Error" not in message and "pip install" not in message
     # Another repo's gate keeps its own error.
     monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load("nvidia/Cosmos3-Nano"))
     with pytest.raises(OSError, match = "safety checker"):
         _loaded(NANO)
+
+
+def _guardrail_downloads(monkeypatch):
+    """A cosmos_guardrail whose module-level snapshot_download, as the real package calls it, records each token."""
+    seen = []
+
+    def snapshot_download(
+        repo_id,
+        token = "ambient",
+        **kwargs,
+    ):
+        seen.append(token)
+        return "/nonexistent"
+
+    inner = types.ModuleType("cosmos_guardrail.cosmos_guardrail")
+    inner.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "cosmos_guardrail.cosmos_guardrail", inner)
+    return inner, seen
+
+
+@pytest.mark.parametrize(
+    "token, sent",
+    [("hf_settings", "hf_settings"), (False, False), (None, "ambient"), ("  ", "ambient")],
+)
+def test_the_guardrail_download_gets_the_loads_token(cosmos3_runtime, monkeypatch, token, sent):
+    _set_guardrail(monkeypatch, "installed")
+    inner, seen = _guardrail_downloads(monkeypatch)
+    original = inner.snapshot_download
+
+    def from_pretrained(cls, source, **kwargs):
+        sys.modules["cosmos_guardrail.cosmos_guardrail"].snapshot_download(
+            _GUARDRAIL_REPO, allow_patterns = ["blocklist/*"]
+        )
+        return _real_from_pretrained.__func__(cls, source, **kwargs)
+
+    _real_from_pretrained = _FakeCosmos3Pipeline.__dict__["from_pretrained"]
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", classmethod(from_pretrained))
+    VideoBackend().load_pipeline(NANO, model_kind = "pipeline", hf_token = token)
+    assert seen == [sent]
+    assert inner.snapshot_download is original
+
+
+def test_the_guardrail_token_scope_restores_on_a_failed_load(monkeypatch):
+    inner, _ = _guardrail_downloads(monkeypatch)
+    original = inner.snapshot_download
+    with pytest.raises(RuntimeError):
+        with vc3.guardrail_hub_token("hf_x"):
+            assert inner.snapshot_download is not original
+            raise RuntimeError("load failed")
+    assert inner.snapshot_download is original
 
 
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):

@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import importlib
 import importlib.util
 import json
 import os
@@ -20,17 +22,10 @@ SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 # Passed as None to from_pretrained: Studio renders video only.
 NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
-# cosmos_guardrail downloads its weights from this gated repo when the pipeline is built.
 GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
-# That download sends only the ambient Hub login (HF_TOKEN or `hf auth login`), never the Unsloth settings token.
-_GUARDRAIL_ACCESS = (
-    f"Accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, sign in with that Hugging Face account where "
-    f"Unsloth Studio runs (hf auth login, or set HF_TOKEN; this download does not use the token in Unsloth settings), "
-    f"then restart Unsloth Studio and load again."
-)
-_GUARDRAIL_OPT_OUT = (
-    f"To run without the guardrail, set {SAFETY_CHECKER_ENV}=0; the model card's terms and safe use stay your "
-    f"responsibility."
+_GUARDRAIL_STEPS = (
+    f"accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, add that account's Hugging Face token in "
+    f"Settings, and load again. Or set {SAFETY_CHECKER_ENV}=0 to run without it at your own responsibility."
 )
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
@@ -117,11 +112,7 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
         return None
     if not checkpoint_enables_safety_checker(repo_id, index):
         return None
-    return (
-        f"'{repo_id}' needs NVIDIA's Cosmos guardrail: pip install cosmos-guardrail in Unsloth Studio's Python "
-        f"environment. Its weights are in the gated Hugging Face repo {GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} "
-        f"{_GUARDRAIL_OPT_OUT}"
-    )
+    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: pip install cosmos-guardrail, restart, {_GUARDRAIL_STEPS}"
 
 
 def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
@@ -132,10 +123,30 @@ def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
     found = _HUB_REPO_RE.search(str(gated)) if gated is not None else None
     if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
         return None
-    return (
-        f"'{repo_id}' could not start NVIDIA's Cosmos guardrail: Hugging Face refused access to the gated repo "
-        f"{GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} {_GUARDRAIL_OPT_OUT}"
-    )
+    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
+
+
+@contextlib.contextmanager
+def guardrail_hub_token(token: Any):
+    """cosmos_guardrail downloads with no token argument, so it would skip the Settings token and lend a managed
+    account the ambient login; this sends the load's own token (None keeps the ambient login)."""
+    module = None
+    if isinstance(token, str):
+        token = token.strip() or None
+    if token is not None:
+        try:
+            module = importlib.import_module(f"{GUARDRAIL_PACKAGE}.{GUARDRAIL_PACKAGE}")
+            download = module.snapshot_download
+        except (ImportError, AttributeError):
+            module = None
+    if module is None:
+        yield
+        return
+    module.snapshot_download = functools.partial(download, token = token)
+    try:
+        yield
+    finally:
+        module.snapshot_download = download
 
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:
