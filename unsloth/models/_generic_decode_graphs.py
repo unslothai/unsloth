@@ -18,7 +18,9 @@ disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECO
 (16) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
 
 import collections
+import collections.abc
 import contextlib
+import warnings
 import copy
 import functools
 import os
@@ -114,8 +116,104 @@ class _Cuda:
         return torch.cuda.current_stream()
 
     @staticmethod
-    def record(pool, fn, cache):
-        """(graph, fn()) with fn's launches captured into graph (`cache`: for host stand-ins)."""
+    def device_stream(index):
+        return torch.cuda.current_stream(index)
+
+    @staticmethod
+    def multidevice_supported():
+        return True
+
+    @staticmethod
+    def mempool():
+        # One graph pool per other card, shared by that card's segments (captured and replayed in order).
+        return torch.cuda.graph_pool_handle()
+
+    @staticmethod
+    def side_stream(index):
+        return torch.cuda.Stream(device = index)
+
+    @staticmethod
+    @contextlib.contextmanager
+    def on_streams(streams):
+        """The other cards' current streams set to `streams` ({index: stream}), restored after."""
+        before = {d: torch.cuda.current_stream(d) for d in streams}
+        here = torch.cuda.current_device()
+        try:
+            for d, stream in streams.items():
+                stream.wait_stream(before[d])
+                with torch.cuda.device(d):
+                    torch.cuda.set_stream(stream)
+            yield
+        finally:
+            for d, stream in before.items():
+                stream.wait_stream(streams[d])
+                with torch.cuda.device(d):
+                    torch.cuda.set_stream(stream)
+            torch.cuda.set_device(here)
+
+    @staticmethod
+    def card_of(value):
+        """The card index a tensor lives on, or None (host tensors)."""
+        if not value.is_cuda:
+            return None
+        return value.device.index if value.device.index is not None else torch.cuda.current_device()
+
+    @staticmethod
+    def index_of(device):
+        """The card index a send_to_device target names (int, "cuda:1", torch.device), or None."""
+        if isinstance(device, int):
+            return device
+        try:
+            device = torch.device(device)
+        except Exception:
+            return None
+        if device.type != "cuda":
+            return None
+        return device.index if device.index is not None else torch.cuda.current_device()
+
+    @staticmethod
+    def card_device(index):
+        return torch.device("cuda", index)
+
+    @staticmethod
+    def new_graph():
+        return torch.cuda.CUDAGraph()
+
+    @staticmethod
+    def begin_on(graph, pool, index):
+        """Capture on card `index`'s current stream (its side stream, made current by on_streams)."""
+        torch.cuda.set_device(index)
+        G._begin(graph, pool)
+
+    @staticmethod
+    def end_on(graph):
+        with warnings.catch_warnings():
+            # A segment with no kernels (the tail after the last hand-off) is an empty, valid graph.
+            warnings.simplefilter("ignore")
+            G._end(graph)
+
+    @staticmethod
+    def record(
+        pool,
+        fn,
+        cache,
+        others = None,
+        mempools = None,
+    ):
+        """(graph, fn()) with fn's launches captured into graph (`cache`: for host stand-ins).
+        `others` ({index: stream}): the other cards of a model split over cards, their side streams
+        current there (on_streams). The step is then captured as one graph per run of work on one
+        card, cut where accelerate's AlignDevicesHook moves tensors to another card; those hand-offs
+        run eagerly between the segments' replays (_Segments). Capturing a cross-card copy is not
+        possible without peer access (cudaErrorStreamCaptureUnsupported on PCIe T4s)."""
+        if others:
+            here = torch.cuda.current_device()
+            pools = dict(mempools)
+            pools[here] = pool
+            try:
+                return _SegmentRecorder(_BACKEND, pools, here).run(fn)
+            finally:
+                torch.cuda.set_device(here)
         graph = torch.cuda.CUDAGraph()
         G._begin(graph, pool)
         try:
@@ -130,6 +228,143 @@ class _Cuda:
             raise
         G._end(graph)
         return graph, out
+
+
+class _Segments:
+    """One decode step of a model split over cards: ("graph", graph, card) parts replayed on their card's
+    current stream, and ("copy", dst, src) hand-offs (accelerate's moves at a block boundary) run eagerly
+    between them into the static buffers the next segment reads. Same order as the capture."""
+
+    def __init__(self):
+        self.parts = []
+
+    def replay(self):
+        for kind, a, b in self.parts:
+            if kind == "graph":
+                with _BACKEND.device(b):
+                    a.replay()
+            else:
+                # Eager cross-card copy: PyTorch orders it after src's stream and before dst's.
+                a.copy_(b)
+
+
+class _SegmentRecorder:
+    """Captures fn() as per-card segments. accelerate's AlignDevicesHook pre_forward / post_forward move
+    tensors through accelerate.hooks.send_to_device; while recording, that name points at self.send:
+    the first move of a tensor to another card ends the open segment, copies eagerly into a buffer kept
+    for replay (recorded as a hand-off), and the next segment starts on the target card when the hook
+    returns. A tensor already moved to that card in this step reuses its buffer (no new cut), so a
+    layer-invariant input (rotary cos / sin, masks) crosses once."""
+
+    def __init__(self, backend, pools, first):
+        self.backend = backend
+        self.pools = pools
+        self.segments = _Segments()
+        self.graph = None
+        self.card = first
+        self.pending = None
+        self.moved = {}
+        self.original = None
+
+    def begin(self, card):
+        self.graph = self.backend.new_graph()
+        self.card = card
+        self.backend.begin_on(self.graph, self.pools[card], card)
+
+    def end(self):
+        if self.graph is not None:
+            graph, self.graph = self.graph, None
+            self.backend.end_on(graph)
+            self.segments.parts.append(("graph", graph, self.card))
+
+    def resume(self):
+        if self.pending is not None and self.graph is None:
+            card, self.pending = self.pending, None
+            self.begin(card)
+
+    def _move(self, value, card, target, skip_keys):
+        if isinstance(value, torch.Tensor):
+            if self.backend.card_of(value) in (None, card):
+                return value
+            key = (id(value), card)
+            hit = self.moved.get(key)
+            if hit is not None:
+                return hit[1]
+            # First crossing of this tensor to `card`: the segment ends here, the copy runs eagerly.
+            self.end()
+            dst = value.to(target)
+            self.moved[key] = (value, dst)
+            self.segments.parts.append(("copy", dst, value))
+            self.pending = card
+            return dst
+        if hasattr(value, "to"):
+            # Not a tensor but movable (BatchEncoding, ...): accelerate's own move, as eager. A real
+            # cross-card copy in it fails the capture, which refuses the key.
+            return self.original(value, target, skip_keys = skip_keys)
+        if isinstance(value, (tuple, list)):
+            from accelerate.utils.operations import honor_type
+            return honor_type(value, (self._move(v, card, target, skip_keys) for v in value))
+        if isinstance(value, collections.abc.Mapping):
+            skip = [skip_keys] if isinstance(skip_keys, str) else (skip_keys or [])
+            return type(value)(
+                {
+                    k: v if k in skip else self._move(v, card, target, skip_keys)
+                    for k, v in value.items()
+                }
+            )
+        return value
+
+    def send(
+        self,
+        original,
+        tensor,
+        device,
+        non_blocking = False,
+        skip_keys = None,
+    ):
+        card = self.backend.index_of(device)
+        if card is None:
+            return original(tensor, device, non_blocking = non_blocking, skip_keys = skip_keys)
+        return self._move(tensor, card, self.backend.card_device(card), skip_keys)
+
+    def run(self, fn):
+        import accelerate.hooks as hooks
+
+        original_send = hooks.send_to_device
+        cls = hooks.AlignDevicesHook
+        original_pre, original_post = cls.pre_forward, cls.post_forward
+        recorder = self
+
+        def pre_forward(hook, module, *args, **kwargs):
+            out = original_pre(hook, module, *args, **kwargs)
+            recorder.resume()
+            return out
+
+        def post_forward(hook, module, output):
+            out = original_post(hook, module, output)
+            recorder.resume()
+            return out
+
+        self.original = original_send
+        hooks.send_to_device = functools.partial(self.send, original_send)
+        cls.pre_forward, cls.post_forward = pre_forward, post_forward
+        try:
+            self.begin(self.card)
+            out = fn()
+            self.resume()
+            self.end()
+        except BaseException:
+            if self.graph is not None:
+                try:
+                    self.backend.end_on(self.graph)
+                except Exception:
+                    pass
+                self.graph = None
+            raise
+        finally:
+            hooks.send_to_device = original_send
+            cls.pre_forward, cls.post_forward = original_pre, original_post
+        return self.segments, out
 
 
 _BACKEND = _Cuda
@@ -222,7 +457,13 @@ def plan(model, args, kwargs, input_ids):
             return "eager"
     if not kept:
         try:
-            free = _BACKEND.free_bytes(input_ids.device)
+            # A model split over cards needs room for its graph pool on every card it runs on.
+            devices = [input_ids.device] + [
+                torch.device(_BACKEND.device_type, d)
+                for d in sorted(set((getattr(model, "hf_device_map", None) or {}).values()))
+                if type(d) is int and d != input_ids.device.index
+            ]
+            free = min(_BACKEND.free_bytes(d) for d in devices)
         except Exception:
             free = None
         if free is not None and free < _FREE_MARGIN_BYTES:
@@ -372,6 +613,11 @@ class _State:
     def __init__(self):
         self.graphs = collections.OrderedDict()
         self.pool = None
+        # A model split over cards: the other cards' indices and their MemPools for the graphs.
+        self.others = ()
+        self.mempools = {}
+        self.side = {}
+        self.fp_reason = None
         self.stream = None
         self.fingerprint = None
         self.optimizer_steps = -1
@@ -406,6 +652,7 @@ class _State:
         self.cache_sig = None
         # A pool whose graphs are all freed is released by the allocator: never reuse its handle.
         self.pool = None
+        self.mempools = {}
         self.drop_kept()
 
     def invalidate(self):
@@ -637,6 +884,8 @@ def stats(model):
         "max_captures_per_key": max(state.key_captures.values(), default = 0),
         "capture_errors": list(state.capture_errors),
         "check": dict(state.check),
+        # Other cards of a model split over cards that the graphs run on.
+        "other_devices": list(state.others),
     }
 
 
@@ -931,24 +1180,93 @@ def _outputs_equal(a, b):
     return True
 
 
-def _fingerprint(model):
+def _multidevice_enabled():
+    return os.environ.get("UNSLOTH_DECODE_MULTIDEVICE_GRAPHS", "1") != "0"
+
+
+def _hooks_align_only(model):
+    """Every accelerate hook in `model` only moves tensors to its block's card (AlignDevicesHook, no
+    offload, no weights map): a model split over cards by device_map / Unsloth's layer split. Offload,
+    other hook types or an unreadable hook keep the model eager."""
+    hooked = [m.__dict__["_hf_hook"] for m in model.modules() if "_hf_hook" in m.__dict__]
+    if not hooked:
+        return True
+    try:
+        from accelerate.hooks import AlignDevicesHook, SequentialHook
+    except Exception:
+        return False
+    for hook in hooked:
+        hooks = list(hook.hooks) if isinstance(hook, SequentialHook) else [hook]
+        for h in hooks:
+            if type(h) is not AlignDevicesHook:
+                return False
+            if h.offload or getattr(h, "offload_buffers", False) or h.weights_map is not None:
+                return False
+            target = h.execution_device
+            if target is not None:
+                try:
+                    target = torch.device(target)
+                except Exception:
+                    return False
+                if target.type != _BACKEND.device_type:
+                    return False
+    return True
+
+
+def _param_devices(model):
+    # An input embedding offloaded to the host is looked up outside the graph: its device does not count.
+    host = _offloaded_input_embedding(model)
+    exempt = {id(p) for p in host.parameters()} if host is not None else ()
+    return {p.device for p in model.parameters() if id(p) not in exempt}
+
+
+def _device_index(device):
+    return device.index if device.index is not None else _BACKEND.current_device()
+
+
+def _multidevice_reason(model, devices):
+    """None when a model split over several cards may be graphed as one multi-card graph."""
+    if not _multidevice_enabled():
+        return "multi-device (UNSLOTH_DECODE_MULTIDEVICE_GRAPHS=0)"
+    if not _BACKEND.multidevice_supported():
+        return "multi-device capture needs a newer torch"
+    if not _hooks_align_only(model):
+        return "multi-device with offload or non-align hooks"
+    return None
+
+
+def _fingerprint(model, state = None):
     """Parameters (address, dtype, shape, in-place version), quant state and adapter state; None
-    when the model is not on exactly one CUDA device."""
+    when the model is not on CUDA cards only, or is split over cards in a way this path does not
+    graph (offload, other hooks). `state` gets the other cards of a split model and the refusal."""
     from ..kernels import utils as K
 
     items = []
-    devices = set()
     host = _offloaded_input_embedding(model)
     # Its weights stay fingerprinted, by identity too (a swapped table re-captures); only their device is exempt.
     exempt = {id(p) for p in host.parameters()} if host is not None else ()
     for p in model.parameters():
         if id(p) in exempt:
             items.append(id(p))
-        else:
-            devices.add(p.device)
         items.append((p.data_ptr(), p.dtype, tuple(p.shape), G._version(p)))
-    if len(devices) != 1 or next(iter(devices)).type != _BACKEND.device_type:
+    devices = _param_devices(model)
+    if not devices or any(d.type != _BACKEND.device_type for d in devices):
+        if state is not None:
+            state.fp_reason = "not one CUDA device / adapters"
         return None
+    others = ()
+    if len(devices) > 1:
+        reason = _multidevice_reason(model, devices)
+        if reason is not None:
+            if state is not None:
+                state.fp_reason = reason
+            return None
+        here = _BACKEND.current_device()
+        others = tuple(sorted({_device_index(d) for d in devices} - {here}))
+    if state is not None:
+        state.others = others
+        state.fp_reason = None
+    items.append(("devices", tuple(sorted(str(d) for d in devices))))
     for b in model.buffers():
         items.append((b.data_ptr(), b.dtype, tuple(b.shape)))
     for module in model.modules():
@@ -961,6 +1279,8 @@ def _fingerprint(model):
             )
     adapters = G._adapter_state(model)
     if adapters is None:
+        if state is not None:
+            state.fp_reason = "not one CUDA device / adapters"
         return None
     items.extend(adapters)
     items.append(K._OPTIMIZER_STEPS)
@@ -1143,20 +1463,20 @@ def decode_step(
     from ..kernels import utils as K
 
     if state.recheck or state.optimizer_steps != K._OPTIMIZER_STEPS:
-        fingerprint = _fingerprint(model)
+        fingerprint = _fingerprint(model, state)
         if fingerprint is None:
             # Ineligible until the next generate() call re-checks.
             state.invalidate()
             state.recheck = False
             state.optimizer_steps = K._OPTIMIZER_STEPS
-            return _refusal(state, "not one CUDA device / adapters")
+            return _refusal(state, state.fp_reason or "not one CUDA device / adapters")
         if fingerprint != state.fingerprint:
             state.invalidate()
             state.fingerprint = fingerprint
         state.recheck = False
         state.optimizer_steps = K._OPTIMIZER_STEPS
     elif state.fingerprint is None:
-        return _refusal(state, "not one CUDA device / adapters")
+        return _refusal(state, state.fp_reason or "not one CUDA device / adapters")
 
     kwargs = _host_embeds(model, _placeholder_embeds(model, _mrope_positions(model, kwargs)))
     leaves = []
@@ -1208,10 +1528,29 @@ def decode_step(
             buffer.copy_(_compact(leaf))
         if not entry.validated or _validate_all():
             return _validate(state, key, entry, forward, kwargs, cache)
-        entry.graph.replay()
+        _replay(state, entry)
         _advance(cache, 1)
         state.replays += 1
         return _map_outputs(entry.outputs, torch.Tensor.clone)
+
+
+def _replay(state, entry):
+    """Replays from this card's current stream. A split model's segments run on their own cards'
+    current streams: every card's stream waits on the others before (the eager work of the step
+    before) and after (outputs and cache rows are read on any of them)."""
+    if not state.others:
+        entry.graph.replay()
+        return
+    streams = [_BACKEND.current_stream()] + [_BACKEND.device_stream(d) for d in state.others]
+    for a in streams:
+        for b in streams:
+            if a is not b:
+                a.wait_stream(b)
+    entry.graph.replay()
+    for a in streams:
+        for b in streams:
+            if a is not b:
+                a.wait_stream(b)
 
 
 def _compact(leaf):
@@ -1246,6 +1585,13 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             state.pool = None
         if state.pool is None:
             state.pool = _BACKEND.pool()
+            state.mempools = {}
+        for d in state.others:
+            if d not in state.mempools:
+                state.mempools[d] = _BACKEND.mempool()
+            if d not in state.side:
+                state.side[d] = _BACKEND.side_stream(d)
+        side = {d: state.side[d] for d in state.others}
         if state.stream is None:
             state.stream = _BACKEND.new_stream()
         stream = state.stream
@@ -1265,7 +1611,12 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     stream.wait_stream(_BACKEND.current_stream())
     graph = None
     try:
-        with _BACKEND.stream(stream):
+        # A split model's other cards run on their side streams in the warm-up too (their cuBLAS
+        # workspaces exist before the capture).
+        with (
+            _BACKEND.stream(stream),
+            _BACKEND.on_streams(side) if side else contextlib.nullcontext(),
+        ):
             # Warm-up: JIT, cuBLAS workspaces and lazy caches built outside the capture.
             outputs = forward(**static_kwargs)
             stream.synchronize()
@@ -1277,9 +1628,14 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             after = _snapshot(cache)
             graph = False
             try:
-                graph, static_outputs = _BACKEND.record(
-                    state.pool, lambda: forward(**static_kwargs), cache
-                )
+                if side:
+                    graph, static_outputs = _BACKEND.record(
+                        state.pool, lambda: forward(**static_kwargs), cache, side, state.mempools
+                    )
+                else:
+                    graph, static_outputs = _BACKEND.record(
+                        state.pool, lambda: forward(**static_kwargs), cache
+                    )
             finally:
                 # Capturing ran the Python update again: put the host counters back.
                 _restore((after[0], []))
@@ -1311,7 +1667,7 @@ def _validate(state, key, entry, forward, kwargs, cache):
     last, so generation continues from its result and cache rows."""
     state.validations += 1
     start = _snapshot(cache)
-    entry.graph.replay()
+    _replay(state, entry)
     _restore(start)
     eager = forward(**kwargs)
     equal = _outputs_equal(eager, entry.outputs)

@@ -477,7 +477,7 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
 
 def test_model_on_two_devices_stays_eager_for_the_call(host, llama, monkeypatch):
     _fresh(llama)
-    monkeypatch.setattr(GG, "_fingerprint", lambda model: None)
+    monkeypatch.setattr(GG, "_fingerprint", lambda model, state = None: None)
     ids, mask = _ids(llama)
     assert torch.equal(_generate(llama, ids, mask, False), _generate(llama, ids, mask, True))
     s = GG.stats(llama)
