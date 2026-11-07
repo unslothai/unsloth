@@ -134,15 +134,11 @@ def test_the_load_defers_the_native_save_and_starts_it_after_the_pins():
     else:
         raise AssertionError("no _native_cache_background branch in load_pipeline")
     pins = min(line for line, n in calls if n == "start_background_pins")
-    starts = [
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "start"
-        and ast.unparse(node.func.value) == "native_writes"
-    ]
-    assert starts and min(starts) > pins
+    # started (or held for the first render) by _start_cache_writes / _HeldCacheWrites, after the pins
+    held = [line for line, n in calls if n in ("_HeldCacheWrites", "_start_cache_writes")]
+    assert held and min(held) > pins
+    starter = inspect.getsource(V._start_cache_writes)
+    assert "native_writes.start()" in starter
 
 
 def test_the_unload_finishes_the_native_writes():
