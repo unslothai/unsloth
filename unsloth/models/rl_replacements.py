@@ -6419,6 +6419,16 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # The JSD reads both heads' weights directly, so forward / backward hooks on a head (its own or torch's
+    # global module hooks) would never fire. Accelerate's _hf_hook is fine: the loss moves to the head device.
+    if _unsloth_global_module_hooks() or any(
+        head._forward_hooks
+        or head._forward_pre_hooks
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+        for head in (student_head, teacher_head)
+    ):
+        return _unsloth_gkd_note_fallback(self, "output head has forward / backward hooks")
     # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
     for unwrapped in (unwrapped_student, unwrapped_teacher):
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
@@ -6602,6 +6612,7 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,
     _unsloth_gkd_chunk_size,

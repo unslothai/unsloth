@@ -431,5 +431,58 @@ def test_every_generated_trainer_with_a_head_guard_defines_the_global_hook_check
     # A trainer that copies a chunked-head guard into its source must copy the helper it calls.
     for trainer, items in rl.RL_PRE_ITEMS.items():
         pre = "\n".join(items)
-        if "def _unsloth_dpo_chunked_head(" in pre or "def _unsloth_pref_chunked_head(" in pre:
+        if any(
+            f"def {guard}(" in pre
+            for guard in (
+                "_unsloth_dpo_chunked_head",
+                "_unsloth_pref_chunked_head",
+                "_unsloth_gkd_chunked_loss",
+            )
+        ):
             assert "def _unsloth_global_module_hooks(" in pre, trainer
+
+
+_GLOBAL_HOOKS = {
+    "forward": "register_module_forward_hook",
+    "forward_pre": "register_module_forward_pre_hook",
+    "full_backward": "register_module_full_backward_hook",
+    "full_backward_pre": "register_module_full_backward_pre_hook",
+}
+
+
+@pytest.mark.parametrize("hook", list(_GLOBAL_HOOKS))
+def test_global_module_hooks_see_the_head_through_trl_math(hook, monkeypatch):
+    """Every torch global module hook must still fire on the head: the chunked path declines while one is registered,
+    gives TRL's numbers, and engages again once it is removed."""
+    from torch.nn.modules import module as module_hooks
+
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES", raising = False)
+    cls, source = _trl_class("orpo")
+    stock = _compile(source)
+    patched = _compile(rl.orpo_trainer_concatenated_forward("concatenated_forward", source))
+    model = _HiddenStatesLM(_ToyLM())
+    head = model.get_output_embeddings()
+    params = list(model.parameters())
+    batch = _batch(61)
+    seen = []
+    handle = getattr(module_hooks, _GLOBAL_HOOKS[hook])(
+        lambda m, *a: seen.append(1) if m is head else None
+    )
+    try:
+        want = _run(_trainer(cls, "orpo"), stock, model, batch, params)
+        assert seen, "control: the hook fires on the head under TRL's own forward"
+        seen.clear()
+        trainer = _trainer(cls, "orpo")
+        got = _run(trainer, patched, model, batch, params)
+    finally:
+        handle.remove()
+    assert getattr(trainer, "_unsloth_pref_chunked_calls", 0) == 0
+    assert seen, "the chunked path skipped a global module hook on the head"
+    assert torch.equal(got[0], want[0])
+    for g, w in zip(got[2], want[2]):
+        assert torch.equal(g, w)
+    trainer = _trainer(cls, "orpo")
+    _run(trainer, patched, model, batch, params)
+    assert (
+        trainer._unsloth_pref_chunked_calls == 1
+    ), "removing the hook must restore the chunked path"
