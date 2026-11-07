@@ -2831,6 +2831,123 @@ def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
 
 
+def test_codex_keeps_the_users_instructions_skills_rules_and_prompts(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    (source_home / "rules").mkdir()
+    (source_home / "rules" / "default.rules").write_text(
+        'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    )
+    (source_home / "prompts").mkdir()
+    (source_home / "prompts" / "summarize.md").write_text("Summarize the diff.\n")
+    (source_home / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "Answer in French.\n"
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert "forbidden" in (home / "rules" / "user-default.rules").read_text()
+    assert not (home / "rules").is_symlink()
+    assert (home / "prompts" / "summarize.md").read_text() == "Summarize the diff.\n"
+    # Codex persists an approval by appending to $CODEX_HOME/rules/default.rules.
+    with open(home / "rules" / "default.rules", "a") as rules:
+        rules.write('prefix_rule(pattern = ["ls"], decision = "allow")\n')
+    assert "allow" not in (source_home / "rules" / "default.rules").read_text()
+
+    (source_home / "AGENTS.md").unlink()
+    (source_home / "AGENTS.override.md").write_text("Answer in German.\n")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+    assert not os.path.lexists(home / "AGENTS.md")
+    assert (source_home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+
+
+def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "old").mkdir(parents = True)
+    (source_home / "AGENTS.md").write_text("first\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "old").is_dir()
+
+    (source_home / "AGENTS.md").write_text("second\n")
+    (source_home / "skills" / "old").rmdir()
+    (source_home / "skills" / "new").mkdir()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "second\n"
+    assert not (home / "skills" / "old").exists()
+    assert (home / "skills" / "new").is_dir()
+
+
+def test_codex_merges_user_rules_into_a_used_saved_home_as_real_files(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "rules").mkdir(parents = True)
+    forbid = 'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    (source_home / "rules" / "default.rules").write_text(forbid)
+    (source_home / "rules" / "team.rules").write_text(forbid)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "rules").mkdir(parents = True)
+    approved = 'prefix_rule(pattern = ["ls"], decision = "allow")\n'
+    (home / "rules" / "default.rules").write_text(approved)
+
+    for _ in range(2):
+        assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+        rules = {p.name: p for p in (home / "rules").iterdir()}
+        assert set(rules) == {"default.rules", "user-default.rules", "team.rules"}
+        assert not any(p.is_symlink() for p in rules.values())
+        assert rules["default.rules"].read_text() == approved
+        assert rules["user-default.rules"].read_text() == forbid
+        assert rules["team.rules"].read_text() == forbid
+
+    (source_home / "rules" / "team.rules").unlink()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "rules" / "team.rules")
+    assert (source_home / "rules" / "default.rules").read_text() == forbid
+
+
+def test_codex_merges_user_skills_into_a_used_saved_home(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "skills" / ".system").mkdir(parents = True)
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert (home / "skills" / ".system").is_dir()
+    assert not (source_home / "skills" / ".system").exists()
+
+    shutil.rmtree(source_home / "skills" / "release")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "skills" / "release")
+    assert (home / "skills" / ".system").is_dir()
+
+
+def test_codex_links_user_files_from_a_relative_codex_home(fake_studio, tmp_path, monkeypatch):
+    (tmp_path / "user-codex").mkdir()
+    (tmp_path / "user-codex" / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", "user-codex")
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (tmp_path / "agents" / "codex" / "AGENTS.md").read_text() == "Answer in French.\n"
+
+
 def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"
