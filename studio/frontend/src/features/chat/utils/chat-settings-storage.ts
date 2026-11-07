@@ -230,6 +230,23 @@ function sanitizeCustomPresets(
   );
 }
 
+/** Keeps null, since outgoing patches pass through here too and null is how a link is removed. */
+function sanitizeModelPresets(
+  value: unknown,
+): Record<string, string | null> | undefined {
+  if (!isRecord(value)) return undefined;
+  const links: Record<string, string | null> = {};
+  for (const [modelId, name] of Object.entries(value)) {
+    if (!modelId) continue;
+    if (name === null) {
+      links[modelId] = null;
+    } else if (typeof name === "string" && name.trim()) {
+      links[modelId] = name.trim();
+    }
+  }
+  return links;
+}
+
 function sanitizePresetSource(value: unknown): ChatPresetSource | undefined {
   return typeof value === "string" && CHAT_PRESET_SOURCES.has(value)
     ? (value as ChatPresetSource)
@@ -321,6 +338,8 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     settings.activePreset = value.activePreset.trim();
   }
   if (activePresetSource) settings.activePresetSource = activePresetSource;
+  const modelPresets = sanitizeModelPresets(value.modelPresets);
+  if (modelPresets !== undefined) settings.modelPresets = modelPresets;
   if (autoTitle !== undefined) settings.autoTitle = autoTitle;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (preserveThinking !== undefined)
@@ -403,6 +422,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
+    settings.modelPresets === undefined &&
     settings.autoTitle === undefined &&
     settings.reasoningEffort === undefined &&
     settings.preserveThinking === undefined &&

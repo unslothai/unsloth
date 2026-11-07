@@ -664,6 +664,30 @@ def test_picking_a_preset_can_forget_one_model_s_params(tmp_path, monkeypatch):
     assert "forgetInferenceParamsByModel" not in settings
 
 
+def test_model_preset_links_merge_per_model_and_null_removes_one(tmp_path, monkeypatch):
+    """Each model links to its own preset (#14900) and a patch names only the model it changed, so
+    the merge keeps the others. A null link is the removal and is not stored."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge({"modelPresets": {"qwen": "Research"}})
+    studio_db.upsert_chat_settings_merge({"modelPresets": {"gemma": "Creative"}})
+    assert studio_db.list_chat_settings()["modelPresets"] == {
+        "qwen": "Research",
+        "gemma": "Creative",
+    }
+
+    studio_db.upsert_chat_settings_merge({"modelPresets": {"qwen": None, "llama": "Research"}})
+    assert studio_db.list_chat_settings()["modelPresets"] == {
+        "gemma": "Creative",
+        "llama": "Research",
+    }
+
+    _, applied = studio_db.upsert_chat_settings_merge_if_current(
+        {}, {"modelPresets": {"gemma": None}}
+    )
+    assert applied is True
+    assert studio_db.list_chat_settings()["modelPresets"] == {"llama": "Research"}
+
+
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
