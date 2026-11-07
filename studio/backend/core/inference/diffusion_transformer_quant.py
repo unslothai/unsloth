@@ -212,7 +212,7 @@ def quantize_streamed_weight_only(
     logger: Any = None,
 ) -> tuple[str, ...]:
     """Quantise the still-dense Linears named by ``streamed_weight_only_tokens_for_scheme``; returns their fqns.
-    Host-placed Linears are split and quantised on ``device`` (CUDA) and moved back, as ``quantize_runtime_leftovers``.
+    Host-placed Linears are quantised on CUDA ``device`` and moved back.
     Weight-only (default): the timestep-embedding outlier channels stay dense beside the int8 codes and the fused GEMV
     runs them (``diffusion_int8_gemv``). An artifact loaded with them already weight-only only gets the GEMV forward.
     Best effort: any failure leaves them dense (the build is still valid, only bigger)."""
@@ -260,7 +260,6 @@ def quantize_streamed_weight_only(
         splits: list = []
 
         def _split_and_quantize(module: Any) -> None:
-            # Outliers exist only in "wo" mode, never beside the rotation above.
             if outliers:
                 splits.append(split_outliers_(module, outliers))
             quantize_(module, config)
@@ -2162,7 +2161,7 @@ def _quantize_native(
 
 
 def _hop_device(device: Any) -> Any:
-    """``device`` as a CUDA ``torch.device`` to quantise host-placed Linears on, else None (quantise in place)."""
+    """CUDA ``torch.device`` to quantise host-placed Linears on, else None."""
     if device is None:
         return None
     try:
@@ -2174,8 +2173,7 @@ def _hop_device(device: Any) -> Any:
 
 
 def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:
-    """``fn(module)`` for each module; a host-placed one runs on ``work`` and moves back, the next upload overlapping
-    the current quantise on one helper thread. A raise leaves every module on its home device."""
+    """``fn`` on each module, host-placed ones on ``work``; a raise leaves every module on its home device."""
     if work is None:
         for module in modules:
             fn(module)
@@ -2206,9 +2204,7 @@ def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:
 
 
 def _upload_staged(module: Any, work: Any) -> bool:
-    """``module.to(work)`` through page-locked copies of its own tensors: a pageable host-to-device copy runs at
-    1-2 GB/s on cloud hosts, a pinned one at the link rate. Bitwise a copy; False (nothing moved) when a tensor
-    cannot be staged, so the caller falls back to ``module.to``."""
+    """``module.to(work)`` via pinned copies (pageable H2D is 1-2 GB/s on cloud hosts); False = nothing moved."""
     import torch
 
     try:
@@ -2238,7 +2234,7 @@ def _upload_staged(module: Any, work: Any) -> bool:
 
 
 def _hop_loop(modules: list, fn: Callable[[Any], None], _up: Callable[[Any], Any]) -> None:
-    """Upload module i + 1 on a helper thread while ``fn`` runs on module i; each goes home after ``fn``."""
+    """Upload module i + 1 on a helper thread while ``fn`` runs on module i."""
     from concurrent.futures import ThreadPoolExecutor
 
     pending = None

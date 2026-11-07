@@ -67,7 +67,6 @@ def test_each_module_quantises_on_work_and_returns_home():
     assert seen == [(0, "cuda:0"), (1, "cuda:0"), (2, "cuda:0"), (3, "cuda:0"), (9, "meta")]
     assert all(str(m.weight.device) in ("cpu", "meta") for m in mods)
     assert [m.weight.device.type for m in mods[:4]] == ["cpu"] * 4
-    # a module already off the host is never moved
     assert not any(entry[1] == 9 for entry in log if entry[0] == "to")
 
 
