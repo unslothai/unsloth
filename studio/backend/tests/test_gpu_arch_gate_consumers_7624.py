@@ -544,6 +544,7 @@ def _load_manual_split(
     outputs,
     returncodes,
     env = None,
+    extra_args = None,
 ):
     """load_model in manual mode over two ROCm GPUs, each spawn answering from the lists."""
     for name in (
@@ -637,6 +638,7 @@ def _load_manual_split(
                 gpu_memory_mode = "manual",
                 gpu_layers = 999,
                 tensor_split = (1.0, 1.0),
+                extra_args = extra_args,
             )
         )
     except RuntimeError:
@@ -662,6 +664,20 @@ class TestUnpinnedArchCrashRetryLoad:
         assert _tensor_split_arg(retry_cmd) is None
         assert retry_env["CUDA_VISIBLE_DEVICES"] == "0"
         assert backend._arch_gate_dropped_tensor_split == (1.0, 1.0)
+
+    def test_a_companion_device_on_the_survivor_is_renumbered(self, monkeypatch, tmp_path):
+        crash_on_0 = _MANUAL_SPLIT_CRASH.replace("current device: 1", "current device: 0")
+        _backend, launches, loaded = _load_manual_split(
+            monkeypatch,
+            tmp_path,
+            outputs = [crash_on_0, ""],
+            returncodes = [1, None],
+            extra_args = ["--spec-draft-device", "ROCm1"],
+        )
+        assert loaded
+        retry_cmd, retry_env = launches[1]
+        assert retry_env.get("ROCR_VISIBLE_DEVICES", retry_env["CUDA_VISIBLE_DEVICES"]) == "1"
+        assert retry_cmd[retry_cmd.index("--spec-draft-device") + 1] == "ROCm0"
 
     def test_a_user_main_gpu_keeps_its_error(self, monkeypatch, tmp_path):
         _backend, launches, loaded = _load_manual_split(
