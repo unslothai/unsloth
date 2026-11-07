@@ -36,11 +36,7 @@ def timed(fn, iters = 20):
 
 
 def _identity(run, reference):
-    """Whether ``run``'s dense output is bitwise-identical to the default dispatch's.
-
-    "yes" on exactly one backend names the kernel the dispatcher selected. A backend that cannot
-    run the dense mask at all reports why instead, so the column never silently reads as a
-    mismatch when nothing ran."""
+    """Bitwise match to default dispatch; a backend that cannot run reports why, not a mismatch."""
     if reference is None:
         return "n/a"
     try:

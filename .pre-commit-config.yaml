@@ -26,31 +26,22 @@ repos:
         # half-process files ruff itself skips (which produced churn). vendor/ is
         # repeated here because this hook does not read ruff's config.
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/|^unsloth/_vendor/'
-        # ruff-unsloth is ruff 0.6.9 patched to write this repo's style itself:
-        # `name = value` kwargs and defaults (measured as `=`, so lines break where
-        # stock 0.6.9 breaks them), the def-signature and short-assert magic-comma
-        # rules, and no blank line after the imports of a short nested block.
-        # Source: https://github.com/unslothai/ruff (branch unsloth-0.6.9, see
-        # UNSLOTH.md). Changing one of those rules means a new release there.
-        # One wheel per platform, picked by the marker and checked by its sha256.
-        # No marker tells musl from glibc, so on Alpine pip rejects the manylinux
-        # wheel; the release also has a musllinux one to install by hand. Other
-        # platforms install nothing and the script refuses with an install hint.
+        # ruff-unsloth is ruff 0.6.9 patched for this repo's style (name = value kwargs,
+        # def-signature and short-assert magic commas, nested-import blank lines); rule changes need
+        # a new release; sha256-checked per-platform wheels; Alpine needs the musllinux wheel by
+        # hand (no marker tells musl from glibc).
         additional_dependencies:
           - "ruff-unsloth @ https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/ruff_unsloth-0.6.9.post1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=866eb6575a00bc6ddeb37dc67ed4cd469e7250a3d118c2e4533b1d99be48fb9a ; sys_platform == 'linux' and platform_machine == 'x86_64'"
           - "ruff-unsloth @ https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/ruff_unsloth-0.6.9.post1-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl#sha256=b375c841533dc0a5f8974915995970cb101ed9ce7af414c672a17c183310e3cc ; sys_platform == 'linux' and platform_machine == 'aarch64'"
           - "ruff-unsloth @ https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/ruff_unsloth-0.6.9.post1-py3-none-macosx_11_0_arm64.whl#sha256=5de72e6a4a22007a4d831785dabd6c362e30ec5ab90304e43d8831ae72770776 ; sys_platform == 'darwin' and platform_machine == 'arm64'"
           - "ruff-unsloth @ https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/ruff_unsloth-0.6.9.post1-py3-none-macosx_10_12_x86_64.whl#sha256=bd14fc7bc056a45804675b408480f0b42f8dfd4dc127213e9eb53fa42b5d7d33 ; sys_platform == 'darwin' and platform_machine == 'x86_64'"
           - "ruff-unsloth @ https://github.com/unslothai/ruff/releases/download/v0.6.9-unsloth.1/ruff_unsloth-0.6.9.post1-py3-none-win_amd64.whl#sha256=0847fc1afffa899c918e162b93d04ff985fba4bf8fc7c5577608068d1fd95ebd ; sys_platform == 'win32' and platform_machine == 'AMD64'"
-        # Serial: pre-commit used to start a partition per CPU, each with its own
-        # multithreaded ruff, nproc x nproc threads on pre-commit.ci (#14174). A
-        # long file list is still split into calls that run one after another;
-        # each runs one ruff, and the script spreads the Python pass after it
-        # over a bounded pool.
+        # Serial because per-CPU partitions each ran a multithreaded ruff, giving nproc x nproc
+        # threads on pre-commit.ci (issue 14174); long file lists run as sequential calls, each with
+        # one ruff, and the Python pass uses a bounded pool.
         require_serial: true
-      # Re-pins allowScripts entries after dependency bumps. pre-commit.ci
-      # pushes the fix to PR branches, Dependabot's included, so stale pins
-      # heal without a human in the loop.
+      # Re-pins allowScripts entries after dependency bumps; pre-commit.ci pushes the fix to PR
+      # branches, Dependabot's included, so stale pins heal without a human.
       - id: sync-allow-scripts-pins
         name: Sync allowScripts pins with the frontend lockfile
         # `python <script>`, not a direct exec: autofix commits can drop the executable bit.

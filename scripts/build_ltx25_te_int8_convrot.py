@@ -88,9 +88,7 @@ def build(
         raise SystemExit(f"expected the at-load build, got {config.get('_te_source')!r}")
     quantized = sum(1 for m in model.modules() if isinstance(m, _int8_convrot_linear_class()))
     state = model.state_dict()
-    # The tied head is the embedding under a second name; the loader re-ties it, so it never gets a key of its own.
-    # The dead-tail trim normally drops it already, but a kept head (or a trim that did not engage) must not ship a
-    # second 262k-vocab copy.
+    # Tied lm_head is the embedding again: the loader re-ties it, so drop it before shipping.
     if _head_is_tied(state):
         state.pop("lm_head.weight")
     tensors = {k: v.detach().to("cpu").contiguous() for k, v in state.items()}

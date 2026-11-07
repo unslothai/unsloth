@@ -99,20 +99,13 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends shellcheck || { apt-get update -qq && apt-get install -y --no-install-recommends shellcheck; }'
 
-      # Every check below is read-only against the checkout and independent of the
-      # others, so they run as one parallel group: the job waits for all of them at
-      # the end of the group and fails if any one failed (an informational step keeps
-      # its continue-on-error). They used to run one after another, about 150 s of
-      # the job, and a failure in an early one hid every result after it.
-      #
-      # The two PR-only diff checks are NOT in the group: both run `git fetch` into
-      # this shallow clone, and two concurrent fetches race on .git/shallow.lock.
+      # Read-only independent checks run as one parallel group that fails if any fails
+      # (informational steps keep continue-on-error); the two PR-only diff checks stay out, since
+      # concurrent git fetch calls race on .git/shallow.lock.
       - parallel:
           - name: Python AST/syntax check (every committed .py must compile)
-            # python -m compileall uses the same parser the interpreter
-            # uses, so anything broken here would also crash at
-            # `import X` on a user's machine. Sub-second across 350+
-            # files. Hard gate.
+            # python -m compileall uses the interpreter's own parser, so anything it rejects would
+            # also crash at import on a user's machine; sub-second across 350+ files; hard gate.
             run: |
               python -m compileall -q -j 0 \
                 unsloth unsloth_cli studio tests cli.py unsloth-cli.py
@@ -139,10 +132,9 @@ jobs:
             run: python scripts/lint_risky_loaders.py
 
           - name: Python ruff check (whole repo)
-            # The narrow rule set in pyproject.toml [tool.ruff.lint]
-            # selects E9 / F63 / F7 / F82 -- syntax errors, broken
-            # comparisons, undefined names. The whole repo passes today,
-            # so this is a hard gate.
+            # The narrow ruff rule set in pyproject.toml [tool.ruff.lint] selects E9, F63, F7 and
+            # F82 (syntax errors, broken comparisons, undefined names); the whole repo passes, so it
+            # is a hard gate.
             run: |
               ruff check unsloth unsloth_cli studio tests cli.py unsloth-cli.py
 
@@ -162,14 +154,9 @@ jobs:
               python scripts/verify_import_hoist.py --self-test
 
           - name: Duplicate-definition verifier self-test
-            # scripts/lint_duplicate_definitions.py refuses a name bound twice in one
-            # scope: two top-level copies of a def / class / constant, or a name
-            # imported twice. That is what a bad merge resolution leaves behind, and
-            # every other check here passes it -- compileall parses both copies, the
-            # ruff rule set (E9 / F63 / F7 / F82) has no F811, and the two copies
-            # usually differ only in their comments.
-            # Runs the tool's self-test cases, positive and negative, so a regression in the
-            # rule fails before we trust it on a diff. Stdlib-only, sub-second.
+            # lint_duplicate_definitions.py rejects names bound twice in one scope, which bad merges
+            # leave and compileall and the ruff set (no F811) both pass; its self-test runs first;
+            # stdlib only.
             run: |
               python scripts/lint_duplicate_definitions.py --self-test
 
@@ -190,11 +177,8 @@ jobs:
               python scripts/lint_no_parallel_clamp.py
 
           - name: No duplicate TypeScript import bindings
-            # #8470 duplicated an import line in model-selector.tsx; tsc rejects it
-            # with TS2300 and every job that builds the frontend goes red behind
-            # it. eslint is not run in CI, so nothing saw it until tsc did, inside
-            # the slowest job in the matrix. Self-test first, so a regression in
-            # the rule fails before we trust it.
+            # A duplicated import in model-selector.tsx (#8470) made tsc fail with TS2300 and red
+            # every frontend build job, since CI does not run eslint; the self-test runs first.
             run: |
               python scripts/lint_no_duplicate_ts_imports.py --self-test
               python scripts/lint_no_duplicate_ts_imports.py
@@ -339,10 +323,8 @@ jobs:
               echo "$n shell scripts parse cleanly"
 
           - name: YAML files parse cleanly (yaml.safe_load)
-            # Catches truncated workflow files, broken indents in
-            # dependabot.yml / pre-commit configs, etc. Includes
-            # .github/workflows/*.yml so a typo in the file we just
-            # added shows up immediately.
+            # Catches truncated workflow files and broken indents in dependabot.yml and pre-commit
+            # configs; includes .github/workflows YAML so a typo in a new workflow shows up at once.
             run: |
               python <<'PY'
               import os, pathlib, subprocess
@@ -503,23 +485,9 @@ jobs:
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
       - name: Duplicate definitions (changed Python files)
-        # Same merge-base reasoning as the import-hoist step above: diff the merge
-        # base against the PR head SHA so the range is the PR's own commits and
-        # not every base commit since the branch point.
-        #
-        # --diff-filter=ACMRT, not M: a bad resolution can just as easily land in a
-        # file the PR adds, and a rename that also edits the file is reported as R
-        # (R093 and so on), which an ACM filter would drop. T is there because a path
-        # that changes TYPE -- a symlink replaced by a regular .py file -- is reported
-        # as neither M nor A, so the newly active source reached the verifier as no
-        # path at all and the step passed having checked nothing.
-        #
-        # The verifier scans BOTH revisions and compares findings by identity, so a
-        # duplicate that was already in the file is printed and ignored while one
-        # this PR introduced fails. Comparing added LINES instead would miss the
-        # case where the new copy is inserted ABOVE the old one, since the finding
-        # is reported at the second, unchanged definition. The whole-tree step below
-        # catches pre-existing ones.
+        # Diffs the merge base to the PR head with --diff-filter=ACMRT, not M, so added files,
+        # renames and type changes are checked; findings compare by identity, so a duplicate
+        # inserted above the old copy is caught; pre-existing ones go to the whole-tree step.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}

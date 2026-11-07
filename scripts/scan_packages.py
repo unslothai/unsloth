@@ -82,8 +82,7 @@ MEDIUM = "MEDIUM"
 
 SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
-# Hard pin-blocks for confirmed malicious PyPI versions (Socket.dev 2026-05-12 Mini Shai-Hulud wave; earlier
-# Semgrep/Endor reports for `lightning`).
+# Hard blocks on confirmed malicious PyPI versions, from the Mini Shai-Hulud wave and others.
 BLOCKED_PYPI_VERSIONS: dict[str, set[str]] = {
     "guardrails-ai": {"0.10.1"},
     "mistralai": {"2.4.6"},

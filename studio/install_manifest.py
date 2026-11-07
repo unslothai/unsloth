@@ -129,11 +129,8 @@ def requirement_digests(req_root: Optional[Path] = None) -> Dict[str, str]:
 
 
 def digest_file(path) -> Optional[str]:
-    """sha256 of one file, or None when it is absent or unreadable.
-
-    None is never equal to a recorded digest, so an input that cannot be read
-    forces the step that consumes it to run. That is the safe direction.
-    """
+    """sha256 of one file, or None when absent or unreadable; None never equals a recorded digest,
+    so an unreadable input forces the consuming step to run."""
     try:
         return _sha256(Path(path))
     except (TypeError, ValueError):
@@ -157,13 +154,9 @@ def _canonical(name: str) -> str:
 
 
 def _metadata_scan_paths() -> List[str]:
-    """This interpreter's site-packages roots, excluding inherited sys.path entries.
-
-    Deduplicated by real path, not by string: purelib hardcodes `lib` while
-    platlib follows sys.platlibdir, so a lib64 build (Fedora, SuSE) names one
-    directory twice through venv's lib64 -> lib symlink. Scanning both would
-    report every package twice and turn a healthy venv into a conflict.
-    """
+    """Site-packages roots minus inherited sys.path entries, deduplicated by real path: purelib
+    hardcodes lib while platlib follows sys.platlibdir, so lib64 builds would list one directory
+    twice."""
     import sysconfig
 
     paths: List[str] = []
@@ -360,13 +353,9 @@ def metadata_conflict(versions: Sequence[str]) -> bool:
 
 
 def _metadata_is_inconsistent(dist_name: str, versions: Optional[List[str]] = None) -> bool:
-    """Duplicated, unreadable, or standing on a record pip will not honour.
-
-    A sole `~` backup is the case a version count cannot see: one readable
-    version, so nothing looks wrong, while pip refuses the directory and the
-    package tree is usually renamed away with it. Left unflagged, the fast path
-    calls the package up to date and skips the pass that would reinstall it.
-    """
+    """Flags duplicated, unreadable or pip-ignored metadata; a sole ~ backup is invisible to a
+    version count yet pip refuses it, and unflagged the fast path would skip the reinstall that
+    repairs it."""
     if versions is None:
         versions = installed_versions(dist_name)
     return bool(metadata_conflict(versions) or pip_backup_metadata_paths(dist_name))
@@ -442,13 +431,9 @@ def _publish_json(
 
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
-    """Hold an exclusive lock on LOCK_NAME for the block. Never raises.
-
-    Best effort: this module has to run inside a half-built venv, so a filesystem that cannot
-    lock (a network mount, a read-only prefix, no fcntl or msvcrt) proceeds unserialised
-    rather than failing an install, as it did before this existed. The deadline below bounds
-    the retries, not one stalled syscall.
-    """
+    """Holds an exclusive lock on LOCK_NAME, best effort and never raising: a filesystem that cannot
+    lock (network mount, read-only prefix, no fcntl or msvcrt) runs unserialised rather than
+    failing; the deadline bounds retries, not one stalled syscall."""
     handle = None
     locked = False
     try:
@@ -813,12 +798,9 @@ def no_torch_marker_path(root: Optional[Path] = None) -> Path:
 
 
 def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
-    """Record the mode outside the completion manifest. Never raises.
-
-    Written before the dependency pass so an interrupted install still knows what
-    it was building. Removed when torch is wanted, so migrating out of no-torch
-    does not leave a stale marker behind.
-    """
+    """Records the no-torch mode outside the completion manifest before the dependency pass, so an
+    interrupted install still knows its mode; removed when torch is wanted so no stale marker
+    remains. Never raises."""
     path = no_torch_marker_path(root)
     try:
         if no_torch:
@@ -830,12 +812,9 @@ def set_no_torch_marker(no_torch: bool, root: Optional[Path] = None) -> None:
 
 
 def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
-    """The mode this venv was installed with, or None when unknown.
-
-    None means nothing recorded it: no manifest key and no marker. Callers must
-    fall back to their own detection on None and never to False, so an install
-    made before either existed is not silently switched out of no-torch mode.
-    """
+    """Recorded no-torch mode, or None when no manifest key or marker exists; callers must detect
+    for themselves on None and never assume False, so older installs are not silently switched
+    out of no-torch mode."""
     manifest = read_manifest(root)
     if manifest is not None:
         value = manifest.get("no_torch")
@@ -852,18 +831,9 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
 
 
 def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
-    """The torch flavor this venv was installed with, or None when unknown.
-
-    None means nothing recorded it: no manifest, or one written before the key
-    existed. Callers must treat None as "unknown" and fall back to their own
-    detection, never as "cpu" -- claiming a flavor nobody selected would let a
-    repair reinstall over a deliberate build.
-
-    There is no marker companion here (unlike no_torch): the manifest is dropped
-    before every dependency pass, so this answers only for the PREVIOUS install,
-    which is exactly the question a repair asks. A run whose own setup script
-    exported the flavor never reaches this.
-    """
+    """Torch flavor recorded by the previous install, or None when unknown; never read None as cpu,
+    or a repair reinstalls over a deliberate build; no marker companion, as the manifest is
+    dropped each pass; a run whose setup script exported the flavor never reaches this."""
     manifest = read_manifest(root)
     if manifest is None:
         return None
@@ -875,15 +845,9 @@ def recorded_torch_flavor(root: Optional[Path] = None) -> Optional[str]:
 
 
 def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
-    """Whether the recorded flavor was NAMED rather than automatically selected.
-
-    False when nothing recorded it, including a manifest written before the key
-    existed. That is the safe direction here and the opposite of the usual "unknown
-    falls back to the old behaviour": treating an unproven CPU record as deliberate is
-    what leaves a host that has since gained a GPU with no repair offered at all, which
-    is the failure this whole field exists to distinguish. A repair is something the
-    user can decline; a silently CPU-only GPU box is not.
-    """
+    """Whether the recorded flavor was named rather than auto-selected; False when unrecorded, since
+    an unproven CPU record read as deliberate would leave a host that later gained a GPU with no
+    repair offered."""
     manifest = read_manifest(root)
     if manifest is None:
         return False
@@ -892,11 +856,8 @@ def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
 
 
 def _parse_requirement_line(line: str) -> Optional[Tuple[str, str, str]]:
-    """(distribution name, marker, specifier) for a requirement, or None.
-
-    Covers what studio.txt uses: names, specifiers, inline comments, markers.
-    pip flags are skipped.
-    """
+    """Returns (distribution name, marker, specifier) for a requirement line, or None for blanks and
+    pip flags; covers the names, specifiers, inline comments and markers that studio.txt uses."""
     text = line.split("#", 1)[0].strip()
     if not text or text.startswith("-"):
         return None
@@ -950,14 +911,9 @@ def _version_satisfies(version: str, specifier: str) -> bool:
 def missing_requirements(
     req_file: Optional[Path] = None, installed: Optional[Dict[str, str]] = None
 ) -> List[str]:
-    """Distribution names that are missing or outside their required versions.
-
-    Checked via importlib.metadata, not import names, because studio.txt lists
-    PyJWT / python-docx / pymupdf whose import names (jwt, docx, fitz) differ.
-
-    `installed` (canonical distribution name -> version) checks a venv other
-    than the one running this code, which importlib.metadata cannot see.
-    """
+    """Distribution names missing or outside their required versions, checked via importlib.metadata
+    since import names (jwt, docx, fitz) differ; the installed mapping checks another venv, which
+    importlib.metadata cannot see."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     path = req_file or (requirements_root() / BOOT_REQUIREMENT_FILE)
@@ -1229,10 +1185,8 @@ def _staged_beside(target) -> bool:
 
 
 def _within(target: Path, anchor: Path) -> bool:
-    """Whether a parent-relative row lands inside the environment.
-
-    One outside it belongs to something else, which reinstalling ours cannot fix.
-    """
+    """Whether a parent-relative row lands inside the environment; one outside it belongs to
+    something else, which reinstalling ours cannot fix."""
     try:
         resolved = target.resolve()
     except OSError:
@@ -1590,12 +1544,9 @@ def _sidecar_damaged_files(
     budget_seconds: float = SIDECAR_SCAN_BUDGET_SECONDS,
     required: Sequence[str] = (),
 ) -> List[str]:
-    """RECORD rows under a sidecar that are gone, truncated, or built for another CPython.
-
-    Fails open everywhere: the caller's answer to a finding is to delete several hundred
-    MB and refetch, so anything unreadable reports nothing rather than guessing. Bounded,
-    because no installer wraps this in a timeout and a stalled mount would wedge setup.
-    """
+    """Finds RECORD rows under a sidecar that are gone, truncated or built for another CPython;
+    fails open since a finding triggers a large delete, and is bounded by budget_seconds since a
+    stalled mount would wedge setup."""
     import csv
     import io
     import stat

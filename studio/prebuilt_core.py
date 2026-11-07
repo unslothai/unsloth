@@ -415,11 +415,8 @@ def is_retryable_url_error(exc: Exception) -> bool:
 
 
 def _http_error_retry_delay(exc: Exception) -> float | None:
-    """Recommended wait from rate-limit headers on a 403/429.
-
-    None when no header is present or the wait exceeds
-    _RATE_LIMIT_WAIT_CAP_SECONDS (the source-build fallback is faster).
-    """
+    """Recommended wait from rate-limit headers on a 403 or 429; None when no header is present or
+    the wait exceeds _RATE_LIMIT_WAIT_CAP_SECONDS, since the source build fallback is faster."""
     if not isinstance(exc, urllib.error.HTTPError):
         return None
     headers = getattr(exc, "headers", None)
@@ -491,14 +488,8 @@ def atomic_replace_from_tempfile(
     *,
     attempts: int = 8,
 ) -> None:
-    """os.replace, retried against transient Windows sharing violations.
-
-    Rename-over needs DELETE access on the destination, so a scanner or the indexer holding the
-    marker open fails the swap outright -- where the in-place write this replaced would only
-    have contended for write access. Handles clear in a second or two, so a bounded backoff
-    turns the failure into a pause; anything else raises at once rather than stalling on a real
-    problem. A no-op off Windows, where the rename does not care about open handles.
-    """
+    """Retries os.replace on transient Windows sharing violations: rename-over needs DELETE access
+    that a scanner or indexer holding the marker open denies; other errors raise at once."""
     destination.parent.mkdir(parents = True, exist_ok = True)
     delay = 0.25
     for attempt in range(attempts):
@@ -753,15 +744,9 @@ def copy_response_body(
     progress: "DownloadProgress | None" = None,
     chunk_size: int = 1024 * 1024,
 ) -> int:
-    """Stream ``response`` into ``write`` and return the byte count. Raises StalledDownload when a
-    window passes with too few bytes, and TruncatedDownload when the body ends short of
-    ``total_bytes``; both are retryable, so the caller's loop reconnects.
-
-    A real HTTPResponse is read with read1, which returns what one receive brings: read(n) waits
-    for all n bytes, so a trickle would block it for hours and the window check would never run.
-    Anything else (file:// bodies, test doubles) keeps plain read. Each read1 stops at the next
-    ``chunk_size`` boundary and progress is reported there, so the progress lines land where the
-    whole-chunk reads put them while the stall window is still checked after every receive."""
+    """Streams response into write and returns the byte count, raising retryable StalledDownload or
+    TruncatedDownload; a real HTTPResponse uses read1 because read(n) waits for all n bytes and
+    would never reach the stall window check; progress lands at chunk_size boundaries."""
     per_receive = isinstance(response, http.client.HTTPResponse)
     read = response.read1 if per_receive else response.read
     downloaded = 0
@@ -988,13 +973,9 @@ def release_asset_map(release: dict[str, Any]) -> dict[str, str]:
 
 
 def release_asset_digests(release: dict[str, Any]) -> dict[str, str]:
-    """asset name -> bare sha256 hex, for the assets whose digest GitHub reports.
-
-    Separate from release_asset_map because the name -> url mapping is what nearly every
-    caller wants and widening its return type would touch all of them. GitHub returns
-    `digest` as an algorithm-prefixed string ("sha256:<hex>"); anything else is skipped
-    rather than guessed at, so a future algorithm cannot be read as a sha256.
-    """
+    """Maps asset name to bare sha256 hex from GitHub's digest field, accepting only sha256:
+    prefixed digests and skipping others; kept separate from release_asset_map to leave its
+    return type alone."""
     assets = release.get("assets")
     if not isinstance(assets, list):
         return {}
@@ -1122,11 +1103,9 @@ def web_release_tags(
     *,
     limit: int = 30,
 ) -> list[str]:
-    """Recent release tags, newest first, from github.com/<repo>/releases.atom.
-
-    The only tokenless surface that ORDERS releases, so it is what restores the
-    older-release walk-back, and the only one that can name the newest nightly.
-    """
+    """Recent release tags, newest first, from the releases.atom feed; the only tokenless source
+    that orders releases, so it restores the older-release walk-back and can name the newest
+    nightly."""
     url = f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases.atom"
     body = _fetch_web_metadata(ops, url)
     tags: list[str] = []
@@ -1143,12 +1122,9 @@ _PRERELEASE_LABEL_RE = re.compile(r"Label--warning[^>]*>\s*Pre-release\s*<", re.
 
 
 def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
-    """Whether <repo>@<tag> is marked pre-release, read from its release page.
-
-    The feed and the asset fragment both omit it, and asserting a value we did not read
-    would let the web path select a release the REST path filters out. Draft is not
-    asked: a draft is not served anonymously, so reaching this page proves publication.
-    """
+    """Pre-release flag is read from the release page rather than assumed, so the web path never
+    picks a release the REST path filters out; drafts are not checked since reaching the page
+    proves publication."""
     url = (
         f"https://github.com/{urllib.parse.quote(repo, safe = '/')}/releases/tag/"
         f"{urllib.parse.quote(tag, safe = '')}"
@@ -1159,12 +1135,8 @@ def web_release_prerelease(ops: ModuleOps, repo: str, tag: str) -> bool:
 def _web_release_prerelease_or_default(
     ops: ModuleOps, repo: str, tag: str, default: bool | None
 ) -> bool:
-    """The release's prerelease flag, or *default* when the page cannot be read.
-
-    The assets and their digests have already loaded by this point, so discarding them
-    because one more request failed would drop a usable release for a fact the caller
-    may already know from the tag.
-    """
+    """Returns the prerelease flag, or default when the page cannot be read, since the assets
+    already loaded and one failed request must not drop a usable release."""
     try:
         return web_release_prerelease(ops, repo, tag)
     except Exception as exc:  # noqa: BLE001 - a known answer beats losing the release
@@ -1250,18 +1222,9 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     def _try_repair_missing_slash(
         member_name: str, link_name: str, archive_names: set[str]
     ) -> str | None:
-        """Repair a mangled symlink from some upstream llama.cpp Mac releases
-        (e.g. b9165, b9169) whose linkname drops the separator AND the file
-        basename's leading char between the top-level dir and the rest:
-
-            llama-b9165/libggml-rpc.0.dylib -> llama-b9165ibggml-rpc.0.11.1.dylib
-
-        Detect the pattern (linkname starts with the top-level dir but no
-        following slash), then find the archive entry under that dir whose
-        basename ends with the mangled suffix; only accept a unique match.
-        Returns the corrected linkname relative to the member's parent dir --
-        callers join it with `target.parent`, so a full `top/file` path would
-        double the prefix into `top/top/file`."""
+        """Repairs mangled Mac llama.cpp symlinks (e.g. b9165, b9169) whose linkname drops the
+        separator and the basename's leading character; accepts only a unique match, returned
+        relative to the member's parent dir because callers join it onto target.parent."""
         if "/" not in member_name or "/" in link_name:
             return None
         top, _, _ = member_name.partition("/")
@@ -1488,10 +1451,9 @@ def install_lock_path(install_dir: Path) -> Path:
 
 # ── macOS version parsing ──
 def parse_macos_version(value: str | None) -> tuple[int, int] | None:
-    """Parse a macOS product version into (major, minor).
-
-    Handles "14.7.1", "15.5", "26.0", bare "26". None when empty/unparseable
-    (callers then defer to runtime validation rather than reject every prebuilt)."""
+    """Parses a macOS product version into (major, minor), e.g. 14.7.1, 15.5 or bare 26; None when
+    empty or unparseable, so callers defer to runtime validation instead of rejecting every
+    prebuilt."""
     if not value:
         return None
     match = re.match(r"\s*(\d+)(?:\.(\d+))?", str(value))
@@ -1838,9 +1800,8 @@ def sm_range(artifact: Any) -> int:
 
 
 def blackwell_capable_linux_runtime_lines(host_sms: list[str], artifacts: list[Any]) -> list[str]:
-    """CUDA runtime lines (highest major first) shipping a bundle covering every
-    visible host SM. Lets a Blackwell host prefer a native sm_120 line over torch's
-    reported line, mirroring the Windows Blackwell preference."""
+    """CUDA runtime lines, highest major first, whose bundles cover every visible host SM; lets a
+    Blackwell host prefer a native sm_120 line over torch's reported line, mirroring Windows."""
     lines: set[str] = set()
     for artifact in artifacts:
         line = artifact.runtime_line
@@ -2050,11 +2011,9 @@ def valid_sha256(value: Any) -> str | None:
 def parse_release_checksums(
     ops: ModuleOps, repo: str, release_tag: str, payload: Any
 ) -> dict[str, str]:
-    """Asset name -> sha256 from a release's checksum-index asset.
-
-    That index is the authority for each asset's sha256. It is validated for
-    schema/component and that its ``release_tag`` matches the resolved release,
-    so a redirected or mismatched index is rejected; malformed fails closed."""
+    """Asset name to sha256 from the release checksum-index asset, the authority for each asset's
+    digest; the index must match schema, component and release_tag, and malformed input fails
+    closed."""
     label = f"{ops.SHA256_ASSET_NAME} in {repo}@{release_tag}"
     if not isinstance(payload, dict):
         raise PrebuiltFallback(f"{label} was not a JSON object")
@@ -2115,9 +2074,8 @@ def expected_sha256_for(
     *,
     manifest_sha256: str | None = None,
 ) -> str:
-    """The sha256 the archive must match, from the release checksum-index entry.
-    An asset absent from the index fails closed. Any sha256 the manifest embeds
-    for the asset must agree with the index (a mismatch means a tampered manifest)."""
+    """The sha256 the archive must match, from the release checksum index; an asset missing from the
+    index fails closed, and a manifest sha256 that disagrees means a tampered manifest."""
     digest = checksums.get(asset_name)
     if digest is None:
         raise ReleaseIntegrityError(
@@ -2421,9 +2379,8 @@ def macos_version_label(host: Any) -> str | None:
 
 
 def walk_back_for(host: Any, skipped_release_tag: str | None) -> WalkBack | None:
-    """The walk-back to record when the planner settled below *skipped_release_tag*
-    on this host; None when there is nothing to record (no skipped release, not
-    macOS, or a host version the marker-only re-check could not compare)."""
+    """Walk-back to record when the planner settled below skipped_release_tag on this host; None
+    without a skipped release, off macOS, or when the host version cannot be compared."""
     if not skipped_release_tag:
         return None
     label = macos_version_label(host)
@@ -2445,9 +2402,8 @@ def marker_walk_back(marker: dict[str, Any]) -> WalkBack | None:
 
 
 def walk_back_stands(marker: dict[str, Any], host: Any, expected_release: str | None) -> bool:
-    """Whether the marker's walk-back still explains why *expected_release*, the newest
-    published release, is not the installed one: same skipped release, same host
-    macOS version."""
+    """Whether the marker's walk-back still explains why expected_release, the newest published
+    release, is not installed: same skipped release and same host macOS version."""
     recorded = marker_walk_back(marker)
     if recorded is None or not expected_release:
         return False
@@ -2689,12 +2645,8 @@ def locate_server_in_tree(ops: ModuleOps, root: Path, host: Any) -> Path:
 
 
 def assemble_install_tree(ops: ModuleOps, bundle_root: Path, staged_root: Path, host: Any) -> Path:
-    """Lay out staged_root as a full install: <runtime bin dir>/<server + libs>.
-
-    Everything beside the server in the archive (shared libs, backend kernel
-    subdirs, license/build-info) is co-located into the canonical bin dir so the
-    server's RUNPATH=$ORIGIN resolves its libs.
-    """
+    """Lay out staged_root as a full install in the runtime bin dir: co-locate everything beside the
+    server (shared libs, backend kernel subdirs, license) so RUNPATH=$ORIGIN resolves its libs."""
     bin_dir = ops.runtime_bin_dir(staged_root, host)
     bin_dir.mkdir(parents = True, exist_ok = True)
     for entry in sorted(bundle_root.iterdir()):
@@ -2940,20 +2892,9 @@ def install_selected_prebuilt(
 def _settle_kept_install(
     ops: ModuleOps, install_dir: Path, host: Any, selection: InstallSelection, *, locked: bool
 ) -> bool:
-    """Let a component catch up the marker of an install it is keeping, under the lock.
-
-    Returns False only when the pre-lock keep's re-check under the lock found another
-    install on disk; everything else, a settle that fails included, keeps the install.
-
-    Optional: a component that has nothing to write defines neither hook. One that
-    does (whisper's slim pairing backfill) rewrites the marker, and a rewrite outside
-    the install lock races a concurrent installer swapping in a new release: the old
-    marker is read, the tree is replaced, the old fields are written over the new
-    marker. So the pre-lock keep takes the lock for the write, re-checks that the
-    install it read is still the one on disk, and only then settles it. Never raises:
-    the install is already valid, and a lock that cannot be had or a write that fails
-    costs the next run the same settle, not the install.
-    """
+    """Catches up a kept install's marker under the install lock, since an unlocked rewrite can race
+    a concurrent swap; optional per component; returns False only when the locked re-check finds
+    another install; never raises."""
     settle = getattr(ops, "settle_kept_install", None)
     needs_settling = getattr(ops, "kept_install_needs_settling", None)
     try:

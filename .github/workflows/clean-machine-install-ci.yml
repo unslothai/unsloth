@@ -99,9 +99,8 @@ on:
         default: tree
 
 concurrency:
-  # The event is in the group so a scheduled run and a push to main, which share a ref,
-  # cannot coalesce: only one run stays pending per group, and cancel-in-progress protects
-  # the running run, never the pending one, so a merge burst would drop the nightly.
+  # The event name stops a scheduled run and a push to main, which share a ref, from replacing each
+  # other as the one pending run, so a merge burst cannot drop the nightly.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
   # never killed, and a newer push replaces only the PENDING one: a merge burst runs the

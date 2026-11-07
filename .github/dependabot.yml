@@ -2,9 +2,8 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    # "/" only scans .github/workflows. The composite actions under
-    # .github/actions pin the same actions (setup-node, cache) and must
-    # move in the same PR, or two SHAs of one action end up in the tree.
+    # The "/" directory only scans .github/workflows; composite actions under .github/actions pin
+    # the same actions and must move in the same PR, or one action ends up with two SHAs.
     directories:
       - "/"
       - "/.github/actions/*"
@@ -44,18 +43,16 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # pyproject.toml is a hand-kept matrix: many packages are split by Python version or
-    # accelerator (typer / fastapi / uvicorn / gguf for 3.9, triton / flash-attn wheel URLs),
-    # and a version update rewrites every copy of a requirement at once. Version-update PRs
-    # stay off, as for /studio/frontend; security PRs have their own limit and still open.
+    # pyproject.toml is a hand-kept matrix split by Python version or accelerator, and one version
+    # update rewrites every copy at once; version PRs stay off as for /studio/frontend, security PRs
+    # still open.
     open-pull-requests-limit: 0
     cooldown:
       default-days: 7
-    # pyproject.toml pins these by hand: torch / torchvision per CUDA extra (with the
-    # matching +cuXXX tag and xformers wheel), and transformers / datasets / bitsandbytes
-    # to tested windows with `!=` exclusions. Dependabot rewrites each whole specifier
-    # (#13833, #14469 collapsed every cuXXX-torchYYY extra to plain torch==2.14.1), so
-    # these move with the version matrix by hand. Advisories still show as alerts.
+    # pyproject.toml pins torch and torchvision per CUDA extra and transformers, datasets and
+    # bitsandbytes via != exclusions; Dependabot rewrites whole specifiers (#13833 and 14469
+    # collapsed every cuXXX-torchYYY extra to torch==2.14.1), so move these by hand; advisories
+    # still show as alerts.
     ignore:
       - dependency-name: "torch"
       - dependency-name: "torchvision"
@@ -93,10 +90,9 @@ updates:
         versions: [">= 0.19"]
       - dependency-name: "gdk-pixbuf"
         versions: [">= 0.19"]
-      # Same GTK3 family: the direct cairo-rs dep exists only to turn on the
-      # `png` feature of gtk's own cairo-rs 0.18. A second cairo-rs (0.22)
-      # leaves gtk's copy without `png` and browser_capture.rs stops
-      # compiling (`write_to_png` not found), as in #13837.
+      # Same GTK3 family: the direct cairo-rs dep only turns on png for gtk's cairo-rs 0.18; a
+      # second cairo-rs (0.22) leaves gtk without png, so browser_capture.rs stops compiling
+      # (#13837).
       - dependency-name: "cairo-rs"
         versions: [">= 0.19"]
       # gio is only used for the proxy resolver gtk already builds; 0.19+
@@ -108,10 +104,9 @@ updates:
       # compiling (E0063). Lift once deep-link builds against 0.21.3.
       - dependency-name: "rust-ini"
         versions: [">= 0.21.2"]
-      # windows-core must match the copy webview2-com and tauri build on
-      # (Cargo.toml: "Keep these versions aligned with Tauri's WebView2
-      # controller bindings"); a lone windows-core bump puts a second copy
-      # next to webview2-com's 0.62. Move it by hand with webview2-com.
+      # windows-core must match the copy that webview2-com and tauri build on (see the Cargo.toml
+      # note); a lone bump adds a second copy beside webview2-com 0.62, so move it with
+      # webview2-com.
       - dependency-name: "windows-core"
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
