@@ -78,7 +78,7 @@ export interface CatalogGroup {
   description: string;
   scope: "image" | "video" | "audio";
   /** Audio-only task tag driving the Audio page's Speak/Transcribe mode interlock. */
-  task?: "tts" | "stt";
+  task?: "tts" | "stt" | "vad";
   /** Descending quality order: bf16, fp8, bnb-4bit, gguf. The router walks it. */
   artifacts: ModelArtifact[];
   /** Cross-owner ids for this group; suffix stripping never merges owners. */
@@ -178,6 +178,7 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   music: "Text-to-music",
   asr: "Speech-to-text",
   sep: "Source separation",
+  vad: "Voice activity detection",
 };
 
 function audioGgufDescription(model: AudioCppModel): string {
@@ -200,7 +201,7 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
     displayName: audioCppDisplayName(model.id),
     description: audioGgufDescription(model),
     scope: "audio",
-    task: model.task === "asr" ? "stt" : "tts",
+    task: model.task === "asr" ? "stt" : model.task === "vad" ? "vad" : "tts",
     artifacts: [gguf(model.id)],
   }));
 
@@ -883,6 +884,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
   ...audioGgufGroups(["asr"]),
+  ...audioGgufGroups(["vad"]),
 ];
 
 

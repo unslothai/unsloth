@@ -447,6 +447,14 @@
 	--picker-panel-w-external: calc(var(--picker-panel-w) + var(--picker-tab-pad) + 4rem * var(--ui-space-scale, 1) + 2.75rem * var(--ui-font-scale, 1));
 	/* (button - icon-size) / 2: a negative margin that aligns the first action icon with message text. */
 	--icon-btn-inset: calc((2rem * var(--ui-space-scale, 1) - var(--icon-size)) / 2);
+
+	/* Voice orb at rest (loop open, not started). Neutral on purpose -- every
+	   running state owns a hue -- but carrying the primary's green cast so it
+	   reads as part of the app rather than a grey blob dropped on the surface.
+	   Light: a pale pearl that still shows against the off-white page. */
+	--voice-orb-idle-from: #e8ebe9;
+	--voice-orb-idle-to: #b4bcb8;
+	--voice-orb-idle-glow: rgb(148 163 158 / 0.28);
 }
 
 /* SF Pro can't be bundled; Inter stays as the fallback. */
@@ -490,6 +498,10 @@ html.client-mac {
 	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
 	--bypass: #ffd60a;
 	--full-access: #ff8f30;
+	/* Idle orb on dark: a slate a clear step above the #181818 page, same green cast as the light pair. */
+	--voice-orb-idle-from: #5a6360;
+	--voice-orb-idle-to: #2b312f;
+	--voice-orb-idle-glow: rgb(90 99 96 / 0.35);
 	/* One step lighter than --muted so outlines stay visible on muted surfaces; matches the hover tone. */
 	--border-base: #3a3a3a;
 	--input-base: #3a3a3a;

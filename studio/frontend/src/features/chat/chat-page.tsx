@@ -26,7 +26,15 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import {
+  getVoiceMode,
+  loadVoiceMode,
+  requestVoiceThreadReset,
+} from "@/features/chat/voice/voice-loop-bridge";
+import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { LibraryAttachmentTargetContext } from "@/features/library";
+import { createVoiceSlotOwner } from "@/features/chat/voice/voice-slot-owner";
+import { unloadVadModel } from "@/features/chat/voice/vad-client";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -347,6 +355,22 @@ const FullViewChatBar = lazy(() =>
 const FullViewChatButton = lazy(() =>
   import("@/features/browser/full-view-chat").then((module) => ({
     default: module.FullViewChatButton,
+  })),
+);
+// Voice mode's header pickers only show once it is on.
+const SttModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.SttModelSelector,
+  })),
+);
+const VoiceModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.VoiceModelSelector,
+  })),
+);
+const VadModelSelector = lazy(() =>
+  loadVoiceMode().then((module) => ({
+    default: module.VadModelSelector,
   })),
 );
 
@@ -810,6 +834,38 @@ const SingleContent = memo(function SingleContent({
     closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
   }, [researchMatchesThread, closeBrowser]);
+
+  // Thread-switch voice reset. Lives here (not in VoiceEngine) because SingleContent
+  // is stable across the ThreadWelcome → ThreadComposerDock remount that fires on
+  // first-send; VoiceEngine remounts there and never observes null → __LOCALID_xxx,
+  // leaving its prev-thread ref stale so the later New Chat (→ null) reset is missed.
+  // We drive the module-level bridge, gated on getVoiceMode() so a plain thread
+  // switch while voice is OFF can't wake the loop up.
+  //
+  // The reset carries voice mode over rather than ending it: starting a new chat
+  // keeps the conversation mode the same way it keeps the loaded model.
+  const prevVoiceThreadIdRef = useRef(activeThreadId);
+  useEffect(() => {
+    const current = activeThreadId;
+    const prev = prevVoiceThreadIdRef.current;
+    if (prev === current) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    // Thread birth (null → __LOCALID_xxx on first send) is the initial thread being
+    // created, not a real switch, so it must NOT kill voice mid-conversation. Skip
+    // the reset but still advance the ref, so the later New Chat (__LOCALID_xxx → null)
+    // is still detected as a genuine switch. Real switches — non-null → null (New Chat)
+    // and non-null → different non-null (sidebar) — fall through below.
+    if (prev === null && current !== null) {
+      prevVoiceThreadIdRef.current = current;
+      return;
+    }
+    if (getVoiceMode() !== "off") {
+      requestVoiceThreadReset();
+    }
+    prevVoiceThreadIdRef.current = current;
+  }, [activeThreadId]);
 
   // Leaving Chat closes this chat's browser. Compare keeps this view mounted but hidden, and by
   // then the panel on screen is the compare chat's: that one stays as it is.
@@ -2713,6 +2769,11 @@ type PendingHubAutoLoad = {
 };
 
 // `search` comes from RootLayout so ChatPage stays mounted off-route; `active` is false there.
+function releaseVoiceDetector(): void {
+  void unloadVadModel();
+  useChatRuntimeStore.getState().setVadSlotLoaded(false);
+}
+
 export function ChatPage({
   search,
   active,
@@ -2839,11 +2900,22 @@ export function ChatPage({
     (state) => state.residentCheckpoint,
   );
   const loadedModels = useChatRuntimeStore((state) => state.loadedModels);
-  const loadedCount = loadedModels.length;
+  // The voice slot's audio.cpp model is kept beside the chat model but never chats, so the
+  // header's "N models loaded" counts chat models only.
+  const loadedChatModels = useMemo(
+    () =>
+      loadedModels.filter(
+        (m) => !isAudioCppFolderId(m.id) && !isAudioCppFolderId(m.checkpoint),
+      ),
+    [loadedModels],
+  );
+  const loadedCount = loadedChatModels.length;
   const loadedNames = useMemo(
     () =>
-      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
-    [loadedModels],
+      loadedChatModels.map(
+        (model) => model.id.split(/[\\/]/).pop() || model.id,
+      ),
+    [loadedChatModels],
   );
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
@@ -2999,6 +3071,79 @@ export function ChatPage({
     loadProgress,
     loadToastDismissed,
   } = useChatModelRuntime();
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const selectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.selectedVoiceModelId,
+  );
+  const setSelectedVoiceModelId = useChatRuntimeStore(
+    (s) => s.setSelectedVoiceModelId,
+  );
+  const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
+  const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
+  const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
+  const selectedVadModelId = useChatRuntimeStore((s) => s.selectedVadModelId);
+  const setSelectedVadModelId = useChatRuntimeStore((s) => s.setSelectedVadModelId);
+  const vadSlotLoaded = useChatRuntimeStore((s) => s.vadSlotLoaded);
+  const setSelectedSttModelId = useChatRuntimeStore(
+    (s) => s.setSelectedSttModelId,
+  );
+  const [voiceSlot] = useState(() =>
+    createVoiceSlotOwner({
+      api: loadVoiceMode,
+      pickedVoice: () => useChatRuntimeStore.getState().selectedVoiceModelId,
+      hasChatModel: () => Boolean(useChatRuntimeStore.getState().params.checkpoint),
+      voiceOff: () => useChatRuntimeStore.getState().voiceMode === "off",
+      setLoaded: (loaded) =>
+        useChatRuntimeStore.getState().setVoiceSlotLoaded(loaded),
+      setLoading: (loading) =>
+        useChatRuntimeStore.getState().setVoiceSlotLoading(loading),
+      onError: (error) =>
+        toast.error("Voice model failed to load", {
+          description: error instanceof Error ? error.message : undefined,
+        }),
+    }),
+  );
+
+  // The TTS player calls this to reload a voice that was evicted under it.
+  useEffect(() => {
+    const register = useChatRuntimeStore.getState().setEnsureVoiceSlotLoaded;
+    register(voiceSlot.ensure);
+    return () => register(null);
+  }, [voiceSlot]);
+
+  // Loaded once voice mode starts (not while it is only being configured), and
+  // again on a new pick or a chat model arriving. Behind any load in flight, so the
+  // pick made last is the one that loads.
+  const hasChatCheckpoint = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
+  useEffect(() => {
+    if (voiceMode !== "active" || !hasChatCheckpoint) return;
+    if (voiceSlot.loadedId !== selectedVoiceModelId) {
+      useChatRuntimeStore.getState().setVoiceSlotLoaded(false);
+    }
+    void (voiceSlot.pending ?? Promise.resolve(true)).then(() =>
+      voiceSlot.ensure(),
+    );
+  }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceSlot]);
+
+  // The speech detector has no idle unload, so voice mode going off releases it too.
+  const prevVoiceModeRef = useRef(voiceMode);
+  useEffect(() => {
+    const was = prevVoiceModeRef.current;
+    prevVoiceModeRef.current = voiceMode;
+    if (voiceMode !== "off") return;
+    voiceSlot.unloadOwn();
+    if (was !== "off") releaseVoiceDetector();
+  }, [voiceMode, voiceSlot]);
+
+  // Leaving Chat with voice mode on unmounts this without voiceMode going "off".
+  useEffect(() => {
+    voiceSlot.open();
+    return () => {
+      voiceSlot.close();
+      if (prevVoiceModeRef.current !== "off") releaseVoiceDetector();
+    };
+  }, [voiceSlot]);
+
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
@@ -4791,6 +4936,34 @@ export function ChatPage({
                 onAutoSwitch={handleAutoSwitchToChatModel}
               />
             )}
+            {/* Detect, listen, then speak: the pipeline's order. */}
+            <Suspense fallback={null}>
+              {view.mode !== "compare" && voiceMode !== "off" && (
+                <VadModelSelector
+                  value={selectedVadModelId}
+                  onValueChange={setSelectedVadModelId}
+                  loaded={vadSlotLoaded}
+                  disabled={!hasActiveModel}
+                />
+              )}
+              {view.mode !== "compare" && voiceMode !== "off" && (
+                <SttModelSelector
+                  value={selectedSttModelId}
+                  onValueChange={setSelectedSttModelId}
+                  disabled={!hasActiveModel}
+                  ready={true}
+                />
+              )}
+              {view.mode !== "compare" && voiceMode !== "off" && (
+                <VoiceModelSelector
+                  value={selectedVoiceModelId}
+                  onValueChange={setSelectedVoiceModelId}
+                  loading={voiceSlotLoading}
+                  loaded={voiceSlotLoaded}
+                  disabled={!hasActiveModel}
+                />
+              )}
+            </Suspense>
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

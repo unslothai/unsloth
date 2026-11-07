@@ -17863,6 +17863,11 @@ async def load_model_gated(
     from core.inference.llama_cpp import GpuMemoryShortError
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
+    if request.voice and not await asyncio.to_thread(_is_voice_model, request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only an audio.cpp speech or transcription model can load as voice mode's voice.",
+        )
     extra = None
     evicted: list[str] = []
     # Every model this load unloads, as {kind, model}: kept slots dropped here and anything the arbiter evicts.
@@ -18009,6 +18014,12 @@ async def load_model_gated(
                             ):
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
+                            if request.voice:
+                                # Voice mode speaks for the chat model, so it never replaces it.
+                                raise HTTPException(
+                                    status_code = 409,
+                                    detail = "Not enough memory to keep the voice loaded next to the chat model.",
+                                )
                             # Fits nowhere: replace the active model; its chats refuse first.
                             routed_slot.set(None)
                             if not background:
@@ -18227,6 +18238,17 @@ def _primary_model_label() -> Optional[str]:
     return getattr(_peek_inference_backend(), "active_model_name", None)
 
 
+def _is_voice_model(request: LoadRequest) -> bool:
+    """``voice`` keeps a slot with multi-model off, so it is honoured for voice mode's models only."""
+    from core.inference.audio_cpp_models import resolve
+
+    try:
+        model = resolve(request.model_path, request.gguf_variant, request.hf_token)
+    except Exception:  # noqa: BLE001 - unresolvable is not a voice
+        return False
+    return model is not None and not model.unsupported and model.task in ("tts", "asr")
+
+
 def _orchestrator_chat_report(backend, account) -> Optional[dict]:
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
@@ -18408,8 +18430,9 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
             note_evictions(
                 [r for slot, found in kept.items() if slot not in model_slots.slots for r in found]
             )
-        return None
-    if not request.alongside:
+        if not request.voice:
+            return None
+    if not (request.alongside or request.voice):
         return None
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:
@@ -18421,6 +18444,7 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         await asyncio.to_thread(LlamaCppBackend),
         await asyncio.to_thread(InferenceOrchestrator),
         current_account_id(),
+        voice = request.voice,
     )
     slot.llama._owns_pidfile = False
     register_serving_backend(slot.llama)
@@ -26263,6 +26287,90 @@ async def stt_model_capabilities(
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
+
+
+# Voice mode's speech check: did the clip the browser's loudness gate cut hold a voice?
+class VadLoadRequest(BaseModel):
+    model: Optional[str] = None
+
+
+def _vad_http_error(exc: Exception) -> HTTPException:
+    from core.inference.vad_audiocpp_sidecar import (
+        VadError,
+        VadModelNotDownloadedError,
+        VadUnavailableError,
+    )
+
+    if isinstance(exc, VadModelNotDownloadedError):
+        return HTTPException(status_code = 409, detail = str(exc))
+    if isinstance(exc, VadUnavailableError):
+        return HTTPException(status_code = 501, detail = str(exc))
+    if isinstance(exc, VadError):
+        return HTTPException(status_code = 422, detail = str(exc))
+    logger.error(f"VAD error: {exc}", exc_info = True)
+    return HTTPException(status_code = 500, detail = safe_error_detail(exc))
+
+
+@studio_router.get("/audio/vad/status")
+async def vad_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
+    return JSONResponse(content = await asyncio.to_thread(get_audio_cpp_vad_sidecar().status))
+
+
+@studio_router.post("/audio/vad/load")
+async def vad_load(
+    payload: VadLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+):
+    """Download (if needed) and start the voice activity detector voice mode checks clips with."""
+    from core.inference.vad_audiocpp_sidecar import (
+        VadModelNotDownloadedError,
+        get_audio_cpp_vad_sidecar,
+    )
+
+    sidecar = get_audio_cpp_vad_sidecar()
+    try:
+        try:
+            loaded = await asyncio.to_thread(sidecar.load, payload.model)
+        except VadModelNotDownloadedError:
+            await asyncio.to_thread(sidecar.download, payload.model, hf_token)
+            loaded = await asyncio.to_thread(sidecar.load, payload.model)
+    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+        raise _vad_http_error(exc)
+    return JSONResponse(content = {"loaded_model": loaded})
+
+
+@studio_router.post("/audio/vad/unload")
+async def vad_unload(current_subject: str = Depends(get_current_subject)):
+    from core.inference.vad_audiocpp_sidecar import get_audio_cpp_vad_sidecar
+    released = await asyncio.to_thread(get_audio_cpp_vad_sidecar().unload)
+    return JSONResponse(content = {"released": released})
+
+
+@studio_router.post("/audio/vad/detect")
+async def vad_detect(
+    request: Request,
+    model: Optional[str] = Query(None, max_length = 512),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Speech segments in a raw WAV body: ``{segments: [{start_s, end_s, confidence}], speech_ms}``."""
+    from core.inference.vad_audiocpp_sidecar import MAX_CLIP_BYTES, get_audio_cpp_vad_sidecar
+
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_CLIP_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+        chunks.append(chunk)
+    try:
+        result = await asyncio.to_thread(
+            get_audio_cpp_vad_sidecar().detect, b"".join(chunks), model
+        )
+    except Exception as exc:  # noqa: BLE001 - mapped to the status the client acts on
+        raise _vad_http_error(exc)
+    return JSONResponse(content = result)
 
 
 @router.post("/audio/cancel")
