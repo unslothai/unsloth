@@ -300,6 +300,13 @@ def record_expert_tokens(block, token_counts) -> None:
     )
 
 
+def forget_expert_tokens(block) -> None:
+    # A graph-building forward without context parallelism (e.g. a later trainer reusing the optimizer):
+    # its experts' None gradients are already the single-process ones, so the step must not drop any.
+    block.__dict__.pop(_EXPERT_TOKENS, None)
+    block.__dict__.pop(_EXPERT_STEPPED, None)
+
+
 def start_expert_window(blocks) -> None:
     """A new gradient window starts (before its first forward): forget the counts of experts whose
     gradients are None now. zero_grad(set_to_none = True) clears them all, also after a step the
@@ -324,17 +331,23 @@ def drop_idle_expert_grads(blocks, group = None) -> int:
     """Set .grad = None on experts (incl. their LoRA adapters) that no rank routed a real token to
     since their gradient was last None. Under CP they ran on no tokens so DDP sees a gradient, but
     the single-process run leaves them None, so AdamW must not decay them or advance their state.
-    One all-reduce and one host sync for all layers. Returns the number of experts dropped."""
+    One all-reduce and one host sync for all layers. Returns the number of experts dropped.
+    Acts only on blocks a context parallel forward counted since the last step: with CP off (the
+    optimizer reused by a trainer without it) no block is counted and every gradient is kept."""
+    # Counted: a CP forward ran since the last step (it pops _EXPERT_STEPPED) and no non-CP forward
+    # since (forget_expert_tokens). All CP peers run the same forwards, so they agree on the collective.
+    blocks = [
+        b
+        for b in blocks
+        if b.__dict__.get(_EXPERT_TOKENS) is not None and not b.__dict__.get(_EXPERT_STEPPED)
+    ]
     if not blocks:
         return 0
     counts = []
     for block in blocks:
-        seen = block.__dict__.get(_EXPERT_TOKENS)
+        seen = block.__dict__[_EXPERT_TOKENS]
         # The next forward starts a new window (start_expert_window), after the trainer's zero_grad.
         block.__dict__[_EXPERT_STEPPED] = True
-        if seen is None:
-            device = next(block.experts.parameters()).device
-            seen = torch.zeros(len(block.experts), dtype = torch.long, device = device)
         counts.append(seen.to(torch.long))
     device = counts[0].device
     total = torch.cat([c.to(device) for c in counts])
@@ -529,6 +542,13 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        if any(
+            isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
+            for m in model.modules()
+        ):
+            # Caller padding routes through the MoE and counts as expert usage in one process: the
+            # Ulysses mixers must give it the single-process activations (caller_pad_lengths).
+            self._match_caller_padding = True
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_mixer(module):
@@ -681,6 +701,34 @@ class ContextParallelManager:
 
     def _clear_real_tokens(self) -> None:
         self.__dict__.pop("_real_token_masks", None)
+        self.__dict__.pop("_caller_pad_lengths", None)
+
+    def _note_caller_padding(self, mask) -> None:
+        # Real (right padded, validated) length per row of the caller's mask, keyed by the whole
+        # sequence's shape, which is what the Ulysses mixers see. Kept for the step's recompute.
+        if not getattr(self, "_match_caller_padding", False) or not isinstance(mask, torch.Tensor):
+            return
+        if mask.ndim != 2:
+            return
+        padded = self.__dict__.get("_padded_input_ids")
+        caller_len = mask.shape[1] if padded is None else padded[1]
+        lengths = tuple(int(n) for n in mask.ne(0).sum(1).tolist())
+        if all(n >= caller_len for n in lengths):
+            return  # no caller padding: the appended tokens are not counted (real_token_mask)
+        store = self.__dict__.setdefault("_caller_pad_lengths", {})
+        key = tuple(mask.shape)
+        seen = store.get(key)
+        # Two forwards of one shape and different padding in one step (never in a trainer step):
+        # the longer length never treats a real token of either as padding.
+        store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
+
+    def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:
+        """Per row, how many leading tokens of the whole [bsz, total] sequence are the caller's real
+        tokens (the rest is right padding), or None when no row is padded. Set only for models whose
+        MoE counts expert usage (the remote shim): one process routes caller padding through the MoE
+        with its own activations (Kimi delta layers zero it, attention masks the padded keys), so the
+        Ulysses mixers reproduce them for the routes, and the expert counts, to match."""
+        return self.__dict__.get("_caller_pad_lengths", {}).get((bsz, total))
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
@@ -703,6 +751,7 @@ class ContextParallelManager:
     def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
+        self._note_caller_padding(inputs.get("attention_mask"))
         real = self._real_tokens(inputs.get("input_ids"))
         if real is not None:
             local = real.shape[1] // self.size

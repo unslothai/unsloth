@@ -354,6 +354,17 @@ def _kda_scan(q, k, v, g, beta):
     return _torch_kda(q, k, v, g, beta).to(v.dtype)
 
 
+def _caller_pad_lengths(manager, bsz, total):
+    lookup = getattr(manager, "caller_pad_lengths", None)
+    return lookup(bsz, total) if callable(lookup) else None
+
+
+def _real_positions(lengths, positions):
+    # [bsz, len(positions)] True where the position is one of the row's caller tokens.
+    limit = torch.tensor(lengths, device = positions.device)
+    return positions[None, :] < limit[:, None]
+
+
 def ulysses_kimi_delta_forward(
     module,
     hidden_states,
@@ -361,9 +372,12 @@ def ulysses_kimi_delta_forward(
     cache_params = None,
     *,
     group,
+    caller_lengths = None,
     **kwargs,
 ):
-    """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard."""
+    """Training forward of a Kimi-Linear / Kimi K3 KimiDeltaAttention on a contiguous sequence shard.
+    caller_lengths (per row, the real length of the whole sequence): the output is zero past it, as the
+    hub layer's pad_input leaves caller padding when it unpads on the 2D mask."""
     if cache_params is not None:
         raise RuntimeError("Unsloth: Ulysses context parallelism does not support a cache.")
     if kwargs.get("packed_seq_lengths") is not None or kwargs.get("cu_seqlens") is not None:
@@ -416,7 +430,11 @@ def ulysses_kimi_delta_forward(
     out = _AllToAll.apply(out.reshape(bsz, total, heads, dim), 1, 2, group)
 
     out = module.o_norm(out, gate.reshape(bsz, local_len, -1, dim))
-    return module.o_proj(out.reshape(bsz, local_len, -1))
+    out = module.o_proj(out.reshape(bsz, local_len, -1))
+    if caller_lengths is not None:
+        local = torch.arange(rank * local_len, (rank + 1) * local_len, device = out.device)
+        out = out.masked_fill(~_real_positions(caller_lengths, local)[..., None], 0)
+    return out
 
 
 def ulysses_lightning_forward(
@@ -495,6 +513,12 @@ def _wrap_ulysses_forward(module, get_cp_manager, name) -> None:
             packed = getattr(manager, "packed_seq_lengths", None)
             if packed is not None:
                 kwargs["packed_seq_lengths"] = packed
+        if name == "ulysses_kimi_delta_forward":
+            hidden = kwargs.get("hidden_states", args[0] if args else None)
+            if isinstance(hidden, torch.Tensor) and hidden.ndim == 3:
+                kwargs["caller_lengths"] = _caller_pad_lengths(
+                    manager, hidden.shape[0], hidden.shape[1] * manager.size
+                )
         # Looked up per call so tests can substitute the exchange.
         return globals()[name](module, *args, group = manager.group, **kwargs)
 
@@ -680,6 +704,7 @@ def _ulysses_hf_attention(
     attention_fn,
     implementation,
     packed_seq_lengths = None,
+    caller_lengths = None,
     **kwargs,
 ):
     """Ulysses around the model's own attention function: q / k / v go from sequence shards to head shards,
@@ -744,7 +769,54 @@ def _ulysses_hf_attention(
     out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]
     out = out.reshape(bsz, total, plan.local_heads, -1)
+    if caller_lengths is not None and cu_seqlens is None:
+        out = _caller_padding_rows(
+            out,
+            shard,
+            query,
+            key,
+            value,
+            caller_lengths,
+            window,
+            implementation,
+            attention_fn,
+            kwargs,
+        )
     return head_to_seq(out, group), None
+
+
+def _caller_padding_rows(
+    out, shard, query, key, value, lengths, window, implementation, attention_fn, kwargs
+):
+    """The rows of right padded positions as one process computes them from the caller's 2D mask, so
+    the MoE routes them alike (real rows never attend padding, so they are unchanged). Flash unpads:
+    padding rows are zero. sdpa / eager mask the padded keys: a padding query attends the row's real
+    keys only. Left as is: a row without real tokens, and sdpa / eager with a sliding window (a
+    padding query past the window has no key at all, which softmax turns into NaN)."""
+    total = out.shape[1]
+    if _is_flash(implementation):
+        real = _real_positions(lengths, torch.arange(total, device = out.device))
+        return out.masked_fill(~real[:, :, None, None], 0)
+    if window is not None:
+        return out
+    rows = []
+    for row, length in enumerate(lengths):
+        if length <= 0 or length >= total:
+            rows.append(out[row])
+            continue
+        # An explicit (all-zero) mask: no causal alignment between the padding queries and real keys.
+        mask = torch.zeros(1, 1, total - length, length, device = query.device, dtype = query.dtype)
+        pad, _ = attention_fn(
+            shard,
+            query[row : row + 1, :, length:],
+            key[row : row + 1, :, :length],
+            value[row : row + 1, :, :length],
+            mask,
+            **{**kwargs, "is_causal": False},
+        )
+        pad = pad.reshape(total - length, out.shape[2], -1)
+        rows.append(torch.cat([out[row, :length], pad.to(out.dtype)], dim = 0))
+    return torch.stack(rows, dim = 0)
 
 
 def _ulysses_attention_wrapper(current, implementation, get_cp_manager):
@@ -771,6 +843,9 @@ def _ulysses_attention_wrapper(current, implementation, get_cp_manager):
             group = manager.group,
             attention_fn = current,
             implementation = implementation,
+            caller_lengths = _caller_pad_lengths(
+                manager, query.shape[0], query.shape[2] * manager.size
+            ),
             **kwargs,
         )
 
