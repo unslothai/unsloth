@@ -4748,6 +4748,7 @@ def _count_tokens_backend(
         strict = False,
         chat_template_kwargs = None,
         should_abort = None,
+        on_prompt = None,
     ):
         counted.update(
             messages = messages,
@@ -4756,6 +4757,8 @@ def _count_tokens_backend(
             strict = strict,
             chat_template_kwargs = chat_template_kwargs,
         )
+        if on_prompt is not None:
+            on_prompt(f"<rendered {len(messages)} messages>")
         return count
 
     async def _switch(*args, **kwargs):
@@ -5251,6 +5254,134 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         for message in counted.get("messages") or []
     )
     assert nudged is (priced_tools == ["web_search"])
+
+
+def _select_only(*names):
+    """A _select_request_tools stand-in returning schemas for ``names``."""
+
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+        checkpoint_fitted = False,
+    ):
+        return [{"type": "function", "function": {"name": name}} for name in names]
+
+    return _select
+
+
+@pytest.mark.parametrize(
+    "overflow, budget",
+    [
+        pytest.param("truncate_oldest", 8192 - 2048, id = "compacting"),
+        pytest.param("error", None, id = "not_compacting"),
+    ],
+)
+@pytest.mark.parametrize("system", ["be brief", None], ids = ["system_prompt", "no_system_prompt"])
+def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, budget, system):
+    # /context: the parts are priced as cumulative renders, so they sum to the one total.
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    backend = inference_route.get_llama_cpp_backend()
+    backend.context_length = 8192
+    renders = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+        on_prompt = None,
+    ):
+        renders.append(([m["role"] for m in messages], bool(tools)))
+        words = sum(len(str(m.get("content", "")).split()) for m in messages)
+        return 3 + words + 40 * len(tools or [])
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_only("web_search"))
+    payload = _count_request(
+        ([{"role": "system", "content": system}] if system else [])
+        + [
+            {"role": "user", "content": "one two three"},
+            {"role": "assistant", "content": "four five"},
+        ],
+        enable_tools = True,
+        context_overflow = overflow,
+        max_tokens = 2048,
+        breakdown = True,
+    )
+    body = _counted_body(payload)
+    parts = body["breakdown"]
+    # The template's 3 and the system prompt; the tool nudge counts under tools, with the schema's 40.
+    assert parts["system"] == 3 + len((system or "").split())
+    assert parts["tools"] > 40
+    assert parts["messages"] == 5
+    assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
+    assert parts["tool_names"] == ["web_search"]
+    assert body["context_length"] == 8192
+    assert body["compaction_budget"] == budget
+    # Full prompt, then the system turns behind an empty user turn without and with the tools.
+    # With no system prompt set the nudge is the whole system turn, so without tools there is none.
+    assert renders == [
+        (["system", "user", "assistant"], True),
+        (["system", "user"] if system else ["user"], False),
+        (["system", "user"], True),
+    ]
+
+
+def test_count_breakdown_parts_sum_to_the_total_when_a_difference_clamps():
+    # A template can render tools differently once history follows them, so the system+tools
+    # prefix may outweigh the full prompt; the parts must still add up to what was priced.
+    renders = {("system", "user", "user"): 100, ("system", "user"): 30}
+
+    def count(messages, tools):
+        roles = tuple(m["role"] for m in messages)
+        return 110 if tools and roles == ("system", "user") else renders[roles]
+
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "user", "content": "v"},
+    ]
+    total, parts = inference_route._count_breakdown(count, messages, [{"function": {"name": "t"}}])
+    assert total == 100
+    assert parts["messages"] == 0
+    assert parts["system"] + parts["tools"] + parts["messages"] == total
+
+
+def test_chat_count_tokens_breakdown_returns_the_full_prompt_it_priced(monkeypatch):
+    # /context's prompt view: the full render, never one of the breakdown's prefixes.
+    _count_tokens_backend(monkeypatch, count = 5)
+    payload = _count_request(
+        [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}],
+        breakdown = True,
+    )
+    assert _counted_body(payload)["prompt"] == "<rendered 2 messages>"
+
+
+def test_chat_count_tokens_without_breakdown_renders_once(monkeypatch):
+    # The header bar recounts every turn: /context's extra renders must not reach it.
+    _count_tokens_backend(monkeypatch, count = 7)
+    backend = inference_route.get_llama_cpp_backend()
+    calls = []
+    original = backend.count_chat_tokens
+    backend.count_chat_tokens = lambda *a, **k: calls.append(True) or original(*a, **k)
+    body = _counted_body(_count_request([{"role": "user", "content": "hi"}]))
+    assert body == {"input_tokens": 7, "model": "org/A-GGUF"}
+    assert len(calls) == 1
+
+
+def test_chat_count_tokens_follows_the_launcher_tool_default(monkeypatch):
+    # Where the completion withdraws a tools-on default, the count must not price its catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, supports_tools = True)
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select_only("web_search"))
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda _p: True)
+    monkeypatch.setattr(inference_route, "_launcher_tool_default_applies", lambda _p, _ui: False)
+    _counted_body(_count_request([{"role": "user", "content": "hi"}]))
+    assert not counted["tools"]
 
 
 def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypatch):
