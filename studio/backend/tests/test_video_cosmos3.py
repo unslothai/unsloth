@@ -1245,10 +1245,12 @@ def test_fps_is_validated_against_the_family(name, fps, ok):
         vf.validate_video_request_shape(fam, fps = fps)
 
 
-@pytest.mark.parametrize("fam", vf._FAMILIES, ids = lambda f: f.name)
+@pytest.mark.parametrize(
+    "fam",
+    [f for f in vf._FAMILIES if vf.video_family_fps_options(f) is None],
+    ids = lambda f: f.name,
+)
 def test_a_family_without_fps_options_takes_any_rate(fam):
-    if vf.video_family_fps_options(fam) is not None:
-        pytest.skip("declares fps options")
     for fps in (None, 1, 7, 24, 60, 120):
         vf.validate_video_fps(fam, fps)
 

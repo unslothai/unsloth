@@ -236,7 +236,7 @@ class VideoFamily:
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
-    # Frame rates a request may pick, as an inclusive (min, max) range or a list; with neither the rate is fixed.
+    # Neither set = the rate is fixed.
     fps_range: Optional[tuple[int, int]] = None
     fps_choices: tuple[int, ...] = ()
     frame_step: int = 8
@@ -1444,7 +1444,6 @@ class VideoShapeError(ValueError):
 
 
 def video_family_fps_options(fam: VideoFamily) -> Optional[tuple[int, ...]]:
-    """Every frame rate a request may pick, ascending, or None when the family's rate is fixed."""
     choices = tuple(sorted({int(f) for f in getattr(fam, "fps_choices", ()) or ()}))
     if choices:
         return choices
