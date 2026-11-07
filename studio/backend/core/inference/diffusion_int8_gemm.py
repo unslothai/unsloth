@@ -780,7 +780,9 @@ def _race_cache_load(key: Optional[str]) -> Optional[tuple]:
     try:
         import json
         tile = (
-            json.loads(path.read_text()).get(key) if path is not None and path.is_file() else None
+            json.loads(path.read_text(encoding = "utf-8")).get(key)
+            if path is not None and path.is_file()
+            else None
         )
     except Exception:  # noqa: BLE001 - unreadable or corrupt: a miss
         return None
@@ -796,7 +798,7 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
         import json
 
         try:
-            table = json.loads(path.read_text()) if path.is_file() else {}
+            table = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
         except Exception:  # noqa: BLE001
             table = {}
         table = {k: v for k, v in table.items() if k != key and isinstance(v, list)}
@@ -804,7 +806,7 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
         table[key] = list(tile)
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(table))
+        tmp.write_text(json.dumps(table), encoding = "utf-8")
         os.replace(tmp, path)
     except Exception:  # noqa: BLE001 - persistence is best-effort
         pass
