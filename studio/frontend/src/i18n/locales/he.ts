@@ -2924,7 +2924,7 @@ export const he = {
       configurationDocs: "תיעוד",
       configurationFlagsSuffix: "עבור דגלים.",
       modelNote:
-        "Codex דורש מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
+        "Codex ו-Claude Code דורשים מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
       subagent: {
         title: "השתמש במודל מקומי כתת-סוכן",
         description:

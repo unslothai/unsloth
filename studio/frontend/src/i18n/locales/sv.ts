@@ -3003,7 +3003,7 @@ export const sv = {
       configurationDocs: "dokumentationen",
       configurationFlagsSuffix: "för flaggor.",
       modelNote:
-        "Codex kräver en GGUF-modell som körs av llama-server. Andra agenter kan även använda transformerbaserade modeller; ta bort --model för att använda modellen som redan är inläst i Unsloth.",
+        "Codex och Claude Code kräver en GGUF-modell som körs av llama-server. Andra agenter kan även använda transformerbaserade modeller; ta bort --model för att använda modellen som redan är inläst i Unsloth.",
       subagent: {
         title: "Använd en lokal modell som underagent",
         description:

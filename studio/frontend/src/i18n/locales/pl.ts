@@ -3122,7 +3122,7 @@ export const pl = {
       configurationDocs: "dokumentację",
       configurationFlagsSuffix: "na temat flag.",
       modelNote:
-        "Codex wymaga modelu GGUF udostępnianego przez llama-server. Inni agenci mogą też używać modeli opartych na transformers; usuń --model, aby użyć modelu już wczytanego w Unsloth.",
+        "Codex i Claude Code wymagają modelu GGUF udostępnianego przez llama-server. Inni agenci mogą też używać modeli opartych na transformers; usuń --model, aby użyć modelu już wczytanego w Unsloth.",
       subagent: {
         title: "Użyj modelu lokalnego jako podagenta",
         description:

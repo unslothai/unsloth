@@ -2817,7 +2817,7 @@ export const zhCN = {
       configurationDocs: "文档",
       configurationFlagsSuffix: "了解标志。",
       modelNote:
-        "Codex 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
+        "Codex 和 Claude Code 需要通过 llama-server 提供服务的 GGUF 模型。其他智能体也可以使用基于 transformers 的模型；去掉 --model 即可使用 Unsloth 中已加载的模型。",
       subagent: {
         title: "将本地模型用作子智能体",
         description:
