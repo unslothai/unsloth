@@ -43,6 +43,7 @@ import {
   stripFrontmatter,
 } from "../lib/hf-readme";
 import { rehypeReadmeUrls } from "../lib/rehype-readme-urls";
+import { badgeRowsRef } from "../lib/badge-rows";
 
 type ReadmePlugins = NonNullable<ComponentProps<typeof Streamdown>["plugins"]>;
 
@@ -544,7 +545,7 @@ export function ModelReadme({
   }
 
   return (
-    <div className={cn("hub-readme-prose", PROSE)}>
+    <div ref={badgeRowsRef} className={cn("hub-readme-prose", PROSE)}>
       <ReadmeOnlineContext.Provider value={online}>
         <Streamdown
           mode="static"

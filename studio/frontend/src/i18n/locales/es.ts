@@ -207,6 +207,7 @@ export const es = {
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -389,6 +390,12 @@ export const es = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al lateral",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -786,6 +793,8 @@ export const es = {
   picker: {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint: "Puede cargarse con un contexto más corto o ir más lento en este Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint: "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1099,6 +1108,9 @@ export const es = {
       modelAccessHint: "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -2107,6 +2119,12 @@ export const es = {
           "Elige según la máquina y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta máquina.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Introduce un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2507,6 +2525,10 @@ export const es = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
+        },
         reduceMotion: {
           label: "Reducir el movimiento",
           description: "Reduce las animaciones o sigue la configuración del sistema.",
@@ -2600,7 +2622,7 @@ export const es = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se ha detectado una GPU dedicada.",
         noUsableGpu: "Ninguna GPU de esta máquina se puede usar con PyTorch.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",
@@ -2676,7 +2698,7 @@ export const es = {
           "llama.cpp backend gguf inferencia cuda rocm hip vulkan metal cpu gpu acelerador prebuilt cambiar motor",
       },
       modelMemory: {
-        title: "Memoria del modelo",
+        title: "Carga del modelo",
         keepResident: "Mantener el modelo en la memoria de la GPU",
         keepResidentDescription: "Permanece en la VRAM entre mensajes.",
         keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y, cuando los pesos sí residen en la RAM del host (memoria unificada o descarga parcial a la GPU), también pasa --mlock para que el sistema operativo no los pagine ni los vuelva a subir en tu siguiente mensaje.",
@@ -2860,7 +2882,7 @@ export const es = {
       configurationDocs: "documentación",
       configurationFlagsSuffix: "para ver los flags.",
       modelNote:
-        "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
+        "Claude Code y Codex requieren un modelo GGUF servido por llama-server o un modelo MLX. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo ya cargado en Unsloth.",
       subagent: {
         title: "Usar un modelo local como subagente",
         description:
@@ -2937,6 +2959,8 @@ export const es = {
     },
     chat: {
       groups: {
+        replies: { title: "Respuestas" },
+        thinkingTools: { title: "Razonamiento y herramientas" },
         conversations: { title: "Conversaciones" },
         files: { title: "Archivos y pegado" },
         display: { title: "Visualización" },
@@ -3021,11 +3045,20 @@ export const es = {
       showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
       showReplyTimesKeywords:
         "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
-      showGenerationDetails: "Detalles de generación",
+      showGenerationDetails: "Información detallada de velocidad y carga",
       showGenerationDetailsDescription:
-        "Muestra en vivo las velocidades del prompt y de la respuesta con el recuento de tokens, y dónde se cargaron las capas de un modelo.",
+        "Añade a las lecturas en directo la velocidad de lectura del prompt, el recuento de tokens y la aceptación de borradores, y muestra dónde se cargaron las capas del modelo.",
       showGenerationDetailsKeywords:
         "detalles velocidad tokens estadísticas capas descarga verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estadísticas de velocidad y contexto",
+      generationStatsUpdatesDescription:
+        "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando acaba cada respuesta.",
+      generationStatsUpdatesHint:
+        "En tiempo real actualiza el indicador de tokens por segundo bajo una respuesta y la barra de contexto en la parte superior del chat varias veces por segundo mientras se escribe la respuesta. Al terminar los actualiza una vez, cuando acaba cada respuesta. En tiempo real puede causar retrasos o menor rendimiento, sobre todo en equipos antiguos u ocupados.",
+      generationStatsUpdatesSettled: "Al terminar",
+      generationStatsUpdatesRealtime: "En tiempo real",
+      generationStatsUpdatesKeywords:
+        "tiempo real en directo actualizar velocidad contexto estadísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       turnNavigation: "Navegación por turnos",
@@ -5546,7 +5579,7 @@ export const es = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster: "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5555,8 +5588,8 @@ export const es = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate: "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates: "Ocultar las actualizaciones de {components} hasta que se vuelva a abrir Unsloth",
     whatsNew: "Novedades",

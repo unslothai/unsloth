@@ -1092,6 +1092,61 @@ def reclaim_host_memory(logger: Any = None) -> bool:
         return False
 
 
+LOAD_HEAP_TRIM_ENV = "UNSLOTH_DIFFUSION_LOAD_HEAP_TRIM"
+_load_heap_trim_warning_logged = False
+
+
+def _rss_anon_mib() -> Optional[int]:
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as status:
+            for line in status:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) >> 10
+    except Exception:  # noqa: BLE001 - not Linux, or no procfs
+        return None
+    return None
+
+
+def trim_host_heap_after_load(logger: Any = None) -> bool:
+    """Return the heap a finished load freed to the OS; glibc otherwise keeps it (Qwen-Image-2.1, 8 GiB budget:
+    0.65 GiB warm, 1.9 GiB on a first load). Live tensors and the pinned caches are untouched."""
+    if _env_off(LOAD_HEAP_TRIM_ENV):
+        return False
+    try:
+        reclaim = _resolve_host_memory_reclaimer()
+        if reclaim is None:
+            return False
+        import time
+
+        before = _rss_anon_mib()
+        began = time.perf_counter()
+        reclaim()
+        took = time.perf_counter() - began
+        after = _rss_anon_mib()
+        if logger is not None:
+            if before is not None and after is not None:
+                logger.info(
+                    "diffusion.memory: returned %d MiB of freed heap to the OS after the load (%.0f ms)",
+                    before - after,
+                    took * 1000,
+                )
+            else:
+                logger.info(
+                    "diffusion.memory: returned freed heap to the OS after the load (%.0f ms)",
+                    took * 1000,
+                )
+        return True
+    except Exception as exc:  # noqa: BLE001 - a trim never fails a load
+        global _load_heap_trim_warning_logged
+        if logger is not None and not _load_heap_trim_warning_logged:
+            _load_heap_trim_warning_logged = True
+            try:
+                logger.warning("diffusion.memory: heap trim after the load failed: %s", exc)
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
 def normalize_memory_mode(value: Optional[str]) -> Optional[str]:
     """Lower/strip a requested mode (accepting dashes); None passes through. Raises ValueError
     for an unsupported mode so the route rejects it as a 4xx before any GPU work."""
@@ -1673,9 +1728,14 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
     # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
     "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
+    # Lumina-Image-2.0, worst per column over tiers / A100 / L4; decode = the first compiled-tier decode (cudnn workspace).
+    "lumina-2": ((1_130, 486, 4_497, 4_497, 4_497), (1_130, 486, 4_497, 4_497, 4_497)),
 }
 # U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
+# A plain bf16 denoiser keeps the whole-module tier the flat plan would take over the measured resident-transformer
+# tier: Lumina-2's encoder is as large as its DiT, and streaming it per prompt was 1% slower per render (L4, 16 GiB).
+_CALIBRATED_KEEPS_WHOLE_MODULE = frozenset({"lumina-2"})
 
 
 def _resident_only_hint(family: Optional[str]) -> bool:
@@ -2468,7 +2528,7 @@ UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
 UNIFIED_OVERSIZE_REQUEST_FIELD = "allow_oversized_load"
 # Must match the Settings switch label and location in frontend unified-memory-load-refusal.ts.
 UNIFIED_OVERSIZE_SETTING_LABEL = "Allow oversized model loads"
-UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model memory"
+UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model loading"
 UNIFIED_OVERSIZE_REFUSAL_CODE = "unified-memory-load"
 
 # Unlike the env var, the per-load flag does NOT lift the MPS allocator cap: that cap is process-wide and set once,
@@ -2904,7 +2964,10 @@ def plan_diffusion_memory(
             stream_transformer = stream_transformer,
         )
         if faster is not None:
+            flat_streamed = policy == OFFLOAD_GROUP and stream_transformer
             policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            if flat_streamed and policy == OFFLOAD_GROUP and not stream_transformer:
+                estimates["calibrated_over_streamed_transformer"] = 1
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
@@ -3281,8 +3344,16 @@ def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPl
     )
 
 
-def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
-    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together."""
+def refine_memory_plan_for_components(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    headroom_mib: int = 0,
+) -> MemoryPlan:
+    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together.
+
+    ``headroom_mib``: what the component's own phase holds beside it (a whole-module onload holds the component AND
+    that phase's activations at once); the caller prices it per phase. 0 (the image path) is the bare size check."""
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
@@ -3313,9 +3384,18 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
     if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
-    if largest_mib <= int(budget):
+    beside = max(0, int(headroom_mib or 0))
+
+    def need(name: str) -> int:
+        # the headroom is the denoise phase's: a text encoder runs in its own phase and keeps the bare check
+        return streamed_sizes[name] + (beside if streamable[name][1] == "block_level" else 0)
+
+    largest_name = max(streamed_sizes, key = need)
+    largest_mib = streamed_sizes[largest_name]
+    if need(largest_name) <= int(budget):
         return plan
+    if streamable[largest_name][1] != "block_level":
+        beside = 0
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
     if resident_mib > int(budget):
@@ -3330,8 +3410,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         estimates = estimates,
         reasons = plan.reasons
         + (
-            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
-            "device budget; streaming transformer blocks and text-encoder layers",
+            f"loaded {largest_name} is {largest_mib} MiB"
+            + (f" (+{beside} MiB runtime headroom)" if beside else "")
+            + f", above the {int(budget)} MiB device budget; streaming transformer blocks and text-encoder layers",
         ),
     )
 
@@ -4258,10 +4339,12 @@ def prefer_whole_module_offload(
     *,
     logger: Any = None,
     steps: Optional[int] = None,
+    family: Optional[str] = None,
 ) -> MemoryPlan:
     """``refined``, or whole-module offload in its place where it beats streaming. With ``steps`` the switch is
     priced from this card's measured bandwidth and bf16 throughput (RTX PRO 6000 streams faster at 4 steps, B200 does
     not); unmeasurable or without ``steps`` it is kept. Plain bf16 only: an fp16 T4 run pointed the other way.
+    A ``_CALIBRATED_KEEPS_WHOLE_MODULE`` family's measured plan is priced as the streamed plan it replaced.
     """
     switch = (os.environ.get(WHOLE_MODULE_OFFLOAD_ENV) or "auto").strip().lower()
     if switch in ("0", "off", "false", "no", "never"):
@@ -4270,11 +4353,16 @@ def prefer_whole_module_offload(
         if (
             getattr(refined, "requested_mode", None) != MEMORY_MODE_AUTO
             or refined.offload_policy != OFFLOAD_GROUP
-            or not bool(getattr(refined, "stream_transformer", True))
             or getattr(refined, "secondary_ordinal", None) is not None
         ):
             return refined
         est = refined.estimates
+        calibrated = bool(
+            str(family or "") in _CALIBRATED_KEEPS_WHOLE_MODULE
+            and est.get("calibrated_over_streamed_transformer")
+        )
+        if not calibrated and not bool(getattr(refined, "stream_transformer", True)):
+            return refined
         model_dense, companions = est.get("model_dense_mib"), est.get("companion_dense_mib")
         floors = [
             int(f)
@@ -4294,7 +4382,7 @@ def prefer_whole_module_offload(
         # A refined plan pinning the whole denoiser runs every step resident: kept.
         sizes = _loaded_component_mib(pipe) or {}
         dit = sum(m for m, r in sizes.values() if r == "dit") or transformer
-        if int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
+        if not calibrated and int(getattr(refined, "resident_transformer_mib", None) or 0) >= dit:
             return refined
         reason = _WHOLE_MODULE_KEPT_REASON.format(dit = transformer, floor = floor)
         priced: dict = {}
@@ -4329,6 +4417,8 @@ def prefer_whole_module_offload(
                     declined = _WHOLE_MODULE_DECLINED_REASON.format(**fields)
                     if logger is not None:
                         logger.info("diffusion.memory: %s", declined)
+                    if calibrated:
+                        return refined
                     if per_request_whole_enabled():
                         try:
                             setattr(
@@ -4346,6 +4436,10 @@ def prefer_whole_module_offload(
                 reason += _WHOLE_MODULE_COST_REASON.format(**fields)
         if logger is not None:
             logger.info("diffusion.memory: %s", reason)
+        kept = dict(refined.estimates)
+        if calibrated:
+            # the generate guard prices it as main's flat whole-module plan
+            kept.pop("calibrated_headroom_mib", None)
         return replace(
             refined,
             offload_policy = OFFLOAD_MODEL,
@@ -4356,7 +4450,7 @@ def prefer_whole_module_offload(
             resident_transformer_mib = None,
             resident_text_encoder_mib = None,
             reasons = refined.reasons + (reason,),
-            estimates = {**refined.estimates, "whole_module_kept_below_floor_mib": floor, **priced},
+            estimates = {**kept, "whole_module_kept_below_floor_mib": floor, **priced},
         )
     except Exception as exc:  # noqa: BLE001 - keep the streamed refinement
         if logger is not None:
@@ -6890,9 +6984,14 @@ class _RegisteredHostBuffer:
 REGISTERED_SLAB_ENV = "UNSLOTH_DIFFUSION_REGISTERED_SLABS"
 
 
-def registered_pinned_empty(nbytes: int) -> Optional[Any]:
+def registered_pinned_empty(
+    nbytes: int, fill: Optional[Callable[[Any], None]] = None
+) -> Optional[Any]:
     """Page-locked uint8 host tensor in registered memory, or None (use torch's pinned allocator).
-    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel."""
+    Torch's allocator faults pages on one thread (~18 s for MiniMax-H3); ``zero_`` here faults them in parallel.
+    ``fill(buf)``, when given, writes every byte before registering, in place of the zero fill: the copy faults the
+    pages, saving a full write pass (an 8 GB H3 conditioner pin: 3.8 -> 3.4 s hot, 6.1 -> 4.1 s cold, A100 VM).
+    Its errors propagate."""
     if (os.environ.get(REGISTERED_SLAB_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     if int(nbytes) <= 0 or not _fast_pin_supported():
@@ -6903,7 +7002,13 @@ def registered_pinned_empty(nbytes: int) -> Optional[Any]:
     try:
         holder = _RegisteredHostBuffer(int(nbytes))
         buf = torch.from_numpy(np.asarray(holder))
-        buf.zero_()
+    except Exception:  # noqa: BLE001
+        return None
+    if fill is not None:
+        fill(buf)
+    try:
+        if fill is None:
+            buf.zero_()
         holder.register()
     except Exception:  # noqa: BLE001
         return None

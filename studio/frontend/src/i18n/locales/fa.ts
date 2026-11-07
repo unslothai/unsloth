@@ -215,6 +215,7 @@ export const fa = {
     tabs: "زبانه‌های مرورگر",
     newTab: "زبانهٔ جدید",
     newTabFullView: "زبانهٔ جدید در نمای کامل",
+    newTabFloating: "زبانه جدید در پنجره شناور",
     closeTab: "بستن زبانه",
     close: "بستن مرورگر",
     show: "نمایش مرورگر",
@@ -431,6 +432,12 @@ export const fa = {
       openChat: "باز کردن در نمای کامل",
       moveLeft: "انتقال به قاب چپ",
       moveRight: "انتقال به قاب راست",
+    },
+    floating: {
+      enter: "پنجره شناور",
+      dock: "چسباندن به کنار",
+      close: "بستن پنجره شناور",
+      handle: "جابه‌جایی پنجره. کلیدهای جهت آن را جابه‌جا می‌کنند و Shift همراه کلیدهای جهت اندازه‌اش را تغییر می‌دهد.",
     },
     annotate: {
       countOne: "1 حاشیه‌نویسی",
@@ -882,6 +889,8 @@ export const fa = {
     unifiedTightFit: "جای تنگ",
     unifiedTightFitHint:
       "ممکن است با زمینهٔ کوتاه‌تر بارگذاری شود یا روی این Mac کندتر اجرا شود.",
+    residentToRun: "برای اجرا",
+    residentToRunHint: "حافظه GPU که بررسی بارگذاری هنگام اجرا لازم دارد",
     onDevice: "روی دستگاه",
     huggingFace: "Hugging Face",
     retry: "تلاش دوباره",
@@ -1199,6 +1208,9 @@ export const fa = {
         "در هر خط یک مدل، برای مثال unsloth/Qwen3-4B-GGUF، یا unsloth/* برای یک سازمان کامل. برای مجاز کردن همهٔ مدل‌ها، خالی بگذارید.",
       modelAccessSave: "ذخیره",
       modelAccessLimited: "دسترسی محدود به مدل",
+      rename: "تغییر نام",
+      renameTitle: "تغییر نام {username}",
+      renameDescription: "نامی را که این حساب با آن وارد می‌شود انتخاب کنید. گفتگوها، فایل‌ها و کلیدهای API در همین حساب می‌مانند. کاربر از حساب خارج می‌شود و با نام جدید و گذرواژهٔ فعلی دوباره وارد می‌شود.",
       empty: "هنوز حساب دیگری وجود ندارد",
       setupCode: "کد راه‌اندازی",
       setupFor: "کد راه‌اندازی برای {username}",
@@ -2280,6 +2292,12 @@ export const fa = {
         autoCurrently:
           "حالت خودکار روی این دستگاه از {transport} استفاده می‌کند.",
         xetMissing: "Xet در دسترس نیست، زیرا hf_xet نصب نشده است.",
+        speedLimit: "محدودیت سرعت دانلود",
+        speedLimitDescription:
+          "بدون محدودیت مگر اینکه عددی تعیین شود. دانلود محدودشده از HTTPS استفاده می‌کند.",
+        speedLimitNoLimit: "بدون محدودیت",
+        speedLimitInvalid: "عددی بر حسب Mbit/s وارد کنید یا فیلد را خالی بگذارید.",
+        speedLimitUsesHttps: "تا زمانی که محدودیت سرعت تنظیم شده باشد، دانلودها از HTTPS استفاده می‌کنند. فایل‌های بزرگ‌تر از ۵۰ گیگابایت همچنان بدون محدودیت از Xet استفاده می‌کنند.",
       },
       uploads: {
         sectionTitle: "آپلودها",
@@ -2671,6 +2689,10 @@ export const fa = {
         contrast: {
           label: "کنتراست",
         },
+        elementOutline: {
+          label: "حاشیهٔ عناصر",
+          description: "شدت حاشیهٔ دکمه‌ها، فیلدها، کارت‌ها و منوها.",
+        },
         reduceMotion: {
           label: "کاهش حرکت",
           description: "کاهش پویانمایی‌ها یا پیروی از سیستم.",
@@ -2763,7 +2785,7 @@ export const fa = {
         detecting: "در حال بررسی GPUها...",
         unreadable: "خواندن سخت‌افزار این سرور ممکن نشد.",
         noGpu:
-          "هیچ GPU قابل مشاهده‌ای شناسایی نشد. منابع فقط CPU در بالا نمایش داده شده‌اند.",
+          "پردازنده گرافیکی اختصاصی پیدا نشد.",
         noUsableGpu: "هیچ GPU در این دستگاه برای PyTorch قابل استفاده نیست.",
         mismatchCpuBuild:
           "PyTorch یک بیلد فقط CPU است ({version})، بنابراین نمی‌توان از GPUهای زیر استفاده کرد. برای بازگرداندن پشتیبانی GPU، نصب را تعمیر کنید.",
@@ -2851,7 +2873,7 @@ export const fa = {
           "بک‌اند استنتاج شتاب‌دهنده موتور مسیر سفارشی پوشه تغییر llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "حافظهٔ مدل",
+        title: "بارگذاری مدل",
         keepResident: "نگه داشتن مدل در حافظهٔ GPU",
         keepResidentDescription: "میان پرامپت‌ها در VRAM بماند.",
         keepResidentHint:
@@ -3050,7 +3072,7 @@ export const fa = {
       configurationDocs: "مستندات",
       configurationFlagsSuffix: "مراجعه کنید.",
       modelNote:
-        "Codex به یک مدل GGUF نیاز دارد که با llama-server ارائه شود. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
+        "Claude Code و Codex به یک مدل GGUF که با llama-server ارائه شود یا یک مدل MLX نیاز دارند. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
       subagent: {
         title: "استفاده از مدل محلی به‌عنوان زیرعامل",
         description:
@@ -3125,6 +3147,8 @@ export const fa = {
     },
     chat: {
       groups: {
+        replies: { title: "پاسخ‌ها" },
+        thinkingTools: { title: "تفکر و ابزارها" },
         conversations: {
           title: "گفتگوها",
         },
@@ -3224,11 +3248,20 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "جزئیات تولید",
+      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
       showGenerationDetailsDescription:
-        "سرعت زندهٔ پرامپت و پاسخ همراه با تعداد توکن‌ها، و محل بارگذاری لایه‌های مدل نمایش داده شود.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
       showGenerationDetailsKeywords:
         "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+      generationStatsUpdates: "آمار سرعت و زمینه",
+      generationStatsUpdatesDescription:
+        "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",
+      generationStatsUpdatesHint:
+        "حالت بی‌درنگ نمایشگر توکن در ثانیه زیر پاسخ و نوار زمینه در بالای گفتگو را هنگام نوشتن پاسخ چند بار در ثانیه تازه می‌کند. حالت پس از پایان آن‌ها را یک بار، پس از پایان هر پاسخ، به‌روز می‌کند. حالت بی‌درنگ ممکن است باعث کندی یا افت کارایی شود، به‌ویژه روی دستگاه‌های قدیمی یا پرمشغله.",
+      generationStatsUpdatesSettled: "پس از پایان",
+      generationStatsUpdatesRealtime: "بی‌درنگ",
+      generationStatsUpdatesKeywords:
+        "بی‌درنگ زنده به‌روزرسانی سرعت زمینه آمار realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
@@ -5848,8 +5881,7 @@ export const fa = {
     skippedVersion: "{component} {version} فعلاً رد شد",
     skippedUpdate: "به‌روزرسانی {component} فعلاً رد شد",
     skippedUpdates: "به‌روزرسانی‌های {components} فعلاً رد شدند",
-    vulkanFaster:
-      "Vulkan بیش از 10% سریع‌تر از ROCM است. نیازی به راه‌اندازی دوباره نیست",
+    vulkanFaster: "بیش از ۱۰٪ سریع‌تر",
     noRestart: "نیازی به راه‌اندازی دوباره نیست",
     downloadSize: "دانلود {size}",
     backendChange: "بک‌اند {change}",
@@ -5858,8 +5890,8 @@ export const fa = {
     installingPhase: "در حال نصب {component} ({current} از {total})...",
     installingCount: "در حال نصب {count} به‌روزرسانی...",
     bundleTitle: "{count} به‌روزرسانی محیط اجرا",
-    newBackend: "بک‌اند جدید {component}",
-    newUpdate: "به‌روزرسانی جدید {component}",
+    newBackend: "بک‌اند جدید محیط اجرا",
+    newUpdate: "به‌روزرسانی جدید محیط اجرا",
     hideUpdate: "پنهان کردن به‌روزرسانی {component} تا باز شدن دوبارهٔ Unsloth",
     hideUpdates:
       "پنهان کردن به‌روزرسانی‌های {components} تا باز شدن دوبارهٔ Unsloth",

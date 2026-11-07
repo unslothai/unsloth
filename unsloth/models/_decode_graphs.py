@@ -78,8 +78,8 @@ MAX_LEN_HINT = 0
 # 1: size the graph KV cache for prompt + max_new_tokens up front (early stops still hold it all).
 PREALLOC = os.environ.get("UNSLOTH_DECODE_GRAPH_PREALLOC", "0") == "1"
 _SUPPORTED_ATTENTION = set()
-# Tested families only (Qwen2 shares the Llama attention but is untested here).
-_SUPPORTED_MODEL_TYPES = {"llama", "qwen3"}
+# Tested families only (Qwen2 reuses the Llama decode path, biases included).
+_SUPPORTED_MODEL_TYPES = {"llama", "qwen2", "qwen3"}
 _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 
 

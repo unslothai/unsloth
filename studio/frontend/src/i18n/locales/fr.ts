@@ -207,6 +207,7 @@ export const fr = {
     tabs: "Onglets du navigateur",
     newTab: "Nouvel onglet",
     newTabFullView: "Nouvel onglet en plein écran",
+    newTabFloating: "Nouvel onglet en fenêtre flottante",
     closeTab: "Fermer l’onglet",
     close: "Fermer le navigateur",
     show: "Afficher le navigateur",
@@ -389,6 +390,12 @@ export const fr = {
       openChat: "Ouvrir en plein écran",
       moveLeft: "Déplacer vers le volet gauche",
       moveRight: "Déplacer vers le volet droit",
+    },
+    floating: {
+      enter: "Fenêtre flottante",
+      dock: "Ancrer sur le côté",
+      close: "Fermer la fenêtre flottante",
+      handle: "Déplacer la fenêtre. Les flèches la déplacent ; Maj et les flèches la redimensionnent.",
     },
     annotate: {
       countOne: "1 annotation",
@@ -786,6 +793,8 @@ export const fr = {
   picker: {
     unifiedTightFit: "Juste",
     unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
+    residentToRun: "pour l'exécution",
+    residentToRunHint: "Mémoire GPU que la vérification de chargement exige pendant l'exécution",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",
@@ -1100,6 +1109,9 @@ export const fr = {
       modelAccessHint: "Un modèle par ligne, par exemple unsloth/Qwen3-4B-GGUF, ou unsloth/* pour toute une organisation. Laissez vide pour autoriser tous les modèles.",
       modelAccessSave: "Enregistrer",
       modelAccessLimited: "Accès aux modèles limité",
+      rename: "Renommer",
+      renameTitle: "Renommer {username}",
+      renameDescription: "Choisissez le nom avec lequel ce compte se connecte. Ses conversations, fichiers et clés API restent attachés au compte. La personne est déconnectée et se reconnecte avec le nouveau nom et son mot de passe actuel.",
       empty: "Aucun autre compte pour l'instant",
       setupCode: "Code de configuration",
       setupFor: "Code de configuration pour {username}",
@@ -2111,6 +2123,12 @@ export const fr = {
           "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
         autoCurrently: "Auto utilise {transport} sur cette machine.",
         xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+        speedLimit: "Limite de vitesse de téléchargement",
+        speedLimitDescription:
+          "Aucune limite tant qu'aucune valeur n'est définie. Un téléchargement limité utilise HTTPS.",
+        speedLimitNoLimit: "Aucune limite",
+        speedLimitInvalid: "Saisissez un nombre en Mbit/s ou laissez le champ vide.",
+        speedLimitUsesHttps: "Les téléchargements utilisent HTTPS tant qu'une limite de vitesse est définie. Les fichiers de plus de 50 Go utilisent toujours Xet, sans la limite.",
       },
       uploads: {
         sectionTitle: "Téléversements",
@@ -2510,6 +2528,10 @@ export const fr = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contour des éléments",
+          description: "Intensité des bordures des boutons, champs, cartes et menus.",
+        },
         reduceMotion: {
           label: "Réduire les animations",
           description: "Réduire les animations ou suivre votre système.",
@@ -2603,7 +2625,7 @@ export const fr = {
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
-          "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
+          "Aucun GPU dédié détecté.",
         noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
         mismatchCpuBuild:
           "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",
@@ -2679,7 +2701,7 @@ export const fr = {
           "llama.cpp backend gguf inférence cuda rocm hip vulkan metal cpu gpu accélérateur prebuilt changer moteur",
       },
       modelMemory: {
-        title: "Mémoire du modèle",
+        title: "Chargement du modèle",
         keepResident: "Conserver le modèle dans la mémoire du GPU",
         keepResidentDescription: "Reste en VRAM entre les messages.",
         keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
@@ -2863,7 +2885,7 @@ export const fr = {
       configurationDocs: "documentation",
       configurationFlagsSuffix: "pour les flags.",
       modelNote:
-        "Codex nécessite un modèle GGUF servi par llama-server. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
+        "Claude Code et Codex nécessitent un modèle GGUF servi par llama-server, ou un modèle MLX. Les autres agents peuvent aussi utiliser des modèles basés sur transformers ; retirez --model pour utiliser le modèle déjà chargé dans Unsloth.",
       subagent: {
         title: "Utiliser un modèle local comme sous-agent",
         description:
@@ -2942,6 +2964,8 @@ export const fr = {
     },
     chat: {
       groups: {
+        replies: { title: "Réponses" },
+        thinkingTools: { title: "Réflexion et outils" },
         conversations: { title: "Conversations" },
         files: { title: "Fichiers et collage" },
         display: { title: "Affichage" },
@@ -3026,11 +3050,20 @@ export const fr = {
       showReplyTimesDescription: "Afficher sous chaque réponse l'heure à laquelle elle s'est terminée.",
       showReplyTimesKeywords:
         "horodatage heure date quand terminé réponse message timestamp time clock date reply",
-      showGenerationDetails: "Détails de génération",
+      showGenerationDetails: "Infos détaillées de vitesse et de chargement",
       showGenerationDetailsDescription:
-        "Affiche en direct les vitesses du prompt et de la réponse avec le nombre de jetons, et où les couches d'un modèle ont été chargées.",
+        "Ajoute aux indicateurs en direct la vitesse de lecture du prompt, le nombre de tokens et l'acceptation des brouillons, et indique où les couches du modèle ont été chargées.",
       showGenerationDetailsKeywords:
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Statistiques de vitesse et de contexte",
+      generationStatsUpdatesDescription:
+        "En temps réel compte les tokens par seconde et l'utilisation du contexte pendant la diffusion d'une réponse. À la fin les met à jour quand chaque réponse se termine.",
+      generationStatsUpdatesHint:
+        "En temps réel actualise l'indicateur de tokens par seconde sous une réponse et la barre de contexte en haut du chat plusieurs fois par seconde pendant l'écriture de la réponse. À la fin les met à jour une fois, quand chaque réponse se termine. Le mode en temps réel peut provoquer des ralentissements ou baisser les performances, surtout sur les machines anciennes ou chargées.",
+      generationStatsUpdatesSettled: "À la fin",
+      generationStatsUpdatesRealtime: "En temps réel",
+      generationStatsUpdatesKeywords:
+        "temps réel direct mise à jour vitesse contexte statistiques realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       turnNavigation: "Navigation par tours",
@@ -5557,7 +5590,7 @@ export const fr = {
     skippedVersion: "{component} {version} ignoré pour l'instant",
     skippedUpdate: "Mise à jour de {component} ignorée pour l'instant",
     skippedUpdates: "Mises à jour de {components} ignorées pour l'instant",
-    vulkanFaster: "Vulkan est plus de 10 % plus rapide que ROCM. Aucun redémarrage nécessaire",
+    vulkanFaster: "Plus de 10 % plus rapide",
     noRestart: "Aucun redémarrage nécessaire",
     downloadSize: "Téléchargement de {size}",
     backendChange: "Backend {change}",
@@ -5566,8 +5599,8 @@ export const fr = {
     installingPhase: "Installation de {component} ({current} sur {total})...",
     installingCount: "Installation de {count} mises à jour...",
     bundleTitle: "{count} mises à jour du runtime",
-    newBackend: "Nouveau backend {component}",
-    newUpdate: "Nouvelle mise à jour de {component}",
+    newBackend: "Nouveau backend du runtime",
+    newUpdate: "Nouvelle mise à jour du runtime",
     hideUpdate: "Masquer la mise à jour de {component} jusqu'à la réouverture d'Unsloth",
     hideUpdates: "Masquer les mises à jour de {components} jusqu'à la réouverture d'Unsloth",
     whatsNew: "Nouveautés",

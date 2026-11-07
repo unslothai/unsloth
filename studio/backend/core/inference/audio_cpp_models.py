@@ -43,6 +43,16 @@ AUDIO_CPP_SEP_AUDIO_TYPE = "audiocpp_sep"
 AUDIO_CPP_AUDIO_TYPES = frozenset(
     (AUDIO_CPP_TTS_AUDIO_TYPE, AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_SEP_AUDIO_TYPE)
 )
+_AUDIO_TYPE_BY_TASK = {
+    "tts": AUDIO_CPP_TTS_AUDIO_TYPE,
+    "music": AUDIO_CPP_MUSIC_AUDIO_TYPE,
+    "sep": AUDIO_CPP_SEP_AUDIO_TYPE,
+}
+
+
+def audio_type_for_task(task: Optional[str]) -> Optional[str]:
+    return _AUDIO_TYPE_BY_TASK.get(task or "")
+
 
 # Studio task -> the Hub pipeline task its rows carry.
 HUB_TASKS = {
@@ -2164,13 +2174,7 @@ class AudioCppModel:
 
     @property
     def audio_type(self) -> Optional[str]:
-        if self.task == "tts":
-            return AUDIO_CPP_TTS_AUDIO_TYPE
-        if self.task == "music":
-            return AUDIO_CPP_MUSIC_AUDIO_TYPE
-        if self.task == "sep":
-            return AUDIO_CPP_SEP_AUDIO_TYPE
-        return None
+        return audio_type_for_task(self.task)
 
     @property
     def hub_task(self) -> Optional[str]:

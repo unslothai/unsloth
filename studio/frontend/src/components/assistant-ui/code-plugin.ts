@@ -77,6 +77,26 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
+// Shiki names shells by grammar ("Shell" for bash and zsh); readers name them by the tag they typed.
+const DISPLAY_NAME_OVERRIDES: Record<string, string> = {
+  bash: "Bash",
+  zsh: "Zsh",
+  text: "Text",
+  plaintext: "Text",
+  txt: "Text",
+  cuda: "CUDA",
+};
+const DISPLAY_NAMES = new Map(
+  bundledLanguagesInfo.flatMap((info) =>
+    [info.id, ...(info.aliases ?? [])].map((name) => [name.toLowerCase(), info.name] as const),
+  ),
+);
+
+export const languageDisplayName = (language: string): string => {
+  const key = language.trim().toLowerCase();
+  return DISPLAY_NAME_OVERRIDES[key] ?? DISPLAY_NAMES.get(key) ?? key.charAt(0).toUpperCase() + key.slice(1);
+};
+
 export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];

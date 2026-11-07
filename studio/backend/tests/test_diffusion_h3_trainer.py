@@ -796,7 +796,7 @@ def test_int8_training_applies_h3s_small_m_guards():
     assert pad_tokens_for_scheme("int8", "minimax-h3")
 
     src = Path(h3.__file__).read_text()
-    assert "_int8_quantize_base(transformer, cfg.resolved_family)" in src
+    assert "_int8_quantize_base(transformer, cfg.resolved_family, device = device)" in src
     dit_src = Path(dit.__file__).read_text()
     body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
     # training keeps the baked list: the streamed-inference text-stream scope never reaches it
@@ -1767,7 +1767,9 @@ def test_h3_routes_its_transformer_through_the_shared_regional_compile(
         diffusion_h3_trainer, "_load_transformer", lambda cfg, device, precision: _Tiny()
     )
     monkeypatch.setattr(
-        dit, "_int8_quantize_base", lambda transformer, family: order.append("int8")
+        dit,
+        "_int8_quantize_base",
+        lambda transformer, family, device = None: order.append("int8"),
     )
     monkeypatch.setattr(dit, "_maybe_compile_transformer", _compile)
     monkeypatch.setattr(dit, "_make_optimizer", _optimizer)
