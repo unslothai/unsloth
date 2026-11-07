@@ -73,8 +73,11 @@ export function desktopSignedMediaPath(url: string): string | null {
 
 // A backend link without a signed token: a plain navigation carries no Authorization header, so it 401s.
 // Leading segments are a proxy's root_path, which the chat tools keep in the URLs they return.
+// isStudioUrl resolves as fetch does: "/\\evil/api/x" and tab or newline spellings are another host.
 export function protectedBackendPath(url: string): string | null {
-  return /^(?:\/[^/?#]+)*?\/(?:v1|api)\/[^?#]+(?:\?[^#]*)?$/.test(url) && !/\/file-signed\?/.test(url)
+  return /^(?:\/[^/?#]+)*?\/(?:v1|api)\/[^?#]+(?:\?[^#]*)?$/.test(url) &&
+    !/\/file-signed\?/.test(url) &&
+    isStudioUrl(url)
     ? url
     : null
 }

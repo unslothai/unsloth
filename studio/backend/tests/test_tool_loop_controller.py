@@ -1122,6 +1122,26 @@ def test_polling_unsloths_own_get_job_is_never_a_duplicate():
     assert other.prepare_call(_call("mcp__other__get_job", poll)).action == "duplicate"
 
 
+def test_a_second_identical_generation_lets_the_gallery_be_read_again():
+    image, media = "mcp__unsloth__generate_image", "mcp__unsloth__list_media"
+    tool_facts.note_mcp_tool(image, {"name": "generate_image"}, studio = True)
+    tool_facts.note_mcp_tool(
+        media, {"name": "list_media", "annotations": {"readOnlyHint": True}}, studio = True
+    )
+    controller = ToolLoopController(tools = [_tool(image), _tool(media)])
+    for name, args in (
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+        (image, {"prompt": "a cat"}),
+        (media, {}),
+    ):
+        decision = controller.prepare_call(_call(name, args))
+        assert decision.action == "execute", name
+        controller.record_result(decision, '{"ok":true}')
+    # Nothing new since that read: a third identical list is still a duplicate.
+    assert controller.prepare_call(_call(media, {})).action == "duplicate"
+
+
 def test_unsloths_own_generators_run_again_on_identical_arguments():
     # No seed: each call draws one, so "two images of a cat" is two calls with the same arguments.
     names = [f"mcp__unsloth__{n}" for n in ("generate_image", "generate_audio", "generate_video")]

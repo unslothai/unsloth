@@ -1419,7 +1419,10 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if _reruns_after_new_work(decision.tool_name):
-            if not reads_only(decision.tool_name) and decision.key not in self._workspace_ran:
+            # A repeatable writer (an unseeded generator) makes something new on every run.
+            if not reads_only(decision.tool_name) and (
+                decision.key not in self._workspace_ran or repeatable(decision.tool_name)
+            ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {

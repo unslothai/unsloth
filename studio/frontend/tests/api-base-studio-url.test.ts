@@ -51,3 +51,20 @@ test("on Desktop a backend link points at the backend and only signed media is a
   }
   resetApiBase();
 });
+
+test("a model-written link that resolves to another host never gets the session", () => {
+  // Browsers read "/\\" as "//" and drop tabs and newlines, so each of these is a network-path reference.
+  const offOrigin = [
+    "/\\attacker.example/api/x",
+    "/\t/attacker.example/api/x",
+    "/\n/attacker.example/v1/audio/voices/v/file",
+  ];
+  for (const apiBase of [null, 8888]) {
+    if (apiBase !== null) setApiBase(apiBase);
+    for (const path of offOrigin) {
+      assert.equal(protectedBackendPath(path), null, `${apiBase} ${JSON.stringify(path)}`);
+    }
+    assert.equal(protectedBackendPath("/v1/audio/voices/v1/file"), "/v1/audio/voices/v1/file");
+    resetApiBase();
+  }
+});
