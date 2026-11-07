@@ -705,9 +705,9 @@ def _held_us(graph: Any, hold_s: float, start: Any, end: Any) -> float:
 
 
 def unlisted_config(index: int) -> Optional[tuple]:
-    """Unlisted sm80+ card: ``_FALLBACK_CONFIG`` when it passed the bit-exact probe (once per device) and the latency
-    check (once per (device, mode); skipped under force), else None; past the check, the fastest probed tile of
-    ``_unlisted_tile``. Outside any trace / capture."""
+    """Unlisted sm80+ card: once ``_FALLBACK_CONFIG`` passed the bit-exact probe (once per device), the tile
+    ``_unlisted_tile`` keeps (the race winner), when it passes the latency check against cuBLAS (once per (device,
+    mode)); else None. Force skips both the race and the check and runs the fallback. Outside any trace / capture."""
     import torch
 
     mode = unlisted_mode()
@@ -718,19 +718,19 @@ def unlisted_config(index: int) -> Optional[tuple]:
                 _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
             if _UNLISTED_PROBE[index]:
                 key = (index, mode)
+                tile = _FALLBACK_CONFIG if mode == "force" else _unlisted_tile(index)
                 if key not in _UNLISTED_OK:
                     ok = True
                     if mode != "force":
                         try:
-                            timing = _unlisted_latency(index, _FALLBACK_CONFIG)
+                            timing = _unlisted_latency(index, tile)
                             _UNLISTED_TIMING[index] = {k: round(v, 1) for k, v in timing.items()}
+                            _UNLISTED_TIMING[index].update(_UNLISTED_RACE.get(index) or {})
                             ok = timing["fused"] <= timing["stock"]
                         except Exception:  # noqa: BLE001 - main's path stays
                             ok = False
                     _UNLISTED_OK[key] = ok
-                cfg = _FALLBACK_CONFIG if _UNLISTED_OK[key] else None
-                if cfg is not None and mode != "force":
-                    cfg = _unlisted_tile(index)
+                cfg = tile if _UNLISTED_OK[key] else None
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = ()
@@ -739,6 +739,7 @@ def unlisted_config(index: int) -> Optional[tuple]:
 
 
 _UNLISTED_TILE: dict = {}
+_UNLISTED_RACE: dict = {}  # index -> {"tile": kept tile, "race": {tile: us}} for the log
 _RACE_CACHE_NAME = "diffusion_int8_tile_race.json"
 _RACE_CACHE_MAX = 16
 
@@ -818,8 +819,8 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
 def _unlisted_tile(index: int) -> tuple:
     """Once per device: ``_FALLBACK_CONFIG`` raced against the ``_UNLISTED_RACE_TILES`` that pass the bit-exact probe
     (``_unlisted_race``, held under load); the fastest wins (ties keep the fallback). The winner is kept per card and
-    toolchain across processes. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback, which already
-    beat cuBLAS."""
+    toolchain across processes. Any failure, or UNSLOTH_DIFFUSION_INT8_GEMM_RACE=0, keeps the fallback. The latency
+    check against cuBLAS then runs on the kept tile."""
     if index not in _UNLISTED_TILE:
         best = _FALLBACK_CONFIG
         try:
@@ -827,8 +828,7 @@ def _unlisted_tile(index: int) -> tuple:
             cached = _race_cache_load(key)
             if cached is not None and (cached == _FALLBACK_CONFIG or _probe(index, cached)):
                 best = cached
-                if index in _UNLISTED_TIMING:
-                    _UNLISTED_TIMING[index]["tile"] = best
+                _UNLISTED_RACE[index] = {"tile": best}
             elif race_enabled():
                 cands = tuple(
                     t for t in _UNLISTED_RACE_TILES if t != _FALLBACK_CONFIG and _probe(index, t)
@@ -838,11 +838,10 @@ def _unlisted_tile(index: int) -> tuple:
                     for tile in cands:
                         if timing[tile] < timing[best]:
                             best = tile
-                    if index in _UNLISTED_TIMING:
-                        _UNLISTED_TIMING[index]["tile"] = best
-                        _UNLISTED_TIMING[index]["race"] = {
-                            t: round(us, 1) for t, us in timing.items()
-                        }
+                    _UNLISTED_RACE[index] = {
+                        "tile": best,
+                        "race": {t: round(us, 1) for t, us in timing.items()},
+                    }
                     _race_cache_store(key, best)
         except Exception:  # noqa: BLE001 - the fallback stays
             best = _FALLBACK_CONFIG

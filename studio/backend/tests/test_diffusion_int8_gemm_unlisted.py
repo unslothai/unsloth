@@ -32,6 +32,7 @@ def _reset():
         g8._UNLISTED_OK,
         g8._UNLISTED_TIMING,
         g8._UNLISTED_TILE,
+        g8._UNLISTED_RACE,
     ):
         d.clear()
     g8._UNLISTED_CARDS.clear()
@@ -142,8 +143,8 @@ def test_latency_gate(monkeypatch, timing, ok):
     fake = _Fake(monkeypatch, (8, 6), timing = timing)
     assert g8.device_config(0) == (g8._FALLBACK_CONFIG if ok else None)
     assert fake.probes[0] == g8._FALLBACK_CONFIG and fake.timed == [g8._FALLBACK_CONFIG]
-    # race tiles are probed only past the latency check
-    assert fake.probes[1:] == (list(g8._UNLISTED_RACE_TILES) if ok else [])
+    # the race tiles are probed (none passes here, so the fallback is the tile the check times)
+    assert fake.probes[1:] == list(g8._UNLISTED_RACE_TILES)
     assert g8._DEVICE_TILES[0] == ()
 
 
@@ -364,10 +365,24 @@ def test_failed_race_keeps_the_fallback(monkeypatch):
     assert g8.device_config(0) == g8._FALLBACK_CONFIG
 
 
-def test_race_needs_the_latency_check(monkeypatch):
+def test_the_race_winner_still_needs_the_latency_check(monkeypatch):
     fake = _Fake(monkeypatch, (8, 6), timing = {"fused": 30.0, "stock": 20.0}, race = {_L4_TILE: 1.0})
     assert g8.device_config(0) is None
-    assert fake.raced == []
+    assert fake.timed == [_L4_TILE]  # the check times the tile the card would run
+
+
+def test_a_faster_tile_can_pass_the_check_the_fallback_fails(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 8.0})
+    # cuBLAS 20 us: the fallback (25 us) would keep it, the race winner (15 us) beats it
+    monkeypatch.setattr(
+        g8,
+        "_unlisted_latency",
+        lambda index, cfg: fake.timed.append(cfg)
+        or {"fused": 15.0 if cfg == _A100_TILE else 25.0, "stock": 20.0},
+    )
+    assert g8.device_config(0) == _A100_TILE
+    assert fake.timed == [_A100_TILE]
+    assert g8._UNLISTED_TIMING[0]["tile"] == _A100_TILE and g8._UNLISTED_TIMING[0]["fused"] == 15.0
 
 
 @pytest.mark.parametrize("env", [g8.INT8_GEMM_UNLISTED_ENV, g8.INT8_GEMM_ENV])
