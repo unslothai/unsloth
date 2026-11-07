@@ -655,6 +655,7 @@ _PARITY = _GLOO + "test_cp_x_tp_from_unsloth_parallel_matches_one_process"
 _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
+_HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
 _MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
 # Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
@@ -694,6 +695,26 @@ CELLS = (
         compile = "eager: no compiled region",
         note = _UNSLOTH_GC
         + "test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process",
+    ),
+    Cell(
+        "hybrid (Gated DeltaNet + attention) cp x native FSDP2 (dp_shard x cp), eager",
+        {
+            **_CP_DP,
+            "family": ("qwen3_5",),
+            "hybrid": (True,),
+            "attention": ("sdpa",),
+            "memory": ("none",),
+            "fsdp2": (True,),
+            "compile": ("eager",),
+            "dp": (2,),
+            "cp": (2,),
+        },
+        parity = _HYBRID_FSDP2_CP,
+        engagement = _HYBRID_FSDP2_CP
+        + " (FSDP2 mesh covers the cp group, seq / cp tokens, Gated DeltaNet and attention Ulysses exchanges, "
+        "UNSLOTH_PARALLEL_STRICT=1)",
+        compile = "eager: no compiled region",
+        note = "cp alone: " + _GLOO + "test_hybrid_qwen3_5_under_cp_matches_one_process",
     ),
     Cell(
         "cp x tp (DDP dp), eager",
