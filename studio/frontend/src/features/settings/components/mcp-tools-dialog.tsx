@@ -86,8 +86,7 @@ function toolIcon(name: string): IconSvgElement {
   return Object.hasOwn(TOOL_ICONS, name) ? TOOL_ICONS[name] : McpServerIcon;
 }
 
-/** One row for many tools: the whole row is the button, and its right side says in words what a
- *  click does, like the Hub filter's "Select all". Symbols (a tick or a dash) left new users guessing. */
+/** One row for many tools: the whole row is the button, and its right side says what a click does. */
 function GroupToggle({
   tools,
   label,
@@ -155,8 +154,7 @@ function ToolChip({
   const descriptionKey = mcpToolDescriptionKey(tool.name);
   const label = labelKey ? t(labelKey) : tool.name;
   const on = tool.enabled;
-  // The Hub filter look: on is the stronger fill with a tick, off the lighter fill with muted text
-  // and no tick, so the tick (not color) carries the state.
+  // The tick, not the color, carries the state.
   const chip = (
     <button
       type="button"
@@ -207,7 +205,6 @@ function ToolChip({
   );
 }
 
-/** Whether the list has more below its visible part, for the rule above the footer. */
 function useMoreBelow(): [(el: HTMLDivElement | null) => void, boolean] {
   // A callback ref: the dialog content mounts after this component's first effect.
   const [el, setEl] = useState<HTMLDivElement | null>(null);
