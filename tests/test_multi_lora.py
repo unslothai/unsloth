@@ -171,6 +171,132 @@ def test_a_single_string_target_is_one_name():
     assert ml.inject_multi_lora(model, "1", 2) == ["1"]
 
 
+def _dense_per_adapter_loss(
+    logits,
+    labels,
+    ids,
+    num_adapters,
+    ignore_index = -100,
+):
+    shift = logits[:, :-1].float()
+    token = torch.nn.functional.cross_entropy(
+        shift.reshape(-1, shift.shape[-1]),
+        labels[:, 1:].reshape(-1),
+        ignore_index = ignore_index,
+        reduction = "none",
+    ).view(labels[:, 1:].shape)
+    valid = (labels[:, 1:] != ignore_index).float()
+    ids = ml._label_adapter_ids(ids, labels)
+    keep = (ids >= 0).float()
+    ids = ids.clamp_min(0).reshape(-1)
+    sums = torch.zeros(num_adapters).index_add(0, ids, (token * keep).reshape(-1))
+    counts = torch.zeros(num_adapters).index_add(0, ids, (valid * keep).reshape(-1))
+    losses = sums / counts.clamp_min(1)
+    return losses.sum(), losses.detach()
+
+
+# Gradients: fp32 agrees to rounding, bf16 to one rounding into the logits dtype.
+_CHUNKED_TOL = {
+    torch.float32: dict(rtol = 1e-6, atol = 1e-7),
+    torch.bfloat16: dict(rtol = 2**-7, atol = 1e-6),
+}
+
+
+def _chunked_vs_dense(
+    dtype,
+    per_token_ids,
+    V = 7,
+):
+    g = torch.Generator().manual_seed(0)
+    B, T, U = 4, 9, 3
+    logits = (torch.randn(B, T, V, generator = g) * 3).to(dtype)
+    labels = torch.randint(0, V, (B, T), generator = g)
+    labels[1, 4:] = -100
+    labels[3, :] = -100
+    if per_token_ids:
+        ids = torch.randint(-1, U, (B, T), generator = g)
+    else:
+        ids = torch.tensor([2, 0, 2, 1])
+
+    def run(fn):
+        x = logits.clone().requires_grad_()
+        total, losses = fn(x, labels, ids, U)
+        (total * 1.5).backward()
+        return total.detach(), losses, x.grad
+
+    return run(ml.per_adapter_loss), run(_dense_per_adapter_loss)
+
+
+def _assert_chunked_matches(new, old, dtype):
+    for a, b in zip(new, old):
+        assert a.dtype == b.dtype
+        torch.testing.assert_close(a, b, **_CHUNKED_TOL[dtype])
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("chunk_elements", [1, 7 * 3, 1 << 25])
+@pytest.mark.parametrize("per_token_ids", [False, True])
+def test_chunked_per_adapter_loss_matches_the_dense_loss(
+    monkeypatch, dtype, chunk_elements, per_token_ids
+):
+    monkeypatch.setattr(ml, "_CE_CHUNK_ELEMENTS", chunk_elements)
+    new, old = _chunked_vs_dense(dtype, per_token_ids)
+    assert torch.equal(new[0], old[0]) and torch.equal(new[1], old[1])
+    _assert_chunked_matches(new, old, dtype)
+    err = (new[2].float() - old[2].float()).abs().max().item()
+    print(f"{dtype} chunk={chunk_elements} max |grad diff| {err:.3g}")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        # no onehot: the label's logit is never pushed up
+        ("-torch.ones_like(g)[:, None]", "0 * torch.ones_like(g)[:, None]"),
+        # no logsumexp: exp(x) instead of softmax
+        (" - lse[b, t:e, None]", ""),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_the_chunked_parity_check_catches_a_broken_backward(monkeypatch, mutation, dtype):
+    import inspect
+
+    src = textwrap.dedent(inspect.getsource(ml._ChunkedTokenCrossEntropy))
+    assert mutation[0] in src
+    namespace = dict(vars(ml))
+    exec(src.replace(mutation[0], mutation[1], 1), namespace)
+    monkeypatch.setattr(ml, "_ChunkedTokenCrossEntropy", namespace["_ChunkedTokenCrossEntropy"])
+    new, old = _chunked_vs_dense(dtype, per_token_ids = True)
+    with pytest.raises(AssertionError):
+        _assert_chunked_matches(new, old, dtype)
+
+
+def test_chunked_per_adapter_loss_saves_no_full_vocab_fp32_copy(monkeypatch):
+    B, T, V, U = 8, 64, 4096, 4
+    logits = torch.randn(B, T, V).to(torch.bfloat16).requires_grad_()
+    labels = torch.randint(0, V, (B, T))
+    ids = torch.arange(B) % U
+    full = B * (T - 1) * V
+
+    def saved_bytes(fn):
+        saved = []
+
+        def pack(t):
+            saved.append(t)
+            return t
+
+        with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+            fn(logits, labels, ids, U)
+        own = logits.untyped_storage().data_ptr()
+        return sum(
+            t.numel() * t.element_size() for t in saved if t.untyped_storage().data_ptr() != own
+        )
+
+    dense = saved_bytes(_dense_per_adapter_loss)
+    chunked = saved_bytes(ml.per_adapter_loss)
+    assert dense >= 8 * full  # the fp32 copy and cross_entropy's fp32 log-softmax
+    assert chunked < full // 100, (chunked, dense)
+
+
 def test_per_adapter_loss_is_each_adapters_own_mean():
     logits = torch.randn(3, 5, 7)
     labels = torch.randint(0, 7, (3, 5))
