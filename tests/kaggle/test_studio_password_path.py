@@ -22,9 +22,8 @@ def test_login_uses_the_password_that_was_passed():
 
 
 def test_there_is_no_fallback_to_the_bootstrap_password():
-    """The whole assertion. If --password were ignored, Studio would seed a
-    bootstrap password instead and the login would fail; a fallback would then
-    quietly succeed and report a pass for a flag that did nothing."""
+    """If --password were ignored, Studio would seed a bootstrap password and login would fail; a
+    fallback would quietly pass for a flag that did nothing."""
     tree = ast.parse(SRC)
     func = next(
         node
@@ -47,9 +46,8 @@ def test_there_is_no_fallback_to_the_bootstrap_password():
 
 
 def test_the_generated_password_is_registered_as_a_secret_before_use():
-    """Registered in __init__, which runs before the server starts and before
-    anything writes a log. Registering it later would scrub the logs written
-    after that point and not the banner."""
+    """Register the generated password in __init__, before the server starts and any log is written;
+    registering later would scrub later logs but not the banner."""
     tree = ast.parse(SRC)
     init = next(
         node

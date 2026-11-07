@@ -661,8 +661,7 @@ def _sdpa_packed_varlen(
         except RuntimeError as exc:
             if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
                 raise
-            # A build whose varlen picks a backend without causal GQA (cuDNN) refuses at forward: stop
-            # using it and give this call to the wrapped sdpa.
+            # Varlen on cuDNN refuses causal GQA: stop using it and send the call to sdpa.
             _TORCH_VARLEN[:] = [None]
             logging.getLogger(__name__).info(f"Unsloth: torch varlen_attn unavailable ({exc})")
             HF_PACKED_ATTENTION_STATS["fast"] -= 1
@@ -962,8 +961,7 @@ def enable_hf_packed_attention() -> bool:
     current = ALL_ATTENTION_FUNCTIONS.get("sdpa", None)
     if current is None:
         return False
-    # Once per process: gemma-4's router stacked above does not forward our sentinel, and re-wrapping
-    # it would loop through its boxed original.
+    # gemma-4's router drops our sentinel, so re-wrapping would loop through its original.
     if getattr(current, _FLAG, False) or _ORIG_SDPA[0] is not None:
         return True
     _ORIG_SDPA[0] = current

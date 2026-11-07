@@ -592,9 +592,8 @@ def test_a_successful_retry_is_unchanged(monkeypatch):
 
 
 def test_the_failed_attempt_is_not_pinned_by_the_error_it_raised(monkeypatch):
-    """Holding the online error holds its frames, and its frames hold the partial
-    model. The retry then reallocates alongside it and a large VLM runs out of
-    memory doing exactly what the retry exists to do."""
+    """Holding the online error keeps its frames and the partial model they hold alive, so the retry
+    reallocates alongside it and a large VLM can run out of memory."""
     import gc
     import weakref
 
@@ -644,9 +643,8 @@ def test_a_real_retry_failure_is_not_replaced_by_the_network_error(monkeypatch):
 
 
 def test_an_oom_spelled_as_a_bare_runtimeerror_still_surfaces(monkeypatch):
-    """accelerate re-raises an accelerator OOM as a plain RuntimeError, and XPU has
-    its own class. Selecting on the empty-cache artifact rather than on a list of
-    OOM spellings covers both without naming either."""
+    """accelerate re-raises an accelerator OOM as a plain RuntimeError and XPU has its own class;
+    selecting on the empty-cache artifact covers both without listing OOM spellings."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
@@ -692,9 +690,8 @@ def test_a_network_error_wrapped_in_a_runtimeerror_keeps_its_cause(monkeypatch):
 
 
 def test_a_wrapped_online_error_does_not_pin_the_failed_attempt(monkeypatch):
-    """Same pinning as above, but through the wrapper path the retry already supports:
-    the loader re-raises the connection error as its own type, so the partial model is
-    held by the CAUSE's traceback, not the top-level one."""
+    """Same pinning through the wrapper path the retry supports: the loader re-raises the connection
+    error as its own type, so the partial model is held by the CAUSE's traceback."""
     import gc
     import weakref
 

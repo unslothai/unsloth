@@ -37,9 +37,8 @@ stack_mod = _load_stack_module()
 
 
 def _sh_function_body(source: str, name: str) -> str:
-    """Return a POSIX-shell function body by brace matching (same idea as
-    _extract_sh_function_body in test_rocm_support.py, kept local so this file
-    stands alone)."""
+    """Return a POSIX-shell function body by brace matching; a local copy of
+    _extract_sh_function_body so this file stands alone."""
     needle = f"{name}() {{"
     start = source.find(needle)
     assert start != -1, f"{name}() not found"
@@ -225,9 +224,8 @@ def _match_sh(rows: list[tuple[list[str], str]], gpu_name: str) -> str | None:
 
 
 def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
-    """Evaluate a PowerShell -match table: first arm whose regex matches wins.
-    -match is case-insensitive; .NET and Python agree on these patterns
-    (alternation plus one negative lookahead)."""
+    """First arm whose regex matches wins; PowerShell -match is case-insensitive, and .NET and
+    Python agree on these patterns (alternation plus one negative lookahead)."""
     for pattern, arch in rows:
         if re.search(pattern, gpu_name, re.IGNORECASE):
             return arch
@@ -372,9 +370,8 @@ class TestGpuNameArchParity:
 
     @pytest.mark.parametrize("gpu_name", [name for name, _ in _GPU_NAME_LEAF_CASES])
     def test_all_copies_return_the_same_arch(self, gpu_name):
-        """The drift guard proper: no expected value, just agreement. This is what
-        catches a table edited in one installer and not the other three, and it
-        stays honest even where the shipped gfx id is itself wrong."""
+        """Drift guard with no expected value, only agreement: catches a table edited in one
+        installer but not the others, and stays honest even where the shipped gfx id is wrong."""
         answers = {where: _resolve(where, rows, gpu_name) for where, rows in _name_tables().items()}
         distinct = set(answers.values())
         assert len(distinct) == 1, f"{gpu_name!r} resolves inconsistently: {answers}"
@@ -474,9 +471,8 @@ class TestSpoofFixtureParity:
                 ), f"{where}: spoof says {gfx} is {gpu_name!r}, installer says {got!r}"
 
     def test_divergences_are_real_and_still_diverging(self):
-        """Keeps the exception list from going stale: if the installers are
-        corrected later, this fails and the entry has to be removed rather than
-        quietly suppressing a check that now passes."""
+        """Keeps the divergence exception list honest: once installers are corrected this fails so
+        the entry is removed, not silently suppressing a passing check."""
         tables = _name_tables()
         profiles = _spoof_profiles()
         for gfx in _SPOOF_DIVERGENCES:
@@ -541,9 +537,8 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
 
 
 class TestNoUnregisteredArchTable:
-    """The failure this whole file exists for is a copy of the table that nobody
-    knew about. Enumerating the copies by hand is the same manual step that let
-    them drift, so this rediscovers them from the source tree."""
+    """Guards against an unknown copy of the arch table; enumerating copies by hand is what let them
+    drift, so the source tree is scanned instead."""
 
     def test_scan_still_finds_the_known_copies(self):
         """Guards the guard: if the heuristic stops matching (patterns reformatted

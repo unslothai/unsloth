@@ -278,9 +278,7 @@ def test_measures_by_cell_does_not_mix_readings_between_cells():
 
 
 def test_the_wire_integrity_counters_may_be_zero():
-    """Zero here is the GOOD outcome and the one that makes the denominator trustworthy: no SSE
-    frame failed to parse, and no unterminated frame was left buffered at the window's close. A
-    clean run tripped the bare-zero ban and no report could be built from it at all."""
+    """Zero wire-integrity counters are the good outcome; a clean run must not trip the bare-zero ban."""
     validate_payload(
         {
             "excluded_cells": [],
@@ -295,9 +293,8 @@ def test_the_wire_integrity_counters_may_be_zero():
 
 
 def test_a_wire_character_count_of_zero_is_still_a_failure():
-    """The exemption is deliberately the counters and not the count. `wireChars` at zero means
-    nothing was ever counted, which is a broken instrument rather than a clean stream, and it must
-    stay loud."""
+    """Exempt counters only, not the count: wireChars at zero means nothing was counted, a broken
+    instrument that must stay loud."""
     with pytest.raises(PayloadSchemaError):
         validate_payload({"excluded_cells": [], "blk": {"wire_chars": 0}})
 
@@ -401,8 +398,7 @@ def test_a_probe_payload_with_legitimate_zeros_still_validates():
 
 
 def test_the_same_probe_payload_without_the_attestation_is_still_refused():
-    """The exemption must come from the flag, not from the key names: an unattested zero is the
-    thing the walk exists to catch."""
+    """Exemption comes from the flag, not the key names: an unattested zero is still refused."""
     cell = _cell()
     cell["click_attribution"] = {"code_token_spans": 0}
     with pytest.raises(PayloadSchemaError, match = "code_token_spans"):

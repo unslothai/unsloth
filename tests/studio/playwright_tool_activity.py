@@ -291,8 +291,7 @@ def run(base_url: str, pw) -> dict:
     if scene["uncontrolled"]["aria_expanded"] != "false":
         p.append("11: the uncontrolled card did not converge after 40 preference flips")
 
-    # --- 12 storage denied -------------------------------------------------
-    # Safari private browsing and blocked cookies make localStorage throw.
+    # Storage denied: Safari private browsing and blocked cookies make localStorage throw.
     denied = browser.new_context(viewport = {"width": 1200, "height": 900})
     denied.add_init_script(
         """() => {

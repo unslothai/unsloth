@@ -671,9 +671,8 @@ def test_a_gutted_install_is_refused_in_every_os_and_accelerator_cell(
 def test_an_accelerator_install_missing_its_own_backend_library_is_refused(
     tmp_path, cell, host, backend
 ):
-    """The shared payload alone must not be enough for a CUDA/ROCm/Vulkan tree. The partial
-    extraction case: everything generic is present and only the accelerator library is gone, so
-    the binaries start and fail once a model loads."""
+    """The shared payload alone is not enough for CUDA, ROCm or Vulkan trees: with only the
+    accelerator library missing, the binaries start and then fail once a model loads."""
     marker = {**S12, "backend": backend, "asset": f"app-b1-{cell}.tar.gz"}
     install_dir = build_install(
         tmp_path,
@@ -775,9 +774,8 @@ def test_a_transient_failure_keeps_each_shipped_shape_and_returns_exit_zero(tmp_
 
 
 def test_a_transient_failure_still_falls_back_when_the_tree_is_not_runnable(tmp_path, monkeypatch):
-    """The other half: a broken tree must still reach the source-build fallback. Exit 2 is what
-    tells setup.sh it may build from source; swallowing it would leave a user with a
-    half-deleted install told everything was fine."""
+    """A broken tree must still reach the source-build fallback: exit 2 tells setup.sh it may build
+    from source, and swallowing it would report a half-deleted install as fine."""
     _transient_listing_failure(monkeypatch)
     install_dir = build_install(tmp_path, marker = S12, payload_backend = None)
     with pytest.raises(SystemExit) as caught:

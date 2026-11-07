@@ -191,9 +191,8 @@ def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
 
 
 def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
-    """A pinned dispatch, a moving main and a stale re-run are indistinguishable by the
-    time the action sees a sha, and re-running is the remedy for only the last. So the
-    message has to hold for all three rather than assert one."""
+    """A pinned dispatch, a moving main and a stale re-run look identical by the time the action
+    sees a sha, and re-running only remedies the last, so the warning must hold for all three."""
     proc = _run_notice(
         tmp_path,
         git_exit = 0,

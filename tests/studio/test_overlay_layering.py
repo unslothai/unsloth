@@ -65,9 +65,8 @@ def test_the_front_panel_does_not_climb_past_the_layer_above_it():
 
 @pytest.mark.parametrize("path", [MONITOR, API_PANEL])
 def test_both_floating_panels_stack_on_the_shared_layer(path: Path):
-    """Both containers take their z-index from the order store, not from a class.
-    Sharing the layer is what lets the one the user touched last come forward,
-    which is the only way out of a monitor resized over the whole viewport."""
+    """Both containers take z-index from the shared order store rather than a class, so the panel
+    touched last comes forward; this is the only way out of a monitor resized over the viewport."""
     container = _container(path, "setConstraintsElement")
     style_applies_shared_layer = re.search(r"style=\{\{\s*zIndex\s*[,}]", container) or re.search(
         r"style=\{floatingMonitorConstraintStyle\(\{\s*zIndex,", container

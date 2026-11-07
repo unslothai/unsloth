@@ -219,9 +219,8 @@ def test_the_correction_itself_on_every_dtype_it_can_meet():
 
 
 def test_the_correction_is_idempotent_and_self_neutralising():
-    """Applied twice is applied once, and applied to an already-correct mask it
-    is the identity in value. That is what makes it safe to leave in place if a
-    future transformers restores its own guard."""
+    """The row unmasking is idempotent and an identity on already-correct masks, so it is safe to
+    leave in place if a future transformers restores its own guard."""
     mask = torch.tensor([[[[False, False], [False, True]]]])
     once = _unmask_rows_attending_to_nothing(mask)
     twice = _unmask_rows_attending_to_nothing(once)

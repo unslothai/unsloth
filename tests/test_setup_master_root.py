@@ -583,21 +583,8 @@ def test_the_windows_legacy_root_named_explicitly_is_not_custom(tmp_path):
 
 @pytest.mark.skipif(PWSH is None, reason = "needs pwsh")
 def test_the_windows_uninstaller_only_removes_a_root_that_is_really_empty(tmp_path):
-    """The master root and its .staging go only when empty, and by an operation that cannot do
-    anything else.
-
-    Windows asked with Get-ChildItem -ErrorAction SilentlyContinue and then called _RemovePath,
-    which is Remove-Item -Recurse -Force, in the one directory this branch teaches users to
-    point at their own files. Two separate calls, so a file arriving between the two was taken
-    by the -Recurse; and a swallowed enumeration error read as an empty directory.
-    uninstall.sh uses rmdir for both paths, which is one call that refuses a non-empty
-    directory, and this file's own %TEMP% prune already asks with -ErrorAction Stop.
-
-    The behavioural halves below are what can be shown on a POSIX host: a recursive delete needs
-    to enumerate too, so an unlistable directory survives either version here and the ACL shape
-    that separates DELETE from LIST is Windows-only. What is checked instead is the mechanism,
-    which is what removes the race as well.
-    """
+    """Master root and .staging go only when empty, removed in one non-recursive call;
+    enumerate-then-Remove-Item -Recurse raced with new files and hid errors."""
     ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
     assert "function _RemoveDirIfEmpty" in ps
     helper = _slice(ps, "    function _RemoveDirIfEmpty {", "\n    # The exact shape")
@@ -746,17 +733,9 @@ UNINSTALL_PS1 = REPO_ROOT / "scripts" / "uninstall.ps1"
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not available")
 def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
-    """setup.ps1 resolves through PowerShell's own location; uninstall.ps1 used
-    [IO.Path]::GetFullPath, which anchors at [Environment]::CurrentDirectory.
-
-    PowerShell does not keep those two in step, so after a Set-Location a relative UNSLOTH_HOME
-    named one install to setup and a different one to the uninstaller. The owner marker does not
-    save you there: it spares trees that are not Unsloth's, and the wrongly resolved path is
-    another Unsloth install, marker and all.
-
-    Runs the shipped function rather than matching its text, so a rewrite that keeps the words
-    and loses the behaviour still fails.
-    """
+    """The uninstaller must resolve a relative UNSLOTH_HOME as setup.ps1 does: GetFullPath anchors
+    at CurrentDirectory, which Set-Location leaves out of step; the owner marker cannot catch it
+    since the wrong path is another real Unsloth install."""
     initial = tmp_path / "initial"
     chosen = tmp_path / "chosen"
     (chosen / "portable").mkdir(parents = True)

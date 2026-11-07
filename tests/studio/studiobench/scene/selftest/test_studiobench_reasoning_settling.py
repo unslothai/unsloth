@@ -13,8 +13,7 @@ from tests.studio.studiobench.scene.actions import reasoning_toggle
 
 @dataclass
 class _Page:
-    """Stub page returning a canned reply; accepts both the old timeoutMs and the new pair argument
-    shape."""
+    """Stub page with a canned reply; accepts old timeoutMs and new pair argument shapes."""
 
     reply: dict
     last_arg: Any = None

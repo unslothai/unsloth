@@ -151,9 +151,8 @@ def test_the_byte_cap_stops_the_read_instead_of_measuring_it_afterwards(monkeypa
 
 
 def test_a_redirect_body_is_bounded_too(monkeypatch):
-    """`requests` drains an intermediate 3xx body inside `get`, before `stream=True`
-    hands anything to the caller, so a redirect was a way around the cap and the
-    deadline. The probe follows redirects itself for that reason; this pins it."""
+    """requests drains an intermediate 3xx body inside get, before stream=True hands anything over,
+    so a redirect was a way around the cap and deadline; the probe follows redirects itself."""
     served = []
 
     def endless():

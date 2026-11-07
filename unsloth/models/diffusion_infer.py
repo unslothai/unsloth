@@ -144,9 +144,7 @@ def capture_lock(device):
 
 
 def drop_on_move(module, attr):
-    """Forget ``module.<attr>`` whenever the module's tensors are moved or cast (``to`` / ``cpu`` / ``cuda`` /
-    ``half`` / ``float`` all go through ``Module._apply``): a cache kept as a plain attribute is not moved with
-    them, so it would keep the old device's memory alive until the next generate."""
+    """Drop module.<attr> on each move or cast: a plain attribute is not moved and pins the old device."""
     cls = type(module)
     attrs = cls.__dict__.get("_unsloth_drop_on_apply")
     if attrs is None:
@@ -303,9 +301,7 @@ def resolve_compile(compile, device):
 
 @contextlib.contextmanager
 def inference_compile(base, mode):
-    """Compile each decoder layer for this generate call and put the previous call path back afterwards, so a
-    later training step never runs an inference-mode (CUDA Graph) layer. The compiled wrapper is cached on the
-    layer, so dynamo reuses its graphs across calls. mode None does nothing."""
+    """Compiles decoder layers for one generate call, then restores them so training never runs graphs."""
     if mode is None or mode == "graphs":
         yield 0
         return

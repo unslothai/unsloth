@@ -1506,9 +1506,8 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        # Radix opens the menu on pointerdown, so the click can time out on the modal open after it
-        # took effect (that open grows with DOM size). The menu this attempt opened is the click's
-        # effect: carry on with it.
+        # Radix opens the menu on pointerdown, so the click can time out after its open took effect
+        # (the open grows with DOM size); an open menu is the click's effect, so carry on.
         if _ev(ctx, _NEW_MENU_OPEN_JS) is True:
             click_overran = True
         else:

@@ -26,12 +26,8 @@ def windows_roots(
     pathmod = _os.path,
     isdir = None,
 ):
-    """Every real Windows directory.
-
-    Candidates are checked, not trusted: a WINDIR aimed at the user's profile
-    would make ordinary folders look like system ones, and one aimed elsewhere
-    would disarm the guard. So a directory counts only if it holds System32.
-    """
+    """Real Windows directories only: candidates from SystemRoot, WINDIR and the default folder
+    count only if they hold System32, since an aimed WINDIR could disarm the guard."""
     if isdir is None:
         isdir = pathmod.isdir
     system_root = environ.get("SystemRoot")
@@ -94,12 +90,9 @@ def is_system_dir(
 
 
 def _is_rooted(path, pathmod):
-    """Absolute, or at least rooted at a drive.
-
-    "." and "C:sub" name no directory on their own, so they are no escape
-    (pin_relative_overrides resolves the drive-relative form separately). A
-    leading separator is not absolute, but can never resolve back into System32.
-    """
+    """Absolute or drive-rooted only: '.' and 'C:sub' name no directory alone
+    (pin_relative_overrides handles the drive-relative form), and a leading separator cannot
+    resolve back into System32."""
     stripped = _strip_extended_prefix(path)
     return pathmod.isabs(stripped) or stripped.startswith(("\\", "/"))
 
@@ -218,9 +211,8 @@ def _carries_a_value(arg):
 
 
 def _takes_a_path(rest):
-    """Whether this `studio` invocation can carry a caller's path. Blunt on
-    purpose: the bare forms the desktop runs carry none, so anything else might.
-    """
+    """Whether this studio invocation can carry a caller's path; blunt on purpose, since the bare
+    forms the desktop runs carry none and anything else might."""
     if not rest:
         return False
     if rest[0] in _PATH_TAKING_STUDIO_COMMANDS:
@@ -231,11 +223,8 @@ def _takes_a_path(rest):
 
 
 def is_relocatable_invocation(argv, environ):
-    """True when this invocation is desktop-managed or provably cwd-independent.
-
-    The argv arm matters on its own: it fixes users whose desktop build predates
-    the Rust-side fix and so sets no marker.
-    """
+    """True when desktop-managed or provably cwd-independent; the argv arm alone fixes desktop
+    builds that predate the Rust-side fix and set no marker."""
     args = [arg for arg in argv if arg]
     if not args:
         return False
@@ -362,11 +351,8 @@ def pin_relative_overrides(
     expandvars = None,
     expanduser = None,
 ):
-    """Rewrite relative path overrides so they keep naming the same folder.
-
-    Returns the names pinned. A `~` value is written out, since only some readers
-    expand it themselves.
-    """
+    """Rewrite relative path overrides to keep naming the same folder, returning the names pinned; a
+    leading ~ is written out since only some readers expand it."""
     pinned = []
     for name in _RELATIVE_PATH_ENV:
         value = (environ.get(name) or "").strip()
@@ -447,18 +433,9 @@ def pin_relative_sys_path(
     exists = None,
     expanduser = None,
 ):
-    """Anchor the relative import roots this interpreter already carries.
-
-    sys.path holds PYTHONPATH entries as written, including the two spellings that
-    follow the process rather than the caller: an empty entry means the working
-    directory, and a leading `~` is never expanded there.
-
-    Only an entry naming something on disk is touched, folder or archive. The rest
-    are other people's strings rather than paths, such as the relative sentinel
-    setuptools registers for an editable install and accepts back by exact
-    equality; rewriting one breaks the import it was meant to protect, and leaving
-    a real archive breaks the next import from it.
-    """
+    """Anchor relative PYTHONPATH entries that name something on disk (an empty entry means the
+    working directory; a leading ~ is never expanded there); setuptools editable sentinels match
+    exactly and stay untouched."""
     if syspath is None:
         import sys as _sys
         syspath = _sys.path
@@ -509,16 +486,8 @@ def _anchor_list_entry(
 
 
 def _expand_settled(value, expandvars):
-    """The value expanded exactly once, or None if one pass does not settle it.
-
-    One pass is what every reader does, so one pass is what the guard does. The
-    result is only usable if expanding it again would change nothing, because the
-    reader expands whatever gets written back: a value that still holds a
-    reference (a nested %LOCALAPPDATA% that itself holds %USERPROFILE%, an escaped
-    %%NAME%%, a self-reference) would be expanded a second time by the reader and
-    read as a folder with another drive in the middle of it. Those are left
-    exactly as written instead.
-    """
+    """Expands once, returning None unless a second pass changes nothing: readers re-expand what is
+    written back, so nested or self-referencing values stay as written."""
     expanded = expandvars(value)
     return expanded if expandvars(expanded) == expanded else None
 
@@ -532,10 +501,8 @@ def _anchor(
     expandvars = None,
     expanduser = None,
 ):
-    """The value rewritten to name the same folder from anywhere, or None.
-
-    None means no rewriting is needed: empty, or already fully qualified.
-    """
+    """The value rewritten to name the same folder from anywhere; None when empty or already fully
+    qualified."""
     original = value = (value or "").strip()
     if value.startswith("~"):
         # llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to Path(), so expand ~ now.
@@ -646,11 +613,8 @@ def check_working_directory(
     expandvars = None,
     relocate = True,
 ):
-    """Decide what to do about the current working directory.
-
-    Returns (message, colour, fatal). `fatal` is the caller's cue to exit 1;
-    a message with fatal False is a warning printed after a successful move.
-    """
+    """Decide what to do about the cwd, returning (message, colour, fatal); fatal means exit 1,
+    while a non-fatal message is a warning printed after a successful move."""
     if platform != "win32":
         return None, None, False
 

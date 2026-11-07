@@ -135,11 +135,7 @@ class GroupLayout:
 
 
 def _build_groups(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows):
-    """CPU-side grouping mirroring the packed _pk_* partition, or None.
-
-    Prompt = real columns < cstart_r = (L - logits_to_keep) - left_pad_r; every row of a group
-    must have a byte-identical prompt. Suffix tokens scatter exactly like the packed path.
-    """
+    """CPU mirror of the packed _pk_* partition; None unless each group has byte-identical prompts."""
     G = num_generations
     if G is None or G < 2 or total_rows % G != 0:
         return None
@@ -204,10 +200,7 @@ def _build_group_layout_reference(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Token-by-token shared-prefix GroupLayout (build_group_layout's fallback), or None.
-
-    input_ids [B, L]: prompt left-padded, completion right-padded.
-    """
+    """Token-level GroupLayout fallback for build_group_layout; prompts left-, completions right-padded."""
     device = input_ids.device
     total_rows, L = input_ids.shape
     keep = input_ids != pad_id
@@ -337,17 +330,8 @@ def build_group_layout(
     apply_tokr_gate = True,
     max_segment_cap = None,
 ):
-    """Build the shared-prefix GroupLayout, or return None to fall back to the packed path.
-
-    input_ids : [B, L]. GRPO's layout is left-padded in the prompt and right-padded in
-        the completion. Real tokens of a row are a contiguous run not necessarily
-        starting at column 0.
-    logits_to_keep : int
-    left_pad_tokens_per_prompt : [B] long tensor (per-row left-pad count in the prompt).
-
-    Same result as _build_group_layout_reference, with one device->host and one
-    host->device copy instead of per-token loops.
-    """
+    """Shared-prefix GroupLayout, or None to fall back to the packed path; input_ids [B, L] with
+    left-padded prompts and right-padded completions; same result as the reference."""
     args = (input_ids, logits_to_keep, pad_id, num_generations, left_pad_tokens_per_prompt)
     kwargs = dict(apply_tokr_gate = apply_tokr_gate, max_segment_cap = max_segment_cap)
     lp = left_pad_tokens_per_prompt

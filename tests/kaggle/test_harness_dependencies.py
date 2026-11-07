@@ -94,9 +94,8 @@ def test_every_unguarded_import_is_installed_by_the_workflow():
 
 
 def test_the_import_scan_finds_something_at_all():
-    """A scan that silently matched nothing would satisfy the rule above
-    forever. Two modules the suite genuinely imports are named here, so a
-    refactor that breaks the walk fails rather than passes."""
+    """A scan that silently matches nothing would pass the rule above forever, so the test asserts
+    known imports (datasets, torch) are found and a broken walk fails."""
     found = _imported_third_party()
     assert "datasets" in found, "the walk no longer sees the vision dataset imports"
     assert "torch" in found

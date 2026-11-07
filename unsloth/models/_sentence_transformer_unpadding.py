@@ -182,12 +182,9 @@ def disable_sentence_transformer_unpadding(model):
 
 
 def enable_sentence_transformer_unpadding(model, auto = False):
-    """Pack valid tokens through FlashAttention varlen / xFormers during training.
-
-    Returns False (model untouched) unless: Transformers 5, stock BertModel / RobertaModel
-    with absolute positions and SDPA, a mean-only pooling pipeline, and a bidirectional
-    varlen backend. ``auto`` skips batches under _MIN_AUTO_TOKENS padded slots.
-    """
+    """Packs valid tokens for FlashAttention varlen or xFormers in training; returns False (model
+    untouched) unless transformers 5, stock Bert or Roberta with absolute positions and SDPA,
+    mean-only pooling, bidirectional varlen backend"""
     import transformers
 
     if getattr(model, "_unsloth_unpadding_installed", False):
@@ -203,8 +200,7 @@ def enable_sentence_transformer_unpadding(model, auto = False):
 
     transformer = model[0]
     base = transformer.auto_model
-    # Exact types (seen through unsloth_zoo's bf16 autocast subclass): PEFT-wrapped,
-    # remote-code and compiled models keep the stock path.
+    # Exact type check: PEFT, remote-code and compiled models keep the stock path.
     base_type = getattr(type(base), "_unsloth_autocast_base", type(base))
     if base_type not in (BertModel, RobertaModel):
         return False

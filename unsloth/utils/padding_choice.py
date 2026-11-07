@@ -23,11 +23,8 @@ _EFFICIENCY = (
     0.5  # fraction of the datasheet peak a LoRA step reaches when GPU bound (A100 measured 0.5)
 )
 _MAX_PADDED_GPU_S = 0.10  # padded micro batch GPU estimate below which the host dominates
-# Per compute capability, only where measured (padded + block compile vs padding-free, Qwen3 0.6B /
-# 4B LoRA r16, 16 and 4 bit, 3 interleaved reps). A capability missing here keeps padding-free.
-#   sm75 T4, sm80 A100, sm89 L4 (torch 2.14.1): 0.10 s.
-#   sm120 RTX PRO 6000 Blackwell (Colab G4, torch 2.14.1 and 2.10.0): padded lost 24-29% at a
-#   ~92 ms estimate on torch 2.14.1 and won (+5% on 2.14.1, +15-64% on 2.10.0) at <= 45 ms.
+# Padded GPU-time thresholds per compute capability, measured on torch 2.14.1 (sm120 also torch
+# 2.10.0); unlisted capabilities keep padding-free.
 _MAX_PADDED_GPU_S_BY_CAPABILITY = {
     (7, 5): 0.10,
     (8, 0): 0.10,
@@ -57,10 +54,8 @@ def estimate_microbatch_tokens(
     max_length = None,
     seed = 0,
 ):
-    """Expected (real tokens, padded tokens, attention pairs when padded) per micro batch.
-
-    Batches are drawn uniformly from `lengths` (the trainer shuffles); padded = batch * longest.
-    """
+    """Expected real tokens, padded tokens and attention pairs (when padded) per micro batch;
+    batches drawn uniformly from lengths, padded to longest."""
     lengths = [int(x) for x in lengths if x is not None and int(x) > 0]
     if not lengths or batch_size < 1:
         return None
@@ -88,10 +83,8 @@ def choose_padding(
     load_in_4bit = False,
     capability = None,
 ):
-    """Pure rule. Returns (use_padding_free: bool, reason: str, padded_gpu_s: float | None).
-
-    `capability` is the CUDA (major, minor); one that was never measured keeps padding-free.
-    None applies the default threshold (callers that know the device always pass it)."""
+    """Returns (use_padding_free, reason, padded_gpu_s); capability is CUDA (major, minor), None
+    applies the default threshold, unmeasured capabilities keep padding-free."""
     if not peak_tflops or peak_tflops <= 0 or not linear_flops_per_token or not padded_tokens:
         return True, "no estimate", None
     max_gpu_s = _MAX_PADDED_GPU_S

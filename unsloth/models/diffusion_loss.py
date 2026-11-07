@@ -24,8 +24,7 @@ _MIN_ROWS = 16
 
 
 def diffusion_compile_mode(args):
-    """None (eager), "auto" (compiled CE chunks on CUDA), "loss" (compiled CE chunks anywhere) or "full"
-    (compiled CE chunks + per-layer backbone compile)."""
+    """None eager; auto = compiled CE on CUDA; loss = anywhere; full adds backbone compile."""
     if os.environ.get("UNSLOTH_COMPILE_DISABLE", "0").lower() in ("1", "true", "yes"):
         return None
     value = getattr(args, "diffusion_compile", "auto") if args is not None else "auto"
@@ -226,12 +225,8 @@ def chunked_cross_entropy(
     softcap = None,
     compiled = False,
 ):
-    """sum(w * CE) and the unweighted CE sum over positions with target != -100.
-
-    ``hidden`` is [..., H] projected by ``weight`` [V, H] (+ ``bias``), or already logits [..., V] when
-    ``weight`` is None. Logits are computed in the input dtype and upcast like ``head(h).float()``. The second
-    output carries no gradient (metrics). Returns (weighted_sum, ce_sum, count) as 0-dim tensors.
-    """
+    """Returns (weighted sum, CE sum, count) over targets not equal to -100; logits computed in
+    input dtype and upcast like head(h).float(); the CE sum has no gradient (metrics only)"""
     width = hidden.shape[-1]
     hidden = hidden.reshape(-1, width)
     targets = targets.reshape(-1)
@@ -273,11 +268,8 @@ def is_plain_linear(module):
 
 
 def fusable_head(model, base):
-    """The plain nn.Linear output head whose input can be taken instead of logits, or None (dense logits).
-
-    Decided once per head module (a head wrapped later, e.g. by PEFT, is re-checked): a LoRA / quantized /
-    offloaded / tied or post-scaled head, or a distributed wrapper (FSDP shards the weight outside its
-    forward), keeps the dense path."""
+    """Plain nn.Linear head whose input can replace logits, else None; LoRA, quantized, offloaded,
+    tied, post-scaled or distributed-wrapped heads stay dense"""
     if is_distributed_wrapper(model):
         return None
     head = base.get_output_embeddings() if hasattr(base, "get_output_embeddings") else None
@@ -335,9 +327,7 @@ def _decoder_layer_lists(model):
 
 
 def _warm_rotary_caches(model):
-    """LLaDA fills its RoPE cache lazily and moves it to the parameters' device on first use. Inside a compiled,
-    checkpointed layer that move happens in the forward but not in the recompute, so the two save different
-    tensors (CheckpointError). Fill it on the right device before compiling."""
+    """Fill LLaDA's RoPE cache on the right device before compiling; else checkpoint recompute fails."""
     try:
         device = next(model.parameters()).device
     except StopIteration:

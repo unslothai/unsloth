@@ -224,8 +224,7 @@ def test_a_wheel_taken_from_pypi_is_not_then_excluded_on_arm64():
     [("0.0.20", True), ("0.0.30", False)],
 )
 def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
-    """xformers carries a floor because the released metadata does, so a PyPI version below
-    it is not a usable answer and the drop has to stay."""
+    """xformers floor mirrors released metadata; a PyPI version below it must stay dropped."""
     dropped = _dropped_names(f'@{{ "xformers" = @("{version}") }}')
     assert ("xformers" in dropped) is still_dropped
 

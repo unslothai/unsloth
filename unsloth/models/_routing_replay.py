@@ -118,10 +118,8 @@ def _active_adapters(model):
 
 
 def _router_extra_args(module, parent):
-    # Routers such as MiniMax-M2 / HY-V3 (`forward(hidden_states, e_score_correction_bias)`) or
-    # LFM2-MoE (`forward(hidden_states, expert_bias = None)`) take the parent MoE block's buffer:
-    # the block calls `self.gate(hidden_states, self.e_score_correction_bias)`. Pass the parent's
-    # same-named tensor; None when a required argument has none.
+    # Routers taking e_score_correction_bias or expert_bias get the same-named tensor from the
+    # parent MoE block; None when a required argument has none
     try:
         params = list(inspect.signature(module.forward).parameters.values())[1:]
     except (TypeError, ValueError):
@@ -145,9 +143,7 @@ def _prime_formula(
     layers,
     parent = None,
 ):
-    """Run the zoo hook once, eagerly, on a synthetic router call whose replay is the natural
-    routing: it picks and caches module._unsloth_replay_formula exactly as the first real call
-    would. Returns None when primed, else why it could not be."""
+    """Eagerly primes module._unsloth_replay_formula on a synthetic natural-routing call; None if primed."""
     weight = getattr(module, "weight", None)
     hidden = getattr(module, "hidden_dim", None) or getattr(module, "in_features", None)
     if hidden is None and torch.is_tensor(weight) and weight.dim() == 2:
@@ -187,9 +183,7 @@ def _prime_formula(
     return _check_formula(rr, module, x, extra)
 
 
-# The check also runs with the input scaled so the router logits spread to these standard
-# deviations: near-zero logits make every formula give ~1 / k, so the priming input alone can let a
-# wrong formula through (sigmoid routing matched by softmax).
+# Also checks scaled inputs: near-zero logits make every formula give ~1/k, hiding a wrong one.
 _CHECK_LOGIT_STDS = (1.0, 4.0)
 
 
@@ -236,12 +230,9 @@ def _remove_hook(module, name, extras, hook_id):
 
 
 def prepare_routing_replay(model, before):
-    """After install_routing_replay(model, ...): prime the router formulas outside compilation and
-    detach the replay hooks during `model.disable_adapter()` and while `model.set_adapter()` leaves a
-    non-policy adapter active (PEFT reference scoring). A router that
-    cannot be primed loses its replay hook (it keeps its natural routing) with a warning, rather
-    than reaching the data dependent formula pick inside a compiled graph. Returns the number of
-    replay hooks left (0 when routing replay installed nothing)."""
+    """Primes router formulas outside compilation; detaches replay hooks during disable_adapter and
+    non-policy set_adapter (PEFT reference scoring); a router that cannot be primed keeps natural
+    routing and loses its replay hook with a warning"""
     hooks = _new_hooks(model, before)
     if not hooks:
         return 0

@@ -263,14 +263,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
         group_size: int = 128,
         stochastic: bool = True,
     ) -> None:
-        """Tag parameters for INT8 weight quantization.
-
-        This marks eligible weights with quantization metadata so that
-        the optimizer knows to quantize/dequantize them during ``step()``.
-        **Weights are NOT converted to uint8 here** — they remain in float
-        so that the first forward/backward pass runs correctly.  The actual
-        quantization happens at the end of the first ``step()`` call.
-        """
+        """Tag INT8-eligible weights; they stay float until the first step() quantizes them, so the
+        first forward and backward pass runs correctly."""
         weight_quant_params = set()
         for group in param_groups:
             if group.get("weight_quant", False):
@@ -334,10 +328,7 @@ def _weight_quant_load_state_dict_hook(module, state_dict, prefix, *args):
 
 
 def install_weight_quant_hooks(model: torch.nn.Module) -> list:
-    """Register forward and checkpoint hooks for INT8-quantized weights.
-
-    Returns a list of hook handles so the caller can remove them if needed.
-    """
+    """Register forward and checkpoint hooks for INT8 weights; returns handles to remove them later."""
     handles = [
         model.register_forward_pre_hook(
             _weight_quant_model_pre_hook, prepend = True, with_kwargs = True

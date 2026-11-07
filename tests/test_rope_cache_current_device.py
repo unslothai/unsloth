@@ -406,9 +406,8 @@ def test_model_forward_longrope_under_compile_matches_eager(monkeypatch, start):
 
 
 def test_first_grown_cache_is_computed_on_inv_freq_device():
-    # A configured max above the 4 * 8192 floor grows the size on the first forward. The eager code then
-    # rebuilt it on inv_freq's device, so the lazy build must too: on CPU it took 0.3-1.6 s for 128K-1M
-    # rows and rounded cos/sin differently from every earlier release.
+    # The lazy build must run on inv_freq's device, as the eager code did, since a CPU build rounds
+    # cos/sin differently from every earlier release.
     rope = _llama(1 << 17)
     rope.inv_freq = rope.inv_freq.to("meta")
     with pytest.raises(NotImplementedError):

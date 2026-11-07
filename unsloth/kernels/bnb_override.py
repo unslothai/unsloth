@@ -178,10 +178,9 @@ def _eligible(self, x, weight, quant_state):
 
 
 def _bnb_fused_takes(self, x, quant_state):
-    """bitsandbytes >= 0.50 would run its fused 4-bit GEMM here (2..1536 rows, per its own per-GPU
-    heuristic): keep that. Where it dequantizes + F.linear instead, the override does the same with
-    the faster Triton dequantize, bit for bit. Eager answers are cached per layer and element count
-    (_nf4_forward checks that cache first): this runs on every decode call."""
+    """Keeps bitsandbytes >= 0.50 fused 4-bit GEMM where it runs (2..1536 rows, per its per-GPU
+    heuristic); otherwise Triton dequantize + F.linear, bit for bit; eager answers are cached per
+    layer and element count since this runs every decode call."""
     K = x.shape[-1]
     n = x.numel()
     if n <= K or n > _BNB_FUSED_MAX_ROWS * K:

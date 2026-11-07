@@ -437,9 +437,8 @@ def test_a_separate_output_filesystem_is_left_alone(tmp_path, monkeypatch, save_
     merge_real = os.path.realpath(merge)
 
     def stat_on_another_device(path, *args, **kwargs):
-        """Real `stat_result`, one field changed. `os.path.isdir` goes through the
-        same `os.stat`, so `st_mode` and the rest have to stay intact or the helper
-        never reaches the device comparison this test is about."""
+        """Returns a real stat_result with one field changed; os.path.isdir uses the same os.stat,
+        so st_mode and the other fields must stay intact for the device comparison to be reached."""
         st = real_stat(path, *args, **kwargs)
         if os.path.realpath(path) != merge_real:
             return st
@@ -455,9 +454,8 @@ def test_a_separate_output_filesystem_is_left_alone(tmp_path, monkeypatch, save_
 def test_an_unreadable_merge_directory_declines_rather_than_raising(
     tmp_path, monkeypatch, save_mod
 ):
-    """The helper promises never to raise. A directory listing that fails must
-    end the reclamation, not the export -- llama-quantize does not need that
-    directory any more and would have succeeded."""
+    """The helper never raises: a failing directory listing must end the reclamation, not the
+    export, since llama-quantize no longer needs that directory and would have succeeded."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 20)
 
@@ -469,9 +467,8 @@ def test_an_unreadable_merge_directory_declines_rather_than_raising(
 
 
 def test_f32_output_is_counted_as_twice_the_base(tmp_path, monkeypatch, save_mod):
-    """An f32 output off a bf16 base is four bytes a weight against two, so it
-    is twice the file it reads. Bounding every pass by the base size would call
-    a disk roomy that is about to fill."""
+    """An f32 output off a bf16 base is four bytes a weight against two, so it is twice the file it
+    reads; bounding every pass by the base size would call a filling disk roomy."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 100)
     assert _reclaim(save_mod, merge, gguf, bases, ["q8_0"], first_conversion = "bf16") == 0
@@ -630,9 +627,8 @@ def test_a_malformed_index_falls_back_to_the_naming_convention(tmp_path, monkeyp
 
 
 def test_a_quantized_output_is_priced_below_the_base_it_reads(tmp_path, monkeypatch, save_mod):
-    """The merge is kept whenever the export already fits, which is the whole
-    promise. A Q4_K_M off a 60GB BF16 base needs about 21GB, so 30GB free has
-    the room and charging it a full 60GB copy would delete for nothing."""
+    """The merge is kept whenever the export fits: a Q4_K_M off a 60GB BF16 base needs about 21GB,
+    so 30GB free has room, and charging a full 60GB copy would delete for nothing."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 60)
     _with_free(monkeypatch, save_mod, 30)
     assert _reclaim(save_mod, merge, gguf, bases) == 0
@@ -661,9 +657,8 @@ def test_a_q8_0_base_is_not_priced_as_sixteen_bit(save_mod):
 
 
 def test_the_vlm_projector_is_not_charged_to_every_quant(tmp_path, monkeypatch, save_mod):
-    """llama-quantize copies the `-mmproj` projector rather than quantizing it,
-    so it is not part of what a pass writes. Charging it per quant calls a disk
-    tight that has the room."""
+    """llama-quantize copies the -mmproj projector rather than quantizing it, so it is not part of
+    what each pass writes; charging it per quant would call a roomy disk tight."""
     merge, gguf, bases = _layout(tmp_path, merge_gb = 63, base_gb = 30)
     mmproj = Path(gguf) / "model.BF16-mmproj.gguf"
     with open(mmproj, "wb") as fh:

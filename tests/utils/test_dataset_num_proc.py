@@ -540,13 +540,8 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
 
 
 def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
-    """The num_proc site has a second, narrower anchor; it needs its own canary.
-
-    The block anchor drifting is survivable precisely because this regex catches
-    the assignment the block ends on. If the Zoo ever renames or restructures
-    that line too, both anchors are gone and nothing rewrites the worker count --
-    so pin it here, in CI, rather than discovering it from a user's Pool(1).
-    """
+    """The narrow num_proc anchor backs up the block anchor; if both break, nothing rewrites the
+    worker count, so this canary pins it in CI."""
     source = _zoo_source_as_anchored()
     pattern = _narrow_num_proc_pattern()
 
@@ -1396,9 +1391,8 @@ def test_the_unaided_reader_picks_its_own_v1_line_too(monkeypatch, dnp, tmp_path
 
 
 def test_the_hatch_wins_on_a_small_split_too(monkeypatch, dnp):
-    """A split under the threshold is where the resolver would otherwise stand
-    down, and standing down there would silently discard the count a user set
-    by hand to get workers on a small dataset."""
+    """The env override must win on a split under the threshold too, where the resolver would
+    otherwise stand down and silently drop a hand-set worker count."""
     _force_start_method(monkeypatch, dnp, "fork")
     _force_stdlib_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "16")

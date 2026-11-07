@@ -693,9 +693,8 @@ def test_a_very_deep_install_path_is_judged_normally(tmp_path):
 
 
 def test_the_probe_never_executes_anything_it_finds(tmp_path, monkeypatch):
-    """Preflight runs at every launch and the setup scripts own the exec probes, so this looks
-    and does not run. Also why the invariant is one-directional: this call can only be as
-    strict as, or looser than, the keep path."""
+    """Preflight runs every launch, so it only looks and never executes what it finds (setup scripts
+    own the exec probes); it is at most as strict as the keep path."""
     root = build_tree(tmp_path / "llama.cpp", host = LINUX, marker = S12, backend = "cuda")
 
     def refuse(*args, **kwargs):

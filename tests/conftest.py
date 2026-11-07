@@ -18,12 +18,9 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
-# --- one CPU share per xdist worker -----------------------------------------------
-# Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
-# as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
-# and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
-# training took >330 s there against ~50 s alone. An explicit thread setting is kept.
-# Loaded by path: tests/_shared is put on sys.path only below.
+# One CPU share per xdist worker, set before torch is imported: otherwise each worker starts a
+# torch/OpenMP pool as wide as the machine, slowing CPU training tests; an explicit thread setting
+# is kept; loaded by path because tests/_shared is only put on sys.path below.
 import os as _os  # noqa: E402
 
 # The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
@@ -154,9 +151,8 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stub the torch.cuda.* probes fired at import time once DEVICE_TYPE is
-    forced to "cuda"; returning plausible Ampere values lets the import finish
-    (real-tensor tests still run on CPU)."""
+    """Stubs the torch.cuda.* probes that fire at import once DEVICE_TYPE is forced to cuda,
+    returning plausible Ampere values so the import finishes; real-tensor tests still run on CPU."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 

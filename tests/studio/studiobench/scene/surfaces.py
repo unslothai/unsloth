@@ -411,8 +411,7 @@ _SURFACES: list[Surface] = [
         group = "chat",
         title = "Composer holding text",
         reach = (("fill", COMPOSER, "studiobench surface sweep"), ("wait", 400)),
-        # With text in the box Stop is replaced by Queue.
-        # Must be one expression: the evaluator wraps it in `return (...)`.
+        # With text in the box, Stop becomes Queue; must be one expression (wrapped in return).
         settle = {
             "js": "(document.querySelector("
             "'textarea[aria-label=\"Message input\"]') || {}).value ? true : false"

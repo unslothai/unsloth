@@ -156,9 +156,8 @@ def _stalled_holder(
     write_after_s: float,
     session: str = "realsession",
 ):
-    """A holder that takes the lock and only then publishes itself, which is the required order:
-    the write is what makes the marker say anything, and writing before the lock would let a LOSER
-    publish itself as the holder."""
+    """The holder must take the lock before publishing itself: the write is what makes the marker
+    say anything, and writing first lets a loser publish as holder."""
     code = (
         "import os,fcntl,time,sys\n"
         "fd=os.open(sys.argv[1],os.O_CREAT|os.O_RDWR,0o644)\n"

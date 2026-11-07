@@ -299,9 +299,8 @@ def test_clean_text_decision_cannot_drift_between_interpreters():
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
-    """smart_chunk_text's single-chunk branch must return a plain list for
-    input_ids even when the tokenizer has no eos_token_id, matching the
-    multi-chunk branch's unconditional tolist()/list() conversion."""
+    """smart_chunk_text's single-chunk branch must return a plain list for input_ids even without an
+    eos_token_id, like the multi-chunk branch's unconditional tolist()/list() conversion."""
 
     class MockTensor:
         def __init__(self, data):
@@ -425,9 +424,8 @@ def test_load_from_file_skips_non_object_json_lines():
 
 
 def test_smart_chunk_text_empty_input_returns_no_chunks():
-    """Empty/whitespace text must yield no chunks. This tokenizer keeps one token
-    per char (like BPE/SentencePiece keeping spaces), so a len(tokens)==0 check
-    would miss whitespace; the fix guards on text.strip() before tokenizing."""
+    """Empty or whitespace text must yield no chunks; this tokenizer keeps a token per char, so a
+    len(tokens)==0 check would miss whitespace, hence the text.strip() guard."""
 
     class WhitespacePreservingTokenizer:
         def __init__(self, eos_token_id):

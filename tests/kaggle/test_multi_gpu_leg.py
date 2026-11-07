@@ -56,9 +56,8 @@ def test_the_nullcontext_shim_is_the_failure_this_leg_exists_for():
 
 
 def test_one_visible_card_fails_and_says_only_that():
-    """A pinned run measures the wrong machine, so every rule after the count
-    is noise. Reporting eight failures about arrays that are correctly sized
-    for the one card the leg was given sends the reader after the wrong bug."""
+    """A pinned run measures the wrong machine, so with one visible card only the count failure is
+    reported; later rules would flag arrays sized correctly for that card."""
     facts = dict(
         GOOD,
         device_count = 1,
@@ -75,9 +74,8 @@ def test_one_visible_card_fails_and_says_only_that():
 
 
 def test_an_import_before_the_cards_were_visible_is_caught_separately():
-    """torch can see two cards while unsloth.kernels.utils was imported when
-    only one was visible -- the bindings are made once, at import. The two are
-    different failures with different fixes, so they are reported separately."""
+    """unsloth.kernels.utils binds its devices once at import, so importing it before both cards
+    were visible is a separate failure with its own fix, reported apart."""
     facts = dict(GOOD, module_device_count = 1)
     broken = _payload().multi_gpu_failures(facts, expected_cards = 2)
     assert broken and "imported before the cards were visible" in broken[0]
@@ -94,9 +92,8 @@ def test_short_stream_and_buffer_arrays_each_fail():
 
 
 def test_missing_facts_are_a_failure_rather_than_a_silence():
-    """A cycle that never ran the reading reports null, and null must not read
-    as "nothing wrong". This is the shape that let a payload be carried and
-    never executed for two rounds."""
+    """A null or empty multi-GPU reading must be a failure, not silence; that gap once let a payload
+    be carried without ever executing."""
     payload = _payload()
     assert payload.multi_gpu_failures(None, expected_cards = 2)
     assert payload.multi_gpu_failures({}, expected_cards = 2)
@@ -141,9 +138,8 @@ def test_the_reading_is_taken_from_the_module_and_not_recomputed():
 
 
 def test_the_leg_asks_for_two_cards_and_the_BUILT_payload_enforces_it():
-    """Asserted through the generated notebook, not off the dataclass. A field
-    nothing emits reads like coverage and does nothing -- which is exactly how
-    a payload was carried and never run for two rounds."""
+    """Assert against the generated notebook, not the dataclass field, because a field nothing emits
+    looks like coverage and enforces nothing."""
     leg = legs.LEGS["multi_gpu"]
     assert leg.all_cards is True
     notebook = build_kernel.build_payload_notebook(
@@ -172,9 +168,8 @@ def test_every_OTHER_leg_still_requires_exactly_one():
 
 
 def test_the_leg_is_small_enough_to_co_tenant():
-    """The whole cost argument. At a whole card this leg would block gptoss
-    (12.78 of the 13.0 budget) for its entire life and the kernel would get
-    longer, which is the one thing this was built not to do."""
+    """The leg must stay small enough to co-tenant: at a whole card it would block gptoss for its
+    whole life (12.78 of the 13.0 budget in CARD_VRAM_BUDGET_GB) and lengthen the kernel."""
     leg = legs.LEGS["multi_gpu"]
     budget = 13.0  # CARD_VRAM_BUDGET_GB in build_kernel.py
 
@@ -254,9 +249,8 @@ def test_it_runs_UNPINNED_or_it_measures_the_single_card_branch():
 
 
 def test_the_reservation_is_all_or_nothing():
-    """A partial reservation holds a seat on card 0 while waiting for card 1 --
-    capacity nothing is using, and a deadlock against a big leg waiting for
-    card 0. The refusal path must not have mutated anything."""
+    """A partial reservation can hold card 0 while waiting for card 1, leaving capacity unused and
+    deadlocking a big leg that waits for card 0; checks must all run before any card is charged."""
     source = _driver_source()
     body = source.split("def _admit_all(name):")[1].split("def _release_all")[0]
     check, commit = body.split("for g in range(N_GPU):")[1:3]

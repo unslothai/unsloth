@@ -132,9 +132,8 @@ class TestSpoofedStrixHaloRouting:
         assert "rocm6.3" not in calls, calls
 
     def test_repair_over_the_broken_rocm63_torch(self):
-        """`studio update` on the host as the reporter left it: torch is already
-        2.9.1+rocm6.3, so has_hip_torch is True and only the Strix reroute can fire. It
-        must, or the repair is a no-op and the segfault survives."""
+        """studio update on a host with torch 2.9.1+rocm6.3 (has_hip_torch True) must still fire the
+        Strix reroute, or the repair is a no-op and the segfault survives."""
         calls = _run_install(torch_probe_stdout = _ROCM63_TORCH, reprobe_devices = ["gfx1151"])
         assert "repo.amd.com/rocm/whl/gfx1151/" in calls, calls
         assert "torch>=2.11.0,<2.12.0" in calls, calls
@@ -163,9 +162,8 @@ class TestPrecedenceStillHolds:
         assert "rocm7.1" in calls, calls
 
     def test_kernel_showing_a_second_gpu_vetoes_the_correction(self):
-        """The mixed host seen through the kernel: the spoofed probe collapsed a Strix
-        APU and a gfx1100 dGPU into one apparent gfx1100, so the single-device premise
-        held. KFD sysfs sees both and withdraws it, so the correction must decline."""
+        """The spoofed probe collapses a Strix APU and a gfx1100 dGPU into one apparent gfx1100; KFD
+        sysfs sees both and withdraws the single-device premise, so the correction must decline."""
         calls = _run_install(
             kfd_targets = ["gfx1151", "gfx1100"],
             rocm_version = (7, 1),
@@ -220,9 +218,8 @@ class TestPrecedenceStillHolds:
         assert "rocm7.1" in calls, calls
 
     def test_deliberate_rdna2_override_is_not_a_strix_spoof(self):
-        """10.3.0 on an RX 6800 is the documented and CORRECT setting for that card. The
-        chassis is still a Ryzen AI Max, so the name still infers gfx1151 and the probe
-        still disagrees, but that does not make gfx1030 a spoof."""
+        """10.3.0 is the documented correct override for an RX 6800; even in a Ryzen AI Max chassis
+        that name-infers gfx1151, gfx1030 is not a spoof."""
         calls = _run_install(
             gfx_devices = ("gfx1030",),
             reprobe_devices = ["gfx1030"],
@@ -233,9 +230,8 @@ class TestPrecedenceStillHolds:
         assert "gfx1151" not in calls, calls
 
     def test_override_naming_a_third_arch_is_never_a_spoof(self):
-        """ROCr can only rename an agent to the target the variable names, so 10.3.0
-        alongside a gfx1100 reading means gfx1100 came from the silicon. No spoof to
-        undo, even if the kernel is silent and the re-probe agrees."""
+        """ROCr only renames an agent to the target the variable names, so 10.3.0 beside a gfx1100
+        reading came from the silicon, so no spoof to undo even if the kernel is silent."""
         calls = _run_install(
             env = {"HSA_OVERRIDE_GFX_VERSION": "10.3.0"},
             reprobe_devices = ["gfx1151"],
@@ -296,9 +292,8 @@ class TestHsaOverrideArch:
 
 
 class TestKfdGfxTargets:
-    """amdkfd encodes gfx_target_version as major*10000 + minor*100 + stepping, the
-    stepping in hex. gfx1151 is 110501; the 110511 circulating online decodes to a
-    nonexistent part, so it is pinned here. Reads a fabricated sysfs tree."""
+    """amdkfd encodes gfx_target_version as major*10000 + minor*100 + hex stepping; gfx1151 is
+    110501 and the circulating 110511 decodes to no real part."""
 
     def _nodes(self, tmp_path, monkeypatch, nodes):
         root = tmp_path / "nodes"
@@ -694,9 +689,8 @@ class TestRandomizedParity:
 
     @pytest.mark.parametrize("seed", [0])
     def test_never_corrects_without_corroboration(self, seed, fake_rocminfo):
-        """The safety invariant over the same random matrix: a verdict is only returned
-        when a source the override cannot reach (the kernel, or rocminfo re-probed
-        without it) named that exact arch and nothing else."""
+        """Safety invariant over the random matrix: a verdict is returned only when the kernel, or
+        rocminfo re-probed without the override, named that exact arch and nothing else."""
         for shape in _shapes(seed, 100):
             env = {
                 "FAKE_KFD": "\n".join(shape["kfd"]),
@@ -835,9 +829,8 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
         assert probe["HSA_OVERRIDE_GFX_VERSION"] is None, probe
 
     def test_declined_spoof_keeps_the_users_override(self):
-        """A real gfx1100 dGPU in a Ryzen AI Max chassis keeps generic wheels, where the
-        override is the user's own business. Nothing was disproved, so nothing is taken
-        away."""
+        """A real gfx1100 dGPU in a Ryzen AI Max chassis keeps generic wheels and the user's own HSA
+        override, since nothing was disproved and nothing is removed."""
         probe = {}
         calls = _run_install(
             kfd_targets = ["gfx1100"],

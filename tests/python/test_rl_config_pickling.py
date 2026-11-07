@@ -79,8 +79,7 @@ def test_torch_save_load_round_trip(patched, tmp_path, use_pristine):
 
 
 def test_checkpoint_loads_without_unsloth(patched, tmp_path):
-    """The whole point of pickling under the TRL name: a checkpoint written here
-    has to open on a machine that only has transformers and TRL."""
+    """Checkpoints pickled under the TRL name must open where only transformers and TRL exist."""
     torch = pytest.importorskip("torch")
 
     path = tmp_path / "training_args.bin"
@@ -179,8 +178,7 @@ def test_every_patched_config_pickles_portably(tmp_path):
 
 
 def _assert_the_patch_applied(patched):
-    """Names the patcher on failure: a failed patch leaves trl.SFTConfig pristine and the tests
-    misreport."""
+    """Fails with the cause when the patch fell back, so tests do not describe TRL's own class."""
     assert getattr(patched, "_unsloth_patched_rl_config", False), (
         f"trl.SFTConfig is {patched.__name__!r} from {patched.__module__!r} but carries "
         "no _unsloth_patched_rl_config, so Unsloth's RL patch fell back and these tests "
@@ -190,8 +188,7 @@ def _assert_the_patch_applied(patched):
 
 
 def test_patched_config_still_subclasses_the_pristine_one(patched):
-    """The generated class is renamed onto TRL's name, which must not tempt a
-    later patching pass into making it its own base."""
+    """The patched class takes TRL's name, so a later patch pass must not make it its own base."""
     _assert_the_patch_applied(patched)
     base = patched.__mro__[1]
     assert base is not patched
@@ -247,8 +244,7 @@ def test_a_displaced_sibling_wrapper_is_covered(patched, tmp_path):
 
 
 def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
-    """Unrelated classes must not be rebuilt as the patched class, which would silently drop their
-    fields."""
+    """Unrelated classes must not be rebuilt as the patched one, or their fields silently drop."""
     import copyreg
 
     from unsloth.models.rl import _register_config_pickle_fallback

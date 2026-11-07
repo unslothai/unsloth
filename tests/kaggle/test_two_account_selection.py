@@ -232,9 +232,8 @@ def test_every_run_of_one_commit_lands_on_the_same_account():
 
 
 def test_an_account_with_no_readable_quota_gets_no_weight_but_keeps_its_turn():
-    """Unknown is not zero-sized and it is not disqualified either: the account
-    loses its share of the traffic, because a share is what its plan says and we
-    did not get to hear it, and keeps its place as a fallback."""
+    """An account with unknown quota gets no weight, since a share comes from its plan, but it is
+    not disqualified and keeps its place as a fallback."""
     chosen, _ = gate.weighted_pick("5", {"1": 60.0})
     assert chosen == "1"
     chosen, _ = gate.weighted_pick("5", {})
@@ -258,9 +257,8 @@ def test_an_unknown_plan_size_leaves_the_reserve_alone():
 
 
 def test_a_sweep_leaves_the_other_account_s_kernels_filed(tmp_path, monkeypatch):
-    """This token cannot delete that kernel. Trying turns a real leak into a
-    log line that reads exactly like a kernel already gone -- and DROPS the
-    record, which is the only thing that still knows the kernel exists."""
+    """This token cannot delete that kernel; trying would turn a real leak into a log line that
+    reads like an already-gone kernel and drop the only record of it."""
     registry = tmp_path / "inflight.json"
     registry.write_text(
         json.dumps(
@@ -385,9 +383,8 @@ def test_neither_token_name_can_reach_the_kernel():
 
 
 def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down():
-    """A handover lands a retry on the other account, whose GPU job collects
-    with only its own token and sees nothing in flight. So the gate asks every
-    account it surveys before it picks one."""
+    """A handover lands a retry on another account whose GPU job sees only its own kernels, so the
+    gate surveys every account before picking one."""
     sha = "abcdef0123456789" + "0" * 24
     own = [
         "danielhanchen/unsloth-t4-ci-sabcdef012345-1111 (RUNNING)",  # studio, this commit
@@ -524,9 +521,8 @@ def _other(sha: str) -> tuple[str, str]:
 def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The sampled account is FREE and the other holds a kernel for this commit,
-    which is what a retry after a handover looks like. A gate that only asks the
-    account it is about to pick finds it clear and dispatches a duplicate."""
+    """The sampled account is free but the other holds a kernel for this commit, as on a retry after
+    a handover; checking only the sampled account would dispatch a duplicate."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other)
     assert code == 0
@@ -539,9 +535,8 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
 def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commit(
     monkeypatch, tmp_path
 ):
-    """The account that dispatched this commit is the one likely to be short of
-    quota now. Skipping it in the sweep hands the retry to the other account,
-    which dispatches the same commit again."""
+    """The dispatching account is likely short of quota now; skipping it in the sweep hands the
+    retry to the other account, which dispatches the same commit again."""
     _sampled, other = _other("abcdef0123456789" + "0" * 24)
     for outcome in ("insufficient_quota", "quota_unreadable"):
         code, outputs, asked, _sha = _drive_gate(
@@ -553,9 +548,8 @@ def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commi
 
 
 def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tmp_path):
-    """`slot: 2` is a second session on the same ref beside slot 1, so a slot-1
-    kernel must not stand it down, while a retry of the slot-2 run itself must.
-    The slot in the slug tells the two apart."""
+    """A slot-2 session on the same ref is not a duplicate of a slot-1 kernel, but a retry of the
+    slot-2 run is; the slot in the kernel slug tells the two apart."""
     sampled, _unused = _other("abcdef0123456789" + "0" * 24)
     # Slot 1 kernel up, slot 2 asked for: runs.
     _c, outputs, _a, _s = _drive_gate(
@@ -600,9 +594,8 @@ def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
 
 
 def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
-    """A dispatch naming `unsloth_ref` tests that ref, not github.sha. Keyed on
-    github.sha the gate looks for the wrong kernel, and once the default branch
-    moves two runs of one ref can land on different accounts."""
+    """A dispatch naming unsloth_ref tests that ref, not github.sha; keyed on github.sha the gate
+    finds the wrong kernel, and after the default branch moves one ref can split across accounts."""
     for path in (NOTEBOOK_WF, STUDIO_WF):
         gate_job = _wf(path)["jobs"]["gate"]
         steps = {s.get("id"): s for s in gate_job["steps"] if s.get("id")}

@@ -153,9 +153,8 @@ def test_api_monitor_renders_lifecycle_rows():
 
 
 def test_auto_switch_section_sits_below_the_monitor_link():
-    # #14455 moved the usage examples up, under the key form (api-settings-tab.test.ts pins that), and
-    # #15467 put them behind ApiExamplesPanel's tab row; the auto-switch section still follows the
-    # monitor link, whatever props the link takes.
+    # Issue 14455 moved the usage examples up under the key form (api-settings-tab.test.ts pins
+    # that) and issue 15467 behind ApiExamplesPanel's tab row; auto-switch follows the monitor link.
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
 
     def at(pattern):

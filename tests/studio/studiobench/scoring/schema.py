@@ -17,8 +17,7 @@ ZERO_OK_KEYS = frozenset(
         "index",
         # parity.js numbers message rows from `i: 0`.
         "i",
-        # Only the counters, not the `visible`/`wire` subtrees: a zero-char signature or zero
-        # `wireChars` must stay loud.
+        # Only counters are exempt, not `visible`/`wire` subtrees; zero `wireChars` must fail.
         "wire_parse_failures",
         "wire_pending_chars",
         "wire_parse_failures_in_window",
@@ -192,8 +191,7 @@ class Measure:
         unit: str = "ms",
         floor: float | None = None,
     ) -> "Measure":
-        """Reads the harness's flat <key>_attempted and <key>_reason siblings, so the bare-zero ban
-        holds."""
+        """Reads flat <key>_attempted and <key>_reason siblings, so the bare-zero ban holds."""
 
         value = row.get(key)
         reason = row.get(f"{key}_reason")

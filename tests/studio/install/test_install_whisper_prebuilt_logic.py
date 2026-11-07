@@ -2492,9 +2492,8 @@ def test_the_whisper_reuse_path_backfills_the_paired_ggml_tree(tmp_path, monkeyp
 
 
 def test_the_whisper_backfill_never_rewrites_a_recorded_tree(tmp_path, monkeypatch):
-    """Added, never corrected: a marker that already names a tree was written by the run
-    that installed against it, and a llama runtime that moved since is exactly what the
-    pre-check is supposed to notice."""
+    """The whisper backfill adds a missing pairing record but never rewrites one: a recorded tree
+    was written against its llama runtime, which the pre-check must notice if it moved."""
     install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     _slim_marker(install_dir)
     monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda: "ggml-def")
@@ -2635,9 +2634,8 @@ def test_a_raw_network_error_from_the_release_fetch_still_keeps_the_install(
     reason = "os.access(X_OK) is always true on Windows, so the unusable-tree half is POSIX only",
 )
 def test_an_unreachable_lookup_still_fails_on_a_broken_install(tmp_path, monkeypatch, capsys):
-    """Fail-open is the right answer for a tree that cannot serve dictation, and the
-    message that says so sends the user to browser and Transformers STT. Only the
-    evidence a previous run left behind may replace it."""
+    """Fail-open is the right answer for a tree that cannot serve dictation, with a message pointing
+    to browser and Transformers STT; only evidence a previous run left may replace it."""
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     marker_path = install_dir / M.METADATA_FILENAME
     recorded = marker_path.read_bytes()
@@ -2689,9 +2687,8 @@ def test_the_kept_path_refuses_a_mismatched_ggml_pairing(tmp_path, monkeypatch, 
 
 
 def test_a_pairing_gap_still_reports_itself(tmp_path, monkeypatch, capsys):
-    """The one lookup failure that ANSWERED. Exit 2 is how setup learns to print the
-    installed-versus-required tags and tell the user to publish the paired releases; a
-    keep would replace a release skew nobody would then fix with a soothing warning."""
+    """The one lookup failure that answered: exit 2 makes setup print installed versus required tags
+    and ask for paired releases; keeping the install would hide the skew."""
     install_dir, _host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     _no_network(monkeypatch)
     rc, output = _cli_install(capsys, install_dir)
@@ -2745,9 +2742,8 @@ def test_both_setup_scripts_report_the_kept_install_as_kept():
 
 
 def test_whisper_a_release_pin_does_not_excuse_a_wrong_upstream_pin(tmp_path, monkeypatch):
-    """The full path refuses a pinned release whose bundle targets another upstream
-    version, so the shortcut checks the upstream pin whether or not the release is
-    pinned too."""
+    """The full path refuses a pinned release whose bundle targets another upstream version, so the
+    shortcut checks the upstream pin even when the release is pinned too."""
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(
         M.llama,
@@ -2825,9 +2821,8 @@ def test_whisper_an_upstream_pin_without_the_v_prefix_is_the_same_pin(tmp_path, 
 
 
 def test_whisper_a_bundle_needing_a_newer_macos_is_not_intact(tmp_path, monkeypatch):
-    """An install restored onto an older same-architecture Mac has the right platform
-    tokens and the execute bit; the marker's recorded min_os is what the selector
-    would refuse it on, so the intact check refuses it too."""
+    """A restore onto an older same-architecture Mac keeps the platform tokens and execute bit, but
+    the recorded min_os makes the intact check refuse it, as the selector would."""
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
     marker_path = install_dir / M.METADATA_FILENAME
     marker = json.loads(marker_path.read_text(encoding = "utf-8"))
@@ -3012,9 +3007,8 @@ def _plan_on_macos(published_repo: str = "unslothai/whisper.cpp"):
 
 
 def test_macos_does_not_walk_back_when_llama_is_ahead_of_every_whisper_release(monkeypatch):
-    """llama.cpp b10080 is out and its paired whisper.cpp release is not yet: no older release can
-    pair with a newer llama.cpp, so listing and fetching all of them (two requests each, on every
-    update) found nothing. Seen in CI as ~50 GitHub requests in a no-op macOS update."""
+    """macOS does not walk back when llama.cpp is ahead of every whisper.cpp release, since no older
+    release pairs with a newer llama.cpp; listing and fetching them finds nothing."""
     listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
     with pytest.raises(M.LlamaPairingGapError, match = SLIM_LLAMA_TAG):
         _plan_on_macos()

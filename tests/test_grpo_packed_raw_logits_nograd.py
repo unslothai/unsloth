@@ -390,9 +390,8 @@ def test_square_lm_head_double_application_is_actually_detectable():
 
 
 def test_first_use_verify_branch_runs_the_per_row_forwards():
-    """Without this, the raw-logits test above would never reach the second
-    call site: a model already inside the trusted envelope takes the shortcut
-    and the verifier never runs."""
+    """Without this the raw-logits test above never reaches the second call site, since a model
+    already inside the trusted envelope takes the shortcut and the verifier never runs."""
     namespace, model, input_ids, _max_left_pad = _run_packed_block(hidden_states = False)
 
     assert (

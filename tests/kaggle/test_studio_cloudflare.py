@@ -86,9 +86,8 @@ def test_an_unauthenticated_request_through_the_tunnel_must_be_refused():
 
 
 def test_the_no_tunnel_excuse_is_narrow():
-    """Reported-not-failed applies ONLY when nothing was published, because
-    then there is nothing to have gone wrong with. Once a URL exists, every
-    rule above is live."""
+    """The no-tunnel excuse, reported rather than failed, applies only when no URL was published;
+    once a URL exists, every cloudflare rule above is live."""
     func = _func("assert_cloudflare")
     excuses = [
         n for n in ast.walk(func) if isinstance(n, ast.If) and ast.unparse(n.test) == "url is None"

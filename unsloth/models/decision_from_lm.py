@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# A plain language model plus a fresh joint schema head = a Clef-style decision model that trains,
-# evaluates and saves like a Cloudflare Clef checkpoint.
+# A plain LM + a fresh joint schema head: a Clef-style model that trains and saves like Clef.
 
 __all__ = [
     "load_lm_as_decision_model",

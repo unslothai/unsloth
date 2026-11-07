@@ -241,8 +241,7 @@ def test_resuming_with_more_reps_and_another_rung_is_still_a_resume(tmp_path):
 
 
 def test_a_payload_that_never_recorded_an_axis_still_resumes(tmp_path):
-    """The legacy control. An older payload carries only the required `run_meta` keys, and an axis
-    it never declared cannot be a difference."""
+    """An older payload has only the required run_meta keys; an undeclared axis cannot differ."""
 
     paths = Paths.under(tmp_path / "out")
     legacy = {
@@ -382,12 +381,8 @@ def test_resuming_a_single_build_payload_as_an_ab_is_refused(tmp_path):
 
 
 def test_a_session_that_died_before_its_first_cell_declares_no_mode(tmp_path):
-    """The control for the refusal above: it may not fire on a run that measured nothing.
-
-    `run_meta` is written after both installs and `ab_plan` after the corpus and the gates, so an
-    A/B killed in between leaves a header and no cells. There is nothing there for a later report
-    to keep in preference to this one's readings, so resuming it is a resume.
-    """
+    """Control for the refusal above: run_meta is written before ab_plan, so a run killed between
+    them leaves a header with no cells, which must still resume."""
 
     paths = Paths.under(tmp_path / "out")
     _record(paths, "sess-1", [_run_meta("standard", "main", ["10K"])])
@@ -488,8 +483,7 @@ def test_resuming_under_a_changed_dollar_setting_is_refused(tmp_path):
 
 
 def test_a_payload_that_already_holds_two_fixtures_is_refused_either_way(tmp_path):
-    """Two sessions, two films, one file: whichever of them you ask for, the other one is still
-    in there and its cells would still be skipped."""
+    """Two sessions in one file: the other session's cells would still be skipped on resume."""
 
     paths = _fixture_payload(tmp_path, "mixed", "sess-1", stream_tail_chars = 6_000)
     _record(
@@ -653,8 +647,7 @@ def test_resuming_after_toggling_the_click_probe_is_refused(tmp_path):
 
 
 def test_a_payload_from_before_the_probe_flag_is_refused_under_a_probed_resume(tmp_path):
-    """Absence proves the default here too. A payload with no `click_probe` key was written when
-    there was no way to ask for the probe, so it ran without it."""
+    """A payload with no click_probe key predates the flag, so it ran without the probe."""
 
     paths = _fixture_payload(tmp_path, "legacy-probe", "sess-old")
     assert "click_probe" not in paths.payload_jsonl.read_text(encoding = "utf-8")
@@ -673,8 +666,7 @@ def test_a_payload_from_before_the_probe_flag_is_refused_under_a_probed_resume(t
 
 
 def test_an_unchanged_probe_setting_resumes_and_returns_its_completed_cells(tmp_path):
-    """The control. The axis may not swallow a resume that is asking for the run it already has,
-    on either setting."""
+    """The axis must not block a resume asking for the run it already has, on either setting."""
 
     probed = _fixture_payload(tmp_path, "probed-same", "sess-probed", click_probe = True)
     assert (
@@ -710,9 +702,8 @@ def test_the_probe_flag_reaches_the_identity_this_invocation_asks_for():
 
 
 def test_the_skip_rule_still_holds_for_an_axis_that_really_did_decline_to_say(tmp_path):
-    """The other axes keep the general rule: `run_meta` has always carried them, so a payload that
-    omits one omitted it for its own reasons and this check has nothing to say about it. Only the
-    axes that arrived with a flag of their own read absence as a value."""
+    """Other axes keep the general rule: run_meta has always carried them, so this check says
+    nothing about an omitted key; only axes that came with a flag read absence as a value."""
 
     paths = Paths.under(tmp_path / "quiet")
     _record(
@@ -921,9 +912,8 @@ def test_resuming_a_finished_uninjected_run_with_the_injection_on_is_refused(tmp
 
 
 def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
-    """The other direction, and the likelier one: an injected A/B dies part way up the ladder and
-    the retry is typed without the flag. The rungs already done stay injected, the rungs still to
-    come are not, and the ladder the recovery fraction is computed from is half of each."""
+    """The likelier case: an injected A/B dies partway up the ladder and is retried without the
+    flag, so the ladder the recovery fraction uses is half injected and half not."""
 
     paths = _injected_payload(tmp_path, "injected", "sess-1", inject_stream_cost_ms = 3.0)
 
@@ -938,8 +928,7 @@ def test_resuming_an_injected_run_without_the_injection_is_refused(tmp_path):
 
 
 def test_resuming_under_a_changed_injection_amount_is_refused(tmp_path):
-    """The amount is the measurement. A ladder half of which burned 3 ms per chunk and half 40 ms
-    has no recovery fraction at all."""
+    """The amount is the measurement; mixing 3 ms and 40 ms chunks leaves no recovery fraction."""
 
     paths = _injected_payload(tmp_path, "amount", "sess-1", inject_stream_cost_ms = 3.0)
 
@@ -1080,9 +1069,8 @@ def test_a_payload_from_before_the_probe_hook_resumes_under_the_default(tmp_path
 
 
 def test_an_unchanged_probe_resumes(tmp_path, monkeypatch):
-    """THE SECOND CONTROL. A probe ladder that died is meant to be resumable AS a probe ladder.
-    The payload is not scorable either way, but a potency run is a run, and refusing every value
-    would make the axis useless rather than safe."""
+    """A probe ladder that died should resume as a probe ladder; the payload is not scorable either
+    way, but refusing every value would make the axis useless, not safe."""
 
     paths = _fixture_payload(tmp_path, "same", "sess-probed", probe_init_script = PROBE)
     monkeypatch.setenv("SBENCH_EXTRA_INIT_SCRIPT", PROBE)

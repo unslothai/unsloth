@@ -134,9 +134,8 @@ def test_no_unsloth_module_probes_a_device_that_is_not_there(_import_attempt_res
 
 
 def test_the_import_succeeds_on_a_driverless_host(_import_attempt_result):
-    """End to end. The chain runs through unsloth_zoo as well
-    (`compiler.py`, `loss_utils.py`), so an unsloth_zoo without those guards
-    leaves this unprovable rather than failed."""
+    """End to end; the chain also runs through unsloth_zoo (compiler.py, loss_utils.py), so an
+    unsloth_zoo without those guards leaves this unprovable rather than failed."""
     out = _import_attempt_result
     if out.returncode != 0 and _asked_a_missing_device(out.stderr):
         import unsloth_zoo

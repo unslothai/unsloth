@@ -75,12 +75,9 @@ def test_every_blocking_call_announces_itself_first():
 
 
 def test_the_stale_page_is_closed_without_waiting_on_its_renderer():
-    """page.close() has no timeout and has sat out the step's whole budget on Windows.
-
-    The step closes through close_page_without_waiting (browser-side Target.closeTarget on
-    Chromium), and marks the page stale first, so a request it sends while the browser tears
-    it down is not counted as the fresh page's /api/system poll.
-    """
+    """page.close() has no timeout and has sat out the whole step budget on Windows, so the step
+    uses close_page_without_waiting (Target.closeTarget on Chromium) and marks the page stale
+    first; a request sent during teardown is not counted as the fresh page's /api/system poll."""
     body = _step_body()
     handoff = body.index("page = _fresh_page")
     assert "page.close()" not in body[:handoff], "the reset waits on the stale renderer again"

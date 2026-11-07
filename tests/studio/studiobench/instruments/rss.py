@@ -65,9 +65,7 @@ def tree_rss_mb(roots: list) -> Optional[float]:
 
 
 class RssSampler:
-    """Samples on a THREAD, because the driver is blocked inside Playwright's sync API for the
-    whole run and cannot sample anything itself. Touches no Playwright object, only psutil, so it
-    is safe alongside the sync API's greenlet."""
+    """Samples on a thread since the sync API blocks the driver; touches only psutil, so it is safe."""
 
     def __init__(
         self,
@@ -114,9 +112,8 @@ class RssSampler:
         return usable[-1] if usable else None
 
     def growth_mb(self) -> Optional[float]:
-        """Peak minus the FIRST reading of this run, not minus zero. A browser that is already up
-        carries a base footprint that has nothing to do with the thread, and the run before this
-        one in the same browser leaves its own. What is claimed is what this run ADDED."""
+        """Peak minus this run's first reading, not zero: a pre-warmed browser's base footprint is
+        excluded."""
         usable = [v for _, v in self.samples if v is not None]
         if len(usable) < 2:
             return None

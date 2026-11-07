@@ -46,9 +46,8 @@ QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.y
 # the one entry, and it no longer runs on pushes to main.
 PER_COMMIT_ALLOWED = frozenset()
 
-# Phrasings that assert a main run is never cancelled or that main is grouped per commit.
-# Either is false for a workflow sharing one group across main commits: its PENDING run is
-# replaced by the next push.
+# Phrasings claiming main runs are never cancelled or are grouped per commit; both are false for a
+# shared-group workflow, whose PENDING run the next push replaces.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main"
     r"|unique per commit on main|grouped per commit on main|one group per commit on main",
@@ -171,11 +170,8 @@ def _coalescing() -> dict[str, dict]:
 
 
 def test_every_workflow_that_runs_on_main_coalesces_a_merge_burst():
-    """Two main commits share one group, so a burst runs the executing commit plus the tip.
-
-    A group per commit runs every workflow on every main commit, which is the load that
-    queued the whole org for hours. Checked across all of them rather than a named few.
-    """
+    """Every main workflow must coalesce merge bursts: a shared group runs the executing commit plus
+    the tip, while a per-commit group queued the whole org for hours."""
     offenders = sorted(
         name for name, document in _coalescing().items() if _is_per_commit_on_main(_group(document))
     )
@@ -291,12 +287,8 @@ def test_every_group_expression_is_understood():
 
 
 def test_the_evaluator_reads_which_branch_supplies_the_sha():
-    """The per-commit predicate is only worth its assertions if this holds.
-
-    Each of these contains ``github.sha`` in its source text, and a substring test would
-    call all four per-commit. Only the first and the last are, so a grep cannot tell a
-    coalescing group from a per-commit one; rendering can.
-    """
+    """The per-commit evaluator must read which branch supplies github.sha, since a substring grep
+    cannot tell a coalescing group from a per-commit one; rendering can."""
     gated = "${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}"
     reversed_ = "${{ github.ref }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}"
     wrong_branch = "${{ github.ref }}-${{ github.ref == 'refs/heads/main' && '' || github.sha }}"
@@ -317,11 +309,8 @@ def test_the_evaluator_reads_which_branch_supplies_the_sha():
 
 
 def test_no_workflow_claims_a_main_protection_it_does_not_have():
-    """A comment promising per-commit or never-cancelled main runs must match the group.
-
-    Read from the raw text rather than the parsed document, because a comment is exactly what
-    YAML throws away, and the comment is what people act on.
-    """
+    """No workflow comment may claim a main protection its group lacks; the check reads raw text,
+    since YAML parsing discards comments and comments are what people act on."""
     offenders = []
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         text = path.read_text(encoding = "utf-8")

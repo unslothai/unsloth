@@ -483,8 +483,7 @@ class Pacer:
 
 
 def check_planned_streams(streams: list[dict], planned: list[dict]) -> dict:
-    """Matches by tag, first unmatched stream wins; cancelled throwaway streams go to extra, not
-    failures."""
+    """By tag, first unmatched wins; cancelled throwaway streams count as extra, not failures."""
     remaining = list(streams)
     turns: list[dict] = []
     ok = True

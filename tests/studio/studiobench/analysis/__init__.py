@@ -22,8 +22,7 @@ __all__ = [
 
 
 class CellFailure(RuntimeError):
-    """Raised, never downgraded to a smaller number, since a truncated trace reads as the thing
-    never ran."""
+    """Raised, never downgraded: a truncated trace reads as if the thing never ran."""
 
     def __init__(self, gate: str, detail: str) -> None:
         super().__init__(f"{gate}: {detail}")
@@ -40,8 +39,7 @@ def measured(key: str, value: Any) -> dict:
 
 
 def unmeasured(key: str, reason: str) -> dict:
-    """Emits None, never 0; the required reason tells a missing mechanism apart from a missing
-    instrument."""
+    """Emits None, never 0; the reason tells a missing mechanism from a missing instrument."""
     if not reason:
         raise ValueError(f"unmeasured({key!r}) requires a reason")
     return {key: None, f"{key}_attempted": False, f"{key}_reason": reason}

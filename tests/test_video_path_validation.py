@@ -348,8 +348,7 @@ def test_file_uri_double_encoded_percent(check_dataset_for_missing_videos, tmp_p
 def test_windows_style_absolute_path_not_mistaken_for_scheme(
     check_dataset_for_missing_videos, tmp_path
 ):
-    """'C:/...' has no '://' so it is a plain path, even where urlparse
-    would yield scheme='c'."""
+    """The path C:/... has no '://' so it is a plain path, even where urlparse would yield scheme 'c'."""
     target = tmp_path / "clip.mp4"
     target.write_bytes(b"x")
     path = str(target)

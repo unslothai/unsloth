@@ -202,8 +202,7 @@ class Unit:
         }
 
     def clipped_to(self, chars: int) -> "Unit":
-        """Clips on block boundaries so no fence is left unclosed, which would take a different
-        render path."""
+        """Clip on block boundaries: an unclosed fence would take a different render path."""
         if chars >= self.chars:
             return self
 
@@ -734,12 +733,7 @@ def dollarise(text: str, salt: str) -> str:
 
 
 def _too_small(rung: str, chars_per_token: float, last_index: int, what: str) -> ValueError:
-    """The one message for every way a rung can outgrow the frozen corpus.
-
-    Deliberately an ERROR and not a clamp. The clamp it replaces is how a 1M rung came to stream
-    the same unit three times and report the cheapest per-character cost on the ladder, and a
-    benchmark that quietly measures something smaller than it says is worse than one that stops.
-    """
+    """Every rung outgrowing the frozen corpus raises this error, not a clamp that measures less quietly."""
     return ValueError(
         f"the frozen corpus is too small for the {rung} rung at {chars_per_token} chars per "
         f"token: {what} runs past the manifest, which ends at index {last_index}. Re-freeze with "

@@ -56,9 +56,8 @@ def _studio_env(
     src_link: bool = False,
     restart_exit: int = 0,
 ) -> dict:
-    """A Studio home whose venv python is the real interpreter over a fake `studio`
-    package, so the script's own import and frontend checks run for real. pip,
-    supervisorctl, git and the bundled npm are recording stubs."""
+    """Builds a Studio home whose venv runs the real interpreter over a fake studio package so
+    import and frontend checks run; pip, supervisorctl, git and npm are recording stubs."""
     home = tmp_path / "studio"
     site = tmp_path / "site"
     (site / "studio" / "backend").mkdir(parents = True)
@@ -208,9 +207,8 @@ def test_studio_update_restarts_a_studio_that_is_not_running(tmp_path: Path, sta
 
 
 def test_studio_update_fails_when_supervisor_cannot_restart_studio(tmp_path: Path):
-    """A restart that fails used to leave the new install in place with Studio down and
-    the previous tree already deleted. The previous tree is kept until the service is
-    up, so a failed restart puts it back and starts that."""
+    """The previous tree is kept until the service is up, so a failed restart puts it back and
+    starts that tree again instead of leaving Studio down."""
     env = _studio_env(tmp_path, restart_exit = 1)
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
@@ -360,9 +358,8 @@ def test_studio_update_rollback_keeps_the_editable_uri_pip_recorded(tmp_path: Pa
 
 
 def test_studio_update_ref_restores_the_tree_when_interrupted_after_the_swap(tmp_path: Path):
-    """Ctrl-C or `docker stop` between the swap and the checks left the half-installed
-    tree in place and the previous one beside it as .src-prev.*, which the next
-    container start links into the Studio home."""
+    """An interrupt (Ctrl-C or docker stop) between the swap and the checks left the half-installed
+    tree and the old one as .src-prev entries, which the next start links into the Studio home."""
     env = _studio_env(tmp_path)
     env["STUB_PIP_INTERRUPT"] = "1"
     res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
@@ -392,9 +389,8 @@ def test_studio_update_release_restores_the_pins_when_interrupted_during_pip(tmp
 def test_studio_update_restores_once_and_leaves_no_temp_files_when_signalled_mid_restore(
     tmp_path: Path,
 ):
-    """After a failed tree check the script restores explicitly, then exits; the exit
-    trap must not restore a second time, and a signal during the restore must not skip
-    the temp-file cleanup."""
+    """After a failed tree check the script restores explicitly, so the exit trap must not restore a
+    second time and a signal mid-restore must not skip temp-file cleanup."""
     env = _studio_env(tmp_path, dist_ok = False)
     env["STUB_PIP_INTERRUPT_RESTORE"] = "1"
     tmpd = tmp_path / "tmpd"
@@ -509,9 +505,8 @@ def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Pat
 
 
 def test_a_signal_during_the_health_wait_puts_the_service_back_too(tmp_path: Path):
-    """Ctrl-C while waiting for /api/health: the service is already running the new
-    code, so restoring the files alone would leave it serving a mix of versions.
-    The cleanup restarts it on the restored install, as back_out does."""
+    """A Ctrl-C while waiting for /api/health must restart the service on the restored install, as
+    back_out does, since restoring files alone leaves a mix of versions."""
     env = _studio_env(tmp_path)
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "30"
     _stub(
@@ -615,9 +610,8 @@ def test_studio_update_health_wait_zero_commits_once_the_restart_command_succeed
 
 
 def test_studio_update_clears_leftovers_of_a_killed_run_before_it_starts(tmp_path: Path):
-    """`docker stop` ends in SIGKILL, so no trap ran: a previous tree can sit beside src
-    with a pid-derived name that a later run could reuse (mv would nest into it) and a
-    staging tree can sit there with its node_modules."""
+    """SIGKILL from docker stop runs no trap, so leftover previous and staging trees can sit beside
+    src; a pid-derived name could be reused and mv would nest into it."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / ".src-prev.4242" / "junk").mkdir(parents = True)
@@ -660,9 +654,8 @@ def test_studio_update_puts_back_a_previous_tree_a_killed_run_never_committed(tm
 
 
 def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_path: Path):
-    """`python -` searches the caller's cwd first, so a checkout there with its own
-    dist-info would answer for the venv's installed unsloth and a rollback would
-    reinstall the wrong thing."""
+    """python - searches the current directory first, so a checkout there with its own dist-info
+    would answer for the venv's unsloth and a rollback would reinstall the wrong thing."""
     env = _studio_env(tmp_path, import_ok = False)
     site = tmp_path / "site"
     info = site / "unsloth-2026.9.4.dist-info"  # seeded by _studio_env
@@ -684,9 +677,8 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
 
 
 def test_studio_update_records_every_packages_target_for_the_rollback(tmp_path: Path):
-    """--packages can name more than unsloth and unsloth_zoo; a restore that put only
-    those two back would leave the extra target upgraded, or newly installed, while
-    reporting the previous install is back."""
+    """--packages can name targets beyond unsloth and unsloth_zoo; the rollback must record all of
+    them, or an extra target stays upgraded while the restore reports success."""
     env = _studio_env(tmp_path, import_ok = False)
     site = tmp_path / "site"
     info = site / "bar-1.0.dist-info"
@@ -715,9 +707,8 @@ def test_studio_update_with_deps_stops_when_the_dependency_snapshot_fails(tmp_pa
 
 
 def test_studio_update_finishes_the_package_restore_a_killed_run_left(tmp_path: Path):
-    """SIGKILL after pip had replaced the packages but before the commit: the record
-    kept beside the tree says what to put back, and the next run does that before it
-    records anything as the previous install."""
+    """SIGKILL after pip replaced packages but before the commit leaves a rollback record beside the
+    tree; the next run finishes that restore before recording a new previous install."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n# absent: foo\n")
@@ -758,9 +749,8 @@ def test_studio_update_recovery_puts_the_service_on_the_restored_install(
 
 
 def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tmp_path: Path):
-    """The list of what the update pulled in comes from a second `pip freeze`; when
-    that fails, nothing would be removed, so the restore is reported as unfinished
-    and the record stays."""
+    """The packages the update pulled in come from a second pip freeze; if that fails nothing can be
+    removed, so the restore is reported unfinished and the record stays."""
     env = _studio_env(tmp_path, import_ok = False)
     env["STUB_FREEZE_EXIT_AFTER"] = "1"
     res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart"], env)
@@ -774,9 +764,8 @@ def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tm
 
 
 def test_recover_finishes_a_killed_update_and_does_nothing_else(tmp_path: Path):
-    """The container start runs --recover before supervisord starts Studio: a previous
-    tree beside src goes back over the unverified one, the recorded packages are
-    reinstalled, and no update is attempted."""
+    """The container start runs --recover before supervisord starts Studio: a previous tree goes
+    back over the unverified src, recorded packages are reinstalled, and no update runs."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / "src" / "OLD_TREE").unlink()
@@ -829,9 +818,8 @@ def test_studio_update_keeps_the_lock_file(tmp_path: Path):
 
 
 def test_studio_update_treats_a_previous_tree_without_a_record_as_scratch(tmp_path: Path):
-    """The record is unlinked before the previous tree is deleted, so a previous tree
-    with no record is a committed update that was killed mid-delete, and src is the
-    tree that passed the health check."""
+    """The record is unlinked before the previous tree is deleted, so a previous tree without a
+    record is scratch from a committed update killed mid-delete; src is the healthy tree."""
     env = _studio_env(tmp_path)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     (home / ".src-prev.abc123" / "studio").mkdir(parents = True)
@@ -1113,9 +1101,8 @@ def test_fetcher_normalizes_the_base_build_for_the_marker_tag(release_tag, expec
 
 
 def test_a_failed_studio_update_puts_the_previous_install_back(tmp_path: Path):
-    """Not restarting protected only the code the running process had already
-    imported; the venv on disk stayed replaced, so any lazy import or later restart
-    failed the same way. The update now reinstalls exactly what it started from."""
+    """Not restarting protected only already-imported code while the venv stayed replaced, so lazy
+    imports and later restarts failed; a failed update now reinstalls its starting set."""
     env = _studio_env(tmp_path, import_ok = False)
     res = _run(STUDIO_UPDATE, [], env)
     assert res.returncode != 0, "a broken update must not report success"

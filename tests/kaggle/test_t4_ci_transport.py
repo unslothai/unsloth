@@ -2323,13 +2323,8 @@ def test_gptoss_never_shares_a_card(tmp_path):
 
 
 def test_two_small_legs_do_share_a_card(tmp_path):
-    """The feature, asserted positively.
-
-    Every other guard here is a bound -- never over budget, never more than two
-    -- and every one of them is satisfied by a scheduler that co-schedules
-    NOTHING. Without this the whole change could silently do no work at all and
-    the suite would stay green.
-    """
+    """Asserts that small legs actually share a card, since the other guards are bounds that a
+    scheduler co-scheduling nothing would also satisfy."""
     durations = {f"t4_{n}.ipynb": 0.4 for n in ALL_LEGS}
     driven = _drive_packed(tmp_path, ALL_LEGS, gpus = 2, durations = durations)
     assert driven[

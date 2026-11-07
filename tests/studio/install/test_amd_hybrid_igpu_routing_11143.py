@@ -202,9 +202,8 @@ def _linux_host() -> "ILP.HostInfo":
 
 
 def test_only_a_flagged_marker_may_disagree_with_its_own_backend():
-    """_marker_backend_fits_host reads the pair as self-consistency evidence. A
-    disagreement the installer recorded on purpose is consistent; one with no flag is
-    still a marker this installer did not write, and keeps taking the full path."""
+    """_marker_backend_fits_host reads the pair as self-consistency evidence: a flagged disagreement
+    is deliberate, while an unflagged one is a marker not written here and takes the full path."""
     host = _linux_host()
     honest = {"backend_request": "vulkan", "backend": "vulkan"}
     unflagged = {"backend_request": "vulkan", "backend": "rocm"}

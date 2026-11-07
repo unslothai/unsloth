@@ -208,8 +208,7 @@ def test_the_attribution_of_one_cell_never_lands_on_the_next(tmp_path):
 
 
 def test_a_cell_that_never_asked_for_the_probe_reports_none(tmp_path):
-    """CONTROL. Without `--click-probe` there is nothing to preserve, and the failed cell says so
-    by carrying no attribution at all rather than an empty one."""
+    """Without --click-probe a failed cell has no attribution to preserve, so it carries none."""
 
     runner, paths, recorder = _runner(tmp_path, click_probe = False)
     runner.run(_cell(), _plan())

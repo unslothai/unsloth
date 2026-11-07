@@ -233,11 +233,8 @@ def _stub_registry(script: str) -> str:
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_the_session_refresh_keeps_an_active_conda_ahead_of_the_user_path(shell: str):
-    """The case #5871 is about, in the prompt the user is standing in.
-
-    Without this the message that conda keeps priority is false for the rest of that
-    session: the registry ordering is right and the live PATH is not.
-    """
+    """The issue 5871 case: an active conda in the user's shell must stay ahead in the live session
+    PATH, since the registry ordering can be right while the live PATH is not."""
     script = _stub_registry(_refresh_preamble(f"{_CONDA_ENTRIES};{MACHINE}"))
     out = _run(
         shell,
@@ -366,9 +363,8 @@ def test_a_name_only_activation_keeps_the_session_it_already_had(shell: str):
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_prefix_activation_still_takes_the_precise_route(shell: str):
-    """The whole-PATH fallback is for the case where nothing better can be known, so an
-    activation that DOES name its prefix must keep the targeted behaviour: only the conda
-    entries move, and an unrelated directory that happened to be on PATH does not."""
+    """The whole-PATH fallback is only for when no prefix is known; an activation that names its
+    prefix moves only the conda entries, leaving unrelated PATH directories alone."""
     previous = f"C:\\tools\\bin;{CONDA_ROOT}\\envs\\ml\\Scripts"
     script = _stub_registry(_refresh_preamble(previous))
     out = _run(

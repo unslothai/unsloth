@@ -171,9 +171,8 @@ def test_the_refusal_is_checked_by_CODE_and_not_by_the_status_alone():
 
 
 def test_the_over_length_conversation_is_sent_twice_under_two_policies():
-    """One request cannot compare two policies. Both calls have to exist, and
-    they have to send the SAME messages, or the pair compares a policy against
-    a different conversation."""
+    """One request cannot compare two policies; both calls must exist and send identical messages,
+    or the pair compares a policy against a different conversation."""
     func = _func("assert_compaction")
     calls = [
         node

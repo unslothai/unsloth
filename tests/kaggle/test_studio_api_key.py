@@ -69,9 +69,8 @@ def test_the_raw_key_is_registered_as_a_secret_before_it_is_used():
 
 
 def test_the_session_token_is_restored_even_when_the_call_raises():
-    """A finally, not a trailing statement: an exception mid-check would
-    otherwise leave the session authenticated as a corrupted API key and every
-    later assertion would fail for the wrong reason."""
+    """The token restore must sit in a finally: an exception mid-check would otherwise leave the
+    session authenticated as a corrupted key and fail later assertions."""
     tree = ast.parse(_assert_api_key_body())
     tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try) and n.finalbody]
     restores = [

@@ -231,15 +231,8 @@ def _commit_upstream_change(up: Path):
 
 @needs_git
 def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
-    """The rollback removes OUR copy so a lost record is recoverable. It must never
-    touch a notebook the user changed.
-
-    Every SECOND notebook is edited, not every twenty-fifth. The cap bites near the
-    end of the walk, so a sparse edited set can miss the failing range entirely and
-    the rollback is then never asked about a user edit -- which is how the first
-    version of this test passed without executing the code it named. The assertion
-    that some pristine notebook WAS removed is what keeps it honest.
-    """
+    """The rollback must never touch a user-edited notebook; every second file is edited since a
+    sparse set can miss the failing range, and a pristine one must still be removed."""
     dest, tpl, up = _shared_setup_1(tmp_path)
     assert len(_published(dest)) == NOTEBOOKS
 
@@ -266,9 +259,8 @@ def test_a_user_edited_notebook_is_never_rolled_back(tmp_path: Path):
 
 
 def _json_upstream(tmp_path: Path, count: int) -> Path:
-    """Valid notebook JSON, so the body-aware comparison can report SAME and the
-    `unchanged` branch is reachable. With one-byte files it never is, which is why
-    the rollback below had no coverage."""
+    """Writes valid notebook JSON so the body-aware comparison can report SAME and the unchanged
+    branch is reachable; one-byte files never reach it."""
     import json
 
     up = tmp_path / "up"
@@ -330,12 +322,8 @@ def test_the_refresh_child_never_republishes_an_unreadable_state_as_empty(tmp_pa
 
 @needs_git
 def test_a_failed_record_on_an_unchanged_notebook_rolls_it_back(tmp_path: Path):
-    """drop_unrecordable's removal, which nothing exercised before.
-
-    Its other call sites either hand it a user-edited file (hash gate declines) or a
-    missing one (early return), so the suite could call it seven times and roll back
-    zero. The `unchanged` branch is the reachable one that must actually remove.
-    """
+    """Exercises drop_unrecordable's removal, reachable only through the unchanged branch; its other
+    call sites decline user edits or return early on missing files."""
     # Own build: only JSON notebooks can reach the body-aware `unchanged` branch.
     tpl, dest = _template(tmp_path), tmp_path / "dest"
     up = _json_upstream(tmp_path, NOTEBOOKS)
@@ -388,14 +376,8 @@ def test_keeping_a_removed_notebook_keeps_its_record_too(tmp_path: Path):
 
 @needs_git
 def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path):
-    """When the publish rollback cannot unlink -- a single-FILE bind mount gives
-    EBUSY there, the same case the rename at line 562 already works around -- the
-    published bytes stay on disk with no record, and no further append is possible in
-    that run. Rolling the bytes back instead would not help, because the file is
-    still unrecorded and so still read as a user edit, and discarding the staged
-    state would strand every notebook the run DID record. The only repair is for a
-    later refresh to notice that a file identical to the clone was never a user edit
-    and take it back under management."""
+    """If the rollback cannot unlink a published file (EBUSY on a single-file bind mount), its bytes
+    stay unrecorded, so a later refresh must adopt a file identical to the clone."""
     dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
@@ -420,9 +402,8 @@ def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path)
 
 @needs_git
 def test_a_genuinely_edited_unrecorded_notebook_is_still_left_alone(tmp_path: Path):
-    """The adoption above must key on the content matching the clone EXACTLY. An
-    unrecorded file whose bytes differ is the real user-edit case and must keep its
-    hands-off treatment."""
+    """Adoption must key on the content matching the clone exactly; an unrecorded file whose bytes
+    differ is a real user edit and must be left alone."""
     dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
@@ -510,18 +491,14 @@ def _big_template(tmp_path: Path, count: int) -> Path:
 
 @needs_git
 def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
-    """Section 1b restores notebooks that are missing, then rewrites the state. When
-    that rewrite is abandoned the old state is kept, and it describes the tree as it
-    was BEFORE the restores -- so the restored files have to go back too. Leaving them
-    means the next refresh sees baked content where the state holds post-refresh
-    hashes and reads every one as a user edit."""
+    """When the state rewrite after the section 1b restores is abandoned, the old state describes
+    the pre-restore tree, so restored files must go back too, or every one reads as a user edit."""
     dest, tpl, up = _shared_big_synced(tmp_path)
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
-    # The last 50 records straddle the point where appends start failing. Taken in the
-    # state's own order: the script records `find` order, which is directory order, so on
-    # ext4 the 50 highest names can all sit before the cap and every one gets restored.
+    # The last 50 records straddle where appends start failing; the script records find order
+    # (directory order), so on ext4 the 50 highest names can all precede the cap.
     order = [
         line.partition("  ")[2]
         for line in (dest / ".unsloth_sync_state").read_text(encoding = "utf-8").splitlines()
@@ -559,11 +536,8 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
 
 @needs_git
 def test_a_lost_merge_record_does_not_publish_the_short_state(tmp_path: Path):
-    """The merge loop is the only source of records for notebooks that exist upstream
-    but not in the baked template. Nothing can re-derive them, so a lost one must
-    abandon the staged state rather than publish it and merely withhold the marker.
-    A failed COPY is different and still publishes, because the next boot re-walks the
-    template."""
+    """A lost merge record must abandon the staged state, since nothing can re-derive upstream-only
+    notebooks; a failed copy still publishes because the next boot re-walks the template."""
     dest, tpl, up = _shared_big_synced(tmp_path)
 
     state = dest / ".unsloth_sync_state"

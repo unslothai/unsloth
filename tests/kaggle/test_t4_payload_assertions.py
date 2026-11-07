@@ -92,11 +92,8 @@ def test_matching_step_coordinates_are_not_reported_as_a_difference():
 
 
 def test_two_runs_that_both_overflowed_on_the_same_step_agree():
-    """An fp16 overflow logs infinity as readily as NaN, and abs(inf-inf) is NaN.
-
-    NaN != 0.0, so the subtraction reported two identical traces as
-    nondeterministic, with a max_abs_diff of 0.0 to show for it.
-    """
+    """fp16 overflow logs infinity and abs(inf-inf) is NaN, which is never 0.0, so identical
+    overflowing traces were reported as nondeterministic."""
     from determinism import compare_metrics
 
     a = [{"step": 1, "loss": 10.0, "grad_norm": INF}, {"step": 2, "loss": 9.0, "grad_norm": 4.0}]
@@ -803,11 +800,8 @@ def test_a_reference_with_no_recorded_revision_does_not_refuse(tmp_path):
 
 
 def test_a_pin_the_run_could_not_read_is_recorded_as_unchecked(tmp_path):
-    """The other direction: the reference names a commit and the run does not.
-
-    Skipping that silently is a checkpoint pin that stopped running with
-    nothing to say so.
-    """
+    """When the reference names a commit but the run cannot read one, the pin must be recorded as
+    unchecked, not silently skipped."""
     check_reference, ref = _shared_setup_3(tmp_path)
     payload = json.loads(ref.read_text())
     payload["resolved_revision"] = "10413c288cb9629acdf60b3e0229f3ba75efe413"
@@ -1928,9 +1922,8 @@ def test_the_length_reward_still_discriminates_at_the_lengths_the_model_emits():
 
 
 def test_the_length_reward_is_strictly_increasing_and_never_saturates():
-    """The property that makes the test above hold for lengths nobody has seen
-    yet. A cap is a length at which this stops being true, which is exactly how
-    the previous version passed review."""
+    """Strict monotonicity must hold for lengths nobody has seen; a cap is a length where it stops
+    being true, which is how the previous version passed review."""
     from run_grpo_t4 import reward_length
 
     lengths = [0, 1, 50, 200, 1000, 3000, 10000, 100000]
@@ -1940,9 +1933,8 @@ def test_the_length_reward_is_strictly_increasing_and_never_saturates():
 
 
 def test_two_identical_completions_still_tie_because_that_is_real():
-    """Guard against overcorrecting. A group whose completions are genuinely
-    identical SHOULD tie -- that is degenerate generation and the leg is right
-    to fail on it. The bug was ties between DIFFERENT completions."""
+    """Identical completions should tie, since that is degenerate generation the leg should fail on;
+    the bug was ties between different completions."""
     from run_grpo_t4 import reward_length
 
     scores = reward_length(_completions(2534, 2534))
@@ -2178,9 +2170,8 @@ def test_every_option_the_child_needs_actually_reaches_the_child():
 
 
 def test_the_export_flag_is_forwarded_as_a_bare_flag():
-    """store_true options cannot ride the (flag, value) loop -- `--export-gguf
-    True` is not a thing -- so they need their own append, and that is the line
-    that was missing."""
+    """store_true options cannot ride the (flag, value) loop, since --export-gguf True is not valid,
+    so they need their own append line."""
     block = _child_command_block()
     assert 'cmd.append("--export-gguf")' in block
     assert "if args.export_gguf:" in block

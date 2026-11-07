@@ -452,9 +452,8 @@ class TestHiddenCvdNotUsable:
 
 
 class TestSetupShPhysicalNvidiaSurvivesTheMask:
-    """The nvcc source-build search is gated on this probe, so it has to answer true under
-    a mask that makes the usable probe answer false. Gated on usable, a masked host
-    compiled a CPU-only binary and activated it over the tree permanently."""
+    """The nvcc source-build search must gate on the physical NVIDIA probe, which stays true under
+    any mask; gating on usable let a masked host activate a CPU-only binary."""
 
     @pytest.mark.parametrize("cvd", [None, "", "-1", "0"])
     def test_the_physical_probe_ignores_every_mask(self, tmp_path, cvd):

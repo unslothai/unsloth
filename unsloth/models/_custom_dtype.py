@@ -110,8 +110,7 @@ def neutralize_inherited_custom_dtype():
 
 
 def trusted_custom_dtype():
-    """Returns (value, code_is_trusted); False means honour the dtype fields and drop
-    the two code fields."""
+    """Returns (value, code_is_trusted); when False, drop the two code fields."""
     value = os.environ.get(_ENV_KEY, "")
     if value == "":
         return "", False

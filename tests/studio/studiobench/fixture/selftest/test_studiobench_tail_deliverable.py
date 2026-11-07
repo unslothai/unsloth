@@ -51,11 +51,7 @@ MATRIX: list[tuple[str, int, bool]] = [
 def test_every_requested_tail_is_delivered_or_refused(
     corpus: Corpus, rung: str, tail: int, deliverable: bool
 ):
-    """The whole property, over the whole matrix: no third outcome.
-
-    The two assertions are the reply-axis test's own, applied to every pair rather than to two of
-    them. Where the corpus cannot answer, the requirement is a refusal and not a smaller number.
-    """
+    """Every requested tail is delivered or refused across the whole matrix, with no third outcome."""
     if not deliverable:
         with pytest.raises(ValueError, match = "cannot deliver"):
             plan_rung(corpus, rung, stream_tail_chars = tail)

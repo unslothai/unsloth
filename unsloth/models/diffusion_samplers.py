@@ -320,8 +320,7 @@ def _block_sample(
                 if int(high.sum()) >= count:
                     transfer[row] = high
                 else:
-                    # Never more than the masks left: the official top-k could overwrite prompt tokens sharing
-                    # the first decoded block.
+                    # Cap at masks left; top-k could overwrite prompt tokens in first block.
                     k = min(count, int(mask_index[row].sum()))
                     transfer[row, torch.topk(confidence[row], k).indices] = True
             window = x[:, start:end]

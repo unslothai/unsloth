@@ -166,9 +166,8 @@ def test_a_source_checkout_with_no_metadata_is_still_guarded(trl_modules):
 
 
 def test_an_unparseable_version_does_not_patch_an_already_guarded_trl(trl_modules):
-    """Falling through on an unparseable version is only safe because the
-    source check is self-guarding: 0.24.0 and above spell the branch with the
-    clause already in it, so there is nothing for us to match."""
+    """Falling through on an unparseable version is safe only because the source check self-guards:
+    0.24.0 and above already include the clause, so nothing matches."""
     trl_modules.trl.__version__ = "unknown"
     src = TRL_0_22_2_SOURCE.replace(
         "if is_qlora and not is_sharded_qlora:",

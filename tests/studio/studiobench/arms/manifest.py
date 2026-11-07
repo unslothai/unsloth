@@ -139,8 +139,7 @@ class ArmOutcome:
         return self.status in (ArmStatus.QUOTED, ArmStatus.BOUND)
 
     def quote(self) -> str:
-        """DOM-changing arms print as a bound, since their cost includes whatever else the change
-        altered."""
+        """DOM-changing arms print a bound: cost includes whatever else the change altered."""
 
         if self.status is ArmStatus.QUOTED:
             return self.cost.display()
