@@ -72,13 +72,23 @@ function resolveTheme(theme: Theme): ResolvedTheme {
 
 export const THEME_SWITCHING_CLASS = "theme-switching";
 
+// Mirrors the two index.css reduced-motion blocks.
+function reducedMotionActive(el: HTMLElement): boolean {
+  if (el.classList.contains("force-reduced-motion")) return true;
+  if (el.classList.contains("force-motion")) return false;
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
 /**
  * Reduce motion gives every element a 0.01ms `all` transition, so a flip would start one
- * transition per element per changed colour (2.5 s on a long sidebar). Commit the new colours
- * with transitions off, then hand them back.
+ * transition per element per changed colour. Only then: the extra restyle costs WebKit more than it saves.
  */
 export function withoutTransitions(change: () => void): void {
   const el = document.documentElement;
+  if (!reducedMotionActive(el)) {
+    change();
+    return;
+  }
   el.classList.add(THEME_SWITCHING_CLASS);
   change();
   void window.getComputedStyle(document.body ?? el).color;

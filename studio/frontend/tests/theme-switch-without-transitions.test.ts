@@ -8,8 +8,9 @@ import { readSrc } from "./helpers/kit.ts";
 
 type Timer = () => void;
 
-function fakeDom() {
+function fakeDom(reduceMotion: boolean) {
   const classes = new Set<string>(["light"]);
+  if (reduceMotion) classes.add("force-reduced-motion");
   const attrs = new Map<string, string>();
   const log: string[] = [];
   const timers: Timer[] = [];
@@ -55,8 +56,8 @@ function fakeDom() {
   return { classes, log, timers };
 }
 
-test("a light/dark flip commits the new colours with transitions off, then turns them back on", async () => {
-  const dom = fakeDom();
+test("under Reduce motion a light/dark flip commits the new colours with transitions off, then turns them back on", async () => {
+  const dom = fakeDom(true);
   const store = await import("../src/features/settings/stores/theme-store.ts");
 
   store.setTheme("dark");
@@ -71,6 +72,11 @@ test("a light/dark flip commits the new colours with transitions off, then turns
 
   store.setPalette("standard");
   assert.deepEqual(dom.log, [], "the standard palette is already the attribute-free default");
+
+  dom.classes.delete("force-reduced-motion");
+  store.setTheme("light");
+  assert.deepEqual(dom.log, ["-dark", "+light"], "without Reduce motion the flip keeps main's path");
+  assert.equal(dom.timers.length, 0);
 });
 
 test("the switching rule outranks both reduced-motion blocks", () => {
