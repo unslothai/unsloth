@@ -938,8 +938,14 @@ def _fingerprint(model):
 
     items = []
     devices = set()
+    host = _offloaded_input_embedding(model)
+    # Its weights stay fingerprinted, by identity too (a swapped table re-captures); only their device is exempt.
+    exempt = {id(p) for p in host.parameters()} if host is not None else ()
     for p in model.parameters():
-        devices.add(p.device)
+        if id(p) in exempt:
+            items.append(id(p))
+        else:
+            devices.add(p.device)
         items.append((p.data_ptr(), p.dtype, tuple(p.shape), G._version(p)))
     if len(devices) != 1 or next(iter(devices)).type != _BACKEND.device_type:
         return None
@@ -1038,6 +1044,50 @@ def _placeholder_embeds(model, kwargs):
     return {**kwargs, "input_ids": None, "inputs_embeds": embeds}
 
 
+def _offloaded_input_embedding(model):
+    """The input embedding Unsloth's `offload_embedding` keeps in host RAM (its hooks move the ids there and the
+    looked-up rows back to the decoder's card), or None. Not when the output head shares a weight with it."""
+    get = getattr(model, "get_input_embeddings", None)
+    try:
+        module = get() if get is not None else None
+    except Exception:
+        return None
+    if not isinstance(module, torch.nn.Module) or not getattr(
+        module, "_unsloth_offload_hooks_installed", False
+    ):
+        return None
+    params = list(module.parameters())
+    if not params or all(p.device.type == _BACKEND.device_type for p in params):
+        return None
+    get_out = getattr(model, "get_output_embeddings", None)
+    try:
+        out = get_out() if get_out is not None else None
+    except Exception:
+        return None
+    if isinstance(out, torch.nn.Module):
+        shared = {id(p) for p in params}
+        if any(id(p) in shared for p in out.parameters()):
+            return None
+    return module
+
+
+def _host_embeds(model, kwargs):
+    """kwargs with input_ids replaced by the offloaded input embedding's rows, looked up outside the graph (a host
+    lookup and copy cannot be captured) exactly as the forward would look them up; unchanged otherwise."""
+    ids = kwargs.get("input_ids")
+    if not isinstance(ids, torch.Tensor) or kwargs.get("inputs_embeds") is not None:
+        return kwargs
+    module = _offloaded_input_embedding(model)
+    if module is None:
+        return kwargs
+    with torch.no_grad():
+        embeds = module(ids)
+    embeds = embeds.detach()
+    if embeds.device != ids.device:
+        embeds = embeds.to(ids.device)
+    return {**kwargs, "input_ids": None, "inputs_embeds": embeds}
+
+
 def decode_step(
     model,
     forward,
@@ -1108,7 +1158,7 @@ def decode_step(
     elif state.fingerprint is None:
         return _refusal(state, "not one CUDA device / adapters")
 
-    kwargs = _placeholder_embeds(model, _mrope_positions(model, kwargs))
+    kwargs = _host_embeds(model, _placeholder_embeds(model, _mrope_positions(model, kwargs)))
     leaves = []
     spec = []
     for name, value in kwargs.items():

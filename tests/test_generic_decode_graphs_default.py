@@ -434,3 +434,94 @@ def test_refusal_reasons_name_the_argument(host, llama, monkeypatch):
     monkeypatch.setattr(type(llama), "forward", forward)
     _gen(llama)
     assert _stats(llama)["refusals"] == {"tensor argument requires grad (extra)": 9}, _stats(llama)
+
+
+class _HostEmbedding(torch.nn.Module):
+    """Unsloth's offloaded input embedding as the decode step sees it: the weight lives off the compute device
+    (meta stands in for host RAM) behind hooks that return the rows on the decoder's device. Records whether
+    each lookup ran inside a graph capture or replay."""
+
+    def __init__(self, real, inside):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.empty_like(real.weight, device = "meta"), requires_grad = False
+        )
+        self.table = real.weight.detach().clone()  # a plain attribute: the lookup's data
+        self.inside = inside
+        self.calls = []
+        self._unsloth_offload_hooks_installed = True
+
+    def forward(self, ids):
+        self.calls.append(self.inside[0])
+        return torch.nn.functional.embedding(ids, self.table)
+
+
+def _offload(
+    host,
+    llama,
+    monkeypatch,
+    extra = False,
+):
+    inside = [False]
+    record = host.record.__func__
+
+    def tracked(fn):
+        def run():
+            inside[0] = True
+            try:
+                return fn()
+            finally:
+                inside[0] = False
+
+        return run
+
+    monkeypatch.setattr(
+        host,
+        "record",
+        classmethod(lambda cls, pool, fn, cache: record(cls, pool, tracked(fn), cache)),
+    )
+    embedding = _HostEmbedding(llama.get_input_embeddings(), inside)
+    llama.set_input_embeddings(embedding)
+    # As `_pin_device_to_decoder`: model.device is the decoder's, not the offloaded table's.
+    monkeypatch.setattr(type(llama), "device", property(lambda self: torch.device("cpu")))
+    if extra:
+        llama.model.norm.register_parameter(
+            "stray", torch.nn.Parameter(torch.zeros(1, device = "meta"), requires_grad = False)
+        )
+    return embedding
+
+
+def test_offloaded_input_embedding_is_looked_up_outside_the_graph(host, llama, monkeypatch):
+    monkeypatch.setenv(ENV, "0")
+    eager = _gen(llama)
+    monkeypatch.delenv(ENV)
+    embedding = _offload(host, llama, monkeypatch)
+    graphed = _gen(llama)
+    s = _stats(llama)
+    assert s["captures"] == 1 and s["replays"] >= 8, s
+    assert torch.equal(eager, graphed)
+    # Every decode step looked its rows up eagerly; none inside a capture or replay.
+    assert embedding.calls and not any(embedding.calls)
+
+
+def test_offloaded_input_embedding_swap_recaptures(host, llama, monkeypatch):
+    embedding = _offload(host, llama, monkeypatch)
+    first = GG._fingerprint(llama)
+    assert first is not None
+    embedding.weight = torch.nn.Parameter(torch.empty_like(embedding.weight), requires_grad = False)
+    assert GG._fingerprint(llama) not in (None, first)
+
+
+def test_another_offloaded_parameter_is_still_refused(host, llama, monkeypatch):
+    _offload(host, llama, monkeypatch, extra = True)
+    assert GG._fingerprint(llama) is None
+    _gen(llama)
+    s = _stats(llama)
+    assert s["replays"] == 0 and "not one CUDA device / adapters" in s["refusals"], s
+
+
+def test_an_unhooked_off_device_embedding_is_still_refused(host, llama, monkeypatch):
+    embedding = _offload(host, llama, monkeypatch)
+    embedding._unsloth_offload_hooks_installed = False
+    assert GG._offloaded_input_embedding(llama) is None
+    assert GG._fingerprint(llama) is None
