@@ -67,6 +67,7 @@ def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) 
     return _NUDGE_DEFAULT if request_flag is None else bool(request_flag)
 
 
+_MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
 # Hold limit: a suspected tool block longer than this is declared a false alarm and flushed as text, bounding memory on a rambling model.
 _MAX_HOLD_CHARS = 64 * 1024
 # Each closer a native block fails to parse at costs a reparse of the whole block.
@@ -708,9 +709,13 @@ class _StrictParseGate:
         return False
 
 
-def _partial_signal_suffix(buffer: str, signals: tuple = _HEAL_SIGNALS) -> int:
+def _partial_signal_suffix(
+    buffer: str,
+    signals: tuple = _HEAL_SIGNALS,
+    longest: int = _MAX_SIGNAL_LEN,
+) -> int:
     """Length of the longest buffer suffix that is a proper prefix of a signal."""
-    for length in range(min(len(buffer), max(map(len, signals)) - 1), 0, -1):
+    for length in range(min(len(buffer), longest - 1), 0, -1):
         tail = buffer[-length:]
         if any(signal.startswith(tail) for signal in signals):
             return length
@@ -783,7 +788,8 @@ class StreamToolCallHealer:
             cut = (
                 start
                 if start >= 0
-                else len(self._buffer) - _partial_signal_suffix(self._buffer, (self._native.open,))
+                else len(self._buffer)
+                - _partial_signal_suffix(self._buffer, (self._native.open,), len(self._native.open))
             )
             if cut:
                 events.append(("text", self._buffer[:cut]))
