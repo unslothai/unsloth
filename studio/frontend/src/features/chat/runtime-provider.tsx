@@ -1764,6 +1764,12 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              if (
+                caughtUp(update.run) &&
+                (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"
+              ) {
+                useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+              }
               // Live figures only once caught up: a replayed backlog would flash every old sample.
               if ("_generationProgress" in chunk) {
                 if (caughtUp(update.run)) {
@@ -1773,6 +1779,13 @@ function scheduleGenerationRecovery(
                     store.setLivePrefill(threadId, progress.prefill);
                   } else if (progress?.phase === "decode") {
                     store.setLiveDecode(threadId, progress.decode);
+                  } else if (progress?.phase === "compacting") {
+                    store.setLiveCompacting(threadId, true);
+                  }
+                  // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
+                  if (update.run.status !== lastPublishedStatus) {
+                    lastPublishedStatus = update.run.status;
+                    await publish(update.run);
                   }
                 }
                 continue;
@@ -1795,6 +1808,7 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                useChatRuntimeStore.getState().setLiveCompacting(threadId, false);
                 const toolCalls = carried
                   .map((entry) => entry.part as { type?: unknown } | null)
                   .filter((part) => part?.type === "tool-call") as Array<{
@@ -4111,6 +4125,8 @@ function ThreadBackendAutosave({
   const aui = useAui();
   const saveChainRef = useRef(Promise.resolve());
   const pendingFirstSavesRef = useRef(new Map<string, Promise<void>>());
+  // Threads whose last whole-chat save failed: a reply-only checkpoint would leave its parent unsaved.
+  const fullSaveDueRef = useRef(new Set<string>());
   // A ref: the save may resolve after the pane is hidden, so read at publish time.
   const backgroundedRef = useRef(backgrounded);
   backgroundedRef.current = backgrounded;
@@ -4122,7 +4138,7 @@ function ThreadBackendAutosave({
   }, []);
 
   const saveThread = useCallback(
-    async (threadId: string): Promise<void> => {
+    async (threadId: string, replyOnly = false): Promise<void> => {
       const runtime = aui.threads().__internal_getAssistantRuntime?.();
       if (!runtime) {
         return;
@@ -4140,7 +4156,12 @@ function ThreadBackendAutosave({
         return;
       }
       await ensureStoredChatThread(remoteId);
-      await syncExportedRepositoryToBackend(remoteId, exported);
+      const partial = replyOnly && !fullSaveDueRef.current.has(threadId);
+      if (!partial) fullSaveDueRef.current.add(threadId);
+      await syncExportedRepositoryToBackend(remoteId, exported, {
+        replyOnly: partial,
+      });
+      if (!partial) fullSaveDueRef.current.delete(threadId);
       if (isChatThreadDeleted(remoteId)) {
         await deleteStoredChatThreads([remoteId]);
         return;
@@ -4168,12 +4189,12 @@ function ThreadBackendAutosave({
   );
 
   const queueSave = useCallback(
-    (threadId: string): Promise<void> => {
+    (threadId: string, replyOnly = false): Promise<void> => {
       const queued = saveChainRef.current
         .catch(() => {})
         .then(async () => {
           await pendingFirstSavesRef.current.get(threadId);
-          await saveThread(threadId);
+          await saveThread(threadId, replyOnly);
         })
         .catch(reportAutosaveError);
       saveChainRef.current = queued;
@@ -4230,7 +4251,7 @@ function ThreadBackendAutosave({
       (threadId) =>
         threadHasLiveGenerationRun(threadId)
           ? Promise.resolve()
-          : queueSaveRef.current(threadId),
+          : queueSaveRef.current(threadId, true),
       {
         isActive: (threadId) => isRunActiveRef.current(threadId),
         isBounded: (threadId) => threadHasDurableGenerationRun(threadId),

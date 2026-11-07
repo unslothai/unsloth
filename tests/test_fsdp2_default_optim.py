@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""unsloth#3551: Unsloth's adamw_8bit default cannot step FSDP2's DTensor parameters."""
+"""unsloth#3551: Unsloth's adamw_8bit default under FSDP2. The generated configs used to switch it to
+adamw_torch_fused; FSDP2 (native and accelerate's) now steps bitsandbytes Adam / AdamW on each rank's
+local shard, so the configs keep it (tests/test_fsdp2_bnb_optim_kept.py)."""
 
 from __future__ import annotations
 
@@ -45,6 +47,7 @@ _PROBE = textwrap.dedent(
         "grpo_fsdp2_args": optim(GRPOConfig, {}, **fsdp2_args),
         "grpo_fsdp2_json": optim(GRPOConfig, {}, fsdp = "full_shard", fsdp_config = fsdp2_json),
         "grpo_fsdp2_explicit_torch": optim(GRPOConfig, {"FSDP_VERSION": "2"}, optim = "adamw_torch"),
+        "sft_fsdp2_paged": optim(SFTConfig, {"FSDP_VERSION": "2"}, optim = "paged_adamw_8bit"),
         "grpo_fsdp_unversioned": optim(GRPOConfig, {}, fsdp = "full_shard"),
     }))
     """
@@ -61,6 +64,7 @@ def probe(tmp_path_factory):
     )
     lines = [line for line in run.stdout.splitlines() if line.startswith("PROBE ")]
     assert lines, f"probe failed:\n{run.stdout[-3000:]}\n{run.stderr[-3000:]}"
+    assert "Switching optim" not in run.stdout
     return json.loads(lines[-1][len("PROBE ") :])
 
 
@@ -71,18 +75,15 @@ def test_without_fsdp2_the_default_is_unchanged(probe):
 
 
 @pytest.mark.parametrize("case", ["grpo_fsdp2", "sft_fsdp2", "grpo_fsdp2_args", "grpo_fsdp2_json"])
-def test_fsdp2_gets_an_optimizer_that_steps_dtensors(probe, case):
-    assert probe[case] == "adamw_torch_fused"
+def test_fsdp2_keeps_adamw_8bit(probe, case):
+    # Stepped on the local shards (fsdp2_bnb_optim), not silently switched to torch's AdamW.
+    assert probe[case] == "adamw_8bit"
 
 
-def test_fsdp_without_a_version_follows_the_transformers_default(probe):
-    """TrainingArguments picks FSDP2 when fsdp_config names no version from transformers 5.10.0, FSDP1 before."""
-    from transformers import __version__
-    from unsloth_zoo.utils import Version
-
-    fsdp2 = Version(__version__) >= Version("5.10.0")
-    assert probe["grpo_fsdp_unversioned"] == ("adamw_torch_fused" if fsdp2 else "adamw_8bit")
+def test_fsdp_without_a_version_keeps_adamw_8bit(probe):
+    assert probe["grpo_fsdp_unversioned"] == "adamw_8bit"
 
 
-def test_an_explicit_non_bnb_choice_is_kept(probe):
+def test_explicit_choices_are_kept(probe):
     assert probe["grpo_fsdp2_explicit_torch"] == "adamw_torch"
+    assert probe["sft_fsdp2_paged"] == "paged_adamw_8bit"

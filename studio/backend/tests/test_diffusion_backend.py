@@ -1131,6 +1131,7 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     backend = DiffusionBackend()
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
+    assert status["lora_unavailable_reason"] is None
     for p in ("one", "two", "three"):
         backend.generate(prompt = p)
     status = backend.status()
@@ -1143,13 +1144,60 @@ def test_speed_auto_compile_reports_that_a_reload_brings_lora_back(
     status = _load_into(backend, tmp_path, **load)
     assert (status["supports_lora"], status["lora_after_reload"]) == (True, False)
 
-    # An explicit compiled tier compiles at load: a reload would not help, so no hint.
+    # An explicit compiled tier compiles at load: a reload would not help, so no hint, only the reason.
     backend.unload()
     status = _load_into(backend, tmp_path, speed_mode = "default", **load)
     assert "compiled" in status["speed_optims"]
     assert (status["supports_lora"], status["lora_after_reload"]) == (False, False)
+    assert "Speed" in DiffusionStatusResponse(**status).lora_unavailable_reason
     backend.unload()
     assert backend.status()["lora_after_reload"] is False
+
+
+def test_a_gguf_on_diffusers_applies_loras_unfused(fake_runtime, tmp_path, monkeypatch):
+    backend = _loaded_backend(tmp_path)
+    status = backend.status()
+    assert (status["model_kind"], status["transformer_quant"]) == ("gguf", None)
+    assert status["supports_lora"] is True and status["lora_unavailable_reason"] is None
+    applied: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_lora_set",
+        lambda self, specs, **kw: (("style", "/loras/style.safetensors", 0.7),),
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "load_lora_weights",
+        lambda self, path, adapter_name = None: applied.append((path, adapter_name)),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        _FakePipe,
+        "set_adapters",
+        lambda self, names, adapter_weights = None: applied.append((names, adapter_weights)),
+        raising = False,
+    )
+    monkeypatch.setattr(_FakePipe, "unload_lora_weights", lambda self: None, raising = False)
+    backend.generate(prompt = "a fox", loras = [("style", 0.7)])
+    assert applied == [("/loras/style.safetensors", "style"), (["style"], [0.7])]
+    assert getattr(backend._state.pipe, "_unsloth_loras_baked", False) is False
+    backend.unload()
+
+
+def test_a_load_that_cannot_carry_adapters_reports_why(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    monkeypatch.setattr(dmod, "_small_host_int8", lambda pipe: True)
+    status = backend.status()
+    assert status["supports_lora"] is False
+    assert "small-host route" in status["lora_unavailable_reason"]
+    with pytest.raises(ValueError) as raised:
+        backend.generate(prompt = "a fox", loras = [("adapter", 1.0)])
+    assert str(raised.value) == status["lora_unavailable_reason"]
+    backend.unload()
 
 
 def test_deferred_speed_stays_off_when_only_an_explicit_tier_may_compile(
@@ -5909,6 +5957,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        vae = None,
         # Spelled out, not **kwargs: pins the exact production signature incl. local_files_only.
         local_files_only = False,
         check_cancelled = None,
@@ -5916,6 +5965,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         assert callable(check_cancelled)
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["vae"] = vae
         calls["local_files_only"] = local_files_only
         return Pipe()
 
@@ -5942,6 +5992,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     assert calls == {
         "base": "unsloth/Krea-2-Turbo",
         "transformer": marker,
+        "vae": None,
         "device": "cuda:0",
         "local_files_only": False,
     }
@@ -6904,8 +6955,7 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
 
 
 def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatch):
-    """Pipeline re-plans must price the quantised transformer, or offloaded runs never take the fast
-    path."""
+    """Pipeline replans price the quantized transformer."""
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
 
@@ -6914,7 +6964,7 @@ def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatc
     monkeypatch.setattr(
         dmod,
         "settled_snapshot_device_memory",
-        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+        lambda t, **kwargs: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
     monkeypatch.setattr(
@@ -8766,6 +8816,11 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
+    assert prequant["hosted_denoiser"] is False
+    selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
+    assert len(selected) == 1
+    assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
+    assert selected[0]["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
 
 
 def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
@@ -14488,3 +14543,235 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
     assert dropped == [pipe]
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert dropped == [pipe, pipe]
+
+
+class _PinProbePipe(_FakePipe):
+    """Enters the denoise loop and decoder like diffusers, and runs out of memory on its first attempt."""
+
+    def __init__(self, fail_first: bool) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.fail_first = fail_first
+        self.vae = types.SimpleNamespace(decode = lambda: None)
+
+    def progress_bar(self, *args, **kwargs):
+        return contextlib.nullcontext()
+
+    def __call__(self, **kwargs):
+        self.progress_bar(total = 1)
+        self.attempts += 1
+        if self.fail_first and self.attempts == 1:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        if hasattr(self.vae, "decode"):
+            self.vae.decode()
+        return super().__call__(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "pins, pinned_placement, expected",
+    [
+        # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
+        ([False, True, True], "resident", "resident"),
+        # one retry ran whole and the other streamed: no one placement describes the batch
+        ([False, True, False], "resident", None),
+        # the pin covers pipe.transformer only: a second DiT (Ideogram 4) still streams
+        ([False, True, True], "partial", "partial"),
+    ],
+)
+def test_saved_placement_counts_only_chunks_that_finished(
+    fake_runtime, tmp_path, monkeypatch, pins, pinned_placement, expected
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _PinProbePipe(fail_first = True)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    outcomes = list(pins)
+    held = [False]
+
+    def _pin(*a, **kw):
+        if not outcomes.pop(0):
+            return None
+        held[0] = True
+        return lambda: held.__setitem__(0, False)
+
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: (1.0, 2.0, 64))
+    monkeypatch.setattr(diffusion, "pin_denoiser_for_call", _pin)
+    # the live hooks: the load streams, a held pin moves what it covers on the GPU
+    monkeypatch.setattr(
+        diffusion,
+        "denoiser_offload",
+        lambda pipe, policy: pinned_placement if held[0] else "streamed",
+    )
+
+    out = backend.generate(prompt = "p", steps = 4, batch_size = 2)
+
+    assert pipe.attempts == 3 and not outcomes
+    assert len(out["images"]) == 2
+    assert out["denoiser_offload"] == expected
+
+
+class _DeferredReturnPipe(_PinProbePipe):
+    """A resident load whose groups a VAE OOM recovery unpinned and left on a deferred return: the first forward
+    returns them, and the next decode's recovery unpins them again."""
+
+    def __init__(self, deferred: bool) -> None:
+        super().__init__(fail_first = False)
+        self.settled = not deferred
+        self.decoded = False
+        self.vae = types.SimpleNamespace(decode = lambda: setattr(self, "decoded", True))
+
+    def progress_bar(self, *args, **kwargs):
+        out = super().progress_bar(*args, **kwargs)
+        self.settled = True
+        return out
+
+    def placement(self) -> str:
+        return "resident" if self.settled and not self.decoded else "streamed"
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_saved_placement_is_read_after_the_steps_and_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch, deferred
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _DeferredReturnPipe(deferred)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: pipe.placement())
+
+    out = backend.generate(prompt = "p", steps = 4)
+
+    assert pipe.decoded
+    assert out["denoiser_offload"] == "resident"
+
+
+def test_a_pass_that_never_decodes_reads_the_placement_once_it_returns(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    # a latent-output pass (the hires latent-upscaler base) never enters the decoder
+    pipe = _PinProbePipe(fail_first = False)
+    pipe.vae = types.SimpleNamespace()
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "resident")
+
+    assert backend.generate(prompt = "p", steps = 4)["denoiser_offload"] == "resident"
+
+
+class _SeedsProbe:
+    """Records when generate() seeds and keeps the first inline compile's float specialisations."""
+
+    def __init__(
+        self,
+        events,
+        modules = (),
+    ):
+        self.events = events
+        self.modules = list(modules)
+
+    def seed(self):
+        if "seed" not in self.events:
+            self.events.append("seed")
+
+    def keep(self):
+        self.events.append("keep")
+
+
+def _loop_pipe(
+    pipe,
+    events,
+    dit = None,
+):
+    """The fake pipe as a diffusers loop: a progress bar, the denoiser, then the VAE decode."""
+
+    class _LoopPipe(type(pipe)):
+        def progress_bar(self, *args, **kwargs):
+            return contextlib.nullcontext()
+
+        def __call__(self, **kwargs):
+            if dit is None:
+                with self.progress_bar(total = 2):
+                    events.append("denoiser")
+            else:
+                dit()
+            self.vae.decode()
+            return super().__call__(**kwargs)
+
+    pipe.__class__ = _LoopPipe
+    pipe.vae = types.SimpleNamespace(decode = lambda *a, **k: events.append("decode"))
+
+
+def test_first_compiled_render_seeds_floats_before_the_denoise_and_keeps_them_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """An inline compile (no background compile) pre-seeds the learned float specialisations, as video does."""
+    backend = _loaded_backend(tmp_path)
+    events: list = []
+    asked: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_inline_float_seeds",
+        lambda self, state: asked.append(state) or _SeedsProbe(events),
+    )
+    _loop_pipe(backend._state.pipe, events)
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert asked == [backend._state]
+    assert events[:2] == ["seed", "denoiser"]
+    assert events.index("keep") < events.index("decode")
+    assert events.count("keep") == 1
+
+
+def test_first_compiled_render_seeds_at_the_first_dit_forward_without_a_progress_bar(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = _loaded_backend(tmp_path)
+    events: list = []
+
+    class _Dit:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_pre_hook(self, fn):
+            self.hooks.append(fn)
+            return types.SimpleNamespace(remove = lambda: self.hooks.remove(fn))
+
+        def __call__(self):
+            for hook in list(self.hooks):
+                hook(self, ())
+            events.append("denoiser")
+
+    dit = _Dit()
+    monkeypatch.setattr(
+        DiffusionBackend, "_inline_float_seeds", lambda self, state: _SeedsProbe(events, [dit])
+    )
+    _loop_pipe(backend._state.pipe, events, dit = dit)
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert events[:2] == ["seed", "denoiser"]
+    assert dit.hooks == []
+
+
+def test_a_background_compile_render_takes_no_inline_seeds(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion_bg_compile as bgc
+
+    backend = _loaded_backend(tmp_path)
+    asked: list = []
+    monkeypatch.setattr(
+        DiffusionBackend, "_inline_float_seeds", lambda self, state: asked.append(state) or None
+    )
+    with bgc.auxiliary_pass():
+        backend.generate(prompt = "a crop inpaint", steps = 2)
+    assert asked == []
+    backend.generate(prompt = "a sloth", steps = 2)
+    assert asked == [backend._state]

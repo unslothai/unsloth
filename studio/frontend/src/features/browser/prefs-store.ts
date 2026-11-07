@@ -35,6 +35,8 @@ interface BrowserPrefsState {
   saveDownloadHistory: boolean;
   askWhereToSave: boolean;
   askBeforeDownloading: boolean;
+  /** Files that can run programs; asked about even with askBeforeDownloading off, unless this is off too. */
+  askBeforeProgramDownloads: boolean;
   annotationScreenshots: AnnotationScreenshots;
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
@@ -53,6 +55,7 @@ interface BrowserPrefsState {
   setSaveDownloadHistory: (value: boolean) => void;
   setAskWhereToSave: (value: boolean) => void;
   setAskBeforeDownloading: (value: boolean) => void;
+  setAskBeforeProgramDownloads: (value: boolean) => void;
   setAnnotationScreenshots: (value: AnnotationScreenshots) => void;
 }
 
@@ -75,6 +78,7 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       saveDownloadHistory: true,
       askWhereToSave: false,
       askBeforeDownloading: true,
+      askBeforeProgramDownloads: true,
       annotationScreenshots: "never",
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
@@ -98,6 +102,7 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       setSaveDownloadHistory: (saveDownloadHistory) => set({ saveDownloadHistory }),
       setAskWhereToSave: (askWhereToSave) => set({ askWhereToSave }),
       setAskBeforeDownloading: (askBeforeDownloading) => set({ askBeforeDownloading }),
+      setAskBeforeProgramDownloads: (askBeforeProgramDownloads) => set({ askBeforeProgramDownloads }),
       setAnnotationScreenshots: (annotationScreenshots) => set({ annotationScreenshots }),
     }),
     {

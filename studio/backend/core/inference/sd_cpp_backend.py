@@ -45,6 +45,7 @@ from core.inference.diffusion_device import (
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -107,7 +108,10 @@ from core.inference.sd_cpp_server import SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
-from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs,
+    windows_loader_error_boxes_suppressed,
+)
 
 logger = get_logger(__name__)
 
@@ -360,10 +364,86 @@ def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[in
     return len(cores) or None
 
 
-def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
-    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
-    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
+# 0 keeps one sd.cpp thread per physical core on an SMT host (the default runs one per logical CPU there).
+SD_CPP_CPU_SMT_ENV = "UNSLOTH_DIFFUSION_CPU_SMT"
+# Many-core servers keep one thread per core: ggml's per-op barrier across many threads outweighs SMT gains.
+SD_CPP_CPU_SMT_MAX_CORES = 16
+
+
+def _linux_hybrid_cpu(sysfs: str = "/sys/devices") -> bool:
+    """Intel hybrid (P + E) hosts register a ``cpu_atom`` PMU."""
+    try:
+        with open(f"{sysfs}/cpu_atom/cpus", encoding = "utf-8") as f:
+            return bool(f.read().strip())
+    except OSError:
+        return False
+
+
+def _smt_threads_enabled() -> bool:
+    return os.environ.get(SD_CPP_CPU_SMT_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# GetLogicalProcessorInformationEx: RelationProcessorCore records (one per physical core).
+_RELATION_PROCESSOR_CORE = 0
+
+
+def _parse_windows_cores(buf: bytes) -> Optional[tuple[int, bool]]:
+    """(cores, hybrid); byte 9 of each record is EfficiencyClass, more than one class = P + E cores."""
+    import struct
+
+    offset, cores, classes = 0, 0, set()
+    while offset + 10 <= len(buf):
+        relationship, size = struct.unpack_from("<II", buf, offset)
+        if size <= 0:
+            return None
+        if relationship == _RELATION_PROCESSOR_CORE:
+            cores += 1
+            classes.add(buf[offset + 9])
+        offset += size
+    return (cores, len(classes) > 1) if cores else None
+
+
+def _windows_cores() -> Optional[tuple[int, bool]]:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        size = wintypes.DWORD(0)
+        kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, None, ctypes.byref(size)
+        )
+        if not size.value:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, buf, ctypes.byref(size)
+        ):
+            return None
+        return _parse_windows_cores(buf.raw[: size.value])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _smt_threads(physical: int, allowed: Optional[int], hybrid: bool, smt: bool) -> int:
+    if (
+        smt
+        and allowed
+        and physical < allowed
+        and physical <= SD_CPP_CPU_SMT_MAX_CORES
+        and _smt_threads_enabled()
+        and not hybrid
+    ):
+        return allowed
+    return physical
+
+
+def _default_threads(smt: bool = True) -> int:
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else logical CPUs on a small non-hybrid SMT host, else physical
+    cores, else ``os.cpu_count() // 2``; capped by the cgroup quota. SMT measured 1.06-1.26x faster, pixel-identical,
+    on 2-4 core VMs; hybrid hosts keep the core count (ggml's even split would wait on E cores)."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -375,8 +455,12 @@ def _default_threads() -> int:
         return performance_cores
     linux = sys.platform.startswith("linux")
     physical = _linux_physical_cores() if linux else None
+    windows = None if linux else _windows_cores()
     if physical:
-        threads = physical
+        threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
+    elif windows is not None and smt:
+        cores, hybrid = windows
+        threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
         cpu = os.cpu_count()
         threads = cpu // 2 if cpu else 8
@@ -423,7 +507,7 @@ def _explicit_threads() -> Optional[int]:
         return performance_cores
     if sys.platform.startswith("linux"):
         cpu = os.cpu_count()
-        threads = _default_threads()
+        threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
         if threads == sd_default:
             return None
@@ -440,13 +524,14 @@ def _server_binary_runnable(binary: str) -> bool:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, "--help"],
-            capture_output = True,
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except OSError:
         return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
@@ -484,16 +569,17 @@ def _sd_cpp_probe_output(binary: str, *args: str) -> Optional[str]:
     import subprocess
 
     try:
-        proc = subprocess.run(
-            [binary, *args],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 20,
-            env = runtime_env(binary),
-            **windows_hidden_subprocess_kwargs(),
-        )
+        with windows_loader_error_boxes_suppressed():
+            proc = subprocess.run(
+                [binary, *args],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 20,
+                env = runtime_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
     except Exception:  # noqa: BLE001 -- cannot exec / timeout: "cannot tell"
         return None
     if proc.returncode != 0:
@@ -1339,8 +1425,8 @@ def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
         # The loader cannot be asked ahead of time on Windows; a missing DLL is exit 0xC0000135 with no output.
         return (
             "the ROCm build needs the AMD HIP SDK 7.x runtime DLLs (amdhip64_7.dll, hipblas.dll, rocblas.dll) on "
-            "PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or the card's gfx "
-            "target is missing from the prebuilt"
+            "PATH or under HIP_PATH; without them Windows stops it before it prints anything (exit 0xC0000135), or "
+            "the card's gfx target is missing from the prebuilt"
         )
     missing = rocm_runtime_missing_sonames()
     if missing is None:
@@ -2119,7 +2205,7 @@ def _on_windows() -> bool:
 
 
 def windows_rocm_build_mode() -> str:
-    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is on PATH), ``1`` always, ``0`` never."""
+    """``UNSLOTH_SD_CPP_WINDOWS_ROCM``: ``auto`` (ROCm only if the HIP SDK is found), ``1`` always, ``0`` never."""
     raw = (os.environ.get("UNSLOTH_SD_CPP_WINDOWS_ROCM", "auto") or "").strip().lower()
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
@@ -2134,6 +2220,10 @@ def _windows_dll_search_dirs() -> list[str]:
     dirs.append(os.path.join(system_root, "System32"))
     dirs.append(system_root)
     dirs.extend(d.strip().strip('"') for d in os.environ.get("PATH", "").split(os.pathsep))
+    try:
+        dirs.extend(_installer_module().windows_hip_sdk_bin_dirs())
+    except Exception as exc:  # noqa: BLE001 -- PATH alone still decides
+        logger.debug("HIP SDK lookup failed: %s", exc)
     return [d for d in dirs if d]
 
 
@@ -2147,6 +2237,13 @@ def windows_hip_runtime_missing_dlls() -> Optional[list[str]]:
         if not any(os.path.isfile(os.path.join(d, dll)) for d in dirs):
             missing.append(dll)
     return missing
+
+
+def _hip_sdk_url() -> str:
+    try:
+        return _installer_module().HIP_SDK_URL
+    except Exception:  # noqa: BLE001 -- the log line still names the SDK
+        return "AMD's HIP SDK page"
 
 
 def windows_rocm_build_skipped() -> bool:
@@ -2173,9 +2270,10 @@ def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None
             _windows_rocm_skip_logged = True
             logger.info(
                 "sd_cpp.windows_rocm_skipped: using the Vulkan stable-diffusion.cpp build; the ROCm "
-                "build needs the AMD HIP SDK runtime (%s) on PATH (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 "
-                "to use it anyway)",
+                "build needs the AMD HIP SDK 7.x runtime (%s), found on neither PATH nor HIP_PATH. "
+                "Install it from %s to use the ROCm build (UNSLOTH_SD_CPP_WINDOWS_ROCM=1 to use it anyway)",
                 ", ".join(windows_hip_runtime_missing_dlls() or _WINDOWS_ROCM_HOST_DLLS),
+                _hip_sdk_url(),
             )
         chosen = klass = "vulkan"
     seen: set[str] = set()
@@ -2908,6 +3006,18 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
         return None
     per_step = (now - first_step_at) / steps_since_first
     return max(0.0, (total_steps - step) * per_step)
+
+
+def _request_extra_sample_args(state: Any) -> Optional[str]:
+    """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
+    if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
+        return None
+    return sd_cpp_args_mod.moss_uncond_skip_sample_args(
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+        getattr(state, "gguf_filename", None),
+    )
 
 
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
@@ -4824,6 +4934,7 @@ class SdCppDiffusionBackend:
                     ],
                     qwen_image_layers = layers,
                     hires = hires_payload,
+                    extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -5133,6 +5244,9 @@ class SdCppDiffusionBackend:
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
+        extra_sample_args = _request_extra_sample_args(state)
+        if extra_sample_args:
+            extra_args += ["--extra-sample-args", extra_sample_args]
 
         images = []
         seeds: list[int] = []
@@ -5408,6 +5522,9 @@ class SdCppDiffusionBackend:
                 "For transparent output on the native engine, raise Guidance above 1 (upstream uses 6)."
             )
         conditioning["notes"] = notes
+        lora_reason = diffusion_lora.lora_unavailable_reason(
+            engine = "sd_cpp", family = state.family.name, model_kind = "gguf", transformer_quant = None
+        )
 
         return {
             "loaded": True,
@@ -5437,12 +5554,8 @@ class SdCppDiffusionBackend:
             "transformer_cache": None,
             "resolved": state.resolved,
             "engine": "sd_cpp",
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "sd_cpp",
-                family = state.family.name,
-                model_kind = "gguf",
-                transformer_quant = None,
-            ),
+            "supports_lora": lora_reason is None,
+            "lora_unavailable_reason": lora_reason,
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),

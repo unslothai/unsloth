@@ -482,8 +482,8 @@ def mlx_selection(
 ) -> tuple[bool, Optional[str]]:
     """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
     cannot disagree about MLX. ``engine`` is the load's own pick (``/images/load``'s ``engine`` field).
-    ``with_loras`` says the load applies LoRA adapters, which the MLX engine cannot, so the load keeps the engine it
-    would have had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
+    ``with_loras`` says the load applies LoRA adapters: a family whose MLX build cannot keeps the engine it would have
+    had without MLX (in every mode) instead of reaching the MLX LoRA refusal.
     ``load_blocker`` (``mlx_load_blocker``) names a load option MLX cannot honour: in ``auto`` it keeps the load on
     diffusers; a forced MLX engine refuses that load in the route instead, as before."""
     mode = mlx_mode()
@@ -500,11 +500,13 @@ def mlx_selection(
         return False, "UNSLOTH_DIFFUSION_SD_CPP_MPS=1 asks for the native engine on the Mac GPU"
     if model_kind and model_kind != "gguf":
         return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
-    if with_loras:
-        return False, "the MLX engine does not apply LoRA adapters yet"
     if fam is None or not family_mlx_supported(fam):
         name = getattr(fam, "name", None) or "unknown"
         return False, f"family '{name}' has no MLX implementation"
+    if with_loras:
+        from core.inference.mlx_diffusion_routing import mlx_capabilities
+        if not mlx_capabilities(fam.name).loras:
+            return False, f"the MLX engine does not apply LoRA adapters to {fam.name} yet"
     from core.inference.mlx_diffusion_convert import quant_convertible
 
     convertible, why = quant_convertible(gguf_filename)
@@ -527,14 +529,12 @@ def mlx_selection(
 
 def mlx_load_blocker(
     *,
-    loras: Any = None,
     component_files: Any = None,
     transformer_quant: Optional[str] = None,
     text_encoder_quant: Optional[str] = None,
 ) -> Optional[str]:
     from core.inference.mlx_diffusion_routing import load_blocker
     return load_blocker(
-        loras = loras,
         component_files = component_files,
         transformer_quant = transformer_quant,
         text_encoder_quant = text_encoder_quant,
@@ -558,9 +558,7 @@ def _refuse_lora_fallback(
 
     if supports_lora(engine = choice, family = fam.name, model_kind = "gguf", transformer_quant = None):
         return
-    via = (
-        "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine on a GGUF"
-    )
+    via = "the native sd.cpp engine" if choice == ENGINE_SD_CPP else "the diffusers engine"
     raise ValueError(
         "LoRA adapters are not supported on the MLX engine yet, and this load would fall back to "
         f"{via}, which cannot apply them here either. Load it without LoRA adapters."
@@ -1165,8 +1163,11 @@ def family_buildable_here(
     *,
     model_kind: Optional[str],
     gguf_filename: Optional[str] = None,
+    provisional: bool = False,
 ) -> bool:
     """True when THIS host can actually build ``fam`` for a ``model_kind`` load, by either engine.
+
+    ``provisional`` (listing before detection) answers engine predictions True so detection never starts.
 
     The two engines need different things. diffusers instantiates ``fam.pipeline_class``, which the
     newer families ship only in a newer diffusers -- and packaging still allows an older one on
@@ -1184,26 +1185,30 @@ def family_buildable_here(
     ``predict_engine`` activates nothing and installs nothing."""
     if fam is None:
         return False
-    if native_gguf_only(fam, model_kind):
+
+    def predicts(engine_name: str, **kwargs) -> bool:
+        if provisional:
+            return True
         try:
-            return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
-        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable here
+            return predict_engine(fam, model_kind = "gguf", **kwargs) == engine_name
+        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable by that engine
             return False
+
+    if native_gguf_only(fam, model_kind):
+        return predicts(ENGINE_SD_CPP)
     if family_pipeline_available(fam):
         return True
-    if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):
-        try:
-            if predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename) == ENGINE_MLX:
-                return True
-        except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
-            pass
+    if (
+        model_kind == "gguf"
+        and gguf_filename
+        and family_mlx_supported(fam)
+        and predicts(ENGINE_MLX, gguf_filename = gguf_filename)
+    ):
+        return True
     # only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs
     if model_kind != "gguf" or not family_sd_cpp_supported(fam):
         return False
-    try:
-        return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
-    except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
-        return False
+    return predicts(ENGINE_SD_CPP)
 
 
 @functools.cache

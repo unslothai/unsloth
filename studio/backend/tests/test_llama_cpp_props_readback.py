@@ -107,10 +107,13 @@ def _stub_props(
         headers = None,
         timeout = None,
         trust_env = None,
+        verify = None,
     ):
         assert url.endswith("/props")
 
         assert trust_env is False
+        # Shared context: httpx otherwise parses the CA bundle on every /props read.
+        assert verify is llama_cpp_mod._local_ssl_context()
         # /props is behind the api-key middleware; no key means no header, not 'Bearer None'.
         assert headers is None or headers == {"Authorization": "Bearer test-key"}
         if exc is not None:

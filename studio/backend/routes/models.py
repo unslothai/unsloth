@@ -196,6 +196,7 @@ from hub.utils.host_paths import (
     resolve_host_path_reference,
     scrub_paths,
 )
+from hub.utils.mlx_variants import looks_like_mlx_repo
 from utils.utils import anonymous_and_offline
 
 
@@ -246,7 +247,7 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -280,7 +281,7 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -616,10 +617,7 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir, variant_state = variant_state
-        )
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+        partial = hf_cache_scan.repo_listing_partial(
             model_id, repo_dir, variant_state = variant_state
         )
 
@@ -981,7 +979,10 @@ def collect_local_models(
         except OSError:
             continue
     try:
-        from hub.utils import download_manifest
+        from hub.utils import download_manifest, partial_verdict_cache
+
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
         variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
@@ -2097,23 +2098,19 @@ def browse_folders(
     )
 
 
-def _looks_like_mlx_repo(model_id: str) -> bool:
-    """Name heuristic for unloaded models (mirrors the -GGUF suffix check);
-    tokenized so MLX only matches as a whole name segment."""
-    if model_id.lower().startswith("mlx-community/"):
-        return True
-    tail = model_id.split("/")[-1]
-    return "MLX" in _re.split(r"[-_.]", tail.upper())
-
-
 @router.get("/list")
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the singleton calls get_device(), which would freeze on the torch import.
-        inference_backend = await asyncio.to_thread(get_inference_backend)
+        from core.inference.defaults import get_default_models
 
-        default_models = inference_backend.default_models
+        # Chat reads this on first paint: listing suggestions must not construct the runtime or probe hardware.
+        inference_backend = peek_inference_backend()
+        default_models = await asyncio.to_thread(
+            lambda: inference_backend.default_models
+            if inference_backend is not None
+            else get_default_models(detect_hardware = False)
+        )
         if account_access.managed_account():
             default_models = [
                 m
@@ -2163,7 +2160,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         hide_resident = account_access.resident_hidden(
             "chat", getattr(inference_backend, "active_model_name", None)
         )
-        if not hide_resident:
+        if not hide_resident and inference_backend is not None:
             loaded_models += _orchestrator_models(inference_backend)
 
         llama_backend = get_llama_cpp_backend()
@@ -2187,7 +2184,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     id = model_id,
                     name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
-                    is_mlx = _looks_like_mlx_repo(model_id),
+                    is_mlx = looks_like_mlx_repo(model_id),
                 )
                 all_models.append(model_info)
                 seen_ids.add(model_id)
@@ -2762,7 +2759,7 @@ async def scan_model_remote_code(
             _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
         # Record repos our scan first pulls in, computed before preflight, so decline purges only those.
-        from utils.security.remote_code_scan import external_auto_map_repos
+        from utils.security.remote_code_scan import external_auto_map_repos, shared_config_reads
 
         scan_created_repos: list = []
         _seen_created: set = set()
@@ -2783,34 +2780,41 @@ async def scan_model_remote_code(
                 pass
 
         external_refs: list = []
-        for _target in security_targets:
-            # Use the pre-base-resolution snapshot for the primary (see above).
-            _mark_scan_created(
-                _target,
-                preexisting = _primary_preexisting if _target == primary_cache_target else None,
-            )
-            for _ext in external_auto_map_repos(
-                _target,
-                hf_token,
-                load_subdirs = consent_load_subdirs[_target],
-            ):
-                # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
-                if not is_local_path(_ext) and cached_read_refused(
-                    hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+        # One advisory scan: its passes share each config read; the load-time gates re-read fresh.
+        with shared_config_reads():
+            for _target in security_targets:
+                # Use the pre-base-resolution snapshot for the primary (see above).
+                _mark_scan_created(
+                    _target,
+                    preexisting = _primary_preexisting if _target == primary_cache_target else None,
+                )
+                for _ext in external_auto_map_repos(
+                    _target,
+                    hf_token,
+                    load_subdirs = consent_load_subdirs[_target],
                 ):
-                    raise HTTPException(
-                        status_code = 404,
-                        detail = _UNAUTHORIZED_CACHED_MODEL,
-                    )
-                external_refs.append(_ext)
-                _mark_scan_created(_ext)
-        decision = preflight_remote_code_consent_for_targets(
-            security_targets,
-            hf_token = hf_token,
-            subject = current_subject,
-            load_subdirs_by_target = consent_load_subdirs,
-        )
+                    # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
+                    if not is_local_path(_ext) and cached_read_refused(
+                        hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+                    ):
+                        raise HTTPException(
+                            status_code = 404,
+                            detail = _UNAUTHORIZED_CACHED_MODEL,
+                        )
+                    external_refs.append(_ext)
+                    _mark_scan_created(_ext)
+            decision = preflight_remote_code_consent_for_targets(
+                security_targets,
+                hf_token = hf_token,
+                subject = current_subject,
+                load_subdirs_by_target = consent_load_subdirs,
+            )
         payload = decision.response_payload()
+        blocks = (
+            [(payload.get("block_cause"), payload.get("model_name"))]
+            if payload.get("block_cause")
+            else []
+        )
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval lets the dialog be skipped; the scan still ran, so this is a real match.
@@ -2841,6 +2845,8 @@ async def scan_model_remote_code(
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
+            if _sec.blocked:
+                blocks.append((_sec.block_cause, _sec.model_name))
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
@@ -2848,6 +2854,16 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
+        from utils.hub_settings import active_source_label
+        from utils.security.file_security import NOT_ON_SOURCE, strongest_block
+
+        block_cause, block_target = strongest_block(blocks)
+        payload["block_cause"] = block_cause
+        # A repo the source lacks declares nothing, but the load still stops at the dialog.
+        if block_cause:
+            payload["requires_trust_remote_code"] = True
+        payload["block_source"] = active_source_label()
+        payload["block_target"] = block_target if block_cause == NOT_ON_SOURCE else None
         # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 
@@ -4646,6 +4662,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        estimated_resident_gb = getattr(v, "estimated_resident_gb", None),
                         lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(
@@ -5624,7 +5641,10 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
+        # Reads every checkpoint's trainer_state.json: keep it off the event loop.
+        raw_models = await asyncio.to_thread(
+            scan_checkpoints, outputs_dir = resolved_outputs_dir, include_decision = True
+        )
 
         models = [
             ModelCheckpoints(

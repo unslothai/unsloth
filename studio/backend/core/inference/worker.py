@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import base64
 import inspect
@@ -255,6 +256,26 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         logger.error("Failed to send response: %s", exc)
 
 
+def _exit_after_shutdown(resp_queue: Any) -> None:
+    """Models are unloaded and acked; interpreter shutdown can stall 10s+ on Windows CUDA (#16330)."""
+    try:
+        resp_queue.close()
+        resp_queue.join_thread()
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    try:
+        from utils.worker_stderr import stop_worker_stderr_mirror
+        stop_worker_stderr_mirror()
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def _encode_share_object(obj: Any) -> bytes:
     data = json.dumps(obj, separators = (",", ":"), ensure_ascii = False).encode("utf-8")
     if len(data) > _SHARE_OBJECT_MAX_BYTES:
@@ -284,13 +305,15 @@ def _apply_worker_hf_token_environment(config: dict) -> None:
 
 def _build_model_config(config: dict):
     from utils.models import ModelConfig
+    from utils.models.model_config import shared_hub_model_info
 
     model_name = config["model_name"]
-    mc = ModelConfig.from_identifier(
-        model_id = model_name,
-        hf_token = _config_hf_token(config),
-        gguf_variant = config.get("gguf_variant"),
-    )
+    with shared_hub_model_info():
+        mc = ModelConfig.from_identifier(
+            model_id = model_name,
+            hf_token = _config_hf_token(config),
+            gguf_variant = config.get("gguf_variant"),
+        )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
     return mc
@@ -517,11 +540,7 @@ def _run_security_gates(
                 {
                     "type": "loaded",
                     "success": False,
-                    "message": (
-                        f"Model '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review "
-                        f"and approve it to proceed."
-                    ),
+                    "message": _rc.blocked_message(),
                     "error_kind": "remote_code_blocked",
                     "remote_code": _rc.response_payload(),
                 },
@@ -575,15 +594,23 @@ def _load_download_repos(
             mapped = mlx_bnb_base_repo(str(base))
         else:
             try:
-                from unsloth.models import loader
-                from unsloth.models.loader_utils import get_model_name
+                from unsloth.models import loader, loader_utils
 
                 quantized = (
                     load_in_4bit
                     and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
-                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                # Unknown names resolve to themselves; get_model_name would fetch the remote mapper for nothing.
+                mapped = str(base)
+                name = mapped.lower()
+                tables = (
+                    loader_utils.FLOAT_TO_INT_MAPPER,
+                    loader_utils.INT_TO_FLOAT_MAPPER,
+                    loader_utils.MAP_TO_UNSLOTH_16bit,
+                )
+                if name in loader_utils.BAD_MAPPINGS or any(name in t for t in tables):
+                    mapped = loader_utils.get_model_name(str(base), load_in_4bit = quantized)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
@@ -654,6 +681,24 @@ def _in_token_rejection_scope(handler):
             return handler(*args, **kwargs)
 
     return scoped
+
+
+def _loaded_auto_map(backend, mc) -> bool | None:
+    """Whether the opened MLX snapshot declares remote code; None when it is not the requested repo (adapter, precision folder, bnb substitute)."""
+    if getattr(backend, "device", None) != "mlx" or mc.is_lora or getattr(mc, "gguf_variant", None):
+        return None
+    try:
+        from core.inference.mlx_inference import _snapshot_dir
+        from core.inference.model_ids import mlx_host_bnb_base_repo
+        from utils.security.consent import _config_has_auto_map
+
+        if mlx_host_bnb_base_repo(mc.identifier):
+            return None
+        snapshot = _snapshot_dir(getattr(backend, "_model", None), mc.identifier)
+        return _config_has_auto_map(snapshot) if snapshot else None
+    except Exception as exc:
+        logger.warning("Could not read remote-code declarations from the loaded files: %s", exc)
+        return None
 
 
 @_in_token_rejection_scope
@@ -775,6 +820,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
                 load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
+                load_kwargs["ane_prefill"] = bool(config.get("mlx_ane_prefill"))
+                load_kwargs["fast_verify"] = bool(config.get("mlx_fast_verify"))
                 load_kwargs["offload"] = tuple(config.get("mlx_offload") or (None, None))
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
@@ -801,6 +848,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_gguf": False,
                 # MLX backend sets device="mlx"; lets the UI tag MLX models.
                 "is_mlx": getattr(backend, "device", None) == "mlx",
+                "loaded_auto_map": _loaded_auto_map(backend, mc),
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
@@ -841,6 +889,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_type",
                         "has_audio_input",
                         "has_video_input",
+                        "speaks",
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
@@ -863,9 +912,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # MLX serves a vision config mlx-lm built as text; the parent must stop accepting images.
-            if model_info["is_mlx"] and _entry.get("is_vision") is False:
-                model_info["is_vision"] = False
+            # MLX decides at load: an mlx-lm text build reads no images, an mlx-vlm-only tower does.
+            if model_info["is_mlx"] and isinstance(_entry.get("is_vision"), bool):
+                model_info["is_vision"] = _entry["is_vision"]
             # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
@@ -882,6 +931,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_int8_prefill",
                         "mlx_int8_prefill_requested",
                         "mlx_int8_prefill_reason",
+                        "mlx_ane_prefill",
+                        "mlx_ane_prefill_requested",
+                        "mlx_ane_prefill_reason",
+                        "mlx_fast_verify",
+                        "mlx_fast_verify_requested",
+                        "mlx_fast_verify_reason",
                         "mlx_offload",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
@@ -950,6 +1005,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 **({"failure": failure.payload()} if failure is not None else {}),
             },
         )
+
+
+def _handle_narrow_context(backend, cmd: dict, resp_queue: Any) -> None:
+    try:
+        fields = backend.narrow_context(cmd.get("max_seq_length"))
+    except Exception as exc:
+        logger.warning("Could not narrow the context in place: %s", exc)
+        fields = None
+    _send_response(resp_queue, {"type": "context_narrowed", "fields": fields})
 
 
 def _drain_skip_generate(
@@ -1151,10 +1215,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
     ):
         if gated in cmd and _backend_declares(backend, gated):
             gen_kwargs[gated] = cmd[gated]
-    if cmd.get("video_base64"):
-        if not _backend_declares(backend, "video"):
+    if cmd.get("videos_base64"):
+        if not _backend_declares(backend, "videos"):
             raise RuntimeError("The loaded backend does not read video.")
-        gen_kwargs["video"] = cmd["video_base64"]
+        gen_kwargs["videos"] = cmd["videos_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
     for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
@@ -1612,12 +1676,30 @@ class _ResidentBatch:
             return
         try:
             for handle, snapshot in self.session.step(waiting):
-                self._report(handle, snapshot)
+                if not isinstance(snapshot, BaseException):
+                    self._report(handle, snapshot)
+                elif not self._fail_row(handle[0], snapshot):
+                    return
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
             self._fail_all(exc)
             return
         self._close_if_empty()
+
+    def _fail_row(self, request_id: str, exc: BaseException) -> bool:
+        """Answer a request whose own decode failed, the batch decoding on. False where it gave up the batch."""
+        if request_id not in self._owed:
+            return True
+        logger.error("A batched reply failed: %s", exc, exc_info = exc)
+        stack = "".join(traceback.format_exception(exc, limit = 20))
+        taken_back = self._forget(request_id, withdraw = True)
+        # _forget already dropped it from _owed, so _fail_all would not answer it.
+        _send_response(
+            self.resp_queue, {**_generation_error_payload(request_id, exc), "stack": stack}
+        )
+        if not taken_back:
+            self._fail_all(exc)
+        return taken_back
 
     def _fail_all(self, exc: BaseException) -> None:
         """Give up on the batch: every request in it is owed an error, not silence."""
@@ -1820,12 +1902,13 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
-        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
-        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
-        # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        extra = (
+            {"audio_options": cmd["audio_options"]}
+            if cmd.get("audio_options") and (takes_any or "audio_options" in params)
+            else {}
+        )
         for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue
@@ -1943,6 +2026,10 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
+            if cmd.get("speak"):
+                audio_kwargs["speak"] = True
+            if cmd.get("tools") is not None:
+                audio_kwargs["tools"] = cmd["tools"]
             generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
@@ -1952,6 +2039,11 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 logger.info("Audio input generation cancelled for request %s", request_id)
                 break
 
+            if isinstance(text_chunk, dict):
+                _send_response(
+                    resp_queue, {"type": "speech", "request_id": request_id, **text_chunk}
+                )
+                continue
             _send_response(
                 resp_queue,
                 {
@@ -2045,6 +2137,7 @@ def run_inference_process(
     # Offline auto-detect, run before any HF import: child_env scrubs the parent's scoped guard, so probe here; skipped for filesystem-only loads.
     _probe_model = config["model_name"]
     _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
+    _probed_offline = None
     if "HF_HUB_OFFLINE" not in os.environ and (
         _probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base)
     ):
@@ -2055,6 +2148,9 @@ def run_inference_process(
             _offline = hf_env_offline()
             if not _offline:
                 _offline = hf_dns_dead()
+            if not _offline and is_apple_silicon():
+                from utils.transformers_version import read_activation_files_ahead
+                read_activation_files_ahead(_probe_model, _config_hf_token(config))
             if not _offline and not hf_probe_disabled():
                 from utils.transformers_version import hf_endpoint_unreachable
 
@@ -2063,6 +2159,7 @@ def run_inference_process(
                     gateway_errors_offline = False,
                     proxy_timeouts_offline = False,
                 )
+                _probed_offline = _offline
             if _offline:
                 os.environ["HF_HUB_OFFLINE"] = "1"
                 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
@@ -2122,13 +2219,34 @@ def run_inference_process(
             )
 
     from utils.hardware import hardware as _hw
+    from utils.utils import hf_env_offline
+
+    hub_answers = contextlib.ExitStack()
+    model_info_ahead = None
+    if (
+        is_apple_silicon()
+        and not _native_audio_worker
+        and not hf_env_offline()
+        and (_probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base))
+    ):
+        from utils.models.model_config import read_hub_model_info_ahead, shared_hub_model_info
+        hub_answers.enter_context(shared_hub_model_info())
+        model_info_ahead = read_hub_model_info_ahead(model_name, _config_hf_token(config))
 
     _hw.detect_hardware()
+    if _hw.DEVICE != _hw.DeviceType.MLX or _native_audio_worker:
+        hub_answers.close()
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
             from utils.models.diffusion_lm import mlx_refusal
+            from utils.models.model_config import shared_hub_model_info
+            from utils.utils import pinned_hf_reachability
 
+            hub_answers.enter_context(pinned_hf_reachability(_probed_offline))
+            hub_answers.enter_context(shared_hub_model_info())
+            if model_info_ahead is not None:
+                model_info_ahead.join()
             refusal = mlx_refusal(model_name, _config_hf_token(config))
             if refusal:
                 raise RuntimeError(refusal)
@@ -2165,10 +2283,13 @@ def run_inference_process(
                 },
             )
             return
+        finally:
+            hub_answers.close()
 
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
         warmth = _MLXIdleWarmth()
+        warmth.active()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
         waiting = lambda: stops.unread() or not cmd_queue.empty()
@@ -2313,6 +2434,11 @@ def run_inference_process(
                     if backend.active_model_name:
                         backend.unload_model(backend.active_model_name)
                     _handle_load(backend, cmd, resp_queue)
+                elif cmd_type == "narrow_context":
+                    batch.cancel_all()
+                    batch.close()
+                    _abandon_held_commands(deferred, resp_queue)
+                    _handle_narrow_context(backend, cmd, resp_queue)
                 elif cmd_type == "unload":
                     batch.cancel_all()
                     batch.close()
@@ -2390,7 +2516,11 @@ def run_inference_process(
     import json as _json
 
     _ensure_backend_on_path()
-    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+    from utils.transformers_version import (
+        _remote_lora_base,
+        _resolve_base_model,
+        remote_lora_base_scope,
+    )
 
     _hf_token = _config_hf_token(config)
     _lora_base = None
@@ -2405,23 +2535,25 @@ def run_inference_process(
             )
         except Exception:
             _lora_base = None
-    if not _lora_base:
-        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
-    # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
-    _base = _lora_base or _resolve_base_model(model_name)
+    # One adapter_config.json answer serves this lookup and activation's own.
+    with remote_lora_base_scope():
+        if not _lora_base:
+            _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
+        _base = _lora_base or _resolve_base_model(model_name)
 
-    try:
-        _activate_transformers_version(_base, _hf_token)
-    except Exception as exc:
-        _send_response(
-            resp_queue,
-            {
-                "type": "error",
-                "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
-        return
+        try:
+            _activate_transformers_version(_base, _hf_token)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"Failed to activate transformers version: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                },
+            )
+            return
 
     # Gates (model and genuine LoRA base only, never a full fine-tune's base), then SSM kernels, both before the transformers import, which snapshots backends.
     _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
@@ -2634,7 +2766,7 @@ def run_inference_process(
                         "type": "shutdown_ack",
                     },
                 )
-                return
+                _exit_after_shutdown(resp_queue)
 
             else:
                 logger.warning("Unknown command type: %s", cmd_type)
