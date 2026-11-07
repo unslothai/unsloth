@@ -10,6 +10,7 @@ import test from "node:test";
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
   keptNumFrames,
+  pickedFpsFor,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -155,4 +156,14 @@ test("a new frame rate keeps the picked length, not a frame count that is anothe
   assert.equal(keptNumFrames(edgeAt24, 145, 145 / 24, false), 145);
   assert.equal(keptNumFrames(edgeAt24, 61, 5, false), 121);
   assert.equal(keptNumFrames([], 61, 5, true), 61);
+});
+
+test("a picked rate applies only to the family it was picked on", () => {
+  const pick = { family: "cosmos3-edge", fps: 30 };
+  assert.equal(pickedFpsFor(pick, "cosmos3-edge"), 30);
+  // Edge at 30 fps to Nano: Nano's defaults are seeded at its own 24 fps, not at Edge's pick.
+  assert.equal(pickedFpsFor(pick, "cosmos3-nano"), null);
+  const edge = defaults({ fps_range: [12, 30] });
+  assert.equal(resolveVideoFps(edge, pickedFpsFor({ family: "cosmos3-nano", fps: 16 }, "cosmos3-edge")), 24);
+  assert.equal(pickedFpsFor(null, "cosmos3-edge"), null);
 });
