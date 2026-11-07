@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import bisect
 import re
 from collections.abc import Callable
 from typing import Any, Optional
@@ -1021,8 +1022,9 @@ _MAX_CHARS_PER_TOKEN = 16
 def _attachment_spans(text: str):
     """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
     # A note starts an attachment only when its content follows; a file quoting the note is text (#16913).
-    notes, openers = [], []
+    notes, openers, fences = [], [], []
     for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text):
+        fences.append(note.start())
         opened = _ATTACHMENT_OPEN_RE.match(text, note.end())
         if opened or _LABELLED_TEXT_RE.match(text, note.end()):
             notes.append(note)
@@ -1050,7 +1052,10 @@ def _attachment_spans(text: str):
             yield note, "", body, "", ""
             continue
         closing = f"\n</{opened.group('tag')}>"
-        close = body.rfind(closing)
+        # A later note-shaped line still fences the search, so a stray close tag after it stays in the tail.
+        fence = bisect.bisect_left(fences, extent)
+        limit = fences[fence] if fence < len(fences) else len(text)
+        close = text.rfind(closing, opened.end(), min(limit, note.end() + len(body))) - note.end()
         yield (
             note,
             opened.group(0),

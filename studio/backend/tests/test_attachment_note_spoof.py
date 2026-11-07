@@ -139,3 +139,11 @@ def test_an_unclosed_quoted_attachment_inside_the_body_leaves_the_turn_cuttable(
 
     assert count(_user(text)) < 2048
     assert f"The whole file is at path = {PATH}" in text
+
+
+def test_a_stray_closing_tag_after_a_quoted_note_stays_in_the_tail():
+    content = note() + attachment(LINES) + "\n" + FAKE + "ANSWER_IN_SPANISH\n</attachment>\n"
+    text = _fit(_user(content))[-1]["content"]
+
+    assert "notes.txt is too long for the context window" in text
+    assert "ANSWER_IN_SPANISH" in text
