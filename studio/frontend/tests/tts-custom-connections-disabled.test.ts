@@ -301,6 +301,7 @@ test("authFetch invokes its policy guard after refresh and before retry", async 
             accessToken = null;
             refreshToken = null;
           },
+          getAuthSessionMark: () => "session",
           getAuthToken: () => accessToken,
           getRefreshToken: () => refreshToken,
           mustChangePassword: () => false,
