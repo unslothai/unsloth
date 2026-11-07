@@ -371,3 +371,52 @@ def test_another_quant_of_the_same_repo_fails_the_waiting_job(gated):
     jobs = _wait(client, lambda jobs: _by_prompt(jobs)["stale"]["status"] == "failed")
     assert "model changed" in _by_prompt(jobs)["stale"]["error"]
     assert order == ["blocker"]
+
+
+def test_a_multi_run_generate_holds_the_queue_across_a_long_gap(client, monkeypatch):
+    """Run 1 says another follows: a job queued meanwhile waits past the settle window for run 2."""
+    monkeypatch.setattr(inference_routes, "_image_queue", None)
+    monkeypatch.setattr(inference_routes, "_DIRECT_RUN_SETTLE_S", 0.2)
+    backend = diffusion_module.get_diffusion_backend()
+    real_generate = backend.generate
+    order: list[str] = []
+
+    def generate(*, prompt = None, **kwargs):
+        order.append(prompt)
+        if prompt == "direct-1":
+            time.sleep(0.3)
+        return real_generate(prompt = prompt, **kwargs)
+
+    monkeypatch.setattr(backend, "generate", generate)
+    with client:
+        assert (
+            client.post(
+                "/api/inference/images/load",
+                json = {
+                    "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                    "gguf_filename": "z-image-turbo-Q4_K_S.gguf",
+                    "base_repo": "unsloth/Z-Image-base",
+                },
+            ).status_code
+            == 200
+        )
+        first = threading.Thread(
+            target = client.post,
+            args = ("/api/inference/images/generate",),
+            kwargs = {"json": {"prompt": "direct-1"}, "headers": {"X-Unsloth-More-Runs": "1"}},
+        )
+        first.start()
+        deadline = time.monotonic() + 5
+        while "direct-1" not in order and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
+        first.join(10)
+        # Far past the settle window, as behind a slow proxy.
+        time.sleep(1.0)
+        assert order == ["direct-1"]
+        assert (
+            client.post("/api/inference/images/generate", json = {"prompt": "direct-2"}).status_code
+            == 200
+        )
+        _wait(client, lambda jobs: jobs[0]["status"] == "done")
+        assert order == ["direct-1", "direct-2", "queued"]

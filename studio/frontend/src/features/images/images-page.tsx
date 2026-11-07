@@ -3640,25 +3640,23 @@ export function ImagesPage({
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
-  const followedJob = useRef<string | null>(null);
   useEffect(() => {
     if (busy === null) followingJob.current = null;
   }, [busy]);
   useEffect(() => {
     // The queue moved on inside one progress window: keep following, now the next job.
     if (queueRunningId && busy !== null && followingJob.current && followingJob.current !== queueRunningId) {
-      followedJob.current = queueRunningId;
       followingJob.current = queueRunningId;
       return;
     }
-    if (!queueRunningId || busy !== null || followedJob.current === queueRunningId) return;
+    // Idle with a job running (also after a gap in its progress, e.g. captioning): follow it once it denoises.
+    if (!queueRunningId || busy !== null) return;
     let cancelled = false;
     void (async () => {
       try {
         const p = await getGenerateProgress();
         // Not denoising yet: the next queue poll (a new jobs array) asks again.
         if (cancelled || !p.active || !isMounted.current) return;
-        followedJob.current = queueRunningId;
         followingJob.current = queueRunningId;
         runTarget.current = undefined;
         setBusy("generating");
@@ -5518,7 +5516,7 @@ export function ImagesPage({
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
-          res = await generateDiffusionImage(requestFor(i));
+          res = await generateDiffusionImage(requestFor(i), i < runs - 1);
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
           if (!(err instanceof GenerateResponseLostError)) throw err;

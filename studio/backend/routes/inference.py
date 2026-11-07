@@ -49357,13 +49357,15 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
-    global _direct_image_runs, _direct_image_last_end
+    global _direct_image_runs, _direct_image_last_end, _direct_sequence_until
     _direct_image_runs += 1
+    more = http_request is not None and http_request.headers.get("x-unsloth-more-runs") == "1"
     try:
         return await _generate_diffusion_image_core(request)
     finally:
         _direct_image_runs -= 1
         _direct_image_last_end = time.monotonic()
+        _direct_sequence_until = _direct_image_last_end + _DIRECT_SEQUENCE_HOLD_S if more else 0.0
 
 
 async def _generate_diffusion_image_core(
@@ -50720,6 +50722,8 @@ async def cancel_diffusion_generation(
     saved image connection instead."""
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
+    global _direct_sequence_until
+    _direct_sequence_until = 0.0
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": False}
     mine = account_access.generation_is_mine("diffusion")
@@ -50759,7 +50763,10 @@ async def cancel_diffusion_generation(
 _direct_image_runs = 0
 _direct_image_last_end = 0.0
 # The page sends a multi-run Generate one request at a time: a queued job must not slip into the gap between two.
+# A request marked X-Unsloth-More-Runs holds the queue until the next one arrives (or Stop, or the hold lapses).
 _DIRECT_RUN_SETTLE_S = 1.5
+_DIRECT_SEQUENCE_HOLD_S = 60.0
+_direct_sequence_until = 0.0
 _image_queue = None
 _QUEUE_MODEL_CHANGED_MSG = (
     "The image model changed since this job was queued. Queue it again on the loaded model."
@@ -50783,6 +50790,7 @@ async def _wait_for_direct_image_runs() -> None:
         _direct_image_runs > 0
         or _diffusion_persist_active > 0
         or time.monotonic() - _direct_image_last_end < _DIRECT_RUN_SETTLE_S
+        or time.monotonic() < _direct_sequence_until
     ):
         await asyncio.sleep(0.25)
 
