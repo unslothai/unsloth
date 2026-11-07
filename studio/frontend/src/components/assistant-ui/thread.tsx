@@ -2092,7 +2092,6 @@ export const Thread: FC<{
   // bottom while the user scrolls up (see the hook for the full explanation).
   const {
     ref: viewportRef,
-    markerRef,
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
@@ -2316,7 +2315,6 @@ export const Thread: FC<{
           scrollToBottomOnRunStart={false}
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
-          ref={markerRef}
           className="aui-thread-host hidden"
           onDragEnter={onDragEnter}
           onDragOver={onDragOver}
