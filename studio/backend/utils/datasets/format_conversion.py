@@ -1020,7 +1020,11 @@ def convert_video_to_vlm_format(
                 f"Rows mix video with image columns {images}; video conversion would drop the images, "
                 "so remove those columns or split the dataset."
             )
-        clips = [row[c] for c in clip_columns if row.get(c) is not None]
+        clips = [
+            row[c]
+            for c in clip_columns
+            if row.get(c) is not None and not (isinstance(row[c], str) and not row[c].strip())
+        ]
         if not clips or answer is None or not str(answer).strip():
             continue
         answer = as_label(answer) if as_label and isinstance(answer, int) else str(answer)

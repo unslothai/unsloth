@@ -277,6 +277,14 @@ def test_byte_backed_hf_video_is_refused_with_a_clear_message():
         convert_video_to_vlm_format([row], "clip", "answer")
 
 
+def test_a_blank_optional_clip_is_skipped_not_fatal():
+    from utils.datasets.format_conversion import convert_video_to_vlm_format
+
+    rows = [{"front": CLIPS[0], "side": "  ", "answer": "red"}]
+    out = convert_video_to_vlm_format(rows, "front", "answer", video_columns = ["front", "side"])
+    assert _video_parts(out[0]) == [{"type": "video", "video": CLIPS[0]}]
+
+
 def test_embedded_bytes_with_a_filename_only_path_are_refused():
     from utils.datasets.format_conversion import convert_video_to_vlm_format
 
