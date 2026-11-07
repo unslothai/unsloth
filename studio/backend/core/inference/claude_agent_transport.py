@@ -10,7 +10,6 @@ import contextlib
 import hashlib
 import json
 import re
-import shutil
 import threading
 import time
 import uuid
@@ -34,6 +33,7 @@ from core.inference.claude_agent import (
     cli_version,
     ensure_catalog,
     failure,
+    find_cli,
     image_url,
     outdated_message,
     remember_models,
@@ -227,7 +227,7 @@ class ClaudeAgentTransport:
         if sdk is None:
             yield _error_sse_line(503, SDK_MISSING, PROVIDER_TYPE)
             return
-        cli = shutil.which("claude")
+        cli = find_cli()
         if cli is None:
             yield _error_sse_line(503, CLI_MISSING, PROVIDER_TYPE)
             return

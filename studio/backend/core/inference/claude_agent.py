@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
 from utils.paths.storage_roots import cache_root
@@ -88,6 +89,20 @@ def _read_cli_version(cli: str) -> Optional[str]:
         match = re.match(r"\s*(\d+\.\d+\.\d+)", out or "")
         _cli_versions[key] = match.group(1) if match else None
     return _cli_versions[key]
+
+
+def find_cli() -> Optional[str]:
+    cli = shutil.which("claude")
+    if cli is None or sys.platform != "win32" or not cli.lower().endswith((".cmd", ".bat")):
+        return cli
+    # The SDK refuses .cmd/.bat shims on Windows, so run the claude.exe behind npm's shim or the native install.
+    for exe in (
+        Path(cli).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe",
+        Path.home() / ".local" / "bin" / "claude.exe",
+    ):
+        if exe.is_file():
+            return str(exe)
+    return cli
 
 
 async def cli_version(cli: str) -> Optional[str]:
@@ -257,7 +272,7 @@ async def claude_agent_status() -> dict[str, Any]:
     if sdk is None:
         status.update(message = SDK_MISSING, problem = "sdk_missing")
         return status
-    cli = shutil.which("claude")
+    cli = find_cli()
     if cli is None:
         status.update(message = CLI_MISSING, problem = "cli_missing")
         return status
@@ -294,7 +309,7 @@ async def claude_agent_context_window(model: str) -> int:
     entry = _model_entry(model)
     if entry is None or entry.get("context_window") is None:
         sdk = _sdk()
-        cli = shutil.which("claude")
+        cli = find_cli()
         if sdk is not None and cli is not None:
             try:
                 await _probe(sdk, cli, discover = [model])
@@ -401,11 +416,24 @@ def build_prompt(
     if not blocks:
         return "\n\n".join(system), None
     history = []
+    earlier_images = []
     for message in turns[:last]:
         text = _history_text(message)
         if text:
             role = message["role"]
             history.append(text if role == "tool" else f"<{role}>\n{text}\n</{role}>")
+        content = message.get("content")
+        for part in content if isinstance(content, list) else []:
+            if (url := image_url(part)) is not None:
+                earlier_images.append(image_block(url))
+    if earlier_images:
+        # Each request is a new Claude Code session, so earlier images ride in this turn.
+        blocks = [
+            {"type": "text", "text": "Images attached earlier in this conversation, oldest first:"},
+            *earlier_images,
+            {"type": "text", "text": "The new message:"},
+            *blocks,
+        ]
     if history:
         body = "\n".join(history)
         system.append(

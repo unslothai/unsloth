@@ -480,7 +480,7 @@ def test_an_image_only_turn_is_sent_and_answered(monkeypatch, tmp_path):
     assert sdk.clients[-1].sent[0]["message"]["content"][0]["type"] == "image"
 
 
-def test_earlier_images_become_markers_in_the_history(monkeypatch, tmp_path):
+def test_earlier_images_become_markers_and_ride_in_the_new_turn(monkeypatch, tmp_path):
     sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
     _stream(
         [
@@ -498,6 +498,13 @@ def test_earlier_images_become_markers_in_the_history(monkeypatch, tmp_path):
     append = sdk.clients[-1].options.system_prompt["append"]
     assert "<user>\nKeep this.\n[image]\n</user>" in append
     assert "iVBORw0KGgo" not in append
+    # A follow-up starts a new session, so the image must still reach Claude.
+    content = sdk.clients[-1].sent[0]["message"]["content"]
+    assert content[1] == {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="},
+    }
+    assert content[-1] == {"type": "text", "text": "What did I send?"}
 
 
 @pytest.mark.parametrize(
@@ -727,6 +734,24 @@ def test_status_explains_what_is_missing(monkeypatch, tmp_path, kwargs, message,
     assert status["ready"] is False
     assert status["message"] == message
     assert status["problem"] == problem
+
+
+def test_windows_runs_the_exe_behind_an_npm_shim(monkeypatch, tmp_path):
+    # claude-agent-sdk refuses .cmd/.bat CLIs on Windows.
+    npm = tmp_path / "npm"
+    exe = npm / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    exe.parent.mkdir(parents = True)
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(claude_agent.sys, "platform", "win32")
+    monkeypatch.setattr(claude_agent.shutil, "which", lambda name: str(npm / "claude.CMD"))
+    monkeypatch.setattr(claude_agent.Path, "home", lambda: tmp_path / "home")
+    assert claude_agent.find_cli() == str(exe)
+    exe.unlink()
+    assert claude_agent.find_cli() == str(npm / "claude.CMD")
+    native = tmp_path / "home" / ".local" / "bin" / "claude.exe"
+    native.parent.mkdir(parents = True)
+    native.write_bytes(b"MZ")
+    assert claude_agent.find_cli() == str(native)
 
 
 def _cli_prints(tmp_path, text):
