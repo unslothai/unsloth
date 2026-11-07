@@ -6183,6 +6183,20 @@ def _unsloth_global_module_hooks():
     )
 
 
+def _unsloth_gkd_head_hooks(head):
+    # TRL activation_offloading puts a pre / post forward pair on lm_head that only pauses offloading around
+    # the logits; skipping both is safe and keeps the chunked JSD on, so only other hooks count.
+    forward = (*head._forward_hooks.values(), *head._forward_pre_hooks.values())
+    return bool(
+        any(
+            getattr(hook, "__module__", None) != "trl.models.activation_offloading"
+            for hook in forward
+        )
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+    )
+
+
 def _unsloth_gkd_dense_head(model):
     """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
     Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
@@ -6422,11 +6436,7 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
     # The JSD reads both heads' weights directly, so forward / backward hooks on a head (its own or torch's
     # global module hooks) would never fire. Accelerate's _hf_hook is fine: the loss moves to the head device.
     if _unsloth_global_module_hooks() or any(
-        head._forward_hooks
-        or head._forward_pre_hooks
-        or head._backward_hooks
-        or getattr(head, "_backward_pre_hooks", None)
-        for head in (student_head, teacher_head)
+        _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
     ):
         return _unsloth_gkd_note_fallback(self, "output head has forward / backward hooks")
     # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
@@ -6612,6 +6622,7 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_head_hooks,
     _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,

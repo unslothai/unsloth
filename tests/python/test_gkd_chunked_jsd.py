@@ -365,6 +365,7 @@ def test_generated_items_are_self_contained():
     for name in (
         "_unsloth_gkd_chunked_loss",
         "_unsloth_gkd_dense_head",
+        "_unsloth_gkd_head_hooks",
         "_unsloth_global_module_hooks",
         "_unsloth_gkd_logit_transforms",
         "_unsloth_gkd_project",
@@ -764,3 +765,27 @@ def test_hooked_heads_fall_back(which, register):
     handle.remove()
     trainer = _trainer(0.5, student, teacher)
     assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+
+
+def test_trl_activation_offloading_head_hooks_keep_the_chunked_jsd():
+    """TRL's activation_offloading pair on lm_head only pauses offloading, so it must not force the dense path."""
+    student, teacher = _TinyLM(97, 16, 0.0, 1), _TinyLM(97, 24, 0.0, 2)
+    layout = {"shift": "shift", "num_items_in_batch": False}
+    pre, post = (lambda *a: None), (lambda *a: None)
+    for hook in (pre, post):
+        hook.__module__ = "trl.models.activation_offloading"
+    head = student.lm_head
+    handles = [
+        head.register_forward_pre_hook(pre),
+        head.register_forward_hook(post, always_call = True),
+    ]
+    try:
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is not None
+        other = head.register_forward_hook(lambda *a: None)
+        trainer = _trainer(0.5, student, teacher)
+        assert rl._unsloth_gkd_chunked_loss(trainer, student, _inputs(97), None, layout) is None
+        other.remove()
+    finally:
+        for handle in handles:
+            handle.remove()
