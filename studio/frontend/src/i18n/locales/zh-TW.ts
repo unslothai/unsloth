@@ -1740,6 +1740,13 @@ export const zhTW = {
         audioUploadCancel: "取消轉錄",
         audioUploadTranscribing: "正在轉錄音訊…",
         sectionTitle: "聽寫",
+        micTargetLabel: "麥克風按鈕",
+        micTargetAsr: "使用 ASR 轉寫",
+        micTargetModel: "將音訊傳送給模型",
+        micTargetAsrDescription: "麥克風按鈕會把你說的話輸入到訊息框中。",
+        micTargetModelDescription: "載入支援音訊輸入的模型後，麥克風會錄製一段音訊並附加到你的訊息中。其他模型仍使用聽寫。",
+        micTargetModelUnavailable: "載入支援音訊輸入的模型（例如 LFM3-Omni）即可向它傳送語音。",
+        micRecordForModel: "為模型錄製音訊",
         engineLabel: "聽寫引擎",
         engineBrowser: "瀏覽器",
         engineBrowserDescription:

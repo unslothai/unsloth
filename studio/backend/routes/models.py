@@ -2153,6 +2153,8 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
+                    # The chat store replaces its row from this list; leaving it out read as False.
+                    has_audio_input = bool(getattr(llama_backend, "_has_audio_input", False)),
                 )
             ]
 

@@ -1663,6 +1663,13 @@ export const ru = {
         audioUploadCancel: "Отменить расшифровку",
         audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
+        micTargetLabel: "Кнопка микрофона",
+        micTargetAsr: "Распознавать через ASR",
+        micTargetModel: "Отправлять аудио модели",
+        micTargetAsrDescription: "Кнопка микрофона вводит сказанное в поле сообщения.",
+        micTargetModelDescription: "Если загружена модель со звуковым вводом, микрофон записывает клип и прикрепляет его к сообщению. Для остальных моделей по-прежнему работает диктовка.",
+        micTargetModelUnavailable: "Загрузите модель со звуковым вводом (например, LFM3-Omni), чтобы отправлять ей свой голос.",
+        micRecordForModel: "Записать аудио для модели",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
         engineBrowserDescription:

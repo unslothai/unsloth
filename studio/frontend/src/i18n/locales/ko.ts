@@ -1661,6 +1661,13 @@ export const ko = {
         audioUploadCancel: "전사 취소",
         audioUploadTranscribing: "오디오 전사 중…",
         sectionTitle: "받아쓰기",
+        micTargetLabel: "마이크 버튼",
+        micTargetAsr: "ASR로 받아쓰기",
+        micTargetModel: "모델에 오디오 보내기",
+        micTargetAsrDescription: "마이크 버튼이 말한 내용을 메시지 상자에 입력합니다.",
+        micTargetModelDescription: "오디오 입력을 지원하는 모델이 로드되어 있으면 마이크가 클립을 녹음해 메시지에 첨부합니다. 다른 모델은 계속 받아쓰기를 사용합니다.",
+        micTargetModelUnavailable: "음성을 보내려면 오디오 입력을 지원하는 모델(예: LFM3-Omni)을 로드하세요.",
+        micRecordForModel: "모델용 오디오 녹음",
         engineLabel: "받아쓰기 엔진",
         engineBrowser: "브라우저",
         engineBrowserDescription:

@@ -1661,6 +1661,13 @@ export const ar = {
         audioUploadCancel: "إلغاء التفريغ النصي",
         audioUploadTranscribing: "جارٍ التفريغ النصي للصوت…",
         sectionTitle: "الإملاء",
+        micTargetLabel: "زر الميكروفون",
+        micTargetAsr: "النسخ باستخدام ASR",
+        micTargetModel: "إرسال الصوت إلى النموذج",
+        micTargetAsrDescription: "يكتب زر الميكروفون ما تقوله في مربع الرسالة.",
+        micTargetModelDescription: "عند تحميل نموذج يقبل إدخال الصوت، يسجّل الميكروفون مقطعًا ويرفقه برسالتك. تحصل النماذج الأخرى على الإملاء كالمعتاد.",
+        micTargetModelUnavailable: "حمّل نموذجًا يقبل إدخال الصوت (مثل LFM3-Omni) لترسل إليه صوتك.",
+        micRecordForModel: "تسجيل صوت للنموذج",
         engineLabel: "محرك الإملاء",
         engineBrowser: "المتصفح",
         engineBrowserDescription:

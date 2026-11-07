@@ -1664,6 +1664,13 @@ export const es = {
         audioUploadCancel: "Cancelar transcripción",
         audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
+        micTargetLabel: "Botón del micrófono",
+        micTargetAsr: "Transcribir con ASR",
+        micTargetModel: "Enviar audio al modelo",
+        micTargetAsrDescription: "El botón del micrófono escribe lo que dices en el cuadro de mensaje.",
+        micTargetModelDescription: "Con un modelo con entrada de audio cargado, el micrófono graba un clip y lo adjunta a tu mensaje. Los demás modelos siguen usando dictado.",
+        micTargetModelUnavailable: "Carga un modelo que acepte entrada de audio (por ejemplo, LFM3-Omni) para enviarle tu voz.",
+        micRecordForModel: "Grabar audio para el modelo",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
         engineBrowserDescription:

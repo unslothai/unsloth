@@ -1819,6 +1819,13 @@ export const fa = {
         audioUploadCancel: "لغو رونویسی",
         audioUploadTranscribing: "در حال رونویسی صدا…",
         sectionTitle: "دیکته",
+        micTargetLabel: "دکمه میکروفون",
+        micTargetAsr: "رونویسی با ASR",
+        micTargetModel: "ارسال صدا به مدل",
+        micTargetAsrDescription: "دکمه میکروفون آنچه می‌گویید را در کادر پیام تایپ می‌کند.",
+        micTargetModelDescription: "وقتی مدلی با ورودی صوتی بارگذاری شده باشد، میکروفون یک کلیپ ضبط کرده و به پیام شما پیوست می‌کند. مدل‌های دیگر همچنان دیکته دریافت می‌کنند.",
+        micTargetModelUnavailable: "برای ارسال صدای خود، مدلی را بارگذاری کنید که ورودی صوتی می‌پذیرد (برای مثال LFM3-Omni).",
+        micRecordForModel: "ضبط صدا برای مدل",
         engineLabel: "موتور دیکته",
         engineBrowser: "مرورگر",
         engineBrowserDescription:

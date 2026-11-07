@@ -1730,6 +1730,13 @@ export const he = {
         audioUploadCancel: "ביטול תמלול",
         audioUploadTranscribing: "מתמלל אודיו…",
         sectionTitle: "הכתבה",
+        micTargetLabel: "כפתור המיקרופון",
+        micTargetAsr: "תמלול באמצעות ASR",
+        micTargetModel: "שליחת שמע למודל",
+        micTargetAsrDescription: "כפתור המיקרופון מקליד את מה שאתם אומרים בתיבת ההודעה.",
+        micTargetModelDescription: "כאשר טעון מודל שמקבל קלט שמע, המיקרופון מקליט קטע ומצרף אותו להודעה. מודלים אחרים ממשיכים לקבל הכתבה.",
+        micTargetModelUnavailable: "טענו מודל שמקבל קלט שמע (לדוגמה LFM3-Omni) כדי לשלוח לו את הקול שלכם.",
+        micRecordForModel: "הקלטת שמע למודל",
         engineLabel: "מנוע הכתבה",
         engineBrowser: "דפדפן",
         engineBrowserDescription:

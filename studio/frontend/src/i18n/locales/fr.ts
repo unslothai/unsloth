@@ -1665,6 +1665,13 @@ export const fr = {
         audioUploadCancel: "Annuler la transcription",
         audioUploadTranscribing: "Transcription audio en cours…",
         sectionTitle: "Dictée",
+        micTargetLabel: "Bouton du micro",
+        micTargetAsr: "Transcrire avec l'ASR",
+        micTargetModel: "Envoyer l'audio au modèle",
+        micTargetAsrDescription: "Le bouton du micro écrit ce que vous dites dans la zone de message.",
+        micTargetModelDescription: "Avec un modèle à entrée audio chargé, le micro enregistre un extrait et le joint à votre message. Les autres modèles utilisent toujours la dictée.",
+        micTargetModelUnavailable: "Chargez un modèle qui accepte l'entrée audio (par exemple LFM3-Omni) pour lui envoyer votre voix.",
+        micRecordForModel: "Enregistrer l'audio pour le modèle",
         engineLabel: "Moteur de dictée",
         engineBrowser: "Navigateur",
         engineBrowserDescription:
