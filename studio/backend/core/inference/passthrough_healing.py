@@ -392,11 +392,8 @@ def _heal_native_text(
     allow_incomplete: bool,
     start: int = 0,
 ) -> Optional[tuple[list, dict]]:
-    """Events for ``text[start:]`` with every block of the format promoted, and each call's source.
-
-    None keeps the text as it is: every block must parse and every call be declared, and no tool
-    markup of another format may remain outside the blocks, since a block quoted in its
-    arguments would otherwise run."""
+    """Events for ``text[start:]`` with every block promoted, and each call's source; None keeps the
+    text. All or nothing: other-format markup outside the blocks could quote a block that would run."""
     blocks: list = []
     # Markup quoted in a leading JSON answer is data, as on the generic path.
     lead = len(text) - len(text.lstrip())
@@ -410,7 +407,6 @@ def _heal_native_text(
     while (begin := text.find(fmt.open, pos)) >= 0:
         think = _THINK_OPEN_RE.search(text, pos, begin)
         if think is not None:
-            # A call rehearsed in reasoning is text.
             pos = _THINK_TAG_RE.match(text, think.start()).end()
             continue
         block = _native_block(text, begin, fmt, allow_incomplete)
