@@ -49505,6 +49505,10 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                     )
                 records[index] = result.images[0]
                 pictures[index] = diffusion_xy.fit_cell(captured[0], plan)
+        # No await between these two: a Stop after the last cell ends the grid, one after this is not acknowledged.
+        _xy_grid_stops.remove(stop)
+        if ticket.cancelled():
+            raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
         first = records[0]
 
         def _save_grid() -> dict:
@@ -49536,7 +49540,8 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
                 detail = "The grid cells are in the gallery, but the grid image could not be saved.",
             )
     finally:
-        _xy_grid_stops.remove(stop)
+        if stop in _xy_grid_stops:
+            _xy_grid_stops.remove(stop)
         _diffusion_persist_active -= 1
     return DiffusionGenerateResponse(images = records, grid = GalleryImage(**grid_record))
 

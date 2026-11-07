@@ -405,3 +405,38 @@ def test_fit_cell_keeps_each_render_to_its_share_of_the_budget():
     assert small.width * small.height <= diffusion_xy.MAX_GRID_PIXELS / 64
     same = Image.new("RGB", (512, 512))
     assert diffusion_xy.fit_cell(same, plan) is same
+
+
+def test_stop_after_the_last_cell_ends_the_grid_unsaved(client):
+    import core.inference.diffusion as diffusion_module
+    from PIL import Image
+
+    client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "x/z-image", "gguf_filename": "q.gguf"},
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    calls = []
+
+    def _generate(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 2:
+            assert client.post("/api/inference/images/generate/cancel").json() == {
+                "cancelled": True
+            }
+        return {
+            "images": [Image.new("RGB", (64, 64), "gray")],
+            "seed": kwargs["seed"],
+            "repo_id": "x/z-image",
+            "workflow": "txt2img",
+        }
+
+    backend.generate = _generate
+    backend.cancel_generate = lambda **kw: False
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "xy": {"x": {"field": "steps", "values": [2, 4]}}},
+    )
+    assert resp.status_code == 409, resp.text
+    gallery = client.get("/api/inference/images/gallery").json()["images"]
+    assert len(gallery) == 2 and not any(g.get("xy_grid") for g in gallery)
