@@ -85,7 +85,10 @@ class _Fake:
         ((12, 1), True),
     ],
 )
-def test_arch_table(cap, on):
+def test_arch_table(monkeypatch, cap, on):
+    monkeypatch.setattr(
+        g8, "_triton_at_least", lambda major, minor: False
+    )  # sm80 / sm89 stock on Triton 3.8
     assert g8.unlisted_wanted(cap) is on
     if cap >= (8, 0) and cap not in g8._UNLISTED_SKIP:  # exactly one route per sm80+ arch
         assert (g8.arch_config(cap) is not None) is not on
