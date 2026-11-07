@@ -59,8 +59,8 @@ test("a per-chat draft from before the upgrade becomes the shared draft when its
   adoptLegacyDraft("t1");
   assert.equal(readComposerDraft(composerDraftKey("", true)), "unsent");
   assert.deepEqual(readPasteDraft(composerPasteDraftKey("", true)), ["pasted"]);
-  assert.equal(store.has("chat-draft:t1"), true);
-  assert.equal(store.has("chat-draft-pastes:t1"), true);
+  assert.equal(store.has("chat-draft:t1"), false);
+  assert.equal(store.has("chat-draft-pastes:t1"), false);
 });
 
 test("an old new-chat draft is adopted when a new chat opens", () => {
@@ -272,4 +272,22 @@ test("per-chat text and pastes stay isolated from other open tabs", async () => 
   const reloaded = await openTab();
   assert.equal(reloaded.latestDraft(textKey), "another external edit");
   assert.deepEqual(reloaded.latestPasteDraft(pasteKey), ["another external paste"]);
+});
+
+test("a draft adopted into the shared slot and sent there does not return when sharing is turned off", async () => {
+  const tab = await openTab();
+  const textKey = tab.composerDraftKey("adopted-chat");
+  const pasteKey = tab.composerPasteDraftKey("adopted-chat");
+  tab.writeComposerDraft(textKey, "sent from the shared slot");
+  tab.writePasteDraft(pasteKey, ["sent paste"]);
+  assert.equal(tab.adoptLegacyDraft("adopted-chat"), true);
+  assert.equal(tab.latestDraft(tab.composerDraftKey("", true)), "sent from the shared slot");
+  tab.publishDraft("", Symbol("chat"));
+  tab.writeComposerDraft(tab.composerDraftKey("", true), "");
+  tab.writePasteDraft(tab.composerPasteDraftKey("", true), []);
+  assert.equal(tab.latestDraft(textKey), "");
+  assert.deepEqual(tab.latestPasteDraft(pasteKey), []);
+  const reloaded = await openTab();
+  assert.equal(reloaded.latestDraft(textKey), "");
+  assert.deepEqual(reloaded.latestPasteDraft(pasteKey), []);
 });

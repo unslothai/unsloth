@@ -106,8 +106,9 @@ export function adoptLegacyDraft(threadId: string | null): boolean {
       adopted = true;
       seeded = null;
       latestPastes = null;
+      // Moved, not copied: a copy left behind would return a prompt sent from the shared slot.
+      clearComposerDraft(id);
     }
-    // Keep the per-chat copy for when sharing is turned off again.
     return adopted;
   } catch {
     return false;
