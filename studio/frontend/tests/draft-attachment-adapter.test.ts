@@ -356,3 +356,19 @@ test("a cancelled overlapping add cannot remove the valid add's resources", asyn
   assert.equal((await newAdd)[0].id, "new");
   assert.deepEqual(h.removed, ["old"]);
 });
+
+test("a generator that finishes without another yield after a switch still cancels", async () => {
+  const file = new File(["content"], "notes.txt");
+  const gate = deferred<void>();
+  const h = setup(async function* () {
+    yield attachment(file, true);
+    await gate.promise;
+  });
+  const pending = collect(h.guarded.add({ file }));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  h.switchDraft();
+  gate.resolve();
+  assert.equal((await pending).length, 1);
+  assert.equal(wasAttachmentAddCancelled(file), true);
+  assert.deepEqual(h.removed, ["test-attachment"]);
+});

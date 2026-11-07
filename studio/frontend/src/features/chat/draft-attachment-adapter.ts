@@ -75,6 +75,8 @@ export class DraftScopedAttachmentAdapter implements AttachmentAdapter {
         }
         yield last;
       }
+      // Delegates return without another yield once the switch cleared their chip.
+      if (!isCurrent()) cancel();
     } catch (error) {
       if (isCurrent()) throw error;
       // Throwing after a running yield makes assistant-ui upsert it again with

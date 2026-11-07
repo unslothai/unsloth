@@ -3167,6 +3167,7 @@ const Composer: FC<{
         event,
         async (file) => {
           await aui.composer().addAttachment(file);
+          if (wasAttachmentAddCancelled(file)) return;
           dropReplacedSelection();
         },
         () =>
@@ -3499,7 +3500,8 @@ const Composer: FC<{
   }, [videoDropFailures]);
   // Hold the send gate while the dropped clip is registered and read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
@@ -3621,11 +3623,12 @@ const Composer: FC<{
       setMaterializingDroppedAudio(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   // Same drain as audio: one clip per message, and the send gate holds across the read.
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
@@ -3741,10 +3744,11 @@ const Composer: FC<{
       setMaterializingDroppedVideo(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
 
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
@@ -3852,7 +3856,7 @@ const Composer: FC<{
         const pending =
           useNativeIntentStore.getState().pendingImageAttachments[targetKey]
             ?.length ?? 0;
-        if (pending > 0) {
+        if (pending > 0 && stillThisComposer()) {
           void drainPendingImages();
         } else {
           setMaterializingDroppedImages(false);
@@ -3885,9 +3889,10 @@ const Composer: FC<{
       setMaterializingDroppedImages(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   useEffect(() => {
-    if (!nativeAttachmentTargetKey) {
+    // Until the runtime reaches this route's thread, aui.composer() is still the previous chat.
+    if (!nativeAttachmentTargetKey || disabled) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
@@ -4003,7 +4008,7 @@ const Composer: FC<{
       setMaterializingDroppedOpenDocuments(false);
       unsubscribe();
     };
-  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui]);
+  }, [nativeAttachmentTargetKey, nativeAttachmentOwner, aui, disabled]);
   const hasMaterializingImageAttachments =
     registeringImageDrops ||
     hasPendingImageAttachments ||

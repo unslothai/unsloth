@@ -129,6 +129,8 @@ async function settle() {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+let composerDisabled = false;
+
 function harness(
   kind: Kind,
   stage: "native read" | "adapter add" | "destination refused" = "native read",
@@ -209,6 +211,7 @@ function harness(
       composerRef.current = next.runtimeId;
     }
     const bindings = {
+      disabled: composerDisabled,
       nativeAttachmentTargetKey: next.key,
       nativeAttachmentTargetKeyRef: keyRef,
       composerIdentityRef: composerRef,
@@ -406,3 +409,58 @@ test("a Library handoff add the draft-scoped adapter cancels is refused, so the 
   );
   await assert.rejects(add(new File(["fixture"], "notes.pdf")));
 });
+
+for (const kind of ["Image", "OpenDocument", "Audio", "Video"] as const) {
+  test(`${kind}: a queued file waits until the runtime reaches the route's thread`, async () => {
+    // The route already names the saved chat while aui.composer() is still the previous one.
+    composerDisabled = true;
+    const { useNativeIntentStore: store } = loadWithStubs<
+      typeof import("../src/features/native-intents/store.ts")
+    >(
+      new URL("../src/features/native-intents/store.ts", import.meta.url),
+      { zustand: { create } },
+      { relativePassthrough: true },
+    );
+    const attached: string[] = [];
+    const run = (disabled: boolean) =>
+      evaluate<{ run: () => (() => void) | undefined }>(effects[kind], {
+        disabled,
+        nativeAttachmentTargetKey: original.key,
+        nativeAttachmentTargetKeyRef: { current: original.key },
+        nativeAttachmentOwnerRef: { current: ownerFor(original) },
+        nativeAttachmentOwner: ownerFor(original),
+        wasAttachmentAddCancelled: () => false,
+        useNativeIntentStore: store,
+        aui: {
+          composer: () => ({
+            addAttachment: async (file: File) => {
+              attached.push(file.name);
+            },
+          }),
+        },
+        cancelQueuedSendRef: { current: () => undefined },
+        toast: { error: () => undefined },
+        nativeAttachmentIntentToFile: async (item: NativeIntent) =>
+          new File(["fixture"], item.displayLabel),
+        normalizeChatImage: async (file: File) => file,
+        setMaterializingDroppedImages: () => undefined,
+        setMaterializingDroppedOpenDocuments: () => undefined,
+        setMaterializingDroppedAudio: () => undefined,
+        setMaterializingDroppedVideo: () => undefined,
+      }).run();
+    try {
+      const intent = attachment(kind);
+      store.getState()[`add${kind}Attachments`](original.key, [intent]);
+      const waiting = run(true);
+      await settle();
+      assert.deepEqual(attached, []);
+      waiting?.();
+      const cleanup = run(false);
+      await settle();
+      cleanup?.();
+      assert.deepEqual(attached, [intent.displayLabel]);
+    } finally {
+      composerDisabled = false;
+    }
+  });
+}
