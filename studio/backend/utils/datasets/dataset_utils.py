@@ -12,6 +12,7 @@ from .format_detection import (
     detect_custom_format_heuristic,
     is_plain_text_dataset,
     detect_video_columns,
+    detect_video_structure,
     video_sample,
     _VIDEO_TEXT_KEYWORDS,
 )
@@ -951,12 +952,17 @@ def format_and_template_dataset(
                 None,
             )
             first = next(iter(dataset), None)
+            probe = video_sample(dataset, first) if isinstance(first, dict) else {}
             mapped_video = (
                 user_vlm_image_column
                 and user_vlm_text_column
-                and isinstance(first, dict)
-                and user_vlm_image_column in detect_video_columns(video_sample(dataset, first))
+                and user_vlm_image_column in detect_video_columns(probe)
             )
+            if mapped_video and video_question_column is None:
+                # The VLM mapping UI offers only image and text roles, so take the question from detection.
+                detected_question = (detect_video_structure(probe) or {}).get("question_column")
+                if detected_question not in (None, video_answer_column, user_vlm_image_column):
+                    video_question_column = detected_question
             if mapped_video:
                 # The image role on a clip column: the image converter would try to open the clip.
                 try:

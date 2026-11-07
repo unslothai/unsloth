@@ -498,3 +498,29 @@ def test_a_manual_video_mapping_uses_the_video_converter():
             {"type": "text", "text": QUESTION},
         ]
         assert assistant["content"] == [{"type": "text", "text": answer}]
+
+
+def test_a_ui_video_mapping_keeps_the_detected_question():
+    ds = Dataset.from_dict({"video": CLIPS, "question": [QUESTION] * 2, "target": ANSWERS})
+    info = format_and_template_dataset(
+        ds,
+        model_name = "unsloth/Qwen2.5-VL-3B-Instruct",
+        tokenizer = None,
+        is_vlm = True,
+        dataset_name = "local",
+        custom_format_mapping = {"video": "image", "target": "text"},
+    )
+    assert info["success"], info["errors"]
+    for row in info["dataset"]:
+        assert row["messages"][0]["content"][-1] == {"type": "text", "text": QUESTION}
+
+
+class AudioDecoder:
+    def __init__(self, path):
+        self._hf_encoded = {"path": path, "bytes": None}
+
+
+@pytest.mark.parametrize("path", ["a.wav", "a.mp4"])
+def test_decoded_hf_audio_cells_are_not_video(path):
+    from utils.datasets.format_detection import detect_video_columns
+    assert detect_video_columns({"audio": AudioDecoder(path), "text": "hi"}) == []

@@ -811,10 +811,16 @@ def encoded_video(value):
 
 
 def _is_hf_video(value) -> bool:
-    return isinstance(getattr(value, "_hf_encoded", None), dict)
+    # datasets' Audio cells are torchcodec AudioDecoders carrying the same _hf_encoded source.
+    return (
+        isinstance(getattr(value, "_hf_encoded", None), dict)
+        and "video" in type(value).__name__.lower()
+    )
 
 
 def _is_video_value(value, extensions = _VIDEO_EXTENSIONS) -> bool:
+    if hasattr(value, "_hf_encoded") and not _is_hf_video(value):
+        return False
     value = encoded_video(value)
     if isinstance(value, dict):
         value = value.get("path")
