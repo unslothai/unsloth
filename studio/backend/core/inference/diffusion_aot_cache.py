@@ -3,8 +3,7 @@
 
 """Lets AOTAutogradCache store denoiser graphs with an sdpa_kernel block (FLUX.1, Z-Image, Qwen-
 Image), whose Dynamo-baked calls are not on AOTAutogradCache's allowlist; the SDPA backend
-priority order is keyed into the cache. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it. Also pins
-the libdevice path and the autotune-cache key so a returning start hits what the first one saved."""
+priority order is keyed into the cache. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it."""
 
 from __future__ import annotations
 
@@ -129,12 +128,9 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
         return None
 
 
-# Autotune key: inductor's compile workers start with torch's default ``cache_key_tag`` (the env var, else ""), but
-# the parent's carries the tags Unsloth and Studio add. A worker-built kernel saves its ``.best_config`` under the
-# worker's key, and every later process loads that kernel from the FX cache in the parent and looks under the parent's
-# key, so every returning start re-benchmarked every multi-config reduction (SDXL on L4: 40 kernels, ~9.5 s of a 22 s
-# first render). The kernel source hash is already in the key, so the parent uses the workers' tag for this key only.
-# UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN=0 disables it.
+# Compile workers save ``.best_config`` under torch's default ``cache_key_tag``; this process carries Unsloth's tags,
+# so every returning start missed and re-benchmarked its reductions (SDXL L4: ~40 kernels, 9.5 s). The kernel source
+# hash is already in the key. UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN=0 disables it.
 _AUTOTUNE_KEY_ENV = "UNSLOTH_DIFFUSION_AUTOTUNE_KEY_PIN"
 _TORCH_TAG_ENV = "TORCH_COMPILE_CACHE_KEY_TAG"
 _AUTOTUNE_KEY_LOCK = threading.Lock()
@@ -146,18 +142,17 @@ def autotune_key_pin_enabled() -> bool:
 
 
 def worker_cache_key_tag() -> str:
-    """The ``cache_key_tag`` a freshly started compile worker reads: torch's env default, else empty."""
+    """A fresh compile worker's ``cache_key_tag``: torch's env default."""
     return os.environ.get(_TORCH_TAG_ENV, "")
 
 
 def _autotune_key(filename: str, tag: str) -> str:
-    """torch's ``AutotuneCache._prepare_key`` (2.6+): basename (a hash of the kernel source) and the tag."""
+    """torch's ``AutotuneCache._prepare_key`` formula."""
     return hashlib.sha256(f"{os.path.basename(filename)}:{tag}".encode("utf-8")).hexdigest()
 
 
 def _workers_get_parent_tag() -> bool:
-    """Whether this torch hands the parent's ``cache_key_tag`` to its compile workers (none up to 2.14 does); then
-    both sides already agree and the pin would split them again. Reads torch's own sources; unreadable -> False."""
+    """True when torch passes its ``cache_key_tag`` to the workers (none up to 2.14): pinning would split them."""
     try:
         import importlib.util
         for name in (
@@ -171,15 +166,13 @@ def _workers_get_parent_tag() -> bool:
                 with open(origin, encoding = "utf-8") as fh:
                     if "cache_key_tag" in fh.read():
                         return True
-    except Exception:  # noqa: BLE001 - unreadable sources: assume the stock behaviour
+    except Exception:  # noqa: BLE001
         return False
     return False
 
 
 def pin_autotune_key(logger: Any = None) -> bool:
-    """Key the parent's autotune cache lookups as the compile workers key their saves (idempotent, process-wide).
-    False when disabled, when this torch keys them some other way (probed, not version-gated) or already passes its
-    tag to the workers. Never raises."""
+    """Key this process's autotune lookups as the workers key their saves (idempotent, process-wide). Never raises."""
     if not autotune_key_pin_enabled():
         return False
     try:
