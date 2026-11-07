@@ -33,9 +33,9 @@ from routes import inference as ri
 )
 def test_context_settings_are_strict_and_default_to_auto(model, fields):
     assert model(**fields).context_length == 0
-    for value in (0, 1024, 4096, 65536):
+    for value in (0, 1024, 4096, 5120, 65536):
         assert model(**fields, context_length = value).context_length == value
-    for value in (True, False, None, "4096", 4096.0, 4096.5, -1, 1, 1023, 65537):
+    for value in (True, False, None, "4096", 4096.0, 4096.5, -1, 1, 1023, 5000, 65537):
         with pytest.raises(ValidationError, match = "Voice context length"):
             model(**fields, context_length = value)
 
@@ -147,7 +147,7 @@ def test_load_context_failure_is_422(client, sidecar_calls, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "value", ["true", "false", "4096.0", "4096.5", "1e4", "-1", "1023", "65537"]
+    "value", ["true", "false", "4096.0", "4096.5", "1e4", "-1", "1023", "5000", "65537"]
 )
 def test_raw_query_rejects_invalid_context_before_transcribing(client, monkeypatch, value):
     async def unexpected(*args, **kwargs):

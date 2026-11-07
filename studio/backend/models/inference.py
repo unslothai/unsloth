@@ -586,9 +586,11 @@ class SearchImagesLookupRequest(BaseModel):
 
 
 def validate_stt_context_length(value: Any) -> int:
-    """A zero selects Auto; fixed context lengths are strict integers in the supported range."""
-    if type(value) is not int or (value != 0 and not 1024 <= value <= 65536):
-        raise ValueError("Voice context length must be 0 (Auto) or an integer from 1024 to 65536.")
+    """A zero selects Auto; fixed lengths are multiples of 256, since llama-server pads n_ctx to that."""
+    if type(value) is not int or (value != 0 and not (1024 <= value <= 65536 and value % 256 == 0)):
+        raise ValueError(
+            "Voice context length must be 0 (Auto) or a multiple of 256 from 1024 to 65536."
+        )
     return value
 
 
@@ -599,7 +601,7 @@ class SttContextSettings(BaseModel):
         le = 65536,
         description = (
             "Qwen3-ASR on llama.cpp only: 0 (Auto) sizes context for the recording; "
-            "1024 to 65536 fixes the context limit. Ignored by other STT engines."
+            "a multiple of 256 from 1024 to 65536 fixes the context limit. Ignored by other STT engines."
         ),
     )
 

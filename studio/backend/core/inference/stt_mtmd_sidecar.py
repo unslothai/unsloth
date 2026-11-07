@@ -108,10 +108,11 @@ _CONTEXT_MARGIN = 64
 
 def _validate_context_length(value: Optional[int]) -> Optional[int]:
     if value is not None and (
-        type(value) is not int or (value != 0 and not 1024 <= value <= _MAX_CONTEXT_LENGTH)
+        type(value) is not int
+        or (value != 0 and not (1024 <= value <= _MAX_CONTEXT_LENGTH and value % 256 == 0))
     ):
         raise SttContextSizeError(
-            "Voice context must be Auto (0) or between 1024 and 65536 tokens."
+            "Voice context must be Auto (0) or a multiple of 256 from 1024 to 65536 tokens."
         )
     return value
 

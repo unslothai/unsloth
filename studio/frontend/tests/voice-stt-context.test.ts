@@ -53,10 +53,11 @@ test("old or invalid preferences use Auto; valid fixed limits survive", () => {
     1023,
     65537,
     4096.5,
+    5000,
   ]) {
     assert.equal(normalizeSttContextLength(value), 0);
   }
-  for (const value of [0, ...STT_CONTEXT_LENGTHS, 5000]) {
+  for (const value of [0, ...STT_CONTEXT_LENGTHS, 5120]) {
     assert.equal(normalizeSttContextLength(value), value);
   }
 });

@@ -12,7 +12,7 @@ export const STT_CONTEXT_LENGTHS = [
 export function normalizeSttContextLength(value: unknown): number {
   return typeof value === "number" &&
     Number.isInteger(value) &&
-    (value === 0 || (value >= 1024 && value <= 65536))
+    (value === 0 || (value >= 1024 && value <= 65536 && value % 256 === 0))
     ? value
     : DEFAULT_STT_CONTEXT_LENGTH;
 }

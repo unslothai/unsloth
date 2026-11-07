@@ -465,6 +465,13 @@ def test_setting_changed_between_load_and_request_claim_is_not_overwritten(runti
     assert runtime.sidecar.context_length_preference == 4096
 
 
+@pytest.mark.parametrize("context_length", [1000, 5000, 65537])
+def test_a_size_llama_server_would_pad_is_refused_before_launch(runtime, context_length):
+    with pytest.raises(SttContextSizeError, match = "multiple of 256"):
+        runtime.sidecar.load(MODEL, context_length = context_length)
+    assert runtime.processes == []
+
+
 def test_server_cannot_silently_exceed_the_requested_manual_context(runtime, monkeypatch):
     monkeypatch.setattr(runtime.sidecar, "_read_server_context", lambda *_args, **_kwargs: 8192)
     with pytest.raises(SttContextSizeError, match = "8192.*4096"):
