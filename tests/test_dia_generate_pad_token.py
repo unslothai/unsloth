@@ -3,6 +3,7 @@
 """Dia generation keeps its own audio pad token instead of EOS (#2560)."""
 
 import ast
+import copy
 import inspect
 import os
 from contextlib import nullcontext
@@ -57,6 +58,7 @@ def _captured_generate_kwargs(config, **generate_kwargs):
         "transformers_version": installed_version("transformers"),
         "_uses_flash_attention_for_generation": lambda config: True,
         "_clear_generation_caches": lambda model: None,
+        "_set_generate_param": _load_function("_set_generate_param", {"copy": copy}),
         "_is_text_seq2seq_config": lambda config: False,
     }
     fast_generate = _load_function("unsloth_base_fast_generate", namespace)
