@@ -191,5 +191,10 @@ def test_a_peft_merged_push_uploads_the_release_config(tmp_path, monkeypatch):
 
     other = _peft_model(base)
     other.config.model_type = "llama"
-    assert not save_mod._push_lfm3_audio_release_config(other, "leo/merged", token = None)
+
+    def no_whoami(*args):
+        raise AssertionError("a non LFM3-Audio push resolved the repo id")
+
+    monkeypatch.setattr(save_mod, "_determine_username", no_whoami)
+    assert not save_mod._push_lfm3_audio_release_config(other, "merged", token = None)
     assert len(uploads) == 1

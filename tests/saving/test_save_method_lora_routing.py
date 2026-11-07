@@ -263,7 +263,7 @@ def _routing_environment(monkeypatch, model):
         _stitch_mtp_head = lambda model, directory: None,
         _mtp_head_tensor_names = lambda model: [],
         _release_layout_for_merged_save = lambda model, directory, method: False,
-        _push_lfm3_audio_release_config = lambda model, repo_id, token = None: False,
+        _push_lfm3_audio_release_config = lambda model, save_directory, token = None: False,
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),

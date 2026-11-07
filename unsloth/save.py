@@ -4078,12 +4078,14 @@ def _release_layout_for_merged_save(model, save_directory, save_method):
 
 def _push_lfm3_audio_release_config(
     model,
-    repo_id,
+    save_directory,
     token = None,
 ):
     # A plain PEFT merged push uploads straight from the merge, so the release layout is pushed after it.
     if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
         return False
+    # After the type check: every other merged push would pay a whoami call that can raise post-upload.
+    repo_id = _determine_username(save_directory, None, token)[0]
     import tempfile
 
     from huggingface_hub import HfApi, hf_hub_download
@@ -7067,9 +7069,7 @@ def unsloth_generic_save(
             _stitch_mtp_head(model, save_directory)
             _release_layout_for_merged_save(model, save_directory, save_method)
         elif "16bit" in save_method and is_main_process:
-            _push_lfm3_audio_release_config(
-                model, _determine_username(save_directory, None, token)[0], token = token
-            )
+            _push_lfm3_audio_release_config(model, save_directory, token = token)
 
     if push_to_hub and datasets:
         try:
