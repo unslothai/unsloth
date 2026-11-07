@@ -10,9 +10,22 @@ export const ROW_REACH_PX = 1500;
 const GATE_ATTRIBUTE = "data-message-row-containment";
 const ROW_SELECTOR = "[data-role][data-message-id]";
 
-type Adjust = (deltaPx: number) => unknown;
+/**
+ * The reach must exceed the engine's own content-visibility: auto margin, so a row is released
+ * (and the reader compensated) before the engine lays it out on its own. Chromium renders a skipped
+ * element within 150% of the window's height of the window (kViewportMarginPercentage in
+ * third_party/blink/renderer/core/display_lock/display_lock_document_state.cc); WebKit only once
+ * it intersects the window (no root margin, Source/WebCore/dom/ContentVisibilityDocumentState.cpp).
+ * Twice the window height covers Chromium's margin plus the thread scroller's offset inside it.
+ */
+export const rowReachPx = (windowHeight: number): number =>
+  Math.max(ROW_REACH_PX, Math.ceil(2 * (Number.isFinite(windowHeight) ? windowHeight : 0)));
 
-const observers = new WeakMap<Element, IntersectionObserver>();
+type Adjust = (deltaPx: number) => unknown;
+type Watch = { observer: IntersectionObserver; reach: number; rows: Set<Element> };
+
+/** Iterated on resize; an entry leaves with its last row. */
+const watches = new Map<Element, Watch>();
 const adjusters = new WeakMap<Element, Adjust>();
 
 /** Rows are stacked in document order, so the first one reaching the fold is a binary search. */
@@ -75,36 +88,68 @@ function settleLater(viewport: Element, rows: Element[]) {
   }));
 }
 
+function createObserver(viewport: Element, reach: number): IntersectionObserver {
+  return new IntersectionObserver((entries) => {
+    // Read before writing. A wide row owns horizontal scroll range, which containment would drop.
+    const distant = entries.map(({ target, boundingClientRect, rootBounds }) =>
+      rootBounds !== null &&
+      (boundingClientRect.bottom < rootBounds.top || boundingClientRect.top > rootBounds.bottom) &&
+      target.scrollWidth <= target.clientWidth
+    );
+    const release: Array<[Element, boolean]> = [];
+    const skip: Element[] = [];
+    entries.forEach(({ target }, i) => {
+      wanted.set(target, distant[i]);
+      if (!distant[i] && target.hasAttribute(ROW_DISTANT_ATTRIBUTE)) release.push([target, false]);
+      else if (distant[i] && !target.hasAttribute(ROW_DISTANT_ATTRIBUTE)) skip.push(target);
+    });
+    toggleRows(viewport, release);
+    if (skip.length > 0) settleLater(viewport, skip);
+  }, { root: viewport, rootMargin: `${reach}px 0px` });
+}
+
+const windowHeight = (): number => (typeof window === "undefined" ? 0 : window.innerHeight);
+
+/** A taller window widens the engine's margin, so the reach follows; unchanged reach is a no-op. */
+function refreshReach() {
+  const reach = rowReachPx(windowHeight());
+  for (const [viewport, watch] of watches) {
+    if (watch.reach === reach) continue;
+    watch.observer.disconnect();
+    watch.reach = reach;
+    watch.observer = createObserver(viewport, reach);
+    for (const row of watch.rows) watch.observer.observe(row);
+  }
+}
+
+let resizeHooked = false;
+
 export function observeDistantRow(row: HTMLElement, adjust?: Adjust) {
   if (typeof document === "undefined" || !document.documentElement.hasAttribute(GATE_ATTRIBUTE)) return;
   const viewport = row.closest(".aui-thread-viewport");
   if (!viewport || typeof IntersectionObserver === "undefined") return;
   if (adjust) adjusters.set(viewport, adjust);
-
-  let observer = observers.get(viewport);
-  if (!observer) {
-    observer = new IntersectionObserver((entries) => {
-      // Read before writing. A wide row owns horizontal scroll range, which containment would drop.
-      const distant = entries.map(({ target, boundingClientRect, rootBounds }) =>
-        rootBounds !== null &&
-        (boundingClientRect.bottom < rootBounds.top || boundingClientRect.top > rootBounds.bottom) &&
-        target.scrollWidth <= target.clientWidth
-      );
-      const release: Array<[Element, boolean]> = [];
-      const skip: Element[] = [];
-      entries.forEach(({ target }, i) => {
-        wanted.set(target, distant[i]);
-        if (!distant[i] && target.hasAttribute(ROW_DISTANT_ATTRIBUTE)) release.push([target, false]);
-        else if (distant[i] && !target.hasAttribute(ROW_DISTANT_ATTRIBUTE)) skip.push(target);
-      });
-      toggleRows(viewport, release);
-      if (skip.length > 0) settleLater(viewport, skip);
-    }, { root: viewport, rootMargin: `${ROW_REACH_PX}px 0px` });
-    observers.set(viewport, observer);
+  if (!resizeHooked && typeof window !== "undefined") {
+    resizeHooked = true;
+    window.addEventListener("resize", refreshReach, { passive: true });
   }
-  observer.observe(row);
+
+  let watch = watches.get(viewport);
+  if (!watch) {
+    const reach = rowReachPx(windowHeight());
+    watch = { observer: createObserver(viewport, reach), reach, rows: new Set() };
+    watches.set(viewport, watch);
+  }
+  watch.rows.add(row);
+  watch.observer.observe(row);
+  const own = watch;
   return () => {
-    observer.unobserve(row);
+    own.observer.unobserve(row);
+    own.rows.delete(row);
+    if (own.rows.size === 0) {
+      own.observer.disconnect();
+      if (watches.get(viewport) === own) watches.delete(viewport);
+    }
     wanted.delete(row);
     row.removeAttribute(ROW_DISTANT_ATTRIBUTE);
   };

@@ -81,19 +81,36 @@ class Viewport {
   scrollTo({ top }: { top: number }) { this.scrollTop = top; }
 }
 
-function world(gate = true) {
+type FakeObserver = { margin: string; observed: Set<Row>; disconnected: boolean };
+
+function world(gate = true, innerHeight = 900) {
   let intersect: (entries: unknown[]) => void = () => {};
-  const observed = new Set<Row>();
+  const observers: FakeObserver[] = [];
+  const resizeListeners: Array<() => void> = [];
   let frames: Array<() => void> = [];
-  const exports: { observeDistantRow?: (row: Row, adjust?: (delta: number) => void) => (() => void) | undefined } = {};
+  const win = {
+    innerHeight,
+    addEventListener: (type: string, cb: () => void) => { if (type === "resize") resizeListeners.push(cb); },
+  };
+  const exports: {
+    observeDistantRow?: (row: Row, adjust?: (delta: number) => void) => (() => void) | undefined;
+    rowReachPx?: (height: number) => number;
+  } = {};
   vm.runInNewContext(outputText, {
     exports,
+    window: win,
     document: { documentElement: { hasAttribute: (name: string) => gate && name === MESSAGE_ROW_CONTAINMENT_ATTRIBUTE } },
     requestAnimationFrame: (cb: () => void) => { frames.push(cb); return frames.length; },
     IntersectionObserver: class {
-      constructor(cb: typeof intersect) { intersect = cb; }
-      observe(row: Row) { observed.add(row); }
-      unobserve(row: Row) { observed.delete(row); }
+      own: FakeObserver;
+      constructor(cb: typeof intersect, options: { rootMargin: string }) {
+        intersect = cb;
+        this.own = { margin: options.rootMargin, observed: new Set(), disconnected: false };
+        observers.push(this.own);
+      }
+      observe(row: Row) { this.own.observed.add(row); }
+      unobserve(row: Row) { this.own.observed.delete(row); }
+      disconnect() { this.own.disconnected = true; this.own.observed.clear(); }
     },
   });
   const rootBounds = { top: -1500, bottom: 2300 };
@@ -101,12 +118,49 @@ function world(gate = true) {
   const frame = () => { const run = frames; frames = []; run.forEach((cb) => cb()); };
   return {
     observe: exports.observeDistantRow!,
+    rowReachPx: exports.rowReachPx!,
     report: (...rows: Row[]) => intersect(rows.map(entry)),
     /** Two frames: the settle before a distant row is skipped. */
     settle: () => { frame(); frame(); },
-    observed,
+    get observed() { return observers.at(-1)?.observed ?? new Set<Row>(); },
+    observers,
+    resize: (height: number) => { win.innerHeight = height; resizeListeners.forEach((cb) => cb()); },
+    resizeListeners,
   };
 }
+
+test("the reach outruns the engine's own content-visibility margin, which grows with the window", () => {
+  const w = world();
+  assert.equal(w.rowReachPx(700), 1500, "a short window keeps the 1500 px floor");
+  assert.equal(w.rowReachPx(900), 1800);
+  assert.equal(w.rowReachPx(2200), 4400, "Chromium renders 150% of the window height out (3300 px here), so 1500 px released rows after it had re-wrapped them");
+  assert.equal(w.rowReachPx(Number.NaN), 1500);
+});
+
+test("a resize to a new window height swaps the observer once, keeping every row; the same height does nothing", () => {
+  const w = world(true, 900);
+  const viewport = new Viewport();
+  const rows = Array.from({ length: 4 }, () => new Row(viewport, 0, 600));
+  const stops = rows.map((row) => w.observe(row)!);
+  assert.equal(w.observers.length, 1, "one observer per thread viewport");
+  assert.equal(w.observers[0].margin, "1800px 0px");
+  assert.equal(w.resizeListeners.length, 1, "one resize listener for every viewport");
+  w.resize(900);
+  assert.equal(w.observers.length, 1, "same height, same reach: no new observer");
+  w.resize(2200);
+  assert.equal(w.observers.length, 2);
+  assert.equal(w.observers[0].disconnected, true);
+  assert.equal(w.observers[1].margin, "4400px 0px");
+  assert.deepEqual([...w.observers[1].observed], rows, "the new observer watches every row the old one did");
+  w.resize(2200);
+  assert.equal(w.observers.length, 2, "idempotent");
+  stops.forEach((stop) => stop());
+  assert.equal(w.observers[1].disconnected, true, "the last row leaving disconnects its viewport's observer");
+  const again = new Row(viewport, 0, 600);
+  w.observe(again);
+  assert.equal(w.observers.length, 3, "a remounted thread gets a fresh observer at the current reach");
+  assert.equal(w.observers[2].margin, "4400px 0px");
+});
 
 test("off when the gate is off: no observer, no attribute", () => {
   const w = world(false);
