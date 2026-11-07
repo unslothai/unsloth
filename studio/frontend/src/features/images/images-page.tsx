@@ -1975,6 +1975,8 @@ export function ImagesPage({
   const localRun = useRef(false);
   // Queue jobs this page submitted.
   const queuedHere = useRef(new Set<string>());
+  // Server time of the run behind sessionSeed, so a late queue poll never replaces a newer direct run's seed.
+  const sessionSeedAt = useRef(0);
   const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
   // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
   const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
@@ -3645,8 +3647,11 @@ export function ImagesPage({
         if (!latest || (job.finished_at ?? 0) > (latest.finished_at ?? 0)) latest = job;
       }
     }
-    // The newest run this page queued is its latest run, as a direct Generate's would be, for Reuse last seed.
-    if (latest) setSessionSeed(latest.seed_used);
+    // Newer than the session seed's run (server clock both sides), as a direct Generate's would be, for Reuse last seed.
+    if (latest && (latest.finished_at ?? 0) > sessionSeedAt.current) {
+      sessionSeedAt.current = latest.finished_at ?? 0;
+      setSessionSeed(latest.seed_used);
+    }
   });
   const queueRunningId = runningJob(imageQueue.jobs)?.id ?? null;
   const queueWaiting = queuedJobs(imageQueue.jobs).length > 0;
@@ -3662,6 +3667,8 @@ export function ImagesPage({
       followingJob.current = queueRunningId;
       return;
     }
+    // The followed job ended while another render keeps the page busy: Stop goes back to that render.
+    if (!queueRunningId && followingJob.current) followingJob.current = null;
     // Idle with a job running (also after a gap in its progress, e.g. captioning): follow it once it denoises.
     if (!queueRunningId || busy !== null) return;
     let cancelled = false;
@@ -5555,7 +5562,10 @@ export function ImagesPage({
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         const runSeed = lastSeedOf(res.images);
-        if (runSeed !== null) setSessionSeed(runSeed);
+        if (runSeed !== null) {
+          sessionSeedAt.current = Math.max(sessionSeedAt.current, ...res.images.map((image) => image.created_at));
+          setSessionSeed(runSeed);
+        }
         // Asked for enhancement and did not get it: say so once, without blocking the result.
         if (enhanceOn && upsamplerCapability.supported) {
           const notice = enhancementNotice(res.images[0]?.prompt_enhancement);
