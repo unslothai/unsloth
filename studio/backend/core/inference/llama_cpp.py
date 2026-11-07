@@ -37622,6 +37622,8 @@ class LlamaCppBackend:
         _conversation_recall_done = False
         # Apply the sticky boundary once; refits run on already-fitted history.
         _sticky_boundary_applied = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Estimator misses the tool catalogue and template framing; the offset corrects it.
         _prompt_token_offset: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
@@ -38179,7 +38181,7 @@ class LlamaCppBackend:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _iteration_can_reset,
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -38191,6 +38193,7 @@ class LlamaCppBackend:
                     )
                     # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     if truncation and truncation.get("fits"):
                         # Before the recall injection, so both sides describe the same
                         # messages, priced by the fit with the catalogue and template.
@@ -38333,7 +38336,7 @@ class LlamaCppBackend:
             _respawn_truncations: list[dict] = []
 
             def _refit_iteration_after_respawn() -> None:
-                nonlocal conversation
+                nonlocal conversation, _loop_cut
                 _before_respawn_fit = conversation
                 if (
                     _preflight_context_length is None
@@ -38370,7 +38373,7 @@ class LlamaCppBackend:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
                             thread_id,
                             _backend_supports_tools(self),
@@ -38379,6 +38382,7 @@ class LlamaCppBackend:
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     # Record here: the reopened stream raises before forwarding sees the refusal.
                     from core.inference import context_refusal  # noqa: PLC0415
 
@@ -40799,7 +40803,7 @@ class LlamaCppBackend:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _final_can_reset,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _final_sticky,
@@ -40958,7 +40962,7 @@ class LlamaCppBackend:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),
