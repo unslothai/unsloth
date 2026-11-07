@@ -2,16 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /*
- * Glass drops its live blur while anything moves. A backdrop-filter is computed again on every frame its
- * surface is drawn, and with software compositing (Chromium without a GPU, WebKit painting on the CPU) every
- * frame redraws the whole window: a menu fading in, a dialog closing or the chat scrolling re-blurred the
- * moving surface and also every still one, the sidebar above all (measured: with only the sidebar's blur off,
- * glass typing, scrolling and menus cost 1.2-1.7x Glass off instead of 2.5-3.5x). So while something moves,
- * the moving surface and the page's standing glass (sidebar, composer) carry data-glass-moving and index.css
- * swaps their blur for a near-opaque fill of the same colour; the blur comes back once nothing has moved for
- * SETTLE_MS. Tooltips and hover cards pause only themselves, so hovering does not flicker the sidebar. At
- * rest nothing changes. The flag sits on each surface and only rules keyed on that surface read it, so
- * setting or clearing it restyles those few surfaces (and their sticky bars), never the chat.
+ * Under software compositing every frame redraws the window and recomputes every backdrop-filter, the
+ * still sidebar's included. So while something moves, the moving surface and the standing glass carry
+ * data-glass-moving, which index.css turns into a near-opaque fill; the blur returns after SETTLE_MS.
+ * The flag sits on each surface and only that surface's rules read it, so it never restyles the chat.
  */
 
 /** Glass surfaces that can move: the composer, menus, popovers, tooltips, dialogs and floating buttons. */
