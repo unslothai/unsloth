@@ -4180,7 +4180,7 @@ html[data-chat-font] .aui-root {
 		padding-bottom: 0;
 	}
 
-	/* Follows the header up by the 0.5rem the padding above lost; the half pixel centres the icons on the label. */
+	/* The half pixel centres the icons on the label. */
 	.aui-thread-root [data-code-block-actions] {
 		top: calc(0.25rem * var(--ui-space-scale, 1) + 0.5px);
 	}
@@ -4945,7 +4945,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	background: oklch(0.67 0 0 / 0.5);
 }
 
-/* Sideways scrollbar only on hover. Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
+/* Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
 @supports selector(::-webkit-scrollbar) {
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		scrollbar-width: auto;

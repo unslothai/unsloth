@@ -412,7 +412,6 @@ test("a capped block colours only what is in view and a streaming one follows it
   const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
   assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
   assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
-  // A finished stream remounts the body; it comes back where the reader left it.
   assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
   assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
 });
