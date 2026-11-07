@@ -20,7 +20,7 @@ RELEASE = {
     "architectures": ["Lfm3AudioForConditionalGeneration"],
     "model_type": "lfm3_audio",
     "codebooks": 8,
-    "lfm": {"architectures": ["Lfm3ForCausalLM"], "vocab_size": 128000},
+    "lfm": {"architectures": ["Lfm3ForCausalLM"], "model_type": "lfm3", "vocab_size": 128000},
     "encoder": {"dim_in": 128},
     "depthformer": {"layers": 4},
 }
@@ -56,6 +56,17 @@ def test_the_transformers_layout_is_replaced_by_the_release_config(tmp_path):
     merged = _write(tmp_path / "merged", SAVED)
     assert save_mod._restore_lfm3_audio_release_config(_peft_model(base), str(merged))
     assert _saved(merged) == RELEASE
+
+
+def test_the_effective_text_settings_survive_the_restore(tmp_path):
+    rope = {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 32768}
+    base = _write(tmp_path / "base", RELEASE)
+    merged = _write(
+        tmp_path / "merged",
+        {**SAVED, "text_config": {**SAVED["text_config"], "rope_parameters": rope}},
+    )
+    assert save_mod._restore_lfm3_audio_release_config(_peft_model(base), str(merged))
+    assert _saved(merged)["lfm"] == {**RELEASE["lfm"], "rope_parameters": rope}
 
 
 def test_a_release_layout_is_left_alone(tmp_path):

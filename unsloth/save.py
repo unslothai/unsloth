@@ -4052,8 +4052,11 @@ def _restore_lfm3_audio_release_config(model, save_directory):
         if vocab is not None and release["lfm"].get("vocab_size") != vocab:
             continue  # resized embeddings: the release config no longer describes these weights
         # The dtype the weights were written in and the code modules the save copied, not the release's.
+        # `lfm` takes text_config's schema: the effective text settings (e.g. a user rope_scaling) win over the release's.
+        text = {k: v for k, v in (saved.get("text_config") or {}).items() if k != "_name_or_path"}
         release = {
             **release,
+            "lfm": {**release["lfm"], **text},
             **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved},
         }
         with open(path, "w", encoding = "utf-8") as f:
