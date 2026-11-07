@@ -29,6 +29,11 @@ export function pickedFpsFor(pick: FpsPick | null, family: string | null): numbe
   return pick != null && pick.family === family ? pick.fps : null;
 }
 
+/** A stored preset rate the loaded family offers, else null (the family default). */
+export function presetVideoFps(options: number[] | null, stored: number | null | undefined): number | null {
+  return stored != null && options?.includes(stored) ? stored : null;
+}
+
 export function resolveVideoFps(
   defaults: VideoGenerationDefaults | null | undefined,
   picked: number | null,

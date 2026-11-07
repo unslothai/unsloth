@@ -147,6 +147,7 @@ import {
   type FpsPick,
   keptNumFrames,
   pickedFpsFor,
+  presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -1638,14 +1639,29 @@ function VideoGenerator({
       guidance,
       flowShift,
       audioFlowShift,
+      fps: fpsOptions ? fps : null,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
   const defaultFlowShift = status?.defaults?.flow_shift ?? null;
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const presetRepoId = status?.repo_id ?? "";
+  const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
+  // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed.
+  const presetFps = useCallback(
+    (stored: number | null | undefined) =>
+      fpsOptions ? (presetVideoFps(fpsOptions, stored) ?? familyFps) : null,
+    [familyFps, fpsOptions],
+  );
+  const presetDurationOptions = useCallback(
+    (rate: number | null) =>
+      rate == null || rate === fps
+        ? durationOptions
+        : videoDurationOptions(durationTargets, rate, frameStep, frameOffset, minFrames, maxFrames),
+    [durationOptions, durationTargets, fps, frameOffset, frameStep, maxFrames, minFrames],
+  );
   const videoDefaultRecipe = useMemo<VideoGenerationPresetParams>(() => {
     const resolution = resolutionPresets[0] ?? [768, 512];
     const recommended =
@@ -1669,14 +1685,17 @@ function VideoGenerator({
       guidance: recommended.guidance,
       flowShift: defaultFlowShift,
       audioFlowShift: defaultAudioFlowShift,
+      fps: presetFps(null),
     };
-  }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
+  }, [presetFps, defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const size = fitVideoSize(params.width, params.height, sizeLimits);
-      const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
-      const durationFrames =
-        durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
+      const rate = presetFps(params.fps);
+      const options = presetDurationOptions(rate);
+      const durationIndex = closestDurationIndex(options, params.durationSeconds);
+      const durationFrames = options[durationIndex]?.frames ?? options[0]?.frames ?? numFrames;
+      if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
       setAspect(matched.key);
@@ -1691,25 +1710,26 @@ function VideoGenerator({
       setGuidance(params.guidance);
       setFlowShift(params.flowShift);
       setAudioFlowShift(params.audioFlowShift);
-      return params;
+      return { ...params, fps: rate };
     },
-    [durationOptions, numFrames, sizeLimits],
+    [numFrames, presetDurationOptions, presetFps, setPickedFps, sizeLimits],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
       const resolution = fitVideoSize(params.width, params.height, sizeLimits);
+      const rate = presetFps(params.fps);
+      const options = presetDurationOptions(rate);
       const duration =
-        durationOptions[
-          closestDurationIndex(durationOptions, params.durationSeconds)
-        ]?.seconds ?? params.durationSeconds;
+        options[closestDurationIndex(options, params.durationSeconds)]?.seconds ?? params.durationSeconds;
       return {
         ...params,
         width: resolution[0],
         height: resolution[1],
         durationSeconds: duration,
+        fps: rate,
       };
     },
-    [durationOptions, sizeLimits],
+    [presetDurationOptions, presetFps, sizeLimits],
   );
   const videoPresets = useMediaGenerationPresets({
     kind: "video",
