@@ -193,6 +193,7 @@ def test_explicit_int8_keeps_its_weight_only_default_on_rdna(rocm, monkeypatch):
 
 def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatch):
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
     monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
     assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") == "measured"
@@ -213,6 +214,14 @@ def test_rdna_auto_w8a8_reason_is_per_family_with_a_kill_switch(rocm, monkeypatc
 def test_rdna_auto_w8a8_ships_only_for_the_measured_families():
     # Measured on gfx1151 against compiled bf16; Wan (LPIPS > 0.10), the small DiTs and edit / layered stay bf16.
     assert set(tq._FAMILY_RDNA_AUTO_W8A8) == {"qwen-image", "qwen-image-2.1"}
+
+
+def test_rdna_auto_w8a8_reason_is_linux_only(rocm, monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
+    monkeypatch.setitem(tq._FAMILY_RDNA_AUTO_W8A8, "toy-family", "measured")
+    monkeypatch.setattr(tq._sys, "platform", "win32")
+    assert tq.rdna_auto_w8a8_reason(_target(), "toy-family") is None
 
 
 def test_rdna_auto_w8a8_reason_is_rocm_only(nvidia, monkeypatch):

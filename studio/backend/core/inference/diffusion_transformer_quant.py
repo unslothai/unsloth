@@ -1226,6 +1226,9 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
     if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
         return None
+    # Measured on Linux only; Windows ROCm runs the speed tier off, where W8A8 has nothing to compile with.
+    if not _sys.platform.startswith("linux"):
+        return None
     # The compiled W8A8 linear must run here; the auto pick always quantises activations (explicit int8 keeps its
     # weight-only default).
     if int8_act_disabled() or not rocm_rdna_w8a8_ready():

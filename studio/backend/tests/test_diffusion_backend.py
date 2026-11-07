@@ -13287,6 +13287,7 @@ def _stub_rdna_w8a8_host(backend, monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: True)
     monkeypatch.setattr(tq, "rocm_rdna_w8a8_ready", lambda: True)
     monkeypatch.delenv(nq.NATIVE_INT8_ACT_ENV, raising = False)
+    monkeypatch.setattr(tq._sys, "platform", "linux")
     recorded = dmod.quantize_transformer
 
     def _quantize(
