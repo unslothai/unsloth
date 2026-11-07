@@ -24,9 +24,9 @@ from .test_audio_cpp_failures import _model
 
 
 @pytest.fixture(autouse = True)
-def _no_audio_runtime(monkeypatch):
-    """Estimates follow the installed audio.cpp backend, so pin it: unset means none installed."""
-    monkeypatch.setattr(af, "_runtime_backend", lambda: None)
+def _cuda_audio_runtime(monkeypatch):
+    """Estimates follow the installed audio.cpp backend, so pin it: CUDA unless a test says otherwise."""
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
 
 _MISSING = "The audio runtime is not installed. Run `unsloth studio update` to install it."
 

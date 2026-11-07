@@ -134,9 +134,15 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-# GiB; resident = weights * per_weight + fixed. Generic: the deliberately high fallback for
-# families not measured yet.
+# GiB; resident = weights * per_weight + fixed. Generic: the fallback for families not measured yet,
+# per runtime backend. Each was chosen to minimize expected user frustration over common cards, a load
+# that runs out of memory counting as ten refusals, and validated by leaving each measured family out
+# of the fit in turn. On CUDA a lower line adds crashes on held-out families, so it stays; on Vulkan
+# the second line beats it on both crashes and refusals.
 _GENERIC_PROFILE = (2.5, 1.5)
+_VULKAN_GENERIC_PROFILE = (1.85, 4.5)
+# Peaks that keep growing with the input: no measured line holds, so the original fallback everywhere.
+_UNBOUNDED_FAMILIES = frozenset({"vibevoice"})
 # family -> (per_weight, fixed, largest package measured): the highest audio.cpp v0.9.3 peak observed
 # on its CUDA build with Studio's default options, plus at least 0.9 GiB, every variant measured.
 # Inputs: TTS text run past several chunks or to the default generation cap, 30 s references; music
@@ -239,17 +245,22 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     A measured family uses its own profile; a package past the sizes measured for it gets the
     larger of that profile and the generic one."""
     weights_gb = size_bytes / (1024**3)
-    generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
+    backend = _runtime_backend()
+
+    def pick(cuda, vulkan):
+        # Not installed yet, or a build measured on neither (HIP, CPU): both, and the larger wins.
+        return {"cuda": [cuda], "vulkan": [vulkan]}.get(backend, [cuda, vulkan])
+
+    generics = (
+        [_GENERIC_PROFILE]
+        if family in _UNBOUNDED_FAMILIES
+        else pick(_GENERIC_PROFILE, _VULKAN_GENERIC_PROFILE)
+    )
+    generic = max(weights_gb * per_weight + fixed for per_weight, fixed in generics)
     profile = _MEASURED_PROFILES.get(family or "")
     if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
         return round(generic, 2)
-    profiles = [profile]
-    if family in _VULKAN_PROFILES:
-        backend = _runtime_backend()
-        # Not installed yet, or a build measured on neither (HIP, CPU): the larger of the two.
-        profiles = {"cuda": [profile], "vulkan": [_VULKAN_PROFILES[family]]}.get(
-            backend, [profile, _VULKAN_PROFILES[family]]
-        )
+    profiles = pick(profile, _VULKAN_PROFILES[family]) if family in _VULKAN_PROFILES else [profile]
     measured = max(weights_gb * per_weight + fixed for per_weight, fixed, _largest in profiles)
     measured_up_to_gb = min(largest for _per_weight, _fixed, largest in profiles)
     return round(measured if weights_gb <= measured_up_to_gb else max(measured, generic), 2)

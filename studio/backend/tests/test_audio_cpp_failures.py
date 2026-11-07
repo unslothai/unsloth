@@ -17,10 +17,10 @@ _REAL_RUNTIME_BACKEND = af._runtime_backend
 
 
 @pytest.fixture(autouse = True)
-def _no_audio_runtime(monkeypatch):
-    """Estimates follow the installed audio.cpp backend, so pin it: unset means none installed (the
-    larger of the two profiles). Tests about one backend set it themselves."""
-    monkeypatch.setattr(af, "_runtime_backend", lambda: None)
+def _cuda_audio_runtime(monkeypatch):
+    """Estimates follow the installed audio.cpp backend, so pin it: CUDA, the NVIDIA case these
+    tests describe. Tests about Vulkan or no runtime set it themselves."""
+    monkeypatch.setattr(af, "_runtime_backend", lambda: "cuda")
 
 
 def _model(sizes = (8, 4, 3, 2, 1), current = 0) -> AudioCppModel:
@@ -239,6 +239,27 @@ def test_the_runtime_backend_picks_the_profile(monkeypatch, family, size_bytes, 
         assert af.estimate_resident_gb(size_bytes, family) == expected, backend
 
 
+@pytest.mark.parametrize(
+    "backend, at_3, at_9_5",
+    [
+        # CUDA keeps the original fallback; Vulkan's is higher for small packages, lower for large ones.
+        ("cuda", 9.0, 25.25),
+        ("vulkan", 10.05, 22.07),
+        # Not installed yet, or another build: the larger of the two.
+        (None, 10.05, 25.25),
+        ("hip", 10.05, 25.25),
+    ],
+)
+def test_the_fallback_follows_the_runtime_backend(monkeypatch, backend, at_3, at_9_5):
+    monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
+    gb = 1024**3
+    assert af.estimate_resident_gb(3 * gb, "neutts") == at_3
+    assert af.estimate_resident_gb(int(9.5 * gb), "neutts") == at_9_5
+    # VibeVoice's peak keeps growing with the input: the original fallback on every backend.
+    assert af.estimate_resident_gb(3 * gb, "vibevoice") == 9.0
+    assert af.estimate_resident_gb(int(9.85 * gb), "vibevoice") == 26.12
+
+
 def test_the_runtime_backend_is_the_installed_servers(monkeypatch):
     from core.inference import audio_cpp_server as srv
 
@@ -255,6 +276,9 @@ YUE2_BYTES = (2933424181, 4531978293, 7529267253)
 MEASURED = (7.73, 9.51, 12.86)
 MEASURED_CUDA = (7.69, 9.23, 12.1)
 GENERIC = (8.33, 12.05, 19.03)
+# The fallback on Vulkan, and with no runtime installed (the larger of the CUDA and Vulkan lines).
+GENERIC_VULKAN = (9.55, 12.31, 17.47)
+GENERIC_EITHER = (9.55, 12.31, 19.03)
 
 
 def _cards(
@@ -285,13 +309,16 @@ def _yue2():
         ({}, True, False),
     ],
 )
-@pytest.mark.parametrize("backend, measured", [(None, MEASURED), ("vulkan", MEASURED), ("cuda", MEASURED_CUDA)])
+@pytest.mark.parametrize(
+    "backend, measured, generic",
+    [(None, MEASURED, GENERIC_EITHER), ("vulkan", MEASURED, GENERIC_VULKAN), ("cuda", MEASURED_CUDA, GENERIC)],
+)
 def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
-    monkeypatch, capabilities, driver, profiled, backend, measured
+    monkeypatch, capabilities, driver, profiled, backend, measured, generic
 ):
     monkeypatch.setattr(af, "_runtime_backend", lambda: backend)
     _cards(monkeypatch, capabilities, driver = driver)
-    assert _yue2() == (measured if profiled else GENERIC)
+    assert _yue2() == (measured if profiled else generic)
 
 
 @pytest.mark.parametrize(
@@ -308,7 +335,7 @@ def test_an_nvidia_host_is_told_from_one_without_nvidia(monkeypatch, smi, procfs
 
 def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
     _cards(monkeypatch, {0: (8, 6)}, {0: (8, 6), 1: (7, 5)}, {0: (8, 6)})
-    assert (_yue2(), _yue2(), _yue2()) == (MEASURED, GENERIC, MEASURED)
+    assert (_yue2(), _yue2(), _yue2()) == (MEASURED_CUDA, GENERIC, MEASURED_CUDA)
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
