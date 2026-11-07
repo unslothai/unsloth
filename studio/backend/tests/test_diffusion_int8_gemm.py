@@ -95,6 +95,20 @@ def test_triton_at_least_parses_the_installed_version(monkeypatch, version, newe
         g8._triton_at_least.cache_clear()
 
 
+def test_triton38_runtime_turns_sm80_sm89_stock(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "triton", types.SimpleNamespace(__version__ = "3.8.0"))
+    clear = getattr(getattr(g8, "_triton_at_least", None), "cache_clear", lambda: None)
+    clear()
+    try:
+        assert g8.arch_config((8, 0), "auto") is None
+        assert g8.arch_config((8, 9), "auto") is None
+        assert g8.arch_config((12, 0), "auto") == g8._ARCH_CONFIG[(12, 0)]
+    finally:
+        clear()
+
+
 def test_install_is_a_noop_when_killed(monkeypatch):
     monkeypatch.setenv(g8.INT8_GEMM_ENV, "0")
     lin = torch.nn.Linear(64, 64)
