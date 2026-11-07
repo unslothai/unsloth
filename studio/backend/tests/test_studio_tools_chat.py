@@ -636,59 +636,58 @@ def test_dropping_nulls_leaves_recipe_rows_as_written():
     assert result.structured_content == {"data_rows": rows}
 
 
-class _VideoClient:
-    """get_job answers in order; each call records its arguments."""
+class _VideoReads:
+    """jobs.follow answers in order; each read records its arguments."""
 
     def __init__(self, *answers):
         self.answers, self.calls = list(answers), []
 
-    async def call_tool(
+    async def __call__(
         self,
+        caller,
         name,
-        args,
-        raise_on_error = True,
+        job_id,
+        wait_s = 0,
+        **_kw,
     ):
-        self.calls.append((name, args))
-        return self.answers.pop(0)
+        self.calls.append((name, job_id, wait_s))
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
 
-def _job(
-    status = None,
-    error = False,
-    **extra,
-):
-    content = {"kind": "video", "id": "video_1", "status": status, **extra} if status else None
-    return SimpleNamespace(is_error = error, structured_content = content)
+def _job(status):
+    return SimpleNamespace(structured_content = {"kind": "video", "id": "video_1", "status": status})
 
 
-def test_a_chats_video_is_followed_to_the_end_inside_its_own_call():
-    created = SimpleNamespace(
-        is_error = False, structured_content = {"id": "video_1", "status": "queued"}
+def _follow(monkeypatch, reads, created, seconds):
+    from studio_mcp import jobs
+    monkeypatch.setattr(jobs, "follow", reads)
+    return asyncio.run(
+        studio_tools_mcp._follow_video(object(), created, time.monotonic() + seconds)
     )
-    done = _job("completed", url = "/v1/videos/video_1/content")
-    client = _VideoClient(_job("in_progress"), done)
-    result = asyncio.run(studio_tools_mcp._follow_video(client, created, time.monotonic() + 600))
-    assert result is done
-    assert [args["id"] for _, args in client.calls] == ["video_1", "video_1"]
-    assert all(0 < args["wait_s"] <= 240 for _, args in client.calls)
 
 
-def test_following_a_video_falls_back_to_the_job_and_never_outlives_its_limit():
-    created = SimpleNamespace(
-        is_error = False, structured_content = {"id": "video_1", "status": "queued"}
-    )
-    # get_job turned off in Settings: the job reference still answers.
-    off = _VideoClient(_job(error = True))
-    assert (
-        asyncio.run(studio_tools_mcp._follow_video(off, created, time.monotonic() + 600)) is created
-    )
+CREATED = SimpleNamespace(is_error = False, structured_content = {"id": "video_1", "status": "queued"})
+
+
+def test_a_chats_video_is_followed_to_the_end_inside_its_own_call(monkeypatch):
+    done = _job("completed")
+    reads = _VideoReads(_job("in_progress"), done)
+    assert _follow(monkeypatch, reads, CREATED, 600) is done
+    assert [(name, job) for name, job, _ in reads.calls] == [("video", "video_1")] * 2
+    assert all(0 < wait <= 240 for *_, wait in reads.calls)
+
+
+def test_following_a_video_falls_back_to_the_job_and_never_outlives_its_limit(monkeypatch):
+    from fastmcp.exceptions import ToolError
+
+    # A failed read: the job reference still answers.
+    assert _follow(monkeypatch, _VideoReads(ToolError("gone")), CREATED, 600) is CREATED
     # Out of time: hand the job back, still running, rather than wait into the call's timeout.
-    late = _VideoClient()
-    assert asyncio.run(studio_tools_mcp._follow_video(late, created, time.monotonic())) is created
-    assert late.calls == []
+    late = _VideoReads()
+    assert _follow(monkeypatch, late, CREATED, 0) is CREATED and late.calls == []
     # A refused create is not followed.
     refused = SimpleNamespace(is_error = True, structured_content = None)
-    assert (
-        asyncio.run(studio_tools_mcp._follow_video(_VideoClient(), refused, time.monotonic() + 600))
-        is refused
-    )
+    assert _follow(monkeypatch, _VideoReads(), refused, 600) is refused

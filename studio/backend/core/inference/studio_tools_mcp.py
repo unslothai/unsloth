@@ -136,16 +136,17 @@ async def _call(
                     raise RuntimeError("MCP server was updated or removed while connecting")
                 result = await client.call_tool(name, args, raise_on_error = False)
                 if follow_until is not None:
-                    result = await _follow_video(client, result, follow_until)
+                    result = await _follow_video(caller, result, follow_until)
                 return result
     finally:
         reset_caller(token)
 
 
-async def _follow_video(client: Any, created: Any, follow_until: float) -> Any:
+async def _follow_video(caller: Any, created: Any, follow_until: float) -> Any:
     """Follows a chat's video to the end in its own call, as the built-in generate_video tool does,
-    so a Stop reaches the render. Past the call's limit it is left running, never cancelled."""
-    from studio_mcp.jobs import RUNNING
+    so a Stop reaches the render. Read directly, not through get_job, which Settings can turn off.
+    Past the call's limit it is left running, never cancelled, as the built-in tool leaves it."""
+    from studio_mcp import jobs
     from studio_mcp.loading import WAIT_S_LIMIT
 
     job = getattr(created, "structured_content", None)
@@ -154,17 +155,13 @@ async def _follow_video(client: Any, created: Any, follow_until: float) -> Any:
         return created
     result = created
     while (left := follow_until - time.monotonic()) >= 1:
-        read = await client.call_tool(
-            "get_job",
-            {"kind": "video", "id": job_id, "wait_s": int(min(left, WAIT_S_LIMIT))},
-            raise_on_error = False,
-        )
-        # get_job turned off in Settings, or a failed read: the job reference still answers.
-        if getattr(read, "is_error", False):
+        try:
+            read = await jobs.follow(caller, "video", job_id, wait_s = int(min(left, WAIT_S_LIMIT)))
+        except Exception:  # noqa: BLE001 - a failed read still leaves the job reference to answer
             return result
         result = read
         status = (getattr(read, "structured_content", None) or {}).get("status")
-        if status not in RUNNING:
+        if status not in jobs.RUNNING:
             break
     return result
 
