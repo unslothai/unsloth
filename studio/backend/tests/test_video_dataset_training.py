@@ -524,3 +524,23 @@ class AudioDecoder:
 def test_decoded_hf_audio_cells_are_not_video(path):
     from utils.datasets.format_detection import detect_video_columns
     assert detect_video_columns({"audio": AudioDecoder(path), "text": "hi"}) == []
+
+
+def test_an_input_column_is_the_video_question():
+    ds = Dataset.from_dict({"video": CLIPS, "input": [QUESTION] * 2, "output": ANSWERS})
+    for row in _format(ds):
+        assert row["messages"][0]["content"][-1] == {"type": "text", "text": QUESTION}
+
+
+def test_text_only_message_rows_lose_the_arrow_video_key():
+    text_row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "yo"}]},
+        ]
+    }
+    ds = Dataset.from_list([_messages_rows()[0], text_row])
+    for row in _format(ds):
+        for message in row["messages"]:
+            for part in message["content"]:
+                assert None not in part.values(), part

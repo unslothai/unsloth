@@ -801,7 +801,7 @@ _VIDEO_TEXT_KEYWORDS = (
     "response",
     "label",
 )
-_VIDEO_QUESTION_KEYWORDS = ("question", "prompt", "instruction", "query")
+_VIDEO_QUESTION_KEYWORDS = ("question", "prompt", "instruction", "query", "input")
 
 
 def encoded_video(value):

@@ -969,10 +969,10 @@ def own_message_videos(
     hub = _HubClips(dataset_name, dataset_revision)
     rows = [row for row in rows]
     for row in rows:
-        if not video_parts(row.get("messages")):
+        if not isinstance(row.get("messages"), list):
             continue
         for message in row["messages"]:
-            content = message.get("content")
+            content = message.get("content") if isinstance(message, dict) else None
             if not isinstance(content, list):
                 continue
             # Arrow fills absent keys with None, and the collator reads any "image" key as an image.
