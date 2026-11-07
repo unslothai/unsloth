@@ -82,3 +82,18 @@ def test_a_raise_leaves_every_module_home():
     with pytest.raises(RuntimeError):
         tq._hop_each(mods, torch.device("cuda:0"), fn)
     assert [m.weight.device.type for m in mods] == ["cpu"] * 4
+
+
+def test_staged_upload_refuses_what_it_cannot_copy_exactly():
+    assert tq._upload_staged(object(), torch.device("cuda:0")) is False
+    lin = torch.nn.Linear(4, 4)
+    lin.weight.data = lin.weight.data.t()  # non-contiguous: left to module.to
+    assert tq._upload_staged(lin, torch.device("cuda:0")) is False
+    assert lin.weight.device.type == "cpu"
+
+
+@pytest.mark.skipif(torch.cuda.is_available(), reason = "checks the no-CUDA fallback")
+def test_staged_upload_without_cuda_moves_nothing():
+    lin = torch.nn.Linear(4, 4)
+    assert tq._upload_staged(lin, torch.device("cuda:0")) is False
+    assert lin.weight.device.type == "cpu"

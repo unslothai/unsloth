@@ -2180,18 +2180,66 @@ def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:
         for module in modules:
             fn(module)
         return
-    from concurrent.futures import ThreadPoolExecutor
 
     def _home(module: Any) -> Any:
         weight = getattr(module, "weight", None)
         return getattr(weight, "device", None)
 
+    from .host_pinning import host_pinning_allowed
+
+    staged = host_pinning_allowed(work)
+
     def _up(module: Any) -> Any:
         home = _home(module)
         if home is None or home.type != "cpu":
             return None
-        module.to(work)
+        if not (staged and _upload_staged(module, work)):
+            module.to(work)
         return home
+
+    try:
+        _hop_loop(modules, fn, _up)
+    finally:
+        if staged:
+            from .diffusion_memory import release_pinned_host_memory
+            release_pinned_host_memory()
+
+
+def _upload_staged(module: Any, work: Any) -> bool:
+    """``module.to(work)`` through page-locked copies of its own tensors: a pageable host-to-device copy runs at
+    1-2 GB/s on cloud hosts, a pinned one at the link rate. Bitwise a copy; False (nothing moved) when a tensor
+    cannot be staged, so the caller falls back to ``module.to``."""
+    import torch
+
+    try:
+        tensors = list(module._parameters.items()) + list(module._buffers.items())
+    except AttributeError:  # not an nn.Module
+        return False
+    if any(
+        t is not None and (type(t.data) is not torch.Tensor or not t.data.is_contiguous())
+        for _n, t in tensors
+    ):
+        return False
+    try:
+        moved = {
+            name: t.data.pin_memory().to(work, non_blocking = True)
+            for name, t in tensors
+            if t is not None and t.device.type == "cpu"
+        }
+        torch.cuda.current_stream(work).synchronize()
+    except Exception:  # noqa: BLE001 - pinning refused: the pageable copy still works
+        return False
+    for name, value in moved.items():
+        if name in module._parameters:
+            module._parameters[name].data = value
+        else:
+            module._buffers[name] = value
+    return True
+
+
+def _hop_loop(modules: list, fn: Callable[[Any], None], _up: Callable[[Any], Any]) -> None:
+    """Upload module i + 1 on a helper thread while ``fn`` runs on module i; each goes home after ``fn``."""
+    from concurrent.futures import ThreadPoolExecutor
 
     pending = None
     with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "quant-hop") as pool:
