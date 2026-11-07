@@ -86,7 +86,7 @@ export function LibraryToolbar({
       <div className="relative min-w-48 flex-1">
         <HugeiconsIcon
           icon={Search01Icon}
-          className="pointer-events-none absolute start-3 top-3 size-4 text-muted-foreground"
+          className="pointer-events-none absolute inset-s-3 top-3 size-4 text-muted-foreground"
         />
         <Input
           type="search"

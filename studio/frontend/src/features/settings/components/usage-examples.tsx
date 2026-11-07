@@ -873,11 +873,11 @@ export function UsageExamples({
                               this matches. */}
                           <HugeiconsIcon
                             icon={InformationCircleIcon}
-                            className="size-[var(--ui-icon-size-hint)]"
+                            className="size-(--ui-icon-size-hint)"
                           />
                         </button>
                       </TooltipTrigger>
-                      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11/snug">
                         {t("settings.apiKeys.secureHttpsHint")}
                       </TooltipContent>
                     </Tooltip>
@@ -906,7 +906,7 @@ export function UsageExamples({
             </div>
           ) : null}
           {model ? null : (
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            <p className="text-ui-11/relaxed text-muted-foreground">
               {t("settings.apiKeys.usageNoModel")}
             </p>
           )}
@@ -978,7 +978,7 @@ export function UsageExamples({
               </a>
             )}
           </div>
-          <p className="text-ui-11 leading-relaxed text-muted-foreground">
+          <p className="text-ui-11/relaxed text-muted-foreground">
             {t("settings.apiKeys.codingAgentsHint")}
           </p>
           <div className="@container">
@@ -1006,7 +1006,7 @@ export function UsageExamples({
                   </SelectTrigger>
                   <SelectContent
                     align="start"
-                    className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] [&_[data-slot=select-scroll-down-button]]:hidden [&_[data-slot=select-scroll-up-button]]:hidden"
+                    className="max-h-[min(var(--radix-select-content-available-height),calc(7*2.25rem+0.5rem))] **:data-[slot=select-scroll-down-button]:hidden **:data-[slot=select-scroll-up-button]:hidden"
                   >
                     {availableAgents.map((id) => {
                       const details = detailsFor(id);
@@ -1031,7 +1031,7 @@ export function UsageExamples({
           </div>
           <div className="relative min-w-0">
             <code
-              className="block min-w-0 whitespace-pre-wrap break-all rounded-3xl border border-border bg-background/70 py-2.5 pr-10 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
+              className="block min-w-0 whitespace-pre-wrap break-all rounded-3xl border border-border bg-background/70 py-2.5 pr-10 pl-4 font-mono text-ui-11/relaxed text-foreground dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.05*var(--contrast-wash-gain,1)))]"
               data-reload-snapshot-sensitive={apiKey ? "" : undefined}
             >
               {agentCommand}
@@ -1049,7 +1049,7 @@ export function UsageExamples({
             </button>
           </div>
           {agent === "vscode" && (
-            <p className="text-ui-11 leading-relaxed text-muted-foreground">
+            <p className="text-ui-11/relaxed text-muted-foreground">
               {t("settings.agents.vscodeNote")}
             </p>
           )}

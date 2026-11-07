@@ -210,7 +210,7 @@ function TextPrefix({ text, className }: { text: string; className?: string }) {
   return (
     <pre
       className={cn(
-        "size-full overflow-auto whitespace-pre-wrap break-words px-6 pb-6 font-mono text-sm leading-relaxed",
+        "size-full overflow-auto whitespace-pre-wrap wrap-break-word px-6 pb-6 font-mono text-sm/relaxed",
         className,
       )}
     >
@@ -454,7 +454,7 @@ function PreviewBody({
               onChange={(event) => onDraftChange(event.target.value)}
               spellCheck={false}
               placeholder={t("library.preview.startWriting")}
-              className="size-full resize-none bg-transparent px-6 pb-6 font-mono text-sm leading-relaxed outline-none"
+              className="size-full resize-none bg-transparent px-6 pb-6 font-mono text-sm/relaxed outline-none"
             />
           </Zoomed>
         );

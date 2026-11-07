@@ -240,7 +240,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                   <span className="min-w-0 break-all font-mono text-ui-12 font-medium text-foreground">
                     {modelId}
                   </span>
-                  <span className="min-w-0 break-words text-ui-11 text-muted-foreground">
+                  <span className="min-w-0 wrap-break-word text-ui-11 text-muted-foreground">
                     {summary.length > 0 ? summary.join(" · ") : "App defaults"}
                   </span>
                 </div>

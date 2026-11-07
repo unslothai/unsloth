@@ -86,6 +86,6 @@ export function MarkdownBlockFallbackView({ content }: { content: string }) {
     );
   }
   return (
-    <div className="my-4 whitespace-pre-wrap break-words">{fallback.text}</div>
+    <div className="my-4 whitespace-pre-wrap wrap-break-word">{fallback.text}</div>
   );
 }

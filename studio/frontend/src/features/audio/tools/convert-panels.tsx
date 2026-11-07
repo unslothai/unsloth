@@ -50,7 +50,7 @@ function PanelSection({
       <div className="grid gap-0.5">
         <h3 className="text-ui-13 font-medium text-foreground">{title}</h3>
         {hint ? (
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          <p className="text-ui-11p5/snug text-muted-foreground">
             {hint}
           </p>
         ) : null}
@@ -211,7 +211,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
                   }
                 />
               </FieldLabel>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              <p className="text-ui-11p5/snug text-muted-foreground">
                 Makes the voice hard to recognise instead of copying the target.
               </p>
             </div>

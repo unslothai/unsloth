@@ -1088,7 +1088,7 @@ export function ChatMcpServersDialog({
                   </span>
                 </div>
                 <Switch
-                  className="mt-[var(--ui-title-cap-inset)]"
+                  className="mt-(--ui-title-cap-inset)"
                   id="mcp-oauth"
                   checked={form.useOauth}
                   disabled={formPending}

@@ -116,7 +116,7 @@ export function PinnedPageRow({
               event.preventDefault();
               setRenaming(true);
             }}
-            className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full py-0 pl-3 pr-4 text-ui-14p5 font-medium leading-ui-19 tracking-nav group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action:focus-visible)]:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
+            className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full py-0 pl-3 pr-4 text-ui-14p5/ui-19 font-medium tracking-nav group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action:focus-visible)]:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 pointer-coarse:pr-16"
           >
             <SiteFavicon
               url={page.url}
@@ -201,7 +201,7 @@ function RenameField({
         if (event.key === "Enter") finish(event.currentTarget.value);
         else if (event.key === "Escape") finish(null);
       }}
-      className="h-[calc(30px*var(--ui-space-scale,1))] w-full border-0 bg-transparent py-0 pl-3 pr-4 text-ui-14p5 font-medium leading-ui-19 tracking-nav text-foreground outline-none"
+      className="h-[calc(30px*var(--ui-space-scale,1))] w-full border-0 bg-transparent py-0 pl-3 pr-4 text-ui-14p5/ui-19 font-medium tracking-nav text-foreground outline-none"
     />
   );
 }

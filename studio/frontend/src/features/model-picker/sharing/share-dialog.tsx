@@ -199,7 +199,7 @@ export function ShareRunConfigDialog({
       {detail !== undefined && disabled && (
         <p
           id={`${id}-${key}-detail`}
-          className="pb-2 pl-7 text-ui-12 leading-snug text-muted-foreground"
+          className="pb-2 pl-7 text-ui-12/snug text-muted-foreground"
         >
           {detail}
         </p>
@@ -228,7 +228,7 @@ export function ShareRunConfigDialog({
             {shareableModel ? (
               choice("model", "Model", includeModel, setIncludeModel, model)
             ) : (
-              <p className="py-1.5 text-ui-12 leading-snug text-muted-foreground">
+              <p className="py-1.5 text-ui-12/snug text-muted-foreground">
                 This model uses a local path. The recipient can choose their own
                 model.
               </p>
@@ -298,8 +298,8 @@ export function ShareRunConfigDialog({
             <p
               className={
                 destination === "browser" && remoteAddress
-                  ? "text-ui-12 leading-snug text-amber-600 dark:text-amber-500"
-                  : "text-ui-12 leading-snug text-muted-foreground"
+                  ? "text-ui-12/snug text-amber-600 dark:text-amber-500"
+                  : "text-ui-12/snug text-muted-foreground"
               }
             >
               {destination !== "browser"
@@ -313,7 +313,7 @@ export function ShareRunConfigDialog({
             <div className="flex items-center gap-2">
               <label
                 htmlFor={`${id}-link`}
-                className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+                className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255/calc(0.12*var(--contrast-wash-gain,1)))]"
               >
                 <span className="sr-only">Shareable link</span>
                 <Textarea
@@ -327,7 +327,7 @@ export function ShareRunConfigDialog({
                       event.currentTarget.select();
                     }
                   }}
-                  className="no-scrollbar! min-h-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-pre rounded-none border-0 bg-transparent p-0 py-1 font-mono text-ui-12 leading-4 text-muted-foreground md:text-ui-12 dark:bg-transparent dark:focus-visible:bg-transparent"
+                  className="no-scrollbar! min-h-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-pre rounded-none border-0 bg-transparent p-0 py-1 font-mono text-ui-12/ui-16 text-muted-foreground md:text-ui-12 dark:bg-transparent dark:focus-visible:bg-transparent"
                 />
               </label>
               <Button
@@ -363,7 +363,7 @@ export function ShareRunConfigDialog({
                   settings{!isTauri && " or open in Web"}.
                 </output>
               )}
-            <p className="text-ui-12 leading-snug text-muted-foreground">
+            <p className="text-ui-12/snug text-muted-foreground">
               Anyone with the link can read the included settings. Custom text,
               template code and file, network or tool arguments cannot be
               shared.

@@ -22,7 +22,7 @@ export const roformerOverlapPanel: AudioToolPanel<OverlapValue> = {
           onCheckedChange={(overlap) => onChange({ overlap })}
         />
       </FieldLabel>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-11p5/snug text-muted-foreground">
         Runs the model over overlapping windows and blends them. Off is about
         three times faster. Changing it reloads the model, which takes a few
         seconds.

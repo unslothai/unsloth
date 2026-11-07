@@ -150,7 +150,7 @@ export function BrowserToggleButton({
           <HugeiconsIcon
             icon={EnterFullViewIcon}
             strokeWidth={1.75}
-            className="size-[calc(var(--icon-size)*1.2)] -mx-[calc(var(--icon-size)*0.1)]"
+            className="size-[calc(var(--icon-size)*1.2)] mx-[calc(-0.1*var(--icon-size))]"
           />
           {t("browser.newTabFullView")}
           {fullViewShortcut ? (

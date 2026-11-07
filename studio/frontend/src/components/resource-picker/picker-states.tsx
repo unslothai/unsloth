@@ -14,7 +14,7 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
       type="button"
       onClick={onRetry}
       className={cn(
-        "btn-fill mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-11 font-medium text-foreground transition-colors ",
+        "btn-fill mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-ui-11 font-medium text-foreground transition-colors",
         PICKER_OPTION_FOCUS_VISIBLE_CLASS,
       )}
     >
@@ -46,7 +46,7 @@ export function PickerSearchError({
     >
       <div className={cn("min-w-0", compact && "text-left")}>
         <p className="text-ui-12p5 font-medium text-foreground">{title}</p>
-        <p className="text-ui-11 leading-snug text-muted-foreground">
+        <p className="text-ui-11/snug text-muted-foreground">
           {detail}
         </p>
       </div>

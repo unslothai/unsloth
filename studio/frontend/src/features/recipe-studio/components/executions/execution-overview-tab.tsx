@@ -272,7 +272,7 @@ export function ExecutionOverviewTab({
             terminalLines.map((line, index) => (
               <p
                 key={`${index}-${line.slice(0, 24)}`}
-                className="whitespace-pre-wrap break-words leading-relaxed"
+                className="whitespace-pre-wrap wrap-break-word leading-relaxed"
               >
                 {line}
               </p>

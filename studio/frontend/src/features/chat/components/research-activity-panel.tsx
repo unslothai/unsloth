@@ -358,7 +358,7 @@ const ActivityRow = memo(function ActivityRow({
       {activity.input ? (
         <p
           className={cn(
-            "line-clamp-3 break-words rounded-lg bg-muted/45 px-3 py-2 text-foreground/80",
+            "line-clamp-3 wrap-break-word rounded-lg bg-muted/45 px-3 py-2 text-foreground/80",
             activity.kind === "step" &&
               "bg-wash-5 ring-1 ring-wash-10",
           )}
@@ -376,7 +376,7 @@ const ActivityRow = memo(function ActivityRow({
               <span aria-hidden className="text-foreground/70">
                 ·
               </span>
-              <span className="min-w-0 break-words text-foreground/80">
+              <span className="min-w-0 wrap-break-word text-foreground/80">
                 {label}
               </span>
             </li>
@@ -384,7 +384,7 @@ const ActivityRow = memo(function ActivityRow({
         </ul>
       ) : null}
       {activity.reasoning ? (
-        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words scroll-rounded rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
+        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap wrap-break-word scroll-rounded rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
           {activity.state === "running" && activity.reasoning.length > 8000
             ? `…\n${activity.reasoning.slice(-8000)}`
             : activity.reasoning}
@@ -404,7 +404,7 @@ const ActivityRow = memo(function ActivityRow({
                 <span className="block font-medium text-foreground/80">
                   {step.title}
                 </span>
-                <span className="line-clamp-2 break-words">{step.query}</span>
+                <span className="line-clamp-2 wrap-break-word">{step.query}</span>
               </span>
             </div>
           ))}
@@ -431,11 +431,11 @@ const ActivityRow = memo(function ActivityRow({
           key={`${activity.id}-${source.id ?? source.url}`}
           type="button"
           onClick={() => openLink(source.url)}
-          className="group/source flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group/source flex w-full items-start gap-2 rounded-md p-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <InternetGlyph className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
-            <span className="block line-clamp-2 break-words font-medium text-foreground/85">
+            <span className="block line-clamp-2 wrap-break-word font-medium text-foreground/85">
               {source.title || source.url}
             </span>
             <span className="block truncate text-ui-11">{source.url}</span>
@@ -453,7 +453,7 @@ const ActivityRow = memo(function ActivityRow({
           key={`${activity.id}-${source.chunkId}`}
           className="rounded-lg bg-muted/45 px-3 py-2"
         >
-          <p className="line-clamp-2 break-words font-medium text-foreground/85">
+          <p className="line-clamp-2 wrap-break-word font-medium text-foreground/85">
             {source.filename}
             {source.page ? ` · page ${source.page}` : ""}
           </p>
@@ -465,7 +465,7 @@ const ActivityRow = memo(function ActivityRow({
         </div>
       ))}
       {activity.excerpt ? (
-        <p className="line-clamp-5 whitespace-pre-wrap break-words rounded-lg bg-muted/45 px-3 py-2 leading-relaxed">
+        <p className="line-clamp-5 whitespace-pre-wrap wrap-break-word rounded-lg bg-muted/45 px-3 py-2 leading-relaxed">
           {activity.excerpt}
         </p>
       ) : null}
@@ -500,7 +500,7 @@ const ActivityRow = memo(function ActivityRow({
           >
             <ActivityIcon activity={activity} />
           </span>
-          <span className="min-w-0 flex-1 break-words text-ui-13p5 font-medium leading-5 text-foreground/90">
+          <span className="min-w-0 flex-1 wrap-break-word text-ui-13p5 font-medium leading-5 text-foreground/90">
             {activity.title}
           </span>
           <time className="shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
@@ -579,7 +579,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
     <>
       <section className="mx-4 mt-3 rounded-2xl border border-wash-20 bg-wash-5 p-3">
         <p className="font-heading text-sm font-medium">Research plan ready</p>
-        <p className="mt-1 line-clamp-2 break-words text-xs text-muted-foreground">
+        <p className="mt-1 line-clamp-2 wrap-break-word text-xs text-muted-foreground">
           {run.plan.title}
         </p>
         <Button
@@ -594,7 +594,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
         open={open}
         onOpenChange={(nextOpen) => setOpen(runId, nextOpen)}
       >
-        <DialogContent className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 data-open:animate-none sm:max-w-3xl [&>[data-slot=dialog-close]]:right-6 [&>[data-slot=dialog-close]]:top-6">
+        <DialogContent className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 data-open:animate-none sm:max-w-3xl *:data-[slot=dialog-close]:right-6 *:data-[slot=dialog-close]:top-6">
           <DialogHeader className="border-b border-border/70 px-7 pb-4 pt-6 pr-16">
             <DialogTitle>Review the research plan</DialogTitle>
             <DialogDescription className="max-w-2xl leading-relaxed">
@@ -720,7 +720,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
             ) : (
               <div className="space-y-3">
                 <div className="mb-4 flex items-start justify-between gap-4">
-                  <p className="break-words font-heading text-lg font-medium leading-snug text-foreground/90">
+                  <p className="wrap-break-word font-heading text-lg/snug font-medium text-foreground/90">
                     {draft.title}
                   </p>
                   <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-ui-11 font-medium text-muted-foreground">
@@ -736,10 +736,10 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
                       {index + 1}
                     </span>
                     <span className="min-w-0">
-                      <span className="block break-words text-sm font-medium leading-5 text-foreground/90">
+                      <span className="block wrap-break-word text-sm font-medium leading-5 text-foreground/90">
                         {step.title}
                       </span>
-                      <span className="mt-1 block break-words text-ui-13 leading-relaxed text-muted-foreground/90">
+                      <span className="mt-1 block wrap-break-word text-ui-13/relaxed text-muted-foreground/90">
                         {step.query}
                       </span>
                     </span>
@@ -812,7 +812,7 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
   };
 
   return (
-    <div className="border-t border-border/70 bg-background/95 p-3 backdrop-blur">
+    <div className="border-t border-border/70 bg-background/95 p-3 backdrop-blur-sm">
       <Button
         className="w-full"
         disabled={pending}
@@ -920,7 +920,7 @@ export function ResearchActivityPanel({
                 {researchStatusLabel(run.status)}
               </span>
             </div>
-            <p className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground">
+            <p className="mt-0.5 line-clamp-2 wrap-break-word text-xs text-muted-foreground">
               {run.plan?.title ?? "Investigating your question"}
             </p>
             {websiteLimitLabel ? (

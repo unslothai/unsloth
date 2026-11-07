@@ -77,7 +77,7 @@ function StemChips({ stems }: { stems: readonly string[] }) {
   return (
     <div className="grid gap-1">
       <span className="text-ui-13 font-medium text-foreground">Outputs</span>
-      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+      <p className="text-ui-11p5/snug text-muted-foreground">
         {stems.map(stemLabel).join(" · ")}
       </p>
     </div>
@@ -124,12 +124,12 @@ function SeparateInputs({
       </div>
       {outputs ? <StemChips stems={outputs} /> : null}
       {pageModelLoaded ? null : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           Loading a separation model replaces the model in the main slot.
         </p>
       )}
       {pageModelLoaded && separate.cpuWarning ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           {separate.cpuWarning}
         </p>
       ) : null}
@@ -218,7 +218,7 @@ export function SeparateFooter({
         handleGenerate={separate.handleGenerate}
       />
       {ready && !presentation && !props.error ? (
-        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-center text-ui-11p5/snug text-muted-foreground">
           {separate.willReload
             ? "Reloads the model with the new overlap first (a few seconds). "
             : ""}

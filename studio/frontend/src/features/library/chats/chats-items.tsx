@@ -472,7 +472,7 @@ function ChatMenu({
   );
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute inset-e-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -1016,7 +1016,7 @@ export function ChatListHeader({
         )}
       >
         {selectable && (
-          <div className="absolute end-full top-1/2 me-3 flex -translate-y-1/2">
+          <div className="absolute inset-e-full top-1/2 me-3 flex -translate-y-1/2">
             <Checkbox
               checked={allSelected}
               onCheckedChange={onToggleAll}
@@ -1093,7 +1093,7 @@ export function ChatRow({
       <SelectBox
         chat={chat}
         visible={actions.selection.size > 0}
-        className="absolute end-full top-1/2 me-3 flex -translate-y-1/2"
+        className="absolute inset-e-full top-1/2 me-3 flex -translate-y-1/2"
       />
       <div className={cn("flex min-w-0 flex-1 items-center gap-4 py-2", !showTile && TILELESS_ROW_NAME)}>
         {showTile && <ChatTile chat={chat} />}
@@ -1190,7 +1190,7 @@ export function ChatCard({
         <ChatBadges chat={chat} marksOnly={showTile} />
       </div>
       <ChatMenu chat={chat} archived={archived} variant="card" />
-      <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 end-4 flex" />
+      <SelectBox chat={chat} visible={selecting} className="absolute bottom-5 inset-e-4 flex" />
       <button
         type="button"
         onClick={(event) => {
@@ -1314,7 +1314,7 @@ export function CollectionHeader({
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-6.5" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h2 className="flex min-w-0 items-center gap-2.5 text-ui-30 font-medium leading-tight text-foreground">
+          <h2 className="flex min-w-0 items-center gap-2.5 text-3xl/tight font-medium text-foreground">
             <span className="truncate">{name}</span>
             {marks}
           </h2>
@@ -1345,7 +1345,7 @@ function ProjectMenu({
   const pinned = actions.pinnedProjects.has(project.id);
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute inset-e-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -1563,7 +1563,7 @@ function SectionMenu({
 }) {
   return (
     <Isolate
-      className={cn(variant === "card" && "absolute end-2 top-2 z-10")}
+      className={cn(variant === "card" && "absolute inset-e-2 top-2 z-10")}
     >
       <DropdownMenu>
         <MenuTrigger variant={variant} />
@@ -1801,7 +1801,7 @@ function FavoriteTile({
         )}
       >
         <div className="grid aspect-square grid-cols-[minmax(0,1fr)] grid-rows-[auto_1fr_auto] px-5 pt-5 pb-3.5">
-          <p className="line-clamp-2 min-h-[2.75em] break-words font-medium text-ui-12p5 leading-snug text-foreground">
+          <p className="line-clamp-2 min-h-[2.75em] wrap-break-word font-medium text-ui-12p5/snug text-foreground">
             {title}
           </p>
           <div className="flex flex-col items-center text-foreground before:flex-5 after:flex-7">

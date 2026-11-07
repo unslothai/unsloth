@@ -192,7 +192,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex h-full w-[46px] shrink-0 items-center justify-center transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+        "relative z-80 inline-flex h-full w-[46px] shrink-0 items-center justify-center transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
         className,
       )}
     >
@@ -228,7 +228,7 @@ export function DesktopTitlebarNavigation({
   return (
     <div
       className={cn(
-        "flex mt-[var(--studio-titlebar-navigation-margin-top,0px)] translate-y-[var(--studio-titlebar-navigation-offset-y,0px)] items-center",
+        "flex mt-(--studio-titlebar-navigation-margin-top,0px) translate-y-(--studio-titlebar-navigation-offset-y,0px) items-center",
         customTitlebar ? "gap-[4px]" : "gap-0.5",
         className,
       )}
@@ -475,7 +475,7 @@ export function WindowTitlebar({
           // Marks a consumer of --studio-sidebar-live-width, so scoped writes land here, not on <html>.
           data-titlebar-live-width-scope=""
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"
+          className="pointer-events-none absolute inset-x-0 top-(--studio-custom-titlebar-height) z-45 h-[12px]"
         >
           {pinned && (
             <div
@@ -503,7 +503,7 @@ export function WindowTitlebar({
       )}
       <header
         className={cn(
-          "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-[70] h-[var(--studio-custom-titlebar-height)] select-none text-foreground",
+          "modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-70 h-(--studio-custom-titlebar-height) select-none text-foreground",
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
         data-titlebar-live-width-scope=""
@@ -542,7 +542,7 @@ export function WindowTitlebar({
         <div
           className={cn(
             // Keep native window actions crisp above the visual modal backdrop.
-            "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
+            "pointer-events-auto absolute right-0 top-0 z-100 flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
           data-wallpaper-chrome-controls=""

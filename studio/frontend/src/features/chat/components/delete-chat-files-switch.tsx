@@ -26,12 +26,12 @@ export function DeleteChatFilesSwitch({
         <span className="block text-sm font-medium text-foreground">
           {label}
         </span>
-        <span className="block break-words text-xs leading-5 text-muted-foreground">
+        <span className="block wrap-break-word text-xs leading-5 text-muted-foreground">
           {description ?? t("shell.selection.deleteChatFilesDescription")}
         </span>
       </label>
       <Switch
-        className="mt-[var(--ui-title-cap-inset)]"
+        className="mt-(--ui-title-cap-inset)"
         id={id}
         checked={checked}
         onCheckedChange={onCheckedChange}

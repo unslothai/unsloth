@@ -262,7 +262,7 @@ function SandboxSetupContent({
           <p className={`${NOTE_CLASS} text-destructive`}>{view.note}</p>
         ) : null}
         {view.outputLines.length > 0 ? (
-          <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
+          <pre className="whitespace-pre-wrap wrap-break-word font-mono text-ui-11 text-muted-foreground">
             {view.outputLines.join("\n")}
           </pre>
         ) : null}

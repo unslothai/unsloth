@@ -37,7 +37,7 @@ const LiveDecodeFigures: FC = () => {
   return (
     <span
       data-slot="live-generation-line"
-      className="aui-live-generation-line ml-[var(--icon-btn-inset)] mr-2 min-w-0 select-none font-mono text-ui-11p5 text-muted-foreground tabular-nums"
+      className="aui-live-generation-line ml-(--icon-btn-inset) mr-2 min-w-0 select-none font-mono text-ui-11p5 text-muted-foreground tabular-nums"
     >
       {formatLiveDecode(decode, t, locale)}
     </span>

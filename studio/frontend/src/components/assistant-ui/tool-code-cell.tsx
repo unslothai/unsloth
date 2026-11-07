@@ -134,7 +134,7 @@ function HighlightedCode({
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="max-h-48 overflow-auto text-xs [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-xs [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!p-3 [&_[data-streamdown=code-block]]:!border-0"
+      className="max-h-48 overflow-auto text-xs [&_pre]:m-0! [&_pre]:bg-transparent! [&_pre]:p-0! [&_pre]:text-xs! **:data-[streamdown=code-block]:my-0! **:data-[streamdown=code-block]:p-3! **:data-[streamdown=code-block]:border-0!"
     >
       {highlight ? (
         <Streamdown

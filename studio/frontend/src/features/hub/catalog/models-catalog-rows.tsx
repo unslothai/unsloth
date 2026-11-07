@@ -201,7 +201,7 @@ function CachedSizeChipLive({
             ))}
           </ul>
         ) : (
-          <span className="block max-w-52 text-ui-11 leading-4 text-muted-foreground">
+          <span className="block max-w-52 text-ui-11/ui-16 text-muted-foreground">
             {variantMessage}
           </span>
         )}
@@ -300,7 +300,7 @@ function CatalogRow({
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
         <div
-          className={cn("pointer-events-none relative", card && "z-[1] w-full")}
+          className={cn("pointer-events-none relative", card && "z-1 w-full")}
         >
           {children}
         </div>
@@ -533,7 +533,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <div className="flex min-w-0 flex-1 flex-col gap-[calc(3px*var(--ui-space-scale,1))]">
           <div className="flex h-[calc(18px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2 pr-2">
-              <p className="truncate text-ui-12 font-medium leading-ui-18 tracking-[-0.005em] text-foreground">
+              <p className="truncate text-ui-12/ui-18 font-medium tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
               <AccessGlyphs
@@ -569,7 +569,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
               />
             </div>
           </div>
-          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5 leading-ui-16 text-muted-foreground/85">
+          <div className="flex h-[calc(16px*var(--ui-space-scale,1))] min-w-0 items-center justify-between gap-2 text-ui-11p5/ui-16 text-muted-foreground/85">
             <span className="flex min-w-0 items-center gap-1">
               <span className="truncate">{row.owner}</span>
               {row.owner.toLowerCase() === "unsloth" && (
@@ -752,7 +752,7 @@ export const InventoryRow = memo(function InventoryRow({
     ) : null;
 
   const ownerLine = (
-    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5 leading-ui-15 text-muted-foreground/80">
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-ui-11p5/ui-15 text-muted-foreground/80">
       <span className="truncate">{subLabel}</span>
       {subLabel.toLowerCase() === "unsloth" && (
         <span
@@ -885,12 +885,12 @@ export const InventoryRow = memo(function InventoryRow({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-ui-12p5 font-semibold leading-ui-16 text-foreground">
+              <span className="truncate text-ui-12p5/ui-16 font-semibold text-foreground">
                 {title}
               </span>
               {compactMarkers}
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-10p5 leading-ui-14 text-muted-foreground/75">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-10p5/ui-14 text-muted-foreground/75">
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate">{subLabel}</span>
                 {subLabel.toLowerCase() === "unsloth" && (
@@ -956,7 +956,7 @@ export const InventoryRow = memo(function InventoryRow({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className="truncate text-ui-13p5 font-semibold leading-ui-17 text-foreground">
+              <span className="truncate text-ui-13p5/ui-17 font-semibold text-foreground">
                 {title}
               </span>
               {statusMarkers}

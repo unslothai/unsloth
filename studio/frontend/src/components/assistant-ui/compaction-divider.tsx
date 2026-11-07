@@ -33,7 +33,7 @@ export const CompactionDivider: FC<
   if (pending) {
     return (
       <DividerRule className={className}>
-        <p className="max-w-72 text-xs leading-snug">
+        <p className="max-w-72 text-ui-12/snug">
           Your next message starts a fresh context. Older messages stay here,
           and the parts relevant to each question are brought back
           automatically.

@@ -170,7 +170,7 @@ export function MediaApiExamples({
             {t("settings.apiKeys.mediaApi.title")}
           </h2>
         )}
-        <p className="text-xs leading-relaxed text-muted-foreground">
+        <p className="text-ui-12/relaxed text-muted-foreground">
           {t("settings.apiKeys.mediaApi.description")}
         </p>
       </div>
@@ -194,7 +194,7 @@ export function MediaApiExamples({
         onChange={setKind}
       />
       {pageModel == null || autoSwitch === false ? (
-        <div className="flex min-w-0 flex-col gap-1 text-ui-11 leading-relaxed text-muted-foreground">
+        <div className="flex min-w-0 flex-col gap-1 text-ui-11/relaxed text-muted-foreground">
           {pageModel == null ? (
             <p>{t("settings.apiKeys.mediaApi.placeholderModel")}</p>
           ) : null}

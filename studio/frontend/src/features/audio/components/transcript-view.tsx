@@ -149,7 +149,7 @@ function SpeakerChip({
             }
           }}
         />
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           Renames every line by this speaker.
         </p>
         <div className="flex justify-end gap-2">
@@ -239,7 +239,7 @@ export function TranscriptView({
   return (
     <>
       {!source ? null : audio.status === "missing" ? (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        <p className="text-ui-11p5/snug text-muted-foreground">
           The audio for this transcript is no longer available. Timestamps still
           export.
         </p>
@@ -271,7 +271,7 @@ export function TranscriptView({
             className="[&>button]:px-3"
           />
           {tabsHint ? (
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-11p5/snug text-muted-foreground">
               {tabsHint}
             </p>
           ) : null}
@@ -313,7 +313,7 @@ export function TranscriptView({
                     {speakersOn && segment.speaker
                       ? chip(segment.speaker)
                       : null}
-                    <p className="min-w-0 flex-1 basis-[calc(160px*var(--ui-space-scale,1))] text-sm leading-relaxed text-foreground">
+                    <p className="min-w-0 flex-1 basis-[calc(160px*var(--ui-space-scale,1))] text-sm/relaxed text-foreground">
                       {segment.text}
                     </p>
                   </div>
@@ -330,14 +330,14 @@ export function TranscriptView({
                 className="flex flex-col items-start gap-1"
               >
                 {paragraph.speaker ? chip(paragraph.speaker) : null}
-                <p className="text-sm leading-relaxed text-foreground">
+                <p className="text-sm/relaxed text-foreground">
                   {paragraph.text}
                 </p>
               </div>
             ))}
           </div>
         ) : (
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+          <p className="whitespace-pre-wrap text-sm/relaxed text-foreground">
             {text}
           </p>
         )}

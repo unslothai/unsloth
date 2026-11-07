@@ -278,10 +278,10 @@ export function ArtifactCard({
           />
         </span>
         <span className="pointer-events-none relative grid min-w-0 flex-1 gap-1">
-          <span className="truncate text-ui-15 font-medium leading-tight text-foreground">
+          <span className="truncate text-ui-15/tight font-medium text-foreground">
             {pageTitle}
           </span>
-          <span className="truncate text-sm leading-tight text-muted-foreground">
+          <span className="truncate text-sm/tight text-muted-foreground">
             {isStreaming ? (
               <span className="shimmer motion-reduce:animate-none">Generating…</span>
             ) : isReact ? (
@@ -302,7 +302,7 @@ export function ArtifactCard({
             disabled={isStreaming}
             onClick={() => open("preview")}
             aria-pressed={showing}
-            className="btn-fill cursor-pointer pl-3.5 pr-2.5 transition-colors focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none disabled:cursor-default disabled:hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
+            className="btn-fill cursor-pointer pl-3.5 pr-2.5 transition-colors focus-visible:bg-[rgb(0_0_0/calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none disabled:cursor-default disabled:hover:bg-[rgb(0_0_0/calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-visible:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:disabled:hover:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]"
           >
             Open in
           </button>
@@ -312,7 +312,7 @@ export function ArtifactCard({
                 type="button"
                 disabled={isStreaming}
                 aria-label="More ways to open"
-                className="btn-fill flex cursor-pointer items-center pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none aria-expanded:bg-[rgb(0_0_0_/_calc(0.09*var(--contrast-wash-gain,1)))] disabled:cursor-default dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:aria-expanded:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                className="btn-fill flex cursor-pointer items-center pl-1.5 pr-2.5 text-muted-foreground transition-colors hover:text-foreground focus-visible:bg-[rgb(0_0_0/calc(0.09*var(--contrast-wash-gain,1)))] focus-visible:outline-none aria-expanded:bg-[rgb(0_0_0/calc(0.09*var(--contrast-wash-gain,1)))] disabled:cursor-default dark:focus-visible:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))] dark:aria-expanded:bg-[rgb(255_255_255/calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
                   icon={ChevronDownStandardIcon}
@@ -324,7 +324,7 @@ export function ArtifactCard({
             <DropdownMenuContent
               align="end"
               sideOffset={8}
-              className="min-w-56 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+              className="min-w-56 rounded-lg p-1 **:data-[slot=dropdown-menu-separator]:mx-3 **:data-[slot=dropdown-menu-separator]:my-1.5"
             >
               <DropdownMenuItem onSelect={() => open("preview")}>
                 <MenuGlyph icon={InternetIcon} />

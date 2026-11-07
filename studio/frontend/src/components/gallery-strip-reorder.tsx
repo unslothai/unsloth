@@ -20,14 +20,14 @@ export function StripDropLine({
           ? cn(
               "inset-y-1 w-0.5",
               edge === "before"
-                ? "-left-[calc(5px*var(--ui-space-scale,1))]"
-                : "-right-[calc(5px*var(--ui-space-scale,1))]",
+                ? "left-[calc(-5px*var(--ui-space-scale,1))]"
+                : "right-[calc(-5px*var(--ui-space-scale,1))]",
             )
           : cn(
               "inset-x-1 h-0.5",
               edge === "before"
-                ? "-top-[calc(3px*var(--ui-space-scale,1))]"
-                : "-bottom-[calc(3px*var(--ui-space-scale,1))]",
+                ? "top-[calc(-3px*var(--ui-space-scale,1))]"
+                : "bottom-[calc(-3px*var(--ui-space-scale,1))]",
             ),
       )}
     />

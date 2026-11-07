@@ -111,7 +111,7 @@ export function ApiKeyRow({
     <div
       className={cn(
         TOKEN_ROW,
-        "group rounded-lg py-2.5 transition-colors hover:bg-muted dark:hover:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]",
+        "group rounded-lg py-2.5 transition-colors hover:bg-muted dark:hover:bg-[rgb(255_255_255/calc(0.06*var(--contrast-wash-gain,1)))]",
       )}
     >
       <div className="flex min-w-0 items-center gap-3">
@@ -148,7 +148,7 @@ export function ApiKeyRow({
           <Button
             variant="ghost"
             size="sm"
-            className="size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100 max-sm:!opacity-100 max-sm:size-9"
+            className="size-7 p-0 opacity-0 transition-opacity group-hover:opacity-100 data-[state=open]:opacity-100 max-sm:opacity-100! max-sm:size-9"
             aria-label={t("settings.apiKeys.actionsFor", { name: apiKey.name })}
           >
             <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />

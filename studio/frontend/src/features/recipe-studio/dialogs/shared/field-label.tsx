@@ -21,10 +21,10 @@ export function FieldLabel({
     <div className="flex min-w-0 items-center gap-1 text-xs font-semibold uppercase text-muted-foreground">
       {htmlFor ? (
         <label className="min-w-0 cursor-pointer" htmlFor={htmlFor}>
-          <span className="break-words">{label}</span>
+          <span className="wrap-break-word">{label}</span>
         </label>
       ) : (
-        <span className="min-w-0 break-words">{label}</span>
+        <span className="min-w-0 wrap-break-word">{label}</span>
       )}
       {hint && (
         <Tooltip>
@@ -38,7 +38,7 @@ export function FieldLabel({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent className="max-w-64 break-words text-xs leading-relaxed">
+          <TooltipContent className="max-w-64 wrap-break-word text-ui-12/relaxed">
             {hint}
           </TooltipContent>
         </Tooltip>

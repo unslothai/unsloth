@@ -416,13 +416,13 @@ export function TrainingStartOverlay({
             </AlertDialogContent>
           </AlertDialog>
           <Terminal
-            className="w-full min-h-[calc(390px*var(--ui-space-scale,1))] rounded-2xl border-0 px-7 py-6 text-left max-sm:min-h-[calc(260px*var(--ui-space-scale,1))] max-sm:px-4 max-sm:py-4"
+            className="w-full min-h-[calc(390px*var(--ui-space-scale,1))] rounded-2xl border-0 px-7 py-6 text-left max-sm:min-h-[calc(260px*var(--ui-space-scale,1))] max-sm:p-4"
             startOnView={false}
             instant={alreadyAnimated}
           >
           <TypingAnimation
             duration={36}
-            className="bg-gradient-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
+            className="bg-linear-to-r from-emerald-300 via-lime-300 to-teal-300 bg-clip-text font-semibold text-transparent"
           >
             {t("studio.trainingStart.terminalStart")}
           </TypingAnimation>

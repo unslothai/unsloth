@@ -123,13 +123,13 @@ export function CommandBlock({ command }: { command: string }) {
   return (
     <div
       className={cn(
-        "group relative overflow-hidden border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+        "group relative overflow-hidden border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255/calc(0.04*var(--contrast-wash-gain,1)))]",
         singleLine ? "rounded-full" : "rounded-lg",
       )}
     >
       <pre
         ref={preRef}
-        className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground"
+        className="py-3 pr-11 pl-4 text-ui-12/relaxed text-foreground"
       >
         <code className="block font-mono whitespace-pre-wrap break-all">
           {command}

@@ -95,8 +95,8 @@ function MarkdownPreviewImpl({
     <div
       className={cn(
         plain
-          ? "h-full w-full min-w-0 overflow-auto p-2 text-xs leading-relaxed pointer-events-none select-none"
-          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-lg border border-border/60 bg-muted/20 p-2 text-xs leading-relaxed",
+          ? "size-full min-w-0 overflow-auto p-2 text-ui-12/relaxed pointer-events-none select-none"
+          : "nodrag max-h-56 w-full min-w-0 overflow-auto scroll-rounded rounded-lg border border-border/60 bg-muted/20 p-2 text-ui-12/relaxed",
         className,
       )}
     >
