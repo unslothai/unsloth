@@ -2885,6 +2885,36 @@ def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_pat
     assert (home / "skills" / "new").is_dir()
 
 
+def test_codex_merges_user_rules_into_a_used_saved_home_as_real_files(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "rules").mkdir(parents = True)
+    forbid = 'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    (source_home / "rules" / "default.rules").write_text(forbid)
+    (source_home / "rules" / "team.rules").write_text(forbid)
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "rules").mkdir(parents = True)
+    approved = 'prefix_rule(pattern = ["ls"], decision = "allow")\n'
+    (home / "rules" / "default.rules").write_text(approved)
+
+    for _ in range(2):
+        assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+        # Codex loads only regular *.rules files, never symlinks.
+        rules = {p.name: p for p in (home / "rules").iterdir()}
+        assert set(rules) == {"default.rules", "user-default.rules", "team.rules"}
+        assert not any(p.is_symlink() for p in rules.values())
+        assert rules["default.rules"].read_text() == approved
+        assert rules["user-default.rules"].read_text() == forbid
+        assert rules["team.rules"].read_text() == forbid
+
+    (source_home / "rules" / "team.rules").unlink()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "rules" / "team.rules")
+    assert (source_home / "rules" / "default.rules").read_text() == forbid
+
+
 def test_codex_merges_user_skills_into_a_used_saved_home(fake_studio, tmp_path, monkeypatch):
     source_home = tmp_path / "user-codex"
     (source_home / "skills" / "release").mkdir(parents = True)

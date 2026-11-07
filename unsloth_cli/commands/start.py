@@ -3849,10 +3849,22 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
         ):
             # Codex creates skills/.system in every home it runs in.
             for child in entry.iterdir():
-                if not os.path.lexists(target / child.name) and _link_codex_entry(
-                    child.resolve(strict = False), target / child.name
+                child_target = target / child.name
+                if name == "rules" and child.is_file():
+                    # Codex skips symlinked *.rules (DirEntry::file_type), and this home's approvals take default.rules.
+                    if os.path.lexists(child_target):
+                        child_target = target / f"user-{child.name}"
+                    if os.path.lexists(child_target):
+                        continue
+                    try:
+                        os.link(child.resolve(strict = False), child_target)
+                    except OSError:
+                        shutil.copy2(child, child_target)
+                elif os.path.lexists(child_target) or not _link_codex_entry(
+                    child.resolve(strict = False), child_target
                 ):
-                    entries.append(f"{name}/{child.name}")
+                    continue
+                entries.append(f"{name}/{child_target.name}")
     _write_private_json(manifest, {"entries": entries})
 
 
