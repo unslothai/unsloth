@@ -1400,10 +1400,16 @@ def _xls_string(segments: list[bytes], seg: int, pos: int) -> tuple[str, int, in
         n = min(count, max(avail, 1))
         raw = segments[seg][pos : pos + n * width]
         pos += n * width
-        parts.append(raw.decode("utf-16-le" if wide else "latin-1", "replace"))
+        if not parts and n == count:
+            take(4 * runs + ext)
+            return raw.decode("utf-16-le" if wide else "latin-1", "replace"), seg, pos
+        if wide and len(raw) & 1:
+            # A corrupt record can end mid-character; one U+FFFD keeps the rest aligned.
+            raw = raw[:-1] + b"\xfd\xff"
+        parts.append(raw if wide else raw.decode("latin-1").encode("utf-16-le"))
         count -= n
     take(4 * runs + ext)
-    return "".join(parts), seg, pos
+    return b"".join(parts).decode("utf-16-le", "replace"), seg, pos
 
 
 def _xls_short_string(body: bytes, pos: int, length_bytes: int) -> str:

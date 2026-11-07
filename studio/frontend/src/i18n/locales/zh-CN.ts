@@ -2567,7 +2567,7 @@ export const zhCN = {
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
-        noGpu: "未检测到可见 GPU。上方仅显示 CPU 资源。",
+        noGpu: "未检测到独立 GPU。",
         noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
         mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
         mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",
@@ -2641,7 +2641,7 @@ export const zhCN = {
           "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
       },
       modelMemory: {
-        title: "模型内存",
+        title: "模型加载",
         keepResident: "将模型保留在显存中",
         keepResidentDescription: "在两次提问之间保持驻留显存。",
         keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载；当权重确实位于主机内存中时（统一内存，或部分卸载到 GPU），还会传入 --mlock，使操作系统无法将其换出、并在你下次提问时重新上传。",
@@ -2888,6 +2888,8 @@ export const zhCN = {
     },
     chat: {
       groups: {
+        replies: { title: "回复" },
+        thinkingTools: { title: "思考与工具" },
         conversations: { title: "对话" },
         files: { title: "文件与粘贴" },
         display: { title: "显示" },
@@ -2968,11 +2970,20 @@ export const zhCN = {
       showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
       showReplyTimesKeywords:
         "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
-      showGenerationDetails: "生成详情",
+      showGenerationDetails: "详细速度与加载信息",
       showGenerationDetailsDescription:
-        "实时显示提示词和回复速度及 token 数，并显示模型各层的加载位置。",
+        "在实时读数中加入提示词读取速度、token 数和草稿采纳率，并显示模型各层加载在哪里。",
       showGenerationDetailsKeywords:
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度与上下文统计",
+      generationStatsUpdatesDescription:
+        "实时模式在回复流式输出时统计每秒 token 数和上下文用量。完成后模式在每条回复结束时更新。",
+      generationStatsUpdatesHint:
+        "实时模式会在回复生成期间，每秒数次刷新回复下方的每秒 token 数读数和聊天顶部的上下文条。完成后模式会在每条回复结束后更新一次。实时模式可能导致卡顿或性能下降，在较旧或繁忙的机器上尤其明显。",
+      generationStatsUpdatesSettled: "完成后",
+      generationStatsUpdatesRealtime: "实时",
+      generationStatsUpdatesKeywords:
+        "实时 动态 更新 速度 上下文 统计 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       turnNavigation: "轮次导航",

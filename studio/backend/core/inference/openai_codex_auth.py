@@ -289,15 +289,24 @@ async def _token_request(data: dict[str, Any]) -> dict[str, Any]:
     if response.status_code >= 400:
         error_code = ""
         try:
-            error = response.json().get("error")
-            error_code = error.get("code", "") if isinstance(error, dict) else str(error or "")
+            payload = response.json()
+            error = payload.get("error")
+            error_code = error.get("code") if isinstance(error, dict) else error
+            # Codex CLI falls back to a top-level code and compares case-insensitively.
+            error_code = str(error_code or payload.get("code") or "").lower()
         except Exception:
             pass
-        if data.get("grant_type") == "refresh_token" and error_code in {
-            "invalid_grant",
-            "invalid_refresh_token",
-            "refresh_token_expired",
-        }:
+        if data.get("grant_type") == "refresh_token" and (
+            response.status_code == 401
+            or error_code
+            in {
+                "invalid_grant",
+                "invalid_refresh_token",
+                "refresh_token_expired",
+                "refresh_token_reused",
+                "refresh_token_invalidated",
+            }
+        ):
             raise CodexReauthorizationRequired(
                 "ChatGPT authorization is no longer valid. Please reconnect."
             )

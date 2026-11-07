@@ -2609,7 +2609,7 @@ export const ptBR = {
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
-        noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noGpu: "Nenhuma GPU dedicada detectada.",
         noUsableGpu: "Nenhuma GPU desta máquina pode ser usada pelo PyTorch.",
         mismatchCpuBuild:
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",
@@ -2685,7 +2685,7 @@ export const ptBR = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
       },
       modelMemory: {
-        title: "Memória do modelo",
+        title: "Carregamento do modelo",
         keepResident: "Manter o modelo na memória da GPU",
         keepResidentDescription: "Permanece na VRAM entre os prompts.",
         keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
@@ -2944,6 +2944,8 @@ export const ptBR = {
     },
     chat: {
       groups: {
+        replies: { title: "Respostas" },
+        thinkingTools: { title: "Raciocínio e ferramentas" },
         conversations: { title: "Conversas" },
         files: { title: "Arquivos e colagem" },
         display: { title: "Exibição" },
@@ -3025,11 +3027,20 @@ export const ptBR = {
       showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
       showReplyTimesKeywords:
         "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
-      showGenerationDetails: "Detalhes da geração",
+      showGenerationDetails: "Informações detalhadas de velocidade e carregamento",
       showGenerationDetailsDescription:
-        "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
+        "Adiciona às leituras ao vivo a velocidade de leitura do prompt, a contagem de tokens e a aceitação de rascunhos, e mostra onde as camadas do modelo foram carregadas.",
       showGenerationDetailsKeywords:
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estatísticas de velocidade e contexto",
+      generationStatsUpdatesDescription:
+        "Em tempo real conta tokens por segundo e uso do contexto enquanto uma resposta é transmitida. Ao terminar atualiza quando cada resposta termina.",
+      generationStatsUpdatesHint:
+        "Em tempo real atualiza o indicador de tokens por segundo abaixo de uma resposta e a barra de contexto no topo do chat algumas vezes por segundo enquanto a resposta é escrita. Ao terminar atualiza uma vez, quando cada resposta termina. O modo em tempo real pode causar lentidão ou queda de desempenho, principalmente em máquinas antigas ou ocupadas.",
+      generationStatsUpdatesSettled: "Ao terminar",
+      generationStatsUpdatesRealtime: "Em tempo real",
+      generationStatsUpdatesKeywords:
+        "tempo real ao vivo atualizar velocidade contexto estatísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",

@@ -2685,7 +2685,7 @@ export const th = {
         unavailable: "ไม่พร้อมใช้งาน",
         detecting: "กำลังตรวจหา GPU...",
         unreadable: "ไม่สามารถอ่านฮาร์ดแวร์ของเซิร์ฟเวอร์นี้ได้",
-        noGpu: "ไม่พบ GPU ทรัพยากรที่แสดงด้านบนเป็นของ CPU เท่านั้น",
+        noGpu: "ไม่พบ GPU แยก",
         noUsableGpu: "ไม่มี GPU ในเครื่องนี้ที่ PyTorch ใช้งานได้",
         mismatchCpuBuild:
           "PyTorch เป็นบิลด์สำหรับ CPU เท่านั้น ({version}) จึงใช้ GPU ด้านล่างไม่ได้ ซ่อมแซมการติดตั้งเพื่อกู้คืนการรองรับ GPU",
@@ -2768,7 +2768,7 @@ export const th = {
           "แบ็กเอนด์ การอนุมาน เอนจิน โฟลเดอร์ พาธ llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "หน่วยความจำโมเดล",
+        title: "การโหลดโมเดล",
         keepResident: "เก็บโมเดลไว้ในหน่วยความจำ GPU",
         keepResidentDescription: "คงอยู่ใน VRAM ระหว่างพรอมต์",
         keepResidentHint:
@@ -3033,6 +3033,8 @@ export const th = {
     },
     chat: {
       groups: {
+        replies: { title: "คำตอบ" },
+        thinkingTools: { title: "การคิดและเครื่องมือ" },
         conversations: {
           title: "การสนทนา",
         },
@@ -3124,11 +3126,20 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "รายละเอียดการสร้าง",
+      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
       showGenerationDetailsDescription:
-        "แสดงความเร็วของพรอมต์และการตอบกลับแบบเรียลไทม์พร้อมจำนวนโทเค็น และตำแหน่งที่โหลดเลเยอร์ของโมเดล",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
       showGenerationDetailsKeywords:
         "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "สถิติความเร็วและบริบท",
+      generationStatsUpdatesDescription:
+        "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",
+      generationStatsUpdatesHint:
+        "แบบเรียลไทม์จะรีเฟรชตัวแสดงโทเค็นต่อวินาทีใต้คำตอบและแถบบริบทด้านบนแชทหลายครั้งต่อวินาทีขณะเขียนคำตอบ แบบเมื่อเสร็จจะอัปเดตครั้งเดียวหลังแต่ละคำตอบจบ แบบเรียลไทม์อาจทำให้หน่วงหรือประสิทธิภาพลดลง โดยเฉพาะบนเครื่องรุ่นเก่าหรือเครื่องที่ทำงานหนัก",
+      generationStatsUpdatesSettled: "เมื่อเสร็จ",
+      generationStatsUpdatesRealtime: "เรียลไทม์",
+      generationStatsUpdatesKeywords:
+        "เรียลไทม์ สด อัปเดต ความเร็ว บริบท สถิติ realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",

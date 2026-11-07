@@ -5,6 +5,7 @@
 import { isMacPlatform } from "@/features/settings/lib/keyboard-shortcuts";
 // eslint-disable-next-line no-restricted-imports
 import { useTheme } from "@/features/settings/stores/theme-store";
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
@@ -177,6 +178,12 @@ const WEBKIT_LAYERS =
   typeof navigator !== "undefined" &&
   /AppleWebKit/.test(navigator.userAgent) &&
   !/Chrom|Edg|Android/i.test(navigator.userAgent);
+// WebKitGTK (the Linux app) also runs every backdrop-filter again on each composite, on the CPU, so
+// there glass drops its live blur except the sidebar's (index.css, data-glass-cpu). macOS WebKit
+// composites backdrops on the GPU and keeps real frosted glass.
+const WEBKIT_GTK =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
 
 export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   const material = useMaterialStore((s) => s.material);
@@ -228,6 +235,12 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
     document.documentElement.toggleAttribute(
       "data-glass-layers",
       WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-cpu",
+      WEBKIT_GTK && material !== "solid" && material !== "transparent" && here,
     );
   }, [material, here]);
   useEffect(() => {

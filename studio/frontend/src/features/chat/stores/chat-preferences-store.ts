@@ -19,6 +19,11 @@ import {
   type DisplayVisibility,
   migrateVisibility,
 } from "../utils/display-visibility.ts";
+import {
+  DEFAULT_GENERATION_STATS_UPDATES,
+  type GenerationStatsUpdates,
+  normaliseGenerationStatsUpdates,
+} from "../lib/live-generation-stats.ts";
 
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
@@ -41,6 +46,8 @@ export interface ChatPreferencesState {
   setShowReplyTimes: (value: boolean) => void;
   showGenerationDetails: boolean;
   setShowGenerationDetails: (value: boolean) => void;
+  generationStatsUpdates: GenerationStatsUpdates;
+  setGenerationStatsUpdates: (value: GenerationStatsUpdates) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -108,6 +115,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showGenerationDetails: false,
       setShowGenerationDetails: (showGenerationDetails) =>
         set({ showGenerationDetails }),
+      generationStatsUpdates: DEFAULT_GENERATION_STATS_UPDATES,
+      setGenerationStatsUpdates: (value) =>
+        set({ generationStatsUpdates: normaliseGenerationStatsUpdates(value) }),
       showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -165,6 +175,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showLinkPreviews: saved?.showLinkPreviews !== false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,
+          generationStatsUpdates: normaliseGenerationStatsUpdates(
+            saved?.generationStatsUpdates,
+          ),
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,

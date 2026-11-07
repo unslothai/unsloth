@@ -2672,7 +2672,7 @@ export const zhTW = {
         unavailable: "無法使用",
         detecting: "正在檢查 GPU...",
         unreadable: "無法讀取此伺服器的硬體資訊。",
-        noGpu: "未偵測到可見的 GPU。上方顯示的是僅 CPU 的資源。",
+        noGpu: "未偵測到獨立 GPU。",
         noUsableGpu: "這台電腦上沒有 PyTorch 可使用的 GPU。",
         mismatchCpuBuild:
           "PyTorch 是僅支援 CPU 的版本（{version}），因此無法使用下列 GPU。請修復安裝以恢復 GPU 支援。",
@@ -2752,7 +2752,7 @@ export const zhTW = {
           "llama.cpp 後端 推論 引擎 加速器 預先建置 切換 自訂 路徑 資料夾 目錄 執行檔 backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "模型記憶體",
+        title: "模型載入",
         keepResident: "將模型保留在 GPU 記憶體中",
         keepResidentDescription: "在提示詞之間持續保留在 VRAM 中。",
         keepResidentHint:
@@ -3013,6 +3013,8 @@ export const zhTW = {
     },
     chat: {
       groups: {
+        replies: { title: "回覆" },
+        thinkingTools: { title: "思考與工具" },
         conversations: {
           title: "對話",
         },
@@ -3106,11 +3108,20 @@ export const zhTW = {
       showReplyTimesDescription: "在每則回覆下方顯示其完成時間。",
       showReplyTimesKeywords:
         "時間戳記 時間 時鐘 日期 小時 完成 抵達 回覆 回應 訊息 timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "生成詳細資料",
+      showGenerationDetails: "詳細速度與載入資訊",
       showGenerationDetailsDescription:
-        "即時顯示提示詞和回覆的速度及 token 數，以及模型各層的載入位置。",
+        "在即時讀數中加入提示詞讀取速度、token 數和草稿採用率，並顯示模型各層載入在哪裡。",
       showGenerationDetailsKeywords:
         "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度與上下文統計",
+      generationStatsUpdatesDescription:
+        "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
+      generationStatsUpdatesHint:
+        "即時模式會在回覆產生期間，每秒數次重新整理回覆下方的每秒 token 數讀數和聊天頂端的上下文列。完成後模式會在每則回覆結束後更新一次。即時模式可能造成卡頓或效能下降，在較舊或忙碌的電腦上尤其明顯。",
+      generationStatsUpdatesSettled: "完成後",
+      generationStatsUpdatesRealtime: "即時",
+      generationStatsUpdatesKeywords:
+        "即時 動態 更新 速度 上下文 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
