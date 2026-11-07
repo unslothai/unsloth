@@ -319,16 +319,17 @@ def test_sliding_window_layers_until_the_window_fills(host, gemma3):
     )
     s = GG.stats(gemma3)
     assert s["replays"] == new - 2 and not s["refusals"], s
-    # Past the window the sliding layers roll: those steps run eagerly, tokens unchanged.
+    # Past the window the sliding layers roll by one slot per step: a second key (window full) is captured and
+    # validated (its rolled rows restored between the replay and the eager step), then replays; tokens unchanged.
     _fresh(gemma3)
     new = window + 5
     assert torch.equal(
         _generate(gemma3, ids, mask, False, new), _generate(gemma3, ids, mask, True, new)
     )
     s = GG.stats(gemma3)
-    full = 3 + new - 1 - window  # decode steps whose sliding update would roll
-    assert s["refusals"] == {"sliding window full": full}, s
-    assert s["replays"] == new - 1 - full - 1, s
+    assert not s["refusals"], s
+    assert s["captures"] == 2 and s["validations"] == 2, s
+    assert s["replays"] == new - 1 - 2 * 1, s
 
 
 def test_beam_search_reordering_the_cache_stays_eager(host, llama):
@@ -535,8 +536,15 @@ def test_window_and_host_state_checks():
     )
     layer.__dict__[name] = 3
     assert GG._window_reason(cache, 1) is None
+    # Full (rolls every step): replayable, keyed apart from the filling state.
     layer.__dict__[name] = 4
-    assert GG._window_reason(cache, 1) == "sliding window full"
+    assert GG._window_reason(cache, 1) is None
+    assert GG._window_state(cache) == (True,)
+    # A multi-token step that fills the window switches branches mid-step.
+    layer.__dict__[name] = 3
+    assert GG._window_reason(cache, 2) == "sliding window filling"
+    assert GG._window_state(cache) == (False,)
+    layer.__dict__[name] = 4
     before = GG._host_state(cache)
     layer.__dict__[name] = 5
     assert GG._host_state_reason(before, GG._host_state(cache), 1) is None

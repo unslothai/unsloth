@@ -206,7 +206,7 @@ def plan(model, args, kwargs, input_ids):
     )
     if kept and max_len:
         # transformers sizes the cache prompt + new tokens - 1 (the last token is never written back).
-        length = _cache_len(state.kept)
+        length = _kept_len(state)
         kept = length is not None and max_len - 1 <= length <= _KEEP_MAX_RATIO * max_len
     if state is not None and state.kept is not None and not kept:
         state.clear()
@@ -346,6 +346,8 @@ class _State:
         # keep(): the StaticCache the kept graphs address, its batch, and the training-forward hook.
         self.kept = None
         self.kept_bsz = None
+        # The max_cache_len the kept cache was built for (5.x), else None (its full layers' length is used).
+        self.kept_len = None
         self.hook = None
         self.owner = None
         self.kept_calls = 0
@@ -367,7 +369,7 @@ class _State:
 
     def drop_kept(self):
         """Forget the kept cache (and free it when the model still holds it for the next call)."""
-        kept, self.kept, self.kept_bsz = self.kept, None, None
+        kept, self.kept, self.kept_bsz, self.kept_len = self.kept, None, None, None
         if self.hook is not None:
             self.hook.remove()
             self.hook = None
@@ -416,8 +418,8 @@ def end(model, keep = False):
     if state is None:
         return
     state.active = False
-    cache = model.__dict__.get("_unsloth_generic_call_cache")
-    model.__dict__.pop("_unsloth_generic_call_cache", None)
+    cache = model.__dict__.pop("_unsloth_generic_call_cache", None)
+    length = model.__dict__.pop("_unsloth_generic_call_len", None)
     if (
         not keep
         or not state.graphs
@@ -427,7 +429,7 @@ def end(model, keep = False):
     ):
         state.clear()
         return
-    state.kept, state.kept_bsz = cache, _cache_batch(cache)
+    state.kept, state.kept_bsz, state.kept_len = cache, _cache_batch(cache), length
     state.kept_calls += 1
     if state.hook is None:
         state.hook = model.register_forward_pre_hook(_release_if_training)
@@ -451,6 +453,11 @@ def _cache_batch(cache):
         return int(cache.max_batch_size)
     except Exception:
         return None
+
+
+def _kept_len(state):
+    # Sliding layers are capped at their window, so only the length the cache was built for says what it holds.
+    return state.kept_len if state.kept_len is not None else _cache_len(state.kept)
 
 
 def _cache_len(cache):
@@ -489,7 +496,7 @@ def _kept_compatible(state, batch_size, max_cache_len, offloading):
     kept = state.kept
     if kept is None:
         return False
-    length = _cache_len(kept)
+    length = _kept_len(state)
     if length is None:
         return False
     return (
@@ -540,6 +547,10 @@ class reuse_kept_cache:
                 state.clear()
             cache = self.prepare(*args, **kwargs)
         model.__dict__["_unsloth_generic_call_cache"] = cache
+        if type(effective) is int:
+            model.__dict__["_unsloth_generic_call_len"] = (
+                effective if cache is not state.kept else _kept_len(state)
+            )
         return cache
 
     def __enter__(self):
@@ -667,15 +678,26 @@ def _host_counter(layer):
 
 
 def _window_reason(cache, q_len):
-    # A full sliding window rolls, which a replay cannot repeat.
+    # A step that fills a sliding window switches the update's branch mid-call: eager. Before and after it, every
+    # one-token step runs the same device work (write at the device counter, or roll by one slot), and the key
+    # carries which of the two each layer is in (_window_state), so a replay repeats the right one.
     for layer in cache.layers:
         if type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
             if count is None:
                 return "sliding layer without host counter"
-            if count + q_len > layer.max_cache_len:
-                return "sliding window full"
+            if count < layer.max_cache_len < count + q_len:
+                return "sliding window filling"
     return None
+
+
+def _window_state(cache):
+    """Per sliding layer: whether its window is full (it rolls) or still filling (writes at the counter)."""
+    return tuple(
+        _host_counter(layer) >= layer.max_cache_len
+        for layer in cache.layers
+        if type(layer) in _SLIDING_LAYERS
+    )
 
 
 def _host_state(cache):
@@ -698,7 +720,8 @@ def _host_state_reason(before, after, q_len):
 
 
 def _snapshot(cache):
-    """Length counters (host ints, device scalars) a step advances; restored by _restore."""
+    """Length counters (host ints, device scalars) a step advances, plus the rows of every full sliding window
+    (a step rolls them, so unlike a slot write it is not idempotent); restored by _restore."""
     host, device = [], []
     for layer in cache.layers:
         for name in _COUNTERS:
@@ -707,6 +730,12 @@ def _snapshot(cache):
                 host.append((layer, name, value))
             elif isinstance(value, torch.Tensor) and value.numel() == 1:
                 device.append((value, value.clone()))
+        if type(layer) in _SLIDING_LAYERS:
+            count = _host_counter(layer)
+            if count is not None and count >= layer.max_cache_len:
+                for rows in (getattr(layer, "keys", None), getattr(layer, "values", None)):
+                    if isinstance(rows, torch.Tensor):
+                        device.append((rows, rows.clone()))
     return host, device
 
 
@@ -1027,7 +1056,14 @@ def decode_step(
     )
     # Ambient autocast incl. cache flag (Dynamo guards on it); cached casts outlive end() in generate().
     autocast = (G._autocast_state(), torch.is_autocast_cache_enabled())
-    key = (spec, layout, autocast, torch.is_inference_mode_enabled(), eager_regions is not None)
+    key = (
+        spec,
+        layout,
+        _window_state(cache),
+        autocast,
+        torch.is_inference_mode_enabled(),
+        eager_regions is not None,
+    )
     refused = state.refused.get(key)
     if refused is not None:
         return _refusal(state, refused)

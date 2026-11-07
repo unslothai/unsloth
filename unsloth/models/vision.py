@@ -1548,6 +1548,22 @@ class _EagerDecodeSteps:
         return False
 
 
+try:
+    from unsloth_zoo.decode_graph_state import (
+        graph_generate as _zoo_graph_generate,
+        graph_decode_step as _zoo_graph_decode_step,
+    )
+except ImportError:
+    _zoo_graph_generate = _zoo_graph_decode_step = None
+
+
+def _one_token_step(kwargs):
+    ids = kwargs.get("input_ids")
+    if ids is None:
+        ids = kwargs.get("inputs_embeds")
+    return isinstance(ids, torch.Tensor) and ids.dim() >= 2 and ids.shape[1] == 1
+
+
 class _GraphDecodeSteps(_EagerDecodeSteps):
     """One generate() call over a static cache with decode CUDA graphs on: each one-token decode
     step replays a captured graph of the step the eager path runs (_generic_decode_graphs), else
@@ -1565,6 +1581,14 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
         self.caches = _generic_decode_graphs.reuse_kept_cache(model)
 
     def _forward(self, *args, **kwargs):
+        # zoo picks its graph-safe decode kernels (gpt-oss dense sink attention, routed MoE below sm80) for
+        # one-token steps in this scope: the eager warm-up, the capture and every eager step agree.
+        if _zoo_graph_decode_step is not None and _one_token_step(kwargs):
+            with _zoo_graph_decode_step():
+                return self._graph_forward(*args, **kwargs)
+        return self._graph_forward(*args, **kwargs)
+
+    def _graph_forward(self, *args, **kwargs):
         if not args and not torch.compiler.is_compiling():
             # The graph records exactly the step the eager path runs: compiled regions stay
             # compiled unless this model's eager decode leaves them (a different kernel mix
@@ -1584,9 +1608,15 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
     def __enter__(self):
         _generic_decode_graphs.begin(self.model)
         self.caches.__enter__()
+        # Masks are built in prepare_inputs_for_generation, outside the forward: the call-wide scope covers them.
+        self._zoo_scope = _zoo_graph_generate() if _zoo_graph_generate is not None else None
+        if self._zoo_scope is not None:
+            self._zoo_scope.__enter__()
         try:
             return super().__enter__()
         except BaseException:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
             self.caches.__exit__(None, None, None)
             raise
 
@@ -1594,6 +1624,8 @@ class _GraphDecodeSteps(_EagerDecodeSteps):
         try:
             return super().__exit__(*exc)
         finally:
+            if self._zoo_scope is not None:
+                self._zoo_scope.__exit__(None, None, None)
             self.caches.__exit__(*exc)
             _generic_decode_graphs.end(self.model, keep = self.keep and exc[0] is None)
 
