@@ -228,9 +228,8 @@ def load_h3_comfy_transformer(
 
 
 def _keep_fp32_init_buffers(transformer_cls: Any, prepare: Any) -> tuple:
-    """``prepare_model`` that also snapshots the float32 ``__init__`` buffers of ``_keep_in_fp32_modules`` (the rope
-    ``inv_freq``, which the file does not carry): the loader casts unloaded buffers to the compute dtype, and a bf16
-    rope moved the clip off the hosted checkpoint's (LPIPS 0.12 against 0.02 run to run on an A100)."""
+    """``prepare_model`` that also snapshots the float32 ``__init__`` buffers of ``_keep_in_fp32_modules``: the loader
+    casts unloaded buffers to the compute dtype, and a bf16 rope ``inv_freq`` drifts the clip off the hosted one's."""
     keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
     if isinstance(keep, str):
         keep = [keep]
