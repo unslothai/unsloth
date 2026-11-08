@@ -16,7 +16,7 @@ from .diffusion_vae_oom import free_first as oom_free_first
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
-# =0: the full-clip fp32 accumulator stays on the card (bands retire to host RAM otherwise).
+# =0: the full-clip fp32 accumulator stays on the card
 BANDED_OUTPUT_ENV = "UNSLOTH_LTX_VAE_BANDED_OUTPUT"
 _HOST_RESERVE_BYTES = 4 * 2**30
 
@@ -207,8 +207,7 @@ def banded_output_disabled() -> bool:
 
 
 def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
-    """Bands retire to host RAM only on a discrete NVIDIA card whose host holds the clip above a reserve (ROCm,
-    XPU, MPS, CPU and unified memory keep the device accumulator)."""
+    """Discrete NVIDIA card only, with host RAM for the clip above a reserve."""
     device = getattr(z, "device", None)
     if banded_output_disabled() or getattr(device, "type", None) != "cuda":
         return False
@@ -249,8 +248,7 @@ def _decode_bands(
     wy: list,
     wx: list,
 ) -> Any:
-    """``_decode_tiles``'s fp32 sums, tile order and final cast, holding only the open band on the card: rows (one
-    row of tiles) when tiles stack vertically, else columns; finished pixels go to host RAM, the clip returns once."""
+    """``_decode_tiles``'s sums, order and cast with one band on the card; finished pixels wait in host RAM."""
     import torch
 
     _, _, _, height, width = (int(x) for x in z.shape)
@@ -259,7 +257,6 @@ def _decode_bands(
     axis, side, starts = (-2, th, hs) if rows else (-1, tw, ws)
     out = band = None
     for b, s in enumerate(starts):
-        # The same row-major tile order as _decode_tiles: one row of tiles per band, else one column (a single row).
         for i, j in [(b, j) for j in range(len(ws))] if rows else [(0, b)]:
             y, x = hs[i], ws[j]
             tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
@@ -278,7 +275,7 @@ def _decode_bands(
             del tile
         lo, hi = s * ratio, (s + side) * ratio
         done = (starts[b + 1] * ratio if b + 1 < len(starts) else hi) - lo
-        # Stream-ordered: the copy to pinned RAM finishes before the band's next write on the same stream.
+        # Same stream: the copy out finishes before the band is rewritten.
         out.narrow(axis, lo, done).copy_(
             band.narrow(axis, 0, done).to(out.dtype), non_blocking = True
         )

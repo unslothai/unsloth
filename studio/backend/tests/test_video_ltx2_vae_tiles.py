@@ -342,7 +342,6 @@ def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, sha
         out = vt._decode_tiles(vae, z, None, False, *tile, True)
     assert out.dtype == ref.dtype and out.shape == ref.shape
     assert torch.equal(out, ref)
-    # the only accumulator is one band: a row of tiles high or a column of tiles wide, never the clip
     (band,) = seen
     h, w = ref.shape[-2:]
     assert band[:3] == tuple(ref.shape[:3])
@@ -363,22 +362,18 @@ def test_banded_output_needs_a_discrete_card_host_room_and_the_switch(monkeypatc
     monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
     assert vt._host_band_output(vae, _Z(), 32, 2)
-    assert not vt._host_band_output(
-        vae, cpu_z, 32, 2
-    )  # CPU decode: the accumulator is host RAM already
+    assert not vt._host_band_output(vae, cpu_z, 32, 2)
     monkeypatch.setenv(vt.BANDED_OUTPUT_ENV, "0")
     assert not vt._host_band_output(vae, _Z(), 32, 2)
     monkeypatch.delenv(vt.BANDED_OUTPUT_ENV)
-    # 1280x704x121 bf16 = 0.61 GiB: below the 4 GiB host reserve plus the clip, the card keeps the accumulator
+    # 0.61 GiB clip: below reserve + clip
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 4 * 1024 + 600)
     assert not vt._host_band_output(vae, _Z(), 32, 2)
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
     assert not vt._host_band_output(vae, _Z(), 32, 2)
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
-    # unified memory: a host copy is the same pool
     monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: True)
     assert not vt._host_band_output(vae, _Z(), 32, 2)
-    # ROCm keeps today's path
     monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     assert not vt._host_band_output(vae, _Z(), 32, 2)
