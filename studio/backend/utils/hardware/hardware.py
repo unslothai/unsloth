@@ -1529,6 +1529,22 @@ def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
         return DEVICE is not None and DETECTION_COMPLETE.is_set() and not CHAT_ONLY
 
 
+def _cuda_device_names() -> list:
+    from utils.hardware import nvidia
+
+    info = nvidia.cuda_device_info_or_torch()
+    if not info:
+        raise RuntimeError("the CUDA driver did not list the devices")
+    return [device[3] if device is not None else None for device in info]
+
+
+def _cuda_device0_name() -> str:
+    name = _cuda_device_names()[0]
+    if name is None:
+        raise RuntimeError("CUDA device 0 did not answer the driver query")
+    return name
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup: the "Hardware detected" banner names only device 0, hiding the other cards. Indices are CUDA ordinals, matching `nvidia-smi -L` when no mask is set. CUDA_DEVICE_ORDER governs only CUDA, so it is shown for CUDA but not ROCm. Purely informational and never raises."""
     try:
@@ -1543,9 +1559,19 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
             order = os.environ.get("CUDA_DEVICE_ORDER", "default")
             header = f"CUDA devices ({count}, CUDA_DEVICE_ORDER={order}):"
         lines = [header]
+        names = None
+        if not is_rocm:
+            try:
+                names = _cuda_device_names()
+            except Exception as e:
+                logger.debug("CUDA device name probe failed: %s", e)
+                names = []
         for i in range(count):
             try:
-                name = torch.cuda.get_device_properties(i).name
+                if names is not None:
+                    name = names[i] if i < len(names) and names[i] is not None else "<unavailable>"
+                else:
+                    name = torch.cuda.get_device_properties(i).name
             except Exception as e:
                 logger.debug("CUDA device %d property probe failed: %s", i, e)
                 name = "<unavailable>"
@@ -1748,8 +1774,14 @@ def _detect_hardware_locked() -> DeviceType:
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
+            _hip_ver = getattr(torch.version, "hip", None)
+            _is_rocm = _hip_ver is not None or "rocm" in torch.__version__.lower()
             try:
-                device_name = torch.cuda.get_device_properties(0).name
+                # Not get_device_properties for NVIDIA: it initialises CUDA in the server.
+                device_name = (
+                    torch.cuda.get_device_properties(0).name if _is_rocm else _cuda_device0_name()
+                )
             except Exception as e:
                 # failed CUDA init can make later PyTorch calls segfault, so log the cause
                 from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
@@ -1764,9 +1796,7 @@ def _detect_hardware_locked() -> DeviceType:
                 )
                 device_name = "<unavailable>"
 
-            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
-            _hip_ver = getattr(torch.version, "hip", None)
-            if _hip_ver is not None or "rocm" in torch.__version__.lower():
+            if _is_rocm:
                 IS_ROCM = True
                 _configure_rocm_miopen(torch)
                 _hip_label = _hip_ver or torch.__version__
@@ -3115,10 +3145,42 @@ def _cuda_props_are_integrated(props: Any, backend: Optional[str] = "cuda") -> b
 
 
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
-    """Per-GPU name and total VRAM only, without creating a driver context: get_device_properties is answered from the driver's device list, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
+    """Per-GPU name and total VRAM only, without creating a driver context: NVIDIA from the driver API (nvidia.cuda_device_info_or_torch), ROCm / XPU from get_device_properties, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
     mod, backend = _torch_get_device_module()
     if mod is None:
         return []
+
+    torch_mod = sys.modules.get("torch")
+    if (
+        backend == "cuda"
+        and mod is getattr(torch_mod, "cuda", None)
+        and not IS_ROCM
+        and not getattr(getattr(torch_mod, "version", None), "hip", None)
+    ):
+        from utils.hardware import nvidia
+
+        info = nvidia.cuda_device_info_or_torch(torch_mod)
+        nvidia_devices = []
+        for ordinal, phys_idx in enumerate(device_indices):
+            device = info[ordinal] if info is not None and ordinal < len(info) else None
+            if device is None:
+                logger.debug("driver inventory probe got no answer for ordinal %d", ordinal)
+                continue
+            nvidia_devices.append(
+                {
+                    "index": phys_idx,
+                    "visible_ordinal": ordinal,
+                    "name": device[3],
+                    "total_gb": round(device[2] / (1024**3), 2),
+                    "used_gb": None,
+                    "shared_memory": False,
+                    "shared_memory_host_backed_gb": None,
+                    "_rocm_known_unified": False,
+                    "_rocm_gfx": "",
+                    "_cuda_integrated": bool(device[1]),
+                }
+            )
+        return nvidia_devices
 
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
