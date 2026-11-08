@@ -2801,6 +2801,24 @@ if _SLOT_SAVE_HTTP_TIMEOUT <= 0:
     _SLOT_SAVE_HTTP_TIMEOUT = 30.0
 
 
+class _SlotLaunchFingerprint(NamedTuple):
+    """What a saved slot state's validity depends on besides the GGUF itself.
+
+    Compared whole, except by ``LlamaCppBackend.slot_resume_fits``, which lets the two context
+    fields differ."""
+
+    extra_args: tuple
+    sidecars: tuple
+    requested_n_ctx: object
+    effective_context_length: object
+    cache_types: object
+    parallel_slots: object
+    swa_full: object
+    kv_cache_unified: object
+    n_ubatch: object
+    flash_attn: object
+
+
 def _swa_cache_path() -> Path:
     home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
     base = Path(home) if home else Path.home() / ".unsloth" / "studio"
@@ -35463,7 +35481,7 @@ class LlamaCppBackend:
             return False
         return True
 
-    def _slot_launch_fingerprint(self) -> tuple:
+    def _slot_launch_fingerprint(self) -> "_SlotLaunchFingerprint":
         # KV validity keys on extra args, stat'd sidecar weights, effective ctx.
         sidecars = []
         for path in self._sidecar_weight_files():
@@ -35472,7 +35490,7 @@ class LlamaCppBackend:
                 sidecars.append((path, st.st_size, st.st_mtime_ns))
             except OSError:
                 sidecars.append((path, None, None))
-        return (
+        return _SlotLaunchFingerprint(
             tuple(self._extra_args or ()),
             tuple(sidecars),
             self._requested_n_ctx,
@@ -35484,6 +35502,48 @@ class LlamaCppBackend:
             self._n_ubatch,
             self._flash_attn_enabled,
         )
+
+    def _slot_context_capacity(self) -> Optional[int]:
+        """Tokens one slot of this launch holds. llama-server splits the context across its
+        slots unless the cache is unified; it also caps a slot at the model's training context,
+        and enforces that itself on a restore."""
+        try:
+            n_ctx = int(self._effective_context_length or self._requested_n_ctx or 0)
+        except (TypeError, ValueError):
+            return None
+        if n_ctx <= 0:
+            return None
+        if self._kv_cache_unified:
+            return n_ctx
+        return n_ctx // max(1, int(self.effective_parallel_slots or 1))
+
+    def slot_resume_fits(self, manifest: dict) -> bool:
+        """Whether the slot state ``manifest`` describes can be restored onto this launch.
+
+        The fingerprint pins what changes the KV cache's numerics or layout. Its two context
+        fields are the one thing allowed to differ: a state saved under one context length is
+        valid under any other, as long as every slot still holds its saved tokens. That is the
+        reload that only raised the Context Length (#9037), which used to prefill the whole chat
+        again. llama-server refuses a prompt longer than its slot anyway; checking the capacity
+        here only saves the round trip."""
+        saved = manifest.get("launch")
+        current = self._slot_launch_fingerprint()
+        if not isinstance(saved, (tuple, list)) or len(saved) != len(current):
+            return False
+        saved = _SlotLaunchFingerprint(*saved)
+        if saved == current:
+            return True
+        neutral = {"requested_n_ctx": None, "effective_context_length": None}
+        if saved._replace(**neutral) != current._replace(**neutral):
+            return False
+        capacity = self._slot_context_capacity()
+        slots = manifest.get("slots") or []
+        if capacity is None or not slots:
+            return False
+        try:
+            return all(0 < int(entry.get("n_saved") or 0) <= capacity for entry in slots)
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _gguf_load_source_identity(path: str, mmproj_path: Optional[str] = None) -> Optional[tuple]:
