@@ -542,11 +542,11 @@ def test_metadata_scales_follow_peft_patterns_and_yield_to_alpha_tensors():
     }
     out = lf.normalize_lora(state, "krea-2", meta)
     stem = "diffusion_model.blocks.0.attn."
-    assert torch.allclose(out[stem + "wq.lora_B.weight"], b * 2.0)  # 8 / 4
+    assert torch.allclose(out[stem + "wq.lora_B.weight"], b * 2.0)
     assert torch.allclose(out[stem + "wk.lora_B.weight"], b * 0.5)  # alpha_pattern 2 / 4
-    assert torch.allclose(out[stem + "wv.lora_B.weight"], b * 0.25)  # 1 / 4
+    assert torch.allclose(out[stem + "wv.lora_B.weight"], b * 0.25)
     rs = lf.normalize_lora(state, "krea-2", dict(meta, use_rslora = True))
-    assert torch.allclose(rs[stem + "wq.lora_B.weight"], b * 4.0)  # 8 / sqrt(4)
+    assert torch.allclose(rs[stem + "wq.lora_B.weight"], b * 4.0)
     dora = lf.normalize_lora(state, "krea-2", dict(meta, use_dora = True))
     assert dora[stem + "wq.lora_B.weight"] is b
     assert lf.normalize_lora(state, "krea-2")[stem + "wq.lora_B.weight"] is b

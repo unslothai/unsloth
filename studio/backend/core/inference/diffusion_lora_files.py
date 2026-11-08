@@ -43,7 +43,7 @@ _METADATA_KEY = "lora_adapter_metadata"  # diffusers' LORA_ADAPTER_METADATA_KEY
 
 
 def read_lora_metadata(path: str) -> Optional[dict]:
-    """The transformer's ``LoraConfig`` kwargs diffusers would read from the file's header for a path load, or None."""
+    """The transformer's ``LoraConfig`` kwargs diffusers reads from the header on a path load, or None."""
     import json
 
     from safetensors import safe_open
@@ -76,7 +76,7 @@ def _pattern_value(patterns: Any, stem: str, default: Any) -> Any:
 
 
 def _metadata_scale(metadata: dict, stem: str, rank: int) -> float:
-    """The ``scaling`` PEFT would give module ``stem`` (path relative to the transformer) under this config."""
+    """PEFT's ``scaling`` for module ``stem`` under this config."""
     import math
 
     alpha = float(_pattern_value(metadata.get("alpha_pattern"), stem, metadata["lora_alpha"]))
@@ -121,9 +121,7 @@ def normalize_lora(
     family: Optional[str],
     metadata: Optional[dict] = None,
 ) -> dict:
-    """Plain LoRA tensors as ``lora_A`` / ``lora_B`` with ``.alpha`` folded into ``lora_B`` (alpha / rank). The
-    rewritten dict loads without the file's header, so ``metadata`` (its diffusers ``LoraConfig``) is folded the same
-    way into every pair without a ``.alpha`` tensor: diffusers then runs each module at scale 1."""
+    """Plain LoRA tensors as ``lora_A`` / ``lora_B``, ``.alpha`` (else ``metadata``'s scale) folded into ``lora_B``."""
     import torch
 
     renamed: dict = {}
