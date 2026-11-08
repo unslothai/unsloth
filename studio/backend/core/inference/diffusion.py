@@ -473,7 +473,14 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
-from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
+from .diffusion_single_file_trust import assert_pickle_free_single_file, single_file_load_allowed
+from .diffusers_safetensors import (
+    component_safetensors_kwargs,
+    component_weight_state,
+    is_never_read_pickle,
+    pipeline_pickle_files,
+    pipeline_safetensors_kwargs,
+)
 from .diffusion_prequant import (
     PrequantIntoError,
     PrequantSource,
@@ -6888,7 +6895,13 @@ class DiffusionBackend:
                 )
                 # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
                 _record_revision(revisions_out, listing_repo, info)
-                return [s for s in info.siblings if not _listing_extra(listing_repo, s.rfilename)]
+                # A .bin beside the component's safetensors is never fetched (diffusers' own preference, made explicit).
+                skipped = set(pipeline_pickle_files(s.rfilename for s in info.siblings))
+                return [
+                    s
+                    for s in info.siblings
+                    if not _listing_extra(listing_repo, s.rfilename) and s.rfilename not in skipped
+                ]
 
             listing_repo = prefer_ungated_mirror(base_repo, hf_token)
             base_siblings = _base_listing(listing_repo)
@@ -7875,35 +7888,17 @@ class DiffusionBackend:
         itemsize: int,
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
+        """A ``.bin`` is never unpickled to price it (it is only ever a component with no safetensors). A load at two
+        bytes or less per float is bounded by the stored size (None keeps it); a wider load is bounded as if every
+        float were stored at two bytes."""
+        del pinned
         try:
-            import torch
-
-            state = torch.load(path, map_location = "cpu", mmap = True, weights_only = True)
-            if not isinstance(state, dict):
-                return None
-            tensors = []
-            seen: set = set()
-            for name, tensor in state.items():
-                if not isinstance(tensor, torch.Tensor):
-                    return None
-                # Tied weights are saved once and load as one tensor: count an exact alias once.
-                alias = (
-                    tensor.untyped_storage().data_ptr(),
-                    tensor.storage_offset(),
-                    tuple(tensor.shape),
-                    tuple(tensor.stride()),
-                    tensor.dtype,
-                )
-                if alias in seen:
-                    continue
-                seen.add(alias)
-                width = int(tensor.element_size()) if tensor.is_floating_point() else None
-                numel = int(tensor.numel())
-                tensors.append((str(name), width, numel, numel * int(tensor.element_size())))
-            del state
-            return DiffusionBackend._cast_tensor_bytes(tensors, itemsize, pinned)
-        except Exception:  # noqa: BLE001 - unreadable pickle keeps the on-disk size
+            stored = int(path.stat().st_size)
+        except OSError:
             return None
+        if itemsize <= 2:
+            return None
+        return stored * int(itemsize) // 2
 
     @staticmethod
     def _cast_tensor_bytes(
@@ -8450,9 +8445,12 @@ class DiffusionBackend:
                 # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and no name-based rule
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
-                if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
-                    # Admitted per file: prove it is a safetensors container before any probe or loader opens it.
-                    assert_safetensors_file(single_file_path)
+                if kind == "single_file":
+                    # Trusted repo or not, only an exact *.safetensors name loads (diffusers' single-file loader
+                    # torch.loads any other); a file admitted per file also proves its header before any probe opens it.
+                    assert_pickle_free_single_file(
+                        single_file_path, check_header = not _is_trusted_diffusion_repo(repo_id)
+                    )
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 assert_flux3_checkpoint_matches_family(fam, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
@@ -9816,7 +9814,14 @@ class DiffusionBackend:
                                     try:
                                         with _converted_shards_pread(dtype, small_host):
                                             pipe = pipeline_cls.from_pretrained(
-                                                _base_local_dir or fetch_base, **pipe_kwargs
+                                                _base_local_dir or fetch_base,
+                                                **pipe_kwargs,
+                                                **pipeline_safetensors_kwargs(
+                                                    _base_local_dir or fetch_base,
+                                                    passed = pipe_kwargs,
+                                                    cache_dir = pipe_kwargs.get("cache_dir"),
+                                                    pipeline_cls = pipeline_cls,
+                                                ),
                                             )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10171,7 +10176,14 @@ class DiffusionBackend:
                                     )
                                 with _converted_shards_pread(dtype, small_host):
                                     pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                        _base_local_dir or fetch_base,
+                                        **pipe_kwargs,
+                                        **pipeline_safetensors_kwargs(
+                                            _base_local_dir or fetch_base,
+                                            passed = pipe_kwargs,
+                                            cache_dir = pipe_kwargs.get("cache_dir"),
+                                            pipeline_cls = pipeline_cls,
+                                        ),
                                     )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
@@ -11786,6 +11798,9 @@ class DiffusionBackend:
             cache_dir = hub_cache_dir(),
             # Dense bf16 transformer is the largest fetch on this path, so API-initiated loads are refused here.
             local_files_only = local_files_only,
+            **component_safetensors_kwargs(
+                fetch_base, "transformer", cache_dir = hub_cache_dir(), model_cls = transformer_cls
+            ),
         )
         check_cancelled()
         pipe = self._assemble_pipe(
@@ -12272,7 +12287,16 @@ class DiffusionBackend:
             )
         )
         with _converted_shards_pread(dtype, None):
-            pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+            pipe = pipeline_cls.from_pretrained(
+                base_local_dir or base,
+                **pipe_kwargs,
+                **pipeline_safetensors_kwargs(
+                    base_local_dir or base,
+                    passed = pipe_kwargs,
+                    cache_dir = pipe_kwargs.get("cache_dir"),
+                    pipeline_cls = pipeline_cls,
+                ),
+            )
         check_cancelled()
         pipe.to(device)
         return pipe
@@ -13442,7 +13466,8 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for untrusted remote repos; if the Hub scan failed open, pickles still load.
             cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
-            if remote_cn:
+            # A local folder that ships safetensors loads them only, never a .bin twin beside them.
+            if remote_cn or component_weight_state(resolved_cn.path) is True:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(
                 resolved_cn.path,
@@ -16173,6 +16198,9 @@ def _base_file_downloaded(
         # from_single_file(config=repo, subfolder="transformer") always fetches this config. Video keeps
         # the same exception in video.py's snapshot filter.
         return True
+    if is_never_read_pickle(rfilename):
+        # .pt / .pth / .ckpt / .pkl: no component loader reads one, and Studio never unpickles weights.
+        return False
     if rfilename.startswith("transformer/"):
         return include_transformer
     if "/" not in rfilename:  # top-level: only the pipeline manifest is fetched
@@ -16220,7 +16248,10 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     name = lower.rsplit("/", 1)[1]
     if name.startswith(("openvino_", "flax_")):
         return False
-    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5", ".ckpt")):
+    if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5")) or is_never_read_pickle(
+        name
+    ):
+        # .pt / .pth / .ckpt / .pkl: no component loader reads one, and Studio never unpickles weights.
         return False
     if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
         return False

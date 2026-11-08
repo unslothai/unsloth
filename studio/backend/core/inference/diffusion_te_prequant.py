@@ -1563,6 +1563,7 @@ def _fetch_dense_components(
         fetched = snapshot_download(
             repo_id,
             allow_patterns = [f"{c}/*" for c in components],
+            ignore_patterns = _dense_component_pickles(repo_id, components, revision, hf_token),
             token = hf_token,
             cache_dir = cache_dir,
             revision = revision,
@@ -1573,6 +1574,31 @@ def _fetch_dense_components(
     except Exception as exc:  # noqa: BLE001 - the strict refusal below still explains the load
         _warn(logger, "dense_fallback_fetch", exc)
         return False
+
+
+def _dense_component_pickles(
+    repo_id: str, components: list, revision: Optional[str], hf_token: Optional[str]
+) -> list:
+    """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
+    the repo lists a safetensors weight for it. Without a listing only the never-read pickles are dropped, so a
+    component whose only copy is a .bin still loads."""
+    from .diffusers_safetensors import pipeline_pickle_files
+
+    patterns = [
+        f"{c}/*{suffix}"
+        for c in components
+        for suffix in (".pt", ".pth", ".ckpt", ".pkl", ".pickle")
+    ]
+    try:
+        from huggingface_hub import HfApi
+        names = HfApi().list_repo_files(repo_id, revision = revision, token = hf_token)
+    except Exception:  # noqa: BLE001 - no listing: the .bin of a component without safetensors must stay fetchable
+        return patterns
+    wanted = tuple(f"{c}/" for c in components)
+    patterns.extend(
+        n for n in pipeline_pickle_files(list(names) + ["model_index.json"]) if n.startswith(wanted)
+    )
+    return patterns
 
 
 def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
