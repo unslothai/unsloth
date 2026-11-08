@@ -108,6 +108,8 @@ _QUIET_SUCCESS_PATHS = {
     "/api/inference/video/load-progress",
     "/api/inference/images/generate-progress",
     "/api/inference/video/generate-progress",
+    # The Images queue panel's list; enqueue, move, cancel and clear are not GETs and still log.
+    "/api/inference/images/queue",
     # Polled by the Images page while the FLUX.3 prompt upsampler downloads.
     "/api/inference/images/prompt-upsampler/status",
     "/api/llama/update-status",

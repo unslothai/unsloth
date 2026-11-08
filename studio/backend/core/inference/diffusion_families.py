@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import contextlib
 import contextvars
 import os
 import re
@@ -56,6 +57,28 @@ class LoadIdentity:
 def load_identity(repo_id, base_repo, family) -> LoadIdentity:
     """``LoadIdentity`` for one load. None and "" describe the same absent field."""
     return LoadIdentity(str(repo_id or ""), str(base_repo or ""), str(family or ""))
+
+
+# The image queue pins the checkpoint file too: another quant of the same repo is the same LoadIdentity.
+_pinned_checkpoint: contextvars.ContextVar = contextvars.ContextVar(
+    "pinned_checkpoint", default = None
+)
+
+
+@contextlib.contextmanager
+def pin_checkpoint(filename):
+    token = _pinned_checkpoint.set((filename,))
+    try:
+        yield
+    finally:
+        _pinned_checkpoint.reset(token)
+
+
+def require_pinned_checkpoint(loaded_id: LoadIdentity, loaded_filename) -> None:
+    """Called by each engine beside its expected_load check, under the same lock."""
+    pin = _pinned_checkpoint.get()
+    if pin is not None and pin[0] != loaded_filename:
+        raise DiffusionModelReplacedError(loaded_id, loaded_id)
 
 
 class DiffusionModelReplacedError(RuntimeError):
