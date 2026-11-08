@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 conditioning blocks on a real accelerator (CUDA or ROCm): a tiny random ``Flux3Transformer2DModel`` in bf16,
-prepared as Studio loads it, stays as close to a float64 CPU oracle as the stock forward; a group-offloaded denoiser
-matches the stock output whether or not the offload cache arms (it arms on CUDA, ROCm keeps the stock path)."""
+"""FLUX.3 compact modulation and offload cache on a real CUDA / ROCm device, against a float64 CPU oracle."""
 
 import pytest
 

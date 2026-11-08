@@ -19,7 +19,6 @@ COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
 COND_KWARG = "unsloth_cond"
-# Instance flags: read at load (compact) and per render (offloaded); the pending miss an offloaded forward fills.
 _COMPACT_ATTR = "_unsloth_compact_mod"
 _OFFLOADED_ATTR = "_unsloth_cond_offloaded"
 _PENDING_ATTR = "_unsloth_cond_pending"
@@ -76,8 +75,7 @@ class _Entry:
 
 
 def _offloaded(module: Any) -> Optional[str]:
-    """Why ``module``'s weights are offloaded (None: resident). Conditioning blocks then run only inside the hooked
-    forward: run outside it they meet host weights or reorder the prefetch."""
+    """Why ``module`` is offloaded (None: resident); its conditioning then runs only inside the hooked forward."""
     for name, sub in module.named_modules():
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'} carries an accelerate hook"
@@ -89,8 +87,7 @@ def _offloaded(module: Any) -> Optional[str]:
 
 
 def _fixed_prefetch_chain(module: Any) -> Optional[str]:
-    """diffusers' own stream prefetch (no event-fenced prefetcher) fixes a next-group chain from one forward: a skipped
-    block it prefetched would stay on the device, so the offload cache declines it."""
+    """diffusers' fixed next-group prefetch chain would leave a skipped block on the device."""
     for name, sub in module.named_modules():
         hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
         for key, hook in hooks.items():
@@ -100,13 +97,13 @@ def _fixed_prefetch_chain(module: Any) -> Optional[str]:
 
 
 def _offload_device_ok(t: Any) -> bool:
-    """The in-forward cache is proven on CUDA only; ROCm, XPU, MPS and CPU offload keep the stock path."""
+    """Offload cache: CUDA only for now (ROCm, XPU, MPS, CPU keep stock)."""
     import torch
     return bool(t.is_cuda) and getattr(torch.version, "hip", None) is None
 
 
 def _rows(t: Any, batch_size: int, n: int) -> Any:
-    """``t`` as ``n`` per-token rows: a stride-0 view of a compact ``[B, 1, D]`` modulation, else ``t`` itself."""
+    """A compact ``[B, 1, D]`` modulation as ``n`` rows (stride-0 view)."""
     return t if t.shape[1] == n else t.expand(batch_size, n, -1)
 
 
@@ -123,10 +120,8 @@ def flux3_conditioning(
     compact: bool = False,
     target_temb: Any = None,
 ) -> dict:
-    """The conditioning-only part of ``Flux3Transformer2DModel.forward``, op for op: the timestep-0 embedding (plus
-    ``target_temb`` for a flow map), the text and reference modulations, projections and RoPE, and their per-mode
-    blocks. ``compact``: each modulation head projects one row per sample, ``[B, 1, 3 * dim]``, that the blocks
-    broadcast over the tokens (every token of a mode shares one timestep, so the rows are identical)."""
+    """The conditioning part of ``Flux3Transformer2DModel.forward``, op for op. ``compact``: one modulation row per
+    sample (every token of a mode shares its timestep), broadcast by the blocks."""
     import torch
     import torch.nn.functional as F
 
@@ -176,8 +171,7 @@ def flux3_conditioning(
 
 
 def _compact_call(module: Any, attention_kwargs: Any) -> bool:
-    """The compact forward stands in for the stock one: inference (training keeps stock and its checkpointing) with
-    no per-call LoRA scale (the stock forward's ``apply_lora_scale`` applies it)."""
+    """Inference without a per-call LoRA scale (stock ``apply_lora_scale`` handles it)."""
     import torch
 
     if not module.__dict__.get(_COMPACT_ATTR) or torch.is_grad_enabled():
@@ -186,8 +180,7 @@ def _compact_call(module: Any, attention_kwargs: Any) -> bool:
 
 
 def _claim_pending(module: Any, hidden_states: Any, sources: tuple) -> Optional[dict]:
-    """An offloaded miss (``_pre_hook``): compute the conditioning here, inside the hooked forward, and cache it. Only
-    for the call the miss was recorded for (same source objects and batch): a merged CFG call keeps stock."""
+    """Offloaded miss: compute and cache inside the hooked forward, only for the exact call it was recorded for."""
     import torch
 
     pending = module.__dict__.pop(_PENDING_ATTR, None)
@@ -231,8 +224,7 @@ def _flux3_cached_forward(
     return_dict: bool = True,
     unsloth_cond: Optional[dict] = None,
 ) -> Any:
-    """Stock forward op for op, taking precomputed ``unsloth_cond`` and, when the load armed it, one modulation row
-    per sample; with neither, it IS the stock forward."""
+    """Stock forward op for op, with precomputed ``unsloth_cond`` and / or compact modulation; else stock."""
     if unsloth_cond is None and self.__dict__.get(_PENDING_ATTR) is not None:
         unsloth_cond = _claim_pending(
             self,
@@ -269,7 +261,6 @@ def _flux3_cached_forward(
                 "cached conditioning states are only valid for a non-flow-map transformer"
             )
     else:
-        # the stock forward's checks; the conditioning streams then run here, as in the stock forward
         if image_cond_hidden_states is not None and image_cond_ids is None:
             raise ValueError("`image_cond_hidden_states` requires `image_cond_ids`.")
         if image_cond_hidden_states is None and image_cond_ids is not None:
@@ -317,7 +308,7 @@ def _flux3_cached_forward(
         cond_states = unsloth_cond["cond_states"]
         cond_rotary_emb = (unsloth_cond["cond_cos"], unsloth_cond["cond_sin"])
         content_states = torch.cat([hidden_states, cond_states], dim = 1)
-        # the two spans carry different timesteps, so the joint modulation is per token here (one copy per step)
+        # image and reference spans carry different timesteps: per token here
         content_mod = torch.cat(
             [
                 _rows(image_single_mod, batch_size, image_seq_len),
@@ -393,19 +384,17 @@ def _conditioning_blocks(module: Any, has_cond: bool) -> list:
 
 
 def _match_prefetch_order(module: Any, has_cond: bool, *, skipping: bool) -> None:
-    """Streamed groups prefetch in the order the last forward ran them; point it at this forward (conditioning
-    blocks skipped on a hit, run on a miss) so both stay on order. Any other mismatch only re-records it."""
+    """Keep the streamed prefetch on order when a hit skips (or a miss runs) the conditioning blocks."""
     from .diffusion_offload_prefetch import match_skipped_order
     try:
         match_skipped_order(module, _conditioning_blocks(module, has_cond), skipping = skipping)
-    except Exception:  # noqa: BLE001 - prefetch order is a speed hint; a stale one costs one unprefetched forward
+    except Exception:  # noqa: BLE001 - speed hint only
         pass
 
 
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     import torch
 
-    # a miss recorded for an earlier call (its forward never ran) must not reach this one
     module.__dict__.pop(_PENDING_ATTR, None)
     if args or kwargs.get(COND_KWARG) is not None or not module.__dict__.get("_unsloth_cond_live"):
         return None
@@ -447,7 +436,6 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     entry = cache.get(key)
     if entry is None or not entry.matches(sources):
         if offloaded:
-            # host weights: the forward computes these in its hooked scope (and, streamed, in prefetch order)
             module.__dict__[_PENDING_ATTR] = (key, sources)
             _match_prefetch_order(module, ich is not None, skipping = False)
             return None
@@ -483,8 +471,7 @@ def _applies(transformer: Any) -> Optional[str]:
 
 
 def prepare(transformer: Any, logger: Any = None) -> bool:
-    """Call at load, before the speed layer binds the class forward. Arms compact modulation for any FLUX.3 (distilled
-    too); True when the conditioning cache can arm."""
+    """Call at load, before the speed layer binds the class forward. True when the conditioning cache can arm."""
     cond_on = enabled()
     compact = compact_enabled()
     if transformer is None or not (cond_on or compact):

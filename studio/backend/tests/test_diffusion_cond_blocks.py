@@ -218,8 +218,7 @@ def _count_calls(blocks):
 
 
 def test_offloaded_conditioning_runs_once_inside_the_forward(monkeypatch):
-    """Group offloaded: the pre-hook only records the miss; the forward (hooks live) computes the conditioning once
-    per branch and later steps skip the text and reference blocks, bitwise equal to the uncached forward."""
+    """Group offloaded: computed once per branch inside the forward, bitwise equal to the uncached forward."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     monkeypatch.delenv(cb.OFFLOAD_COND_ENV, raising = False)
@@ -235,7 +234,6 @@ def test_offloaded_conditioning_runs_once_inside_the_forward(monkeypatch):
     real = cb.flux3_conditioning
 
     def spy(module, **kw):
-        # inside the hooked forward: the top-level group is onloaded by then
         seen.append(model.__dict__.get(cb._PENDING_ATTR) is None)
         return real(module, **kw)
 
@@ -251,7 +249,7 @@ def test_offloaded_conditioning_runs_once_inside_the_forward(monkeypatch):
         finally:
             cb.end_render(model)
     assert all(torch.equal(a, b) for a, b in zip(want, got))
-    # one evaluation per branch per render (2 blocks x 2 branches), not one per step; image blocks every step
+    # 2 blocks x 2 branches once per render; image blocks every step
     assert cond_calls[0] == 2 * 2 and image_calls[0] == 2 * 3 * 2
     stats = cb.status(model)
     assert (stats["misses"], stats["hits"], stats["in_forward"]) == (2, 4, 2)
@@ -294,8 +292,7 @@ def test_offloaded_cache_declines_a_fixed_diffusers_prefetch_chain(monkeypatch):
 
 
 def test_offloaded_miss_is_not_served_to_another_call(monkeypatch):
-    """A recorded miss whose forward never ran (a CFG router reused a kept output) must not reach a later call that
-    the pre-hook declined, e.g. one with a per-call LoRA scale."""
+    """A recorded miss whose forward never ran must not reach a later declined (LoRA-scale) call."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     monkeypatch.setattr(cb, "_offload_device_ok", lambda t: True)
@@ -328,7 +325,7 @@ def test_prefetch_order_follows_skipped_blocks():
     assert pf.order == ids[2:] and pf.on_order
     op.match_skipped_order(module, blocks[:2], skipping = False)
     assert pf.order == ids
-    pf.seen = [ids[0]]  # a block already ran: this forward's order is fixed
+    pf.seen = [ids[0]]
     op.match_skipped_order(module, blocks[:2], skipping = True)
     assert pf.order == ids
 
@@ -346,8 +343,7 @@ def _mod_rows(model):
     "flow_map,refs", [(False, False), (False, True), (True, False), (True, True)]
 )
 def test_compact_modulation_matches_stock_in_float64(flow_map, refs, monkeypatch):
-    """One modulation row per sample (every token of a mode shares its timestep): equal to the stock per-token rows
-    up to float64 rounding, for Base and flow map, with and without references."""
+    """One modulation row per sample equals the stock per-token rows up to float64 rounding."""
     cls = _flux3()
     monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
     model = _tiny(cls, flow_map = flow_map).double()

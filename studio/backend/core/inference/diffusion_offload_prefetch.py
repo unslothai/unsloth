@@ -1124,9 +1124,7 @@ def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
 
 
 def match_skipped_order(module: Any, skipped: list, *, skipping: bool) -> None:
-    """Before ``module``'s forward runs a block (after ``begin``): this forward skips (``skipping``) or runs the
-    groups that lie wholly inside the ``skipped`` modules. Point the recorded order at it so the prefetch stays on
-    order: drop those groups, or restore the full order the last running forward recorded."""
+    """Call after ``begin``: drop (``skipping``) or restore the groups wholly inside ``skipped`` in the order."""
     pf = module_prefetcher(module)
     if pf is None or not pf.active or pf.seen or pf.pos or not pf.order:
         return
