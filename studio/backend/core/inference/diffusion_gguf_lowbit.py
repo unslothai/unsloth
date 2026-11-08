@@ -13,15 +13,30 @@ from typing import Any
 
 LOWBIT_IQ_ENV = "UNSLOTH_DIFFUSION_GGUF_LOWBIT_IQ"
 _QK_K = 256
-# (table, device) -> gguf-py's grid / sign table on that device
+# table -> gguf-py's grid / sign table on the host, built eagerly (install / first eager use)
+_HOST: dict = {}
+# (table, device) -> the same table on that device
 _CONSTS: dict = {}
+# tables each type reads
+_TABLES = {
+    "IQ1_S": ("IQ1_S",),
+    "IQ1_M": ("IQ1_S",),
+    "IQ2_XXS": ("ksigns", "IQ2_XXS"),
+    "IQ2_XS": ("ksigns", "IQ2_XS"),
+    "IQ2_S": ("IQ2_S",),
+    "IQ3_XXS": ("ksigns", "IQ3_XXS"),
+    "IQ3_S": ("IQ3_S",),
+}
 
 
 def lowbit_iq_enabled() -> bool:
     return os.environ.get(LOWBIT_IQ_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
-def _build(name: str, device: Any) -> Any:
+def _host(name: str) -> Any:
+    value = _HOST.get(name)
+    if value is not None:
+        return value
     import numpy as np
     import torch
     from gguf import quants
@@ -32,19 +47,60 @@ def _build(name: str, device: Any) -> Any:
         cls = getattr(quants, name)
         cls.init_grid()
         table = np.ascontiguousarray(cls.grid.reshape(cls.grid_shape), dtype = np.float32)
-    value = torch.from_numpy(table.copy()).to(device)
+    value = torch.from_numpy(table.copy())
+    _HOST[name] = value
+    return value
+
+
+def _build(name: str, device: Any) -> Any:
+    value = _host(name).to(device)
     _CONSTS[(name, str(device))] = value
     return value
 
 
 def _const(name: str, device: Any) -> Any:
     value = _CONSTS.get((name, str(device)))
-    if value is None:
+    if value is not None:
+        return value
+    import torch
+
+    if torch.compiler.is_compiling():
+        host = _HOST.get(name)
+        if host is not None:
+            # Not prepared for this device: a traceable copy of the host table, so no graph break under fullgraph.
+            return host.to(device)
+        # Only reachable without install_lowbit_iq: build outside the graph.
+        return torch.compiler.disable(_build)(name, device)
+    return _build(name, device)
+
+
+def prepare_lowbit_iq_tables(device: Any, *modules: Any) -> list:
+    """Build the tables on ``device`` before any compiled region reads them, so the graph holds a device constant.
+    With ``modules``, only the tables their IQ weights need (none: nothing built). Returns the names built."""
+    try:
         import torch
 
-        # once per (table, device), outside any compiled graph
-        value = torch.compiler.disable(_build)(name, device)
-    return value
+        if modules:
+            types = set()
+            for module in modules:
+                for param in getattr(module, "parameters", lambda: ())():
+                    qtype = getattr(param, "quant_type", None)
+                    name = getattr(qtype, "name", None)
+                    if name in _TABLES:
+                        types.add(name)
+            names = sorted({t for name in types for t in _TABLES[name]})
+        else:
+            names = sorted({t for tables in _TABLES.values() for t in tables})
+        if not names:
+            return []
+        # The resolved device ("cuda" -> "cuda:0"), the key a weight's ``.device`` produces.
+        device = torch.empty(0, device = device).device
+        for name in names:
+            if (name, str(device)) not in _CONSTS:
+                _build(name, device)
+        return names
+    except Exception:  # noqa: BLE001 - optimisation only: the lookup still builds traceably
+        return []
 
 
 def _shifts(values: tuple, like: Any) -> Any:
@@ -189,8 +245,11 @@ def dequantize_blocks_IQ3_S(
 
 
 def _iq1_delta() -> float:
-    from gguf import quants
-    return float(quants.IQ1_S.delta)
+    value = _HOST.get("iq1_delta")
+    if value is None:
+        from gguf import quants
+        value = _HOST["iq1_delta"] = float(quants.IQ1_S.delta)
+    return value
 
 
 def dequantize_blocks_IQ1_S(
@@ -278,6 +337,13 @@ def install_lowbit_iq(logger: Any = None) -> list:
             supported.append(qtype)
         added.append(name)
         _added.append(qtype)
+    if _added:
+        try:
+            for name in sorted({t for tables in _TABLES.values() for t in tables}):
+                _host(name)
+            _iq1_delta()
+        except Exception:  # noqa: BLE001 - the eager lookup builds them on first use
+            pass
     if added and logger is not None:
         logger.info("diffusion.gguf: dequantising %s on the device", ", ".join(added))
     return added

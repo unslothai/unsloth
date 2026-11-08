@@ -147,6 +147,58 @@ def test_compiled_dequant_matches_eager():
         assert torch.equal(got.view(torch.int32), eager.view(torch.int32))
 
 
+def _oracle(name, raw):
+    qtype = getattr(T, name)
+    return torch.from_numpy(gguf.quants.dequantize(raw.numpy(), qtype).astype(np.float32))
+
+
+@pytest.mark.parametrize("name", TYPES)
+def test_cold_fullgraph_dequant_has_no_graph_break(name):
+    # Studio's resident max tier compiles blocks with fullgraph=True before any eager forward: no device table yet
+    from torch._dynamo.testing import CompileCounter
+
+    lb.install_lowbit_iq()
+    lb._CONSTS.clear()
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(
+        gguf_utils.dequantize_gguf_tensor, backend = counter, fullgraph = True, dynamic = True
+    )
+    raw = torch.from_numpy(_blocks(name, 8, seed = 5))
+    for rows in (2, 3, 8):
+        part = raw[:rows].contiguous()
+        got = compiled(gguf_utils.GGUFParameter(part, quant_type = getattr(T, name)))
+        assert torch.equal(got.float().view(torch.int32), _oracle(name, part).view(torch.int32))
+    assert counter.frame_count == 1  # one graph over three shapes, no break, no recompile
+    torch._dynamo.reset()
+
+
+def test_prepared_tables_are_per_type_and_recompile_at_most_once():
+    from torch._dynamo.testing import CompileCounter
+
+    lb.install_lowbit_iq()
+    lb._CONSTS.clear()
+    module = torch.nn.Module()
+    raw = torch.from_numpy(_blocks("IQ2_XS", 4, seed = 6))
+    module.weight = gguf_utils.GGUFParameter(raw, quant_type = T.IQ2_XS, requires_grad = False)
+    assert (
+        lb.prepare_lowbit_iq_tables("cpu", torch.nn.Linear(2, 2)) == []
+    )  # no IQ weight: nothing built
+    assert lb._CONSTS == {}
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(
+        gguf_utils.dequantize_gguf_tensor, backend = counter, fullgraph = True, dynamic = True
+    )
+    cold = compiled(module.weight)
+    assert lb.prepare_lowbit_iq_tables("cpu", module) == ["IQ2_XS", "ksigns"]
+    assert set(lb._CONSTS) == {("IQ2_XS", "cpu"), ("ksigns", "cpu")}
+    warm = compiled(module.weight)
+    assert torch.equal(cold, warm) and torch.equal(warm.float(), _oracle("IQ2_XS", raw))
+    assert counter.frame_count <= 2  # a prepared table recompiles at most once
+    torch._dynamo.reset()
+
+
 class _ReadStop(Exception):
     pass
 
