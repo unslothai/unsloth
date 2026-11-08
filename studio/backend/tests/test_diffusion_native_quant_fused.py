@@ -481,3 +481,26 @@ def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
     monkeypatch.setattr(rb, "is_rocm_torch", lambda _torch: False)
     assert nq._fused_w8a8() is not None
     assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)
+
+
+@pytest.mark.skipif(
+    not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two CUDA / HIP devices"
+)
+def test_each_real_card_runs_the_compiled_linear_bit_identical_to_eager(monkeypatch):
+    _require_the_compiled_linear()
+    torch._dynamo.reset()
+    with torch.no_grad():
+        for i in (1, 0):
+            dev = torch.device("cuda", i)
+            torch.manual_seed(0)
+            lin = torch.nn.Linear(512, 1536).to(dev, torch.bfloat16)
+            layer = nq.native_linear_class()(lin, "int8", act_int8 = True, rot_group = 256)
+            x = torch.randn(4096, 512, device = dev, dtype = torch.bfloat16) * 3
+            monkeypatch.setenv(nq.NATIVE_INT8_FUSED_ENV, "0")
+            ref = layer(x)
+            monkeypatch.delenv(nq.NATIVE_INT8_FUSED_ENV)
+            calls = nq.fused_w8a8_state()["calls"]
+            got = layer(x)
+            assert nq.fused_w8a8_state()["calls"] == calls + 1
+            assert got.device == dev and torch.equal(got, ref)
+    assert nq.fused_w8a8_state()["devices"] == {"cuda:0": None, "cuda:1": None}
