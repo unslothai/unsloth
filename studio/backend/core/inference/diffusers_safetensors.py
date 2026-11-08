@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Optional
@@ -21,20 +22,25 @@ from .safetensors_only import is_pickle_weight
 _MANIFESTS = ("model_index.json", "modular_model_index.json")
 # Files a diffusers / transformers model load could read as weights.
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".pkl", ".pickle")
-# dtype-variant twins (``model.fp16.safetensors``): a load without ``variant`` never reads them.
-_VARIANT_MARKERS = (".fp16.", ".bf16.", ".non_ema.", ".fp32.")
 # Pickle containers no diffusers / transformers component load reads: always skipped in a pipeline download.
 _NEVER_READ_PICKLES = (".pt", ".pth", ".ckpt", ".pkl", ".pickle")
 
 
-def _is_variant(name: str) -> bool:
-    low = name.lower()
-    return any(m in low for m in _VARIANT_MARKERS)
+# The weight names a component load resolves (diffusers ``diffusion_pytorch_model``, transformers ``model``), single or
+# sharded. dtype-variant twins (``model.fp16.safetensors``) never match, and any other ``.safetensors``
+# (``adapter_model.safetensors``, an aux file) is not the component's weights.
+_MODEL_SAFETENSORS = re.compile(
+    r"^(diffusion_pytorch_model|model)(-\d+-of-\d+)?\.safetensors(\.index\.json)?$"
+)
+
+
+def _is_model_safetensors(name: str) -> bool:
+    return bool(_MODEL_SAFETENSORS.match(name.rsplit("/", 1)[-1]))
 
 
 def component_weight_state(folder: Any) -> Optional[bool]:
-    """True: ``folder`` holds a non-variant ``.safetensors`` weight (or its index); False: it holds weights and none
-    is safetensors; None: no weight file at all (or unreadable)."""
+    """True: ``folder`` holds the component's own non-variant ``.safetensors`` weight (or its index); False: it holds
+    weights and none of them is that; None: no weight file at all (or unreadable)."""
     try:
         names = [p.name for p in Path(str(folder)).iterdir() if p.is_file()]
     except OSError:
@@ -44,10 +50,7 @@ def component_weight_state(folder: Any) -> Optional[bool]:
     ]
     if not weights:
         return None
-    if any(
-        (n.endswith(".safetensors") or n.endswith(".safetensors.index.json")) and not _is_variant(n)
-        for n in weights
-    ):
+    if any(_is_model_safetensors(n) for n in weights):
         return True
     return False if any(not n.endswith(".index.json") for n in weights) else None
 
@@ -208,17 +211,12 @@ def component_safetensors_kwargs(
 def pipeline_pickle_files(filenames: Iterable[str]) -> list:
     """Repo files a diffusers pipeline download skips (exact names, for a repo with a pipeline manifest at its root):
     every ``.pt`` / ``.pth`` / ``.ckpt`` / ``.pkl`` (no component loader reads them), and every ``.bin`` in a folder that
-    also holds a non-variant ``.safetensors`` weight. A ``.bin`` in a folder without safetensors stays (the only copy of
+    also holds the component's own non-variant ``.safetensors`` weight. A ``.bin`` in a folder without safetensors stays (the only copy of
     that component). Empty for any other repo."""
     names = [n for n in filenames if isinstance(n, str)]
     if not any(n in _MANIFESTS for n in names):
         return []
-    st_dirs = {
-        n.rsplit("/", 1)[0] if "/" in n else ""
-        for n in names
-        if (n.endswith(".safetensors") or n.endswith(".safetensors.index.json"))
-        and not _is_variant(n.rsplit("/", 1)[-1])
-    }
+    st_dirs = {n.rsplit("/", 1)[0] if "/" in n else "" for n in names if _is_model_safetensors(n)}
     out = []
     for n in names:
         low = n.lower()

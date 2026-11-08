@@ -91,8 +91,36 @@ def test_a_bin_only_component_still_downloads():
 
 
 def test_a_modular_pipeline_repo_is_filtered_too():
-    names = ["modular_model_index.json", "transformer/a.safetensors", "transformer/a.bin", "x.pt"]
-    assert set(ds.pipeline_pickle_files(names)) == {"transformer/a.bin", "x.pt"}
+    names = [
+        "modular_model_index.json",
+        "transformer/diffusion_pytorch_model.safetensors",
+        "transformer/diffusion_pytorch_model.bin",
+        "x.pt",
+    ]
+    assert set(ds.pipeline_pickle_files(names)) == {
+        "transformer/diffusion_pytorch_model.bin",
+        "x.pt",
+    }
+
+
+def test_an_unrelated_safetensors_never_drops_the_only_bin(tmp_path):
+    # An adapter / aux .safetensors beside a .bin-only component is not that component's weights.
+    names = [
+        "model_index.json",
+        "transformer/diffusion_pytorch_model.bin",
+        "transformer/adapter_model.safetensors",
+        "text_encoder/model-00001-of-00002.safetensors",
+        "text_encoder/model.safetensors.index.json",
+        "text_encoder/pytorch_model.bin",
+    ]
+    assert set(ds.pipeline_pickle_files(names)) == {"text_encoder/pytorch_model.bin"}
+    folder = tmp_path / "transformer"
+    folder.mkdir()
+    (folder / "diffusion_pytorch_model.bin").write_bytes(b"x")
+    (folder / "adapter_model.safetensors").write_bytes(b"x")
+    assert ds.component_weight_state(folder) is False
+    (folder / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+    assert ds.component_weight_state(folder) is True
 
 
 def test_a_non_pipeline_repo_keeps_its_files():
