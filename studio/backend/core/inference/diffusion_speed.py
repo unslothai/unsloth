@@ -522,6 +522,8 @@ def apply_speed_optims(
         return applied
     if mode in (SPEED_DEFAULT, SPEED_MAX):
         _pin_compile_defaults()
+        if is_gguf:
+            _prepare_lowbit_iq_tables(pipe, target)
 
     if getattr(target, "backend", None) == "rocm":
         try:
@@ -682,6 +684,24 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _prepare_lowbit_iq_tables(pipe: Any, target: Any) -> None:
+    """Low-bit IQ lookup tables on the execution device before compile, so a compiled block reads a device constant."""
+    device = getattr(target, "torch_device", None)
+    if not isinstance(device, str) or not device:
+        return
+    try:
+        from .diffusion_gguf_lowbit import prepare_lowbit_iq_tables
+
+        modules = list(_denoiser_dits(pipe))
+        unet = _denoiser_unet(pipe)
+        if unet is not None:
+            modules.append(unet)
+        if modules:
+            prepare_lowbit_iq_tables(device, *modules)
+    except Exception:  # noqa: BLE001 - optimisation only: the lookup still builds traceably
+        pass
 
 
 def _onload_device(target: Any) -> Optional[str]:
