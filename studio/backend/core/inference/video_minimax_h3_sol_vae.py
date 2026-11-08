@@ -24,7 +24,6 @@ import time
 from typing import Any, Optional
 
 SOL_VAE_ENV = "UNSLOTH_H3_SOL_VAE"
-# 0: read each window's key mask back to the host and rebuild the RoPE tables per block, as before.
 SOL_LEAN_WINDOWS_ENV = "UNSLOTH_H3_SOL_VAE_LEAN_WINDOWS"
 SOL_VAE_REPO = "Efficient-Large-Model/Sol-H3-VAE"
 SOL_VAE_FILE = "sol_h3_vae.safetensors"
@@ -253,8 +252,7 @@ def _build_module_classes():
         def _slot_rope(
             self, t0: int, n: int, H: int, W: int, s: int, st: int, device: Any
         ) -> tuple:
-            """``_rope`` in the compute dtype. Its temporal ids are (t + st) % block with t0 a multiple of block, so a
-            block's table depends on (n, s, st) only: built once per decode, not per block of every layer."""
+            """``_rope`` in the compute dtype, cached per decode: with t0 a multiple of block it does not depend on t0."""
             cache = getattr(self, "_rope_tables", None)
             key = (n, H, W, s, st, str(device))
             if cache is not None and key in cache:
@@ -301,8 +299,7 @@ def _build_module_classes():
             keys = torch.cat([part(k), kg], 2)
             vals = torch.cat([part(v), vg], 2)
             mask = None
-            # Host ints decide it: every padded slot holds a token iff the window starts at 0 and is full, unshifted
-            # and unpadded (the global tokens are all valid when gvalid is None).
+            # every padded slot holds a token iff the window starts at 0, is full, unshifted and unpadded
             lean = gvalid is None and _lean_windows()
             full = k0 == 0 and n == tb and s == 0 and Hp == H and Wp == W
             if not (lean and full):
@@ -372,7 +369,6 @@ def _build_module_classes():
                 else:
                     # the reference pads the second block slot and masks it; leaving it out is the same softmax
                     kgw, vgw = kg[b0], vg[b0]
-                # gvalid None: every global token is valid
                 o = self._window_attn(q, k, v, kgw, vgw, None, lo - (j * tb - st), s)
                 del q, k, v, parts
                 xw = x[lo : hi + 1].view(-1, D)
