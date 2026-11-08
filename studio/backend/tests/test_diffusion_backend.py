@@ -13400,6 +13400,27 @@ def test_auto_on_rdna_honours_an_explicit_speed_tier(fake_runtime, tmp_path, mon
     backend.unload()
 
 
+def test_auto_on_rdna_stays_bf16_when_the_int8_plan_still_offloads(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # 16 GiB RDNA card, automatic memory: even the int8 transformer does not fit resident, so AUTO keeps bf16.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    backend = DiffusionBackend()
+    calls = _stub_rdna_w8a8_host(backend, monkeypatch)
+    memory = DeviceMemory("rocm", "cuda", "discrete_vram", 16 * 1024, 16 * 1024)
+    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", lambda *a, **kw: memory)
+    monkeypatch.setattr(dmod, "snapshot_device_memory", lambda *a, **kw: memory)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert status["offload_policy"] != "none"
+    backend.unload()
+
+
 def test_an_explicit_scheme_on_nvidia_keeps_the_torchao_path_and_its_wording(
     fake_runtime, tmp_path, monkeypatch
 ):
