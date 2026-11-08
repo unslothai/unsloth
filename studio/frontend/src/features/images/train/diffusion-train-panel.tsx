@@ -4,7 +4,6 @@
 import {
   type DragEvent,
   type ReactNode,
-  type SyntheticEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -815,16 +814,30 @@ export function DiffusionTrainPanel({
   const presetsReadyRef = useRef(false);
   // Not every control sets a dirty ref (family, toggles), so any edit before presets settle counts.
   const editedBeforePresets = useRef(false);
-  const noteFormEdit = useCallback((event: SyntheticEvent) => {
-    if (presetsReadyRef.current || !(event.target instanceof Element)) {
+  const trainRailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Listens on the scroller natively: its opening tag must carry only className (rail clamp).
+    const root = trainRailRef.current?.parentElement;
+    if (!root) {
       return;
     }
-    const control = event.target.closest(
-      "input, textarea, button, [role=combobox], [role=option], [role=switch], [role=radio]",
-    );
-    if (control && !control.closest("[data-testid=training-generation-presets]")) {
-      editedBeforePresets.current = true;
-    }
+    const noteFormEdit = (event: Event) => {
+      if (presetsReadyRef.current || !(event.target instanceof Element)) {
+        return;
+      }
+      const control = event.target.closest(
+        "input, textarea, button, [role=combobox], [role=switch], [role=radio]",
+      );
+      if (control && !control.closest("[data-testid=training-generation-presets]")) {
+        editedBeforePresets.current = true;
+      }
+    };
+    root.addEventListener("pointerdown", noteFormEdit, true);
+    root.addEventListener("keydown", noteFormEdit, true);
+    return () => {
+      root.removeEventListener("pointerdown", noteFormEdit, true);
+      root.removeEventListener("keydown", noteFormEdit, true);
+    };
   }, []);
   const applyPresetParams = useCallback(
     (params: TrainingPresetParams) => {
@@ -1849,12 +1862,8 @@ export function DiffusionTrainPanel({
   // overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto, letting a wide
   // row pan the page sideways on a phone.
   return (
-    <div
-      onPointerDownCapture={noteFormEdit}
-      onKeyDownCapture={noteFormEdit}
-      className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden"
-    >
-      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width,13rem)+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
+      <div ref={trainRailRef} className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 max-sm:pl-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width,13rem)+--spacing(8)))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}

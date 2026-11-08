@@ -70,8 +70,9 @@ test("edits made before the stored preset lands are kept", () => {
   assert.ok(guard > 0, "hydration must not overwrite a form the user already edited");
   assert.ok(guard < apply.indexOf("setFamilyName(params.familyName);"));
   assert.match(apply, /editedBeforePresets\.current \|\|/, "family and toggle edits count too");
-  assert.match(panel, /onPointerDownCapture=\{noteFormEdit\}/);
-  assert.match(panel, /onKeyDownCapture=\{noteFormEdit\}/);
+  assert.match(panel, /root\.addEventListener\("pointerdown", noteFormEdit, true\);/);
+  assert.match(panel, /root\.addEventListener\("keydown", noteFormEdit, true\);/);
+  assert.match(panel, /<div ref=\{trainRailRef\} className=/);
   assert.match(panel, /readyRef\.current = presets\.presetsReady;/);
   assert.match(panel, /readyRef=\{presetsReadyRef\}/);
 });
