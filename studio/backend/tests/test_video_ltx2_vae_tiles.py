@@ -375,10 +375,13 @@ def test_banded_output_needs_a_discrete_card_host_room_and_the_switch(monkeypatc
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
     assert not vt._host_band_output(vae, _Z(), 32, 2)
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
+    # unified memory: a host copy is the same pool
     monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: True)
-    assert not vt._host_band_output(
-        vae, _Z(), 32, 2
-    )  # unified memory: a host copy is the same pool
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    # ROCm keeps today's path
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
 
 
 def test_unbudgeted_decode_never_bands(monkeypatch):

@@ -207,9 +207,14 @@ def banded_output_disabled() -> bool:
 
 
 def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
-    """Bands retire to host RAM only on a discrete CUDA / ROCm card whose host holds the clip above a reserve."""
+    """Bands retire to host RAM only on a discrete NVIDIA card whose host holds the clip above a reserve (ROCm,
+    XPU, MPS, CPU and unified memory keep the device accumulator)."""
     device = getattr(z, "device", None)
     if banded_output_disabled() or getattr(device, "type", None) != "cuda":
+        return False
+    import torch
+
+    if getattr(torch.version, "hip", None):
         return False
     from .host_pinning import device_is_integrated
 
