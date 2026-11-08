@@ -1976,9 +1976,7 @@ export function ImagesPage({
   const compareOnce = useRef<CompareRun | null>(null);
   // The queued job this page is following, so Stop ends that job and never the one the queue starts next.
   const followingJob = useRef<string | null>(null);
-  // This page's own direct Generate is in flight.
   const localRun = useRef(false);
-  // Queue jobs this page submitted.
   const queuedHere = useRef(new Set<string>());
   // Server time of the run behind sessionSeed, so a late queue poll never replaces a newer direct run's seed.
   const sessionSeedAt = useRef(0);
@@ -3650,7 +3648,6 @@ export function ImagesPage({
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [loadGallery, refreshStatus]);
 
-  // Follow a queued job's render like a run started elsewhere.
   const imageQueue = useImageQueue(active, (finished) => {
     if (finished.some((job) => job.status === "done")) {
       // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
@@ -3678,8 +3675,7 @@ export function ImagesPage({
     localRun.current = false;
   }, [busy]);
   useEffect(() => {
-    // Busy but not from this page's own Generate (the mount probe, or the queue moving on inside one progress
-    // window): what renders is the queue's running job, so Stop targets it by id.
+    // Busy on a run this page did not start: it is the queue's running job, so Stop targets it by id.
     if (queueRunningId && busy === "generating" && !localRun.current && followingJob.current !== queueRunningId) {
       // A different job: the previous one's Stop state and in-flight acknowledgement do not carry over.
       if (followingJob.current !== null) resetStopState();
@@ -5572,8 +5568,7 @@ export function ImagesPage({
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
-          // The run landed without its records, so Reuse last seed takes the seed it was sent, unless a queued run
-          // finished after the records this one gained.
+          // No records came back: Reuse last seed takes the sent seed, unless a later queued run already set one.
           const gainedAt = Math.max(0, ...gained.map((image) => image.created_at));
           if (!external && gainedAt >= sessionSeedAt.current) {
             sessionSeedAt.current = gainedAt;

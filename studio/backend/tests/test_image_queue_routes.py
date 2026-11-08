@@ -350,7 +350,6 @@ def test_a_queued_job_waits_out_the_gap_between_two_direct_runs(client, monkeypa
             time.sleep(0.01)
         assert client.post(QUEUE, json = {"prompt": "queued"}).status_code == 200
         first.result(timeout = 10)
-        # The page's next run arrives a few hundred ms later.
         time.sleep(0.3)
         assert (
             client.post("/api/inference/images/generate", json = {"prompt": "direct-2"}).status_code

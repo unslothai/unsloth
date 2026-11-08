@@ -51139,8 +51139,7 @@ async def _run_queued_image_job(job) -> list[str]:
             raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG)
         if job.ticket.cancelled():
             raise JobCancelled()
-        # No HTTP request carries a queued job: keep-warm, the training guards and the account checks never see it
-        # otherwise (the video queue reserves the same way).
+        # No HTTP request carries a queued job: keep-warm, training guards and account checks need it (as video's queue).
         activity = InferenceActivityReservation()
         activity.reserve()
         try:

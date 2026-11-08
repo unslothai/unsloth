@@ -587,7 +587,6 @@ export interface ImageQueueJob {
   finished_at: number | null;
   error: string | null;
   image_ids: string[];
-  /** The run's base seed once done. */
   seed_used: number | null;
 }
 
