@@ -822,7 +822,6 @@ def convert_to_vlm_format(
         )
 
         def _repo_fetch(sample):
-            # Each repo file is one Hub request, the slow part, so only that runs on the pool.
             name = sample[image_column]
             if isinstance(name, str) and name in _image_lookup:
                 return functools.partial(_fetch_repo_image, name)
