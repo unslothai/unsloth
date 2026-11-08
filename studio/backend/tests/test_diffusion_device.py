@@ -1003,3 +1003,68 @@ def test_mps_cap_failure_keeps_target(monkeypatch):
     _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
     t = dd.resolve_diffusion_device_target()
     assert t.device == "mps" and t.dtype == BF16
+
+
+# ---------------------------------------------------------------------------------------------- XPU float64
+_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _fake_xpu_torch(has_fp64 = None, raises = False):
+    import torch
+
+    def props(index):
+        if raises:
+            raise RuntimeError("no device properties")
+        return (
+            types.SimpleNamespace()
+            if has_fp64 is None
+            else types.SimpleNamespace(has_fp64 = has_fp64)
+        )
+
+    xpu = types.SimpleNamespace(
+        is_bf16_supported = lambda: True,
+        current_device = lambda: 0,
+        get_device_properties = props,
+    )
+    return types.SimpleNamespace(xpu = xpu, bfloat16 = torch.bfloat16, float16 = torch.float16)
+
+
+@pytest.mark.parametrize(
+    "has_fp64, raises, env, want",
+    [
+        (False, False, None, False),  # Arc A-series
+        (True, False, None, True),  # Arc B-series / data center
+        (None, False, None, True),  # an older torch without the field: as before
+        (False, True, None, True),  # unanswerable probe: as before
+        (False, False, "0", True),  # kill switch
+    ],
+)
+def test_xpu_target_reports_the_devices_float64(monkeypatch, has_fp64, raises, env, want):
+    if env is None:
+        monkeypatch.delenv(_PROBE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_PROBE_ENV, env)
+    target = dd._xpu_target(_fake_xpu_torch(has_fp64, raises))
+    assert target.device == "xpu"
+    assert target.supports_float64 is want
+
+
+def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
+    torch = pytest.importorskip("torch")
+    ltx2 = pytest.importorskip("diffusers.models.transformers.transformer_ltx2")
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    rope = ltx2.LTX2AudioVideoRotaryPosEmbed(dim = 96, num_attention_heads = 2)
+    assert rope.double_precision
+    pipe = types.SimpleNamespace(components = {"transformer": torch.nn.Sequential(rope)})
+    coords = rope.prepare_video_coords(1, 4, 8, 8, device = "cpu")
+    oracle = rope(coords, device = "cpu")
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(True))) == 0
+    assert rope.double_precision
+    assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
+    assert not rope.double_precision
+    got = rope(coords, device = "cpu")
+    # the float32 frequency base MPS already uses: measured 9.8e-4 here, 4.9e-3 at LTX-2.5's 4096 dims
+    for a, b in zip(got, oracle):
+        assert a.dtype == b.dtype == torch.float32
+        assert 0 < float((a - b).abs().max()) < 1e-2
+    assert dd.float64_device("cpu") == "cpu"
