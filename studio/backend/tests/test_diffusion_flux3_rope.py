@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``diffusion_flux3_rope.py``: the fused FLUX.3 RoPE engages only for a FLUX.3 load on CUDA (not ROCm),
-honours its kill switch, restores cleanly, and is bit-identical to stock, per call and through the attention
-processor and a whole denoiser forward (CUDA tests)."""
+"""Fused FLUX.3 RoPE: gating, kill switch, clean restore, bit-identical to stock (CUDA tests)."""
 
 from __future__ import annotations
 
@@ -20,8 +18,7 @@ from torch.torch_version import TorchVersion  # noqa: E402
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux3")
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# Studio also reads ROCm from the "+rocm" tag, so faking NVIDIA clears both tag and version.hip.
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 needs_cuda = pytest.mark.skipif(
@@ -33,8 +30,6 @@ needs_cuda = pytest.mark.skipif(
 
 
 class _Flux3Like:
-    """A pipe whose transformer reports the FLUX.3 module, without building the model."""
-
     def __init__(self, module = fr._MODULE):
         self.transformer = type("Flux3Transformer2DModel", (), {"__module__": module})()
 
@@ -50,7 +45,6 @@ def _restore(monkeypatch):
 
 @pytest.fixture
 def fake_kernel(monkeypatch):
-    """Gate tests run without a GPU: pretend Triton built the kernel on a CUDA (non-ROCm) torch."""
     monkeypatch.setattr(fr, "_kernel", lambda: (lambda x, cos, sin: None))
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch, "__version__", _CUDA_TORCH_VERSION, raising = False)
@@ -232,13 +226,12 @@ def test_a_failed_launch_disables_the_fused_path_for_the_load(monkeypatch):
     for _ in range(4):
         assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), want)
     assert len(calls) == 1
-    # The next load re-arms, whether or not the previous one was torn down first.
+    # the next load re-arms even without a teardown
     assert fr.install_for_pipe(_Flux3Like(), "cuda")
     fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
     assert len(calls) == 2
 
 
-# ------------------------------------------------------------------------------------------------------------ CUDA
 @needs_cuda
 @pytest.mark.parametrize(
     "shape,x_dtype,freq_dtype",
@@ -339,7 +332,7 @@ def test_attention_processor_bit_identical():
         assert fr.install("cuda")
         n = fr.call_count()
         out = attn(hidden_states = hs, image_rotary_emb = freqs)
-    assert fr.call_count() == n + 2  # Q and K
+    assert fr.call_count() == n + 2
     assert torch.equal(out, ref)
 
 
@@ -360,7 +353,7 @@ def test_compiled_attention_has_no_graph_break():
         out = torch.compile(
             lambda t: attn(hidden_states = t, image_rotary_emb = freqs), fullgraph = True
         )(hs)
-    assert fr.call_count() == n  # traced as stock
+    assert fr.call_count() == n
     assert torch.equal(out, ref)
 
 

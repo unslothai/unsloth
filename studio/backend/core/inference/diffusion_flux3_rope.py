@@ -73,7 +73,7 @@ def _eligible(
     B, S, H, D = x.shape
     if D % 2 or x.stride(3) != 1 or x.numel() == 0:
         return False
-    # Kernel offsets are int32.
+    # int32 kernel offsets
     if x.storage_offset() + sum((n - 1) * st for n, st in zip(x.shape, x.stride())) >= 2**31 - 1:
         return False
     cos, sin = freqs_cis
@@ -82,7 +82,6 @@ def _eligible(
             return False
         if f.device != x.device or f.stride(1) != 1:
             return False
-        # widened to fp32 exactly, as stock's type promotion does
         if f.dtype not in (torch.float32, torch.bfloat16, torch.float16):
             return False
     return True
