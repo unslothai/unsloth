@@ -259,7 +259,7 @@ def test_peft_019s_required_merge_callback_gets_peft_020s_default(monkeypatch):
     with pytest.raises(TypeError, match = "get_apply_tensor_subclass"):
         layer()
     assert patches._make_peft_torchao_merge_callback_optional() is True
-    assert patches._make_peft_torchao_merge_callback_optional() is False  # idempotent
+    assert patches._make_peft_torchao_merge_callback_optional() is False
     layer()
     callback = object()
     layer(get_apply_tensor_subclass = callback)  # a transformers hf_quantizer's callback still wins

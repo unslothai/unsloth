@@ -363,10 +363,8 @@ _PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV = "UNSLOTH_STUDIO_PEFT_TORCHAO_OPTIONAL_CALL
 
 
 def _make_peft_torchao_merge_callback_optional():
-    """peft 0.19 dispatches every torchao weight to ``TorchaoLoraLinear`` but requires its requantisation callback,
-    which it reads only off a transformers ``hf_quantizer``; a torchao weight built any other way (a quantised single
-    file, a hosted prequant) raised a TypeError at injection. peft 0.20 made it optional (forward and training work,
-    merge refuses); give 0.19 the same default. True when patched."""
+    """peft 0.19 requires TorchaoLoraLinear's requantisation callback, found only on a transformers hf_quantizer, so a
+    LoRA on torchao weights built any other way raised at injection; backport peft 0.20's None default."""
     if (os.environ.get(_PEFT_TORCHAO_OPTIONAL_CALLBACK_ENV) or "").strip().lower() in (
         "0",
         "off",
