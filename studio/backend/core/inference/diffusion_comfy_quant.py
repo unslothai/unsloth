@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
+from .diffusion_fp8_dequant import chunk_rows, dequant_rows, fused_dequant_enabled
 from .diffusion_single_file_converters import host_ram_budget_scope
 from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
@@ -594,10 +595,23 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     from .diffusion_single_file_converters import charge_host_ram
 
     rows = codes.shape[0]
+    out_size = torch.empty((), dtype = dtype).element_size()
+    if not group and codes.dim() == 2 and rows and fused_dequant_enabled():
+        cols = codes.shape[1]
+        step = chunk_rows(rows, cols, codes.device)
+        if step:
+            # Row chunks into the output: the output plus one float32 chunk is the peak.
+            charge_host_ram(codes.numel() * out_size + step * cols * 4)
+            return dequant_rows(
+                codes,
+                scale.to(torch.float32).reshape(-1).expand(rows),
+                dtype,
+                lambda c: c.to(torch.float32, copy = True),
+                triton_ok = False,
+            )
     # Peak, not just the output: the float32 codes and their float32 product are live together (8 bytes per
     # element); ConvRot's batched matmul holds the product, a float32 copy of it and its float32 result (12,
     # measured); last the product and the output.
-    out_size = torch.empty((), dtype = dtype).element_size()
     charge_host_ram(codes.numel() * max(12 if group else 8, 4 + out_size))
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
     if group:
