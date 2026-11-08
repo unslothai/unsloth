@@ -1310,8 +1310,10 @@ class Ltx25TextEncoderClient:
         clone per call is ~40 ms on a B200 host."""
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
-            for cached_key, value in self._cache:
+            for i, (cached_key, value) in enumerate(self._cache):
                 if cached_key == key:
+                    # LRU: a negative prompt hit every render is never the one evicted.
+                    self._cache.append(self._cache.pop(i))
                     return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():
                 logger.warning("video.ltx25_te: encoder worker not running; restarting it")
