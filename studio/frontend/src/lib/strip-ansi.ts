@@ -81,23 +81,21 @@ function consumeCsi(text: string, afterIntro: number): number {
   return cursor;
 }
 
-// Bytes the scanner acts on: CAN, SUB, ESC and the C1 range. Everything else is copied in runs.
 const SPECIAL = /[\x18\x1a\x1b\x80-\x9f]/g;
+
+function isSpecial(code: number): boolean {
+  return (
+    code === ESC ||
+    code === CAN ||
+    code === SUB ||
+    (code >= 0x80 && code <= 0x9f)
+  );
+}
 
 export function stripAnsi(text: string): string {
   let out = "";
   let index = 0;
   while (index < text.length) {
-    SPECIAL.lastIndex = index;
-    const found = SPECIAL.exec(text);
-    const stop = found === null ? text.length : found.index;
-    if (stop > index) {
-      out += text.slice(index, stop);
-      index = stop;
-      if (index >= text.length) {
-        break;
-      }
-    }
     const code = text.charCodeAt(index);
 
     if (code === CAN || code === SUB) {
@@ -119,6 +117,21 @@ export function stripAnsi(text: string): string {
     }
     if (code >= 0x80 && code <= 0x9f) {
       index += 1;
+      continue;
+    }
+    if (code !== ESC) {
+      // Hand scan short plain runs; a regex call costs more than a few compares.
+      let stop = index + 1;
+      const limit = Math.min(text.length, index + 32);
+      while (stop < limit && !isSpecial(text.charCodeAt(stop))) {
+        stop += 1;
+      }
+      if (stop === limit && stop < text.length) {
+        SPECIAL.lastIndex = stop;
+        stop = SPECIAL.exec(text)?.index ?? text.length;
+      }
+      out += stop === index + 1 ? text[index] : text.slice(index, stop);
+      index = stop;
       continue;
     }
     if (index + 1 >= text.length) {
@@ -186,8 +199,10 @@ export function tailToolOutput(text: string): ToolOutputTail {
     found += 1;
   }
   if (cut >= 0) {
-    for (let at = cut; at >= 0; at = at > 0 ? text.lastIndexOf("\n", at - 1) : -1) {
+    let at = cut;
+    while (at >= 0) {
       hiddenLines += 1;
+      at = at > 0 ? text.lastIndexOf("\n", at - 1) : -1;
     }
     visible = text.slice(cut + 1);
   }
