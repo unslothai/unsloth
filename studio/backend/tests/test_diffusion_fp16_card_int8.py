@@ -233,7 +233,6 @@ def test_image_gate_on_other_fp16_cards_is_unchanged(nvidia, monkeypatch, cap):
 
 
 def test_dense_blocker_accepts_float16_only_when_asked():
-    # An fp16 pipeline on an fp16-only card holds float16 dense weights; elsewhere float16 is still not a dense source.
     pipe = types.SimpleNamespace(transformer = _Toy().to(torch.float16))
     assert "float16" in (tq.dense_quant_blocker(pipe) or "")
     assert tq.dense_quant_blocker(pipe, allow_float16 = True) is None
@@ -259,7 +258,6 @@ def test_small_host_int8_linears_arm_w8a8_on_request(monkeypatch):
     assert layers and not any(m.act_int8 for m in layers)
     assert sh.enable_int8_act_(model) == len(layers)
     assert all(m.act_int8 for m in layers)
-    # CPU input: the per-call gate still dequantises, so the output is the weight-only one.
     with torch.no_grad():
         assert torch.isfinite(model(torch.randn(32, 128))).all()
 
