@@ -38,7 +38,7 @@ def _save_prequant_safetensors(ckpt, path):
 
     helpers = ps._torchao_helpers()
     if helpers is None:
-        pytest.skip("needs torchao >= 0.16 flatten helpers to write the fixture")
+        pytest.skip(reason = "needs torchao >= 0.16 flatten helpers to write the safetensors fixture")
     flat, meta = helpers[0](ckpt["state_dict"])
     header = dict(meta)
     header[ps.UNSLOTH_FORMAT_KEY] = ckpt["format"]

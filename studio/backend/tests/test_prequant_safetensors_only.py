@@ -253,7 +253,7 @@ def test_native_reader_serves_below_the_torchao_floor(tmp_path, monkeypatch):
     import core.inference.prequant_native as pn
 
     if not ps.safetensors_prequant_supported() or pn._torchao_api() is None:
-        pytest.skip("needs torchao flatten helpers to write the fixture")
+        pytest.skip(reason = "needs torchao >= 0.16 flatten helpers to write the safetensors fixture")
     from torchao.float8.inference import Float8MMConfig
     from torchao.quantization import Float8Tensor
     from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
