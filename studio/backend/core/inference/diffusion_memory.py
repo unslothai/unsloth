@@ -3446,14 +3446,11 @@ _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
-# Streamed partial placement of a phase-seeded family: size the resident blocks from the denoise phase seed, and lend
-# them to the VAE decode (release_for_decode streams the shortfall again only if free memory is short then). The
-# whole-render seed is the untiled decode (FLUX.3: 2_437 vs denoise 901 MiB), which is not concurrent with the block
-# stream: at a 6 GiB budget it kept 936 of 6_144 MiB resident and streamed 5.1 GiB per step. "0" restores it.
+# Streamed placement sized from the denoise seed, resident blocks lent to the VAE decode (whose 2_437 MiB FLUX.3 seed
+# never runs beside the stream); "0" restores the whole-render seed.
 STREAMED_DECODE_LEND_ENV = "UNSLOTH_DIFFUSION_STREAMED_DECODE_LEND"
-# Measured families only (L4, int8 and fp8 at 6 GiB); the other phase-seeded families keep the whole-render seed.
+# Measured on L4 (int8 / fp8, 6 GiB) only.
 _STREAMED_DECODE_LEND_FAMILIES = frozenset({"flux.3-klein", "flux.3-klein-base"})
-# _MEASURED_IMAGE_ACTIVATION_MIB column of the denoise phase and of the untiled decode.
 _PHASE_DENOISE_COLUMN = 1
 _PHASE_DECODE_COLUMN = 2
 # "0": Qwen-Image t2i streams with the borrowed Edit figure again.
@@ -3646,7 +3643,7 @@ def measured_image_runtime_mib(
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
                 row = phases[1 if speed_mode == "max" else 0]
-                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier, or the one phase asked for
+                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier, unless one is asked for
                 seed = row[seed_phase] if seed_phase is not None else max(row[:3])
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
@@ -4131,8 +4128,7 @@ def _stream_window_mib(pipe: Any) -> int:
 def _streamed_decode_lend_seed(
     pipe: Any, family: Optional[str], speed_mode: Optional[str]
 ) -> Optional[int]:
-    """The untiled decode seed (MiB, no margin) when a streamed partial placement of ``family`` may size its resident
-    blocks from the denoise phase and lend them to the decode; None keeps the whole-render seed."""
+    """Untiled decode seed (MiB) when ``family``'s streamed placement may lend its resident blocks to the decode."""
     name = str(family or "").lower()
     if (
         _env_off(STREAMED_DECODE_LEND_ENV)
@@ -4858,7 +4854,6 @@ def _refine_plan_from_loaded_weights(
                         # seed covers denoise only; flat encode room on top overran at 16 GiB
                         encode_room = 0
                     if lend_decode is not None:
-                        # the resident blocks are lent to the decode (decode_lend_from_plan / release_for_decode)
                         estimates.update(
                             measured_streamed_seed_phase = _PHASE_DENOISE_COLUMN,
                             decode_lend_transformer_mib = int(streamed_room),
@@ -5321,7 +5316,6 @@ def decode_lend_from_plan(plan: Any) -> Optional[tuple[int, int, int, bool]]:
     estimates = getattr(plan, "estimates", None) or {}
     lend = estimates.get("decode_lend_text_encoder_mib")
     if not lend or not getattr(plan, "resident_text_encoder_mib", None):
-        # a streamed partial placement sized from the denoise phase lends its resident blocks instead
         lend = estimates.get("decode_lend_transformer_mib")
         if not lend or not getattr(plan, "resident_transformer_mib", None):
             return None
@@ -5931,7 +5925,7 @@ def measured_request_extra_mib(
     if seed_phase is not None:
         from .diffusion_measured_peaks import PHASE_PRE_DECODE
 
-        # placed from the denoise phase: the decode is priced by release_for_decode, not here
+        # the decode is priced by release_for_decode
         sized.update(seed_phase = int(seed_phase), phase = PHASE_PRE_DECODE)
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 and seed_phase is None else None
@@ -6544,16 +6538,14 @@ def _module_pin_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
-# Block-level group offload matches only a denoiser's direct ModuleList children; FLUX.3 keeps its per-mode image
-# blocks in a ModuleDict of ModuleLists (mode_blocks), so diffusers left them in the always-onloaded top-level group
-# (1692 of 2249 MiB streamed every forward at a 6 GiB budget, never eligible to stay resident). Listing those dicts as
-# block_modules gives each block its own group, as for the ModuleList stacks. "0" restores the top-level group.
+# Block-level offload groups only direct ModuleList children, so FLUX.3's ModuleDict of block stacks (mode_blocks)
+# stayed in the always-onloaded top-level group; block_modules splits it per block. "0" restores that.
 GROUP_OFFLOAD_DICT_BLOCKS_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_DICT_BLOCKS"
 _DICT_BLOCK_CLASSES = frozenset({"Flux3Transformer2DModel"})
 
 
 def _dict_block_modules(module: Any) -> list[str]:
-    """Direct children of ``module`` that are ModuleDicts of block stacks (every value a ModuleList / Sequential)."""
+    """Direct children of ``module`` that are ModuleDicts of block stacks."""
     if _env_off(GROUP_OFFLOAD_DICT_BLOCKS_ENV) or type(module).__name__ not in _DICT_BLOCK_CLASSES:
         return []
     try:
