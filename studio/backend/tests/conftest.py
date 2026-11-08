@@ -234,7 +234,9 @@ def _no_real_cuda_device_query(monkeypatch):
         from utils.hardware import nvidia
     except Exception:
         return
-    monkeypatch.setattr(nvidia, "get_cuda_device_info", _cuda_device_info_from_the_test_torch)
+    monkeypatch.setattr(
+        nvidia, "get_cuda_device_info", _cuda_device_info_from_the_test_torch, raising = False
+    )
     monkeypatch.setattr(nvidia, "_CUDA_DEVICE_INFO_CACHE", {}, raising = False)
 
 

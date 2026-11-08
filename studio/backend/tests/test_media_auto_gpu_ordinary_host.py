@@ -21,7 +21,7 @@ from utils.hardware.hardware import DeviceType
 
 from utils.hardware import nvidia as _nvidia
 
-_REAL_GET_CUDA_DEVICE_INFO = _nvidia.get_cuda_device_info
+_REAL_GET_CUDA_DEVICE_INFO = getattr(_nvidia, "get_cuda_device_info", None)
 
 
 def _dev(index, total, used):

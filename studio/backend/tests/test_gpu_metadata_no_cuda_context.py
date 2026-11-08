@@ -68,8 +68,8 @@ def host(monkeypatch):
         return list(devices)
 
     # The real query and its per-mask cache, on a faked driver child.
-    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
-    monkeypatch.setattr(nvidia, "_query_cuda_device_info", _child)
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO, raising = False)
+    monkeypatch.setattr(nvidia, "_query_cuda_device_info", _child, raising = False)
     return types.SimpleNamespace(torch = torch, queries = queries)
 
 
