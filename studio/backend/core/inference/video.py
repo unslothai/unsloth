@@ -4666,18 +4666,14 @@ def _video_offload_vram_floor_mib(
         return None
 
 
-# Families whose text encoder runs outside ``pipe.components`` (a sidecar worker process): a split cannot move it, so
-# without the lever below the companion split the planner priced with it would leave it on the primary beside the DiT.
+# Text encoder runs in a sidecar worker outside ``pipe.components``: a split cannot move it.
 _VIDEO_SIDECAR_ENCODER_FAMILIES = frozenset({"ltx-2.5"})
-# "0" keeps LTX-2.5 on one card under a multi-GPU selection (the sidecar encoder then always shares the primary).
+# "0" keeps LTX-2.5 on one card under a multi-GPU selection.
 LTX25_MULTI_GPU_ENV = "UNSLOTH_LTX25_MULTI_GPU"
 
 
 def _video_sidecar_multigpu(fam: Any) -> bool:
-    """A sidecar-encoder family may use two cards: the lever is on, a multi-card selection is active and the cards are
-    CUDA (not ROCm): the worker then gets its own card and budget (``_video_sidecar_worker_card``) and the post-load
-    refinement is charged for what it holds (``_video_sidecar_card_reserve_mib``). ROCm / XPU / MPS / CPU keep one
-    card."""
+    """Sidecar-encoder family may use two cards: lever on, multi-card selection active, CUDA (not ROCm)."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return False
     if (os.environ.get(LTX25_MULTI_GPU_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
@@ -4688,7 +4684,6 @@ def _video_sidecar_multigpu(fam: Any) -> bool:
 
 
 def _video_sidecar_worker_card(fam: Any, plan: Any) -> Optional[int]:
-    """The partner ordinal the sidecar encoder runs on (a companion split the lever kept), else None (the primary)."""
     secondary = getattr(plan, "secondary_ordinal", None)
     if secondary is None or not _video_sidecar_multigpu(fam):
         return None
@@ -4700,9 +4695,7 @@ def _video_single_card_for_sidecar(
     plan: Any,
     logger: Any = None,
 ) -> Any:
-    """The single-card plan in place of a companion split for a sidecar-encoder family; any other plan unchanged. Under
-    ``_video_sidecar_multigpu`` the split stays when the partner also holds the worker's own context (the planner
-    priced it beside the VAE on the primary): the worker then runs on the partner."""
+    """Single-card plan for a sidecar-encoder split, unless the partner can also hold the worker's context."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return plan
     fallback = getattr(plan, "fallback_plan", None)
@@ -4734,12 +4727,9 @@ def _video_single_card_for_sidecar(
 
 
 def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dict[int, int]]:
-    """``{ordinal: MiB}`` the sidecar encoder holds at its peak on its card, which ``_loaded_component_mib`` does not
-    see: its context plus the resident weights, or for an encoder kept on the host the part of its on-card encode the
-    primary's denoise working memory does not already cover (the encode runs before the denoise, as the worker's own
-    room check assumes, and a split leaves no blocks to lend). None when it cannot be priced (the caller then keeps one
-    card). Waits for the worker's load report: the need depends on what it loaded. A worker that failed to load raises
-    here, as the load's own wait would (its message is read once)."""
+    """``{ordinal: MiB}`` peak the sidecar encoder holds, unseen by ``_loaded_component_mib``; None = unpriceable.
+    On the primary a host-kept encoder reuses the denoise headroom (encode runs first). Waits for the worker's load
+    report and raises its load error here (the message is read once)."""
     client = getattr(pipe, "_unsloth_ltx25_encoder", None)
     config = getattr(client, "config", None) or {}
     device = str(config.get("device") or "")
@@ -4766,7 +4756,6 @@ def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dic
 
             selection = current_selection()
             if selection is not None and int(selection.primary) == ordinal:
-                # the headroom refine_plan_for_multigpu keeps free on the primary for the denoise
                 estimates = getattr(plan, "estimates", None) or {}
                 flat = (
                     estimates.get("calibrated_headroom_mib")
@@ -4787,8 +4776,7 @@ def _video_refine_for_multigpu(
     plan: Any,
     logger: Any = None,
 ) -> Any:
-    """``refine_plan_for_multigpu``; for a sidecar-encoder family only under ``_video_sidecar_multigpu`` and charged
-    for the worker's card (its loaded sizes omit the encoder), else declined."""
+    """``refine_plan_for_multigpu``; sidecar families only under ``_video_sidecar_multigpu``, charged for the worker."""
     if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
         return refine_plan_for_multigpu(pipe, plan, logger)
     if not _video_sidecar_multigpu(fam):
@@ -4797,7 +4785,6 @@ def _video_refine_for_multigpu(
         getattr(plan, "secondary_ordinal", None) is not None
         or getattr(plan, "layer_split", None) is not None
     ):
-        # already split before the load (the worker is on the partner): refinement only records it
         return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = {})
     from .diffusion_layer_split_plan import layer_split_mode
 
@@ -4806,7 +4793,7 @@ def _video_refine_for_multigpu(
         and multigpu_mode() != "force"
         and layer_split_mode() != "force"
     ):
-        # resident on one card: refinement keeps it without pricing anything, so do not wait for the worker
+        # resident: nothing is priced, so do not wait for the worker
         return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = {})
     reserve = _video_sidecar_card_reserve_mib(pipe, plan)
     if reserve is None:
@@ -9663,7 +9650,6 @@ class VideoBackend:
                 stale_encoder, self._ltx25_pending_encoder = self._ltx25_pending_encoder, None
             if stale_encoder is not None:
                 _stop_ltx25_encoder(stale_encoder[1])
-            # Its own card under a split the multi-GPU lever kept: the partner's device and budget, else the primary's.
             worker_card = _video_sidecar_worker_card(fam, plan)
             if worker_card is not None:
                 from .diffusion_multigpu import secondary_safe_budget_mib

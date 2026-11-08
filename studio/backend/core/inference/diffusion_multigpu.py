@@ -928,8 +928,7 @@ def refine_plan_for_multigpu(
     card_reserve_mib: Optional[Mapping[int, int]] = None,
 ) -> Any:
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
-    ``card_reserve_mib`` (ordinal -> MiB) is memory another process the load owns (a sidecar encoder) holds or will hold
-    on a card, which the loaded sizes do not count: it comes off that card's limit before any split is priced.
+    ``card_reserve_mib`` (ordinal -> MiB): memory a sidecar process holds on a card, uncounted by the loaded sizes.
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before

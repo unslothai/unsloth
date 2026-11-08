@@ -1807,13 +1807,12 @@ def test_ltx25_sidecar_encoder_keeps_one_card_without_the_lever(monkeypatch):
         lambda pipe, plan, logger = None, **kw: refined.append(kw) or split,
     )
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
-    # no selection (one card): today's contract, whatever the lever says
+    # no selection: one card, whatever the lever says
     assert vid._video_single_card_for_sidecar(ltx25, split) is single
     assert vid._video_single_card_for_sidecar(wan, split) is split
     assert vid._video_single_card_for_sidecar(ltx25, single) is single
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [{}]
-    # the kill switch under a selection: still one card, refinement never runs
     monkeypatch.setenv(vid.LTX25_MULTI_GPU_ENV, "0")
     refined.clear()
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
@@ -1837,7 +1836,6 @@ def test_ltx25_split_keeps_the_worker_on_the_partner_when_it_fits(monkeypatch):
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         assert vid._video_single_card_for_sidecar(ltx25, fits) is fits
         assert vid._video_sidecar_worker_card(ltx25, fits) == 1
-        # the worker's context does not fit beside what the planner put there: one card, as today
         assert vid._video_single_card_for_sidecar(ltx25, short) is single
         assert vid._video_single_card_for_sidecar(ltx25, unpriced) is single
         assert vid._video_sidecar_worker_card(ltx25, single) is None
@@ -1874,10 +1872,8 @@ def test_ltx25_worker_reserve_prices_its_card():
     assert reserve(
         "cuda:1", {"resident": False, "weights_mib": 13000, "stream_need_mib": 6000}
     ) == {1: 6000 + 1024}
-    # a non-resident encoder that cannot stream onloads whole: weights plus the encode margin
     assert reserve("cuda:0", {"resident": False, "weights_mib": 13000}) == {0: 13000 + 4096 + 1024}
-    # on the primary of a selection the encode (before the denoise) reuses the denoise working memory; resident
-    # weights never do, nor does a worker on the partner (the primary holds that working memory)
+    # on the primary a non-resident encode reuses the denoise headroom; resident weights and the partner never do
     plan = _types_ns(estimates = {"runtime_headroom_mib": 5000})
     streamed = {"resident": False, "weights_mib": 13000, "stream_need_mib": 6000}
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
@@ -1892,7 +1888,6 @@ def test_ltx25_worker_reserve_prices_its_card():
     assert reserve("cuda:0", streamed, plan) == {0: 6000 + 1024}
     assert reserve("cpu", {"resident": True, "weights_mib": 13000}) is None
     assert reserve("cuda:0", {"resident": True}) is None
-    # a worker that failed to load fails the load here, with its own message (read once from the queue)
     with pytest.raises(RuntimeError, match = "worker died"):
         reserve("cuda:0", RuntimeError("worker died"))
     assert vid._video_sidecar_card_reserve_mib(_types_ns()) is None
@@ -1904,8 +1899,7 @@ def _types_ns(**kw):
 
 
 def test_ltx25_refinement_is_charged_for_the_worker(monkeypatch):
-    """Fake 2-card runtime: the loaded sizes omit the sidecar encoder, so the same companion split that fits without
-    the worker's charge must not fit with it (the layer split is then tried, here declined)."""
+    """A companion split that fits without the worker's charge must not fit with it."""
     from core.inference import diffusion_layer_split_plan as lsp
     from core.inference import video as vid
 
@@ -1928,37 +1922,31 @@ def test_ltx25_refinement_is_charged_for_the_worker(monkeypatch):
         free = mg.refine_plan_for_multigpu(object(), plan)
         assert free.secondary_ordinal == 1 and free.offload_policy == dm.OFFLOAD_NONE
         budget = int(plan.estimates["safe_device_budget_mib"])
-        # a plan already holding the DiT resident prices the primary at the full budget (refine_plan_for_multigpu)
         unreserved = (
             budget
             if dm.plan_keeps_transformer_resident(plan)
             else int(budget * mg._RESIDENT_FRACTION)
         )
-        # the worker on the primary: the primary limit shrinks by its peak
         worker = _FakeEncoderClient("cuda:0", {"resident": True, "weights_mib": unreserved})
         charged = vid._video_refine_for_multigpu(
             ltx25, _types_ns(_unsloth_ltx25_encoder = worker), plan
         )
         assert charged is plan and worker.waits == 1
         assert limits[-1] == (unreserved - unreserved - 1024, 12750)
-        # the worker on the partner: the partner's limit shrinks instead, the primary keeps its own
         partner = _FakeEncoderClient("cuda:1", {"resident": True, "weights_mib": 12000})
         assert (
             vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = partner), plan)
             is plan
         )
         assert limits[-1] == (unreserved, 12750 - 12000 - 1024)
-        # small enough to fit both: the split goes ahead with the worker priced
         small = _FakeEncoderClient("cuda:1", {"resident": True, "weights_mib": 100})
         split = vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = small), plan)
         assert split.secondary_ordinal == 1
-        # unpriced worker (no weights reported): one card, no refinement
         unpriced = _FakeEncoderClient("cuda:0", {"resident": True})
         assert (
             vid._video_refine_for_multigpu(ltx25, _types_ns(_unsloth_ltx25_encoder = unpriced), plan)
             is plan
         )
-        # a resident one-card plan is kept without waiting for the worker
         resident = dataclasses.replace(plan, offload_policy = dm.OFFLOAD_NONE)
         idle = _FakeEncoderClient("cuda:0", {"resident": True, "weights_mib": 1})
         kept = vid._video_refine_for_multigpu(

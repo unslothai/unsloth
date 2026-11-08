@@ -1499,7 +1499,7 @@ def start_text_encoder(
     if share > 0:
         client.config["vram_reserve_share"] = share
     if bind_device:
-        # the worker makes this card current (by UUID: a spawned child may enumerate cards in another order)
+        # by UUID: a spawned child may enumerate cards in another order
         client.config.update(bind_device = True, device_uuid = _cuda_device_uuid(device))
     client.start()
     return client

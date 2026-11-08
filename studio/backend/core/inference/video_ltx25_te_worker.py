@@ -1071,8 +1071,7 @@ def _no_context() -> Any:
 
 
 def _bind_device(config: dict) -> None:
-    """Under ``bind_device``: make the configured card this process's current one (pins, cache flushes and contexts then
-    land there, not on cuda:0), first re-resolving the ordinal by the server's card UUID."""
+    """Make the configured card current (not cuda:0), re-resolving the ordinal by the server's card UUID."""
     device = str(config.get("device") or "")
     if not config.get("bind_device") or not device.startswith("cuda"):
         return
