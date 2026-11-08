@@ -139,11 +139,14 @@ def normalize_lora(
                 stem = key[: -len(".lora_A.weight")]
                 scales[stem] = _metadata_scale(metadata, _strip(stem), int(a.shape[0]))
     for stem, scale in scales.items():
-        b = renamed.get(stem + ".lora_B.weight")
-        if b is None:
+        if renamed.get(stem + ".lora_B.weight") is None:
             continue  # an alpha with no low-rank pair (some converters write it for every module)
         if scale != 1.0:
-            renamed[stem + ".lora_B.weight"] = (b.to(torch.float32) * scale).to(b.dtype)
+            # PEFT scales the whole lora_B output, its bias included
+            for key in (stem + ".lora_B.weight", stem + ".lora_B.bias"):
+                t = renamed.get(key)
+                if t is not None:
+                    renamed[key] = (t.to(torch.float32) * scale).to(t.dtype)
     if family == "anima":
         renamed = _anima_embedding(renamed)
     elif family == "moss-image":

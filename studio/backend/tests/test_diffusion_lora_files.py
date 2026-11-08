@@ -607,3 +607,22 @@ def test_a_caret_pattern_is_anchored_at_both_ends_as_in_peft():
         )
         assert lf._metadata_scale(meta, stem, 4) == want / 4
     assert lf._metadata_scale(meta, "layers.0.proj.qkv", 4) == 1.0
+
+
+@pytest.mark.parametrize("source", ["alpha", "metadata"])
+def test_the_folded_scale_covers_the_lora_b_bias(source):
+    a, b, bias = torch.randn(2, 8), torch.randn(6, 2), torch.randn(6)
+    stem = "diffusion_model.blocks.0.attn.wq"
+    state = {
+        f"{stem}.lora_down.weight": a,
+        f"{stem}.lora_up.weight": b,
+        f"{stem}.lora_up.bias": bias,
+    }
+    meta = None
+    if source == "alpha":
+        state[f"{stem}.alpha"] = torch.tensor(8.0)
+    else:
+        meta = {"r": 2, "lora_alpha": 8}
+    out = lf.normalize_lora(state, "krea-2", meta)
+    assert torch.allclose(out[f"{stem}.lora_B.weight"], b * 4.0)
+    assert torch.allclose(out[f"{stem}.lora_B.bias"], bias * 4.0)
