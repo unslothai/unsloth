@@ -83,7 +83,6 @@ class _RefApi:
             back = (new.float() - d).to(w.dtype)
             bad = back.view(torch.int16) != w.view(torch.int16)
             t.bad, t.val = bad, w[bad].clone()
-            # Host fix-up store as the zoo keeps it: int32 flat indices + original 16-bit values.
             t.host_idx = bad.flatten().nonzero().flatten().to(torch.int32)
             t.host_val = t.val.cpu()
             t.checksum = w.view(torch.int16).long().sum()
@@ -309,7 +308,6 @@ def test_restored_when_generate_raises(error, _clean):
     assert s["engaged"] == 1 and s["restored"] == 1
     assert _clean.unfolds == 1
     assert fold._ACTIVE == 0
-    # Usable again afterwards.
     assert _generate(model, 16)[0] is True
 
 
@@ -328,7 +326,6 @@ def test_fold_failure_part_way_is_undone(error, _clean, monkeypatch):
         with pytest.raises(KeyboardInterrupt):
             _generate(model, 20)
     else:
-        # A failed fold falls back to the normal LoRA path.
         engaged, out = _generate(model, 20)
         assert engaged is False and out.shape[1] > 20
         assert fold.stats()["refused"] == {"fold_failed": 1}
@@ -695,7 +692,6 @@ def test_training_after_generate_is_bitwise_unchanged(pending_graph):
 def _with_blocks(path, name):
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    # Called directly or handed to a wrapper (generate_with_fallback(self, self._old_generate, ...)).
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Attribute) and n.attr == "_old_generate"]
     withs = [n for n in ast.walk(fn) if isinstance(n, ast.With)]
     return calls, withs
@@ -716,11 +712,9 @@ def test_every_generate_path_is_wrapped(path, name):
         assert owner, f"{name}: _old_generate outside a with block"
         items = [ast.unparse(item.context_expr) for item in owner[-1].items]
         assert "_lora_fold_generate(self, args, kwargs)" in items, items
-        # Inside the inference-mode scope, so grad is off when it decides.
         assert items.index("_lora_fold_generate(self, args, kwargs)") > items.index(
             "_get_inference_mode_context_manager(self)"
         )
-        # After the per-call eager plan, so the graphs-on threshold follows what this call decodes with.
         eager = [i for i, item in enumerate(items) if "eager_scope()" in item]
         assert all(items.index("_lora_fold_generate(self, args, kwargs)") > i for i in eager), items
 
@@ -794,13 +788,11 @@ def test_position_free_store_is_counted_whole(monkeypatch):
     s = fold.stats()
     want = sum(sum(chunk) for chunk in sizes)
     assert s["last"]["host_store_bytes"] == want > 0, (s["last"], sizes)
-    # Not just the escapes (one per target here).
     assert want > 6 * s["last"]["targets"]
 
 
 def test_fold_that_overflows_is_undone_and_refused(_clean):
-    # A finite low-rank product can overflow when materialised: W + B @ A past fp16's 65504 would turn a finite
-    # LoRA output into inf. The fold is undone before any forward and generate takes the LoRA path.
+    # W + B @ A past fp16's 65504: the fold is undone before any forward, LoRA path taken.
     model = _make(MODELS[0], dtype = torch.float16)
     module = next(m for m in model.modules() if hasattr(m, "lora_A") and "default" in m.lora_A)
     with torch.no_grad():
@@ -818,7 +810,6 @@ def test_fold_that_overflows_is_undone_and_refused(_clean):
     assert calls[0] > 0, "the unfolded LoRA path did not run"
     assert _same_bits(before, _bits(model)) and _merged_state(model) == merged
     assert _clean.folds == 1 and _clean.unfolds == 1
-    # The same model without the overflowing element folds as before.
     with torch.no_grad():
         module.lora_B["default"].weight[0, 0] = 0.01
     fold.reset_stats()

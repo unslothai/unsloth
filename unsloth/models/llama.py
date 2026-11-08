@@ -3127,8 +3127,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-                # 16-bit LoRA: adapters folded into the base weights for this call, restored after.
-                # After eager_scope, so the fold's graphs-on threshold follows this call's plan.
+                # After eager_scope: the fold's graphs-on threshold follows this call's plan.
                 _lora_fold_generate(self, args, kwargs),
             ):
                 output = _decode_graphs.generate_with_fallback(

@@ -183,7 +183,6 @@ def fold_refusal(model):
         if adapter in getattr(module, "lora_embedding_A", {}):
             return "unsupported_layer", None
         if adapter not in module.lora_A:
-            # Not on this layer: PEFT runs its base layer alone, folded or not.
             continue
         if type(module) is not LoraLinear:
             return "unsupported_layer", None
@@ -209,7 +208,6 @@ def fold_refusal(model):
         W = getattr(base, "weight", None)
         A = module.lora_A[adapter]
         B = module.lora_B[adapter]
-        # Exact nn.Linear: subclasses (QAT FakeQuantizedLinear, custom forwards) compute something else.
         if any(type(m) is not torch.nn.Linear for m in (base, A, B)):
             return "unsupported_layer", None
         if A.bias is not None or B.bias is not None:
@@ -230,7 +228,6 @@ def fold_refusal(model):
             return "mixed_adapters", None
         if any(_is_dtensor(t) or hasattr(t, "ds_id") for t in (W, A.weight, B.weight)):
             return "distributed", None
-        # Params4bit / Int8Params / torchao / fp8 tensors are Parameter subclasses or other dtypes.
         if (
             type(W) is not torch.nn.Parameter
             or hasattr(W, "quant_state")
@@ -242,8 +239,7 @@ def fold_refusal(model):
                 "quantized" if not W.is_floating_point() or W.element_size() < 2 else "not_16bit",
                 None,
             )
-        # bf16 keeps 8 mantissa bits: rounding W + B @ A drifts further from fp32 than the unfolded
-        # path (measured on L4 / A100); fp16 does not. UNSLOTH_LORA_FOLD_GENERATE=1 opts bf16 in.
+        # bf16 W + B @ A drifts further from fp32 than unfolded (measured L4 / A100); =1 opts in.
         if W.dtype == torch.bfloat16 and os.environ.get("UNSLOTH_LORA_FOLD_GENERATE") != "1":
             return "bf16", None
         if any(type(t) is not torch.nn.Parameter for t in (A.weight, B.weight)):
@@ -406,8 +402,7 @@ def _scope(model, entries):
                 )
             )
         info = api.exact_fold(targets, stream = stream)
-        # W + B @ A past the dtype's range (a finite low-rank product can still overflow when materialised, fp16
-        # above 65504): the folded layer would give inf where the unfolded one is finite.
+        # A finite low-rank product can still overflow W's dtype (fp16 > 65504) once materialised.
         finite = _folded_finite(entries, device)
         for module, adapter, _ in entries:
             # Merged = base layer only. Mutated in place so compiled guards see the same list.
@@ -418,7 +413,6 @@ def _scope(model, entries):
         if finite:
             _record_fold(info, targets, t1 - t0)
     except Exception:
-        # Nothing ran on folded weights yet: undo what was folded and take the normal LoRA path.
         _restore(model, api, targets, flagged, stream)
         _refuse("fold_failed")
         yield False
@@ -445,8 +439,7 @@ def _scope(model, entries):
                 STATS["last"]["unfold_s"] = time.perf_counter() - t2
 
 
-# Host tensors of a target's fix-up store: positions + originals (older unsloth_zoo), or the per-tile correction
-# stream, its word counts and the escapes (newer, position-free store).
+# Fix-up store host tensors: positions + originals (older zoo) or correction stream + escapes (newer).
 _STORE_NAMES = ("host_words", "host_wcnt", "host_idx", "host_val")
 
 
@@ -467,7 +460,6 @@ def _store_bytes(t):
 
 
 def _record_fold(info, targets, fold_s):
-    # Pinned host RAM of the fix-up store, held for the whole call.
     host_bytes, pinned = 0, None
     for t in targets:
         host_bytes += _store_bytes(t)
@@ -509,8 +501,7 @@ def _restore(model, api, targets, flagged, stream):
     if not targets:
         return
     try:
-        # In chunks: the KV cache and decode buffers are still live here, so only one chunk's fix-up
-        # store is on the GPU at a time instead of every target's at once.
+        # Chunked: the KV cache is still live, so only one chunk's fix-up store is on the GPU at a time.
         for chunk in _restore_chunks(targets):
             api.exact_unfold(chunk, stream = stream)
     except BaseException as error:

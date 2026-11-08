@@ -2401,7 +2401,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
             eager_scope,
             _get_inference_mode_context_manager(self),
             autocaster,
-            # 16-bit LoRA: adapters folded into the base weights for this call, restored after.
             _lora_fold_generate(self, args, kwargs),
         ):
             output = self._old_generate(*args, **kwargs)
