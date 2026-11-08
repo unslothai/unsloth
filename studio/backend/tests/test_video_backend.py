@@ -18,6 +18,18 @@ from pathlib import Path
 
 import pytest
 
+try:
+    from ._sparse_file import extend_sparse
+except ImportError:  # loaded by path, with no parent package (test_h3_native_resident.py)
+    import importlib.util as _importlib_util
+
+    _sparse_spec = _importlib_util.spec_from_file_location(
+        "_studio_tests_sparse_file", Path(__file__).with_name("_sparse_file.py")
+    )
+    _sparse_module = _importlib_util.module_from_spec(_sparse_spec)
+    _sparse_spec.loader.exec_module(_sparse_module)
+    extend_sparse = _sparse_module.extend_sparse
+
 import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
@@ -12875,7 +12887,7 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *a, **k: [tmp_path])
     good = blobs / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(good, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
+        extend_sparse(fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # sparse
     snap = tmp_path / "snap"
     snap.mkdir()
     (snap / name).symlink_to(good)
@@ -12887,7 +12899,7 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     elsewhere.mkdir(parents = True)
     fake = elsewhere / video_ltx2.LTX23_PREQUANT_SOURCE_SHA256
     with open(fake, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
+        extend_sparse(fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)
     (snap / name).unlink()
     (snap / name).symlink_to(fake)
     monkeypatch.setattr(
@@ -12899,7 +12911,9 @@ def test_ltx23_hub_pick_is_substituted_only_from_the_official_repo(tmp_path, mon
     (snap / name).symlink_to(good)
     bad = blobs / ("0" * 64)
     with open(bad, "wb") as fh:
-        fh.truncate(video_ltx2.LTX23_PREQUANT_SOURCE_SIZE)  # right size, wrong content (zeros)
+        extend_sparse(
+            fh, video_ltx2.LTX23_PREQUANT_SOURCE_SIZE
+        )  # right size, wrong content (zeros)
     (snap / name).unlink()
     (snap / name).symlink_to(bad)
     monkeypatch.setattr(video_ltx2, "ltx23_source_sha256", lambda path: "0" * 64)
