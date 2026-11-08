@@ -36,7 +36,6 @@ const ROW = readSrc("features/settings/components/unsloth-studio-mcp-row.tsx");
 const DIALOG = readSrc("features/settings/settings-dialog.tsx");
 const STORE = readSrc("features/settings/stores/settings-dialog-store.ts");
 
-// Each catalog tool's backend area, in tool_catalog() order.
 const AREAS: Record<string, string> = {
   studio_status: "status",
   list_models: "models",
@@ -114,7 +113,6 @@ test("tools fall into the five groups in order, with unknown areas last", () => 
       ["other", ["brand_new"]],
     ],
   );
-  // Empty groups are left out.
   assert.deepEqual(
     groupMcpTools([{ name: "embed", area: "text" }]).map((group) => group.id),
     ["generate"],
@@ -125,29 +123,24 @@ test("tools fall into the five groups in order, with unknown areas last", () => 
 });
 
 test("each group and every tool get one row that says what a click does, and every change sends only the changed tools", () => {
-  // No switches and no symbols to decode: the row's right side says "Select all" or "Select none".
   assert.doesNotMatch(TOOLS, /<Switch|groupTurnO|"mixed"/);
   assert.match(TOOLS, /const allOn = on === tools\.length;/);
   assert.match(
     TOOLS,
     /allOn\s+\? "settings\.mcp\.tools\.selectNone"\s+: "settings\.mcp\.tools\.selectAll"/,
   );
-  // Some or none on turns every tool on; only an all-on group turns off, and it sends only what flips.
   assert.match(
     TOOLS,
     /tools\s+\.filter\(\(tool\) => tool\.enabled === allOn\)\s+\.map\(\(tool\) => tool\.name\),\s+!allOn,/,
   );
-  // "All tools" heads the list; every row shows how many are on.
   assert.match(TOOLS, /label=\{t\("settings\.mcp\.tools\.allTools"\)\}\s+prominent=\{true\}/);
   assert.match(TOOLS, /t\("settings\.mcp\.tools\.count", \{ on, total: tools\.length \}\)/);
   assert.equal(en.settings.mcp.tools.selectAll, "Select all");
   assert.equal(en.settings.mcp.tools.selectNone, "Select none");
-  // Only the changed tools go to the server, which merges them into its stored list.
   assert.match(
     TOOLS,
     /onSave\(Object\.fromEntries\(names\.map\(\(name\) => \[name, on\]\)\)\)/,
   );
-  // The footer only closes; a rule appears above it while more of the list is below.
   assert.match(TOOLS, /moreBelow \? "border-border" : "border-transparent"/);
 });
 

@@ -23,7 +23,6 @@ def disabled_message(name: str) -> str:
 
 
 async def _disabled() -> Optional[frozenset[str]]:
-    # sqlite, so never on the event loop.
     return await asyncio.to_thread(mcp_access.disabled_tools)
 
 
