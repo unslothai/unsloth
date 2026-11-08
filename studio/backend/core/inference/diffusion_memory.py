@@ -721,6 +721,8 @@ class _WholeModulePinner:
         buffer_host = state.setdefault("buffer_host", {})
         entries: list = []
         wrapped: dict = {}
+        # A wrapper weight is checked once per chunk, before its first inner tensor moves.
+        wrapper_ok: dict = {}
         with self._lock:
             if self._stop.is_set():
                 return False
@@ -749,12 +751,16 @@ class _WholeModulePinner:
                         p.data = view
                     host[name] = view
                 else:
-                    inner = dict(_wrapper_inner(p.data) or ()) if p.device.type == "cpu" else {}
-                    held = inner.get(attr)
+                    if name not in wrapper_ok:
+                        wrapper_ok[name] = p.device.type == "cpu" and _tensor_ptr(
+                            host[name]
+                        ) == _tensor_ptr(p.data)
+                    held = (
+                        dict(_wrapper_inner(p.data) or ()).get(attr) if wrapper_ok[name] else None
+                    )
                     if (
                         held is None
                         or held.data_ptr() != src.data_ptr()
-                        or _tensor_ptr(host[name]) != _tensor_ptr(p.data)
                         or not torch.equal(src, view)
                     ):
                         continue  # an onloaded wrapper weight keeps its pageable host copy

@@ -180,3 +180,47 @@ def test_stopping_the_pipe_drops_a_pin_in_flight(gated):
     assert worker.join(10)
     assert not _state(module).get("pin_layout")
     assert {name: p.data_ptr() for name, p in module.named_parameters()} == before
+
+
+def test_a_host_wrapper_weight_moves_every_inner_tensor(gated):
+    """A torchao int8 weight on the host: each inner tensor in the chunk moves, so the chunk upload can rebuild it."""
+    quant = pytest.importorskip("torchao.quantization")
+    torch.manual_seed(0)
+    module = torch.nn.Sequential(*(torch.nn.Linear(64, 64, dtype = torch.bfloat16) for _ in range(3)))
+    try:
+        config = quant.Int8DynamicActivationInt8WeightConfig(version = 2)
+    except TypeError:
+        config = quant.Int8DynamicActivationInt8WeightConfig()
+    try:
+        quant.quantize_(module, config)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"torchao int8 quantize unavailable here: {exc}")
+    if dm._wrapper_inner(module[0].weight.data) is None:
+        pytest.skip("this torchao build stores the weights without a traceable wrapper")
+    ref = {
+        n: {a: x.clone() for a, x in dm._wrapper_inner(p.data)}
+        for n, p in module.named_parameters()
+        if dm._wrapper_inner(p.data)
+    }
+    host = {name: p.data for name, p in module.named_parameters()}
+    state = {"host": host, "owner": dict(module.named_parameters()), "buffer_host": {}}
+    plan: list = []
+    assert dm._pin_host_weights(module, host, None, buffer_host = {}, exact = True, plan = plan)
+    worker = dm._WholeModulePinner(module, state, dm._HookLock(), plan, None)
+    gated.set()
+    worker.start()
+    assert worker.join(10)
+    listed: dict = {}
+    for _buf, entries in state["pin_layout"]:
+        for name, _start, view in entries:
+            listed.setdefault(name, []).append(view)
+    for name, inner in ref.items():
+        p = dict(module.named_parameters())[name]
+        now = dict(dm._wrapper_inner(p.data))
+        assert len(listed[name]) == len(inner), name
+        assert sorted(v.data_ptr() for v in listed[name]) == sorted(
+            x.data_ptr() for x in now.values()
+        )
+        assert dm._tensor_ptr(host[name]) == dm._tensor_ptr(p.data)
+        for attr, x in inner.items():
+            assert torch.equal(now[attr], x), (name, attr)
