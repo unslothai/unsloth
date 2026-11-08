@@ -1602,11 +1602,12 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
   return (
     <>
       <div className="flex shrink-0 items-center gap-0.5">
-        <IconButton label={t("browser.back")} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
+        <IconButton label={t("browser.back")} tooltip={false} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
           <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
         <IconButton
           label={t("browser.forward")}
+          tooltip={false}
           disabled={!canGoForward}
           onClick={forward}
           className={NAV_BUTTON}
@@ -1615,6 +1616,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
         </IconButton>
         <IconButton
           label={t("browser.reload")}
+          tooltip={false}
           disabled={!tab || currentEntry(tab).kind !== "web"}
           onClick={() => {
             if (!tab) return;
@@ -1720,6 +1722,7 @@ function BrowserFileToolbar({
       <div className="flex shrink-0 items-center gap-0.5">
         <IconButton
           label={t("browser.back")}
+          tooltip={false}
           disabled={tab.index === 0}
           onClick={() => goBack(tab.id)}
           className={NAV_BUTTON}
@@ -1728,6 +1731,7 @@ function BrowserFileToolbar({
         </IconButton>
         <IconButton
           label={t("browser.forward")}
+          tooltip={false}
           disabled={tab.index >= tab.history.length - 1}
           onClick={() => goForward(tab.id)}
           className={NAV_BUTTON}
@@ -1736,6 +1740,8 @@ function BrowserFileToolbar({
         </IconButton>
         <IconButton
           label={t(kind === "html" ? "browser.file.runAgain" : "browser.reload")}
+          // "Run again" isn't obvious from the icon; reload is.
+          tooltip={kind === "html"}
           onClick={runAgain}
           className={NAV_BUTTON}
         >
