@@ -1765,8 +1765,8 @@ def _LlamaModel_fast_forward_inference(
     # Makes attention and MLP customisable for models like qwen3/cohere.
     fused_nf4 = (
         attention_fast_forward_inference is LlamaAttention_fast_forward_inference
-        and mlp_fast_forward_inference is fast_swiglu_inference
-    )
+        or getattr(attention_fast_forward_inference, "_unsloth_fused_nf4", False)
+    ) and mlp_fast_forward_inference is fast_swiglu_inference
 
     def LlamaModel_fast_forward_inference_custom(
         self,

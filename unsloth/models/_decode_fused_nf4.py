@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Opt-in fused NF4 Llama decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
+"""Opt-in fused NF4 Llama-shaped decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
 A failed check keeps the regular path; projection weights retain their original storage."""
 
 import os
@@ -29,6 +29,12 @@ STATS = {
     "refused": None,
 }
 _PLAN, _BATCH_PLAN, _HOMES = _decode_graphs.FUSED_NF4_ATTRS
+_FAMILIES = {
+    "llama": (False, False),
+    "mistral": (False, False),
+    "qwen2": (False, True),
+    "qwen3": (True, False),
+}
 
 
 def _backend_ok():
@@ -98,7 +104,9 @@ class _Refused:
 
 
 class _Layer:
-    __slots__ = ("attn", "sites", "ln1", "ln2", "head_dim", "n_heads", "n_kv_heads", "rope")
+    __slots__ = (
+        "attn", "sites", "ln1", "ln2", "head_dim", "n_heads", "n_kv_heads", "rope", "qk_norm",
+    )  # fmt: skip
 
 
 class _Plan:
@@ -168,6 +176,7 @@ def _plan_stale(plan):
             getattr(module, name, None) is not tensor
             for module, name, tensor in getattr(plan, "tensor_bindings", ())
         )
+        or any(_norm_eps(module) != eps for module, eps in getattr(plan, "eps_bindings", ()))
     )
 
 
@@ -211,7 +220,15 @@ def _signature(plan):
             plan.eps,
             plan.final_norm.data_ptr(),
         )
-        + tuple((entry.ln1.data_ptr(), entry.ln2.data_ptr()) for entry in plan.layers)
+        + tuple(
+            (entry.ln1.data_ptr(), entry.ln2.data_ptr())
+            + (
+                (entry.qk_norm[0].data_ptr(), entry.qk_norm[1].data_ptr()) + entry.qk_norm[2:]
+                if entry.qk_norm
+                else ()
+            )
+            for entry in plan.layers
+        )
         + tuple(
             (
                 site.packed.data_ptr(),
@@ -224,6 +241,7 @@ def _signature(plan):
                 site.lora and tuple(t.data_ptr() for t in site.A3 + site.B3),
                 site.lora and (site.rank, site.scaling),
                 tuple(site.bounds),
+                site.bias and tuple(t.data_ptr() for t in site.bias),
             )
             for entry in plan.layers
             for site in entry.sites.values()
@@ -231,8 +249,12 @@ def _signature(plan):
     )
 
 
-def _proj_parts(proj, K):
-    """(W, quant_state, (A, B, S) or None) of a 4bit NF4 projection the kernel can read, else a str."""
+def _proj_parts(
+    proj,
+    K,
+    allow_bias = False,
+):
+    """(W, quant_state, N, (A, B, S) or None, bias or None) of a kernel-readable NF4 projection, else a str."""
     if (
         KU._has_non_lora_adapter(proj)
         or KU._has_multiple_active_adapters(proj)
@@ -243,7 +265,7 @@ def _proj_parts(proj, K):
     ):
         return "adapter or projection type"
     W, qs, A, B, S, bias = KU.get_lora_parameters_bias(proj)
-    if bias is not None:
+    if bias is not None and not allow_bias:
         return "bias"
     if qs is None or type(qs) is list or getattr(qs, "quant_type", None) != "nf4":
         return "not NF4"
@@ -259,7 +281,6 @@ def _proj_parts(proj, K):
         return "NF4 shape"
     if qs.state2 is not None:
         blocksize2 = int(qs.state2.blocksize)
-        # Segments are concatenated: each must hold whole absmax2 blocks.
         if blocksize2 & (blocksize2 - 1) or (N * K // blocksize) % blocksize2:
             return "nested absmax layout"
     elif qs.absmax.dtype != torch.float32:
@@ -279,7 +300,17 @@ def _proj_parts(proj, K):
                 return "inference tensor LoRA scale"
             S = float(S)
         lora = (A, B, float(S))
-    return W, qs, N, lora
+    if bias is not None:
+        if bias.shape != (N,) or not bias.is_contiguous() or bias.device != W.device:
+            return "bias layout"
+    return W, qs, N, lora, bias
+
+
+def _bias_bindings(projs, biases):
+    # Absent biases are bound too: a bias added later must rebuild the plan, not be skipped.
+    return tuple(
+        (getattr(proj, "base_layer", proj), "bias", bias) for proj, bias in zip(projs, biases)
+    )
 
 
 def _site(
@@ -288,12 +319,18 @@ def _site(
     kind,
     projs,
     K,
+    allow_bias = False,
     batch_size = 1,
 ):
-    parts = [_proj_parts(p, K) for p in projs]
+    parts = [_proj_parts(p, K, allow_bias) for p in projs]
     for part in parts:
         if isinstance(part, str):
             return part
+    biases = [part[4] for part in parts]
+    if any(b is None for b in biases) != all(b is None for b in biases):
+        return "bias on some projections only"
+    if biases[0] is not None and len({b.dtype for b in biases}) != 1:
+        return "bias dtypes differ"
     Ws = [part[0] for part in parts]
     states = [part[1] for part in parts]
     loras = [part[3] for part in parts]
@@ -363,13 +400,14 @@ def _site(
         blocksize2 = int(st0.state2.blocksize) if nested else 256,
         lora = lora,
         scaling = loras[0][2] if lora is not None else 1.0,
+        bias = None if biases[0] is None else biases,
         segments = tuple(
             (W, qs.absmax, qs.state2.absmax if nested else None) for W, qs in zip(Ws, states)
         ),
     )
     site.tensor_bindings = tuple(
         (getattr(proj, "base_layer", proj), "weight", W) for proj, W in zip(projs, Ws)
-    )
+    ) + _bias_bindings(projs, biases)
     return site if batch_size == 1 else F.BatchSite(site, batch_size)
 
 
@@ -378,8 +416,10 @@ def _build(model, X):
         return "fused NF4 kernels unavailable (torch < 2.6)"
     batch = X.shape[0]
     config = model.config
-    if getattr(config, "model_type", None) != "llama":
+    model_type = getattr(config, "model_type", None)
+    if model_type not in _FAMILIES:
         return "model type"
+    qk_norm, allow_bias = _FAMILIES[model_type]
     if getattr(model, "vllm_engine", None) is not None:
         # vLLM owns its inference path and captured state.
         return "weights shared with vLLM (fast_inference)"
@@ -392,7 +432,12 @@ def _build(model, X):
     if batch != 1 and capability != (7, 5) and os.environ.get(ENV) != "force":
         return "batch NF4 decode is tuned on T4; use force for other GPUs"
     # T4 fusion adds compilation cost without a measured gain over segmented graphs.
-    if capability == (7, 5) and _decode_graphs.enabled() and os.environ.get(ENV) != "force":
+    if (
+        model_type in _decode_graphs._SUPPORTED_MODEL_TYPES
+        and capability == (7, 5)
+        and _decode_graphs.enabled()
+        and os.environ.get(ENV) != "force"
+    ):
         return "T4 uses regular CUDA graphs"
     if not F.supported_capability(capability) and os.environ.get(ENV) != "force":
         return (
@@ -409,7 +454,7 @@ def _build(model, X):
     plan.device = device
     plan.dtype = X.dtype
     plan.capability = capability
-    watch, bindings, tensor_bindings = [], [], []
+    watch, bindings, tensor_bindings, eps_bindings = [], [], [], []
     norm = model.model.norm
     eps = _norm_eps(norm)
     for idx, layer in enumerate(layers):
@@ -417,9 +462,12 @@ def _build(model, X):
         # Replacing a whole attention / MLP block must invalidate the plan like its projections.
         bindings.append((layer, "self_attn", attn))
         bindings.append((layer, "mlp", mlp))
+        has_qk_norm = (
+            getattr(attn, "q_norm", None) is not None,
+            getattr(attn, "k_norm", None) is not None,
+        )
         if (
-            getattr(attn, "q_norm", None) is not None
-            or getattr(attn, "k_norm", None) is not None
+            has_qk_norm != (qk_norm, qk_norm)
             or attn.__dict__.get("_unsloth_tp_heads") is not None
             or getattr(attn, "rotary_emb", None) is None
         ):
@@ -450,6 +498,29 @@ def _build(model, X):
         entry.head_dim, entry.n_heads, entry.n_kv_heads = head_dim, n_heads, n_kv_heads
         entry.rope = attn.rotary_emb
         bindings.append((attn, "rotary_emb", entry.rope))
+        entry.qk_norm = None
+        if qk_norm:
+            if head_dim & (head_dim - 1) or head_dim < 32:
+                return "head dim"
+            if plan.layers and head_dim != plan.layers[0].head_dim:
+                return "head dim differs across layers"
+            norms = (attn.q_norm, attn.k_norm)
+            for name, module in zip(("q_norm", "k_norm"), norms):
+                bindings.append((attn, name, module))
+                tensor_bindings.append((module, "weight", module.weight))
+                if hasattr(module, "modules_to_save"):
+                    watch.append(module)
+            for w in (n.weight for n in norms):
+                if (
+                    w.device != device or w.shape != (head_dim,) or not w.is_contiguous()
+                    or w.dtype != norms[0].weight.dtype
+                ):  # fmt: skip
+                    return "q / k norm weight"
+            qk_eps = (_norm_eps(norms[0]), _norm_eps(norms[1]))
+            if any(not isinstance(e, (int, float)) for e in qk_eps):
+                return "q / k norm eps"
+            eps_bindings.extend(zip(norms, qk_eps))
+            entry.qk_norm = (norms[0].weight, norms[1].weight, *qk_eps)
         sites = {}
         for kind, owner, names, K in (
             ("qkv", attn, ("q_proj", "k_proj", "v_proj"), hidden),
@@ -461,9 +532,17 @@ def _build(model, X):
             if any(p is None for p in projs):
                 return "projections"
             site = (
-                _site(model, (idx, kind), kind, projs, K)
+                _site(model, (idx, kind), kind, projs, K, allow_bias and kind == "qkv")
                 if batch == 1
-                else _site(model, (idx, kind), kind, projs, K, batch_size = batch)
+                else _site(
+                    model,
+                    (idx, kind),
+                    kind,
+                    projs,
+                    K,
+                    allow_bias and kind == "qkv",
+                    batch_size = batch,
+                )
             )
             if isinstance(site, str):
                 return f"{kind}: {site}"
@@ -499,12 +578,14 @@ def _build(model, X):
     plan.watch = watch
     plan.bindings = tuple(bindings)
     plan.tensor_bindings = tuple(tensor_bindings)
+    plan.eps_bindings = tuple(eps_bindings)
     plan.adapter_state = _adapter_state(watch)
     plan.eps = float(eps)
     plan.final_norm = norm.weight
     plan.hidden = hidden
     plan.intermediate = config.intermediate_size
     plan.batch_size = batch
+    plan.sdpa_gqa_with_batch_mask = batch == 1 or model_type != "qwen3"
     hidden_shape = hidden if batch == 1 else (batch, hidden)
     act_shape = config.intermediate_size if batch == 1 else (batch, config.intermediate_size)
     with _decode_graphs._no_inference_tensors():
@@ -516,6 +597,17 @@ def _build(model, X):
             torch.zeros(hidden_shape, dtype = torch.float32, device = device),
         )
         plan.act = torch.empty(act_shape, dtype = X.dtype, device = device)
+        plan.qkv_raw = (
+            torch.empty(
+                plan.layers[0].sites["qkv"].N
+                if batch == 1
+                else (batch, plan.layers[0].sites["qkv"].N),
+                dtype = X.dtype,
+                device = device,
+            )
+            if qk_norm
+            else None
+        )
         plan.pos = torch.zeros(batch, dtype = torch.long, device = device)
         plan.slot = torch.zeros(1, dtype = torch.long, device = device)
     plan.signature = _signature(plan)
@@ -531,10 +623,26 @@ def _build(model, X):
             for site in entry.sites.values()
             if site.lora
         )
-        plan.signature = (plan.signature, batch, geometry, shapes, workspaces)
+        plan.signature = (
+            plan.signature,
+            batch,
+            geometry,
+            shapes,
+            workspaces,
+            plan.sdpa_gqa_with_batch_mask,
+        )
     _track_moves(model)
     STATS["plans"] += 1
     return plan
+
+
+def _rope_ok(cos, sin, head_dim, device):
+    # The qkv kernels read both tables with cos's layout on the launch device.
+    return (
+        cos.dim() == 2 and cos.shape == sin.shape and cos.shape[-1] == head_dim
+        and cos.stride(-1) == 1 and sin.stride() == cos.stride()
+        and cos.device == device and sin.device == device and sin.dtype == cos.dtype
+    )  # fmt: skip
 
 
 def decode_forward(model, X, *args):
@@ -600,6 +708,7 @@ def _decode_forward(
                 plan.watch, plan.adapter_state = built.watch, built.adapter_state
                 plan.bindings = built.bindings
                 plan.tensor_bindings = built.tensor_bindings
+                plan.eps_bindings = built.eps_bindings
                 built = plan
         if built is not plan:
             if plan is not None:
@@ -610,6 +719,8 @@ def _decode_forward(
         return None
     fused_site = F.fused_site if batch == 1 else F.batch_fused_site
     final_norm = F.final_norm if batch == 1 else F.batch_final_norm
+    qk_norm_rope_kv = F.qk_norm_rope_kv if batch == 1 else F.batch_qk_norm_rope_kv
+    gqa_with_batch_mask = True if batch == 1 else plan.sdpa_gqa_with_batch_mask
     device = X.device
     capability = plan.capability
     ropes = {}
@@ -618,10 +729,7 @@ def _decode_forward(
         if id(rope) not in ropes:
             rope.extend_rope_embedding(X, rotary_seq_len + 1)
             cos, sin = rope.get_cached(rotary_seq_len, device.index or 0)
-            if (
-                cos.dim() != 2 or cos.shape != sin.shape or cos.shape[-1] != entry.head_dim
-                or cos.stride(-1) != 1 or sin.stride() != cos.stride() or cos.device != device
-            ):  # fmt: skip
+            if not _rope_ok(cos, sin, entry.head_dim, device):
                 return None
             ropes[id(rope)] = (cos, sin)
 
@@ -668,27 +776,38 @@ def _decode_forward(
         q = attn.temp_QA[0]
         common = dict(capability = capability, eps = eps)
         if idx == 0:
+            pre_args = dict(pre = F.PRE_INLOOP, norm_weight = entry.ln1)
+            x_in = residual
+        else:
+            pre_args = dict(pre = F.PRE_SCALED, ss_in = ss[0], n_ss = n_ss)
+            x_in = xg
+        bias = sites["qkv"].bias
+        if entry.qk_norm is None:
             fused_site(
-                sites["qkv"], residual, q, epi = F.EPI_ROPE_KV, pre = F.PRE_INLOOP,
-                norm_weight = entry.ln1, k_cache = k_cache, v_cache = v_cache,
+                sites["qkv"], x_in, q, epi = F.EPI_ROPE_KV, k_cache = k_cache, v_cache = v_cache,
                 cache_strides = (k_cache.stride(2), k_cache.stride(0)), cos = cos, sin = sin,
-                pos = plan.pos, slot = slot, head_dim = head_dim, **common,
+                pos = plan.pos, slot = slot, head_dim = head_dim, bias = bias, **pre_args, **common,
             )  # fmt: skip
         else:
+            # Qwen3: q / k RMSNorm needs a whole head, so the rotation and cache writes are one more launch.
             fused_site(
-                sites["qkv"], xg, q, epi = F.EPI_ROPE_KV, pre = F.PRE_SCALED, ss_in = ss[0],
-                n_ss = n_ss, k_cache = k_cache, v_cache = v_cache,
-                cache_strides = (k_cache.stride(2), k_cache.stride(0)), cos = cos, sin = sin,
-                pos = plan.pos, slot = slot, head_dim = head_dim, **common,
+                sites["qkv"], x_in, plan.qkv_raw, epi = F.EPI_PLAIN, bias = bias, **pre_args, **common
+            )
+            wq, wk, eps_q, eps_k = entry.qk_norm
+            qk_norm_rope_kv(
+                plan.qkv_raw, q, wq, wk, eps_q, eps_k, cos, sin, plan.pos, slot, k_cache, v_cache,
+                n_heads, n_kv_heads, head_dim,
             )  # fmt: skip
         Qn = q.view(batch, 1, n_heads, head_dim).transpose(1, 2)
         if static is None:
-            A, Kn, Vn = attention_core(attn, Qn, kv_seq_len, attention_mask, batch, True)
+            A, Kn, Vn = attention_core(
+                attn, Qn, kv_seq_len, attention_mask, batch, gqa_with_batch_mask
+            )
             next_cache.append((Kn, Vn))
         else:
             A = static.attention(
                 lambda attn = attn, Qn = Qn: attention_core(
-                    attn, Qn, static.kv_len, static.mask, batch, True
+                    attn, Qn, static.kv_len, static.mask, batch, gqa_with_batch_mask
                 )[0]
             )
             next_cache.append((None, None))

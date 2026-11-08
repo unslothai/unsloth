@@ -368,6 +368,9 @@ def Qwen3Attention_fast_forward_inference(
 _decode_graphs.register_attention(Qwen3Attention_fast_forward_inference)
 
 
+Qwen3Attention_fast_forward_inference._unsloth_fused_nf4 = True
+
+
 class FastQwen3Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
