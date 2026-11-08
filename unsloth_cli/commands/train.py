@@ -337,6 +337,15 @@ def train(
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
 
+    # Studio refuses the same pair; here it would train 0 steps on CUDA and 1 on MLX.
+    if cfg.training.num_epochs <= 0 and cfg.training.max_steps <= 0:
+        typer.echo(
+            "Error: Either num_epochs (--num-epochs) or max_steps (--max-steps) must be > 0; "
+            "both cannot be 0.",
+            err = True,
+        )
+        raise typer.Exit(code = 2)
+
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
 
