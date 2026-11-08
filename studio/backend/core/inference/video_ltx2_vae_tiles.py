@@ -282,15 +282,9 @@ def _decode_bands(
             del tile
         lo, hi = s * ratio, (s + side) * ratio
         done = (starts[b + 1] * ratio if b + 1 < len(starts) else hi) - lo
-        done_bands.append(
-            (
-                lo,
-                _to_host(
-                    band.narrow(axis, 0, done).to(dtype, memory_format = torch.contiguous_format),
-                    torch,
-                ),
-            )
-        )
+        chunk = band.narrow(axis, 0, done).to(dtype).contiguous()
+        done_bands.append((lo, _to_host(chunk, torch)))
+        del chunk
         if b + 1 < len(starts):
             carry = band.narrow(axis, done, hi - lo - done).clone()
         band = None
