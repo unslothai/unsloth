@@ -187,7 +187,8 @@ def _launch(x: Any, q: Any, s2: Any, bias: Any, oidx: Any, ow: Any, cfg: tuple) 
     ko = 0 if oidx is None else int(oidx.numel())
     y = torch.empty((m, n), device = x.device, dtype = torch.bfloat16)
     # Triton launches on the current device, not the tensor's
-    with torch.cuda.device(x.device) if x.is_cuda else contextlib.nullcontext():
+    other_card = x.is_cuda and x.device.index != torch.cuda.current_device()
+    with torch.cuda.device(x.device) if other_card else contextlib.nullcontext():
         fn[(triton.cdiv(n, block_n),)](
             x,
             q,
