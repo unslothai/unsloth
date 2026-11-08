@@ -3803,10 +3803,16 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
     Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
+    pipe = getattr(state, "pipe", None)
     return bool(
         getattr(state, "transformer_quant", None)
         or getattr(state, "text_encoder_quant", None)
-        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        or pipe_fp8_stored_layers(pipe)
+        # a single file's int8 / fp8 layers on torchao (streamed fp8 under group offload)
+        or any(
+            comfy_torchao_quantized(getattr(pipe, attr, None))
+            for attr in ("transformer", "transformer_2")
+        )
     )
 
 
