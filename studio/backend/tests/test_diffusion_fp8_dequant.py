@@ -34,12 +34,10 @@ def _fd():
 
 
 def test_imports_own_tree():
-    """Run from studio/backend: the modules under test are that tree's."""
-    cwd = os.path.realpath(os.getcwd())
-    if not os.path.isdir(os.path.join(cwd, "core", "inference")):
-        pytest.skip("not run from a studio/backend directory")
+    """The modules under test are this test's own tree."""
+    root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     for mod in (nq, cq):
-        assert os.path.realpath(mod.__file__).startswith(cwd + os.sep), mod.__file__
+        assert os.path.realpath(mod.__file__).startswith(root + os.sep), mod.__file__
 
 
 def _old(
@@ -170,6 +168,7 @@ def test_triton_kernel_is_bitwise_under_the_interpreter():
     )
     line = [l for l in proc.stdout.splitlines() if l.startswith("RESULT ")]
     if not line and "interpret" in proc.stderr.lower() and "not supported" in proc.stderr.lower():
+        # skip because this Triton build has no interpreter for the op; the GPU check covers the kernel
         pytest.skip(f"Triton interpreter cannot run here: {proc.stderr[-400:]}")
     assert line, proc.stderr[-4000:]
     res = json.loads(line[0][len("RESULT ") :])
@@ -384,6 +383,7 @@ def test_compiled_stored_fp8_layer_graph_is_unchanged(monkeypatch, backend):
             frames, ops, out, out2 = _compile_counts(layer, x, backend)
         except Exception as exc:  # noqa: BLE001 - no C++ toolchain for CPU inductor
             if backend == "inductor":
+                # skip because CPU inductor needs a C++ toolchain; the aot_eager leg still runs
                 pytest.skip(f"CPU inductor unavailable: {exc!r}"[:300])
             raise
         assert frames == 1
