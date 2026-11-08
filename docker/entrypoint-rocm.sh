@@ -151,6 +151,56 @@ else
     rocm-smi --showid 2>/dev/null | grep 'GPU\[' | head -4 >&2
 fi
 
+# RDNA 2 cards other than gfx1030 on the generic image: its wheels carry gfx1030 kernels only,
+# so the first kernel launch segfaults. ROCm runs these cards as gfx1030 (install.sh routes the
+# same set to AMD's gfx103X-all wheels). Read from the KFD topology, which the override cannot
+# spoof; only when every AMD GPU is in that set, so a mixed host is not misreported, and only
+# when torch lacks the card's arch but has gfx1030. gfx1033 is not in the set: check 4 refuses
+# it. A value the user set is kept.
+if [[ -z "$IMAGE_GFX" && -z "${HSA_OVERRIDE_GFX_VERSION:-}" && "$UNSLOTH_ROCM_DEV_PATH" == "kfd" ]]; then
+    _gfx103x=()
+    _gfx_other=()
+    for _props in "${UNSLOTH_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"/*/properties; do
+        [[ -r "$_props" ]] || continue
+        _vendor=""
+        _gtv=0
+        while read -r _key _val; do
+            case "$_key" in
+                vendor_id) _vendor="$_val" ;;
+                gfx_target_version) _gtv="$_val" ;;
+            esac
+        done < "$_props"
+        [[ "$_vendor" == "4098" && "$_gtv" =~ ^[0-9]+$ && "$_gtv" -gt 0 ]] || continue
+        _gfx="$(printf 'gfx%d%d%x' $((_gtv / 10000 % 100)) $((_gtv / 100 % 100)) $((_gtv % 100)))"
+        case "$_gfx" in
+            gfx1030) ;;
+            gfx1031|gfx1032|gfx1034|gfx1035|gfx1036) _gfx103x+=("$_gfx") ;;
+            *) _gfx_other+=("$_gfx") ;;
+        esac
+    done
+    if [[ ${#_gfx103x[@]} -gt 0 ]]; then
+        _wheel_archs=" $(python - 2>/dev/null <<'PY' || true
+import torch
+print(" ".join(torch.cuda.get_arch_list()))
+PY
+) "
+        _missing=()
+        for _gfx in "${_gfx103x[@]}"; do
+            [[ "$_wheel_archs" == *" $_gfx "* ]] || _missing+=("$_gfx")
+        done
+        if [[ ${#_missing[@]} -gt 0 && "$_wheel_archs" == *" gfx1030 "* ]]; then
+            if [[ ${#_gfx_other[@]} -eq 0 ]]; then
+                export HSA_OVERRIDE_GFX_VERSION=10.3.0
+                note "${_missing[*]} has no kernels in this image's torch, which carries gfx1030: running it as"
+                note "gfx1030 (HSA_OVERRIDE_GFX_VERSION=10.3.0). Set HSA_OVERRIDE_GFX_VERSION yourself to change this."
+            else
+                warn "${_missing[*]} has no kernels in this image's torch and will crash on its first kernel;"
+                warn "not setting HSA_OVERRIDE_GFX_VERSION=10.3.0 for it, because it would also apply to ${_gfx_other[*]}."
+            fi
+        fi
+    fi
+fi
+
 # Check 3: torch.cuda.is_available() on a HIP build; check torch.version.hip first.
 IMAGE_ROCM="$IMAGE_ROCM" UNSLOTH_ROCM_DEV_PATH="$UNSLOTH_ROCM_DEV_PATH" python - >&2 <<'PY' || exit 1
 import os
