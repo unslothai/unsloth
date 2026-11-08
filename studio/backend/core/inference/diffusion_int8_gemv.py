@@ -26,10 +26,8 @@ _OP_NAMESPACE = "unsloth_studio"
 _OP_NAME = "int8_wo_gemv"
 # (BLOCK_N, BLOCK_K, warps, stages), first that launches wins; the first needs ~40 KB smem, the second fits any card.
 _CONFIGS = ((128, 128, 8, 3), (64, 64, 4, 2))
-# (device index, scale group or 0 per row) -> position in that layout's _plans that launched: a grouped layer whose
-# tile does not fit never demotes the card's per-row Linears.
+# (device index, scale group or 0 per row) -> index into _plans of the plan that launched
 _DEVICE_CFG: dict = {}
-# 0: a grouped layer only tries one-group K tiles (512-wide groups need 192 KiB of shared memory, then fall back).
 GROUP_TILES_ENV = "UNSLOTH_DIFFUSION_INT8_GEMV_GROUP_TILES"
 _LOCK = threading.Lock()
 # Engagement evidence for benches.
@@ -51,7 +49,7 @@ def _kernel() -> Any:
     except Exception:  # noqa: BLE001 - no Triton: stock path
         return None
 
-    # M (rows, 1..MAX_ROWS) and KO (outlier columns) only bound masks: one binary for every batch size.
+    # M and KO only bound masks
     @triton.jit(do_not_specialize = ["M", "KO"])
     def i8_wo_gemv(
         x_ptr,
@@ -93,7 +91,7 @@ def _kernel() -> Any:
             # int8 -> bf16 is exact and bf16 x bf16 products are exact in the float32 accumulator
             part = tl.dot(x, tl.trans(q.to(tl.bfloat16)), out_dtype = tl.float32)
             if GROUPED:
-                # GS (the scale group) is a multiple of BLOCK_K: each K tile lies inside one group
+                # GS (the scale group) is a multiple of BLOCK_K
                 s = tl.load(s_ptr + rn * stride_sn + k0 // GS, mask = n_ok, other = 0.0)
                 acc += part * s.to(tl.float32)[None, :]
             else:
@@ -168,8 +166,7 @@ def _group_tiles() -> bool:
 
 
 def _plans(group: int) -> tuple:
-    """(BLOCK_N, BLOCK_K, warps, stages) to try in order. Per row (group 0): _CONFIGS. Grouped: one group per K tile
-    first (the tile it always used), then _CONFIGS' own K tiles inside a group wider than them."""
+    """Tiles to try in order; grouped: one group per K tile first (the old tile), then _CONFIGS' K tiles inside it."""
     if not group:
         return _CONFIGS
     whole = tuple((bn, group, w, st) for bn, _bk, w, st in _CONFIGS)
@@ -189,7 +186,7 @@ def _launch(x: Any, q: Any, s2: Any, bias: Any, oidx: Any, ow: Any, cfg: tuple) 
     n, groups = s2.shape
     ko = 0 if oidx is None else int(oidx.numel())
     y = torch.empty((m, n), device = x.device, dtype = torch.bfloat16)
-    # Triton launches on the current device, not the tensor's (CPU: the interpreter in tests)
+    # Triton launches on the current device, not the tensor's
     with torch.cuda.device(x.device) if x.is_cuda else contextlib.nullcontext():
         fn[(triton.cdiv(n, block_n),)](
             x,
