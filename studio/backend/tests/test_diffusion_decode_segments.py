@@ -15,15 +15,28 @@ from core.inference import diffusion_vae_oom as O  # noqa: E402
 
 
 class _FakeTorch:
-    def __init__(self, *, segments = (), backend = "native", hip = None, compiling = False, capturing = False,
-                 setter = True, legacy = False, fail = False):  # fmt: skip
+    """Allocator settings as ``AllocatorConfig::parseArgs`` keeps them: each call resets max_split_size /
+    garbage_collection_threshold / roundup to defaults, applies the keys it names and records the string."""
+
+    def __init__(self, *, backend = "native", hip = None, compiling = False, capturing = False,
+                 setter = True, legacy = False, fail = False, live = "", settings = True):  # fmt: skip
         self.calls = []
         self.version = types.SimpleNamespace(hip = hip)
+        self.state = {"expandable_segments": False, "release_lock_on_cudamalloc": False}
+        self._parse(live)
 
         def set_settings(value):
             if fail:
                 raise RuntimeError("refused")
             self.calls.append(value)
+            self._parse(value)
+
+        def snapshot():
+            return (
+                {"segments": [], "allocator_settings": dict(self.state)}
+                if settings
+                else {"segments": []}
+            )
 
         c = types.SimpleNamespace()
         if setter:
@@ -33,9 +46,31 @@ class _FakeTorch:
         self.compiler = types.SimpleNamespace(is_compiling = lambda: compiling)
         self.cuda = types.SimpleNamespace(
             is_current_stream_capturing = lambda: capturing,
-            memory_snapshot = lambda: [dict(s) for s in segments],
-            memory = types.SimpleNamespace(get_allocator_backend = lambda: backend),
+            memory = types.SimpleNamespace(get_allocator_backend = lambda: backend, _snapshot = snapshot),
         )
+
+    def _parse(self, value):
+        self.state.update(
+            {
+                "max_split_size": -1,
+                "garbage_collection_threshold": 0.0,
+                "roundup_power2_divisions": None,
+            }
+        )
+        self.state["PYTORCH_CUDA_ALLOC_CONF"] = value
+        for part in D._conf_parts(value):
+            key, _, val = part.partition(":")
+            if key == "max_split_size_mb":
+                self.state["max_split_size"] = int(val) << 20
+            elif key == "garbage_collection_threshold":
+                self.state["garbage_collection_threshold"] = float(val)
+            elif key == "roundup_power2_divisions":
+                self.state["roundup_power2_divisions"] = val
+            elif key in ("expandable_segments", "release_lock_on_cudamalloc"):
+                self.state[key] = val == "True"
+
+    def settings(self):
+        return {k: v for k, v in self.state.items() if k != "PYTORCH_CUDA_ALLOC_CONF"}
 
 
 class _Vae:
@@ -50,6 +85,8 @@ def _cuda_z():
 def fresh(monkeypatch):
     monkeypatch.setattr(D, "_usable", None)
     monkeypatch.setattr(D, "_depth", 0)
+    monkeypatch.setattr(D, "_saved", None)
+    monkeypatch.setattr(D, "_written", (None, None))
     monkeypatch.setattr(D, "_platform_ok", lambda: True)
     for name in D._ALLOC_CONF_VARS + (D.DECODE_EXPANDABLE_ENV,):
         monkeypatch.delenv(name, raising = False)
@@ -112,12 +149,14 @@ def test_restores_after_a_failing_decode(fresh):
 @pytest.mark.parametrize(
     "fake_kwargs",
     [
-        {"segments": [{"is_expandable": True}]},  # already on process-wide
+        {"live": "expandable_segments:True"},  # already on process-wide
+        {"live": "expandable_segments:False"},  # switched off on purpose
         {"backend": "cudaMallocAsync"},
         {"hip": "6.4"},
         {"compiling": True},
         {"capturing": True},
         {"setter": False},
+        {"settings": False},  # live settings unreadable: they could not be restored
     ],
 )
 def test_never_touches_the_allocator_when_not_allowed(fresh, fake_kwargs):
@@ -127,27 +166,51 @@ def test_never_touches_the_allocator_when_not_allowed(fresh, fake_kwargs):
 
 
 @pytest.mark.parametrize(
-    "conf",
+    "live",
     [
-        "max_split_size_mb:128",
-        "expandable_segments:False",
-        "expandable_segments:True,roundup_power2_divisions:[32:256,64:128,256:64,>:32]",
-        "backend:cudaMallocAsync",
-        "garbage_collection_threshold:0.6",
+        "max_split_size_mb:128,garbage_collection_threshold:0.7",
+        "roundup_power2_divisions:[32:256,64:128,256:64,>:32]",
+        "release_lock_on_cudamalloc:True,max_split_size_mb:512",
     ],
 )
-def test_user_allocator_config_wins(fresh, monkeypatch, conf):
+def test_runtime_allocator_settings_survive_the_decode(fresh, live):
+    """Settings applied through the runtime setter (no environment variable) are kept inside and after."""
+    fake = fresh(_FakeTorch(live = live))
+    before = fake.settings()
+    vae = _vae()
+    seen = []
+    for _ in range(2):  # the second decode reads the first one's restore as the user's string
+        with D.expandable_decode(vae, _cuda_z()):
+            inside = fake.settings()
+            seen.append(inside.pop("expandable_segments"))
+            assert inside == {k: v for k, v in before.items() if k != "expandable_segments"}
+        assert fake.settings() == before
+    assert seen == [True, True] and len(fake.calls) == 4 and D._usable is True
+
+
+def test_env_allocator_config_is_kept_too(fresh, monkeypatch):
+    conf = "max_split_size_mb:128,garbage_collection_threshold:0.6"
     monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", conf)
-    fake = fresh(_FakeTorch())
-    _decode(_vae(), fake)
-    assert fake.calls == []
+    fake = fresh(_FakeTorch(live = conf))
+    before = fake.settings()
+    inside = _decode(_vae(), fake)
+    assert inside == [conf + ",expandable_segments:True"]
+    assert fake.settings() == before
 
 
 def test_bare_expandable_true_export_after_init_still_engages(fresh, monkeypatch):
     monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-    fake = fresh(_FakeTorch(segments = [{"is_expandable": False}]))
+    fake = fresh(_FakeTorch())
     _decode(_vae(), fake)
     assert fake.calls == ["expandable_segments:True", "expandable_segments:False"]
+
+
+def test_a_restore_that_reads_back_different_ends_it(fresh, monkeypatch):
+    fake = fresh(_FakeTorch(live = "max_split_size_mb:128"))
+    real = fake._parse
+    fake._parse = lambda value: real(value.replace("max_split_size_mb:128,", ""))
+    _decode(_vae(), fake)
+    assert D._usable is False
 
 
 def test_kill_switch_and_opt_in(fresh, monkeypatch):
@@ -261,9 +324,7 @@ def test_rocm_device_never_engages(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not (_real_gpu and not getattr(torch.version, "hip", None))
-    or not D._platform_ok()
-    or D._allocator_configured(),
+    not (_real_gpu and not getattr(torch.version, "hip", None)) or not D._platform_ok(),
     reason = "Linux CUDA device with the default allocator only",
 )
 def test_cuda_device_maps_the_decode_into_an_expandable_segment(monkeypatch):
