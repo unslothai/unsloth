@@ -458,7 +458,7 @@ def _default_threads(smt: bool = True) -> int:
     windows = None if linux else _windows_cores()
     if physical:
         threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
-    elif windows is not None and smt:
+    elif windows is not None:
         cores, hybrid = windows
         threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
@@ -493,9 +493,9 @@ def _cpus_restricted(cpu: Optional[int]) -> bool:
 
 
 def _explicit_threads() -> Optional[int]:
-    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
-    sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
-    the logical CPUs and ignore the affinity mask, so a host without SMT or a cpuset needs the count passed."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux, Windows) the thread count above whenever it differs
+    from what sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp halves the logical CPUs on Windows (and
+    on Linux before the fork's topology fix) and ignores the affinity mask: hosts without SMT need the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -505,7 +505,7 @@ def _explicit_threads() -> Optional[int]:
     performance_cores = _apple_performance_cores()
     if performance_cores:
         return performance_cores
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or sys.platform == "win32":
         cpu = os.cpu_count()
         threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
