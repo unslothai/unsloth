@@ -190,3 +190,108 @@ def test_requests_price_the_denoise_phase_not_the_decode(pipe):
         dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, cfg = False)
         == WHOLE_RENDER_HEADROOM - DENOISE_HEADROOM
     )
+
+
+def _flux3_like():
+    import torch
+    class Flux3Transformer2DModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.x_embedder = torch.nn.Linear(4, 8)
+            self.mode_blocks = torch.nn.ModuleDict(
+                {
+                    name: torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(3)])
+                    for name in ("image", "image_cond")
+                }
+            )
+            self.modulations = torch.nn.ModuleDict({"image": torch.nn.Linear(8, 8)})
+            self.txt_mode_blocks = torch.nn.ModuleList([torch.nn.Linear(8, 8) for _ in range(2)])
+
+        def forward(self, x):
+            x = self.x_embedder(x)
+            for block in self.txt_mode_blocks:
+                x = block(x)
+            for block in self.mode_blocks["image"]:
+                x = block(x)
+            return x
+
+    return Flux3Transformer2DModel()
+
+
+def test_flux3_mode_block_dicts_become_block_groups(monkeypatch):
+    import torch
+
+    monkeypatch.delenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, raising = False)
+    model = _flux3_like()
+    assert dm._dict_block_modules(model) == ["mode_blocks"]
+
+    def apply(
+        module,
+        *,
+        offload_type = "block_level",
+        block_modules = None,
+        **kw,
+    ):
+        return None
+
+    def old_apply(
+        module,
+        *,
+        offload_type = "block_level",
+        **kw,
+    ):
+        return None
+
+    assert dm._with_dict_block_modules(apply, model, {"offload_type": "block_level"})[
+        "block_modules"
+    ] == ["mode_blocks"]
+    # leaf-level, an older diffusers without the parameter, and other classes keep the stock grouping
+    assert "block_modules" not in dm._with_dict_block_modules(
+        apply, model, {"offload_type": "leaf_level"}
+    )
+    assert "block_modules" not in dm._with_dict_block_modules(
+        old_apply, model, {"offload_type": "block_level"}
+    )
+    assert (
+        dm._dict_block_modules(
+            torch.nn.ModuleDict({"a": torch.nn.ModuleList([torch.nn.Linear(2, 2)])})
+        )
+        == []
+    )
+    monkeypatch.setenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, "0")
+    assert dm._dict_block_modules(model) == []
+
+
+def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
+    import inspect
+
+    import torch
+
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    if "block_modules" not in inspect.signature(apply_group_offloading).parameters:
+        pytest.skip("this diffusers has no block_modules")
+    monkeypatch.delenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, raising = False)
+    counts = {}
+    for env in ("1", "0"):
+        monkeypatch.setenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, env)
+        model = _flux3_like()
+        x = torch.randn(2, 4)
+        want = model(x)
+        kwargs = dict(
+            onload_device = torch.device("cpu"),
+            offload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
+        )
+        dm._apply_group_offloading_packed(apply_group_offloading, model, kwargs)
+        groups = dm._offload_groups(model)
+        counts[env] = len(groups)
+        mode_groups = [
+            g for g in groups if any(m is b for b in model.mode_blocks["image"] for m in g.modules)
+        ]
+        assert (len(mode_groups) == 3) is (env == "1")
+        torch.testing.assert_close(model(x), want)
+    # 6 mode blocks become groups of their own; the stock grouping folds them into the top-level group
+    assert counts["1"] == counts["0"] + 6
