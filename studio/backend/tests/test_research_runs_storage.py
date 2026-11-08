@@ -4734,7 +4734,6 @@ def test_terminal_fallback_keeps_a_clean_attachment_inventory_clean():
     assert dirty == 0
     assert rows == before_rows
 
-    # A forced rebuild of the same data produces the same inventory.
     conn = studio_db.get_connection()
     try:
         studio_db._rebuild_chat_attachment_inventory(conn)
