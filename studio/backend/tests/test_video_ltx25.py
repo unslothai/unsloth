@@ -2758,6 +2758,8 @@ def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(mon
     config = {"device": "cuda:0", "resident": False}
     for _ in range(2):
         worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    worker._own_if_pending(model, config)  # the worker loop runs it once idle
+    worker._own_if_pending(model, config)
     assert owned == [1] and config["_owned_host"] is True
     assert all(t.data_ptr() != ptrs[id(t)] for t in params)
     assert list(model.parameters()) == params
@@ -2791,6 +2793,101 @@ def test_the_first_card_encode_owns_the_host_copy_once_when_it_is_not_pinned(mon
         _FakeTokenizer(), _stack_model(), {"device": "cuda:0", "resident": False}, ["a"], 6
     )
     assert owned == [1]
+
+
+def _owning_worker(monkeypatch):
+    from core.inference import diffusion_memory
+    from core.inference import video_ltx25_te_worker as worker
+
+    monkeypatch.delenv("UNSLOTH_LTX25_TE_OWN_WHEN_IDLE", raising = False)
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu:0", None))
+    monkeypatch.setattr(worker, "_discrete_card", lambda device: True)
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 64 << 10)
+    monkeypatch.setattr(diffusion_memory, "_host_ram_capacity_mib", lambda: 128 << 10)
+    owned = []
+    real = worker._own_host_copy
+    monkeypatch.setattr(worker, "_own_host_copy", lambda m: owned.append(1) or real(m))
+    return worker, owned
+
+
+def test_the_first_card_encode_reads_the_mapping_and_the_copy_waits_for_idle(monkeypatch):
+    """The copy out of the checkpoint mapping no longer runs inside the first encode, where it read the whole file
+    from disk before the encode started: that encode uploads the mapped pages, the copy follows between encodes."""
+    import torch
+
+    worker, owned = _owning_worker(monkeypatch)
+    model = _stack_model()
+    ptrs = [t.data_ptr() for t in model.parameters()]
+    config = {"device": "cuda:0", "resident": False}
+    embeds, _mask, _device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert owned == [] and config.get("_own_pending") is True
+    assert [t.data_ptr() for t in model.parameters()] == ptrs
+    worker._own_if_pending(model, config)
+    assert owned == [1] and config["_owned_host"] is True and "_own_pending" not in config
+    assert all(t.data_ptr() != p for t, p in zip(model.parameters(), ptrs))
+    again, _mask, _device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert owned == [1] and torch.equal(embeds, again)
+
+
+@pytest.mark.parametrize("value", ["0", "off"])
+def test_the_idle_copy_kill_switch_copies_inside_the_first_encode(monkeypatch, value):
+    worker, owned = _owning_worker(monkeypatch)
+    monkeypatch.setenv(worker.OWN_WHEN_IDLE_ENV, value)
+    config = {"device": "cuda:0", "resident": False}
+    worker._encode_on(_FakeTokenizer(), _stack_model(), config, ["a fox"], 6)
+    assert owned == [1] and config["_owned_host"] is True and "_own_pending" not in config
+
+
+def test_the_worker_copies_once_idle_and_not_between_back_to_back_encodes(monkeypatch, tmp_path):
+    """CFG's negative prompt arrives right after the positive: both encode before the copy runs."""
+    import threading
+
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = SimpleNamespace(
+        config = SimpleNamespace(
+            model_type = "gemma4_unified", text_config = SimpleNamespace(hidden_size = 4)
+        )
+    )
+    events = []
+
+    def encode_on(
+        tok,
+        m,
+        config,
+        prompts,
+        n,
+        server_reserved_mib = None,
+    ):
+        events.append(("encode", prompts[0]))
+        config["_own_pending"] = True
+        return torch.ones(len(prompts), n, 8), torch.ones(len(prompts), n), "cuda:0"
+
+    cmd, resp = queue.Queue(), queue.Queue()
+    monkeypatch.setattr(worker, "_activate_sidecar", lambda venv: None)
+    monkeypatch.setattr(worker, "_load", lambda config: ("tok", model))
+    monkeypatch.setattr(worker, "_encode_on", encode_on)
+    monkeypatch.setattr(worker, "_OWN_IDLE_S", 0.2)
+
+    def own(m, config):
+        if config.pop("_own_pending", False):
+            events.append(("own",))
+            cmd.put({"type": "shutdown"})
+
+    monkeypatch.setattr(worker, "_own_if_pending", own)
+    cmd.put({"type": "encode", "id": 1, "prompts": ["pos"], "max_sequence_length": 5})
+    cmd.put({"type": "encode", "id": 2, "prompts": ["neg"], "max_sequence_length": 5})
+    runner = threading.Thread(
+        target = worker.run_text_encoder_worker,
+        kwargs = {"cmd_queue": cmd, "resp_queue": resp, "config": {"venv_dir": str(tmp_path)}},
+        daemon = True,
+    )
+    runner.start()
+    runner.join(10)
+    assert not runner.is_alive()
+    assert events == [("encode", "pos"), ("encode", "neg"), ("own",)]
 
 
 def test_unified_memory_keeps_moving_the_encoder_with_model_to(monkeypatch):

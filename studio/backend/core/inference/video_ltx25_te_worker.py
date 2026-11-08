@@ -772,6 +772,32 @@ def _own_host_copy(model: Any) -> bool:
         return False
 
 
+# "0" copies the mapped host weights before the first card encode, inside it, as before.
+OWN_WHEN_IDLE_ENV = "UNSLOTH_LTX25_TE_OWN_WHEN_IDLE"
+# An encode arriving within this window (CFG's negative prompt) runs before the copy.
+_OWN_IDLE_S = 1.0
+
+
+def _own_when_idle_enabled() -> bool:
+    return (os.environ.get(OWN_WHEN_IDLE_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _own_if_pending(model: Any, config: dict) -> None:
+    """The deferred ``_own_host_copy``, run between encodes. Before the first encode it read the 23 GB checkpoint
+    from disk on the first render's critical path; after it, it copies the pages that encode left cached."""
+    if (
+        config.pop("_own_pending", False)
+        and not config.get("_owned_host")
+        and not config.get("_pinned_bytes")
+    ):
+        config["_owned_host"] = _own_host_copy(model)
+
+
 def _pin_fits_twice(tensors: list) -> bool:
     """Whether host RAM holds a second copy of ``tensors`` above the pin reserve. The loaded encoder's tensors share
     storages, so the pinned chunks fill before the pageable copy is freed (24.9 -> 42.7 GB on an A100 host); on a host
@@ -1034,7 +1060,11 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
         if config.get("_pin_host") and "_pinned_bytes" not in config:
             config["_pinned_bytes"] = _pin_host_copy(model, config)
         if not config.get("_pinned_bytes") and not config.get("_owned_host"):
-            config["_owned_host"] = _own_host_copy(model)
+            if _own_when_idle_enabled():
+                # This encode reads the mapping (the pages it faults in stay cached); the copy waits for idle.
+                config["_own_pending"] = True
+            else:
+                config["_owned_host"] = _own_host_copy(model)
     # Onload copies host tensors up and restores by repointing: no 23 GB device-to-host copy per prompt.
     whole = (
         _Onload(device) if onloaded and _discrete_card(device) and _onloads_whole(model) else None
@@ -1107,7 +1137,15 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
         )
         return
     while True:
-        msg = cmd_queue.get()
+        if config.get("_own_pending"):
+            import queue
+            try:
+                msg = cmd_queue.get(timeout = _OWN_IDLE_S)
+            except queue.Empty:
+                _own_if_pending(model, config)
+                continue
+        else:
+            msg = cmd_queue.get()
         kind = msg.get("type") if isinstance(msg, dict) else None
         if kind == "shutdown" or kind is None:
             return
