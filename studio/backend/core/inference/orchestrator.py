@@ -433,6 +433,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "precision_folder": model_info.get("precision_folder"),
         "audio_workflows": model_info.get("audio_workflows"),
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
@@ -3122,6 +3123,7 @@ class InferenceOrchestrator:
         request_branch: Optional[list] = None,
         live_branch: Optional[list] = None,
         force_reset: bool = False,
+        keeps_boundary: bool = False,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
@@ -3250,7 +3252,7 @@ class InferenceOrchestrator:
                 max_tokens = fit_max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
-                keeps_boundary = _keeps_compaction_boundary(thread_id),
+                keeps_boundary = keeps_boundary or _keeps_compaction_boundary(thread_id),
                 can_reset = can_reset,
                 recall_offered = recall_offered,
                 reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -3795,6 +3797,8 @@ class InferenceOrchestrator:
         _request_ids = {id(message) for message in initial}
         _sticky_boundary_applied = False
         _conversation_recall_done = False
+        # Later fits run on the cut history, so the cut stays put even without a saved thread.
+        _loop_cut = False
         # Loop notices are user turns, so the fit stops protecting the question as the newest user turn.
         _rolling_anchor_ids: set[int] = set()
         for message in reversed(initial):
@@ -3803,7 +3807,7 @@ class InferenceOrchestrator:
                 break
 
         def _fit_iteration(conversation: list, active_tools: list, live_branch: list) -> dict:
-            nonlocal _sticky_boundary_applied, _conversation_recall_done
+            nonlocal _sticky_boundary_applied, _conversation_recall_done, _loop_cut
             if loop_images:
                 # The count cannot price pictures.
                 return {}
@@ -3835,6 +3839,10 @@ class InferenceOrchestrator:
                 recall_done = _conversation_recall_done,
                 request_branch = _request_branch,
                 live_branch = live_branch,
+                keeps_boundary = _loop_cut,
+            )
+            _loop_cut = _loop_cut or any(
+                event.get("dropped_messages") for event in result.get("events") or ()
             )
             # The saved boundary applies once, in the first fit that runs (not resumed or failed).
             if result.get("boundary_applied"):

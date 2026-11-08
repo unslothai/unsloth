@@ -1221,7 +1221,9 @@ def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
     )
     assert inference_route._names_studio_embedder(model_dir)
     assert not inference_route._names_studio_embedder(str(tmp_path / "foo"))
-    assert inference_route._names_studio_embedder(f"sentence-transformers:{model_dir}")
+    # An identity escapes the colons in its segments (a Windows path has one after the drive).
+    segment = rag_config._escape_identity_segment(model_dir)
+    assert inference_route._names_studio_embedder(f"sentence-transformers:{segment}")
 
 
 def test_untagged_aliases_never_probe_the_backend(studio_embedder):

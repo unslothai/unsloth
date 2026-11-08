@@ -268,8 +268,15 @@ class TestGpuInitCrashMessage:
         assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" in message
 
     def test_rocm_host_keeps_the_original_advice(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
         message = self._message(monkeypatch, "hip")
         assert "ROCR_VISIBLE_DEVICES=0" in message
+
+    def test_windows_rocm_host_is_told_the_variable_that_masks_there(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        message = self._message(monkeypatch, "hip")
+        assert "HIP_VISIBLE_DEVICES=0" in message
+        assert "ROCR_VISIBLE_DEVICES" not in message
 
     def test_cuda_host_gets_cuda_advice(self, monkeypatch):
         message = self._message(monkeypatch, "cuda")

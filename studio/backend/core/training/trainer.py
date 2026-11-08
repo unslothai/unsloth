@@ -73,7 +73,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models import is_vision_model, audio_vlm_multimodal_lm_checked, detect_audio_type_checked
 from utils.models.diffusion_lm import (
     diffusion_lm_profile_for_model,
     loaded_diffusion_profile,
@@ -227,6 +227,16 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
 
 # These load_model branches force load_in_4bit=False: the base is 16-bit or wider (bicodec fp32).
 _FORCED_16BIT_AUDIO_TYPES = frozenset({"csm", "whisper", "bicodec", "dac"})
+
+
+def _audio_vlm_auto_model_kwargs(multimodal: bool) -> dict:
+    """No vision tower (LFM3-Audio): the default load builds a backbone with no LM head, so use Chat's class."""
+    if not multimodal:
+        return {}
+    import transformers
+
+    auto_model = getattr(transformers, "AutoModelForMultimodalLM", None)
+    return {"auto_model": auto_model} if auto_model is not None else {}
 
 
 def _bitsandbytes_allows_4bit() -> bool:
@@ -1262,6 +1272,16 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+            # Only a definitive no (not an unreadable config) takes the multimodal class.
+            audio_vlm_multimodal = False
+            if self.is_audio_vlm and not vision:
+                takes, known = audio_vlm_multimodal_lm_checked(
+                    metadata_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+                audio_vlm_multimodal = known and takes
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -1465,7 +1485,10 @@ class UnslothTrainer:
 
             elif self.is_audio_vlm:
                 from unsloth import FastModel
+
+                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(audio_vlm_multimodal)
                 self.model, self.tokenizer = FastModel.from_pretrained(
+                    **audio_vlm_kwargs,
                     model_name = lookup_name,
                     max_seq_length = max_seq_length,
                     dtype = _auto_dtype,
@@ -1480,7 +1503,9 @@ class UnslothTrainer:
                     on_model_resolved = on_model_resolved,
                     **self._offload_load_kwargs(device_map),
                 )
-                logger.info("Loaded audio VLM model (FastModel)")
+                logger.info(
+                    f"Loaded audio VLM model (FastModel{', AutoModelForMultimodalLM' if audio_vlm_kwargs else ''})"
+                )
 
             elif self.diffusion_lm_profile:
                 # FastModel routes every registered text-diffusion family to its diffusion loader.
@@ -4542,6 +4567,19 @@ class UnslothTrainer:
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
                 image_col_name = getattr(self, "_audio_vlm_image_col", None)
+                # Placeholder ids stay out of the loss; LFM3-Audio keeps them on the processor, Gemma 3n on its tokenizer.
+                placeholder_ids = set()
+                for holder in (processor, getattr(processor, "tokenizer", None)):
+                    for attr in (
+                        "audio_token_id",
+                        "audio_out_token_id",
+                        "image_token_id",
+                        "boi_token_id",
+                        "eoi_token_id",
+                    ):
+                        token_id = getattr(holder, attr, None)
+                        if type(token_id) is int:
+                            placeholder_ids.add(token_id)
                 if training_args.get("train_on_completions", False) and not training_args.get(
                     "is_cpt", False
                 ):
@@ -4603,15 +4641,8 @@ class UnslothTrainer:
 
                     labels = batch["input_ids"].clone()
                     labels[labels == processor.tokenizer.pad_token_id] = -100
-                    for attr in (
-                        "audio_token_id",
-                        "image_token_id",
-                        "boi_token_id",
-                        "eoi_token_id",
-                    ):
-                        token_id = getattr(processor.tokenizer, attr, None)
-                        if token_id is not None:
-                            labels[labels == token_id] = -100
+                    for token_id in placeholder_ids:
+                        labels[labels == token_id] = -100
                     batch["labels"] = labels
                     if audio_response_masker is not None:
                         batch["labels"] = audio_response_masker(batch)["labels"]

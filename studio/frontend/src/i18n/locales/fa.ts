@@ -2753,6 +2753,21 @@ export const fa = {
         summary: "درخواست‌ها، خطاها و مصرف توکن به‌صورت زنده",
         status: "{active} فعال · {recent} اخیر · {model}",
         noModelLoaded: "هیچ مدلی بارگذاری نشده",
+        memory: "حافظه",
+        gpuInUse: "GPU در حال استفاده",
+        availableForModels: "در دسترس برای مدل‌ها",
+        refreshRate: "نرخ تازه‌سازی",
+        refreshRateDescription: "هر چند وقت یک بار مانیتور شناور، مصرف حافظه و GPU را هنگام باز بودن می‌خواند.",
+        refreshEvery: "هر {seconds} ثانیه",
+        unsloth: "Unsloth",
+        otherApps: "برنامه‌های دیگر",
+        otherInUse: "مصرف دیگر",
+        freeLabel: "آزاد",
+        unslothApp: "برنامهٔ Unsloth",
+        unslothShare: "نمایش سهم Unsloth",
+        unslothShareDescription: "حافظه را به سهم Unsloth، سهم برنامه‌های دیگر و بخش آزاد تقسیم می‌کند.",
+        modelBreakdown: "تفکیک بر اساس مدل",
+        modelBreakdownDescription: "سهم Unsloth در نوار حافظه را به هر مدل بارگذاری‌شده و بقیهٔ برنامه تقسیم می‌کند.",
         autoOpen: "پایشگر شناور خودکار باز شود",
         autoOpenDescription: "وقتی ترافیک API می‌رسد، یک پنل کوچک باز می‌شود.",
         cpu: "CPU",
@@ -2768,8 +2783,7 @@ export const fa = {
         gpuUnusableDetail: "شناسایی شد، اما PyTorch نمی‌تواند از آن استفاده کند",
         detailedView: "نمای جزئی",
         detailedViewDescription:
-          "بار CPU و بار، دما و توان هر GPU در پنجرهٔ شناور نمایش داده شود.",
-        cpuLoad: "بار CPU",
+          "بار، دما و توان هر GPU در پنجرهٔ شناور نمایش داده شود.",
         gpuLoad: "بار GPU",
         temperature: "دما",
         power: "توان",
@@ -2785,7 +2799,7 @@ export const fa = {
         detecting: "در حال بررسی GPUها...",
         unreadable: "خواندن سخت‌افزار این سرور ممکن نشد.",
         noGpu:
-          "هیچ GPU قابل مشاهده‌ای شناسایی نشد. منابع فقط CPU در بالا نمایش داده شده‌اند.",
+          "پردازنده گرافیکی اختصاصی پیدا نشد.",
         noUsableGpu: "هیچ GPU در این دستگاه برای PyTorch قابل استفاده نیست.",
         mismatchCpuBuild:
           "PyTorch یک بیلد فقط CPU است ({version})، بنابراین نمی‌توان از GPUهای زیر استفاده کرد. برای بازگرداندن پشتیبانی GPU، نصب را تعمیر کنید.",
@@ -2873,7 +2887,7 @@ export const fa = {
           "بک‌اند استنتاج شتاب‌دهنده موتور مسیر سفارشی پوشه تغییر llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "حافظهٔ مدل",
+        title: "بارگذاری مدل",
         keepResident: "نگه داشتن مدل در حافظهٔ GPU",
         keepResidentDescription: "میان پرامپت‌ها در VRAM بماند.",
         keepResidentHint:
@@ -3072,7 +3086,7 @@ export const fa = {
       configurationDocs: "مستندات",
       configurationFlagsSuffix: "مراجعه کنید.",
       modelNote:
-        "Codex به یک مدل GGUF نیاز دارد که با llama-server ارائه شود. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
+        "Claude Code و Codex به یک مدل GGUF که با llama-server ارائه شود یا یک مدل MLX نیاز دارند. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
       subagent: {
         title: "استفاده از مدل محلی به‌عنوان زیرعامل",
         description:
@@ -3147,6 +3161,8 @@ export const fa = {
     },
     chat: {
       groups: {
+        replies: { title: "پاسخ‌ها" },
+        thinkingTools: { title: "تفکر و ابزارها" },
         conversations: {
           title: "گفتگوها",
         },
@@ -3246,11 +3262,20 @@ export const fa = {
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",
       showReplyTimesKeywords:
         "مهر زمانی زمان ساعت تاریخ پایان رسیدن پاسخ پیام timestamp",
-      showGenerationDetails: "جزئیات تولید",
+      showGenerationDetails: "اطلاعات دقیق سرعت و بارگذاری",
       showGenerationDetailsDescription:
-        "سرعت زندهٔ پرامپت و پاسخ همراه با تعداد توکن‌ها، و محل بارگذاری لایه‌های مدل نمایش داده شود.",
+        "سرعت خواندن پرامپت، شمار توکن‌ها و پذیرش پیش‌نویس را به نمایش زنده می‌افزاید و نشان می‌دهد لایه‌های مدل کجا بارگذاری شده‌اند.",
       showGenerationDetailsKeywords:
         "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+      generationStatsUpdates: "آمار سرعت و زمینه",
+      generationStatsUpdatesDescription:
+        "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",
+      generationStatsUpdatesHint:
+        "حالت بی‌درنگ نمایشگر توکن در ثانیه زیر پاسخ و نوار زمینه در بالای گفتگو را هنگام نوشتن پاسخ چند بار در ثانیه تازه می‌کند. حالت پس از پایان آن‌ها را یک بار، پس از پایان هر پاسخ، به‌روز می‌کند. حالت بی‌درنگ ممکن است باعث کندی یا افت کارایی شود، به‌ویژه روی دستگاه‌های قدیمی یا پرمشغله.",
+      generationStatsUpdatesSettled: "پس از پایان",
+      generationStatsUpdatesRealtime: "بی‌درنگ",
+      generationStatsUpdatesKeywords:
+        "بی‌درنگ زنده به‌روزرسانی سرعت زمینه آمار realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
@@ -5554,6 +5579,7 @@ export const fa = {
     monitor: {
       dragHandleLabel:
         "جابه‌جایی پایشگر زنده. کلیدهای جهت‌نما آن را کمی جابه‌جا می‌کنند و دوبار کلیک آن را بازنشانی می‌کند.",
+      resizeHint: "برای تغییر عرض، یک لبه یا گوشه را بکشید. دوبار کلیک آن را بازنشانی می‌کند.",
       reconnecting: "در حال اتصال دوباره...",
     },
   },

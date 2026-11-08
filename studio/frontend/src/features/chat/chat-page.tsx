@@ -102,6 +102,7 @@ import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
@@ -182,7 +183,7 @@ import {
   chatModelSwitchMeta,
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
-import { ContextUsageBar } from "./components/context-usage-bar";
+import { LiveContextUsageBar } from "./components/live-context-usage-bar";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -435,6 +436,7 @@ const BrowserOverlaidContext = createContext(false);
 function BrowserOverlay(): ReactElement {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const modalRef = useSurfaceRef(MODAL_SURFACE, dialogRef);
   useDocumentFlag("data-browser-overlay-open", true);
   useEffect(() => {
     const previous = document.activeElement;
@@ -482,7 +484,7 @@ function BrowserOverlay(): ReactElement {
       }}
     >
       <div
-        ref={dialogRef}
+        ref={modalRef}
         role="dialog"
         aria-modal={true}
         aria-label={t("browser.title")}
@@ -4860,7 +4862,9 @@ export function ChatPage({
             (view.mode === "single" ||
               (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
-              <ContextUsageBar
+              <LiveContextUsageBar
+                // Keyed like the adapter's run (resolvedThreadId || "__default"), local ids included.
+                liveThreadKey={activeThreadId ?? "__default"}
                 compactUnknownAsIcon={view.mode === "single"}
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
