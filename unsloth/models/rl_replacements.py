@@ -3785,6 +3785,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            # A hooked output head must run as a module: score the real logits its own call returns.
+            _unsloth_head_hooked = _unsloth_grpo_head_hooked(unwrapped_model)
             _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
@@ -3985,7 +3987,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 attention_mask_chunks,
                 vision_chunks,
             )
-            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0" if _unsloth_head_hooked else "1"
 
             # Sequence packing (default on; UNSLOTH_GRPO_SEQ_PACKING=0 disables): one varlen [1, sum L] forward replaces the padded [B, Lmax] loop and fixes the left-pad RoPE error. Self-verified against the per-row forward, re-checked as T grows, and falls back if a backend ignores packed_seq_lengths.
             logprobs = None
@@ -4000,6 +4002,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             _pg_engage = (
                 UNSLOTH_GRPO_PREFIX_GROUPER_ON
                 and not getattr(self, "use_vllm", False)
+                # Its extract_logps always projects with lm_head.weight.
+                and not _unsloth_head_hooked
                 and not getattr(unwrapped_model, "_unsloth_prefix_grouper_nograd_disabled", False)
             )
             if _pg_engage:
@@ -4119,7 +4123,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     unwrapped_model._unsloth_prefix_grouper_nograd_disabled = True
                     if isinstance(_pg_err, torch.cuda.OutOfMemoryError):
                         torch.cuda.empty_cache()
-                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+                    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                        "0" if _unsloth_head_hooked else "1"
+                    )
                     if UNSLOTH_ENABLE_LOGGING:
                         print(
                             f"[Unsloth] GRPO PrefixGrouper (no-grad) disabled (fell back to packed): {_pg_err!r}",
@@ -4427,7 +4433,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pg_use = False
                         if isinstance(_pg_err3, torch.cuda.OutOfMemoryError):
                             torch.cuda.empty_cache()
-                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+                        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = (
+                            "0" if _unsloth_head_hooked else "1"
+                        )
                         if UNSLOTH_ENABLE_LOGGING:
                             print(
                                 f"[Unsloth] GRPO PrefixGrouper (no-grad) verify failed (fell back to packed): {_pg_err3!r}",
@@ -4649,6 +4657,45 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     return _unsloth_grpo_hidden_states_signal(model) is not False
 
 
+def _unsloth_grpo_head_hooked(model):
+    """True when GRPO must score real logits from the head's own call: hidden-states scorers read ``lm_head.weight``
+    and bypass its hooks / patched ``forward``. Unsloth, ZeRO-3, FSDP2 and accelerate ``_hf_hook`` hooks are already
+    handled. A square head keeps hidden states: the width dispatch could not tell them from logits."""
+    try:
+        head = model.get_output_embeddings()
+    except Exception:
+        return False
+    if not isinstance(head, torch.nn.Module):
+        return False
+    weight = getattr(head, "weight", None)
+    if (
+        isinstance(weight, torch.Tensor)
+        and weight.dim() == 2
+        and weight.shape[0] == weight.shape[1]
+    ):
+        return False
+    from torch.nn.modules import module as _module
+
+    if (
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    ):
+        return True
+    if "forward" in vars(head) and not hasattr(head, "_hf_hook"):
+        return True
+    for _name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
+        for _hook in (getattr(head, _name, None) or {}).values():
+            _fn = getattr(_hook, "func", _hook)  # functools.partial
+            _owner = getattr(_fn, "__module__", None) or ""
+            if not _owner.startswith(
+                ("unsloth.", "unsloth_zoo.", "deepspeed.", "torch.distributed.")
+            ):
+                return True
+    return False
+
+
 def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
     """``_unsloth_grpo_returns_hidden_states`` for the preference routes, which need a zoo that writes the hidden-state
     markers: a square head with no signal is a forward that ignored the flag, so its output is real logits."""
@@ -4748,6 +4795,31 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
             f"{len(unpatched)} still decide on width alone "
             f"({', '.join(line.strip() for line in unpatched)}). "
             "Please upgrade unsloth_zoo."
+        )
+    return source
+
+
+_GRPO_HIDDEN_STATES_REQUEST = re.compile(
+    r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
+)
+
+
+def _patch_grpo_accumulated_loss_head_hooks(source):
+    """In ``grpo_accumulated_loss``, request real logits instead of hidden states while ``_unsloth_grpo_head_hooked``."""
+    if re.search(r"def grpo_accumulated_loss\(\s*trainer\s*,", source) is None:
+        raise RuntimeError(
+            "Unsloth: grpo_accumulated_loss in this unsloth_zoo version does not take "
+            "`trainer` first. Please upgrade unsloth_zoo."
+        )
+    source, requests = _GRPO_HIDDEN_STATES_REQUEST.subn(
+        'os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = '
+        '"0" if _unsloth_grpo_head_hooked(trainer.model) else "1"',
+        source,
+    )
+    if requests == 0:
+        raise RuntimeError(
+            "Unsloth: could not find where grpo_accumulated_loss requests hidden states "
+            "in this unsloth_zoo version. Please upgrade unsloth_zoo."
         )
     return source
 
@@ -5054,6 +5126,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_resolve_logit_scales))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_head_hooked))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
@@ -5084,7 +5157,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_head_hooks(
+        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    )
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
@@ -6171,6 +6246,31 @@ def _unsloth_gkd_layout(source):
     return {"shift": "prompt" if is_prompt else "shift", "num_items_in_batch": bool(calls[0])}
 
 
+def _unsloth_global_module_hooks():
+    # torch's register_module_*_hook globals apply to every module, the head included.
+    from torch.nn.modules import module as _module
+    return bool(
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    )
+
+
+def _unsloth_gkd_head_hooks(head):
+    # TRL activation_offloading puts a pre / post forward pair on lm_head that only pauses offloading around
+    # the logits; skipping both is safe and keeps the chunked JSD on, so only other hooks count.
+    forward = (*head._forward_hooks.values(), *head._forward_pre_hooks.values())
+    return bool(
+        any(
+            getattr(hook, "__module__", None) != "trl.models.activation_offloading"
+            for hook in forward
+        )
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+    )
+
+
 def _unsloth_gkd_dense_head(model):
     """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
     Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
@@ -6407,6 +6507,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # The JSD bypasses head calls, so head / global hooks would not fire; accelerate's _hf_hook is fine.
+    if _unsloth_global_module_hooks() or any(
+        _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
+    ):
+        return _unsloth_gkd_note_fallback(self, "output head has forward / backward hooks")
     # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
     for unwrapped in (unwrapped_student, unwrapped_teacher):
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
@@ -6590,6 +6695,8 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_head_hooks,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,
     _unsloth_gkd_chunk_size,
@@ -6685,7 +6792,8 @@ def _unsloth_pref_chunked_head(self, model):
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
         return None
-    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+    # hooks, torch's global module hooks) is not
     # F.linear(h, W, b), and its backward hooks would never see the gradient.
     if (
         hasattr(head, "_hf_hook")
@@ -6694,6 +6802,7 @@ def _unsloth_pref_chunked_head(self, model):
         or head._forward_pre_hooks
         or head._backward_hooks
         or getattr(head, "_backward_pre_hooks", None)
+        or _unsloth_global_module_hooks()
     ):
         return None
     # MiniCPM3 divides hidden states by logits_scaling before the head.
@@ -6927,6 +7036,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_stock_logps_hook,
         _unsloth_pref_chunked_head,
         _unsloth_gkd_logit_transforms,
@@ -7010,7 +7120,8 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
-        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+        # hooks, torch's global module hooks) is not
         # F.linear(h, W, b), and its backward hooks would never see the gradient.
         elif (
             hasattr(head, "_hf_hook")
@@ -7019,6 +7130,7 @@ def _unsloth_dpo_chunked_head(
             or head._forward_pre_hooks
             or head._backward_hooks
             or getattr(head, "_backward_pre_hooks", None)
+            or _unsloth_global_module_hooks()
         ):
             reason = "output head has hooks or a patched forward"
     if reason is None:
@@ -7436,6 +7548,7 @@ for _dpo_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -7660,6 +7773,7 @@ for _kto_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -8588,6 +8702,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
         _unsloth_stock_logps_hook,

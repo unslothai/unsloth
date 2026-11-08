@@ -213,6 +213,10 @@ def load_native_from_hosted(
             )
             state[fqn + ".weight_q"] = codes
             state[fqn + ".weight_scale"] = scale.view(torch.int32)
+        from .prequant_safetensors import _unviewed
+
+        # No-copy aliases: a view's base survives offload's ``.data =`` re-point and keeps the whole file mapped.
+        state = {key: _unviewed(value) for key, value in state.items()}
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
