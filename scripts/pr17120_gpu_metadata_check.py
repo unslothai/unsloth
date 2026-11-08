@@ -132,6 +132,23 @@ def driver_loaded_here() -> bool:
         return False
 
 
+def cuda_rule_rows(mask: typing.Optional[str], n: int) -> typing.Optional[list[int]]:
+    """nvidia-smi rows CUDA exposes under a numeric CUDA_VISIBLE_DEVICES (None for UUID masks): unset = all,
+    empty = none, otherwise the leading valid, distinct indices up to the first invalid entry."""
+    if mask is None:
+        return list(range(n))
+    out: list[int] = []
+    for tok in mask.split(","):
+        tok = tok.strip()
+        if not tok.lstrip("-").isdigit():
+            return None if tok else out
+        i = int(tok)
+        if i < 0 or i >= n or i in out:
+            break
+        out.append(i)
+    return out
+
+
 def is_wsl() -> bool:
     try:
         return "microsoft" in Path("/proc/version").read_text().lower()
@@ -152,6 +169,10 @@ def main() -> int:
     )
     for g in gpus:
         print(f"  GPU {g[0]}: {g[1]} {g[2]} {g[3]} MiB")
+    if subprocess.run([sys.executable, "-c", "import torch"], capture_output = True).returncode != 0:
+        print(
+            "  no torch in this Python: comparing the driver answers with CUDA's mask rules and nvidia-smi"
+        )
     cases, failures, torch_info = [], [], None
     for order in (None, "PCI_BUS_ID", "FASTEST_FIRST"):
         for mask in (None, "0", "1", "1,0", "", "-1", "7"):
@@ -226,11 +247,40 @@ def main() -> int:
             )
             # Studio joins rows only when their count equals the visible devices; otherwise it keeps torch.
             rows_used = rows is not None and torch_devs is not None and len(rows) == len(torch_devs)
+            mode = "torch"
+            if torch_devs is None and "No module named 'torch'" in tc.stderr:
+                # No torch in this Python (a bare WSL python3): judge the driver answer against CUDA's mask
+                # rules and nvidia-smi (name, bus id, memory within 1%). Studio then has no torch to
+                # reconcile with, so the driver answer is what it uses.
+                mode = "cuda-rules"
+                exp = cuda_rule_rows(
+                    mask if order in (None, "PCI_BUS_ID") or len(gpus) == 1 else None, len(gpus)
+                )
+                got_rows = (
+                    None
+                    if info is None
+                    else [None if d is None else rows_by_bus.get(norm(d[0])) for d in info]
+                )
+                studio = info
+                studio_ok = (
+                    exp is not None
+                    and got_rows == exp
+                    and all(
+                        d[3] == gpus[r][1]
+                        and abs(d[2] / 2**20 - float(gpus[r][3])) <= 0.01 * float(gpus[r][3])
+                        for d, r in zip(info, exp)
+                    )
+                )
+                want, want_rows = None, exp
+                rows_used = (
+                    rows is not None and exp is not None and len(rows) == len(exp) and len(exp) > 0
+                )
             case = {
                 "order": order,
                 "mask": mask,
                 "studio_matches_torch": studio_ok,
-                "raw_driver_matches_torch": got == want,
+                "mode": mode,
+                "raw_driver_matches_torch": got == want if mode == "torch" else studio_ok,
                 "rows": rows,
                 "want_rows": want_rows,
                 "rows_used_by_studio": rows_used,
@@ -244,7 +294,7 @@ def main() -> int:
             ok = studio_ok and case["rows_match"] is not False and case["cached"]
             note = (
                 ""
-                if case["raw_driver_matches_torch"]
+                if case["raw_driver_matches_torch"] or mode != "torch"
                 else (
                     f"  NOTE raw driver sees {case['n']}, torch {len(want) if want is not None else '?'}; Studio follows torch"
                 )
