@@ -230,11 +230,28 @@ def _scoped_lora_key() -> bool:
     return (os.environ.get(_ENV_SCOPED_LORA_KEY) or "").strip().lower() not in _FALSE_TOKENS
 
 
-def _encode_skips_denoisers(cls: Any, name: str) -> bool:
-    """True only when ``cls.<name>`` and the ``self`` methods it calls provably run no denoiser; unprovable = False."""
+def _inert_base_property(cls: Any, attr: str, prop: Any) -> bool:
+    """``prop`` is ``DiffusionPipeline``'s own (``_execution_device``, ``device``, ``dtype``): no layer runs."""
+    try:
+        from diffusers import DiffusionPipeline
+    except Exception:  # noqa: BLE001 - no base to compare against: follow the getter instead
+        return False
+    return cls is not DiffusionPipeline and prop is inspect.getattr_static(
+        DiffusionPipeline, attr, None
+    )
+
+
+def _encode_skips_denoisers(
+    cls: Any,
+    name: str,
+    instance: Any = None,
+) -> bool:
+    """True only when ``cls.<name>`` and the ``self`` methods / properties it reads provably run no denoiser.
+    ``instance``: a helper it shadows is not the code examined. Unprovable = False."""
     import ast
     import textwrap
 
+    own = getattr(instance, "__dict__", None) or {}
     seen: set = set()
     todo = [name]
     while todo:
@@ -244,11 +261,21 @@ def _encode_skips_denoisers(cls: Any, name: str) -> bool:
         seen.add(method)
         if len(seen) > _MAX_FOLLOWED_METHODS:
             return False
+        if method in own:
+            return False  # an instance override: not the class body examined below
         func = inspect.getattr_static(cls, method, None)
-        if isinstance(func, (staticmethod, classmethod)):
-            func = func.__func__
-        if func is None or not callable(func):
+        if func is None:
             continue
+        if isinstance(func, property):
+            if _inert_base_property(cls, method, func):
+                continue
+            func = func.fget
+            if func is None:
+                return False
+        elif isinstance(func, (staticmethod, classmethod)):
+            func = func.__func__
+        if not inspect.isfunction(inspect.unwrap(func)):
+            return False  # a descriptor or callable object whose reads this walk cannot see
         try:
             tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(func))))
         except (OSError, TypeError, SyntaxError, ValueError):
@@ -291,9 +318,23 @@ def _encode_skips_denoisers(cls: Any, name: str) -> bool:
                     and parent.attr in _INERT_MODULE_ATTRS
                 ):
                     return False
-            elif callable(inspect.getattr_static(cls, node.attr, None)):
+            elif node.attr in own:
+                if _bound_code(own[node.attr]):
+                    return False  # a function set on the instance: its body is unknown
+            elif _followable(inspect.getattr_static(cls, node.attr, None)):
                 todo.append(node.attr)
     return True
+
+
+def _bound_code(value: Any) -> bool:
+    import functools
+    import types
+    return isinstance(value, (types.FunctionType, types.MethodType, functools.partial))
+
+
+def _followable(value: Any) -> bool:
+    """A class attribute whose access may run code: methods, properties, any other descriptor."""
+    return value is not None and (callable(value) or hasattr(type(value), "__get__"))
 
 
 def _adapter_components(owner: Any) -> Optional[dict]:
@@ -447,9 +488,7 @@ def _wrap_encode_prompt(
     except (TypeError, ValueError):
         return False
     try:
-        skips_denoisers = name not in getattr(pipe, "__dict__", {}) and _encode_skips_denoisers(
-            type(pipe), name
-        )
+        skips_denoisers = _encode_skips_denoisers(type(pipe), name, pipe)
     except Exception:  # noqa: BLE001 - unprovable: the full LoRA key
         skips_denoisers = False
 

@@ -788,3 +788,89 @@ def test_the_static_check_on_real_pipelines():
 
     for cls in (_Helper, _Inherited, _Dynamic, _Indirect):
         assert not prompt_cache._encode_skips_denoisers(cls, "encode_prompt"), cls
+
+
+class _HelperPipe(_AdapterPipe):
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self._embed(prompt),)
+
+    def _embed(self, prompt):
+        return torch.full((1, 2), float(len(prompt)))
+
+
+class _PropertyPipe(_AdapterPipe):
+    @property
+    def conditioning(self):
+        return self.transformer.weight.detach().clone()
+
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self.conditioning,)
+
+
+class _CleanPropertyPipe(_PropertyPipe):
+    @property
+    def conditioning(self):
+        return torch.ones(1, 2)
+
+
+class _Reads:
+    def __get__(
+        self,
+        obj,
+        owner = None,
+    ):
+        return obj.transformer.weight.detach().clone()
+
+
+class _DescriptorPipe(_PropertyPipe):
+    conditioning = _Reads()
+
+
+def _strength_sweep(pipe):
+    """Each strength also rewrites the denoiser weight: a stale hit returns the first strength's value."""
+    out = []
+    for strength in (0.25, 0.75):
+        pipe._unsloth_loras = (("style", "/x/style.safetensors", strength),)
+        with torch.no_grad():
+            pipe.transformer.weight.fill_(strength)
+        out.append(pipe.encode_prompt("same")[0].flatten()[0].item())
+    return out
+
+
+def test_an_instance_override_of_a_followed_helper_keeps_the_full_key(monkeypatch):
+    import types
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _HelperPipe({"transformer": ["style"]})
+    assert prompt_cache._encode_skips_denoisers(_HelperPipe, "encode_prompt")
+    pipe._embed = types.MethodType(
+        lambda self, prompt: self.transformer.weight.detach().clone(), pipe
+    )
+    prompt_cache.install(pipe)
+    assert _strength_sweep(pipe) == [0.25, 0.75] and pipe.calls == 2
+
+
+@pytest.mark.parametrize("cls", [_PropertyPipe, _DescriptorPipe])
+def test_a_property_or_descriptor_reading_the_denoiser_keeps_the_full_key(monkeypatch, cls):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = cls({"transformer": ["style"]})
+    assert not prompt_cache._encode_skips_denoisers(cls, "encode_prompt")
+    prompt_cache.install(pipe)
+    assert _strength_sweep(pipe) == [0.25, 0.75] and pipe.calls == 2
+
+
+def test_a_property_running_no_denoiser_still_reuses_the_embeddings(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _CleanPropertyPipe({"transformer": ["style"]})
+    prompt_cache.install(pipe)
+    assert _strength_sweep(pipe) == [1.0, 1.0] and pipe.calls == 1
