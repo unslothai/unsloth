@@ -246,8 +246,7 @@ def _encode_skips_denoisers(
     name: str,
     instance: Any = None,
 ) -> bool:
-    """True only when ``cls.<name>`` and the ``self`` methods / properties it reads provably run no denoiser.
-    ``instance``: a helper it shadows is not the code examined. Unprovable = False."""
+    """True only when ``cls.<name>`` and the ``self`` methods / properties it reads provably run no denoiser."""
     import ast
     import textwrap
 
@@ -262,7 +261,7 @@ def _encode_skips_denoisers(
         if len(seen) > _MAX_FOLLOWED_METHODS:
             return False
         if method in own:
-            return False  # an instance override: not the class body examined below
+            return False
         func = inspect.getattr_static(cls, method, None)
         if func is None:
             continue
@@ -287,7 +286,7 @@ def _encode_skips_denoisers(
         parents = {id(c): n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
         for node in ast.walk(fn):
             if isinstance(node, ast.Name) and node.id == "super":
-                return False  # an inherited body this walk does not follow
+                return False
             if isinstance(node, ast.Call):
                 callee = node.func.id if isinstance(node.func, ast.Name) else None
                 if callee in ("isinstance", "issubclass", "type", "id"):
@@ -298,7 +297,7 @@ def _encode_skips_denoisers(
                     and isinstance(node.args[0], ast.Name)
                     and node.args[0].id == me
                 ):
-                    return False  # an attribute this walk cannot name
+                    return False
                 if any(
                     isinstance(arg, ast.Name) and arg.id == me
                     for arg in [*node.args, *(k.value for k in node.keywords)]
@@ -320,7 +319,7 @@ def _encode_skips_denoisers(
                     return False
             elif node.attr in own:
                 if _bound_code(own[node.attr]):
-                    return False  # a function set on the instance: its body is unknown
+                    return False
             elif _followable(inspect.getattr_static(cls, node.attr, None)):
                 todo.append(node.attr)
     return True
@@ -333,7 +332,6 @@ def _bound_code(value: Any) -> bool:
 
 
 def _followable(value: Any) -> bool:
-    """A class attribute whose access may run code: methods, properties, any other descriptor."""
     return value is not None and (callable(value) or hasattr(type(value), "__get__"))
 
 

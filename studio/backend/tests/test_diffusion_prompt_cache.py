@@ -692,7 +692,7 @@ def test_a_denoiser_only_strength_sweep_reuses_the_text_embeddings(monkeypatch):
 @pytest.mark.parametrize(
     "listed",
     [
-        {"text_encoder": ["style"]},  # a text-encoder adapter
+        {"text_encoder": ["style"]},
         {"transformer": ["style"], "text_encoder": ["style"]},  # one file patching both
         {},  # nothing says where it sits: the conservative key
     ],
@@ -837,7 +837,6 @@ class _DescriptorPipe(_PropertyPipe):
 
 
 def _strength_sweep(pipe):
-    """Each strength also rewrites the denoiser weight: a stale hit returns the first strength's value."""
     out = []
     for strength in (0.25, 0.75):
         pipe._unsloth_loras = (("style", "/x/style.safetensors", strength),)
