@@ -840,7 +840,9 @@ def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]
         parts = line.strip().split(" ", 3)
         if len(parts) < 3 or parts[1] not in ("0", "1") or not parts[2].isdigit():
             return None
-        devices.append((parts[0], parts[1] == "1", int(parts[2]), parts[3] if len(parts) > 3 else ""))
+        devices.append(
+            (parts[0], parts[1] == "1", int(parts[2]), parts[3] if len(parts) > 3 else "")
+        )
     return devices
 
 

@@ -35,8 +35,11 @@ class _CountingTorch(types.ModuleType):
             def _call(*a, **k):
                 self.calls.append(name)
                 if name == "get_device_properties":
-                    return types.SimpleNamespace(name = "NVIDIA B200", total_memory = 180 * GIB, is_integrated = 0)
+                    return types.SimpleNamespace(
+                        name = "NVIDIA B200", total_memory = 180 * GIB, is_integrated = 0
+                    )
                 return value
+
             return _call
 
         self.cuda = types.SimpleNamespace(
@@ -83,8 +86,11 @@ def test_metadata_lookups_never_initialise_torch_cuda(host):
 
 
 def test_an_ordinal_that_did_not_answer_is_used_but_not_settled(host, monkeypatch):
-    monkeypatch.setattr(nvidia, "get_cuda_device_info",
-                        lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None])
+    monkeypatch.setattr(
+        nvidia,
+        "get_cuda_device_info",
+        lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None],
+    )
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
     assert LlamaCppBackend._CUDA_DEVICE_INFO == {}
@@ -96,7 +102,11 @@ def test_an_unknown_answer_is_not_cached(host, monkeypatch):
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
 
 
-def _child(monkeypatch, returncode, stdout = ""):
+def _child(
+    monkeypatch,
+    returncode,
+    stdout = "",
+):
     seen = {}
 
     def _run(cmd, **kw):
@@ -110,13 +120,22 @@ def _child(monkeypatch, returncode, stdout = ""):
 @pytest.mark.parametrize(
     "returncode, stdout, expected",
     [
-        (0, "0000:3b:00.0 0 85899345920 NVIDIA H100 80GB HBM3\n0000:00:00.0 1 128000000000 NVIDIA GB10\n",
-         [("0000:3b:00.0", False, 85899345920, "NVIDIA H100 80GB HBM3"),
-          ("0000:00:00.0", True, 128000000000, "NVIDIA GB10")]),
-        (0, "0000:3b:00.0 0 85899345920 NVIDIA H100\nERR\n", [("0000:3b:00.0", False, 85899345920, "NVIDIA H100"), None]),
-        (0, "", []),        # cuInit: CUDA_ERROR_NO_DEVICE
-        (2, "", []),        # no NVIDIA driver
-        (3, "", None),      # cuInit failed otherwise: unknown
+        (
+            0,
+            "0000:3b:00.0 0 85899345920 NVIDIA H100 80GB HBM3\n0000:00:00.0 1 128000000000 NVIDIA GB10\n",
+            [
+                ("0000:3b:00.0", False, 85899345920, "NVIDIA H100 80GB HBM3"),
+                ("0000:00:00.0", True, 128000000000, "NVIDIA GB10"),
+            ],
+        ),
+        (
+            0,
+            "0000:3b:00.0 0 85899345920 NVIDIA H100\nERR\n",
+            [("0000:3b:00.0", False, 85899345920, "NVIDIA H100"), None],
+        ),
+        (0, "", []),  # cuInit: CUDA_ERROR_NO_DEVICE
+        (2, "", []),  # no NVIDIA driver
+        (3, "", None),  # cuInit failed otherwise: unknown
         (0, "garbage\n", None),
     ],
 )
@@ -140,16 +159,24 @@ def test_a_child_that_times_out_is_unknown(monkeypatch):
 def test_the_driver_child_runs_and_finds_no_device_under_an_empty_mask():
     """The real script under CUDA_VISIBLE_DEVICES="": cuInit sees no device (or there is no driver at all)."""
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "")
-    r = subprocess.run([sys.executable, "-c", nvidia._CUDA_DEVICE_INFO_SCRIPT], capture_output = True, text = True,
-                       timeout = 60, env = env)
+    r = subprocess.run(
+        [sys.executable, "-c", nvidia._CUDA_DEVICE_INFO_SCRIPT],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+        env = env,
+    )
     assert r.returncode in (0, 2), r.stderr
     assert r.stdout.strip() == ""
 
 
 def test_an_ordinal_that_did_not_answer_leaves_the_pool_unsettled(host, monkeypatch):
     """Device 1 did not answer: it may be integrated, so neither its id set nor the pool totals are cached."""
-    monkeypatch.setattr(nvidia, "get_cuda_device_info",
-                        lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None])
+    monkeypatch.setattr(
+        nvidia,
+        "get_cuda_device_info",
+        lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None],
+    )
     assert LlamaCppBackend._integrated_cuda_pool_total_mib() == {0: 120 * 1024}
     assert LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB == {}
 
@@ -161,7 +188,10 @@ def test_the_inventory_poll_reads_nvidia_cards_from_the_driver(host, monkeypatch
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     inventory = hw._torch_get_device_inventory([4, 6])
     assert host.torch.calls == []
-    assert [(d["index"], d["visible_ordinal"], d["name"], d["total_gb"], d["_cuda_integrated"]) for d in inventory] == [
+    assert [
+        (d["index"], d["visible_ordinal"], d["name"], d["total_gb"], d["_cuda_integrated"])
+        for d in inventory
+    ] == [
         (4, 0, "NVIDIA B200", 180.0, False),
         (6, 1, "NVIDIA B200", 180.0, False),
     ]
@@ -171,8 +201,11 @@ def test_the_device_list_keeps_the_names_that_answered(host, monkeypatch, capsys
     from utils.hardware import hardware as hw
 
     monkeypatch.setattr(hw, "_CUDA_DEVICE_NAMES", {})
-    monkeypatch.setattr(nvidia, "get_cuda_device_info",
-                        lambda: [None, ("0000:02:00.0", False, 180 * GIB, "NVIDIA B200")])
+    monkeypatch.setattr(
+        nvidia,
+        "get_cuda_device_info",
+        lambda: [None, ("0000:02:00.0", False, 180 * GIB, "NVIDIA B200")],
+    )
     host.torch.cuda.device_count = lambda: 2
     hw._print_cuda_device_list(False)
     out = capsys.readouterr().out

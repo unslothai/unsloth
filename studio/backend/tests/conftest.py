@@ -127,8 +127,14 @@ def _cuda_device_info_from_the_test_torch():
             devices.append(None)
             continue
         integrated = bool(getattr(p, "is_integrated", False) or getattr(p, "integrated", False))
-        devices.append((f"0000:{ordinal + 1:02x}:00.0", integrated, int(getattr(p, "total_memory", 0) or 0),
-                        str(getattr(p, "name", "") or "")))
+        devices.append(
+            (
+                f"0000:{ordinal + 1:02x}:00.0",
+                integrated,
+                int(getattr(p, "total_memory", 0) or 0),
+                str(getattr(p, "name", "") or ""),
+            )
+        )
     return devices
 
 
@@ -148,7 +154,7 @@ def _c_cuda_mask():
 # context on it (xdist workers once held 600-900 MiB on six GPUs this way). Such an init is refused like on
 # a GPU-less host, and the test fails naming the call, unless it is marked gpu. Runs that expose GPUs, and
 # GPU-less hosts, are unaffected.
-_SESSION_HID_GPUS = (os.name != "nt" and _c_cuda_mask() in ("", "-1"))
+_SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
 _cuda_init_state = {"cpu_test": False, "attempts": []}
 
 
@@ -162,8 +168,9 @@ def _refuse_cuda_init_once_unhidden(torch):
         mask = _c_cuda_mask()
         if _cuda_init_state["cpu_test"] and mask not in ("", "-1"):
             import traceback
-
-            _cuda_init_state["attempts"].append((mask, "".join(traceback.format_stack(limit = 12)[:-1])))
+            _cuda_init_state["attempts"].append(
+                (mask, "".join(traceback.format_stack(limit = 12)[:-1]))
+            )
             raise RuntimeError("a CPU test initialised CUDA after unhiding the GPUs (refused)")
         return real(*a, **k)
 
@@ -172,7 +179,12 @@ def _refuse_cuda_init_once_unhidden(torch):
 
 
 class _AfterTorchImport:
-    def find_spec(self, name, path = None, target = None):
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
         if name != "torch" or "torch" in sys.modules:
             return None
         sys.meta_path.remove(self)

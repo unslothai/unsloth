@@ -6206,7 +6206,9 @@ def _mixed_host_launch(
         LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm))
     )
     # The carve-out query reads torch's devices; a GPU-less host answers None (unknown) and so does this one.
-    monkeypatch.setattr(LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(lambda gpu_indices = None: None))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(lambda gpu_indices = None: None)
+    )
     monkeypatch.setattr(
         LlamaCppBackend,
         "_INTEGRATED_CUDA_IDS",
