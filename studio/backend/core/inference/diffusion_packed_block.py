@@ -264,6 +264,19 @@ def packed_block_linear_class():
             )
             return w if dtype is None or dtype == w.dtype else w.to(dtype)
 
+        def _apply(self, fn, *args, **kwargs):
+            # the packed buffers are integer, so a module-wide .to(dtype) / .half() / .float() leaves them as they
+            # are: the widen target follows the cast the way a dense Linear's weight would
+            out = super()._apply(fn, *args, **kwargs)
+            probe = fn(torch.empty(0, dtype = self.compute_dtype, device = self.weight_q.device))
+            if isinstance(probe, torch.Tensor) and probe.dtype in (
+                torch.bfloat16,
+                torch.float16,
+                torch.float32,
+            ):
+                self.compute_dtype = probe.dtype
+            return out
+
         @property
         def weight(self) -> Any:
             return self.dequantized_weight()
