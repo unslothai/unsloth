@@ -344,6 +344,7 @@ from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_postprocess import install as install_device_postprocess
+from .diffusion_reference_cache import install as install_reference_vae_cache
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -15219,6 +15220,7 @@ class DiffusionBackend:
                             chunk_kwargs = applied_embeddings.rewrite(chunk_kwargs)
                         # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
                         install_device_postprocess(pipe, logger)
+                        install_reference_vae_cache(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
