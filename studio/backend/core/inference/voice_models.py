@@ -66,11 +66,12 @@ HUB_FILES = {
     ],
     "interject": ["models/tfidf_lr/*"],
 }
-# The one file that says the local folder really holds the model (a stray empty dir does not).
+# Files that say the local folder really holds the model (a stray empty dir does not); any one is enough.
 _MARKER = {
-    "judge": f"models/{JUDGE_ONNX}/onnx/model_int8.onnx",
-    "filler": "phrases.json",
-    "interject": "models/tfidf_lr/model.pkl",
+    # _Judge falls back to the first-pass torch weights when the int8 export is absent.
+    "judge": (f"models/{JUDGE_ONNX}/onnx/model_int8.onnx", "models/modernbert_base/config.json"),
+    "filler": ("phrases.json",),
+    "interject": ("models/tfidf_lr/model.pkl",),
 }
 
 
@@ -79,7 +80,7 @@ def resolve_model_dir(name: str, root: Optional[Path], hub: Optional[str]) -> Pa
     if root is None and not hub:
         raise FileNotFoundError(f"no voice models configured (set {ENV_DIR} or {ENV_HUB})")
     local = root / name if root is not None else None
-    if not hub or (local is not None and (local / _MARKER[name]).exists()):
+    if not hub or (local is not None and any((local / m).exists() for m in _MARKER[name])):
         if not root.is_dir():
             raise FileNotFoundError(f"voice models dir not found: {root} (set {ENV_DIR})")
         return local

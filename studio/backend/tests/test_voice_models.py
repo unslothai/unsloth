@@ -130,6 +130,19 @@ def test_env_var_picks_the_models_dir(monkeypatch, tmp_path):
     assert vm.models_dir() is None
 
 
+def test_local_torch_judge_weights_win_over_the_hub(tmp_path, monkeypatch):
+    # No int8 export, only the first-pass weights _Judge falls back to: still the local folder.
+    weights = tmp_path / "judge" / "models" / "modernbert_base"
+    weights.mkdir(parents = True)
+    (weights / "config.json").write_text("{}")
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda *a, **k: pytest.fail("fetched")
+    )
+    assert vm.resolve_model_dir("judge", tmp_path, "someone") == tmp_path / "judge"
+
+
 def test_nothing_is_fetched_without_a_dir_or_hub(monkeypatch):
     # No personal default: unset, the routes answer 503 and the app keeps its word rules.
     import huggingface_hub
