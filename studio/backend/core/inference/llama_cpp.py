@@ -2038,7 +2038,7 @@ def _sticky_compaction_details(
     try:
         from storage import studio_db
 
-        # A boundary is read only from a stored row's contextTruncation; most threads have none, so skip the full read.
+        # Boundaries live only in a stored row's contextTruncation; most threads have none.
         has_truncation = getattr(studio_db, "chat_thread_has_context_truncation", None)
         if has_truncation is not None and not has_truncation(thread_id):
             return 0, False, False
