@@ -435,7 +435,7 @@ def test_compact_kill_switch_grad_and_lora_scale_keep_stock(monkeypatch):
     monkeypatch.delenv(cb.COMPACT_MOD_ENV)
     cb.prepare(model)
     assert model.__dict__.get(cb._COMPACT_ATTR)
-    model(**kw)  # grad enabled: training keeps the stock forward
+    model(**kw)
     with torch.no_grad():
         model(**dict(kw, attention_kwargs = {"scale": 0.5}))
     assert cb.status(model).get("compact", 0) == 0
