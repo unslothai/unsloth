@@ -53,7 +53,7 @@ def wheel_platform_tag() -> str | None:
 
 
 def _loaded_torch_wheel_env() -> dict[str, str] | None:
-    """The probe child's fields, read from the torch this process already imported (same interpreter and build), or None."""
+    """The probe child's fields from the already imported torch, or None. Keep in step with the child below."""
     torch = sys.modules.get("torch")
     if torch is None:
         return None
@@ -86,7 +86,7 @@ def probe_torch_wheel_env(
     include_windows: bool = False,
     reuse_loaded_torch: bool = False,
 ) -> dict[str, str] | None:
-    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset. ``reuse_loaded_torch`` reads an already imported torch instead of importing it again in a child (1-3 s)."""
+    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset. ``reuse_loaded_torch`` reads an already imported torch instead of a 1-3 s child import."""
     platform_tag = wheel_platform_tag()
     if platform_tag is None:
         return None
