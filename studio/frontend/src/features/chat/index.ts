@@ -93,12 +93,14 @@ export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 export type { PlacementPool } from "./lib/partial-offload";
 export {
+  betweenToolRounds,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
   prefillPercent,
 } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -498,7 +500,6 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
-  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";

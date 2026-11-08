@@ -243,9 +243,10 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_TF32": "on",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
-    # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
-    "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+    # Keyed against the card's unset default (auto on sm_100-class, else off); a bare "0" protects step 0, not off.
+    "UNSLOTH_NVFP4_PROTECT_STEPS": "protect",
 }
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
@@ -269,6 +270,10 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         except ValueError:
             return None
         return None if count == default.partition(":")[2] else count
+    if default == "protect":
+        from .diffusion_nvfp4_protect import default_model_spec, protect_steps_env
+        value = protect_steps_env() or "off"
+        return None if value == (default_model_spec() or "off") else value
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
@@ -588,6 +593,11 @@ def begin(
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = inductor_dir
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"could not set TORCHINDUCTOR_CACHE_DIR: {exc}")
+    try:
+        from .diffusion_aot_cache import pin_autotune_key
+        pin_autotune_key(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, f"compile-cache: autotune key not pinned: {exc}")
 
     # The manifest is the commit point and only names a fully written bundle.
     published = _read_manifest(ctx.manifest_path)

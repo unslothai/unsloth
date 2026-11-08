@@ -157,8 +157,11 @@ def test_lora_unavailable_reason_names_the_cause():
     assert "NVFP4" in dl.lora_unavailable_reason(
         engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = "nvfp4"
     )
-    assert "no LoRA loader" in dl.lora_unavailable_reason(
-        engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+    assert (
+        dl.lora_unavailable_reason(
+            engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+        )
+        is None
     )
     assert "Speed" in dl.lora_unavailable_reason(
         engine = "diffusers",
@@ -507,6 +510,26 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
 
 
+def test_a_declined_quantize_keeps_the_dense_lora_path(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    b = _backend()
+    pipe = _FakePipe()
+    pipe._unsloth_loras = b._resolve_lora_set([("styleA", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    b._apply_loras(_fake_state(pipe), [("styleB", 1.0)], threading.Event())
+    assert [n for _p, n in pipe.loaded] == ["styleB"]
+    assert pipe.active == (["styleB"], [1.0])
+
+
 @pytest.mark.parametrize("mode, refused", [("group", True), ("resident", False), ("model", False)])
 def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode, refused):
     # Resetting a block-streamed graph for new LoRA scales left every later generate failing. Refuse the change.
@@ -594,16 +617,29 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     assert entry.families == () and entry.weight_default == 1.0
 
 
-def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
+def test_moss_image_has_a_lora_loader():
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import MOSSImagePipeline, MOSSImageTransformer
+
+    for method in ("load_lora_weights", "set_adapters", "unload_lora_weights", "get_list_adapters"):
+        assert hasattr(MOSSImagePipeline, method)
+    assert hasattr(MOSSImageTransformer, "load_lora_adapter")
+    assert dl.supports_lora(
+        engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+    )
+
+
+def test_a_family_without_a_lora_loader_is_gated_off(monkeypatch):
+    """The gate for an in-tree pipeline with no LoRA loader, exercised on MOSS-Image as if it still had none."""
     import threading
 
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_moss_image import MOSSImagePipeline
 
-    assert not hasattr(MOSSImagePipeline, "load_lora_weights")
+    monkeypatch.setattr(dl, "_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES", ("moss-image",))
     for quant in (None, "int8", "fp8"):
         assert not dl.supports_lora(
             engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = quant
@@ -1056,3 +1092,194 @@ def test_diffusers_weight_change_falls_back_to_reload_when_set_adapters_fails(
     assert pipe.unloaded == 1
     assert pipe.active == (["styleA"], [0.5])
     assert [(n, w) for n, _p, w in pipe._unsloth_loras] == [("styleA", 0.5)]
+
+
+@pytest.mark.parametrize("baked", [True, False])
+def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, baked):
+    """A LoKR-only strength change (or disable) writes scale tensors in place: graphs kept, CFG replica dropped."""
+    import threading
+
+    from core.inference import diffusion as diffusion_mod
+    from core.inference import diffusion_lora_files as lf
+
+    _real_file_specs(monkeypatch, tmp_path)
+    resets: list = []
+    invalidated: list = []
+    monkeypatch.setattr(
+        diffusion_mod.cuda_graph, "reset_all", lambda handles: resets.append(handles)
+    )
+    monkeypatch.setattr(
+        diffusion_mod, "invalidate_cfg_replica", lambda pipe, why, log = None: invalidated.append(why)
+    )
+    # The scale mirror copies PEFT scales only, so even a mirror that lines up must not keep the replica.
+    monkeypatch.setattr(
+        diffusion_mod, "mirror_cfg_replica_adapter_scales", lambda pipe, log = None: True
+    )
+    torch = pytest.importorskip("torch")
+    block = torch.nn.ModuleDict({"q": torch.nn.Linear(24, 36, bias = False)})
+    adapter = lf.KronAdapter(block, block["q"], torch.randn(4, 3), torch.randn(9, 8), 1.0)
+    pipe = _FakePipe()
+    pipe.__dict__[lf.KRON_ATTR] = {"styleA": [adapter]}
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"styleA"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8" if baked else None)
+    pipe._unsloth_loras = b._resolve_lora_set([("styleA", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = baked
+    if not baked:
+        monkeypatch.setattr(diffusion_mod, "_lora_weights_only_change", lambda *a: True)
+        monkeypatch.setattr(diffusion_mod, "_lora_load_block_reason", lambda pipe: None)
+
+    b._apply_loras(state, [("styleA", 0.4)], threading.Event())
+    assert float(getattr(block["q"], adapter.prefix + "_scale")) == pytest.approx(0.4)
+    if baked:
+        b._apply_loras(state, [], threading.Event())  # disabling every adapter
+        assert float(getattr(block["q"], adapter.prefix + "_scale")) == 0.0
+    assert resets == []
+    assert invalidated
+
+
+def _roomy_host(monkeypatch):
+    from core.inference import diffusion_lora_files, diffusion_memory
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
+    # No group offloading on a resident merge; the refresh imports diffusers, absent on CPU CI.
+    monkeypatch.setattr(diffusion_lora_files, "_refresh_group_offload", lambda roots: None)
+
+
+def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
+    """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
+    re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
+    and weight 0 is the base weights exactly."""
+    import threading
+
+    import torch
+    from torch._dynamo.testing import CompileCounter
+
+    from core.inference import diffusion as diff
+    from core.inference import diffusion_lora_files as lf
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    resets = []
+    monkeypatch.setattr(diff.cuda_graph, "reset_all", lambda handles: resets.append(handles))
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(16, 8, bias = False)).requires_grad_(False)
+    base = net[0].weight.detach().clone()
+
+    class _Pipe:
+        transformer = net
+        components = {"transformer": net}
+
+        def unload_lora_weights(self):
+            pass
+
+    pipe = _Pipe()
+    w1, w2 = torch.randn(2, 2) * 0.1, torch.randn(4, 8) * 0.1
+    pipe.__dict__[lf.KRON_ATTR] = {"a": [lf.KronAdapter(net, net[0], w1, w2, 1.0)]}
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"a"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    _roomy_host(monkeypatch)
+    assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
+    assert type(net[0]) is torch.nn.Linear
+
+    x = torch.randn(3, 16)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(net, backend = counter)
+    with torch.no_grad():
+        torch.testing.assert_close(compiled(x), x @ (base + torch.kron(w1, w2)).T)
+    for loras, w in (([("a", 0.4)], 0.4), ([], 0.0), ([("a", 1.0)], 1.0)):
+        b._apply_loras(state, loras, threading.Event())
+        with torch.no_grad():
+            torch.testing.assert_close(compiled(x), x @ (base + w * torch.kron(w1, w2)).T)
+        assert [wt for (_n, _p, wt) in pipe._unsloth_loras] == [w]
+        if not w:
+            assert torch.equal(net[0].weight, base)
+    assert counter.frame_count == 1
+    assert resets == []
+    torch._dynamo.reset()
+
+
+def _merged_lokr_pipe(monkeypatch):
+    from core.inference import diffusion_lora_files as lf
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(16, 8, bias = False)).requires_grad_(False)
+
+    class _Pipe:
+        transformer = net
+        components = {"transformer": net}
+
+        def unload_lora_weights(self):
+            pass
+
+    pipe = _Pipe()
+    pipe.__dict__[lf.KRON_ATTR] = {
+        "a": [lf.KronAdapter(net, net[0], torch.randn(2, 2), torch.randn(4, 8), 1.0)]
+    }
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"a"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    _roomy_host(monkeypatch)
+    assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
+    return b, state, pipe, net
+
+
+def test_a_failed_remerge_records_the_adapters_as_off(monkeypatch):
+    """A re-merge that fails (an OOM) leaves the base weights: the recorded weights say so, the CFG replica is dropped,
+    and asking for the old weight again merges again instead of matching a stale record."""
+    import threading
+
+    from core.inference import diffusion as diff
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    b, state, pipe, net = _merged_lokr_pipe(monkeypatch)
+    base = qm.set_weights(pipe, {}) and net[0].weight.detach().clone()
+    qm.set_weights(pipe, {"a": 1.0})
+    invalidated = []
+    monkeypatch.setattr(diff, "invalidate_cfg_replica", lambda *a, **k: invalidated.append(a[1]))
+    real = qm._requant_
+    monkeypatch.setattr(
+        qm, "_requant_", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory"))
+    )
+    with pytest.raises(ValueError, match = "Could not apply the new LoRA weights"):
+        b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [0.0]
+    assert invalidated and __import__("torch").equal(net[0].weight, base)
+    monkeypatch.setattr(qm, "_requant_", real)
+    b._apply_loras(state, [("a", 1.0)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
+    assert not __import__("torch").equal(net[0].weight, base)
+
+
+def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
+    import threading
+
+    b, state, pipe, _net = _merged_lokr_pipe(monkeypatch)
+    state.offload_policy = "group"
+    with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+        b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]

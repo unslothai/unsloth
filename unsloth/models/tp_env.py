@@ -115,6 +115,8 @@ _REFUSED_LOAD_FLAGS = (
     ("fast_inference", "vLLM (fast_inference = True)"),
     ("load_in_8bit", "8-bit weights (load_in_8bit = True; load in 4-bit or 16-bit)"),
     ("load_in_fp8", "fp8 weights (load_in_fp8)"),
+    # Refused again at Trainer init ("tp / pp x precision"); here before any shard is read.
+    ("float8_training", "fp8 training (float8_training; UNSLOTH_FSDP2=1 trains it data parallel)"),
 )
 _REFUSED_PIPELINE_LOAD_FLAGS = (
     ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),

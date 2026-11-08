@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
@@ -18,6 +19,11 @@ import {
   type DisplayVisibility,
   migrateVisibility,
 } from "../utils/display-visibility.ts";
+import {
+  DEFAULT_GENERATION_STATS_UPDATES,
+  type GenerationStatsUpdates,
+  normaliseGenerationStatsUpdates,
+} from "../lib/live-generation-stats.ts";
 
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
@@ -40,6 +46,8 @@ export interface ChatPreferencesState {
   setShowReplyTimes: (value: boolean) => void;
   showGenerationDetails: boolean;
   setShowGenerationDetails: (value: boolean) => void;
+  generationStatsUpdates: GenerationStatsUpdates;
+  setGenerationStatsUpdates: (value: GenerationStatsUpdates) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
@@ -56,12 +64,22 @@ export interface ChatPreferencesState {
   setNotifyWhenReplyFinishes: (value: boolean) => void;
   filesPanelCollapsed: boolean;
   setFilesPanelCollapsed: (value: boolean) => void;
-  newChatComposerAtBottom: boolean;
-  setNewChatComposerAtBottom: (value: boolean) => void;
+  /** New chat composer height, 0 (top) to 100 (docked at the bottom); 50 is the middle. */
+  newChatComposerPosition: number;
+  setNewChatComposerPosition: (value: number) => void;
   showTurnNavigation: boolean;
   setShowTurnNavigation: (value: boolean) => void;
   richTextPaste: boolean;
   setRichTextPaste: (value: boolean) => void;
+}
+
+export const COMPOSER_POSITION_MIDDLE = 50;
+export const COMPOSER_POSITION_BOTTOM = 100;
+// Records from the old on/off setting carry only newChatComposerAtBottom.
+export function normaliseComposerPosition(value: unknown, legacyBottom = false): number {
+  if (typeof value === "number" && Number.isFinite(value))
+    return Math.max(0, Math.min(COMPOSER_POSITION_BOTTOM, Math.round(value)));
+  return legacyBottom ? COMPOSER_POSITION_BOTTOM : COMPOSER_POSITION_MIDDLE;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -97,6 +115,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showGenerationDetails: false,
       setShowGenerationDetails: (showGenerationDetails) =>
         set({ showGenerationDetails }),
+      generationStatsUpdates: DEFAULT_GENERATION_STATS_UPDATES,
+      setGenerationStatsUpdates: (value) =>
+        set({ generationStatsUpdates: normaliseGenerationStatsUpdates(value) }),
       showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
@@ -120,9 +141,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       filesPanelCollapsed: false,
       setFilesPanelCollapsed: (filesPanelCollapsed) =>
         set({ filesPanelCollapsed }),
-      newChatComposerAtBottom: false,
-      setNewChatComposerAtBottom: (newChatComposerAtBottom) =>
-        set({ newChatComposerAtBottom }),
+      newChatComposerPosition: COMPOSER_POSITION_MIDDLE,
+      setNewChatComposerPosition: (value) =>
+        set({ newChatComposerPosition: normaliseComposerPosition(value) }),
       showTurnNavigation: true,
       setShowTurnNavigation: (showTurnNavigation) => set({ showTurnNavigation }),
       richTextPaste: true,
@@ -154,6 +175,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showLinkPreviews: saved?.showLinkPreviews !== false,
           showReplyTimes: saved?.showReplyTimes === true,
           showGenerationDetails: saved?.showGenerationDetails === true,
+          generationStatsUpdates: normaliseGenerationStatsUpdates(
+            saved?.generationStatsUpdates,
+          ),
           showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
@@ -175,9 +199,15 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           filesPanelCollapsed: saved?.filesPanelCollapsed === true,
           showTurnNavigation: saved?.showTurnNavigation !== false,
           richTextPaste: saved?.richTextPaste !== false,
-          newChatComposerAtBottom: saved?.newChatComposerAtBottom === true,
+          newChatComposerPosition: normaliseComposerPosition(
+            saved?.newChatComposerPosition,
+            (persisted as { newChatComposerAtBottom?: unknown } | undefined)
+              ?.newChatComposerAtBottom === true,
+          ),
         };
       },
     },
   ),
 );
+
+syncAcrossWindows(useChatPreferencesStore);

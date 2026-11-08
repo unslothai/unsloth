@@ -219,17 +219,23 @@ def test_source_patch_still_accepts_the_installed_zoo():
 def test_generated_trainer_embeds_the_patched_gradient_function():
     text = SOURCE_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(text, filename = str(SOURCE_PATH))
-    calls = [
-        node
+    appended = [
+        node.args[0]
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "append"
         and ast.unparse(node.func.value) == "RL_PRE_ITEMS['grpo_trainer']"
         and node.args
-        and isinstance(node.args[0], ast.Call)
-        and isinstance(node.args[0].func, ast.Name)
-        and node.args[0].func.id == PATCH_HELPER
+    ]
+    # The dispatch patch may be nested inside the hooked-head patch.
+    calls = [
+        inner
+        for item in appended
+        for inner in ast.walk(item)
+        if isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == PATCH_HELPER
     ]
     assert len(calls) == 1
-    assert ast.unparse(calls[0].args[0].args[0]) == "grpo_accumulated_loss"
+    assert ast.unparse(calls[0].args[0]) == "grpo_accumulated_loss"

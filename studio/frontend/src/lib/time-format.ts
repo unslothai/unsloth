@@ -41,13 +41,13 @@ function notify(): void {
   }
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeTimeFormat(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
 export function useTimeFormat(): TimeFormat {
-  return useSyncExternalStore(subscribe, getTimeFormat, getTimeFormat);
+  return useSyncExternalStore(subscribeTimeFormat, getTimeFormat, getTimeFormat);
 }
 
 export function watchTimeFormat(win: Window): void {

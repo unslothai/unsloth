@@ -70,9 +70,13 @@ def fused_head(model):
     head = _unsloth_gkd_dense_head(model)
     if head is None:
         return None, None, "output head is not a dense nn.Linear"
-    # The kernel reads weight / bias directly: a hooked head is not F.linear(h, W, b).
+    # The kernel reads weight / bias directly: a hooked head (its own or torch's global module hooks) is not
+    # F.linear(h, W, b).
+    from .dpo import _global_module_hooks
+
     if (
-        hasattr(head, "_hf_hook")
+        _global_module_hooks()
+        or hasattr(head, "_hf_hook")
         or "forward" in vars(head)
         or head._forward_hooks
         or head._forward_pre_hooks

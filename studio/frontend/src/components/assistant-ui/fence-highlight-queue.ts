@@ -16,16 +16,18 @@ export const selectionInFence = (
 type HighlightEntry = {
   step: () => boolean;
   finish: () => void;
+  /** Bounded work (a reach, or the lines on screen in a capped block) that may run mid-scroll. */
+  duringScroll: boolean;
 };
 
 export type FenceHighlightQueueOptions = {
-  schedule: (callback: () => void) => () => void;
-  blocked: () => boolean;
+  schedule: (callback: () => void, duringScroll: boolean) => () => void;
+  blocked: (duringScroll: boolean) => boolean;
   commit: (callback: () => void) => void;
 };
 
 export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): {
-  add: (step: () => boolean, finish: () => void) => () => void;
+  add: (step: () => boolean, finish: () => void, duringScroll?: boolean) => () => void;
   flush: () => void;
   pending: () => number;
 } {
@@ -49,7 +51,7 @@ export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): 
         if (scheduled !== ticket) return;
         scheduled = null;
         run();
-      });
+      }, [...entries].some((entry) => entry.duringScroll));
     } catch (error) {
       if (scheduled === ticket) scheduled = null;
       entries.clear();
@@ -61,8 +63,12 @@ export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): 
     running = true;
     let entry: HighlightEntry | undefined;
     try {
-      if (options.blocked()) return;
-      entry = entries.values().next().value;
+      for (const candidate of entries) {
+        if (!options.blocked(candidate.duringScroll)) {
+          entry = candidate;
+          break;
+        }
+      }
       if (!entry) return;
       const current = entry;
       let complete = false;
@@ -112,8 +118,8 @@ export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): 
   };
 
   return {
-    add: (step, finish) => {
-      const entry = { step, finish };
+    add: (step, finish, duringScroll = false) => {
+      const entry = { step, finish, duringScroll };
       entries.add(entry);
       schedule();
       return () => {

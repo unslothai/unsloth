@@ -4,6 +4,7 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { isRetiredCopySnapshot, readImageModel, retiredSnapshotAsLoaded, rememberImageModel, matchesRememberedModel, componentFilesMatch, componentFieldsOwnerAfterLoad, componentFilesForModel, forgetStaleImageComponents, forgetStaleResidentComponents, recalledComponentFiles, reconcileRememberedComponents, rememberLoadedImageComponents, recoveredComponentFields, seedImageComponents, rememberPendingImageLoad, clearPendingImageLoad, finishedLoadTarget, type ImageComponentFiles, type ImageModelKey, type RememberedImageModel } from "./image-model-recall";
 import { componentFileFields, splitComponentFileList } from "./component-files";
+import { LoraAddMenu } from "./lora-add-menu";
 import type { CompareContext } from "./compare/compare-axes";
 import type { CompareRun } from "./compare/compare-run";
 // Statically imported: this page is already its own lazy chunk, and a nested import() of the panel split modules
@@ -214,6 +215,7 @@ import {
   formatResolvedValue,
   isDenseQuantKind,
   isPrecisionRefusal,
+  denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
@@ -252,6 +254,7 @@ import {
   restorableSize,
   sizeLimitsFrom,
   snapDim,
+  xyGridCellSize,
 } from "./image-size";
 import {
   ANNOTATION_COLORS,
@@ -1329,6 +1332,8 @@ function RecipePopover({
 }) {
   // PopoverContent portals to body, so the inert page wrapper cannot contain it.
   const [open, setOpen] = useState(false);
+  const recipePlacement =
+    image.offload_policy === "group" ? denoiserPlacement(image.denoiser_offload) : null;
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
@@ -1372,6 +1377,13 @@ function RecipePopover({
             <RecipeRow
               label="Memory"
               value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
+          {recipePlacement ? (
+            <RecipeRow
+              label="Placement"
+              value={recipePlacement.label}
+              title={recipePlacement.detail}
             />
           ) : null}
           {image.speed_mode ? (
@@ -1491,6 +1503,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1535,6 +1548,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {placement ? (
+        <BuildRow
+          label="Placement"
+          value={placement.label}
+          badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -1901,11 +1921,14 @@ export function ImagesPage({
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
   // The family availableLoras was fetched for; undefined while none is current (loading, failed, no model).
   const [loraCatalogFamily, setLoraCatalogFamily] = useState<string | null | undefined>(undefined);
-  // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
+  // Fine-tuned (trained in Unsloth) first, for both the row suggestions and the Add LoRA picker.
   const sortedLoras = useMemo(
     () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
     [availableLoras],
   );
+  // Trimmed like the request payload, whose duplicate-id check this mirrors.
+  const takenLoraIds = useMemo(() => new Set(loras.map((l) => l.id.trim())), [loras]);
+  const [focusLoraRow, setFocusLoraRow] = useState<number | null>(null);
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   // Mounted on first visit, then hidden rather than unmounted, so switching to Create keeps the training form.
@@ -2942,7 +2965,7 @@ export function ImagesPage({
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     // A Hires fix image records its output size; the Width / Height controls take the base pass.
-    const base = hiresBaseSize(image) ?? { width: image.width, height: image.height };
+    const base = hiresBaseSize(image) ?? xyGridCellSize(image) ?? { width: image.width, height: image.height };
     const restored = restorableSize(base.width, base.height, image.workflow, sizeLimits);
     setHires(resolveRestoredHires(hiresFromRecipe(image), status?.hires));
     setUpscaleModel(image.upscale_model ?? null);
@@ -6754,7 +6777,7 @@ export function ImagesPage({
             {loraCapable && (
               <Field
                 label="LoRAs"
-                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
+                hint="Style or character adapters applied on top of the model. Pick one from Add LoRA, enter a Hugging Face repo id, or add a folder of LoRA files, then set the strength (1.0 = full effect, 0 disables). Stack several."
               >
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
@@ -6776,6 +6799,9 @@ export function ImagesPage({
                       <div className="flex items-center gap-2">
                         <Input
                           value={sel.id}
+                          autoFocus={i === focusLoraRow}
+                          // One-shot, so a later row mounting at this index (recipe restore) stays unfocused.
+                          onFocus={i === focusLoraRow ? () => setFocusLoraRow(null) : undefined}
                           list={availableLoras.length > 0 ? "diffusion-lora-suggestions" : undefined}
                           placeholder="owner/name or owner/name:file.safetensors"
                           spellCheck={false}
@@ -6813,30 +6839,20 @@ export function ImagesPage({
                   ))}
                   <div className="flex gap-2">
                     {loras.length < 8 && (
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() => {
-                          // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
-                          const taken = new Set(loras.map((l) => l.id));
-                          const next = sortedLoras.find((a) => !taken.has(a.id));
-                          setLoras((prev) => [
-                            ...prev,
-                            next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                          ]);
+                      <LoraAddMenu
+                        catalog={sortedLoras}
+                        takenIds={takenLoraIds}
+                        onAdd={(spec, focusRow) => {
+                          setFocusLoraRow(focusRow ? loras.length : null);
+                          setLoras((prev) => [...prev, spec]);
                         }}
-                      >
-                        <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
-                        Add LoRA
-                      </Button>
+                      />
                     )}
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      title="Add a custom models folder. Image LoRA .safetensors files in it show up here."
                       onClick={() => setLoraFoldersOpen(true)}
                     >
                       <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />

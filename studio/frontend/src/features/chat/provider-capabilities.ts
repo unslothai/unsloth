@@ -352,14 +352,16 @@ export function providerSupportsBuiltinWebSearch(
   );
 }
 
+function isKimiK3(modelId: string | null | undefined): boolean {
+  return /^kimi-k3(?:$|[.-])/.test(modelId?.trim().toLowerCase() ?? "");
+}
+
 /** Search and Think stay exclusive on Kimi, except kimi-k3, which has no thinking off switch. */
 export function kimiSearchExcludesThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean {
-  return (
-    providerType === "kimi" && modelId?.trim().toLowerCase() !== "kimi-k3"
-  );
+  return providerType === "kimi" && !isKimiK3(modelId);
 }
 
 /** Whether the provider exposes a server-side web_fetch tool emitting a document block.
@@ -722,7 +724,7 @@ export function getProviderCapabilities(
     };
   }
   // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
-  if (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3") {
+  if (providerType === "kimi" && isKimiK3(modelId)) {
     return { ...PROVIDER_CAPABILITIES.kimi, presencePenalty: false };
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
@@ -952,7 +954,7 @@ function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCap
   // toggleable, k2-thinking always on, k2.5 and others none.
   // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
   // and takes reasoning_effort low|high|max instead.
-  if (modelId === "kimi-k3") {
+  if (isKimiK3(modelId)) {
     return {
       ...withReasoningEffortStyle({
         supportsReasoning: true,
@@ -1380,7 +1382,7 @@ export function providerModelReplaysReasoning(
 ): boolean {
   return (
     providerType === "minimax" ||
-    (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3")
+    (providerType === "kimi" && isKimiK3(modelId))
   );
 }
 

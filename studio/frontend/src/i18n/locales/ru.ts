@@ -198,12 +198,16 @@ export const ru = {
         history: "Читает вашу историю браузера",
         move: "Перемещает мышь",
         drag: "Перетаскивает",
+        tabs: "Просматривает вкладки",
+        readFile: "Читает файл",
+        editFile: "Редактирует файл",
       },
     },
     title: "Браузер",
     tabs: "Вкладки браузера",
     newTab: "Новая вкладка",
     newTabFullView: "Новая вкладка во весь экран",
+    newTabFloating: "Новая вкладка в плавающем окне",
     closeTab: "Закрыть вкладку",
     close: "Закрыть браузер",
     show: "Показать браузер",
@@ -327,18 +331,24 @@ export const ru = {
     downloadLocationReset: "Сбросить",
     askBeforeDownloadingSetting: "Спрашивать перед загрузкой",
     askBeforeDownloadingSettingDescription: "Подтверждать файлы с веб-сайтов перед сохранением.",
+    askBeforeProgramDownloadsSetting: "Спрашивать перед загрузкой программ",
+    askBeforeProgramDownloadsSettingDescription: "Подтверждать файлы, которые могут запускать программы, например .exe или .dmg, даже если для других загрузок вопрос не задаётся.",
     downloadSitesSetting: "Разрешения на загрузку для сайтов",
     downloadSitesSettingDescription: "Сайты, загрузки с которых вы решили всегда разрешать или блокировать.",
     downloadSitesNone: "Отметьте «Запомнить на будущее» при запросе, и сайт появится здесь.",
     downloadSitesFor: "Загрузки с {host}",
     downloadSitesRemove: "Забыть {host}",
     downloadSiteAllow: "Всегда разрешать",
+    downloadSiteAllowAll: "Разрешать и программы",
     downloadSiteBlock: "Всегда блокировать",
     downloadPrompt: {
       title: "Загрузить этот файл?",
       description: "{host} хочет сохранить {name} на ваш компьютер.",
       dangerous: "Такие файлы могут запускать программы на вашем компьютере. Скачивайте его, только если доверяете {host}.",
       remember: "Запомнить на будущее",
+      once: "Спросить в следующий раз",
+      site: "Всегда для {host}",
+      all: "Всегда загружать, с любого сайта",
       cancel: "Отмена",
       download: "Загрузить",
       blocked: "Загрузка с {host} заблокирована.",
@@ -380,6 +390,12 @@ export const ru = {
       openChat: "Открыть на весь экран",
       moveLeft: "Переместить в левую панель",
       moveRight: "Переместить в правую панель",
+    },
+    floating: {
+      enter: "Плавающее окно",
+      dock: "Закрепить сбоку",
+      close: "Закрыть плавающее окно",
+      handle: "Переместить окно. Стрелки перемещают его, Shift со стрелками меняет размер.",
     },
     annotate: {
       countOne: "1 пометка",
@@ -777,6 +793,8 @@ export const ru = {
   picker: {
     unifiedTightFit: "Впритык",
     unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
+    residentToRun: "для запуска",
+    residentToRunHint: "Память GPU, которую проверка загрузки требует во время работы",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
@@ -1089,6 +1107,9 @@ export const ru = {
       modelAccessHint: "По одной модели в строке, например unsloth/Qwen3-4B-GGUF, или unsloth/* для всей организации. Оставьте пустым, чтобы разрешить все модели.",
       modelAccessSave: "Сохранить",
       modelAccessLimited: "Ограниченный доступ к моделям",
+      rename: "Переименовать",
+      renameTitle: "Переименовать {username}",
+      renameDescription: "Выберите имя, под которым эта учётная запись входит в систему. Чаты, файлы и ключи API остаются в учётной записи. Пользователь выйдет из системы и снова войдёт с новым именем и текущим паролем.",
       empty: "Других учётных записей пока нет",
       setupCode: "Код настройки",
       setupFor: "Код настройки для {username}",
@@ -2087,6 +2108,12 @@ export const ru = {
           "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
         autoCurrently: "Auto использует {transport} на этой машине.",
         xetMissing: "Xet недоступен, так как hf_xet не установлен.",
+        speedLimit: "Ограничение скорости загрузки",
+        speedLimitDescription:
+          "Без ограничения, пока не задано значение. Ограниченная загрузка идёт по HTTPS.",
+        speedLimitNoLimit: "Без ограничения",
+        speedLimitInvalid: "Введите число в Мбит/с или оставьте поле пустым.",
+        speedLimitUsesHttps: "Пока задано ограничение скорости, загрузки используют HTTPS. Файлы больше 50 ГБ по-прежнему загружаются через Xet без ограничения.",
       },
       uploads: {
         sectionTitle: "Загрузки",
@@ -2484,6 +2511,10 @@ export const ru = {
         contrast: {
           label: "Контраст",
         },
+        elementOutline: {
+          label: "Контур элементов",
+          description: "Насыщенность границ кнопок, полей, карточек и меню.",
+        },
         reduceMotion: {
           label: "Уменьшить анимацию",
           description: "Уменьшить анимацию или использовать системную настройку.",
@@ -2542,7 +2573,7 @@ export const ru = {
         apiDescription: "Смотрите, что другие приложения отправляют в API этого сервера, по мере поступления.",
         summary: "Активные запросы, ошибки и использование токенов",
         status: "активных: {active} · недавних: {recent} · {model}",
-        noModelLoaded: "модель не загружена",
+        noModelLoaded: "Модель не загружена",
         autoOpen: "Автоматически показывать плавающий монитор",
         autoOpenDescription:
           "Открывает небольшую панель при появлении трафика API.",
@@ -2559,11 +2590,25 @@ export const ru = {
         gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
         detailedView: "Подробный вид",
         detailedViewDescription:
-          "Показывать загрузку CPU, а также загрузку, температуру и мощность каждой GPU в плавающем окне.",
-        cpuLoad: "Загрузка CPU",
+          "Показывать загрузку, температуру и мощность каждой GPU в плавающем окне.",
         gpuLoad: "Загрузка GPU",
         temperature: "Температура",
         power: "Мощность",
+        memory: "Память",
+        gpuInUse: "Используется GPU",
+        availableForModels: "Доступно для моделей",
+        refreshRate: "Частота обновления",
+        refreshRateDescription: "Как часто плавающий монитор считывает использование памяти и GPU, пока он открыт.",
+        refreshEvery: "Каждые {seconds} с",
+        unsloth: "Unsloth",
+        otherApps: "Другие приложения",
+        otherInUse: "Прочее",
+        freeLabel: "Свободно",
+        unslothApp: "Приложение Unsloth",
+        unslothShare: "Показывать долю Unsloth",
+        unslothShareDescription: "Делит память на занятую Unsloth, другими приложениями и свободную.",
+        modelBreakdown: "Разбивка по моделям",
+        modelBreakdownDescription: "Делит долю Unsloth на полосе памяти между загруженными моделями и остальной частью приложения.",
       },
       gpu: {
         title: "Устройства GPU",
@@ -2576,7 +2621,7 @@ export const ru = {
         detecting: "Поиск GPU...",
         unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
-          "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+          "Отдельный GPU не обнаружен.",
         noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
         mismatchCpuBuild:
           "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
@@ -2652,7 +2697,7 @@ export const ru = {
           "llama.cpp backend gguf инференс cuda rocm hip vulkan metal cpu gpu ускоритель prebuilt переключить движок",
       },
       modelMemory: {
-        title: "Память модели",
+        title: "Загрузка модели",
         keepResident: "Держать модель в памяти GPU",
         keepResidentDescription: "Остаётся в видеопамяти между запросами.",
         keepResidentHint: "Веса не возвращаются в системную ОЗУ, пока модель загружена. Отключает автовыгрузку по простою, а если веса действительно находятся в ОЗУ хоста (единая память или частичная выгрузка на GPU), дополнительно передаёт --mlock, чтобы ОС не вытесняла их и не загружала заново при следующем запросе.",
@@ -2833,7 +2878,7 @@ export const ru = {
       configurationDocs: "документации",
       configurationFlagsSuffix: "о флагах.",
       modelNote:
-        "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
+        "Claude Code и Codex требуют модель GGUF, обслуживаемую llama-server, или модель MLX. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
         title: "Использовать локальную модель в качестве субагента",
         description:
@@ -2912,6 +2957,8 @@ export const ru = {
     },
     chat: {
       groups: {
+        replies: { title: "Ответы" },
+        thinkingTools: { title: "Размышления и инструменты" },
         conversations: { title: "Беседы" },
         files: { title: "Файлы и вставка" },
         display: { title: "Отображение" },
@@ -2993,17 +3040,26 @@ export const ru = {
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:
         "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
-      showGenerationDetails: "Подробности генерации",
+      showGenerationDetails: "Подробности о скорости и загрузке",
       showGenerationDetailsDescription:
-        "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
+        "Добавляет к живым показателям скорость чтения запроса, число токенов и принятие черновиков, а также показывает, куда загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Статистика скорости и контекста",
+      generationStatsUpdatesDescription:
+        "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",
+      generationStatsUpdatesHint:
+        "В реальном времени обновляет показатель токенов в секунду под ответом и полосу контекста вверху чата несколько раз в секунду, пока ответ пишется. По завершении обновляет их один раз, когда каждый ответ закончен. Режим реального времени может вызывать подтормаживания или снижать производительность, особенно на старых или загруженных компьютерах.",
+      generationStatsUpdatesSettled: "По завершении",
+      generationStatsUpdatesRealtime: "В реальном времени",
+      generationStatsUpdatesKeywords:
+        "реальное время вживую обновление скорость контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",
       turnNavigationDescription: "Показывает ваши сообщения полосой у левого края длинных чатов. Наведите, чтобы увидеть ход, нажмите, чтобы перейти к нему, и добавляйте закладки, чтобы быстро находить ходы.",
-      composerAtBottom: "Поле ввода внизу",
-      composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
+      composerPosition: "Положение поля ввода",
+      composerPositionDescription: "Где находится поле ввода в новом чате: от верха страницы до самого низа.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
         "Делает новые вложения доступными во всех чатах проекта.",
@@ -3473,6 +3529,9 @@ export const ru = {
         docs: "Документация",
         docsLabel: "Открыть документацию по API решений",
         description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью модели на этом компьютере или модели решений из подключений. Работает с SDK TypeSafe.",
+        codeTitle: "Вызов из кода",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Другие клиенты MCP подключаются сюда с тем же токеном.",
         enable: "Обрабатывать запросы",
         enableDescription: "Обслуживает /v1/systemone. При включении модель скачивается.",
         enableRemoteDescription: "Обслуживает /v1/systemone.",
@@ -3951,8 +4010,6 @@ export const ru = {
             "Похоже, этот датасет содержит изображения, поэтому его нельзя передавать потоком.",
           audioDataset:
             "Похоже, этот датасет содержит аудио, поэтому его нельзя передавать потоком.",
-          appleSilicon:
-            "Потоковая передача на Apple Silicon (MLX) пока не поддерживается.",
         },
         options: {
           trainOnCompletions: "только ответы ассистента",
@@ -5126,6 +5183,8 @@ export const ru = {
     removeLevel: "Удалить уровень {n}",
     addLevel: "Добавить уровень",
     jsonHelp: "Тело запроса. Запуск отправляет его как есть.",
+    copyBody: "Копировать тело",
+    copyCurl: "Копировать как cURL",
     examples: "Примеры",
     presetToolApproval: "Одобрять вызовы инструментов агентом",
     presetPromptInjection: "Ловить prompt injection",
@@ -5183,6 +5242,7 @@ export const ru = {
     monitor: {
       dragHandleLabel: "Переместить живой монитор. Стрелки сдвигают его понемногу, двойной щелчок сбрасывает положение.",
       reconnecting: "Повторное подключение…",
+      resizeHint: "Потяните за сторону или угол, чтобы изменить ширину. Двойной щелчок сбрасывает её.",
     },
   },
   projectsPage: {
@@ -5489,7 +5549,7 @@ export const ru = {
     skippedVersion: "Версия {component} {version} пока пропущена",
     skippedUpdate: "Обновление {component} пока пропущено",
     skippedUpdates: "Обновления {components} пока пропущены",
-    vulkanFaster: "Vulkan более чем на 10% быстрее ROCM. Перезапуск не требуется",
+    vulkanFaster: "Быстрее более чем на 10%",
     noRestart: "Перезапуск не требуется",
     downloadSize: "Загрузка: {size}",
     backendChange: "Бэкенд: {change}",
@@ -5498,8 +5558,8 @@ export const ru = {
     installingPhase: "Установка {component} ({current} из {total})...",
     installingCount: "Установка обновлений: {count}...",
     bundleTitle: "Обновления среды выполнения: {count}",
-    newBackend: "Новый бэкенд {component}",
-    newUpdate: "Новое обновление {component}",
+    newBackend: "Новый бэкенд среды выполнения",
+    newUpdate: "Новое обновление среды выполнения",
     hideUpdate: "Скрыть обновление {component} до перезапуска Unsloth",
     hideUpdates: "Скрыть обновления {components} до перезапуска Unsloth",
     whatsNew: "Что нового",
@@ -5511,6 +5571,7 @@ export const ru = {
   generationStats: {
     working: "Обработка...",
     processingPrompt: "Обработка промпта {percent}%",
+    compactingContext: "Сжатие контекста...",
     timeLeft: "осталось {eta}",
     tokensOne: "токены: {count}",
     tokens: "токены: {count}",

@@ -198,12 +198,16 @@ export const de = {
         history: "Liest deinen Browserverlauf",
         move: "Bewegt die Maus",
         drag: "Zieht",
+        tabs: "Sieht sich die Tabs an",
+        readFile: "Liest die Datei",
+        editFile: "Bearbeitet die Datei",
       },
     },
     title: "Browser",
     tabs: "Browser-Tabs",
     newTab: "Neuer Tab",
     newTabFullView: "Neuer Tab in Vollansicht",
+    newTabFloating: "Neuer Tab in schwebendem Fenster",
     closeTab: "Tab schließen",
     close: "Browser schließen",
     show: "Browser anzeigen",
@@ -327,18 +331,24 @@ export const de = {
     downloadLocationReset: "Zurücksetzen",
     askBeforeDownloadingSetting: "Vor dem Herunterladen fragen",
     askBeforeDownloadingSettingDescription: "Dateien von Websites vor dem Speichern bestätigen.",
+    askBeforeProgramDownloadsSetting: "Vor dem Herunterladen von Programmen fragen",
+    askBeforeProgramDownloadsSettingDescription: "Dateien bestätigen, die Programme ausführen können, etwa .exe oder .dmg, auch wenn andere Downloads nicht nachfragen.",
     downloadSitesSetting: "Download-Berechtigungen für Websites",
     downloadSitesSettingDescription: "Websites, deren Downloads du immer erlaubst oder blockierst.",
     downloadSitesNone: "Aktiviere bei der Nachfrage „Für das nächste Mal merken“, dann erscheint die Website hier.",
     downloadSitesFor: "Downloads von {host}",
     downloadSitesRemove: "{host} vergessen",
     downloadSiteAllow: "Immer erlauben",
+    downloadSiteAllowAll: "Auch Programme erlauben",
     downloadSiteBlock: "Immer blockieren",
     downloadPrompt: {
       title: "Diese Datei herunterladen?",
       description: "{host} möchte {name} auf deinem Computer speichern.",
       dangerous: "Dateien wie diese können Programme auf deinem Computer ausführen. Lade sie nur herunter, wenn du {host} vertraust.",
       remember: "Für das nächste Mal merken",
+      once: "Nächstes Mal fragen",
+      site: "Immer für {host}",
+      all: "Immer herunterladen, von jeder Website",
       cancel: "Abbrechen",
       download: "Herunterladen",
       blocked: "Ein Download von {host} wurde blockiert.",
@@ -380,6 +390,12 @@ export const de = {
       openChat: "In Vollansicht öffnen",
       moveLeft: "In linken Bereich verschieben",
       moveRight: "In rechten Bereich verschieben",
+    },
+    floating: {
+      enter: "Schwebendes Fenster",
+      dock: "Seitlich andocken",
+      close: "Schwebendes Fenster schließen",
+      handle: "Fenster verschieben. Pfeiltasten verschieben es, Umschalt und Pfeiltasten ändern seine Größe.",
     },
     annotate: {
       countOne: "1 Anmerkung",
@@ -777,6 +793,8 @@ export const de = {
   picker: {
     unifiedTightFit: "Knapp",
     unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
+    residentToRun: "zum Ausführen",
+    residentToRunHint: "GPU-Speicher, den die Ladeprüfung während der Ausführung verlangt",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",
@@ -1091,6 +1109,9 @@ export const de = {
       modelAccessHint: "Ein Modell pro Zeile, zum Beispiel unsloth/Qwen3-4B-GGUF, oder unsloth/* für eine ganze Organisation. Leer lassen, um alle Modelle zu erlauben.",
       modelAccessSave: "Speichern",
       modelAccessLimited: "Eingeschränkter Modellzugriff",
+      rename: "Umbenennen",
+      renameTitle: "{username} umbenennen",
+      renameDescription: "Wähle den Namen, mit dem sich dieses Konto anmeldet. Chats, Dateien und API-Schlüssel bleiben beim Konto. Die Person wird abgemeldet und meldet sich mit dem neuen Namen und ihrem bisherigen Passwort wieder an.",
       empty: "Noch keine weiteren Konten",
       setupCode: "Einrichtungscode",
       setupFor: "Einrichtungscode für {username}",
@@ -2103,6 +2124,12 @@ export const de = {
           "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
         autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
         xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+        speedLimit: "Download-Geschwindigkeitslimit",
+        speedLimitDescription:
+          "Kein Limit, solange kein Wert gesetzt ist. Ein begrenzter Download verwendet HTTPS.",
+        speedLimitNoLimit: "Kein Limit",
+        speedLimitInvalid: "Gib eine Zahl in Mbit/s ein oder lass das Feld leer.",
+        speedLimitUsesHttps: "Solange ein Geschwindigkeitslimit gesetzt ist, verwenden Downloads HTTPS. Dateien über 50 GB verwenden weiterhin Xet, ohne das Limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2503,6 +2530,10 @@ export const de = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Umrandung der Elemente",
+          description: "Stärke der Ränder von Schaltflächen, Feldern, Karten und Menüs.",
+        },
         reduceMotion: {
           label: "Bewegung reduzieren",
           description: "Animationen reduzieren oder Systemeinstellung übernehmen.",
@@ -2562,7 +2593,7 @@ export const de = {
         apiDescription: "Sieh, was andere Apps an die API dieses Servers senden, sobald es ankommt.",
         summary: "Aktive Anfragen, Fehler und Token-Nutzung",
         status: "Aktiv: {active} · kürzlich: {recent} · {model}",
-        noModelLoaded: "kein Modell geladen",
+        noModelLoaded: "Kein Modell geladen",
         autoOpen: "Schwebenden Monitor automatisch anzeigen",
         autoOpenDescription:
           "Öffnet ein kleines Fenster, wenn API-Aktivität eingeht.",
@@ -2579,11 +2610,25 @@ export const de = {
         gpuUnusableDetail: "Erkannt, aber PyTorch kann sie nicht nutzen",
         detailedView: "Detailansicht",
         detailedViewDescription:
-          "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
-        cpuLoad: "CPU-Last",
+          "Zeigt Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
         power: "Leistung",
+        memory: "Arbeitsspeicher",
+        gpuInUse: "Von der GPU belegt",
+        availableForModels: "Für Modelle verfügbar",
+        refreshRate: "Aktualisierungsrate",
+        refreshRateDescription: "Wie oft der schwebende Monitor Speicher- und GPU-Auslastung liest, solange er geöffnet ist.",
+        refreshEvery: "Alle {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andere Apps",
+        otherInUse: "Sonstige Nutzung",
+        freeLabel: "Frei",
+        unslothApp: "Unsloth-App",
+        unslothShare: "Anteil von Unsloth anzeigen",
+        unslothShareDescription: "Teilt den Speicher in Unsloth, andere Apps und freien Speicher auf.",
+        modelBreakdown: "Nach Modell aufschlüsseln",
+        modelBreakdownDescription: "Teilt den Anteil von Unsloth im Speicherbalken in jedes geladene Modell und den Rest der App auf.",
       },
       gpu: {
         title: "GPU-Geräte",
@@ -2596,7 +2641,7 @@ export const de = {
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
         noGpu:
-          "Keine sichtbare GPU erkannt. Oben werden nur die CPU-Ressourcen angezeigt.",
+          "Keine dedizierte GPU erkannt.",
         noUsableGpu: "Auf diesem Rechner ist keine GPU für PyTorch nutzbar.",
         mismatchCpuBuild:
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",
@@ -2672,7 +2717,7 @@ export const de = {
           "llama.cpp backend gguf inferenz cuda rocm hip vulkan metal cpu gpu beschleuniger prebuilt wechseln engine",
       },
       modelMemory: {
-        title: "Modellspeicher",
+        title: "Modell laden",
         keepResident: "Modell im GPU-Speicher behalten",
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
@@ -2857,7 +2902,7 @@ export const de = {
       configurationDocs: "Dokumentation",
       configurationFlagsSuffix: "zu den Flags.",
       modelNote:
-        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
+        "Claude Code und Codex benötigen ein GGUF-Modell, das von llama-server bereitgestellt wird, oder ein MLX-Modell. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
       subagent: {
         title: "Ein lokales Modell als Subagent verwenden",
         description:
@@ -2937,6 +2982,8 @@ export const de = {
     },
     chat: {
       groups: {
+        replies: { title: "Antworten" },
+        thinkingTools: { title: "Denken und Werkzeuge" },
         conversations: { title: "Gespräche" },
         files: { title: "Dateien und Einfügen" },
         display: { title: "Anzeige" },
@@ -3021,17 +3068,26 @@ export const de = {
       showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
       showReplyTimesKeywords:
         "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
-      showGenerationDetails: "Generierungsdetails",
+      showGenerationDetails: "Detaillierte Geschwindigkeits- und Ladeinfos",
       showGenerationDetailsDescription:
-        "Prompt- und Antwortgeschwindigkeit live mit Tokenzahlen anzeigen, und wo die Schichten eines Modells geladen wurden.",
+        "Ergänzt die Live-Anzeigen um Prompt-Lesegeschwindigkeit, Tokenzahlen und Entwurfsannahme und zeigt, wo die Schichten eines Modells geladen wurden.",
       showGenerationDetailsKeywords:
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
+      generationStatsUpdatesDescription:
+        "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",
+      generationStatsUpdatesHint:
+        "Echtzeit aktualisiert die Anzeige der Token pro Sekunde unter einer Antwort und die Kontextleiste oben im Chat mehrmals pro Sekunde, während die Antwort geschrieben wird. Nach Abschluss aktualisiert sie einmal, wenn jede Antwort fertig ist. Echtzeit kann zu Verzögerungen oder geringerer Leistung führen, besonders auf älteren oder ausgelasteten Geräten.",
+      generationStatsUpdatesSettled: "Nach Abschluss",
+      generationStatsUpdatesRealtime: "Echtzeit",
+      generationStatsUpdatesKeywords:
+        "Echtzeit live aktualisieren Geschwindigkeit Kontext Statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       turnNavigation: "Rundennavigation",
       turnNavigationDescription: "Zeigt deine Eingaben als Leiste am linken Rand langer Chats. Zeige auf eine Runde für eine Vorschau, klicke, um hinzuspringen, und setze Lesezeichen, um Runden wiederzufinden.",
-      composerAtBottom: "Eingabefeld unten",
-      composerAtBottomDescription: "Neue Chats mit dem Eingabefeld unten auf der Seite statt in der Mitte beginnen.",
+      composerPosition: "Position des Eingabefelds",
+      composerPositionDescription: "Wo das Eingabefeld beim Start eines neuen Chats sitzt, vom oberen Seitenrand bis ganz nach unten.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
         "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",
@@ -3508,6 +3564,9 @@ export const de = {
         docs: "Dokumentation",
         docsLabel: "Dokumentation zur Entscheidungs-API öffnen",
         description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem Modell auf diesem Rechner oder einem Entscheidungsmodell aus den Verbindungen. Funktioniert mit dem TypeSafe-SDK.",
+        codeTitle: "Aus Code aufrufen",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andere MCP-Clients verbinden sich hier mit demselben Token.",
         enable: "Anfragen beantworten",
         enableDescription: "Stellt /v1/systemone bereit. Beim Einschalten wird das Modell heruntergeladen.",
         enableRemoteDescription: "Stellt /v1/systemone bereit.",
@@ -3983,8 +4042,6 @@ export const de = {
             "Dieser Datensatz scheint Bilder zu enthalten, die nicht gestreamt werden können.",
           audioDataset:
             "Dieser Datensatz scheint Audio zu enthalten, das nicht gestreamt werden kann.",
-          appleSilicon:
-            "Streaming wird auf Apple Silicon (MLX) noch nicht unterstützt.",
         },
         options: {
           trainOnCompletions: "nur Assistenten-Antworten",
@@ -5172,6 +5229,8 @@ export const de = {
     removeLevel: "Stufe {n} entfernen",
     addLevel: "Stufe hinzufügen",
     jsonHelp: "Der Anfrage-Body. Ausführen sendet ihn so, wie er ist.",
+    copyBody: "Body kopieren",
+    copyCurl: "Als cURL kopieren",
     examples: "Beispiele",
     presetToolApproval: "Tool-Aufrufe von Agenten freigeben",
     presetPromptInjection: "Prompt-Injection erkennen",
@@ -5229,6 +5288,7 @@ export const de = {
     monitor: {
       dragHandleLabel: "Live-Monitor verschieben. Mit den Pfeiltasten feinjustieren, per Doppelklick zurücksetzen.",
       reconnecting: "Verbindung wird wiederhergestellt...",
+      resizeHint: "Zum Ändern der Breite an einer Seite oder Ecke ziehen. Doppelklick setzt sie zurück.",
     },
   },
   projectsPage: {
@@ -5535,7 +5595,7 @@ export const de = {
     skippedVersion: "{component} {version} vorerst übersprungen",
     skippedUpdate: "Das {component}-Update vorerst übersprungen",
     skippedUpdates: "Die Updates für {components} vorerst übersprungen",
-    vulkanFaster: "Vulkan ist >10 % schneller als ROCM. Kein Neustart nötig",
+    vulkanFaster: "Über 10 % schneller",
     noRestart: "Kein Neustart nötig",
     downloadSize: "{size} Download",
     backendChange: "Backend {change}",
@@ -5544,8 +5604,8 @@ export const de = {
     installingPhase: "{component} wird installiert ({current} von {total})...",
     installingCount: "{count} Updates werden installiert...",
     bundleTitle: "{count} Laufzeit-Updates",
-    newBackend: "Neues {component}-Backend",
-    newUpdate: "Neues {component}-Update",
+    newBackend: "Neues Laufzeit-Backend",
+    newUpdate: "Neues Laufzeit-Update",
     hideUpdate: "Das {component}-Update ausblenden, bis Unsloth erneut geöffnet wird",
     hideUpdates: "Die Updates für {components} ausblenden, bis Unsloth erneut geöffnet wird",
     whatsNew: "Neuigkeiten",
@@ -5557,6 +5617,7 @@ export const de = {
   generationStats: {
     working: "Wird bearbeitet...",
     processingPrompt: "Prompt-Verarbeitung {percent}%",
+    compactingContext: "Kontext wird komprimiert...",
     timeLeft: "noch {eta}",
     tokensOne: "{count} Token",
     tokens: "{count} Tokens",
