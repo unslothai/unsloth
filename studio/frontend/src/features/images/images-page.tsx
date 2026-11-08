@@ -3652,7 +3652,11 @@ export function ImagesPage({
 
   // Follow a queued job's render like a run started elsewhere.
   const imageQueue = useImageQueue(active, (finished) => {
-    if (finished.some((job) => job.status === "done")) void loadGallery();
+    if (finished.some((job) => job.status === "done")) {
+      // Fences an earlier refresh still in flight, so it refetches instead of landing after this one.
+      stripEpoch.current += 1;
+      void loadGallery();
+    }
     let latest: ImageQueueJob | null = null;
     for (const job of finished) {
       if (job.status === "failed") toast.error(job.error ?? "A queued generation failed");
