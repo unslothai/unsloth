@@ -222,6 +222,39 @@ def test_unsloth_checkpoint_is_seen_and_covered_by_the_cells_that_measured_it(mo
         caps.check(query)
 
 
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_kimi_linear_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
+    # tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process: sdpa / eager, none / HF
+    # checkpointing, cp 2 and dp 2 x cp 2. Unsloth's checkpoint, FSDP2 x cp and the router loss stay refused.
+    kw = dict(
+        trainer = "sft",
+        family = "kimi_linear",
+        moe = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+    )
+    for extra in ({}, {"memory": "gc"}, {"attention": "eager"}, {"dp": 2}):
+        query = caps.Query(**kw, **extra)
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_kimi_moe_under_ulysses" in cell.parity, (extra, cell)
+        caps.check(query)
+    for extra, match in (
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+    ):
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**kw, **extra))
+
+
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):
