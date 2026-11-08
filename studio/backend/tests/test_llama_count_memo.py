@@ -90,7 +90,6 @@ def test_anything_the_render_sees_misses(monkeypatch, change):
 
 
 def test_a_new_day_renders_again(monkeypatch):
-    # The server's chat template can print today's date (date_string, strftime_now).
     from core.inference import llama_cpp
 
     backend, paths = _setup(monkeypatch)
