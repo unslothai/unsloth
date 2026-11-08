@@ -7520,8 +7520,8 @@ class VideoBackend:
             if getattr(source, "kind", None) != "repo":
                 continue
             names = list(dict.fromkeys(candidate_filenames_of(source)))
-            # the resolver's filter: readable names, unless that leaves none
-            names = [n for n in names if restricted_prequant_load_supported(scheme, n)] or names
+            # the resolver's filter: readable .safetensors names only (none readable fetches nothing)
+            names = [n for n in names if restricted_prequant_load_supported(scheme, n)]
             names = prefer_cached_pickle_twins(
                 source.location,
                 names,
@@ -7685,10 +7685,8 @@ class VideoBackend:
         files: list[tuple[str, int]] = []
         for src in sources:
             names = list(candidate_filenames_of(src))
-            # the resolver's filter: readable names, unless that leaves none
-            names = [
-                n for n in names if restricted_prequant_load_supported(transformer_quant, n)
-            ] or names
+            # the resolver's filter: readable .safetensors names only (none readable keeps the dense DiT)
+            names = [n for n in names if restricted_prequant_load_supported(transformer_quant, n)]
             wanted = prefer_cached_pickle_twins(
                 src.location,
                 names,
@@ -8484,7 +8482,7 @@ class VideoBackend:
             # Local path overrides are validated at injection; they never justify skipping the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
-            # Try every candidate: the preferred safetensors name is absent from most repos.
+            # Try every candidate (all .safetensors): a repo that hosts none keeps its dense encoder.
             from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
 
             from .diffusion_prequant import prefer_cached_pickle_twins

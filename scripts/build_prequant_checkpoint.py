@@ -75,12 +75,14 @@ def upload_destination(
     pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
     way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
 
-    nvfp4 publishes safetensors only: Studio never resolves or opens an nvfp4 pickle.
+    Every scheme publishes safetensors only: Studio never resolves or opens a pre-quant pickle. A ``.pt`` build
+    is still written for local conversion (scripts/convert_prequant_to_safetensors.py), never published.
     """
-    if (scheme or "").strip().lower() == "nvfp4" and not safetensors:
+    if not safetensors:
         raise ValueError(
-            "nvfp4 checkpoints are published as .safetensors only (Studio never reads an nvfp4 "
-            "pickle); write --out as a .safetensors file"
+            "pre-quantized checkpoints are published as .safetensors only (Studio never reads a "
+            ".pt pickle); write --out as a .safetensors file, or convert the .pt with "
+            "scripts/convert_prequant_to_safetensors.py before uploading"
         )
     if override:
         wanted = ".safetensors" if safetensors else ".pt"
@@ -193,8 +195,9 @@ def main(argv = None) -> int:
     p.add_argument(
         "--out",
         required = True,
-        help = "output path; a .safetensors extension writes the safetensors container, anything "
-        "else writes the torch.save one",
+        help = "output path; a .safetensors extension writes the safetensors container Studio loads, "
+        "anything else writes a torch.save one Studio never reads (convert it with "
+        "scripts/convert_prequant_to_safetensors.py)",
     )
     p.add_argument("--min-features", type = int, default = 512)
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
@@ -219,19 +222,30 @@ def main(argv = None) -> int:
         "--upload-filename",
         default = None,
         help = "repo-root filename to publish under; defaults to the family's declared "
-        "prequant_filenames entry for a rotated build and the legacy transformer_<scheme>.pt "
-        "otherwise",
+        "prequant_filenames entry, else the derived <Model>-<SCHEME>.safetensors name",
     )
     args = p.parse_args(argv)
-    if (args.scheme or "").strip().lower() == "nvfp4" and not str(args.out).lower().endswith(
-        ".safetensors"
-    ):
+    if not str(args.out).lower().endswith(".safetensors"):
+        if (args.scheme or "").strip().lower() == "nvfp4":
+            print(
+                "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
+                "give --out a .safetensors path",
+                flush = True,
+            )
+            return 2
+        if args.upload_repo:
+            print(
+                "error: Studio loads pre-quantized checkpoints from .safetensors only, so a .pt build "
+                "is never uploaded; give --out a .safetensors path, or convert the .pt with "
+                "scripts/convert_prequant_to_safetensors.py",
+                flush = True,
+            )
+            return 2
         print(
-            "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
-            "give --out a .safetensors path",
+            "note: Studio loads pre-quantized checkpoints from .safetensors only; convert this .pt "
+            "with scripts/convert_prequant_to_safetensors.py before using it",
             flush = True,
         )
-        return 2
 
     sys.path.insert(0, str(BACKEND))
     import torch

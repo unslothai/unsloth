@@ -6616,14 +6616,14 @@ class DiffusionBackend:
             )
             return None
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-        # All candidates in loader order (safetensors, then pickle spellings).
+        # All candidates in loader order (.safetensors only; a hosted pickle is never priced or staged).
         from .diffusion_prequant import (
             candidate_filenames_of,
             prefer_cached_pickle_twins,
             restricted_prequant_load_supported,
         )
 
-        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
+        # The resolver's order (pickles dropped), so the plan stages the file the load opens.
         ordered = prefer_cached_pickle_twins(
             source.location,
             candidate_filenames_of(source),

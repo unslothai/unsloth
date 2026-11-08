@@ -13,8 +13,8 @@ the ~half-size fp8-storage state dict directly: meta-init the encoder skeleton,
 cast uses. The layerwise cast is a deterministic storage transform, so the loaded encoder is
 bit-identical to dense-load-then-cast by construction.
 
-v1 covers the layerwise ``fp8`` STORAGE scheme only: its state dict is plain tensors
-(``torch.load(weights_only = True)``, no pickle execution), and cast-on-load equals
+v1 covers the layerwise ``fp8`` STORAGE scheme only: its state dict is plain tensors read
+from ``.safetensors`` only (a ``.pt`` is never opened), and cast-on-load equals
 load-of-cast exactly. The dynamic-compute schemes (fp8_dynamic / int8 / nvfp4) build
 torchao subclass wrappers at runtime and int8 keys off per-family keep-bf16 schedules, so
 their artifacts are deliberately NOT hosted; the metadata layout leaves room to add them.
@@ -252,11 +252,13 @@ def family_te_int8_convrot(fam: Any, component: str) -> Optional[tuple[str, ...]
 
 
 def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
-    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises."""
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that .safetensors file, else None. Never raises."""
     import os
 
+    from .safetensors_only import is_safetensors_name
+
     raw = (os.environ.get(TE_PREQUANT_MIRROR_ENV) or "").strip()
-    if not raw or not repo_id or not name:
+    if not raw or not repo_id or not name or not is_safetensors_name(name):
         return None
     parts = [*str(repo_id).split("/"), *str(name).split("/")]
     if any(p in ("", ".", "..") or "\\" in p for p in parts):
@@ -781,12 +783,12 @@ def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
 
 
 def te_prequant_repo_filenames(repo_id: str, component: str, scheme: str) -> tuple:
-    """Both .safetensors and .pt are live and the name must be requested; safetensors is tried first."""
+    """The ``<stem>.safetensors`` name only: a hosted ``.pt`` twin is never requested or opened."""
     # Lazy import: prequant_safetensors pulls torchao, which some hosts lack.
     from .prequant_safetensors import SAFETENSORS_SUFFIX
 
     stem = te_prequant_repo_stem(repo_id, component, scheme)
-    return (f"{stem}{SAFETENSORS_SUFFIX}", f"{stem}.pt")
+    return (f"{stem}{SAFETENSORS_SUFFIX}",)
 
 
 def te_prequant_companion_names(repo_id: str, families: Iterable[Any]) -> set[str]:
@@ -832,12 +834,12 @@ def te_candidate_filenames(source: Any) -> tuple:
 
 
 def te_candidate_is_readable(name: Optional[str]) -> bool:
-    """Not the DiT's torchao check: a plain-tensor .pt always reads; safetensors needs no torchao."""
+    """Not the DiT's torchao check: safetensors needs no torchao; a pickle (.pt) is never readable."""
     if not name:
         return False
     from .prequant_safetensors import is_safetensors_checkpoint, plain_safetensors_supported
 
-    return plain_safetensors_supported() if is_safetensors_checkpoint(name) else True
+    return is_safetensors_checkpoint(name) and plain_safetensors_supported()
 
 
 def family_te_prequant_repo(fam: Any, scheme: str, component: str) -> Optional[str]:
@@ -1143,11 +1145,11 @@ def load_prequant_text_encoder(
         if path is None:
             return None
 
-        import torch
-
         from .prequant_safetensors import is_safetensors_checkpoint, load_plain_prequant_safetensors
+        from .safetensors_only import refuse_pickle_path
 
-        # weights_only=True: no pickle runs; a torchao-subclass scheme needs a format bump and an allowlist.
+        # Safetensors only: a pickle (.pt) is refused by name before it is opened.
+        refuse_pickle_path(path)
         from .diffusion_text_encoder_trim import (
             LM_HEAD_KEY,
             class_trims_lm_head,
@@ -1161,9 +1163,7 @@ def load_prequant_text_encoder(
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
-            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
-        else:
-            ckpt = torch.load(path, weights_only = True, map_location = "cpu")
+        ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
         # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
         file_scheme = (
             "int8"
@@ -1796,9 +1796,14 @@ def _resolve_checkpoint_path(
     local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[str]:
-    """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
+    """The local file path for ``source``, downloading from the Hub if needed; None if absent. A local override that
+    is not a .safetensors file raises (never opened)."""
     if source.kind == "path":
         import os
+
+        from .safetensors_only import refuse_pickle_path
+
+        refuse_pickle_path(source.location, f"the local pre-cast override {str(source.location)!r}")
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
