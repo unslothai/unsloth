@@ -7,22 +7,6 @@
       "size": 1575158877
     }
   },
-  "0.6.15.post1+cu130": {
-    "arches": ["7.5", "8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"],
-    "x86_64": {
-      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.15.post1/flashinfer_jit_cache-0.6.15.post1+cu130-cp39-abi3-manylinux_2_28_x86_64.whl",
-      "sha256": "2473dbb78f65002267c221be4d75eb50dbcde51acd5242542f5aea7d1bff1b23",
-      "size": 1592844520
-    }
-  },
-  "0.6.18+cu130": {
-    "arches": ["8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"],
-    "x86_64": {
-      "url": "https://github.com/flashinfer-ai/flashinfer/releases/download/v0.6.18/flashinfer_jit_cache-0.6.18+cu130-cp39-abi3-manylinux_2_28_x86_64.whl",
-      "sha256": "428a47a554ade93c30a818e142b781df58582bf056bab94611fb4c906cc366bf",
-      "size": 1016181643
-    }
-  },
   "0.6.18.post1+cu130": {
     "arches": ["8.0", "8.9", "9.0a", "10.0a", "10.3a", "12.0f"],
     "x86_64": {

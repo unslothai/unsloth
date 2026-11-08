@@ -2923,13 +2923,17 @@ def kernel_host(monkeypatch):
     return rows
 
 
-def test_every_cuda_lock_has_its_flashinfer_kernel_wheel(kernel_host, monkeypatch):
+def test_every_vllm_lock_has_its_flashinfer_kernel_wheel(kernel_host, monkeypatch):
     table = json.loads(install._FLASHINFER_KERNELS.read_text())
     for engine, entry in install.PROFILES.items():
         for release in entry["releases"]:
             monkeypatch.setattr(install, "_release", lambda engine, release = release: release)
             version = install._pins(engine)["flashinfer-python"][0]
             wheel = install.flashinfer_kernel_wheel(engine)
+            if engine != "vllm":
+                # Studio's SGLang flags (triton attention, pytorch sampling) build no FlashInfer kernel.
+                assert wheel is None, release["lock"]
+                continue
             assert wheel == table[f"{version}+cu130"]["x86_64"], release["lock"]
             # FlashInfer refuses a jit-cache of another version.
             assert f"/flashinfer_jit_cache-{version}+cu130-" in wheel["url"]
@@ -2976,7 +2980,7 @@ def test_flashinfer_kernels_only_for_linux_cuda_and_honour_the_switch(kernel_hos
         monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", value)
         assert install.flashinfer_kernel_wheel("vllm") is None
     monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "1")
-    assert install.flashinfer_kernel_wheel("sglang") is not None
+    assert install.flashinfer_kernel_wheel("vllm") is not None
     monkeypatch.setattr(install.platform, "machine", lambda: "aarch64")
     assert install.flashinfer_kernel_wheel("vllm") is None
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
@@ -3011,6 +3015,10 @@ def test_install_adds_the_flashinfer_kernel_wheel_before_the_checks(
     assert install.status(engine)["job"]["state"] == "success"
     wheel = install.flashinfer_kernel_wheel(engine)
     pip = [i for i, argv in enumerate(calls) if isinstance(argv, list) and "-r" in argv]
+    if engine == "sglang":
+        assert wheel is None and pip == []
+        assert install.installed(engine)["flashinfer_kernels"] is False
+        return
     assert len(pip) == 1
     argv = calls[pip[0]]
     assert argv[:3] == ["/uv", "pip", "install"]

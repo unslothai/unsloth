@@ -34,6 +34,9 @@ PROFILES = {
         "driver": 580,
         # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
+        # vLLM's default top-k/top-p sampler is FlashInfer's: its prebuilt kernels skip the first-launch
+        # nvcc build. SGLang, on Studio's triton attention and pytorch sampling, builds none.
+        "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
@@ -1362,7 +1365,12 @@ def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
     ):
         return None
     wanted = profile(engine)
-    if sys.platform != "linux" or wanted["platform"] != "cuda" or not wanted["cuda"]:
+    if (
+        not wanted.get("flashinfer_kernels")
+        or sys.platform != "linux"
+        or wanted["platform"] != "cuda"
+        or not wanted["cuda"]
+    ):
         return None
     version = _pins(engine).get("flashinfer-python", (None,))[0]
     try:
