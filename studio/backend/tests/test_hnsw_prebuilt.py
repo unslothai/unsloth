@@ -258,6 +258,37 @@ def test_an_install_that_dies_halfway_leaves_the_pair_unimportable(flow, tmp_pat
     assert hp.read_marker(str(tmp_path))["result"] == "ok"
 
 
+@pytest.mark.parametrize("ok", [True, False])
+def test_half_a_pair_gets_only_its_missing_half_and_keeps_the_other_on_failure(
+    flow, tmp_path, monkeypatch, ok
+):
+    flow["info"] = _info(tmp_path, installed = {"numkong": "7.8.7"})
+    flow["probe"] = (True, "") if ok else (False, "ImportError: MSVCP140.dll")
+    calls = []
+
+    def run_first(cmds, timeout):
+        verb = cmds[0][2] if cmds[0][1] == "pip" else cmds[0][3]
+        args = [a for a in cmds[0] if a.endswith(".whl") or a in ("usearch", "numkong")]
+        calls.append((verb, [Path(a).name.split("-")[0] for a in args]))
+        if verb == "install":
+            flow["info"]["installed"]["usearch"] = "2.26.6"
+        else:
+            for n in calls[-1][1]:
+                flow["info"]["installed"][n] = None
+
+    monkeypatch.setattr(hp, "_run_first", run_first)
+    r = hp.ensure("py")
+    assert calls[0] == ("install", ["usearch"])
+    assert flow["wants"] == [
+        ""
+    ]  # the kept numkong is not the pinned one: probe without the pin check
+    if ok:
+        assert r["status"] == "ready" and len(calls) == 1
+    else:
+        assert r["status"] == "failed" and calls[1] == ("uninstall", ["usearch"])
+        assert flow["info"]["installed"]["numkong"] == "7.8.7"
+
+
 @pytest.mark.parametrize("numkong", ["7.8.7", "8.0.0"])
 def test_a_pair_from_an_older_install_is_probed_not_replaced(flow, tmp_path, numkong):
     flow["info"] = _info(tmp_path, installed = {"usearch": "2.26.6", "numkong": numkong})

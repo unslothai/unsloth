@@ -720,8 +720,13 @@ def ensure(
             info = interpreter_info(python)
             if _pair_installed(info) and _marker_says(read_marker(prefix), fp) == "ok":
                 return _result("already", "", info)
+            # Half a pair already here (the user's numkong, say): install only the other half, and never
+            # replace or, on a failed probe, uninstall what this run did not put there.
+            present = {n for n, _ in PAIR if info["installed"].get(n)}
             files, sources = [], set()
-            for wheel in chosen.values():
+            for name, wheel in chosen.items():
+                if name in present:
+                    continue
                 path, source = obtain(wheel, catalog, cache, deadline, network)
                 # Pinned bytes verified above; only then drop their Linux debug info (~10x smaller).
                 files.append(str(slim_wheel(path, cache.parent / "slim")))
@@ -731,10 +736,13 @@ def ensure(
             # Until a probe passes, files from a failed, killed or timed-out install stay unimportable.
             _write_marker(prefix, fp, None, "install not finished")
             _run_first(_pip_cmd(python, "install", files, prefix), remaining)
-            ok, reason = probe(python)
+            ok, reason = probe(
+                python, want = _want(interpreter_info(python)) if present else PAIR_STR
+            )
             if ok is False:
                 try:
-                    _run_first(_pip_cmd(python, "uninstall", [n for n, _ in PAIR], prefix), 120.0)
+                    ours = [n for n, _ in PAIR if n not in present]
+                    _run_first(_pip_cmd(python, "uninstall", ours, prefix), 120.0)
                 except Exception:  # noqa: BLE001 - the failed marker still keeps Studio off it
                     pass
             _write_marker(prefix, fp, ok, reason)
