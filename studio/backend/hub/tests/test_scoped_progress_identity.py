@@ -10,6 +10,8 @@ from hub.services import snapshot_progress
 from hub.services.models import downloads
 from hub.utils import download_manifest
 
+_real_requirements = downloads.gguf_variants.gguf_variant_requirements
+
 
 @pytest.fixture
 def scoped_progress(monkeypatch, tmp_path):
@@ -219,21 +221,20 @@ def test_offline_variant_manifest_does_not_shrink_hint(scoped_progress):
 
 
 @pytest.mark.parametrize("scope", ["@diffusion", "@audio", "@hub-assets"])
-def test_scoped_poll_asks_the_hub_for_no_gguf_requirement(monkeypatch, scoped_progress, scope):
-    """A scope is never a GGUF quant, so polling it must not cost a model_info request each time."""
+def test_scoped_poll_does_not_fetch_model_info(monkeypatch, scoped_progress, scope):
     case = scoped_progress
     case.metadata.scoped_files = ()
-    asked = []
+    gv = downloads.gguf_variants
+    monkeypatch.setattr(gv, "gguf_variant_requirements", _real_requirements)
+    fetched = []
     monkeypatch.setattr(
-        downloads.gguf_variants,
-        "gguf_variant_requirements",
-        lambda *a, **k: asked.append(a[1]),
+        gv, "_fetch_gguf_variant_requirements", lambda repo, *a, **k: fetched.append(repo) or {}
     )
     (case.blobs / "new.incomplete").write_bytes(b"n" * 20)
     for _ in range(3):
         result = case.poll(700, scope)
-    assert asked == []
+    assert fetched == []
     assert result["expected_bytes"] == 700
     assert result["downloaded_bytes"] == 0
     case.poll(700, "Q6_K")
-    assert asked == ["Q6_K"]
+    assert fetched == ["Org/Model"]
