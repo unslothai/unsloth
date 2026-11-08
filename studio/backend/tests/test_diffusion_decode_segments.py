@@ -330,9 +330,16 @@ def test_rocm_device_never_engages(monkeypatch):
 def test_cuda_device_maps_the_decode_into_an_expandable_segment(monkeypatch):
     monkeypatch.setattr(D, "_usable", None)
     monkeypatch.setattr(D, "_depth", 0)
+    monkeypatch.setattr(D, "_saved", None)
+    monkeypatch.setattr(D, "_written", (None, None))
     torch.cuda.init()
     if any(seg.get("is_expandable") for seg in torch.cuda.memory_snapshot()):
         pytest.skip("expandable segments already on in this process")
+    live = D._live_settings(torch)
+    if not D._decide(torch) or live is None or D._base_conf(live) is None:
+        pytest.skip(
+            "this process's allocator settings rule the toggle out (backend, or expandable set)"
+        )
     vae = _Vae()
     D.enable(vae)
     z = torch.zeros(1, device = "cuda")
