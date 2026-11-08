@@ -2622,6 +2622,74 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
     )
 
 
+# torch < 2.12 on sm_89: the row-wise fp8 GEMM behind torch._scaled_mm is a stream-K CUTLASS kernel whose barrier
+# workspace is zeroed by a memset on the legacy default stream (initialize() is given no stream). That memset never
+# joins a capture on PyTorch's non-blocking streams, so a replay reuses the dirty barrier and spins forever (FLUX.3 klein
+# fp8 on an L4 hangs on the first replay). Fixed upstream by pytorch/pytorch#177573, first released in torch 2.12.
+FP8_ROWWISE_STREAMK_CAPS = ((8, 9),)
+FP8_ROWWISE_STREAMK_FIXED = (2, 12)
+
+
+def _fp8_rowwise_weight(t: Any, activation: bool = False) -> bool:
+    """Whether ``t`` is a torchao fp8 weight whose linear runs the row-wise ``torch._scaled_mm`` (dynamic fp8 activation,
+    per-row scale). Weight-only and per-tensor fp8 never reach the stream-K kernel."""
+    name = type(t).__name__
+    if name == "LinearActivationQuantizedTensor":
+        inner = getattr(t, "original_weight_tensor", None)
+        return inner is not None and _fp8_rowwise_weight(inner, activation = True)
+    if name == "Float8Tensor":
+        scale = getattr(t, "scale", None)
+        dynamic = activation or getattr(t, "act_quant_kwargs", None) is not None
+    elif name == "AffineQuantizedTensor" and activation:
+        impl = getattr(t, "tensor_impl", None)
+        if "Float8" not in type(impl).__name__:
+            return False
+        scale = getattr(impl, "scale", None)
+        dynamic = True
+    else:
+        return False
+    try:
+        return bool(dynamic and scale is not None and int(scale.numel()) > 1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[str]:
+    """Why these denoiser modules must not be recorded into a CUDA graph on ``device``, else None: a torchao row-wise fp8
+    weight on an sm_89 card under a torch without pytorch/pytorch#177573. Anything unreadable keeps the graphs."""
+    if sys.platform == "win32":
+        return None  # the CUTLASS row-wise kernels are not built on Windows
+    try:
+        torch = _torch()
+        if getattr(getattr(torch, "version", None), "hip", None):
+            return None
+        major, minor = (int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
+        if (major, minor) >= FP8_ROWWISE_STREAMK_FIXED:
+            return None
+        cap = tuple(torch.cuda.get_device_capability(device))
+    except Exception:  # noqa: BLE001
+        return None
+    if cap not in FP8_ROWWISE_STREAMK_CAPS:
+        return None
+    for module in modules or ():
+        try:
+            weights = list(module.parameters())
+        except Exception:  # noqa: BLE001
+            continue
+        if any(_fp8_rowwise_weight(w) for w in weights):
+            return (
+                f"the row-wise fp8 GEMM on this sm_{cap[0]}{cap[1]} card cannot replay in a CUDA graph under torch "
+                f"{major}.{minor} (it hangs; fixed in torch {FP8_ROWWISE_STREAMK_FIXED[0]}."
+                f"{FP8_ROWWISE_STREAMK_FIXED[1]}, pytorch/pytorch#177573)"
+            )
+    return None
+
+
+def _graph_device(target: Any) -> Any:
+    device = getattr(target, "torch_device", None)
+    return device if isinstance(device, str) and device.startswith("cuda") else None
+
+
 def graph_eligible(
     target: Any,
     *,
@@ -2700,6 +2768,10 @@ def graph_eligible(
                 return False, why
     except Exception as exc:  # noqa: BLE001 - the capture itself still poisons safely
         _warn(logger, "capture-safe probe", exc)
+
+    why = fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
+    if why is not None:
+        return False, why
 
     return True, "eligible"
 
@@ -3032,8 +3104,10 @@ def arm_block_graphs(
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or (
-        None if split else prompt_length_reason(pipe, family)
+    why = (
+        _block_basics(target, family, cache_engaged, speed_mode, family_default)
+        or (None if split else prompt_length_reason(pipe, family))
+        or fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
     )
     if whole:
         uninstall_all(whole, logger = logger)
