@@ -27,9 +27,7 @@ class _FakeTorch:
             if fail:
                 raise RuntimeError("refused")
             self.calls.append(value)
-            self.settings = (
-                value  # torch keeps the last string; the flag only moves when the string names it
-            )
+            self.settings = value
             flag = D._conf_keys(value).get("expandable_segments")
             if flag is not None:
                 self.expandable = flag == "true"
@@ -226,7 +224,7 @@ def test_bare_expandable_true_export_after_init_still_engages(fresh, monkeypatch
 
 def test_kill_switch_and_opt_in(fresh, monkeypatch):
     fake = fresh(_FakeTorch())
-    _decode(_Vae(), fake)  # not opted in: video and other VAEs
+    _decode(_Vae(), fake)
     assert fake.calls == []
     vae = _vae()
     monkeypatch.setenv(D.DECODE_EXPANDABLE_ENV, "0")
@@ -337,12 +335,12 @@ def _real_live():
             None,
             "expandable_segments:True",
             False,
-        ),  # a runtime opt-in before any expandable segment exists
+        ),
         (
             "expandable_segments:True",
             "",
             False,
-        ),  # the flag outlives a later string that does not name it
+        ),
     ],
 )
 def test_real_allocator_settings_come_back_exactly(fresh, first, live, engages):
