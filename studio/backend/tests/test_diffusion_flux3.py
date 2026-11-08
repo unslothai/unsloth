@@ -99,7 +99,6 @@ def test_family_records():
 
 
 def test_fp16_only_cards_promote_flux3_to_fp32():
-    # Float16 renders black on a T4.
     import torch
 
     from core.inference.diffusion import _resolve_diffusion_compute_dtype
