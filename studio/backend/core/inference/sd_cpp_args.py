@@ -135,6 +135,10 @@ class SdCppUpscaleParams:
 
 # Fork patch (ggml-patches/0001): quantized matmuls with >= N rows use BF16 dequant + cuBLAS instead of int8 MMQ.
 # Q8_0 only (Z-Image Turbo vs BF16, B200: LPIPS 0.0148 -> 0.0052); k-quants are weight-error bound. Ada/Ampere/Orin keep MMQ (2x faster).
+# Decided from the diffusion GGUF alone: a k-quant text encoder next to a Q8_0 DiT kept the whole load on MMQ (A100,
+# Z-Image 1024 px: 7.74 -> 4.82 s sampling with the route). The value is process-wide, so encoder matmuls with as many
+# rows move too; a text prompt stays below it. Fork patch 0016 makes this the build's own Q8_0-only default: once the
+# pin carries it, stop setting the env (a user value stays the override).
 QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 QUANT_CUBLAS_WEIGHT_TYPES = frozenset({"Q8_0"})
 _UNQUANTIZED_GGUF_TYPES = frozenset({"F32", "F16", "BF16", "F64", "I8", "I16", "I32", "I64"})
@@ -162,36 +166,13 @@ def gguf_quantized_weight_types(path: Optional[str]) -> Optional[frozenset[str]]
         return None
 
 
-def model_files_quantized_weight_types(files: "SdCppModelFiles") -> Optional[frozenset[str]]:
-    """Quantized types across every loaded file (the env override is process-wide), or None if any GGUF is unreadable."""
-    types = gguf_quantized_weight_types(files.diffusion_model)
-    if types is None:
-        return None
-    for path in (
-        files.vae,
-        files.audio_vae,
-        files.clip_l,
-        files.clip_g,
-        files.t5xxl,
-        files.llm,
-        files.llm_vision,
-        files.qwen2vl,
-    ):
-        if not path or not str(path).lower().endswith(".gguf"):
-            continue
-        extra = gguf_quantized_weight_types(path)
-        if extra is None:
-            return None
-        types |= extra
-    return types
-
-
 def quant_cublas_env(
     cuda_ccs: Sequence[tuple[int, int]],
     environ: Optional[dict] = None,
     weight_types: Optional[frozenset[str]] = None,
 ) -> dict[str, str]:
-    """Set only if every card sd.cpp may pick agrees and all quantized tensors are Q8_0; a user value wins."""
+    """Set only if every card sd.cpp may pick agrees and the diffusion GGUF's quantized tensors are all Q8_0;
+    a user value wins."""
     import os
 
     environ = os.environ if environ is None else environ
