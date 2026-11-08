@@ -230,19 +230,11 @@ def test_offloaded_conditioning_runs_once_inside_the_forward(monkeypatch):
     image_calls = _count_calls(model.mode_blocks["image"])
     cond = _inputs(True, seed = 1)
     uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
-    seen = []
-    real = cb.flux3_conditioning
-
-    def spy(module, **kw):
-        seen.append(model.__dict__.get(cb._PENDING_ATTR) is None)
-        return real(module, **kw)
-
     with torch.no_grad():
         assert cb.prepare(model)
         want = _steps(model, [cond, uncond])
         assert cond_calls[0] == 3 * 2 * 2
         cond_calls[0] = 0
-        monkeypatch.setattr(cb, "flux3_conditioning", spy)
         assert cb.begin_render(model)
         try:
             got = _steps(model, [cond, uncond])
@@ -253,8 +245,7 @@ def test_offloaded_conditioning_runs_once_inside_the_forward(monkeypatch):
     assert cond_calls[0] == 2 * 2 and image_calls[0] == 2 * 3 * 2
     stats = cb.status(model)
     assert (stats["misses"], stats["hits"], stats["in_forward"]) == (2, 4, 2)
-    assert seen == [True, True]
-    assert not model.__dict__["_unsloth_cond_cache"] and cb._PENDING_ATTR not in model.__dict__
+    assert not model.__dict__["_unsloth_cond_cache"]
 
 
 def test_offloaded_cache_is_cuda_only(monkeypatch):
@@ -291,8 +282,8 @@ def test_offloaded_cache_declines_a_fixed_diffusers_prefetch_chain(monkeypatch):
         hook.next_group = None
 
 
-def test_offloaded_miss_is_not_served_to_another_call(monkeypatch):
-    """A recorded miss whose forward never ran must not reach a later declined (LoRA-scale) call."""
+def test_offloaded_miss_is_claimed_only_by_its_own_call(monkeypatch):
+    """The miss travels as ``Pending``: a call with other sources (a merged CFG batch) computes stock, caches nothing."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     monkeypatch.setattr(cb, "_offload_device_ok", lambda t: True)
@@ -300,13 +291,28 @@ def test_offloaded_miss_is_not_served_to_another_call(monkeypatch):
     kw = _inputs(True)
     with torch.no_grad():
         cb.prepare(model)
+        want = model(**kw)[0]
         assert cb.begin_render(model)
-        cb._pre_hook(model, (), dict(kw))
-        assert model.__dict__.get(cb._PENDING_ATTR) is not None
-        model(**dict(kw, attention_kwargs = {"scale": 0.5}))
+        _, hooked = cb._pre_hook(model, (), dict(kw))
+        pending = hooked[cb.COND_KWARG]
+        assert isinstance(pending, cb.Pending)
+        other = dict(kw, encoder_hidden_states = kw["encoder_hidden_states"].clone())
+        got = model(**other, unsloth_cond = pending)[0]
         cb.end_render(model)
+    assert torch.equal(got, want)
     stats = cb.status(model)
     assert stats["misses"] == 0 and stats.get("in_forward", 0) == 0
+
+
+def test_a_pending_miss_is_never_graphed_or_a_cfg_template():
+    from core.inference import diffusion_cfg_batch as cfg
+    from core.inference import diffusion_cuda_graph as cg
+
+    pending = cb.Pending(("k", 1), (None,) * 4)
+    assert cg._uncapturable(cg.graph_key({cb.COND_KWARG: pending}))
+    router = SimpleNamespace(template = ("stale",), b0 = None)
+    cfg.CfgBatchRouter._record_template(router, (), {cb.COND_KWARG: pending}, None)
+    assert router.template is None
 
 
 def test_prefetch_order_follows_skipped_blocks():

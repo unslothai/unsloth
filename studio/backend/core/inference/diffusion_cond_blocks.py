@@ -21,7 +21,6 @@ COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
 COND_KWARG = "unsloth_cond"
 _COMPACT_ATTR = "_unsloth_compact_mod"
 _OFFLOADED_ATTR = "_unsloth_cond_offloaded"
-_PENDING_ATTR = "_unsloth_cond_pending"
 
 # sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
@@ -179,14 +178,25 @@ def _compact_call(module: Any, attention_kwargs: Any) -> bool:
     return not (attention_kwargs and "scale" in attention_kwargs)
 
 
-def _claim_pending(module: Any, hidden_states: Any, sources: tuple) -> Optional[dict]:
+class Pending:
+    """An offloaded miss passed as ``unsloth_cond``: a non-tensor, so a CUDA graph runs this call eager and a CFG
+    router records no template from it (``pending``)."""
+
+    __slots__ = ("key", "sources")
+    pending = True
+
+    def __init__(self, key: tuple, sources: tuple) -> None:
+        self.key = key
+        self.sources = sources
+
+
+def _claim_pending(
+    module: Any, hidden_states: Any, pending: Pending, sources: tuple
+) -> Optional[dict]:
     """Offloaded miss: compute and cache inside the hooked forward, only for the exact call it was recorded for."""
     import torch
 
-    pending = module.__dict__.pop(_PENDING_ATTR, None)
-    if pending is None:
-        return None
-    key, recorded = pending
+    key, recorded = pending.key, pending.sources
     if key[1] != int(hidden_states.shape[0]) or any(a is not b for a, b in zip(sources, recorded)):
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
@@ -225,10 +235,11 @@ def _flux3_cached_forward(
     unsloth_cond: Optional[dict] = None,
 ) -> Any:
     """Stock forward op for op, with precomputed ``unsloth_cond`` and / or compact modulation; else stock."""
-    if unsloth_cond is None and self.__dict__.get(_PENDING_ATTR) is not None:
+    if isinstance(unsloth_cond, Pending):
         unsloth_cond = _claim_pending(
             self,
             hidden_states,
+            unsloth_cond,
             (encoder_hidden_states, txt_ids, image_cond_hidden_states, image_cond_ids),
         )
     if unsloth_cond is None and not _compact_call(self, attention_kwargs):
@@ -395,7 +406,6 @@ def _match_prefetch_order(module: Any, has_cond: bool, *, skipping: bool) -> Non
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     import torch
 
-    module.__dict__.pop(_PENDING_ATTR, None)
     if args or kwargs.get(COND_KWARG) is not None or not module.__dict__.get("_unsloth_cond_live"):
         return None
     if torch.is_grad_enabled() or kwargs.get("target_timestep") is not None:
@@ -436,9 +446,10 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     entry = cache.get(key)
     if entry is None or not entry.matches(sources):
         if offloaded:
-            module.__dict__[_PENDING_ATTR] = (key, sources)
             _match_prefetch_order(module, ich is not None, skipping = False)
-            return None
+            new_kwargs = dict(kwargs)
+            new_kwargs[COND_KWARG] = Pending(key, sources)
+            return args, new_kwargs
         states = flux3_conditioning(
             module,
             encoder_hidden_states = ehs,
@@ -509,7 +520,6 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         return False
     clear(transformer)
     transformer.__dict__["_unsloth_cond_live"] = False
-    transformer.__dict__.pop(_PENDING_ATTR, None)
     if not enabled() or _applies(transformer) is not None:
         return False
     if (
@@ -550,7 +560,6 @@ def end_render(transformer: Any) -> None:
     if transformer is not None:
         clear(transformer)
         transformer.__dict__["_unsloth_cond_live"] = False
-        transformer.__dict__.pop(_PENDING_ATTR, None)
 
 
 def clear(transformer: Any) -> None:
