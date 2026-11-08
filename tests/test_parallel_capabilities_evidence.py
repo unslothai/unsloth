@@ -62,6 +62,54 @@ def _packed(**kw):
     return caps.Query(**base)
 
 
+# Hybrid (Gated DeltaNet + attention) cp x native FSDP2.
+
+
+def _hybrid(**kw):
+    base = dict(
+        trainer = "sft",
+        family = "qwen3_5",
+        hybrid = True,
+        cp = 2,
+        dp = 2,
+        fsdp2 = True,
+        cp_backend = "ulysses",
+        attention = "sdpa",
+        compile = "eager",
+        mode = "lora",
+        torch = (2, 13),
+    )
+    base.update(kw)
+    return caps.Query(**base)
+
+
+def test_hybrid_qwen3_5_cp_x_native_fsdp2_is_supported_under_strict(clean_env):
+    status, cell = caps.cell_status(_hybrid())
+    assert status == "supported", cell
+    assert "hybrid" in cell.name and not cell.missing()
+    assert "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process" in cell.parity
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    caps.check(_hybrid())
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"family": "qwen3_next"},
+        {"attention": "eager"},
+        {"dp": 4},
+        {"mode": "full"},
+        {"memory": "gc"},
+        {"compile": "block"},
+    ],
+)
+def test_hybrid_cp_x_native_fsdp2_outside_the_measured_cell_stays_unverified(kw, clean_env):
+    assert caps.cell_status(_hybrid(**kw))[0] == "unverified"
+    clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
+    with pytest.raises(NotImplementedError, match = "no numeric parity"):
+        caps.check(_hybrid(**kw))
+
+
 # Packed / padding-free rows x cp Ulysses.
 
 
