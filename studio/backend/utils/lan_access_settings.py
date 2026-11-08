@@ -323,6 +323,7 @@ def save_lan_access_addresses(app, addresses: Any) -> dict:
         clear_lan_listener_error()
         return lan_access_status(app)
 
+
 def _available_lan_addresses() -> list[dict]:
     """Offer active local interfaces; automatic binding remains filtered."""
     try:
@@ -338,10 +339,7 @@ def _available_lan_addresses() -> list[dict]:
             if address not in addresses:
                 addresses.append(address)
 
-        return [
-            {"address": address, "public": is_public_address(address)}
-            for address in addresses
-        ]
+        return [{"address": address, "public": is_public_address(address)} for address in addresses]
     except Exception:
         return []
 

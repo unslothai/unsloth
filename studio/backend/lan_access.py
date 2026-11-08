@@ -187,6 +187,7 @@ def _interface_addresses(ip_version: int = 4) -> list[str]:
     except Exception:
         return []
 
+
 def _selectable_interface_addresses(ip_version: int = 4) -> list[str]:
     """Addresses on active interfaces, including virtual bridges.
 
@@ -235,6 +236,7 @@ def _selectable_interface_addresses(ip_version: int = 4) -> list[str]:
         return addresses
     except (ImportError, OSError, ValueError, AttributeError):
         return []
+
 
 def is_public_address(address: str) -> bool:
     """A VPS may carry a public IPv4 on its NIC, so callers surface that rather than refuse it."""
@@ -335,34 +337,27 @@ def start_lan_listener(
             allowed = set(candidates)
             allowed.update(_selectable_interface_addresses())
 
-            missing = [
-                address for address in selected_addresses
-                if address not in allowed
-            ]
+            missing = [address for address in selected_addresses if address not in allowed]
 
-            candidates = [
-                address for address in candidates
-                if address in selected_addresses
-            ]
+            candidates = [address for address in candidates if address in selected_addresses]
 
             candidates.extend(
-                address for address in selected_addresses
+                address
+                for address in selected_addresses
                 if address in allowed and address not in candidates
             )
 
             if not candidates:
                 _error = "selected_address_unavailable"
                 logger.warning(
-                    "LAN access found none of the chosen addresses "
-                    "on this machine: %s",
+                    "LAN access found none of the chosen addresses on this machine: %s",
                     ", ".join(selected_addresses),
                 )
                 raise RuntimeError(_error)
 
             if missing:
                 logger.info(
-                    "LAN access skipped chosen addresses not on "
-                    "this machine: %s",
+                    "LAN access skipped chosen addresses not on this machine: %s",
                     ", ".join(missing),
                 )
 

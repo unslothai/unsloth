@@ -1,4 +1,3 @@
-
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import socket
@@ -19,8 +18,8 @@ def test_active_virtual_bridge_is_selectable(monkeypatch):
     import psutil
 
     entry = SimpleNamespace(
-        family=socket.AF_INET,
-        address="192.168.100.1",
+        family = socket.AF_INET,
+        address = "192.168.100.1",
     )
     monkeypatch.setattr(
         psutil,
@@ -30,20 +29,18 @@ def test_active_virtual_bridge_is_selectable(monkeypatch):
     monkeypatch.setattr(
         psutil,
         "net_if_stats",
-        lambda: {"virbr0": SimpleNamespace(isup=True)},
+        lambda: {"virbr0": SimpleNamespace(isup = True)},
     )
 
-    assert lan_access._selectable_interface_addresses() == [
-        "192.168.100.1"
-    ]
+    assert lan_access._selectable_interface_addresses() == ["192.168.100.1"]
 
 
 def test_down_virtual_bridge_is_not_selectable(monkeypatch):
     import psutil
 
     entry = SimpleNamespace(
-        family=socket.AF_INET,
-        address="192.168.100.1",
+        family = socket.AF_INET,
+        address = "192.168.100.1",
     )
     monkeypatch.setattr(
         psutil,
@@ -53,7 +50,7 @@ def test_down_virtual_bridge_is_not_selectable(monkeypatch):
     monkeypatch.setattr(
         psutil,
         "net_if_stats",
-        lambda: {"virbr0": SimpleNamespace(isup=False)},
+        lambda: {"virbr0": SimpleNamespace(isup = False)},
     )
 
     assert lan_access._selectable_interface_addresses() == []
@@ -63,8 +60,8 @@ def test_automatic_discovery_still_excludes_virtual_bridge(monkeypatch):
     import psutil
 
     entry = SimpleNamespace(
-        family=socket.AF_INET,
-        address="192.168.100.1",
+        family = socket.AF_INET,
+        address = "192.168.100.1",
     )
     monkeypatch.setattr(
         psutil,
@@ -74,7 +71,7 @@ def test_automatic_discovery_still_excludes_virtual_bridge(monkeypatch):
     monkeypatch.setattr(
         psutil,
         "net_if_stats",
-        lambda: {"virbr0": SimpleNamespace(isup=True)},
+        lambda: {"virbr0": SimpleNamespace(isup = True)},
     )
 
     monkeypatch.setattr(
@@ -119,7 +116,7 @@ def test_selected_bridge_reaches_bind_attempt(monkeypatch):
 
     monkeypatch.setattr(lan_access, "_bind_listener", fake_bind)
 
-    with pytest.raises(RuntimeError, match="bind_failed"):
+    with pytest.raises(RuntimeError, match = "bind_failed"):
         lan_access.start_lan_listener(
             object(),
             object(),
@@ -129,6 +126,7 @@ def test_selected_bridge_reaches_bind_attempt(monkeypatch):
         )
 
     assert attempted == ["192.168.100.1"]
+
 
 def test_unavailable_selected_bridge_never_binds(monkeypatch):
     attempted = []
@@ -150,9 +148,7 @@ def test_unavailable_selected_bridge_never_binds(monkeypatch):
 
     monkeypatch.setattr(lan_access, "_bind_listener", fake_bind)
 
-    with pytest.raises(
-        RuntimeError, match="selected_address_unavailable"
-    ):
+    with pytest.raises(RuntimeError, match = "selected_address_unavailable"):
         lan_access.start_lan_listener(
             object(),
             object(),
@@ -162,6 +158,7 @@ def test_unavailable_selected_bridge_never_binds(monkeypatch):
         )
 
     assert attempted == []
+
 
 @pytest.mark.parametrize("mode", ["nat", "unknown"])
 def test_wsl_unreachable_interfaces_are_not_selectable(monkeypatch, mode):
