@@ -614,7 +614,7 @@ export function useFenceReached(
   language: string | null,
   chars: number,
   source: string,
-  warm: (tokens: boolean) => void,
+  warm: (tokens: boolean, inView?: boolean) => void,
   speculate: (settle: (seeded: boolean) => void) => (() => void) | null,
 ): boolean {
   const speculateRef = useRef(speculate);
@@ -692,7 +692,7 @@ export function useFenceReached(
       outer,
       language,
       chars,
-      warm: (tokens) => warmRef.current(tokens),
+      warm: (tokens, inView) => warmRef.current(tokens, inView),
       speculate: (settle) => speculateRef.current(settle),
       latch: () => setLatched(true),
       // Reuses `generation`: this fence just latched, so the bump costs one render.

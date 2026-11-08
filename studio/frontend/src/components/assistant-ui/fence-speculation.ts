@@ -32,6 +32,7 @@ export type FenceSpeculator<G> = {
     seededChars: number;
     inFlight: boolean;
     inFlightCount: number;
+    distanced: number;
   };
 };
 
@@ -158,6 +159,7 @@ export function createFenceSpeculator<G extends SpeculationGate>(
     },
     remove: (gate) => {
       candidates.delete(gate);
+      distance.delete(gate);
       ranked = null;
       const share = seeded.get(gate);
       if (share !== undefined) {
@@ -184,6 +186,7 @@ export function createFenceSpeculator<G extends SpeculationGate>(
       seededChars,
       inFlight: inFlight.size > 0,
       inFlightCount: inFlight.size,
+      distanced: distance.size,
     }),
   };
 }

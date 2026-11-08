@@ -35,6 +35,7 @@ test("every gate joins and leaves the speculator with its registration, and a la
   assert.match(DEFER, /scheduleGrammarWarm\(\);\s*fenceSpeculator\.add\(registered\);/);
   assert.match(DEFER, /fenceSpeculator\.remove\(registered\);\s*unreached\.delete\(registered\);/);
   assert.match(DEFER, /unreached\.delete\(gate\);\s*fenceSpeculator\.remove\(gate\);\s*gate\.warm\(true, performance\.now\(\) - started < LATCH_INLINE_MS && gateInView\(gate\)\);/, "a latch tokenizes here only fences already on screen, inside its budget");
+  assert.match(DEFER, /warm: \(tokens, inView\) => warmRef\.current\(tokens, inView\),/, "the registered warm forwards on-screen, so a latched fence tokenizes inline");
   assert.match(DEFER, /latchNow\(arrived\);\s*fenceSpeculator\.rerank\(\);/);
   assert.match(PLUGIN, /const reachInto = \(fence: Fence, code: string\): number => \{\s*if \(fence\.result === null \|\| fence\.seeded\) return -1;/, "a seeded entry is an exact hit only, never a prefix anchor");
   assert.match(PLUGIN, /export const MAX_FENCES = 512;\s*export const MAX_CACHED_CHARACTERS = 512_000;/);

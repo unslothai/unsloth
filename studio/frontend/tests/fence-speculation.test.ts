@@ -289,3 +289,17 @@ test("without a horizon a rerank only refreshes the order", () => {
   assert.equal(h.idle.length, 0);
   assert.equal(h.waits.length, 0);
 });
+
+test("a removed fence leaves the distance cache, so an unmounted message is not kept alive", () => {
+  const h = harness();
+  h.warmed.add("js");
+  const a = h.make("a", 0);
+  const b = h.make("b", 5);
+  h.speculator.add(a);
+  h.speculator.add(b);
+  h.runIdle();
+  assert.equal(h.speculator.snapshot().distanced, 2);
+  h.speculator.remove(a);
+  h.speculator.remove(b);
+  assert.equal(h.speculator.snapshot().distanced, 0);
+});
