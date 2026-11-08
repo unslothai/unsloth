@@ -221,6 +221,7 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
                     dense = _cast_in_place(half, dtype)
                 else:
                     dense = half.to(dtype)
+                del half  # an fp32 dequant must not outlive its cast through the matmul, as in the stock forward
             bias = self.bias.to(dtype) if self.bias is not None else None
             return F.linear(inputs, dense, bias)
 

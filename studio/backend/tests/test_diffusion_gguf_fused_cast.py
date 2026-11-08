@@ -98,13 +98,17 @@ def _bits(t):
 
 def _watch(monkeypatch):
     """Record the dequant's output buffer and the weight F.linear receives, per forward."""
-    seen = {"dequant": [], "linear": []}
+    import weakref
+
+    seen = {"dequant": [], "linear": [], "dequant_alive_in_linear": []}
     dequant = gguf_utils.dequantize_gguf_tensor
     linear = torch.nn.functional.linear
+    refs = []
 
     def recorded_dequant(t):
         out = dequant(t)
         seen["dequant"].append(out.data_ptr())
+        refs.append(weakref.ref(out))
         return out
 
     def recorded_linear(
@@ -113,6 +117,7 @@ def _watch(monkeypatch):
         b = None,
     ):
         seen["linear"].append(w.data_ptr())
+        seen["dequant_alive_in_linear"].append([r() is not None for r in refs])
         return linear(x, w, b)
 
     monkeypatch.setattr(gguf_utils, "dequantize_gguf_tensor", recorded_dequant)
@@ -153,6 +158,8 @@ def test_an_fp32_dequant_keeps_the_stock_cast(qtype, monkeypatch):
     seen = _watch(monkeypatch)
     assert torch.equal(_bits(lin(x)), _bits(expected))
     assert seen["linear"] != seen["dequant"]  # a 4-byte weight cannot become a 2-byte one in place
+    # and, as in the stock forward, the fp32 dequant is gone before the matmul runs
+    assert seen["dequant_alive_in_linear"] == [[False]]
     monkeypatch.undo()
 
 
