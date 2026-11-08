@@ -1111,13 +1111,17 @@ def _graphable_update(original, counter):
     return update
 
 
-@contextlib.contextmanager
-def _graphable_rolls():
+def _rolling_classes():
     if not _ROLLING_CLASSES:
         _ROLLING_CLASSES.append(_rolling_update_classes())
+    return _ROLLING_CLASSES[0]
+
+
+@contextlib.contextmanager
+def _graphable_rolls():
     patched = []
     try:
-        for cls, counter in _ROLLING_CLASSES[0]:
+        for cls, counter in _rolling_classes():
             original = cls.__dict__.get("update")
             if original is None or getattr(original, "_unsloth_graphable_roll", False):
                 continue
@@ -1148,23 +1152,31 @@ def _host_state_reason(before, after, q_len):
     return None
 
 
-def _snapshot(cache):
-    """Length counters (host ints, device scalars) a step advances, plus the rows of every full sliding window
-    (a step rolls them, so unlike a slot write it is not idempotent); restored by _restore."""
+def _snapshot(cache, rows = True):
+    """Length counters (host ints, device scalars) a step advances, plus what undoes the roll of every full sliding
+    window (a step rolls it, so unlike a slot write it is not idempotent); restored by _restore. rows=False: the
+    counters only (a recording runs no device work)."""
     host, device = [], []
+    rolling = None
     for layer in cache.layers:
         for name in _COUNTERS:
             value = layer.__dict__.get(name)
             if type(value) is int:
                 host.append((layer, name, value))
             elif isinstance(value, torch.Tensor) and value.numel() == 1:
-                device.append((value, value.clone()))
-        if type(layer) in _SLIDING_LAYERS:
+                device.append((value, value.clone(), False))
+        if rows and type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
             if count is not None and count >= layer.max_cache_len:
-                for rows in (getattr(layer, "keys", None), getattr(layer, "values", None)):
-                    if isinstance(rows, torch.Tensor):
-                        device.append((rows, rows.clone()))
+                if rolling is None:
+                    rolling = {cls for cls, _ in _rolling_classes()}
+                # A transformers rolling layer's one-token step drops slot 0 and shifts the rest down by one:
+                # keeping slot 0 undoes it with one layer's temporary, not a copy of every window held at once.
+                rolls = type(layer) in rolling
+                for t in (getattr(layer, "keys", None), getattr(layer, "values", None)):
+                    if isinstance(t, torch.Tensor):
+                        one = rolls and t.dim() == 4
+                        device.append((t, t[..., :1, :].clone() if one else t.clone(), one))
     return host, device
 
 
@@ -1172,8 +1184,11 @@ def _restore(snapshot):
     host, device = snapshot
     for layer, name, value in host:
         layer.__dict__[name] = value
-    for live, saved in device:
-        live.copy_(saved)
+    for live, saved, rolled in device:
+        if rolled:
+            live.copy_(torch.cat((saved, live[..., :-1, :]), dim = -2))
+        else:
+            live.copy_(saved)
 
 
 def _advance(cache, q_len):
@@ -1795,7 +1810,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
                 state.refused[key] = reason
                 state.refusals[reason] += 1
                 return outputs
-            after = _snapshot(cache)
+            after = _snapshot(cache, rows = False)
             graph = False
             try:
                 if side:

@@ -8,6 +8,8 @@ capture is the gpu-marked test at the end."""
 
 import contextlib
 import os
+import sys
+import types
 
 import pytest
 import torch
@@ -829,7 +831,7 @@ def test_full_sliding_window_roll_is_captured_without_host_copies(host, gemma3):
         assert not getattr(cls.__dict__["update"], "_unsloth_graphable_roll", False)
 
 
-def test_rolling_update_matches_transformers_rows():
+def test_rolling_update_matches_transformers_rows(host):
     classes = GG._rolling_update_classes()
     assert classes, "no static sliding layer with the host-built roll index in this transformers"
     for cls, counter in classes:
@@ -853,6 +855,71 @@ def test_rolling_update_matches_transformers_rows():
                 b = layers[1].update(k, v, step_kwargs)
             assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
             assert layers[0].__dict__[counter] == layers[1].__dict__[counter]
+
+
+def test_full_window_snapshot_keeps_slot_zero_and_undoes_the_roll(host):
+    # Validation replays a step that rolls every full window, then puts the rows back for the eager step: keeping
+    # the slot the roll drops is enough, not a clone of every window (bsz x 116 MiB on Gemma-3-4B).
+    classes = GG._rolling_update_classes()
+    assert classes, "no static sliding layer with the host-built roll index in this transformers"
+    for cls, counter in classes:
+        for graphable in (False, True):
+            torch.manual_seed(0)
+            try:
+                layer = cls(max_cache_len = 32, sliding_window = 4)
+            except TypeError:
+                layer = cls(sliding_window = 4)
+            layer.update(
+                torch.randn(2, 3, 6, 8),
+                torch.randn(2, 3, 6, 8),
+                {"cache_position": torch.arange(6)},
+            )
+            cache = types.SimpleNamespace(layers = [layer])
+            for i in range(3):
+                keys, values = layer.keys.clone(), layer.values.clone()
+                count = layer.__dict__[counter]
+                snapshot = GG._snapshot(cache)
+                rows = [e[1] for e in snapshot[1] if e[0] is layer.keys or e[0] is layer.values]
+                assert len(rows) == 2 and all(saved.shape[-2] == 1 for saved in rows), [
+                    r.shape for r in rows
+                ]
+                step = (
+                    torch.randn(2, 3, 1, 8),
+                    torch.randn(2, 3, 1, 8),
+                    {"cache_position": torch.tensor([6 + i])},
+                )
+                with GG._graphable_rolls() if graphable else contextlib.nullcontext():
+                    layer.update(*step)
+                assert not torch.equal(layer.keys, keys)
+                GG._restore(snapshot)
+                assert torch.equal(layer.keys, keys) and torch.equal(layer.values, values)
+                assert layer.__dict__[counter] == count
+                layer.update(*step)
+            # Counters only: what a recording, which runs no device work, needs back.
+            assert all(e[1].numel() == 1 for e in GG._snapshot(cache, rows = False)[1])
+
+
+def test_capture_takes_no_window_copies(host, gemma3, monkeypatch):
+    # The recording runs no device work: the capture puts back the host counters only and holds no copy of the
+    # full windows' rows while it records.
+    window = gemma3.config.sliding_window
+    ids, mask = _ids(gemma3, 1, length = 3)
+    _fresh(gemma3)
+    taken = []
+    snapshot = GG._snapshot
+
+    def recorder(cache, *args, **kwargs):
+        out = snapshot(cache, *args, **kwargs)
+        if sys._getframe(1).f_code.co_name == "_capture":
+            taken.append(max((e[1].numel() for e in out[1]), default = 0))
+        return out
+
+    monkeypatch.setattr(GG, "_snapshot", recorder)
+    new = window + 6
+    eager = _generate(gemma3, ids, mask, False, new)
+    assert torch.equal(eager, _generate(gemma3, ids, mask, True, new))
+    assert GG.stats(gemma3)["captures"] == 2 and len(taken) == 2, (GG.stats(gemma3), taken)
+    assert max(taken) <= 1, taken
 
 
 def test_keys_changing_every_step_stop_capturing_for_the_call(host, llama, monkeypatch):
