@@ -267,11 +267,10 @@ def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
 
     import torch
 
-    go = pytest.importorskip("diffusers.hooks.group_offloading")
     from diffusers.hooks import apply_group_offloading
 
-    if "block_modules" not in inspect.signature(apply_group_offloading).parameters:
-        pytest.skip("this diffusers has no block_modules")
+    # an older diffusers without block_modules keeps the stock grouping (and this PR adds nothing to it)
+    supported = "block_modules" in inspect.signature(apply_group_offloading).parameters
     monkeypatch.delenv(dm.GROUP_OFFLOAD_DICT_BLOCKS_ENV, raising = False)
     counts = {}
     for env in ("1", "0"):
@@ -291,7 +290,7 @@ def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
         mode_groups = [
             g for g in groups if any(m is b for b in model.mode_blocks["image"] for m in g.modules)
         ]
-        assert (len(mode_groups) == 3) is (env == "1")
+        assert (len(mode_groups) == 3) is (env == "1" and supported)
         torch.testing.assert_close(model(x), want)
     # 6 mode blocks become groups of their own; the stock grouping folds them into the top-level group
-    assert counts["1"] == counts["0"] + 6
+    assert counts["1"] == counts["0"] + (6 if supported else 0)
