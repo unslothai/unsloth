@@ -276,6 +276,23 @@ def test_offloaded_cache_is_cuda_only(monkeypatch):
     assert stats["hits"] == stats["misses"] == 0 and "CUDA only" in stats["reason"]
 
 
+def test_offloaded_cache_declines_a_fixed_diffusers_prefetch_chain(monkeypatch):
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    model = _group_offloaded(cls)
+    cb.prepare(model)
+    assert cb.begin_render(model)
+    cb.end_render(model)
+    hooks = model.single_transformer_blocks[0]._diffusers_hook.hooks
+    hook = next(iter(hooks.values()))
+    hook.next_group = object()
+    try:
+        assert not cb.begin_render(model)
+        assert "prefetch chain" in cb.status(model)["reason"]
+    finally:
+        hook.next_group = None
+
+
 def test_offloaded_miss_is_not_served_to_another_call(monkeypatch):
     """A recorded miss whose forward never ran (a CFG router reused a kept output) must not reach a later call that
     the pre-hook declined, e.g. one with a per-call LoRA scale."""

@@ -88,6 +88,17 @@ def _offloaded(module: Any) -> Optional[str]:
     return None
 
 
+def _fixed_prefetch_chain(module: Any) -> Optional[str]:
+    """diffusers' own stream prefetch (no event-fenced prefetcher) fixes a next-group chain from one forward: a skipped
+    block it prefetched would stay on the device, so the offload cache declines it."""
+    for name, sub in module.named_modules():
+        hooks = getattr(getattr(sub, "_diffusers_hook", None), "hooks", None) or {}
+        for key, hook in hooks.items():
+            if "lazy_prefetch" in str(key).lower() or getattr(hook, "next_group", None) is not None:
+                return f"{name or '<root>'} streams with diffusers' prefetch chain"
+    return None
+
+
 def _offload_device_ok(t: Any) -> bool:
     """The in-forward cache is proven on CUDA only; ROCm, XPU, MPS and CPU offload keep the stock path."""
     import torch
@@ -521,8 +532,8 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         _stats(transformer)["reason"] = "the class forward was not patched at load"
         return False
     why = _offloaded(transformer)
-    if why is not None and not offload_cache_enabled():
-        _stats(transformer)["reason"] = why
+    if why is not None and (not offload_cache_enabled() or _fixed_prefetch_chain(transformer)):
+        _stats(transformer)["reason"] = _fixed_prefetch_chain(transformer) or why
         return False
     transformer.__dict__[_OFFLOADED_ATTR] = why is not None
     handle = transformer.__dict__.get("_unsloth_cond_hook")
