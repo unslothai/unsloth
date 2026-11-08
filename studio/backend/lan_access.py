@@ -187,6 +187,54 @@ def _interface_addresses(ip_version: int = 4) -> list[str]:
     except Exception:
         return []
 
+def _selectable_interface_addresses(ip_version: int = 4) -> list[str]:
+    """Addresses on active interfaces, including virtual bridges.
+
+    Used only for explicit user selection, not automatic LAN binding.
+    Fail closed when local interfaces cannot be verified.
+    """
+    # WSL NAT and unknown modes do not expose addresses reachable from other devices.
+    if _wsl_networking_mode() not in (None, "mirrored"):
+        return []
+
+    try:
+        import psutil
+
+        family = socket.AF_INET if ip_version == 4 else socket.AF_INET6
+        stats = psutil.net_if_stats()
+        addresses = []
+
+        for name, entries in psutil.net_if_addrs().items():
+            interface = stats.get(name)
+            if interface is None or not interface.isup:
+                continue
+
+            for entry in entries:
+                if entry.family != family:
+                    continue
+
+                address = entry.address.split("%", 1)[0]
+                try:
+                    parsed = ipaddress.ip_address(address)
+                except ValueError:
+                    continue
+
+                if (
+                    parsed.is_loopback
+                    or parsed.is_link_local
+                    or parsed.is_multicast
+                    or parsed.is_unspecified
+                    or parsed.is_reserved
+                ):
+                    continue
+
+                normalized = str(parsed)
+                if normalized not in addresses:
+                    addresses.append(normalized)
+
+        return addresses
+    except (ImportError, OSError, ValueError, AttributeError):
+        return []
 
 def is_public_address(address: str) -> bool:
     """A VPS may carry a public IPv4 on its NIC, so callers surface that rather than refuse it."""
@@ -282,25 +330,45 @@ def start_lan_listener(
             return _bound_addresses
 
         candidates = detect_lan_addresses()
-        if not candidates:
-            _error = "no_lan_address"
-            raise RuntimeError(_error)
+
         if selected_addresses is not None:
-            # never widened back to the detected set: that would bind the addresses the user excluded
-            missing = [address for address in selected_addresses if address not in candidates]
-            candidates = [address for address in candidates if address in selected_addresses]
+            allowed = set(candidates)
+            allowed.update(_selectable_interface_addresses())
+
+            missing = [
+                address for address in selected_addresses
+                if address not in allowed
+            ]
+
+            candidates = [
+                address for address in candidates
+                if address in selected_addresses
+            ]
+
+            candidates.extend(
+                address for address in selected_addresses
+                if address in allowed and address not in candidates
+            )
+
             if not candidates:
                 _error = "selected_address_unavailable"
                 logger.warning(
-                    "LAN access found none of the chosen addresses on this machine: %s",
+                    "LAN access found none of the chosen addresses "
+                    "on this machine: %s",
                     ", ".join(selected_addresses),
                 )
                 raise RuntimeError(_error)
+
             if missing:
                 logger.info(
-                    "LAN access skipped chosen addresses not on this machine: %s",
+                    "LAN access skipped chosen addresses not on "
+                    "this machine: %s",
                     ", ".join(missing),
                 )
+
+        elif not candidates:
+            _error = "no_lan_address"
+            raise RuntimeError(_error)
 
         sockets: list[socket.socket] = []
         bound: list[str] = []

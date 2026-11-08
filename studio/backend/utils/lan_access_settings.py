@@ -323,14 +323,24 @@ def save_lan_access_addresses(app, addresses: Any) -> dict:
         clear_lan_listener_error()
         return lan_access_status(app)
 
-
 def _available_lan_addresses() -> list[dict]:
-    """Detected addresses with a public flag; a detection failure offers nothing rather than failing status."""
+    """Offer active local interfaces; automatic binding remains filtered."""
     try:
-        from lan_access import detect_lan_addresses, is_public_address
+        from lan_access import (
+            detect_lan_addresses,
+            is_public_address,
+            _selectable_interface_addresses,
+        )
+
+        addresses = list(detect_lan_addresses())
+
+        for address in _selectable_interface_addresses():
+            if address not in addresses:
+                addresses.append(address)
+
         return [
             {"address": address, "public": is_public_address(address)}
-            for address in detect_lan_addresses()
+            for address in addresses
         ]
     except Exception:
         return []
