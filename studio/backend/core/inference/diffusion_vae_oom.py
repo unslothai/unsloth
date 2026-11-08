@@ -14,6 +14,7 @@ import weakref
 from typing import Any, Callable, Optional
 
 from . import decode_layers
+from .diffusion_decode_segments import expandable_decode
 
 OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
 HOST_MARGIN_MIB = 2048
@@ -1115,6 +1116,10 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
         def decode(*args: Any, **kwargs: Any) -> Any:
             if _compiling() or oom_retry_disabled() or _scope_session(vae) is not None:
                 return inner(*args, **kwargs)
+            with expandable_decode(vae, args[0] if args else kwargs.get("z")):
+                return _scoped(args, kwargs)
+
+        def _scoped(args: tuple, kwargs: dict) -> Any:
             holder: dict = {"session": None}
             vae.__dict__[_SESSION_ATTR] = holder
             z = args[0] if args else kwargs.get("z")
