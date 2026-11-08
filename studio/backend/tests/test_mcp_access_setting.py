@@ -120,12 +120,8 @@ def _stored():
     return studio_db.get_app_settings([MCP_ENABLED_SETTING_KEY, MCP_DISABLED_TOOLS_SETTING_KEY])
 
 
-def test_every_tool_is_on_by_default():
-    assert disabled_tools() == frozenset()
-    assert tool_enabled("cancel") is True
-
-
-def test_the_tool_list_is_stored_sorted_and_unique_and_read_live():
+def test_the_tool_list_defaults_empty_and_is_stored_sorted_unique_and_read_live():
+    assert disabled_tools() == frozenset() and tool_enabled("cancel") is True
     set_mcp_settings(disabled_tools = ["voices", "cancel", "cancel"])
     assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel", "voices"]}
     assert disabled_tools() == {"cancel", "voices"}
@@ -151,7 +147,7 @@ def test_both_values_go_in_one_upsert(monkeypatch):
 @pytest.mark.parametrize(
     "call,error",
     [
-        (lambda: set_mcp_settings(disabled_tools = ["cancel", "nope"]), UnknownMcpToolError),
+        (lambda: set_mcp_settings(disabled_tools = ["nope"]), UnknownMcpToolError),
         (lambda: set_mcp_settings(disabled_tools = "cancel"), ValueError),
         (lambda: set_mcp_settings(disabled_tools = ["cancel", 1]), ValueError),
         (lambda: set_mcp_settings(), ValueError),
@@ -165,11 +161,6 @@ def test_a_bad_tool_write_stores_nothing(call, error):
         call()
     assert _stored() == {}
     assert disabled_tools() == frozenset()
-
-
-def test_an_unknown_tool_names_itself():
-    with pytest.raises(UnknownMcpToolError, match = "^Unknown Unsloth Studio MCP tool: nope$"):
-        set_mcp_settings(disabled_tools = ["nope"])
 
 
 @pytest.mark.parametrize("stored", ["x", {}, None, 3, {"cancel": True}])

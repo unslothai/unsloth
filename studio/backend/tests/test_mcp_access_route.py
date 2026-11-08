@@ -186,77 +186,49 @@ def test_concurrent_tool_states_all_land(client):
 
 
 @pytest.mark.parametrize(
-    "body, code",
-    [
-        ({"tool_states": {"cancel": False}, "disabled_tools": []}, 422),
-        ({"tool_states": {"nope": False}}, 422),
-        ({"tool_states": {"cancel": "off"}}, 422),
-        ({"tool_states": None}, 422),
-    ],
-    ids = ["both", "unknown", "non-bool", "null"],
-)
-def test_a_bad_tool_states_body_writes_nothing(client, body, code):
-    response = client.put(URL, json = body, headers = _owner_session())
-    assert response.status_code == code, response.text
-    assert _stored() == {}
-
-
-def test_tool_states_drops_a_stale_stored_name(client):
-    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: ["gone_tool", "cancel"]})
-    put = client.put(URL, json = {"tool_states": {"voices": False}}, headers = _owner_session())
-    assert put.status_code == 200, put.text
-    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel", "voices"]}
-
-
-def test_tool_states_recover_an_unreadable_list(client):
-    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: "x"})
-    response = client.put(URL, json = {"tool_states": {"cancel": True}}, headers = _owner_session())
-    assert response.status_code == 200, response.text
-    everything_else = sorted(e["name"] for e in tool_catalog() if e["name"] != "cancel")
-    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: everything_else}
-
-
-@pytest.mark.parametrize(
     "body",
     [
         {},
+        {"something": True},
         {"disabled_tools": None},
-        {"enabled": None, "disabled_tools": ["cancel"]},
         {"disabled_tools": "cancel"},
         {"disabled_tools": ["cancel", 1]},
-        {"something": True},
+        {"enabled": None, "disabled_tools": ["cancel"]},
+        {"enabled": True, "disabled_tools": ["cancel", "nope"]},
+        {"tool_states": None},
+        {"tool_states": {"nope": False}},
+        {"tool_states": {"cancel": "off"}},
+        {"tool_states": {"cancel": False}, "disabled_tools": []},
     ],
-    ids = ["empty", "null-list", "null-enabled", "string", "non-string", "unknown-field"],
 )
 def test_a_bad_body_is_a_422_and_writes_nothing(client, body):
     response = client.put(URL, json = body, headers = _owner_session())
     assert response.status_code == 422, response.text
     assert _stored() == {}
+    if "nope" in str(body) and "disabled_tools" in body:
+        assert response.json()["detail"] == "Unknown Unsloth Studio MCP tool: nope"
 
 
-def test_an_unknown_tool_is_a_422_and_writes_nothing(client):
-    response = client.put(
-        URL, json = {"enabled": True, "disabled_tools": ["cancel", "nope"]}, headers = _owner_session()
-    )
-    assert response.status_code == 422
-    assert response.json()["detail"] == "Unknown Unsloth Studio MCP tool: nope"
-    assert _stored() == {}
+@pytest.mark.parametrize("body", [{"disabled_tools": ["chat"]}, {"tool_states": {"chat": False}}])
+def test_a_stale_stored_name_is_ignored_then_dropped(client, body):
+    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: ["gone_tool", "cancel"]})
+    assert _off(client.get(URL, headers = _owner_session())) == ["cancel"]
+    put = client.put(URL, json = body, headers = _owner_session())
+    assert put.status_code == 200, put.text
+    kept = ["chat"] if "disabled_tools" in body else ["cancel", "chat"]
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: kept}
 
 
 @pytest.mark.parametrize("stored", ["x", {}])
-def test_an_unreadable_stored_list_shows_every_tool_off(client, stored):
+def test_an_unreadable_stored_list_shows_every_tool_off_until_a_change_rewrites_it(client, stored):
     studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: stored})
     got = client.get(URL, headers = _owner_session())
     assert got.status_code == 200, got.text
     assert _off(got) == [entry["name"] for entry in tool_catalog()]
-
-
-def test_a_stale_stored_name_is_ignored_then_dropped(client):
-    studio_db.upsert_app_settings({MCP_DISABLED_TOOLS_SETTING_KEY: ["gone_tool", "cancel"]})
-    assert _off(client.get(URL, headers = _owner_session())) == ["cancel"]
-    put = client.put(URL, json = {"disabled_tools": ["chat"]}, headers = _owner_session())
-    assert put.status_code == 200, put.text
-    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["chat"]}
+    response = client.put(URL, json = {"tool_states": {"cancel": True}}, headers = _owner_session())
+    assert response.status_code == 200, response.text
+    everything_else = sorted(e["name"] for e in tool_catalog() if e["name"] != "cancel")
+    assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: everything_else}
 
 
 def test_tools_can_be_chosen_while_forced_by_env(client, monkeypatch):
