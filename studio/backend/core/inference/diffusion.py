@@ -3803,10 +3803,15 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
     Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
+    pipe = getattr(state, "pipe", None)
     return bool(
         getattr(state, "transformer_quant", None)
         or getattr(state, "text_encoder_quant", None)
-        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        or pipe_fp8_stored_layers(pipe)
+        or any(
+            comfy_torchao_quantized(getattr(pipe, attr, None))
+            for attr in ("transformer", "transformer_2")
+        )
     )
 
 
@@ -9936,6 +9941,9 @@ class DiffusionBackend:
                             elif comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = self._comfy_offload_for(plan, single_file_path)
+                                _comfy_fp8_plan = (
+                                    self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -9952,6 +9960,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        torchao_offload = _comfy_fp8_plan is not None,
                                     ),
                                     **comfy_block_backends(
                                         comfy_scan,
@@ -9973,6 +9982,8 @@ class DiffusionBackend:
                                     ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
+                                if _comfy_fp8_plan is not None and comfy_compile:
+                                    plan = _comfy_fp8_plan
                             else:
                                 if kind != "gguf" and (
                                     not hasattr(transformer_cls, "from_single_file")
@@ -10312,7 +10323,15 @@ class DiffusionBackend:
                                     plan.offload_policy,
                                 )
                             inplace_decline = None
-                            if not keeps_resident and native_scheme is None:
+                            if rdna_auto_w8a8 is not None and not keeps_resident:
+                                # Measured resident only: AUTO keeps bf16 when even the int8 plan offloads.
+                                native_scheme = rdna_auto_w8a8 = None
+                                plan = bf16_plan
+                                inplace_decline = (
+                                    f"auto int8 W8A8 on RDNA is resident-only; the '{plan.offload_policy}' "
+                                    "offload keeps the bf16 transformer"
+                                )
+                            elif not keeps_resident and native_scheme is None:
                                 plan, inplace_decline = _inplace_torchao_placement(
                                     plan,
                                     preview_scheme,
@@ -11540,6 +11559,24 @@ class DiffusionBackend:
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
 
+    @staticmethod
+    def _comfy_fp8_stream_plan(plan: Any) -> Any:
+        """The streaming placement torchao fp8 takes under an offloaded ``plan`` (``torchao_offload_plan``), else None."""
+        if plan_keeps_transformer_resident(plan):
+            return None
+        try:
+            placed = torchao_offload_plan(plan, "fp8")
+        except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's fp8 storage
+            return None
+        if placed is None or getattr(placed, "offload_policy", None) not in (
+            OFFLOAD_GROUP,
+            OFFLOAD_STREAMING,
+        ):
+            return None
+        if plan_keeps_transformer_resident(placed):
+            return None
+        return placed
+
     def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
         does the host RAM refusal reserve what that rule keeps free."""
@@ -11588,6 +11625,7 @@ class DiffusionBackend:
                 keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
+                target = target,
                 **_comfy_keep_fp32_pricing(fam, target),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
@@ -13341,8 +13379,7 @@ class DiffusionBackend:
             and transformer_resident is not None
             and not plan_keeps_transformer_resident(plan)
         ):
-            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
-            # price what that load builds, widened and fp8-stored, before choosing storage.
+            # Offloaded: price what the offload=True loader builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
                 # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
@@ -15924,6 +15961,14 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "quantized Linears, which cannot carry adapters. Set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / "
             "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
             "those layers)."
+        )
+    from .diffusion_packed_block import PACKED_BLOCK_ENV, packed_block_layers
+
+    if packed_block_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's nvfp4 / mxfp8 layers are kept packed and "
+            f"widened per layer (no native runtime on this GPU), which cannot carry adapters. Set {PACKED_BLOCK_ENV}=0, "
+            "or name the LoRA in the API load request (Unsloth then dequantizes those layers at load)."
         )
     if fp8_stored_layers(getattr(pipe, "transformer", None)):
         return (

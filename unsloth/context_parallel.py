@@ -473,8 +473,8 @@ def _check_stateful_mixers(model, backend, size) -> None:
     unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet and Kimi delta "
-            f"linear attention only, not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet, Kimi delta and "
+            f"Lightning linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
         check_ulysses_mixer_heads(module, size)
@@ -1520,9 +1520,9 @@ def _check_cp_model(
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
             "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3, Mistral, Granite, "
-            "Cohere) with either backend, "
-            "and with Ulysses any Hugging Face attention model (attention through ALL_ATTENTION_FUNCTIONS) "
-            "and the Qwen3-Next / Qwen3.5 Gated DeltaNet and Kimi-Linear hybrids."
+            "Cohere) with either backend, and with Ulysses any Hugging Face attention model (attention through "
+            "ALL_ATTENTION_FUNCTIONS, e.g. MiniMax-M2) and the Qwen3-Next / Qwen3.5 Gated DeltaNet, Kimi-Linear and "
+            "MiniMax-M1 Lightning hybrids."
         )
 
 
