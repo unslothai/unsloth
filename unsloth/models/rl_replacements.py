@@ -4011,7 +4011,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     # Skip softcap models (the flex kernel never applies attn_logit_softcapping) and hybrid SSM / MoE models: only the threaded attention forwards get shared-prefix isolation, so a decoder that does not forward prefix_seg_info leaks suffixes across completions. PG also rides on sequence packing, so it needs the same zoo masked-column guard.
                     _pg_cfg = getattr(unwrapped_model, "config", None)
                     _pg_engage = (
-                        _pg_enabled_fn()
+                        # Given the model, also requires prefix_seg_info_applied(model).
+                        _pg_enabled_fn(unwrapped_model)
                         and UNSLOTH_ZOO_HAS_MASKED_COL_GUARD
                         and pixel_values is None
                         and token_type_ids is None
@@ -4799,6 +4800,22 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     return source
 
 
+_GRPO_PREFIX_GROUPER_GATE = re.compile(r"\b_pg_enabled_fn\(\s*\)")
+
+
+def _patch_grpo_accumulated_loss_prefix_grouper_gate(source):
+    """Pass the model to zoo's ``_pg_enabled_fn()`` so the gradient PrefixGrouper checks ``prefix_seg_info_applied``: a forward ignoring ``prefix_seg_info`` leaks completions across a group yet passes the 0.7-nat self-verify. Fails at generation if zoo has the feature but not this gate."""
+    if "prefix_seg_info" not in source:
+        return source
+    source, replacements = _GRPO_PREFIX_GROUPER_GATE.subn("_pg_enabled_fn(unwrapped_model)", source)
+    if replacements == 0 and "_pg_enabled_fn(unwrapped_model)" not in source:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient PrefixGrouper gate in this "
+            "unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    return source
+
+
 _GRPO_HIDDEN_STATES_REQUEST = re.compile(
     r"""os\.environ\[\s*(["'])UNSLOTH_RETURN_HIDDEN_STATES\1\s*\]\s*=\s*(["'])1\2"""
 )
@@ -5157,8 +5174,10 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mr
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
-    _patch_grpo_accumulated_loss_head_hooks(
-        _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+    _patch_grpo_accumulated_loss_prefix_grouper_gate(
+        _patch_grpo_accumulated_loss_head_hooks(
+            _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+        )
     )
 )
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
