@@ -59,8 +59,7 @@ def _overrides(module: Any) -> tuple:
 
 
 def _weights_revision(vae: Any) -> Optional[tuple]:
-    # Version counters move on every in-place write (load_state_dict, copy_) but not on the
-    # offload hooks' device moves, which swap ``.data``. Inference tensors carry no counter.
+    # Bumped by in-place writes (load_state_dict), not by offload moves that swap ``.data``.
     try:
         tensors = [*vae.parameters(), *vae.buffers()]
         return (len(tensors), sum(t._version for t in tensors))

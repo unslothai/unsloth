@@ -76,13 +76,11 @@ def test_reuse_is_exact_and_skips_the_encode():
     ref = [_prepare(stock, images, s) for s in (3, 4, 3)]
     pipe = _pipe()
     calls = _spy(pipe.vae)
-    assert rc.install(pipe) and rc.install(pipe)  # idempotent
+    assert rc.install(pipe) and rc.install(pipe)
     got = [_prepare(pipe, images, s) for s in (3, 4, 3)]
     for (rl, ri, rg), (gl, gi, gg) in zip(ref, got):
         assert torch.equal(ri, gi) and torch.equal(rl, gl) and torch.equal(rg, gg)
-    assert len(calls) == len(
-        images
-    )  # the first render encodes each reference once, later renders none
+    assert len(calls) == len(images)
     assert rc.STATS["misses"] == 2 and rc.STATS["hits"] == 4
     rc.uninstall(pipe)
     _prepare(pipe, images, 3)
@@ -97,14 +95,14 @@ def test_every_changed_input_encodes_again():
     _prepare(pipe, images, 0)
     other = [images[0].clone()]
     other[0][0, 0, 0, 0, 0] += 0.25
-    _prepare(pipe, other, 0)  # one pixel moved
+    _prepare(pipe, other, 0)
     assert len(calls) == 2
     pipe.vae.use_tiling = True
     _, tiled, _ = _prepare(pipe, images, 0)  # tiling changes what encode returns
     assert len(calls) == 3
     pipe.vae.use_tiling = False
     _prepare(pipe, images, 0)
-    assert len(calls) == 3  # back to the cached untiled entry
+    assert len(calls) == 3
     pipe.vae.to(torch.float64)
     with torch.inference_mode():
         pipe.prepare_latents(images, 1, 4, 64, 64, torch.float64, torch.device("cpu"), None)
@@ -158,8 +156,8 @@ def test_the_cache_is_bounded(monkeypatch):
     sets = [_images(seed = s, n = 1) for s in range(3)]
     for images in sets:
         _prepare(pipe, images, 0)
-    _prepare(pipe, sets[0], 0)  # evicted (least recently used)
-    _prepare(pipe, sets[2], 0)  # still cached
+    _prepare(pipe, sets[0], 0)  # LRU-evicted
+    _prepare(pipe, sets[2], 0)
     assert len(calls) == 4
     assert len(getattr(pipe, rc._MARK).entries) == 2
 
