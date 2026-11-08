@@ -328,8 +328,7 @@ def test_automatic_replica_is_not_built_on_a_card_another_job_keeps_busy(monkeyp
 
 
 def test_automatic_replica_build_reads_utilisation_before_opening_its_own_context(monkeypatch):
-    # the memory read opens this process's CUDA context on the idle card, which nvidia-smi then shows as 3-7% busy
-    # for a moment (Kaggle 2x T4): read after it, the card's own context refused the replica as "no longer idle"
+    # opening this process's context on the idle card reads as 3-7% busy for a moment (Kaggle 2x T4)
     unet = UNet2DConditionModel()
     router, replicas = _router(unet)
     router.automatic_idle_only = True

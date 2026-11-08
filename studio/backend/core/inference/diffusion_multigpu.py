@@ -3256,8 +3256,7 @@ class CfgParallelRouter:
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
             automatic = getattr(self, "automatic_idle_only", False)
-            # Built lazily during generation, after the load's selection scope ended: read the card directly, and read
-            # its utilisation before the memory read opens this process's CUDA context there (that shows as 3-7% busy).
+            # Outside the load scope: read the card directly, before the memory read opens our context (3-7% busy).
             util = _smi_util_pct(self.secondary.index) if automatic else None
             free, total = self._secondary_free_total_mib()
             if automatic:
