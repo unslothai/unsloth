@@ -102,7 +102,6 @@ def _offload_device_ok(t: Any) -> bool:
 
 
 def _rows(t: Any, batch_size: int, n: int) -> Any:
-    """A compact ``[B, 1, D]`` modulation as ``n`` rows (stride-0 view)."""
     return t if t.shape[1] == n else t.expand(batch_size, n, -1)
 
 
