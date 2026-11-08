@@ -105,3 +105,7 @@ export function keptNumFrames(
 export function presetFamilyKnown(defaults: VideoGenerationDefaults | null | undefined, loading: boolean): boolean {
   return defaults != null && !loading;
 }
+
+export function resolvePresetFps(options: number[] | null, stored: number | null, familyFps: number): number | null {
+  return options ? (presetVideoFps(options, stored) ?? familyFps) : null;
+}

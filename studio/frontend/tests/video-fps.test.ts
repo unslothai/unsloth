@@ -12,6 +12,7 @@ import {
   keptNumFrames,
   pickedFpsFor,
   presetFamilyKnown,
+  resolvePresetFps,
   presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
@@ -192,4 +193,13 @@ test("a preset applied while Nano loads over Edge keeps its rate for Nano", () =
   assert.equal(rate, 30);
   assert.equal(resolveVideoFps(nano, pickedFpsFor({ family: "cosmos3-nano", fps: rate! }, "cosmos3-nano")), 30);
   assert.equal(presetFamilyKnown(null, false), false);
+});
+
+test("a pending preset without a rate resets to the family default, as it does when applied idle", () => {
+  const edge = videoFpsOptions(defaults({ fps_range: [12, 30] }));
+  // Default picked during an Edge Reapply with 30 fps picked: 24, not the old 30.
+  assert.equal(resolvePresetFps(edge, null, 24), 24);
+  assert.equal(resolvePresetFps(edge, 30, 24), 30);
+  assert.equal(resolvePresetFps(edge, 31, 24), 24);
+  assert.equal(resolvePresetFps(null, 30, 24), null);
 });

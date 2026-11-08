@@ -148,6 +148,7 @@ import {
   keptNumFrames,
   pickedFpsFor,
   presetFamilyKnown,
+  resolvePresetFps,
   presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
@@ -1302,7 +1303,10 @@ function VideoGenerator({
   );
   const [fpsPick, setFpsPick] = useState<FpsPick | null>(null);
   // A preset rate restored before status names the family; kept in the saved params until it can be validated.
-  const [pendingPresetFps, setPendingPresetFps] = useState<number | null>(null);
+  // Boxed: a preset without a rate (null) is still pending, and resolves to the family default.
+  const [pendingPresetFps, setPendingPresetFps] = useState<{ fps: number | null } | null>(null);
+  // A reload learns of an in-flight load only after its first status read.
+  const [loadProbed, setLoadProbed] = useState(false);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
@@ -1649,7 +1653,7 @@ function VideoGenerator({
       guidance,
       flowShift,
       audioFlowShift,
-      fps: pendingPresetFps ?? (status?.defaults != null && fpsOptions ? fps : null),
+      fps: pendingPresetFps ? pendingPresetFps.fps : status?.defaults != null && fpsOptions ? fps : null,
     };
   }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, pendingPresetFps, status?.defaults, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
@@ -1659,7 +1663,7 @@ function VideoGenerator({
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const presetRepoId = status?.repo_id ?? "";
   const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
-  const statusKnown = presetFamilyKnown(status?.defaults, busy === "loading");
+  const statusKnown = presetFamilyKnown(status?.defaults, busy === "loading" || !loadProbed);
   // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed. Kept as
   // stored until status names the family, or a reload racing the first status read would drop it.
   const presetFps = useCallback(
@@ -1673,10 +1677,10 @@ function VideoGenerator({
   );
   useEffect(() => {
     if (!statusKnown || pendingPresetFps == null) return;
-    const rate = presetVideoFps(fpsOptions, pendingPresetFps);
+    const rate = resolvePresetFps(fpsOptions, pendingPresetFps.fps, familyFps);
     setPendingPresetFps(null);
     if (rate != null) setPickedFps(rate);
-  }, [fpsOptions, pendingPresetFps, setPickedFps, statusKnown]);
+  }, [familyFps, fpsOptions, pendingPresetFps, setPickedFps, statusKnown]);
   const presetDurationOptions = useCallback(
     (rate: number | null) =>
       rate == null || rate === fps
@@ -1718,7 +1722,7 @@ function VideoGenerator({
       const options = presetDurationOptions(rate);
       const durationIndex = closestDurationIndex(options, params.durationSeconds);
       const durationFrames = options[durationIndex]?.frames ?? options[0]?.frames ?? numFrames;
-      if (!statusKnown) setPendingPresetFps(rate);
+      if (!statusKnown) setPendingPresetFps({ fps: rate });
       else if (rate != null) setPickedFps(rate);
       setResolutionIntent(size);
       const matched = matchAspect(size[0], size[1]);
@@ -2786,6 +2790,7 @@ function VideoGenerator({
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
       }
+      setLoadProbed(true);
       // Generation also runs on a daemon thread, so a reload re-enters the poll loop.
       try {
         const g = await getVideoGenerateProgress();
