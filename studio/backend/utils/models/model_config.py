@@ -1518,6 +1518,33 @@ def is_vision_model(
     )
 
 
+def audio_vlm_multimodal_lm_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """(loads through AutoModelForMultimodalLM, config.json readable): no vision tower and a class registered there,
+    natively or by auto_map. AudioFlamingo3 has none and keeps FastModel's resolver. Raw config: no repo code runs."""
+    vision = _raw_config_has_vision_config(model_name, hf_token, local_files_only, revision)
+    if vision is None:
+        return False, False
+    if vision:
+        return False, True
+    try:
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision) or {}
+    except Exception:
+        return False, False
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and "AutoModelForMultimodalLM" in auto_map:
+        return True, True
+    try:
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES
+    except ImportError:
+        return False, True
+    return config.get("model_type") in MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES, True
+
+
 def is_vision_model_checked(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -4371,6 +4398,8 @@ class ModelConfig:
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
+    # A picked MLX precision folder's config, for route checks only; sizing needs the folder's weights.
+    config_dir: Optional[str] = None
     base_model: Optional[str] = None  # Base model (for LoRAs)
     # Set for a GGUF only audio.cpp runs; loads via the native-audio worker, never llama-server.
     audio_cpp: Optional[Any] = None
@@ -4861,6 +4890,7 @@ class ModelConfig:
 
         return cls(
             gguf_variant = precision_folder,
+            config_dir = check_model if precision_folder else None,
             identifier = identifier,
             display_name = display_name,
             path = path,

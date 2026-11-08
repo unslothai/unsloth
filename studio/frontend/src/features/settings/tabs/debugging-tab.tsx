@@ -36,8 +36,8 @@ import {
   Refresh01Icon,
   Search01Icon,
   Shield01Icon,
-  TextWrapIcon,
 } from "@hugeicons/core-free-icons";
+import { LineWrapDisableIcon, LineWrapIcon } from "@/lib/hugeicons-derived";
 import { FolderOpenIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -850,7 +850,7 @@ export function DebuggingTab() {
                   wrap ? "text-foreground" : "text-muted-foreground",
                 )}
               >
-                <HugeiconsIcon strokeWidth={1.75} icon={TextWrapIcon} />
+                <HugeiconsIcon strokeWidth={1.75} icon={wrap ? LineWrapDisableIcon : LineWrapIcon} />
               </Button>
             </TooltipTrigger>
             <TooltipContent>{t("settings.debugging.wrapLines")}</TooltipContent>

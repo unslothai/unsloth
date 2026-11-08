@@ -3321,3 +3321,80 @@ def test_an_unlink_cancel_only_reaches_its_own_account():
         assert not run_as(other, folder_sync.is_cancel_requested, "shared-id")
     finally:
         folder_sync.clear_cancel("shared-id")
+
+
+@requires_sqlite_vec
+def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddings, monkeypatch):
+    """A vault of one-chunk notes paid one encode call per file before (#16715)."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
+    source, folder = _folder(rag_home)
+    for i in range(12):
+        (source / f"note-{i:02d}.md").write_text(f"note {i} searchable words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+    batches = []
+    real_encode = embeddings.encode
+    lock = threading.Lock()
+
+    def recording(texts, **kwargs):
+        with lock:
+            batches.append(len(texts))
+        # An instant stub finishes each file before the coordinator snapshots the next one.
+        time.sleep(0.5)
+        return real_encode(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", recording)
+
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert sum(batches) == 12, batches
+    assert len(batches) < 12, batches
+    assert max(batches) > 1, batches
+    with _connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchone()["count"]
+            == 12
+        )
+        for i in range(12):
+            assert store.search_lexical(conn, folder["scope"], f"note {i}", 5)
+
+
+@requires_sqlite_vec
+def test_large_files_stay_within_the_parse_workers(rag_home, stub_embeddings, monkeypatch):
+    """Only small files queue past the workers; big ones would hold snapshots and chunks."""
+    monkeypatch.setattr(embeddings, "batches_across_documents", lambda model_name = None: True)
+    source, folder = _folder(rag_home)
+    for i in range(8):
+        (source / f"doc-{i}.txt").write_text(f"document {i} words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+    # Every file in this folder counts as large.
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_BATCH_FILE_BYTES", 1)
+    in_flight = {"now": 0, "peak": 0}
+    lock = threading.Lock()
+    real_start = ingestion.start_ingestion
+
+    def watched(*args, **kwargs):
+        with lock:
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        try:
+            return real_start(*args, **kwargs)
+        finally:
+            with lock:
+                in_flight["now"] -= 1
+
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", watched)
+
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert in_flight["peak"] <= 2, in_flight
+    with _connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS count FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchone()["count"]
+            == 8
+        )

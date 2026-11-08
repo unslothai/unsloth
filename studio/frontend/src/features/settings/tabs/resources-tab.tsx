@@ -42,7 +42,7 @@ import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
   loadHuggingFaceCacheSettings,
@@ -69,7 +69,22 @@ import {
   type StorageSegment,
   StorageOverview,
 } from "../components/storage-overview";
+import {
+  MONITOR_REFRESH_OPTIONS_MS,
+  monitorRefreshMs,
+} from "@/components/monitor-refresh";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { MemoryShareBar } from "@/components/monitor-memory";
+import { inferenceGpuDisjoint, poolSplit } from "@/components/monitor-share";
+import { useLoadedModels } from "@/features/loaded-models/use-loaded-models";
+import { holdsModelsInVram, vramCards } from "@/components/monitor-cards";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -148,14 +163,16 @@ function MetricTile({
   percent,
   showUsage = true,
   extraDetail,
+  children,
 }: {
   label: string;
   value: string;
-  detail: string;
+  detail?: string;
   // null = unknown (e.g. Windows ROCm perf counter); show a dash, not 0%.
   percent: number | null;
   showUsage?: boolean;
   extraDetail?: string;
+  children?: ReactNode;
 }) {
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
@@ -186,12 +203,14 @@ function MetricTile({
         >
           {value}
         </span>
-        <span
-          title={detail}
-          className="truncate text-ui-11 text-muted-foreground"
-        >
-          {detail}
-        </span>
+        {detail ? (
+          <span
+            title={detail}
+            className="truncate text-ui-11 text-muted-foreground"
+          >
+            {detail}
+          </span>
+        ) : null}
         {extraDetail ? (
           <span className="whitespace-pre-line text-ui-11 text-muted-foreground">
             {extraDetail}
@@ -206,6 +225,7 @@ function MetricTile({
           indicatorClassName={usageIndicatorClass(safePercent)}
         />
       )}
+      {children ? <div className="mt-auto">{children}</div> : null}
     </div>
   );
 }
@@ -293,7 +313,18 @@ export function ResourcesTab() {
     setShowDetails,
     detailMetrics: storedDetailMetrics,
     setDetailMetric,
+    refreshMs,
+    setRefreshMs,
+    showUnslothShare,
+    setShowUnslothShare,
+    showModelBreakdown,
+    setShowModelBreakdown,
   } = useMonitorOverlayStore();
+  const wantsModels = showUnslothShare || showModelBreakdown;
+  const { polledEntries: loadedModels } = useLoadedModels(
+    wantsModels,
+    wantsModels,
+  );
   const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
@@ -611,6 +642,31 @@ export function ResourcesTab() {
           shared: formatGiB(metrics.vramShared),
         })
       : formatGiB(unifiedPool ? metrics.vramShared : metrics.vramTotal);
+  const vram = vramCards(memoryDisplay.usageDevices, memoryDisplay.usageGpu);
+  const discreteVram =
+    hasGpu &&
+    !unifiedPool &&
+    !memoryDisplay.sharedOnly &&
+    holdsModelsInVram(vram.cards);
+  const processMb =
+    systemInfo.memory?.process_tree_used_mb ?? systemInfo.memory?.process_used_mb;
+  const split = poolSplit({
+    entries: loadedModels,
+    showShare: showUnslothShare,
+    showBreakdown: showModelBreakdown,
+    modelsInVram: discreteVram,
+    inferenceGpuElsewhere: inferenceGpuDisjoint(
+      systemInfo.gpu?.backend,
+      separateInferenceGpu?.backend,
+    ),
+    processGb: !hostUnread && processMb !== undefined ? processMb / 1024 : null,
+    ramUsedGb: metrics.ramUsed,
+    ramTotalGb: metrics.ramTotal,
+    vramUsedGb: vram.usedGb,
+    vramTotalGb: vram.totalGb,
+  });
+  const ramSegments = split.ram;
+  const vramSegments = split.vram;
   // The placeholder's cpu backend and empty package list are not facts about the host either.
   const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
   // systemInfo.gpu, not displayedGpu: a Vulkan llama.cpp makes displayedGpu use the inference
@@ -725,7 +781,7 @@ export function ResourcesTab() {
           )}
           <MetricTile
             label={t(
-              memoryDisplay.sharedOnly
+              memoryDisplay.sharedOnly || unifiedPool
                 ? "settings.resources.gpu.memory"
                 : "settings.resources.liveMonitor.vram",
             )}
@@ -778,6 +834,63 @@ export function ResourcesTab() {
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
         </div>
+        {(ramSegments || vramSegments) && (
+          <div
+            className="grid gap-3 pb-3 sm:grid-cols-2 sm:[&>:last-child:nth-child(odd)]:col-span-2"
+            data-testid="settings-unsloth-share"
+          >
+            {ramSegments && (
+              <MetricTile
+                label={t(
+                  unifiedPool
+                    ? "settings.resources.liveMonitor.memory"
+                    : "settings.resources.liveMonitor.ram",
+                )}
+                value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={ramSegments}
+                  noModels={!discreteVram && split.noModels}
+                />
+              </MetricTile>
+            )}
+            {vramSegments && (
+              <MetricTile
+                label={t("settings.resources.liveMonitor.vram")}
+                value={`${formatGiB(vram.usedGb)} / ${formatGiB(vram.totalGb)}`}
+                percent={null}
+                showUsage={false}
+              >
+                <MemoryShareBar
+                  segments={vramSegments}
+                  noModels={split.noModels}
+                />
+              </MetricTile>
+            )}
+          </div>
+        )}
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.unslothShare")}
+          description={t("settings.resources.liveMonitor.unslothShareDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.unslothShare")}
+            checked={showUnslothShare}
+            onCheckedChange={setShowUnslothShare}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.modelBreakdown")}
+          description={t("settings.resources.liveMonitor.modelBreakdownDescription")}
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.modelBreakdown")}
+            checked={showModelBreakdown}
+            onCheckedChange={setShowModelBreakdown}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -1113,6 +1226,31 @@ export function ResourcesTab() {
           />
         </SettingsRow>
         <SettingsRow
+          label={t("settings.resources.liveMonitor.refreshRate")}
+          description={t("settings.resources.liveMonitor.refreshRateDescription")}
+        >
+          <Select
+            value={String(monitorRefreshMs(refreshMs))}
+            onValueChange={(value) => setRefreshMs(Number(value))}
+          >
+            <SelectTrigger
+              className="w-28"
+              aria-label={t("settings.resources.liveMonitor.refreshRate")}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MONITOR_REFRESH_OPTIONS_MS.map((ms) => (
+                <SelectItem key={ms} value={String(ms)}>
+                  {t("settings.resources.liveMonitor.refreshEvery", {
+                    seconds: ms / 1000,
+                  })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow
           label={t("settings.resources.liveMonitor.detailedView")}
           description={t(
             "settings.resources.liveMonitor.detailedViewDescription",
@@ -1206,7 +1344,7 @@ export function ResourcesTab() {
           >
             {hfCache?.isCustom ? (
               <Button
-                variant="ghost"
+                variant="outline"
                 size="sm"
                 disabled={cacheSaving}
                 onClick={() => void saveCacheFolder(null)}

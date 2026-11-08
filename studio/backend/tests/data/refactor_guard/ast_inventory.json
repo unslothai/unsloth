@@ -1946,7 +1946,7 @@
       "_parse_glm_tool_calls": {
         "decorators": [],
         "kind": "def",
-        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+        "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True, raw_values: bool=False"
       },
       "_parse_glued_deepseek_envelopes": {
         "decorators": [],

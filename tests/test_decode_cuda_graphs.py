@@ -18,6 +18,7 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
 MODELS = (
     "trl-internal-testing/tiny-LlamaForCausalLM-3.2",
     "trl-internal-testing/tiny-Qwen3ForCausalLM",
+    "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder",
 )
 PROMPTS = [
     "Once upon a time there was",
@@ -135,6 +136,26 @@ def test_graph_decode_is_bitwise_eager(name, load_in_4bit, bsz, monkeypatch):
     assert G.stats(_causal(model))["captures"] == captures
     again = _generate(model, tok, enc, True, monkeypatch)
     assert torch.equal(eager[1], again[1])
+
+
+@cuda
+@pytest.mark.parametrize("bsz", [1, 4])
+def test_qwen2_sliding_window_graph_decode_is_bitwise_eager(bsz, monkeypatch):
+    """Past the sliding window, replay attends over the same trailing window as eager."""
+    model, tok = _load(MODELS[2], False)
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        if config is not None and hasattr(config, "sliding_window"):
+            config.sliding_window = 16
+    enc = tok(PROMPTS[:bsz], return_tensors = "pt", padding = True).to("cuda")
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    before = G.stats(_causal(model)).get("replays", 0)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    stats = G.stats(_causal(model))
+    assert stats["disabled"] is None, stats
+    assert stats["replays"] - before == 40 - 2
+    assert torch.equal(eager[0], graph[0])
+    assert torch.equal(eager[1], graph[1])
 
 
 @cuda

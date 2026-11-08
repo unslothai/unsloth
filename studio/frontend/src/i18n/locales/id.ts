@@ -215,6 +215,7 @@ export const id = {
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
+    newTabFloating: "Tab baru di jendela mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -433,6 +434,12 @@ export const id = {
       openChat: "Buka dalam tampilan penuh",
       moveLeft: "Pindahkan ke panel kiri",
       moveRight: "Pindahkan ke panel kanan",
+    },
+    floating: {
+      enter: "Jendela mengambang",
+      dock: "Sematkan ke samping",
+      close: "Tutup jendela mengambang",
+      handle: "Pindahkan jendela. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",
@@ -884,6 +891,9 @@ export const id = {
     unifiedTightFit: "Pas-pasan",
     unifiedTightFitHint:
       "Mungkin dimuat dengan konteks lebih pendek atau berjalan lebih lambat di Mac ini.",
+    residentToRun: "untuk menjalankan",
+    residentToRunHint:
+      "Memori GPU yang dibutuhkan pemeriksaan pemuatan saat berjalan",
     onDevice: "Di Perangkat",
     huggingFace: "Hugging Face",
     retry: "Coba lagi",
@@ -1205,6 +1215,9 @@ export const id = {
         "Satu model per baris, misalnya unsloth/Qwen3-4B-GGUF, atau unsloth/* untuk seluruh organisasi. Biarkan kosong untuk mengizinkan semua model.",
       modelAccessSave: "Simpan",
       modelAccessLimited: "Akses model terbatas",
+      rename: "Ganti nama",
+      renameTitle: "Ganti nama {username}",
+      renameDescription: "Pilih nama yang digunakan akun ini untuk masuk. Chat, file, dan kunci API tetap berada di akun ini. Pengguna akan dikeluarkan dan masuk lagi dengan nama baru serta kata sandi yang sekarang.",
       empty: "Belum ada akun lain",
       setupCode: "Kode penyiapan",
       setupFor: "Kode penyiapan untuk {username}",
@@ -2289,6 +2302,12 @@ export const id = {
           "Memilih per mesin dan beralih ke HTTPS jika Xet macet atau gagal di sini.",
         autoCurrently: "Otomatis menggunakan {transport} di mesin ini.",
         xetMissing: "Xet tidak tersedia karena hf_xet tidak terinstal.",
+        speedLimit: "Batas kecepatan unduhan",
+        speedLimitDescription:
+          "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
+        speedLimitNoLimit: "Tanpa batas",
+        speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",
@@ -2682,6 +2701,10 @@ export const id = {
         contrast: {
           label: "Kontras",
         },
+        elementOutline: {
+          label: "Garis tepi elemen",
+          description: "Kekuatan garis tepi tombol, kolom, kartu, dan menu.",
+        },
         reduceMotion: {
           label: "Kurangi gerakan",
           description: "Kurangi animasi atau ikuti sistem Anda.",
@@ -2742,7 +2765,22 @@ export const id = {
           "Lihat apa yang dikirim aplikasi lain ke API server ini saat tiba.",
         summary: "Permintaan, kesalahan, dan penggunaan token secara langsung",
         status: "{active} aktif · {recent} terbaru · {model}",
-        noModelLoaded: "tidak ada model yang dimuat",
+        noModelLoaded: "Tidak ada model yang dimuat",
+        memory: "Memori",
+        gpuInUse: "GPU terpakai",
+        availableForModels: "Tersedia untuk model",
+        refreshRate: "Laju penyegaran",
+        refreshRateDescription: "Seberapa sering monitor mengambang membaca penggunaan memori dan GPU saat terbuka.",
+        refreshEvery: "Setiap {seconds} dtk",
+        unsloth: "Unsloth",
+        otherApps: "Aplikasi lain",
+        otherInUse: "Penggunaan lain",
+        freeLabel: "Kosong",
+        unslothApp: "Aplikasi Unsloth",
+        unslothShare: "Tampilkan bagian Unsloth",
+        unslothShareDescription: "Bagi memori menjadi yang dipakai Unsloth, yang dipakai aplikasi lain, dan yang kosong.",
+        modelBreakdown: "Rinci per model",
+        modelBreakdownDescription: "Bagi bagian Unsloth di bilah memori menjadi tiap model yang dimuat dan sisa aplikasi.",
         autoOpen: "Pemantau mengambang terbuka otomatis",
         autoOpenDescription: "Membuka panel kecil saat ada lalu lintas API.",
         cpu: "CPU",
@@ -2759,8 +2797,7 @@ export const id = {
           "Terdeteksi, tetapi PyTorch tidak dapat menggunakannya",
         detailedView: "Tampilan terperinci",
         detailedViewDescription:
-          "Tampilkan beban CPU serta beban, suhu, dan daya setiap GPU di jendela mengambang.",
-        cpuLoad: "Beban CPU",
+          "Tampilkan beban, suhu, dan daya setiap GPU di jendela mengambang.",
         gpuLoad: "Beban GPU",
         temperature: "Suhu",
         power: "Daya",
@@ -2777,7 +2814,7 @@ export const id = {
         detecting: "Memeriksa GPU...",
         unreadable: "Tidak dapat membaca perangkat keras server ini.",
         noGpu:
-          "Tidak ada GPU yang terdeteksi. Sumber daya khusus CPU ditampilkan di atas.",
+          "Tidak ada GPU khusus yang terdeteksi.",
         noUsableGpu:
           "Tidak ada GPU di mesin ini yang dapat digunakan oleh PyTorch.",
         mismatchCpuBuild:
@@ -2866,7 +2903,7 @@ export const id = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary inferensi akselerator alihkan kustom jalur direktori",
       },
       modelMemory: {
-        title: "Memori model",
+        title: "Pemuatan model",
         keepResident: "Simpan model di memori GPU",
         keepResidentDescription: "Tetap di VRAM di antara prompt.",
         keepResidentHint:
@@ -3065,7 +3102,7 @@ export const id = {
       configurationDocs: "dokumentasi",
       configurationFlagsSuffix: "untuk flag.",
       modelNote:
-        "Codex memerlukan model GGUF yang dilayani oleh llama-server. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
+        "Claude Code dan Codex memerlukan model GGUF yang dilayani oleh llama-server, atau model MLX. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
       subagent: {
         title: "Gunakan model lokal sebagai subagen",
         description:
@@ -3139,6 +3176,8 @@ export const id = {
     },
     chat: {
       groups: {
+        replies: { title: "Balasan" },
+        thinkingTools: { title: "Penalaran dan alat" },
         conversations: {
           title: "Percakapan",
         },
@@ -3237,11 +3276,20 @@ export const id = {
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message waktu jam tanggal balasan pesan",
-      showGenerationDetails: "Detail pembuatan",
+      showGenerationDetails: "Info kecepatan dan pemuatan terperinci",
       showGenerationDetailsDescription:
-        "Tampilkan kecepatan prompt dan balasan secara langsung beserta jumlah token, serta tempat lapisan model dimuat.",
+        "Menambahkan kecepatan membaca prompt, jumlah token, dan penerimaan draf ke tampilan langsung, serta menunjukkan tempat lapisan model dimuat.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+      generationStatsUpdates: "Statistik kecepatan dan konteks",
+      generationStatsUpdatesDescription:
+        "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
+      generationStatsUpdatesHint:
+        "Waktu nyata menyegarkan penunjuk token per detik di bawah balasan dan bilah konteks di atas chat beberapa kali per detik saat balasan ditulis. Setelah selesai memperbaruinya sekali, setelah setiap balasan selesai. Waktu nyata dapat menyebabkan lag atau kinerja lebih lambat, terutama pada perangkat lama atau sibuk.",
+      generationStatsUpdatesSettled: "Setelah selesai",
+      generationStatsUpdatesRealtime: "Waktu nyata",
+      generationStatsUpdatesKeywords:
+        "waktu nyata langsung perbarui kecepatan konteks statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
@@ -5565,6 +5613,7 @@ export const id = {
     monitor: {
       dragHandleLabel:
         "Pindahkan pemantau langsung. Tombol panah menggesernya sedikit, klik dua kali untuk mengatur ulang.",
+      resizeHint: "Seret sisi atau sudut untuk mengubah lebar. Klik dua kali untuk mengatur ulang.",
       reconnecting: "Menyambungkan kembali...",
     },
   },
@@ -5880,8 +5929,7 @@ export const id = {
     skippedVersion: "{component} {version} dilewati untuk saat ini",
     skippedUpdate: "Pembaruan {component} dilewati untuk saat ini",
     skippedUpdates: "Pembaruan {components} dilewati untuk saat ini",
-    vulkanFaster:
-      "Vulkan >10% lebih cepat daripada ROCM. Tidak perlu memulai ulang",
+    vulkanFaster: "Lebih dari 10% lebih cepat",
     noRestart: "Tidak perlu memulai ulang",
     downloadSize: "Unduhan {size}",
     backendChange: "Backend {change}",
@@ -5890,8 +5938,8 @@ export const id = {
     installingPhase: "Menginstal {component} ({current} dari {total})...",
     installingCount: "Menginstal {count} pembaruan...",
     bundleTitle: "{count} pembaruan runtime",
-    newBackend: "Backend {component} baru",
-    newUpdate: "Pembaruan {component} baru",
+    newBackend: "Backend runtime baru",
+    newUpdate: "Pembaruan runtime baru",
     hideUpdate:
       "Sembunyikan pembaruan {component} hingga Unsloth dibuka kembali",
     hideUpdates:

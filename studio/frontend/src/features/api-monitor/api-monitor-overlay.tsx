@@ -391,7 +391,8 @@ function ApiMonitorPanel({
         exit={{ opacity: 0 }}
         /* Panel language from the sidebar menu: soft surface, menu corner, heading font. */
         className={cn(
-          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
+          // transition-none: see floating-monitor.tsx (a drop must not flash at the start spot).
+          "menu-soft-surface pointer-events-auto absolute flex max-h-full transition-none w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border-0 p-2.5 font-heading ring-0",
           // The CSS corner until it has been measured, so the first paint
           // is the corner it has always opened in rather than the top left.
           layout ? "top-0 left-0 resize" : "bottom-0 right-0",

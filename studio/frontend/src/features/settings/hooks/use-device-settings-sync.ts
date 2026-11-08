@@ -1,35 +1,61 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
+// eslint-disable-next-line no-restricted-imports
 import { startChatBackgroundSync } from "@/features/chat-background/sync";
+// eslint-disable-next-line no-restricted-imports
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+// eslint-disable-next-line no-restricted-imports
+import { usePlusMenuPrefsStore } from "@/features/chat/stores/plus-menu-prefs-store";
+import {
+  accountTransitionPending,
+  BROWSER_ACCOUNT_KEY,
+  sameBrowserAccount,
+} from "@/lib/account-transition";
+import { getSpellCheck, setSpellCheck, subscribeSpellCheck } from "@/lib/spellcheck";
+import {
+  getTimeFormat,
+  setTimeFormat,
+  subscribeTimeFormat,
+  type TimeFormat,
+} from "@/lib/time-format";
 import { useEffect } from "react";
-import { loadClientPreferences, saveClientPreferences } from "../api/device-sync";
+import {
+  type ClientPreferencesChanges,
+  loadClientPreferences,
+  saveClientPreferences,
+} from "../api/device-sync";
 import {
   INTERFACE_SCALE_RANGE,
   useInterfaceScaleStore,
 } from "../stores/interface-scale-store";
-import { type Pending, readPending, writePending } from "../lib/client-prefs-pending";
+import {
+  markPending,
+  type Pending,
+  PENDING_SECTIONS,
+  readPending,
+} from "../lib/client-prefs-pending";
 
 const PUSH_DEBOUNCE_MS = 800;
 
-type BrowserPrefs = Record<string, unknown>;
+type Prefs = Record<string, unknown>;
 
-function prefsOf(state: object): BrowserPrefs {
+function prefsOf(state: object, skip?: ReadonlySet<string>): Prefs {
   return Object.fromEntries(
-    Object.entries(state).filter(([, value]) => typeof value !== "function"),
+    Object.entries(state).filter(
+      ([key, value]) => typeof value !== "function" && !skip?.has(key),
+    ),
   );
 }
 
-const browserPrefs = () => prefsOf(useBrowserPrefsStore.getState());
-const DEFAULT_BROWSER_PREFS = prefsOf(useBrowserPrefsStore.getInitialState());
-
-export function browserPrefsFromRemote(remote: BrowserPrefs): BrowserPrefs {
+export function prefsFromRemote(remote: Prefs, defaults: Prefs): Prefs {
   return Object.fromEntries(
     Object.entries(remote).filter(([key, value]) => {
-      const fallback = DEFAULT_BROWSER_PREFS[key];
+      const fallback = defaults[key];
       return (
-        key in DEFAULT_BROWSER_PREFS &&
+        key in defaults &&
         value !== null &&
         Array.isArray(value) === Array.isArray(fallback) &&
         typeof value === typeof fallback
@@ -38,94 +64,175 @@ export function browserPrefsFromRemote(remote: BrowserPrefs): BrowserPrefs {
   );
 }
 
-function sameBrowserPrefs(a: BrowserPrefs, b: BrowserPrefs): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+// The notification needs this browser's permission; the files panel is layout state.
+const LOCAL_CHAT_PREFS = new Set(["notifyWhenReplyFinishes", "filesPanelCollapsed"]);
+
+type Section = {
+  field: keyof ClientPreferencesChanges;
+  fallback: unknown;
+  read: () => unknown;
+  apply: (remote: unknown) => void;
+  subscribe: (listener: () => void) => () => void;
+};
+
+type PersistedStore<S> = {
+  getState: () => S;
+  getInitialState: () => S;
+  setState: (state: Partial<S>) => void;
+  subscribe: (listener: () => void) => () => void;
+  persist: {
+    getOptions: () => { merge?: (persisted: unknown, current: S) => S };
+  };
+};
+
+function storeSection<S extends object>(
+  field: Section["field"],
+  store: PersistedStore<S>,
+  skip?: ReadonlySet<string>,
+): Section {
+  const fallback = prefsOf(store.getInitialState(), skip);
+  return {
+    field,
+    fallback,
+    read: () => prefsOf(store.getState(), skip),
+    apply: (remote) => {
+      // merge() resets absent fields to defaults; a field the record lacks keeps this browser's value.
+      const saved = {
+        ...prefsOf(store.getState(), skip),
+        ...prefsFromRemote(remote as Prefs, fallback),
+      };
+      const next =
+        store.persist.getOptions().merge?.(saved, store.getState()) ?? saved;
+      store.setState(prefsOf(next, skip) as Partial<S>);
+    },
+    subscribe: store.subscribe,
+  };
+}
+
+function sections(): Record<keyof Pending, Section> {
+  return {
+    scale: {
+      field: "interfaceScale",
+      fallback: INTERFACE_SCALE_RANGE.default,
+      read: () => useInterfaceScaleStore.getState().scale,
+      apply: (remote) =>
+        useInterfaceScaleStore.getState().setScale(remote as number),
+      subscribe: useInterfaceScaleStore.subscribe,
+    },
+    browser: storeSection("browser", useBrowserPrefsStore),
+    chat: storeSection("chat", useChatPreferencesStore, LOCAL_CHAT_PREFS),
+    plusMenu: storeSection("plusMenu", usePlusMenuPrefsStore),
+    timeFormat: {
+      field: "timeFormat",
+      fallback: "system",
+      read: getTimeFormat,
+      apply: (remote) => setTimeFormat(remote as TimeFormat),
+      subscribe: subscribeTimeFormat,
+    },
+    spellcheck: {
+      field: "spellcheck",
+      fallback: true,
+      read: getSpellCheck,
+      apply: (remote) => setSpellCheck(remote as boolean),
+      subscribe: subscribeSpellCheck,
+    },
+  };
+}
+
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+export function startClientPreferencesSync(): () => void {
+  const all = sections();
+  let loaded = false;
+  let applying = false;
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const touched = readPending();
+  let edits = 0;
+  const touch = (section: keyof Pending) => {
+    touched[section] = true;
+    edits++;
+    markPending([section], true);
+  };
+
+  const account = localStorage.getItem(BROWSER_ACCOUNT_KEY);
+  // Another tab's switch clears these keys and a queued request outlives this one's: neither is this account's.
+  const switched = () => accountTransitionPending() || !sameBrowserAccount(account);
+
+  let saving: Promise<void> = Promise.resolve();
+  const pushAll = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      saving = saving
+        .then(async () => {
+          const sent = edits;
+          const edited = PENDING_SECTIONS.filter((section) => touched[section]);
+          if (edited.length === 0 || switched()) return;
+          await saveClientPreferences(
+            Object.fromEntries(
+              edited.map((section) => [all[section].field, all[section].read()]),
+            ),
+          );
+          if (edits === sent && !switched()) {
+            for (const section of edited) touched[section] = false;
+            markPending(edited, false);
+          }
+        })
+        .catch(() => undefined);
+    }, PUSH_DEBOUNCE_MS);
+  };
+
+  const last = {} as Record<keyof Pending, unknown>;
+  const stops = PENDING_SECTIONS.map((section) => {
+    last[section] = all[section].read();
+    return all[section].subscribe(() => {
+      const next = all[section].read();
+      if (applying || same(next, last[section])) return;
+      if (switched()) return;
+      last[section] = next;
+      touch(section);
+      if (loaded) pushAll();
+    });
+  });
+
+  void loadClientPreferences()
+    .then((remote) => {
+      if (cancelled || switched()) return;
+      loaded = true;
+      applying = true;
+      for (const section of PENDING_SECTIONS) {
+        const value = remote[all[section].field];
+        if (value != null && !touched[section]) all[section].apply(value);
+        last[section] = all[section].read();
+      }
+      applying = false;
+      for (const section of PENDING_SECTIONS) {
+        if (
+          remote[all[section].field] == null &&
+          !same(last[section], all[section].fallback)
+        )
+          touch(section);
+      }
+      if (PENDING_SECTIONS.some((section) => touched[section])) pushAll();
+    })
+    .catch(() => {
+      loaded = true;
+    });
+
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+    for (const stop of stops) stop();
+  };
 }
 
 export function useDeviceSettingsSync(enabled: boolean): void {
   useEffect(() => {
     if (!enabled) return;
     const stopBackground = startChatBackgroundSync();
-    let loaded = false;
-    let applying = false;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const touched = readPending();
-    let edits = 0;
-    const touch = (section: keyof Pending) => {
-      touched[section] = true;
-      edits++;
-      writePending(touched);
-    };
-
-    let saving: Promise<void> = Promise.resolve();
-    const pushAll = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        saving = saving
-          .then(async () => {
-            const sent = edits;
-            if (!touched.scale && !touched.browser) return;
-            await saveClientPreferences({
-              interfaceScale: touched.scale
-                ? useInterfaceScaleStore.getState().scale
-                : undefined,
-              browser: touched.browser ? browserPrefs() : undefined,
-            });
-            if (edits === sent) {
-              touched.scale = false;
-              touched.browser = false;
-              writePending(touched);
-            }
-          })
-          .catch(() => undefined);
-      }, PUSH_DEBOUNCE_MS);
-    };
-
-    const stopScale = useInterfaceScaleStore.subscribe((state, prev) => {
-      if (applying || state.scale === prev.scale) return;
-      touch("scale");
-      if (loaded) pushAll();
-    });
-    let lastBrowser = browserPrefs();
-    const stopBrowser = useBrowserPrefsStore.subscribe(() => {
-      const next = browserPrefs();
-      if (applying || sameBrowserPrefs(next, lastBrowser)) return;
-      lastBrowser = next;
-      touch("browser");
-      if (loaded) pushAll();
-    });
-
-    void loadClientPreferences()
-      .then((remote) => {
-        if (cancelled) return;
-        loaded = true;
-        applying = true;
-        if (remote.interfaceScale !== null && !touched.scale)
-          useInterfaceScaleStore.getState().setScale(remote.interfaceScale);
-        if (remote.browser && !touched.browser)
-          useBrowserPrefsStore.setState(browserPrefsFromRemote(remote.browser));
-        lastBrowser = browserPrefs();
-        applying = false;
-        const scale = useInterfaceScaleStore.getState().scale;
-        const missingScale =
-          remote.interfaceScale === null &&
-          scale !== INTERFACE_SCALE_RANGE.default;
-        const missingBrowser =
-          !remote.browser && !sameBrowserPrefs(lastBrowser, DEFAULT_BROWSER_PREFS);
-        if (missingScale) touch("scale");
-        if (missingBrowser) touch("browser");
-        if (touched.scale || touched.browser) pushAll();
-      })
-      .catch(() => {
-        loaded = true;
-      });
-
+    const stopPreferences = startClientPreferencesSync();
     return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      stopScale();
-      stopBrowser();
+      stopPreferences();
       stopBackground();
     };
   }, [enabled]);

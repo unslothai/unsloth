@@ -413,6 +413,8 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
@@ -421,12 +423,16 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
@@ -480,6 +486,8 @@ def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monk
     assert kept == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
@@ -1122,6 +1130,8 @@ def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, m
     assert picked == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
