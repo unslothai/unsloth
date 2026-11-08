@@ -3446,8 +3446,7 @@ _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
-# Streamed placement sized from the denoise seed, resident blocks lent to the VAE decode (whose 2_437 MiB FLUX.3 seed
-# never runs beside the stream); "0" restores the whole-render seed.
+# Streamed FLUX.3 sizes from the denoise seed and lends resident blocks to the decode; "0": whole-render seed.
 STREAMED_DECODE_LEND_ENV = "UNSLOTH_DIFFUSION_STREAMED_DECODE_LEND"
 # Measured on L4 (int8 / fp8, 6 GiB) only.
 _STREAMED_DECODE_LEND_FAMILIES = frozenset({"flux.3-klein", "flux.3-klein-base"})
@@ -3643,7 +3642,7 @@ def measured_image_runtime_mib(
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
                 row = phases[1 if speed_mode == "max" else 0]
-                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier, unless one is asked for
+                # worst of encoder / denoise / untiled decode at 1024x1024, unless one is asked for
                 seed = row[seed_phase] if seed_phase is not None else max(row[:3])
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
@@ -4861,7 +4860,6 @@ def _refine_plan_from_loaded_weights(
                             DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT,
                             False,
                         )
-                        # a larger learned decode peak (with its own bucket) wins over the seed
                         learned_decode = lookup_bucket(
                             family = family,
                             quant = read_quant,
@@ -5949,7 +5947,7 @@ def measured_request_extra_mib(
         sized.update(seed_phase = int(seed_phase), phase = PHASE_PRE_DECODE)
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     if seed_phase is not None and isinstance(identity, tuple) and len(identity) == 3:
-        # the learned pre-decode peak the placement read, scaled to this request by the store
+        # the learned pre-decode peak, scaled to this request
         stored = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
         if stored is not None:
             need = stored if need is None else max(need, stored)
@@ -6563,8 +6561,7 @@ def _module_pin_mib(module: Any) -> int:
         return _module_host_mib(module)
 
 
-# Block-level offload groups only direct ModuleList children, so FLUX.3's ModuleDict of block stacks (mode_blocks)
-# stayed in the always-onloaded top-level group; block_modules splits it per block. "0" restores that.
+# Block-level offload groups only direct ModuleList children; split FLUX.3's ModuleDict of block stacks too ("0": off).
 GROUP_OFFLOAD_DICT_BLOCKS_ENV = "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_DICT_BLOCKS"
 _DICT_BLOCK_CLASSES = frozenset({"Flux3Transformer2DModel"})
 
