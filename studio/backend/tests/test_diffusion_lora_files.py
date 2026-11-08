@@ -11,6 +11,8 @@ torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_lora_files as lf  # noqa: E402
 
+REWRITE_METADATA_ENV = "UNSLOTH_DIFFUSION_LORA_REWRITE_METADATA"
+
 
 def test_alpha_folds_into_lora_b_and_down_up_rename():
     a, b = torch.randn(4, 8), torch.randn(6, 4)
@@ -469,7 +471,7 @@ def test_a_rewritten_file_keeps_the_strength_its_metadata_sets(tmp_path, monkeyp
     from core.inference.diffusion_torchao_patches import install_peft_torchao_dispatch_guard
 
     install_peft_torchao_dispatch_guard()
-    monkeypatch.delenv(lf.REWRITE_METADATA_ENV, raising = False)
+    monkeypatch.delenv(REWRITE_METADATA_ENV, raising = False)
     model = _moss_transformer()
     x = torch.randn(3, 16)
     base = model.layers[0].proj.q(x).detach()
@@ -517,11 +519,11 @@ def test_the_metadata_kill_switch_keeps_unit_strength(tmp_path, monkeypatch):
         },
     )
     key = "diffusion_model.blocks.1.proj.q.lora_B.weight"
-    monkeypatch.delenv(lf.REWRITE_METADATA_ENV, raising = False)
+    monkeypatch.delenv(REWRITE_METADATA_ENV, raising = False)
     pipe = _RecordingPipe()
     lf.load_adapter(pipe, str(path), "on", "krea-2")
     assert torch.equal(pipe.loaded["on"][key], b * 4.0)
-    monkeypatch.setenv(lf.REWRITE_METADATA_ENV, "0")
+    monkeypatch.setenv(REWRITE_METADATA_ENV, "0")
     lf.load_adapter(pipe, str(path), "off", "krea-2")
     assert pipe.loaded["off"][key] is not None and torch.equal(pipe.loaded["off"][key], b)
 
@@ -590,4 +592,5 @@ def test_only_the_transformers_metadata_is_read(tmp_path):
         write({"r": 2, "lora_alpha": 8}) is None
     )  # diffusers drops unprefixed keys under its prefix
     assert write(None) is None
+    assert lf.REWRITE_METADATA_ENV == REWRITE_METADATA_ENV
     assert lf.read_lora_metadata(str(tmp_path / "missing.safetensors")) is None
