@@ -605,3 +605,32 @@ def test_a_spool_that_cannot_be_written_keeps_the_chunks(monkeypatch):
     session, final = _spool_session()
     final[-1, 0, 0, 0] ^= 1
     assert session.take(final, 8) is None and vse.STATS["last"] == "frames differ"
+
+
+def _raw_bytes_held(session):
+    """uint8 frame bytes reachable from the session's own containers, whatever shape its chunk records take."""
+    seen, total, stack = set(), 0, [vars(session)]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, torch.Tensor):
+            total += obj.numel() * obj.element_size() if obj.dtype == torch.uint8 else 0
+        elif isinstance(obj, dict):
+            stack.extend(obj.values())
+        elif isinstance(obj, (list, tuple)):
+            stack.extend(obj)
+        elif hasattr(type(obj), "__slots__"):
+            stack.extend(getattr(obj, name, None) for name in type(obj).__slots__)
+    return total
+
+
+def test_the_session_holds_no_raw_frames_once_they_are_encoded():
+    session, final = _spool_session()
+    session._join()  # the encoder has encoded (and spooled) every chunk
+    assert (
+        _raw_bytes_held(session) == 0
+    ), f"{_raw_bytes_held(session)} of {final.numel()} raw bytes still held"
+    assert session._matches(final)
+    session.close()
