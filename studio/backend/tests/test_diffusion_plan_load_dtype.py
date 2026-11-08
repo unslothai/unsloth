@@ -304,35 +304,43 @@ def test_a_dotted_pin_matches_the_parameter_path_the_way_the_loader_does(tmp_pat
     assert DiffusionBackend._safetensors_cast_bytes(path, 2, ("gate",)) == 40 + 20 + 40
 
 
-def test_a_bin_checkpoint_is_priced_at_the_load_dtype(tmp_path):
+def _no_torch_load(monkeypatch):
+    def _refuse(*_a, **_k):
+        raise AssertionError("a .bin must never be unpickled to price it")
+
+    monkeypatch.setattr(torch, "load", _refuse)
+
+
+def test_a_bin_checkpoint_is_priced_without_unpickling(tmp_path, monkeypatch):
     path = tmp_path / "pytorch_model.bin"
     torch.save(
         {"a": torch.zeros(10, dtype = torch.bfloat16), "b": torch.zeros(5, dtype = torch.float32)},
         path,
     )
-    assert DiffusionBackend._bin_cast_bytes(path, 4) == 10 * 4 + 5 * 4
-    assert DiffusionBackend._bin_cast_bytes(path, 2) == 10 * 2 + 5 * 4
+    _no_torch_load(monkeypatch)
+    stored = path.stat().st_size
+    # a widening load is bounded as if every float were stored at two bytes; never below the real cast
+    assert DiffusionBackend._bin_cast_bytes(path, 4) == stored * 2
+    assert DiffusionBackend._bin_cast_bytes(path, 4) >= 10 * 4 + 5 * 4
+    # a load at <= 2 bytes per float keeps the stored size (an upper bound)
+    assert DiffusionBackend._bin_cast_bytes(path, 2) is None
 
 
-def test_a_bin_only_component_is_repriced_in_the_directory_scan(tmp_path):
+def test_a_bin_only_component_is_repriced_in_the_directory_scan(tmp_path, monkeypatch):
     encoder = tmp_path / "text_encoder"
     encoder.mkdir()
     torch.save({"w": torch.zeros(1000, dtype = torch.bfloat16)}, encoder / "pytorch_model.bin")
+    stored = (encoder / "pytorch_model.bin").stat().st_size
+    _no_torch_load(monkeypatch)
     sizes = DiffusionBackend._local_dir_weight_sizes(
         tmp_path, exclude_transformer = False, load_dtype = torch.float32
     )
-    assert sizes == {"text_encoder/pytorch_model.bin": 4000}
+    assert sizes == {"text_encoder/pytorch_model.bin": stored * 2}
+    assert sizes["text_encoder/pytorch_model.bin"] >= 4000
 
 
-def test_a_tied_bin_weight_is_counted_once(tmp_path):
-    path = tmp_path / "pytorch_model.bin"
-    shared = torch.zeros(100, 8, dtype = torch.bfloat16)
-    torch.save(
-        {"shared.weight": shared, "encoder.embed_tokens.weight": shared, "head": shared[:10]},
-        path,
-    )
-    # an alias costs nothing; a distinct view of the same storage counts separately
-    assert DiffusionBackend._bin_cast_bytes(path, 4) == (800 + 80) * 4
+def test_a_missing_bin_keeps_the_stored_size(tmp_path):
+    assert DiffusionBackend._bin_cast_bytes(tmp_path / "absent.bin", 4) is None
 
 
 def test_a_legacy_bin_keeps_the_stored_size(tmp_path):

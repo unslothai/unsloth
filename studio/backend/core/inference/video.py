@@ -73,7 +73,8 @@ from .diffusion_comfy_quant import (
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
-from .diffusion_single_file_trust import assert_safetensors_file, single_file_load_allowed
+from .diffusion_single_file_trust import assert_pickle_free_single_file, single_file_load_allowed
+from .diffusers_safetensors import component_safetensors_kwargs, pipeline_safetensors_kwargs
 from .diffusion_prequant import scoped_local_files_only
 from .video_moe_pair import moe_expert_of, moe_partner_filename, moe_pick_pairs
 from .diffusion_cache import (
@@ -9085,8 +9086,10 @@ class VideoBackend:
                         fetch = _checkpoint_fetch,
                     )
                 )
-                if not _is_trusted_video_repo(repo_id):
-                    assert_safetensors_file(comfy_checkpoint)
+                # Trusted repo or not, only an exact *.safetensors name is ever opened; untrusted ones prove the header.
+                assert_pickle_free_single_file(
+                    comfy_checkpoint, check_header = not _is_trusted_video_repo(repo_id)
+                )
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,
@@ -9172,9 +9175,12 @@ class VideoBackend:
                 fetch = _checkpoint_fetch,
             )
             # Admitted per file from an untrusted repo: prove each file is a safetensors container before any probe.
-            untrusted_single_file = kind == "single_file" and not _is_trusted_video_repo(repo_id)
-            if untrusted_single_file:
-                assert_safetensors_file(checkpoint_path)
+            # Trusted repo or not, only an exact *.safetensors name loads (diffusers torch.loads any other); a file
+            # admitted per file from an untrusted repo also proves its header before any probe.
+            checked_single_file = kind == "single_file"
+            untrusted_single_file = checked_single_file and not _is_trusted_video_repo(repo_id)
+            if checked_single_file:
+                assert_pickle_free_single_file(checkpoint_path, check_header = untrusted_single_file)
             if fam.name == "ltx-2":
                 from .video_ltx2 import ltx23_variant_identifier
                 variant_id = ltx23_variant_identifier(checkpoint_path)
@@ -9194,8 +9200,8 @@ class VideoBackend:
                 """Resident MiB of one checkpoint file's DiT and its ComfyUI quant scan (None: a plain file)."""
                 scan = None
                 mib: Optional[int] = None
-                if untrusted_single_file:
-                    assert_safetensors_file(path)
+                if checked_single_file:
+                    assert_pickle_free_single_file(path, check_header = untrusted_single_file)
                 size_mib = file_size_mib(str(path))
                 if kind == "single_file":
                     scan = refuse_comfy_quant(str(path))
@@ -9592,6 +9598,15 @@ class VideoBackend:
                 else {}
             )
 
+        def _safetensors_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+            """use_safetensors=True when the base folder ships safetensors for every component this load reads."""
+            return pipeline_safetensors_kwargs(
+                _base_local_dir or fetch_base,
+                passed = kwargs,
+                cache_dir = kwargs.get("cache_dir"),
+                pipeline_cls = pipeline_cls,
+            )
+
         pipe_kwargs: dict[str, Any] = {
             "torch_dtype": dtype,
             "cache_dir": hub_cache_dir(),
@@ -9793,6 +9808,7 @@ class VideoBackend:
                         _base_local_dir or fetch_base,
                         **_pinned_base_kwargs(),
                         **pipe_kwargs,
+                        **_safetensors_kwargs(pipe_kwargs),
                     )
             except Exception as exc:
                 refusal = (
@@ -10020,6 +10036,7 @@ class VideoBackend:
                         _base_local_dir or fetch_base,
                         **_pinned_base_kwargs(),
                         **{**pipe_kwargs, "transformer": ltx25_transformer},
+                        **_safetensors_kwargs({**pipe_kwargs, "transformer": ltx25_transformer}),
                     )
             else:
 
@@ -10065,6 +10082,7 @@ class VideoBackend:
                     _base_local_dir or fetch_base,
                     **_pinned_base_kwargs(),
                     **{**pipe_kwargs, **experts},
+                    **_safetensors_kwargs({**pipe_kwargs, **experts}),
                 )
 
         # Dtype dict already loads the Wan VAE in float32; this backstops any path bypassing it (e.g. vae=).
@@ -10185,6 +10203,12 @@ class VideoBackend:
                             local_files_only = local_files_only,
                             **({"token": hf_token} if hf_token else {}),
                             **_pinned_base_kwargs(),
+                            **component_safetensors_kwargs(
+                                _base_local_dir or fetch_base,
+                                component,
+                                cache_dir = hub_cache_dir(),
+                                model_cls = dense_cls,
+                            ),
                         )
                     }
                 )
