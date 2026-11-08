@@ -1279,15 +1279,12 @@ _UNRESUMABLE_STATUS = {
 }
 
 
-# The run listing asks _fully_loadable for every stopped run on each request, and _assert_loadable
-# reads every state file in full (adapter, EMA, optimizer moments). Its verdict depends only on the
-# bytes of those files, so a pass is kept per bundle while none of them changed. Files changed within
-# the settle window are not kept: a coarse filesystem clock can give a same-size rewrite identical
-# timestamps. The resume preflight calls _assert_loadable directly and never reads this.
-_LOADABLE_VERDICTS: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
-_LOADABLE_VERDICTS_MAX = 512
+# Listing-only memo of passing _assert_loadable verdicts, keyed on the stat of every state file.
+# Files touched within the settle window are not kept: a coarse mtime can hide a same-size rewrite.
+_LOADABLE_PASSES: "OrderedDict[str, tuple]" = OrderedDict()
+_LOADABLE_PASSES_MAX = 512
 _LOADABLE_SETTLE_NS = 2_000_000_000
-_LOADABLE_VERDICTS_LOCK = threading.Lock()
+_LOADABLE_PASSES_LOCK = threading.Lock()
 
 
 def _loadable_key(path: Path, manifest: dict[str, Any]) -> Optional[tuple]:
@@ -1314,29 +1311,27 @@ def _assert_loadable_cached(path: Path, manifest: dict[str, Any]) -> bool:
     cache_id = str(path)
     key = _loadable_key(path, manifest)
     if key is not None:
-        with _LOADABLE_VERDICTS_LOCK:
-            hit = _LOADABLE_VERDICTS.get(cache_id)
-            if hit is not None and hit[0] == key:
-                _LOADABLE_VERDICTS.move_to_end(cache_id)
-                return hit[1]
+        with _LOADABLE_PASSES_LOCK:
+            if _LOADABLE_PASSES.get(cache_id) == key:
+                _LOADABLE_PASSES.move_to_end(cache_id)
+                return True
     try:
         _assert_loadable(path, manifest)
-        verdict = True
     except ResumeError:
-        verdict = False
-    settled = key is not None and all(
-        time.time_ns() - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key
-    )
-    # Only a pass is kept: a refusal can come from a passing condition (out of memory, too many open
-    # files), so it is read again next time. A write during the read changes the stat, so that read is
-    # not kept either.
-    if verdict and settled and _loadable_key(path, manifest) == key:
-        with _LOADABLE_VERDICTS_LOCK:
-            _LOADABLE_VERDICTS[cache_id] = (key, verdict)
-            _LOADABLE_VERDICTS.move_to_end(cache_id)
-            while len(_LOADABLE_VERDICTS) > _LOADABLE_VERDICTS_MAX:
-                _LOADABLE_VERDICTS.popitem(last = False)
-    return verdict
+        # Never kept: a refusal can be transient (MemoryError, EMFILE).
+        return False
+    now = time.time_ns()
+    if (
+        key is not None
+        and all(now - max(entry[5], entry[6]) > _LOADABLE_SETTLE_NS for entry in key)
+        and _loadable_key(path, manifest) == key
+    ):
+        with _LOADABLE_PASSES_LOCK:
+            _LOADABLE_PASSES[cache_id] = key
+            _LOADABLE_PASSES.move_to_end(cache_id)
+            while len(_LOADABLE_PASSES) > _LOADABLE_PASSES_MAX:
+                _LOADABLE_PASSES.popitem(last = False)
+    return True
 
 
 def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:

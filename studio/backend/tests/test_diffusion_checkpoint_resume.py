@@ -10,6 +10,7 @@ import time
 import os
 import json
 from pathlib import Path
+from collections import OrderedDict
 
 import pytest
 import torch
@@ -2724,12 +2725,8 @@ def test_the_ema_decay_is_part_of_the_identity(run_dir):
 
 
 def test_the_run_listing_reads_an_unchanged_bundle_once(run_dir, monkeypatch):
-    """describe_resume_state runs on every run listing; the full state-file read is kept per
-    unchanged bundle, and any change to a state file reads it again."""
-    monkeypatch.setattr(
-        dc, "_LOADABLE_VERDICTS", __import__("collections").OrderedDict(), raising = False
-    )
-    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1, raising = False)
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
+    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1)
     reads = []
     original = dc._assert_loadable
 
@@ -2747,7 +2744,7 @@ def test_the_run_listing_reads_an_unchanged_bundle_once(run_dir, monkeypatch):
     assert reads == ["checkpoint-5"]
 
     run.step_once(0.5)
-    run.save(5)  # rewritten in place: new files, so the bundle is read again
+    run.save(5)
     assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True
     assert reads == ["checkpoint-5", "checkpoint-5"]
 
@@ -2758,9 +2755,7 @@ def test_the_run_listing_reads_an_unchanged_bundle_once(run_dir, monkeypatch):
 
 
 def test_a_bundle_written_inside_the_settle_window_is_read_every_time(run_dir, monkeypatch):
-    monkeypatch.setattr(
-        dc, "_LOADABLE_VERDICTS", __import__("collections").OrderedDict(), raising = False
-    )
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
     reads = []
     original = dc._assert_loadable
     monkeypatch.setattr(
@@ -2775,12 +2770,8 @@ def test_a_bundle_written_inside_the_settle_window_is_read_every_time(run_dir, m
 
 
 def test_a_passing_failure_to_load_is_not_remembered(run_dir, monkeypatch):
-    """A refusal can come from a passing condition (out of memory while a model is resident), so
-    the next listing must read the bundle again instead of hiding a healthy run."""
-    monkeypatch.setattr(
-        dc, "_LOADABLE_VERDICTS", __import__("collections").OrderedDict(), raising = False
-    )
-    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1, raising = False)
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
+    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1)
     _Run(run_dir).save(5)
     real = dc.LoadedCheckpoint.tensors
     fail = {"on": True}
