@@ -494,9 +494,8 @@ def _cpus_restricted(cpu: Optional[int]) -> bool:
 
 def _explicit_threads() -> Optional[int]:
     """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux, Windows) the thread count above whenever it differs
-    from what sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix
-    count half the logical CPUs (Windows always: no topology read there) and ignore the affinity mask, so a host
-    without SMT or a cpuset needs the count passed."""
+    from what sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp halves the logical CPUs on Windows (and
+    on Linux before the fork's topology fix) and ignores the affinity mask: hosts without SMT need the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:

@@ -496,7 +496,7 @@ def _win_topology(
     e_cores = 0,
     smt = True,
 ):
-    """P cores (EfficiencyClass 1 on a hybrid part, else 0, SMT as given) then E cores (class 0, no SMT)."""
+    """P cores (EfficiencyClass 1 on a hybrid part) then E cores (class 0, no SMT)."""
     p_class = 1 if e_cores else 0
     buf = b"".join(_win_record(0, p_class, smt = smt) for _ in range(p_cores))
     return buf + b"".join(_win_record(0, 0, smt = False) for _ in range(e_cores)) + _win_record(2)
