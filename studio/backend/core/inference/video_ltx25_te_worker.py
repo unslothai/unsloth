@@ -808,8 +808,7 @@ class _Onload:
         self.device = device
         self.saved: list = []
         self.moved: dict = {}
-        # ``_Lookahead``'s uploads, ``id(tensor) -> (host data_ptr, device copy)``; a tensor whose host storage moved
-        # since is copied here as before.
+        # id(tensor) -> (host data_ptr, device copy); a moved host storage falls back to a plain copy.
         self.ready = ready or {}
 
     def _copy(self, key: int, tensor: Any) -> Any:
@@ -858,8 +857,7 @@ PREFETCH_ENV = "UNSLOTH_LTX25_TE_PREFETCH"
 
 
 def _host_sources(module: Any) -> Optional[list]:
-    """``(id(tensor), host data)`` for every tensor ``_Onload.add([module])`` moves, or None unless all are pinned:
-    only a pinned source copies asynchronously, so a pageable layer keeps the plain upload."""
+    """``(id, host data)`` per tensor ``_Onload`` moves, or None unless all are pinned (only pinned copies async)."""
     import torch
 
     seen: set = set()
@@ -878,8 +876,6 @@ def _host_sources(module: Any) -> Optional[list]:
 
 
 class _CudaUploads:
-    """The stream calls ``_Lookahead`` makes: uploads on a copy stream of their own, events between it and compute."""
-
     def __init__(self, device: Any) -> None:
         import torch
 
@@ -889,8 +885,7 @@ class _CudaUploads:
 
     @property
     def stream(self) -> Any:
-        # Created on the first upload: an encode with no pinned layer never touches the stream pool (whose first use
-        # costs the worker ~20 MiB of card memory).
+        # Lazy: the stream pool's first use costs ~20 MiB of card memory.
         if self._stream is None:
             self._stream = self.torch.cuda.Stream(device = self.device)
         return self._stream
@@ -899,7 +894,6 @@ class _CudaUploads:
         return self.torch.cuda.current_stream(self.device)
 
     def fence(self, events: list) -> None:
-        """Later uploads wait for these computes, so buffers dropped after this never feed an upload early."""
         for event in events:
             self.stream.wait_event(event)
 
@@ -930,7 +924,6 @@ class _CudaUploads:
 
 
 def _lookahead_ops(device: str) -> Any:
-    """``_CudaUploads`` for a CUDA card, else None: ROCm, XPU, MPS and the CPU keep the synchronous upload."""
     if (os.environ.get(PREFETCH_ENV) or "").strip() == "0":
         return None
     if str(device).split(":", 1)[0] != "cuda":
@@ -945,15 +938,12 @@ def _lookahead_ops(device: str) -> Any:
 
 
 class _Lookahead:
-    """One-layer lookahead for a streamed encode: layer i+1 uploads while layer i computes. Layer i waits on its
-    upload's event before reading it, and its buffers are dropped only once the copy stream waits on layer i's compute,
-    so the allocator cannot hand them to a later upload early. At most two layers are on the card, which
-    ``_stream_need_mib`` already prices."""
+    """Layer i+1 uploads while layer i computes. Layer i's buffers are freed only after the copy stream waits on its
+    compute, so the allocator cannot reuse them early. At most two layers resident (priced by ``_stream_need_mib``)."""
 
     def __init__(self, layers: list, ops: Any) -> None:
         self.ops = ops
         self.order = {id(layer): i for i, layer in enumerate(layers)}
-        # Read before any layer runs, while every layer still points at its host copy.
         self.sources = [_host_sources(layer) for layer in layers]
         self.pending: dict = {}
         self.retired: list = []
@@ -968,10 +958,9 @@ class _Lookahead:
         self.layers += 1
 
     def take(self, module: Any) -> Optional[dict]:
-        """This layer's uploaded copies, compute ordered after them; the next layer's upload is issued."""
         index = self.order.get(id(module))
         entry = self.pending.pop(index, None) if index is not None else None
-        # An upload for a layer that did not run next is dropped, never read.
+        # An out-of-order layer's upload is dropped, never read.
         self.pending.clear()
         if entry is not None:
             self.ops.wait_ready(entry[1])
@@ -1160,7 +1149,7 @@ def _encode_on(
             raise
         oom = str(exc)
     if oom is not None and config["_stream_stats"].get("prefetched_layers"):
-        # The lookahead holds a second layer: try the one-layer upload on the card before the CPU.
+        # Retry without the lookahead's second layer before falling back to CPU.
         _empty_accelerator_cache(device)
         print(
             f"video.ltx25_te: out of memory with the layer lookahead on {device} ({oom}); retrying without it",

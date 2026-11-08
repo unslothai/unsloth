@@ -1378,8 +1378,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             return lend_resident_dit_for_encode(pipe, client)
 
         def _hosts(*texts: list[str]) -> list:
-            """The client's own cached tensors (read only) for each prompt list, encoded one after another under
-            one lease: the denoiser's room is lent and pinned back once per request, not once per prompt."""
+            """Cached (read-only) tensors per prompt list, all encoded under one lease."""
             restore = _lend(*texts)
             try:
                 return [client.encode(t, max_sequence_length, copy = False) for t in texts]
@@ -1394,7 +1393,6 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
                     restore()
 
         def _one(texts: list[str], host: Optional[tuple] = None) -> tuple[Any, Any]:
-            # Every op below returns a new tensor, so the cache is never written.
             cached, mask = host if host is not None else _hosts(texts)[0]
             batch = cached.shape[0]
             embeds = cached.to(device = device, dtype = dtype)
@@ -1427,7 +1425,6 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
                     f"`negative_prompt` has batch size {len(negative)}, but `prompt` has batch size "
                     f"{batch_size}."
                 )
-            # Positive then negative, the same two encodes as before, inside one lease.
             positive_host, negative_host = _hosts(
                 [p.strip() for p in prompt], [p.strip() for p in negative]
             )

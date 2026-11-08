@@ -61,8 +61,7 @@ def _three_layer_model(width = 8):
 
 
 class _SimUploads:
-    """A simulated copy engine: an upload's buffers hold NaN until compute waits on its event, the way a card's
-    weights are garbage until the copy stream's event fires. Logs every call in order."""
+    """Simulated copy engine: uploads hold NaN until compute waits on their event. Logs every call."""
 
     def __init__(
         self,
@@ -72,7 +71,7 @@ class _SimUploads:
         self.log, self.land = log, land
         self.uploads = 0
         self.dones = 0
-        self.buffers = []  # one list of weakrefs per upload
+        self.buffers = []
         self.max_live = 0
 
     def live_uploads(self):
@@ -130,7 +129,6 @@ def _streamed_encode(
     log = None,
     pinned = True,
 ):
-    """The streamed encode with ``sim`` as the copy engine; ``log`` also gets each layer's compute start / end."""
     monkeypatch.setattr(torch.Tensor, "is_pinned", lambda self: pinned)
     monkeypatch.setattr(worker, "_lookahead_ops", lambda device: sim)
     parts = worker._stream_parts(model)
@@ -210,7 +208,6 @@ def test_kill_switch_restores_the_synchronous_upload_bit_for_bit(monkeypatch):
     gate = worker._lookahead_ops
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(worker, "_CudaUploads", lambda device: sim)
-    # the real gate, asked about a CUDA card
     assert gate("cuda:0") is sim
     monkeypatch.setenv(worker.PREFETCH_ENV, "0")
     assert gate("cuda:0") is None
