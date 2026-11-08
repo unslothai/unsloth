@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import copy
+import json
 import os
 import sys
 import threading
@@ -1651,8 +1652,6 @@ def test_float_rows_serialize_like_the_element_loop():
     rows = np.random.default_rng(0).standard_normal((4, 33)).astype(np.float32)
     rows[0, :3] = [np.nan, np.inf, -0.0]
     for row in rows:
-        import json
-
         fast = inference_route._embedding_payload(row, "float")
         assert json.dumps(fast) == json.dumps([float(x) for x in row])
         assert all(type(x) is float for x in fast)

@@ -38211,10 +38211,10 @@ def _embedding_payload(vector, encoding_format: str):
         import base64
         import numpy as np
         return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    # float16/32/64 numpy rows only: longdouble tolist() keeps numpy scalars.
     if getattr(vector, "ndim", None) == 1 and getattr(
         getattr(vector, "dtype", None), "char", None
     ) in ("e", "f", "d"):
-        # A float numpy row: tolist() gives the same Python floats without a per-element loop.
         return vector.tolist()
     return [float(x) for x in vector]
 
@@ -38384,17 +38384,9 @@ async def _studio_embeddings(
         # Pass the captured model: defaults re-read the live setting and can mix models.
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
-        count_many = getattr(count, "many", None)
-
-        def _counts(items):
-            # One /tokenize request (llama-server) or tokenizer call (sentence-transformers) per
-            # batch instead of one per input; the counts are the same.
-            if count_many is not None and len(items) > 1:
-                return list(count_many(items))
-            return [count(text) for text in items]
-
         inputs = texts
-        token_counts = _counts(inputs)
+        # One batched /tokenize or tokenizer call instead of one per input.
+        token_counts = rag_embeddings._many(count, inputs)
         if limit and max(token_counts) > limit:
             if not _embeddings_truncate(body):
                 raise HTTPException(
@@ -38405,7 +38397,7 @@ async def _studio_embeddings(
             logger.warning(
                 "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
-            token_counts = _counts(inputs)
+            token_counts = rag_embeddings._many(count, inputs)
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."
