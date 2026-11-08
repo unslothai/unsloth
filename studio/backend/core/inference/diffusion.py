@@ -11588,6 +11588,7 @@ class DiffusionBackend:
                 keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
+                target = target,
                 **_comfy_keep_fp32_pricing(fam, target),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
@@ -15924,6 +15925,14 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "quantized Linears, which cannot carry adapters. Set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / "
             "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
             "those layers)."
+        )
+    from .diffusion_packed_block import PACKED_BLOCK_ENV, packed_block_layers
+
+    if packed_block_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's nvfp4 / mxfp8 layers are kept packed and "
+            f"widened per layer (no native runtime on this GPU), which cannot carry adapters. Set {PACKED_BLOCK_ENV}=0, "
+            "or name the LoRA in the API load request (Unsloth then dequantizes those layers at load)."
         )
     if fp8_stored_layers(getattr(pipe, "transformer", None)):
         return (
