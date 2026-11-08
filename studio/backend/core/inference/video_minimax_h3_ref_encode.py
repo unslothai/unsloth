@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 reference-video VAE condition, normalised per 17-frame chunk instead of as one float32 clip
-(plus the padded copy ``_encode`` makes). Elementwise, so bit-identical; only over the mirrored diffusers 0.42.1
-sources. ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables."""
+"""MiniMax-H3 reference-video VAE condition normalised per 17-frame chunk, not as one float32 clip; bit-identical
+(elementwise), only over the mirrored diffusers 0.42.1 sources. ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables."""
 
 from __future__ import annotations
 

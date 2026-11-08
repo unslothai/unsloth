@@ -51,7 +51,7 @@ def shim(monkeypatch):
         pytest.skip("diffusers H3 encoder source this shim does not mirror")
     monkeypatch.setattr(encoders, "encode_vae_condition", original)
     assert ref_encode.install_h3_chunked_reference_encode()
-    assert ref_encode.install_h3_chunked_reference_encode()  # idempotent
+    assert ref_encode.install_h3_chunked_reference_encode()
     installed = encoders.encode_vae_condition
     assert installed is not original and installed.__wrapped__ is original
     return original, installed
