@@ -1435,11 +1435,10 @@ export function startNativeViews(): () => void {
     if (shownView && movingWindow()) {
       const tabId = shownView;
       coverForDrag(tabId);
-      if (!layered && parkable(tabId)) {
-        // Outside apply: forgotten, or a drop back at the same place would match it and never show the page.
-        sent = "";
-        void parkForDrag(tabId);
-      }
+      // Outside apply: forgotten, or a gesture ending where it started (before any sync) would match it
+      // and never reopen the cut or show the page.
+      sent = "";
+      if (!layered && parkable(tabId)) void parkForDrag(tabId);
     }
     if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
   };

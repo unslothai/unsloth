@@ -75,8 +75,8 @@ test("a moved or resized floating window parks its page under the picture on eve
   assert.match(NATIVE, /const covered = movingWindow\(\) \|\| \(!layered && coveredNow\(rect\)\);/);
   assert.match(body("applyView"), /if \(desired && "covered" in desired && movingWindow\(\) && parkable\(desired\.tabId\)\) \{\s*await parkForDrag/);
   // On top of the app nothing syncs during the gesture, so the first frame parks it.
-  // and forgets what was last sent, so a drop back at the same place still shows the page again.
-  assert.match(NATIVE, /coverForDrag\(tabId\);\s*if \(!layered && parkable\(tabId\)\) \{[^}]*sent = "";\s*void parkForDrag\(tabId\);/);
+  // and, on every platform, forgets what was last sent, so a gesture ending where it started shows the page again.
+  assert.match(NATIVE, /coverForDrag\(tabId\);\s*(\/\/[^\n]*\n\s*)*sent = "";\s*if \(!layered && parkable\(tabId\)\) void parkForDrag\(tabId\);/);
   assert.match(readSrc("features/browser/floating-preview.ts"), /event\.preventDefault\(\);\s*announceGrab\(\);/);
 });
 
