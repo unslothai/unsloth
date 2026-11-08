@@ -2484,6 +2484,8 @@ function VideoGenerator({
       if (!statusKnown) {
         setPendingPresetFps({ fps: video.fps });
         setDurationIntentSeconds(video.num_frames / video.fps);
+        // Kept when the incoming window offers it, else reseated from the intent.
+        setNumFrames(video.num_frames);
       } else if (fpsOptions?.includes(video.fps)) {
         const option = restoredClipDuration(
           videoDurationOptions(durationTargets, video.fps, frameStep, frameOffset, minFrames, maxFrames),
