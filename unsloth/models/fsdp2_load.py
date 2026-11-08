@@ -277,10 +277,12 @@ def _refuse_weight_dependent_lora_init(model):
         modules = m.__dict__.get("_modules") or {}
         m = modules.get("base_model") or modules.get("model")
         seen += 1
+    # Random inits (True / "gaussian" / "orthogonal") read only the module's full in / out features and the
+    # weight dtype, so a rank's rows give the one-process factors; the others read the weight itself.
     bad = {
         name: cfg.init_lora_weights
         for name, cfg in configs.items()
-        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian")
+        if getattr(cfg, "init_lora_weights", True) not in (True, False, "gaussian", "orthogonal")
     }
     if any(getattr(cfg, "use_dora", False) for cfg in configs.values()) and any(
         _sharded_chunk(p) for p in model.parameters()
@@ -289,8 +291,8 @@ def _refuse_weight_dependent_lora_init(model):
     if bad:
         raise ValueError(
             f"Unsloth: init_lora_weights {bad} reads the base weight, which native FSDP2 sharded loading "
-            "holds only as this rank's rows; use init_lora_weights = True / 'gaussian', or load the full "
-            "model (no sharded loading)."
+            "holds only as this rank's rows; use init_lora_weights = True / 'gaussian' / 'orthogonal', or load "
+            "the full model (no sharded loading)."
         )
 
 
