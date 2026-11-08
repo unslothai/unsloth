@@ -3,11 +3,8 @@
 
 """Bit-identical one-kernel RoPE for FLUX.3's eager attention; off via UNSLOTH_DIFFUSION_FLUX3_FUSED_ROPE=0.
 
-``Flux3AttnProcessor`` rotates the fp32 output of ``norm_q`` / ``norm_k`` with diffusers' ``apply_rotary_emb``: an
-unbind, a negate, a stack, two products and a sum, each a kernel with an fp32 temporary, for Q and K of all 38
-blocks. The FLUX.2 RoPE kernel computes the same products and sum in fp32 with no FMA contraction, so the result is
-bit-identical. A compiled block keeps stock (Inductor already fuses it), so this only changes eager renders: the
-renders before a deferred compile, LoRA renders and speed ``off``.
+Reuses the FLUX.2 kernel (fp32 products and sum, no FMA contraction) on the fp32 Q / K norm outputs. Compiled blocks
+keep stock, so only eager renders change: before a deferred compile, with LoRA, and speed ``off``.
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ _STOCK: dict = {}
 _ORIGINAL: list = [None]
 # Set by the first failed launch (JIT / driver / PTX): the rest of the load runs stock, not one failing JIT per call.
 _FAILED = [False]
-# Fused launches (engagement census; eager only, never read inside a traced region).
+# Fused launches (eager only).
 _CALLS = [0]
 
 
@@ -47,7 +44,7 @@ def _kernel() -> Any:
 
 
 def wanted(device: Any = "cuda") -> bool:
-    """Any load dtype: the processor rotates the fp32 output of its Q / K norms either way."""
+    """Any load dtype: the processor rotates fp32 Q / K norm outputs either way."""
     if disabled():
         return False
     try:
