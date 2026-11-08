@@ -125,7 +125,7 @@ def _triton_widen(
     out = torch.empty((rows, 2 * half_k), dtype = dtype, device = codes.device)
     if rows == 0 or half_k == 0:
         return out
-    block_r, block_c = 16, 64
+    block_r, block_c = 32, 64
     grid = (triton.cdiv(rows, block_r), triton.cdiv(half_k, block_c))
     rs = row_scale.view(torch.float32) if row_scale is not None else out
     pq = pre_quant.view(torch.float32) if pre_quant is not None else out

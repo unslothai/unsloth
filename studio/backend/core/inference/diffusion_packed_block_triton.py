@@ -99,6 +99,8 @@ def nvfp4_widen_kernel(
     if HAS_PQ:
         lo = lo * tl.load(pq_ptr + 2 * j64, mask = jmask, other = 1.0)[None, :]
         hi = hi * tl.load(pq_ptr + 2 * j64 + 1, mask = jmask, other = 1.0)[None, :]
-    dst = out_ptr + r64[:, None] * (2 * half_k) + 2 * j64[None, :]
-    _store(dst, lo, mask)
-    _store(dst + 1, hi, mask)
+    # even column = low nibble: interleave into one contiguous row segment (one coalesced store)
+    w = tl.reshape(tl.join(lo, hi), (BLOCK_R, 2 * BLOCK_C))
+    c = tl.program_id(1).to(tl.int64) * (2 * BLOCK_C) + tl.arange(0, 2 * BLOCK_C)
+    dst = out_ptr + r64[:, None] * (2 * half_k) + c[None, :]
+    _store(dst, w, rmask[:, None] & (c < 2 * half_k)[None, :])
