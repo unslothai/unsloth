@@ -2585,11 +2585,25 @@ export const hi = {
         gpuUnusableDetail: "पहचाना गया, लेकिन PyTorch इसका उपयोग नहीं कर सकता",
         detailedView: "विस्तृत दृश्य",
         detailedViewDescription:
-          "फ़्लोटिंग विंडो में CPU लोड तथा हर GPU का लोड, तापमान और पावर दिखाएँ।",
-        cpuLoad: "CPU लोड",
+          "फ़्लोटिंग विंडो में हर GPU का लोड, तापमान और पावर दिखाएँ।",
         gpuLoad: "GPU लोड",
         temperature: "तापमान",
         power: "पावर",
+        memory: "मेमोरी",
+        gpuInUse: "GPU द्वारा उपयोग में",
+        availableForModels: "मॉडल के लिए उपलब्ध",
+        refreshRate: "रीफ़्रेश दर",
+        refreshRateDescription: "खुला रहने पर फ़्लोटिंग मॉनिटर कितनी बार मेमोरी और GPU उपयोग पढ़ता है।",
+        refreshEvery: "हर {seconds} से.",
+        unsloth: "Unsloth",
+        otherApps: "अन्य ऐप्स",
+        otherInUse: "अन्य उपयोग",
+        freeLabel: "खाली",
+        unslothApp: "Unsloth ऐप",
+        unslothShare: "Unsloth का हिस्सा दिखाएं",
+        unslothShareDescription: "मेमोरी को Unsloth, अन्य ऐप्स और खाली हिस्से में बांटें।",
+        modelBreakdown: "मॉडल के अनुसार विवरण",
+        modelBreakdownDescription: "मेमोरी बार में Unsloth के हिस्से को हर लोड किए गए मॉडल और बाकी ऐप में बांटें।",
       },
       gpu: {
         title: "GPU डिवाइस",
@@ -2601,7 +2615,7 @@ export const hi = {
         unavailable: "उपलब्ध नहीं",
         detecting: "GPU खोजे जा रहे हैं...",
         unreadable: "इस सर्वर का हार्डवेयर नहीं पढ़ा जा सका।",
-        noGpu: "कोई दृश्यमान GPU नहीं मिला। केवल-CPU संसाधन ऊपर दिखाए गए हैं।",
+        noGpu: "कोई अलग GPU नहीं मिला।",
         noUsableGpu: "इस मशीन का कोई भी GPU PyTorch के लिए उपयोग योग्य नहीं है।",
         mismatchCpuBuild:
           "PyTorch केवल-CPU बिल्ड ({version}) है, इसलिए नीचे दिए गए GPU उपयोग नहीं किए जा सकते। GPU समर्थन बहाल करने के लिए इंस्टॉलेशन की मरम्मत करें।",
@@ -2677,7 +2691,7 @@ export const hi = {
           "llama.cpp backend gguf इनफ़रेंस cuda rocm hip vulkan metal cpu gpu एक्सेलेरेटर prebuilt बदलें इंजन",
       },
       modelMemory: {
-        title: "मॉडल मेमोरी",
+        title: "मॉडल लोडिंग",
         keepResident: "मॉडल को GPU मेमोरी में रखें",
         keepResidentDescription: "प्रॉम्प्ट के बीच VRAM में बना रहता है।",
         keepResidentHint: "जब तक मॉडल लोड रहता है, वेट्स सिस्टम RAM को वापस नहीं दिए जाते। निष्क्रिय होने पर स्वतः अनलोड बंद कर देता है, और जब वेट्स वास्तव में होस्ट RAM में रहते हैं (यूनिफाइड मेमोरी, या आंशिक GPU ऑफ़लोड) तब --mlock भी भेजता है, ताकि OS उन्हें पेज आउट करके आपके अगले प्रॉम्प्ट पर दोबारा अपलोड न करे।",
@@ -2860,7 +2874,7 @@ export const hi = {
       configurationDocs: "दस्तावेज़",
       configurationFlagsSuffix: "देखें।",
       modelNote:
-        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
+        "Claude Code और Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल या MLX मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
         title: "लोकल मॉडल को सबएजेंट के रूप में उपयोग करें",
         description:
@@ -2936,6 +2950,8 @@ export const hi = {
     },
     chat: {
       groups: {
+        replies: { title: "उत्तर" },
+        thinkingTools: { title: "सोच और टूल" },
         conversations: { title: "बातचीत" },
         files: { title: "फ़ाइलें और पेस्ट" },
         display: { title: "दिखावट" },
@@ -3020,11 +3036,20 @@ export const hi = {
       showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
       showReplyTimesKeywords:
         "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
-      showGenerationDetails: "जनरेशन विवरण",
+      showGenerationDetails: "गति और लोडिंग की विस्तृत जानकारी",
       showGenerationDetailsDescription:
-        "टोकन गिनती के साथ प्रॉम्प्ट और जवाब की लाइव गति दिखाएँ, और यह भी कि मॉडल की परतें कहाँ लोड हुईं।",
+        "लाइव रीडआउट में प्रॉम्प्ट पढ़ने की गति, टोकन गिनती और ड्राफ़्ट स्वीकृति जोड़ता है, और दिखाता है कि मॉडल की लेयर कहाँ लोड हुईं।",
       showGenerationDetailsKeywords:
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "गति और संदर्भ आँकड़े",
+      generationStatsUpdatesDescription:
+        "रीयल-टाइम उत्तर स्ट्रीम होते समय प्रति सेकंड टोकन और संदर्भ उपयोग गिनता है। पूरा होने पर हर उत्तर खत्म होने पर इन्हें अपडेट करता है।",
+      generationStatsUpdatesHint:
+        "रीयल-टाइम उत्तर लिखे जाते समय उत्तर के नीचे प्रति सेकंड टोकन संकेतक और चैट के ऊपर संदर्भ बार को प्रति सेकंड कुछ बार ताज़ा करता है। पूरा होने पर हर उत्तर खत्म होने के बाद इन्हें एक बार अपडेट करता है। रीयल-टाइम से धीमापन या कम प्रदर्शन हो सकता है, खासकर पुरानी या व्यस्त मशीनों पर।",
+      generationStatsUpdatesSettled: "पूरा होने पर",
+      generationStatsUpdatesRealtime: "रीयल-टाइम",
+      generationStatsUpdatesKeywords:
+        "रीयल-टाइम लाइव अपडेट गति संदर्भ आँकड़े realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       turnNavigation: "टर्न नेविगेशन",
@@ -5200,6 +5225,7 @@ export const hi = {
     monitor: {
       dragHandleLabel: "लाइव मॉनिटर हिलाएँ। एरो कुंजियाँ इसे थोड़ा खिसकाती हैं, डबल-क्लिक करने पर यह रीसेट हो जाता है।",
       reconnecting: "फिर से कनेक्ट हो रहा है...",
+      resizeHint: "चौड़ाई बदलने के लिए कोई किनारा या कोना खींचें। डबल-क्लिक से रीसेट होता है।",
     },
   },
   projectsPage: {

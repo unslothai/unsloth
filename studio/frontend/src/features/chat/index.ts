@@ -100,6 +100,7 @@ export {
   prefillPercent,
 } from "./lib/generation-progress";
 export type { LiveDecodeProgress } from "./stores/chat-runtime-store";
+export { useThrottledLiveGeneration } from "./hooks/use-throttled-live-generation";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,

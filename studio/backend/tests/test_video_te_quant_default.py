@@ -12,6 +12,12 @@ import types
 import pytest
 import torch
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 import core.inference.diffusion_te_prequant as tpq
 from core.inference.video import video_te_quant_request
 from core.inference.video_families import _FAMILIES, detect_video_family
@@ -341,6 +347,7 @@ def _converter():
     return module
 
 
+@needs_torchao
 def test_the_converter_can_store_a_tied_embedding_once(tmp_path, monkeypatch):
     """--drop-tied-copies writes UMT5's shared/embed_tokens pair once, the round trip still verifies, and the fp8
     loader fills the alias back from the model's own tie."""
@@ -592,6 +599,7 @@ def test_ltx25_budgets_the_dense_peak_unless_the_hosted_encoder_applies(monkeypa
     )
 
 
+@needs_torchao
 def test_drop_tied_copies_keeps_a_tied_lm_head(tmp_path):
     import core.inference.prequant_safetensors as ps
 

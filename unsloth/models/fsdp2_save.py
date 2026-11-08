@@ -118,6 +118,14 @@ def _composed_writer_rank(meshes):
         return None
 
 
+def _recorded_mesh(model):
+    """The mesh shard_model recorded on the root (under a torch.compile wrapper, on `_orig_mod`)."""
+    if not isinstance(model, torch.nn.Module):
+        return None
+    model = model._modules.get("_orig_mod", model)
+    return model.__dict__.get("_unsloth_fsdp2_mesh", None)
+
+
 def mesh_writer_rank(model):
     """Lowest global rank of the model's FSDP2 mesh: a sub-mesh without rank 0 never gathers there."""
     dist = _dist()
@@ -131,6 +139,15 @@ def mesh_writer_rank(model):
             for p in model.parameters():
                 if isinstance(p, DTensor) and p.device_mesh not in meshes:
                     meshes.append(p.device_mesh)
+            if meshes:
+                # The dp mesh too: unsharded parameters (eval forward, no reshard) or every
+                # parameter in ignored_params leave only tp DTensors, one writer per tp group.
+                for dp_mesh in (
+                    *map(_unit_mesh, fsdp2_units(model)),
+                    _recorded_mesh(model),
+                ):
+                    if dp_mesh is not None and dp_mesh not in meshes:
+                        meshes.append(dp_mesh)
             if len(meshes) > 1:
                 writer = _composed_writer_rank(meshes)
                 if writer is not None:
@@ -140,7 +157,7 @@ def mesh_writer_rank(model):
             # Unsharded parameters (eval forward, no reshard) carry no mesh; the units still do.
             mesh = next(filter(None, map(_unit_mesh, fsdp2_units(model))), None)
         if mesh is None:
-            mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
+            mesh = _recorded_mesh(model)
     try:
         return int(mesh.mesh.min()) if mesh is not None else 0
     except Exception:

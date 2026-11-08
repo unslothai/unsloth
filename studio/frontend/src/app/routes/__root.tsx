@@ -99,6 +99,7 @@ import {
 
   useState,
 } from "react";
+import { FIND_SCOPE_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { AppProvider } from "../provider";
 import { useDesktopShellReady } from "../desktop-shell-ready";
 import { type HelpAction, helpActionAvailable, runHelpAction } from "@/components/help-actions";
@@ -405,6 +406,7 @@ const DEFAULT_DOCUMENT_TITLE = "Unsloth";
 
 function RootLayout() {
   const t = useT();
+  const findScopeRef = useSurfaceRef<HTMLDivElement>(FIND_SCOPE_SURFACE);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const routeOwnsReloadReadiness =
@@ -747,6 +749,7 @@ function RootLayout() {
           >
             <Navbar />
             <div
+              ref={findScopeRef}
               {...{ [FIND_SCOPE_ATTRIBUTE]: "" }}
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : nonChatTopInset}`}
             >

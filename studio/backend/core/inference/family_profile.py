@@ -80,6 +80,8 @@ class FamilyProfile:
     auto_scheme_skip: frozenset[str] = frozenset()
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
+    # ROCm RDNA AUTO W8A8 evidence (gfx1151); None = bf16. Kill switch UNSLOTH_NATIVE_INT8_ACT=0.
+    rdna_auto_w8a8: Optional[str] = None
     # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
     auto_prequant_when_resident: frozenset[str] = frozenset()
     # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) decoder blocks; None = int8 falls back to fp8.

@@ -2653,6 +2653,21 @@ export const th = {
         summary: "คำขอ ข้อผิดพลาด และการใช้โทเค็นแบบสด",
         status: "ใช้งานอยู่ {active} · ล่าสุด {recent} · {model}",
         noModelLoaded: "ไม่ได้โหลดโมเดล",
+        memory: "หน่วยความจำ",
+        gpuInUse: "GPU ที่ใช้งาน",
+        availableForModels: "ว่างสำหรับโมเดล",
+        refreshRate: "อัตราการรีเฟรช",
+        refreshRateDescription: "ความถี่ที่มอนิเตอร์แบบลอยอ่านการใช้หน่วยความจำและ GPU ขณะเปิดอยู่",
+        refreshEvery: "ทุก {seconds} วินาที",
+        unsloth: "Unsloth",
+        otherApps: "แอปอื่น",
+        otherInUse: "การใช้งานอื่น",
+        freeLabel: "ว่าง",
+        unslothApp: "แอป Unsloth",
+        unslothShare: "แสดงส่วนของ Unsloth",
+        unslothShareDescription: "แบ่งหน่วยความจำเป็นส่วนที่ Unsloth ใช้ ส่วนที่แอปอื่นใช้ และส่วนที่ว่าง",
+        modelBreakdown: "แยกตามโมเดล",
+        modelBreakdownDescription: "แบ่งส่วนของ Unsloth ในแถบหน่วยความจำออกเป็นแต่ละโมเดลที่โหลดและส่วนที่เหลือของแอป",
         autoOpen: "เปิดตัวตรวจสอบแบบลอยโดยอัตโนมัติ",
         autoOpenDescription: "เปิดแผงขนาดเล็กเมื่อมีทราฟฟิก API เข้ามา",
         cpu: "CPU",
@@ -2668,8 +2683,7 @@ export const th = {
         gpuUnusableDetail: "ตรวจพบ แต่ PyTorch ใช้งานไม่ได้",
         detailedView: "มุมมองแบบละเอียด",
         detailedViewDescription:
-          "แสดงโหลด CPU และโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
-        cpuLoad: "โหลด CPU",
+          "แสดงโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
         gpuLoad: "โหลด GPU",
         temperature: "อุณหภูมิ",
         power: "พลังงาน",
@@ -2685,7 +2699,7 @@ export const th = {
         unavailable: "ไม่พร้อมใช้งาน",
         detecting: "กำลังตรวจหา GPU...",
         unreadable: "ไม่สามารถอ่านฮาร์ดแวร์ของเซิร์ฟเวอร์นี้ได้",
-        noGpu: "ไม่พบ GPU ทรัพยากรที่แสดงด้านบนเป็นของ CPU เท่านั้น",
+        noGpu: "ไม่พบ GPU แยก",
         noUsableGpu: "ไม่มี GPU ในเครื่องนี้ที่ PyTorch ใช้งานได้",
         mismatchCpuBuild:
           "PyTorch เป็นบิลด์สำหรับ CPU เท่านั้น ({version}) จึงใช้ GPU ด้านล่างไม่ได้ ซ่อมแซมการติดตั้งเพื่อกู้คืนการรองรับ GPU",
@@ -2768,7 +2782,7 @@ export const th = {
           "แบ็กเอนด์ การอนุมาน เอนจิน โฟลเดอร์ พาธ llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "หน่วยความจำโมเดล",
+        title: "การโหลดโมเดล",
         keepResident: "เก็บโมเดลไว้ในหน่วยความจำ GPU",
         keepResidentDescription: "คงอยู่ใน VRAM ระหว่างพรอมต์",
         keepResidentHint:
@@ -2962,7 +2976,7 @@ export const th = {
       configurationDocs: "เอกสาร",
       configurationFlagsSuffix: "สำหรับแฟล็ก",
       modelNote:
-        "Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
+        "Claude Code และ Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server หรือโมเดล MLX เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
       subagent: {
         title: "ใช้โมเดลภายในเครื่องเป็นเอเจนต์ย่อย",
         description:
@@ -3033,6 +3047,8 @@ export const th = {
     },
     chat: {
       groups: {
+        replies: { title: "คำตอบ" },
+        thinkingTools: { title: "การคิดและเครื่องมือ" },
         conversations: {
           title: "การสนทนา",
         },
@@ -3124,11 +3140,20 @@ export const th = {
       showReplyTimesDescription: "แสดงเวลาที่การตอบกลับแต่ละครั้งเสร็จสิ้นไว้ใต้การตอบกลับ",
       showReplyTimesKeywords:
         "เวลา นาฬิกา วันที่ ชั่วโมง เมื่อใด เสร็จ มาถึง ตอบกลับ คำตอบ ข้อความ timestamp time clock date reply response message",
-      showGenerationDetails: "รายละเอียดการสร้าง",
+      showGenerationDetails: "ข้อมูลความเร็วและการโหลดแบบละเอียด",
       showGenerationDetailsDescription:
-        "แสดงความเร็วของพรอมต์และการตอบกลับแบบเรียลไทม์พร้อมจำนวนโทเค็น และตำแหน่งที่โหลดเลเยอร์ของโมเดล",
+        "เพิ่มความเร็วการอ่านพรอมต์ จำนวนโทเค็น และอัตราการยอมรับร่างลงในการแสดงผลสด และแสดงว่าเลเยอร์ของโมเดลโหลดไว้ที่ใด",
       showGenerationDetailsKeywords:
         "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "สถิติความเร็วและบริบท",
+      generationStatsUpdatesDescription:
+        "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",
+      generationStatsUpdatesHint:
+        "แบบเรียลไทม์จะรีเฟรชตัวแสดงโทเค็นต่อวินาทีใต้คำตอบและแถบบริบทด้านบนแชทหลายครั้งต่อวินาทีขณะเขียนคำตอบ แบบเมื่อเสร็จจะอัปเดตครั้งเดียวหลังแต่ละคำตอบจบ แบบเรียลไทม์อาจทำให้หน่วงหรือประสิทธิภาพลดลง โดยเฉพาะบนเครื่องรุ่นเก่าหรือเครื่องที่ทำงานหนัก",
+      generationStatsUpdatesSettled: "เมื่อเสร็จ",
+      generationStatsUpdatesRealtime: "เรียลไทม์",
+      generationStatsUpdatesKeywords:
+        "เรียลไทม์ สด อัปเดต ความเร็ว บริบท สถิติ realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
@@ -5321,6 +5346,7 @@ export const th = {
     },
     monitor: {
       dragHandleLabel: "ย้ายตัวตรวจสอบแบบเรียลไทม์ ใช้ปุ่มลูกศรเพื่อขยับ ดับเบิลคลิกเพื่อรีเซ็ต",
+      resizeHint: "ลากขอบหรือมุมเพื่อเปลี่ยนความกว้าง ดับเบิลคลิกเพื่อรีเซ็ต",
       reconnecting: "กำลังเชื่อมต่อใหม่...",
     },
   },

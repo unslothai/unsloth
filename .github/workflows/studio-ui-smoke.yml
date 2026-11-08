@@ -99,9 +99,7 @@ permissions:
 jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
-    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
-    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # Do not tighten: a timeout is for hangs, and runner stalls would turn into red builds.
     timeout-minutes: 30
     strategy:
@@ -200,15 +198,17 @@ jobs:
         run: |
           pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+          # Browser builds differ per OS release; one restored onto another release exits at launch.
+          echo "os=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
 
-      # Keyed on the resolved Playwright version, which decides the browser builds.
+      # Keyed on the OS release and the resolved Playwright version, which decide the browser builds.
       - name: Restore the Playwright browser cache
         id: pw-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
       - name: Restore the apt archive cache (webkit's .deb set)
         id: apt-cache
@@ -217,7 +217,7 @@ jobs:
         continue-on-error: true
         with:
           path: ${{ github.workspace }}/.apt-archives
-          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-${{ matrix.engine_key }}-v1
+          key: apt-archives-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ matrix.engine_key }}-v1
 
       - name: Install Playwright browsers
         id: pw-install
@@ -357,7 +357,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ steps.pw.outputs.version }}-${{ matrix.engine_key }}-v2
 
       - name: Drive MTP companion download visibility
         if: matrix.shard == 'extra'
@@ -789,9 +789,7 @@ jobs:
 
   ui-indicator:
     name: Loaded-models indicator (cross-browser)
-    # ubuntu-24.04, not ubuntu-latest: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
-    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     env:
       # A release published mid-run puts an update card over the controls the scripts click.
       UNSLOTH_DISABLE_UPDATE_CHECK: '1'
@@ -834,15 +832,17 @@ jobs:
         run: |
           pip install 'playwright>=1.45,<2'
           echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+          # Browser builds differ per OS release; one restored onto another release exits at launch.
+          echo "os=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
 
-      # Keyed on the resolved Playwright version, which decides the browser builds.
+      # Keyed on the OS release and the resolved Playwright version, which decide the browser builds.
       - name: Restore the Playwright browser cache
         id: pw-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Restore the apt archive cache (webkit's .deb set)
         id: apt-cache
@@ -851,7 +851,7 @@ jobs:
         continue-on-error: true
         with:
           path: ${{ github.workspace }}/.apt-archives
-          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-cfw-v1
+          key: apt-archives-${{ runner.os }}-${{ steps.pw.outputs.os }}-cfw-v1
 
       - name: Install Playwright browsers
         id: pw-install
@@ -931,7 +931,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v2
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ steps.pw.outputs.version }}-cfw-v2
 
       - name: Cross-browser loaded-models indicator
         # Engines run in parallel, each with its own port and UNSLOTH_STUDIO_HOME, since the

@@ -2633,11 +2633,25 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
-        cpuLoad: "עומס מעבד",
+          "הצגת עומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",
+        memory: "זיכרון",
+        gpuInUse: "בשימוש ה-GPU",
+        availableForModels: "זמין למודלים",
+        refreshRate: "קצב רענון",
+        refreshRateDescription: "באיזו תדירות המוניטור הצף קורא את השימוש בזיכרון וב-GPU כשהוא פתוח.",
+        refreshEvery: "כל {seconds} שנ׳",
+        unsloth: "Unsloth",
+        otherApps: "אפליקציות אחרות",
+        otherInUse: "שימוש אחר",
+        freeLabel: "פנוי",
+        unslothApp: "אפליקציית Unsloth",
+        unslothShare: "הצגת החלק של Unsloth",
+        unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
+        modelBreakdown: "פירוט לפי מודל",
+        modelBreakdownDescription: "חלוקת החלק של Unsloth בסרגל הזיכרון לכל מודל טעון ולשאר האפליקציה.",
       },
       gpu: {
         title: "התקני GPU",
@@ -2649,7 +2663,7 @@ export const he = {
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
-        noGpu: "לא זוהה GPU גלוי. משאבי CPU בלבד מוצגים למעלה.",
+        noGpu: "לא זוהה GPU ייעודי.",
         noUsableGpu: "אף GPU במחשב זה אינו שמיש על ידי PyTorch.",
         mismatchCpuBuild:
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
@@ -2735,7 +2749,7 @@ export const he = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
-        title: "זיכרון מודל",
+        title: "טעינת מודל",
         keepResident: "שמור מודל בזיכרון ה-GPU",
         keepResidentDescription: "הישאר ב-VRAM בין פרומפטים.",
         keepResidentHint:
@@ -2924,7 +2938,7 @@ export const he = {
       configurationDocs: "תיעוד",
       configurationFlagsSuffix: "עבור דגלים.",
       modelNote:
-        "Codex דורש מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
+        "Claude Code ו-Codex דורשים מודל GGUF המוגש על ידי llama-server, או מודל MLX. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
       subagent: {
         title: "השתמש במודל מקומי כתת-סוכן",
         description:
@@ -2998,6 +3012,8 @@ export const he = {
     },
     chat: {
       groups: {
+        replies: { title: "תשובות" },
+        thinkingTools: { title: "חשיבה וכלים" },
         conversations: {
           title: "שיחות",
         },
@@ -3091,11 +3107,20 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
       showGenerationDetailsDescription:
-        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "נתוני מהירות והקשר",
+      generationStatsUpdatesDescription:
+        "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
+      generationStatsUpdatesHint:
+        "זמן אמת מרענן את מד הטוקנים לשנייה מתחת לתשובה ואת סרגל ההקשר בראש הצ'אט כמה פעמים בשנייה בזמן שהתשובה נכתבת. בסיום מעדכן אותם פעם אחת, אחרי שכל תשובה מסתיימת. זמן אמת עלול לגרום להאטה או לביצועים נמוכים יותר, במיוחד במחשבים ישנים או עמוסים.",
+      generationStatsUpdatesSettled: "בסיום",
+      generationStatsUpdatesRealtime: "זמן אמת",
+      generationStatsUpdatesKeywords:
+        "זמן אמת חי עדכון מהירות הקשר נתונים realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
@@ -5288,6 +5313,7 @@ export const he = {
     monitor: {
       dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
       reconnecting: "מתחבר מחדש...",
+      resizeHint: "גררו צד או פינה כדי לשנות את הרוחב. לחיצה כפולה מאפסת אותו.",
     },
   },
   projectsPage: {

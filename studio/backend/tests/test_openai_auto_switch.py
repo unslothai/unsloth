@@ -76,6 +76,7 @@ def _reset_keepwarm():
     kw._last_active = time.monotonic() - 3600
     kw._last_unloaded_model = None
     kw._last_unloaded_mlx = False
+    kw._last_unloaded_intent = None
     kw._kv_resume = None
 
 
@@ -3077,6 +3078,236 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
     assert rec.calls[0].model_path == "/cache/snap/A"
     assert rec.calls[0].gguf_variant == "Q4_K_M"
     assert rec.calls[0].max_seq_length == 8192
+
+
+_CUSTOM_LAUNCH = {
+    "max_seq_length": 8192,
+    "cache_type_kv": "q8_0",
+    "cache_ram": 1024,
+    "speculative_type": "off",
+    "gpu_memory_mode": "manual",
+    "gpu_layers": 0,
+    "llama_extra_args": ["--no-warmup"],
+    "n_parallel": 2,
+}
+
+
+class _LaunchRecorder(_LoadRecorder):
+    async def __call__(self, request, *args, **kwargs):
+        await super().__call__(request, *args, **kwargs)
+        inference_route._note_replay_launch(self.backend, request)
+
+
+def _idle_unload(monkeypatch, backend):
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    _drive_idle_loop(kw, run_for = 0.05, until = lambda: kw.get_last_unloaded_model() is not None)
+    assert not backend.is_loaded
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+
+
+def _idle_unload_a_custom_launch(
+    monkeypatch,
+    launch = None,
+    overrides = None,
+    enabled = False,
+    resolves_to = None,
+    cpu_fallback = False,
+):
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    _reset_keepwarm()
+    overrides = {} if overrides is None else overrides
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: overrides.get(mid, {}))
+    backend = _FakeBackend("/cache/snap/A", hf_variant = "Q4_K_M", advertised_id = "org/A-GGUF")
+    backend.last_load_intent = SimpleNamespace(cpu_fallback = cpu_fallback)
+    inference_route._note_replay_launch(
+        backend,
+        LoadRequest(
+            model_path = "/cache/snap/A", gguf_variant = "Q4_K_M", **(launch or _CUSTOM_LAUNCH)
+        ),
+    )
+
+    def _unload():
+        backend.is_loaded = False
+
+    backend.unload_model = _unload
+    rec = _LaunchRecorder(backend)
+    _wire(monkeypatch, enabled = enabled, resolves_to = resolves_to, backend = backend, recorder = rec)
+    _idle_unload(monkeypatch, backend)
+    return rec
+
+
+def _reload_unnamed():
+    asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+
+
+def test_idle_reload_keeps_the_launch_settings_it_was_loaded_with(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch)
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert (reload.model_path, reload.gguf_variant) == ("/cache/snap/A", "Q4_K_M")
+    assert reload.max_seq_length == 8192
+    assert reload.cache_type_kv == "q8_0"
+    assert reload.cache_ram == 1024
+    assert reload.speculative_type == "off"
+    assert (reload.gpu_memory_mode, reload.gpu_layers) == ("manual", 0)
+    assert reload.llama_extra_args == ["--no-warmup"]
+    assert reload.n_parallel == 2
+
+
+def test_idle_reload_lets_a_saved_override_win_over_the_freed_launch(monkeypatch):
+    rec = _idle_unload_a_custom_launch(
+        monkeypatch, overrides = {"org/A-GGUF": {"max_seq_length": 4096}}
+    )
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.max_seq_length == 4096
+    assert reload.cache_type_kv == "q8_0"
+
+
+def test_idle_reload_strips_a_freed_flag_the_saved_context_shadows(monkeypatch):
+    launch = {**_CUSTOM_LAUNCH, "llama_extra_args": ["--ctx-size", "8192", "--no-warmup"]}
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = launch)
+    saved = {"org/A-GGUF": {"max_seq_length": 4096}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.max_seq_length == 4096
+    assert reload.llama_extra_args == ["--no-warmup"]
+
+
+def test_idle_reload_uses_saved_auto_layers_over_a_freed_cpu_only_launch(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch)
+    saved = {"org/A-GGUF": {"gpu_memory_mode": "manual"}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert (reload.gpu_memory_mode, reload.gpu_layers) == ("manual", -1)
+
+
+def test_idle_reload_strips_a_freed_split_flag_the_saved_pin_replaces(monkeypatch):
+    async def _resolves(ids, kind = "physical"):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    launch = {**_CUSTOM_LAUNCH, "llama_extra_args": ["--tensor-split", "2,1", "--no-warmup"]}
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = launch)
+    saved = {"org/A-GGUF": {"gpu_memory_mode": "manual", "gpu_layers": 99, "gpu_ids": [0, 1]}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.llama_extra_args == ["--no-warmup"]
+
+
+def test_hub_snapshot_load_does_not_record_its_saved_settings_as_launch(monkeypatch):
+    path = "/hf/models--org--A-GGUF/snapshots/abc"
+    monkeypatch.setattr(inference_route, "_inside_hf_cache", lambda p: True)
+    saved = {"org/A-GGUF": {"kv_cache_dtype": "q8_0"}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    backend = SimpleNamespace()
+    inference_route._note_replay_launch(
+        backend,
+        LoadRequest(
+            model_path = path, gguf_variant = "Q4_K_M", max_seq_length = 8192, cache_type_kv = "q8_0"
+        ),
+    )
+    assert backend.replay_launch == {"max_seq_length": 8192}
+
+
+def test_idle_reload_replays_only_fields_the_launch_set(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = {"max_seq_length": 8192})
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.max_seq_length == 8192
+    assert reload.model_fields_set == {"model_path", "gguf_variant", "max_seq_length"}
+
+
+def test_named_request_reloads_the_idle_freed_model_with_its_launch_settings(monkeypatch):
+    rec = _idle_unload_a_custom_launch(
+        monkeypatch, enabled = True, resolves_to = ("/cache/snap/A", "Q4_K_M", "org/A-GGUF")
+    )
+    _run_hook("org/A-GGUF:Q4_K_M")
+    (reload,) = rec.calls
+    assert reload.model_path == "/cache/snap/A"
+    assert reload.max_seq_length == 8192
+    assert reload.cache_type_kv == "q8_0"
+
+
+def test_named_request_for_another_model_does_not_take_the_freed_launch(monkeypatch):
+    rec = _idle_unload_a_custom_launch(
+        monkeypatch, enabled = True, resolves_to = ("/cache/snap/B", "Q4_K_M", "org/B-GGUF")
+    )
+    _run_hook("org/B-GGUF:Q4_K_M")
+    (reload,) = rec.calls
+    assert reload.model_path == "/cache/snap/B"
+    assert reload.max_seq_length == 0
+    assert reload.cache_type_kv is None
+
+
+def test_idle_reload_replays_gpu_placement_and_drops_a_stale_pin(monkeypatch):
+    kinds = []
+    usable = [True]
+
+    async def _resolves(ids, kind = "physical"):
+        kinds.append(kind)
+        return usable[0]
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    launch = {"max_seq_length": 8192, "gpu_ids": [0, 1], "tensor_split": [2.0, 1.0]}
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = launch)
+    _reload_unnamed()
+    assert (rec.calls[0].gpu_ids, rec.calls[0].tensor_split) == ([0, 1], [2.0, 1.0])
+    assert kinds == [None]
+    _idle_unload(monkeypatch, rec.backend)
+    usable[0] = False
+    _reload_unnamed()
+    assert (rec.calls[1].gpu_ids, rec.calls[1].tensor_split) == (None, None)
+    assert rec.calls[1].max_seq_length == 8192
+
+
+def test_idle_reload_after_a_cpu_fallback_uses_automatic_placement(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch, cpu_fallback = True)
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert (reload.gpu_memory_mode, reload.gpu_layers) == ("auto", -1)
+    assert "gpu_layers" not in reload.model_fields_set
+    assert reload.cache_type_kv == "q8_0"
+
+
+def test_a_reset_saved_setting_does_not_come_back_from_the_freed_launch(monkeypatch):
+    overrides = {"org/A-GGUF": {"kv_cache_dtype": "q8_0"}}
+    rec = _idle_unload_a_custom_launch(
+        monkeypatch, launch = {"max_seq_length": 8192}, overrides = overrides
+    )
+    _reload_unnamed()
+    assert rec.calls[0].cache_type_kv == "q8_0"
+    overrides.clear()
+    _idle_unload(monkeypatch, rec.backend)
+    _reload_unnamed()
+    assert rec.calls[1].cache_type_kv is None
+    assert rec.calls[1].max_seq_length == 8192
+
+
+def test_managed_caller_may_reload_the_owners_idle_freed_projector(monkeypatch):
+    _idle_unload_a_custom_launch(
+        monkeypatch, launch = {"llama_extra_args": ["--mmproj", "/owner/p.gguf"]}
+    )
+    monkeypatch.setattr(inference_route.account_access, "managed_account", lambda: True)
+    inference_route._refuse_managed_custom_projector(
+        ["--mmproj", "/owner/p.gguf"], "/cache/snap/A", "org/A-GGUF", "Q4_K_M"
+    )
+    with pytest.raises(HTTPException) as err:
+        inference_route._refuse_managed_custom_projector(
+            ["--mmproj", "/other/p.gguf"], "/cache/snap/A", "org/A-GGUF", "Q4_K_M"
+        )
+    assert err.value.status_code == 403
+    with pytest.raises(HTTPException):
+        inference_route._refuse_managed_custom_projector(
+            ["--mmproj", "/owner/p.gguf"], "/cache/snap/B", "org/B-GGUF", "Q4_K_M"
+        )
 
 
 def test_load_route_holds_lifecycle_gate(monkeypatch):
