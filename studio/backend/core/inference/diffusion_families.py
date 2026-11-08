@@ -305,9 +305,8 @@ _QWENIMAGE_RDNA_AUTO_W8A8 = (
     "compiled int8 W8A8 measured 133.1 vs 141.2 s/image against compiled bf16 on gfx1151 (20 steps CFG 4), "
     "LPIPS 0.014"
 )
-# FLUX.3's Qwen3-VL encoder overflows float16 in its first decoder layer (a 56k Linear output plus the residual), so
-# every later layer is NaN and fp16-only cards (T4, pre-Ampere) render black; float32 there, as the baseline runs it.
-# UNSLOTH_STUDIO_FLUX3_FP16=1 keeps the old float16 load.
+# FLUX.3 renders black in float16 (fp16-only cards: T4, pre-Ampere), so it runs in float32 there;
+# UNSLOTH_STUDIO_FLUX3_FP16=1 keeps float16.
 _FLUX3_FP16_INCOMPATIBLE = (
     os.environ.get("UNSLOTH_STUDIO_FLUX3_FP16") or ""
 ).strip().lower() not in (

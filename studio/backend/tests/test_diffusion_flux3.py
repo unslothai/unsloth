@@ -99,7 +99,7 @@ def test_family_records():
 
 
 def test_fp16_only_cards_promote_flux3_to_fp32():
-    # The Qwen3-VL encoder overflows float16 at its first decoder layer (NaN from there on, a black image on a T4).
+    # Float16 renders black on a T4.
     import torch
 
     from core.inference.diffusion import _resolve_diffusion_compute_dtype
