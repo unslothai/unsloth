@@ -806,7 +806,7 @@ class _Scale:
         return self.n
 
 
-# Named like torchao's classes: the hazard check matches by class name and never imports torchao.
+# Named like torchao's classes: the check matches by class name.
 Float8Tensor = type("Float8Tensor", (), {})
 Int8Tensor = type("Int8Tensor", (), {})
 LinearActivationQuantizedTensor = type("LinearActivationQuantizedTensor", (), {})
@@ -857,8 +857,7 @@ def _hazard_torch(
 def test_graph_eligible_refuses_row_wise_fp8_on_sm89_under_torch_without_the_streamk_fix(
     stub_torch, monkeypatch
 ):
-    """FLUX.3 klein fp8 on an L4 (torch 2.10): the recorded step's stream-K fp8 GEMM spins forever on replay, so the load
-    must stay eager. Base arms a graph here (and hangs on the first render's replay)."""
+    """FLUX.3 klein fp8 on an L4 (torch 2.10) hung on the first replay; the load must stay eager."""
     _hazard_torch(stub_torch, monkeypatch)
     ok, reason = _eligible(
         monkeypatch, pipe = types.SimpleNamespace(transformer = _QuantDiT(_fp8_weight()))

@@ -2622,17 +2622,14 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
     )
 
 
-# torch < 2.12 on sm_89: the row-wise fp8 GEMM behind torch._scaled_mm is a stream-K CUTLASS kernel whose barrier
-# workspace is zeroed by a memset on the legacy default stream (initialize() is given no stream). That memset never
-# joins a capture on PyTorch's non-blocking streams, so a replay reuses the dirty barrier and spins forever (FLUX.3 klein
-# fp8 on an L4 hangs on the first replay). Fixed upstream by pytorch/pytorch#177573, first released in torch 2.12.
+# torch < 2.12, sm_89: the row-wise fp8 _scaled_mm is stream-K CUTLASS whose barrier memset runs on the legacy stream,
+# outside any capture, so a replay spins forever on the stale barrier (pytorch/pytorch#177573, fixed in 2.12).
 FP8_ROWWISE_STREAMK_CAPS = ((8, 9),)
 FP8_ROWWISE_STREAMK_FIXED = (2, 12)
 
 
 def _fp8_rowwise_weight(t: Any, activation: bool = False) -> bool:
-    """Whether ``t`` is a torchao fp8 weight whose linear runs the row-wise ``torch._scaled_mm`` (dynamic fp8 activation,
-    per-row scale). Weight-only and per-tensor fp8 never reach the stream-K kernel."""
+    """A torchao fp8 weight whose linear runs the row-wise ``_scaled_mm`` (dynamic activation, per-row scale)."""
     name = type(t).__name__
     if name == "LinearActivationQuantizedTensor":
         inner = getattr(t, "original_weight_tensor", None)
@@ -2655,10 +2652,9 @@ def _fp8_rowwise_weight(t: Any, activation: bool = False) -> bool:
 
 
 def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[str]:
-    """Why these denoiser modules must not be recorded into a CUDA graph on ``device``, else None: a torchao row-wise fp8
-    weight on an sm_89 card under a torch without pytorch/pytorch#177573. Anything unreadable keeps the graphs."""
+    """Why ``modules`` must not be graphed on ``device`` (row-wise fp8 on sm_89, torch < 2.12), else None; unreadable = None."""
     if sys.platform == "win32":
-        return None  # the CUTLASS row-wise kernels are not built on Windows
+        return None  # not built on Windows
     try:
         torch = _torch()
         if getattr(getattr(torch, "version", None), "hip", None):
@@ -3106,7 +3102,7 @@ def arm_block_graphs(
         return handles
     why = (
         _block_basics(target, family, cache_engaged, speed_mode, family_default)
-        # Before the prompt-length reason, which an env var can force past: this one cannot be.
+        # Ahead of the prompt-length reason: an env var forces past that one, never this.
         or fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
         or (None if split else prompt_length_reason(pipe, family))
     )
