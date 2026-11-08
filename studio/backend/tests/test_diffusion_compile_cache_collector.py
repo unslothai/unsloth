@@ -109,3 +109,123 @@ def test_a_running_compile_is_never_waited_for(collector, monkeypatch):
     lock.release()
     assert cc._fresh_collector(None) is True
     assert not _cache.CacheArtifactManager.need_serialize()
+
+
+# Real torch.compile (CPU Inductor) from here on: Dynamo reuses compiled code per code object, so a later model of the
+# same classes runs an earlier model's graphs from memory and records nothing for its own collection.
+
+
+class _Net(torch.nn.Module):
+    def __init__(
+        self,
+        value: float,
+        graph_break: bool = False,
+    ):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.full((16, 16), value))
+        self.graph_break = graph_break
+
+    def forward(self, x):
+        x = torch.sin(x @ self.weight)
+        if self.graph_break:
+            torch._dynamo.graph_break()
+        return torch.cos(x) * 2
+
+
+class _Other(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.full((16, 16), 0.5))
+
+    def forward(self, x):
+        return torch.tanh(x @ self.weight) + 1
+
+
+@pytest.fixture
+def real_compile(monkeypatch, tmp_path):
+    monkeypatch.setenv(cc._ENV_MODE, "on")
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "bundles"))
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "inductor"))
+    monkeypatch.delenv(ISOLATE_ENV, raising = False)
+    monkeypatch.setattr(cc, "_live_dirs", {})
+    monkeypatch.setattr(cc, "_collections", [], raising = False)
+    monkeypatch.setattr(cc, "_collecting_since", None, raising = False)
+    monkeypatch.setattr(cc, "_collecting_forwards", set(), raising = False)
+    torch._dynamo.reset()
+    try:
+        with _cache.CacheArtifactManager.with_fresh_cache(), torch.no_grad():
+            try:
+                torch.compile(lambda x: x.sin() + 1, backend = "inductor")(torch.randn(2))
+            except Exception as exc:  # noqa: BLE001 - no C++ toolchain for CPU Inductor here
+                pytest.skip(f"CPU Inductor cannot compile here: {exc}")
+            torch._dynamo.reset()
+            _cache.CacheArtifactManager.clear()
+            yield
+    finally:
+        torch._dynamo.reset()
+
+
+def _compiled_lifecycle(
+    name: str,
+    net,
+    shapes = ((4, 16),),
+):
+    ctx = cc.begin(
+        family = name,
+        transformer = net,
+        dtype = "torch.float32",
+        quant = None,
+        attention_backend = "native",
+        compile_kwargs = {"fullgraph": False, "dynamic": False},
+    )
+    assert ctx is not None
+    compiled = torch.compile(net, dynamic = False)
+    for shape in shapes:
+        x = torch.randn(*shape)
+        torch.testing.assert_close(compiled(x), net(x))
+    saved = cc.save(ctx)
+    cc.restore(ctx)
+    return ctx, saved
+
+
+def _inductor_keys(ctx) -> set:
+    artifacts = _cache.CacheArtifactManager.deserialize(ctx.bundle.read_bytes())
+    return {a.key for a in artifacts.get("inductor", [])}
+
+
+def _unique_graphs() -> int:
+    from torch._dynamo.utils import counters
+    return counters["stats"]["unique_graphs"]
+
+
+@pytest.mark.parametrize("graph_break", [False, True], ids = ["fullgraph", "graph_break"])
+def test_a_model_reusing_an_earlier_models_compiled_graph_still_gets_a_bundle(
+    real_compile, graph_break
+):
+    first, first_saved = _compiled_lifecycle("model_a", _Net(1.0, graph_break))
+    graphs = _unique_graphs()
+    second, second_saved = _compiled_lifecycle("model_b", _Net(2.0, graph_break))
+    assert first.key != second.key
+    # model_b compiled nothing: it ran model_a's graphs from Dynamo's in-memory cache
+    assert _unique_graphs() == graphs
+    assert first_saved and second_saved
+    assert _inductor_keys(second) == _inductor_keys(first) != set()
+    with _cache.CacheArtifactManager.with_fresh_cache():
+        assert torch.compiler.load_cache_artifacts(second.bundle.read_bytes()) is not None
+
+
+def test_an_unrelated_model_still_gets_only_its_own_artifacts(real_compile):
+    first, _ = _compiled_lifecycle("model_a", _Net(1.0))
+    other, saved = _compiled_lifecycle("other", _Other())
+    assert saved
+    assert _inductor_keys(other) and not _inductor_keys(other) & _inductor_keys(first)
+
+
+def test_a_reload_that_compiles_a_new_shape_keeps_the_shape_it_reused(real_compile):
+    net = _Net(1.0)
+    first, _ = _compiled_lifecycle("model_a", net, shapes = ((4, 16),))
+    reloaded, saved = _compiled_lifecycle("model_a", net, shapes = ((4, 16), (8, 16)))
+    assert reloaded.key == first.key and saved
+    keys = _inductor_keys(reloaded)
+    assert _inductor_keys(first) < keys
