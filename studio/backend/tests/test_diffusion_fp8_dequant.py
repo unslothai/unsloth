@@ -439,3 +439,72 @@ def test_the_triton_widen_on_the_gpu_matches_the_old_formula(monkeypatch, fmt, d
     assert launches and _fd()._TRITON_STATE["failed"] is None, _fd()._TRITON_STATE["failed"]
     ref = _old(codes, scale, dtype, fmt)
     _assert_bitwise(got, ref)
+
+
+def test_the_triton_capture_probe_and_launch_run_on_the_operands_device(monkeypatch):
+    """Triton launches on the current device's current stream: both the capture probe and the launch must see the
+    codes' GPU current, not the one the caller left current."""
+    import contextlib
+    import types
+
+    fd = _fd()
+    monkeypatch.setattr(fd, "_TRITON_STATE", {"kernel": None, "failed": None})
+    monkeypatch.setattr(fd, "_WARM", set())
+    current = ["cuda:0"]
+    seen = {}
+
+    @contextlib.contextmanager
+    def device(dev):
+        prev, current[0] = current[0], str(dev)
+        try:
+            yield
+        finally:
+            current[0] = prev
+
+    def capturing():
+        seen["probe"] = current[0]
+        return False
+
+    def launch(codes, scale, out, fmt):
+        seen["launch"] = current[0]
+
+    out = object()
+    monkeypatch.setattr(torch.cuda, "device", device)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", capturing)
+    monkeypatch.setattr(torch, "empty", lambda *a, **k: out)
+    monkeypatch.setattr(fd, "launch_triton", launch)
+    codes = types.SimpleNamespace(
+        is_cuda = True,
+        is_contiguous = lambda: True,
+        dim = lambda: 2,
+        shape = (4, 32),
+        device = "cuda:1",
+        dtype = torch.uint8,
+    )
+    got = fd.dequant_rows(codes, torch.ones(4), torch.bfloat16, lambda c: c, None)
+    assert got is out and seen == {"probe": "cuda:1", "launch": "cuda:1"}
+    assert current == ["cuda:0"] and fd._TRITON_STATE["failed"] is None
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2,
+    reason = "needs two CUDA / ROCm GPUs",
+)
+@pytest.mark.parametrize("fmt", (*FP8, None))
+def test_the_triton_widen_of_a_layer_on_a_non_current_gpu(monkeypatch, fmt):
+    monkeypatch.delenv(ENV, raising = False)
+    fd = _fd()
+    monkeypatch.setattr(fd, "_TRITON_STATE", {"kernel": fd._TRITON_STATE["kernel"], "failed": None})
+    codes, scale = _exhaustive(fmt)
+    store = codes.view(getattr(torch, fmt)) if fmt else codes
+    layer = _layer(store, scale, nq.NATIVE_FP8 if fmt else nq.NATIVE_INT8).to("cuda:1")
+    launches = []
+    real = fd.launch_triton
+    monkeypatch.setattr(fd, "launch_triton", lambda *a: launches.append(1) or real(*a))
+    with torch.cuda.device(0):
+        got = layer._stored_weight(torch.bfloat16)
+        assert torch.cuda.current_device() == 0
+    torch.cuda.synchronize(1)
+    assert launches and fd._TRITON_STATE["failed"] is None, fd._TRITON_STATE["failed"]
+    assert got.device == torch.device("cuda", 1)
+    _assert_bitwise(got.cpu(), _old(codes, scale, torch.bfloat16, fmt))
