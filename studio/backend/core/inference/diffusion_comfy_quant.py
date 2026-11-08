@@ -53,6 +53,10 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
+# Modules whose __init__ buffers stay as built, as the diffusers pipeline load keeps them. Qwen-Image-2.1's timestep
+# table runs in fp32 (t * 1000 * freqs): bf16 freqs moved a 1024 x 1024 fp8 render from LPIPS 0.106 to 0.174
+# against bf16, and with fp32 freqs the torchao fp8 render matched Studio's own FP8 checkpoint pixel for pixel.
+FP32_INIT_BUFFER_MODULES = frozenset({"QwenImage21TemporalTimesteps"})
 # Container prefixes a declaration may omit while its weight carries one.
 _DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
 
@@ -952,6 +956,7 @@ def comfy_fp8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    torchao_offload: bool = False,
 ) -> Optional[str]:
     """Which of Studio's fp8 runtimes takes the ``float8_e4m3fn`` layers, by the rule its own fp8 quant
     follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
@@ -959,7 +964,9 @@ def comfy_fp8_backend(
     quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
     older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
     ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
-    ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
+    ``torchao_offload``: the offloaded plan streams the denoiser through group offload, which moves a
+    ``Float8Tensor`` as Studio's own fp8 checkpoints are moved (``torchao_offload_plan``), so torchao runs
+    there too. ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -974,7 +981,7 @@ def comfy_fp8_backend(
         if native_quant_scheme(target, TQ_FP8, family = family, offload = offload) == TQ_FP8:
             return "native"
         if (
-            not offload
+            (not offload or torchao_offload)
             and getattr(target, "dtype", None) is torch.bfloat16
             and select_transformer_quant_scheme(target, TQ_FP8, family = family, base_repo = base_repo)
             == TQ_FP8
@@ -1673,6 +1680,8 @@ def load_comfy_quant_transformer(
     for module_name, module in model.named_modules():
         if module_name in block_native:
             continue  # fp32 scales / alpha the block kernels need; codes are not floating
+        if type(module).__name__ in FP32_INIT_BUFFER_MODULES:
+            continue
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
                 continue

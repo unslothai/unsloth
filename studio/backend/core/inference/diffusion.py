@@ -9936,6 +9936,9 @@ class DiffusionBackend:
                             elif comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = self._comfy_offload_for(plan, single_file_path)
+                                _comfy_fp8_plan = (
+                                    self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -9952,6 +9955,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        torchao_offload = _comfy_fp8_plan is not None,
                                     ),
                                     **comfy_block_backends(
                                         comfy_scan,
@@ -9973,6 +9977,9 @@ class DiffusionBackend:
                                     ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
+                                if _comfy_fp8_plan is not None and comfy_compile:
+                                    # torchao fp8 under offload streams the blocks, as Studio's own fp8 does there.
+                                    plan = _comfy_fp8_plan
                             else:
                                 if kind != "gguf" and (
                                     not hasattr(transformer_cls, "from_single_file")
@@ -11539,6 +11546,26 @@ class DiffusionBackend:
         """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    @staticmethod
+    def _comfy_fp8_stream_plan(plan: Any) -> Any:
+        """The placement an offloaded ``plan`` takes when the single file's fp8 layers run on torchao, else None.
+        Only group streaming (``torchao_offload_plan``, as for Studio's own fp8 checkpoints: a whole-module plan
+        whose quantised parts do not fit becomes streaming); sequential and whole-module offload keep fp8 storage."""
+        if plan_keeps_transformer_resident(plan):
+            return None
+        try:
+            placed = torchao_offload_plan(plan, "fp8")
+        except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's fp8 storage
+            return None
+        if placed is None or getattr(placed, "offload_policy", None) not in (
+            OFFLOAD_GROUP,
+            OFFLOAD_STREAMING,
+        ):
+            return None
+        if plan_keeps_transformer_resident(placed):
+            return None
+        return placed
 
     def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
@@ -13341,8 +13368,8 @@ class DiffusionBackend:
             and transformer_resident is not None
             and not plan_keeps_transformer_resident(plan)
         ):
-            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
-            # price what that load builds, widened and fp8-stored, before choosing storage.
+            # Offloaded: the loader probes the backends with offload=True (torchao fp8 only under group streaming, at the
+            # fp8 size storage prices too), so price what that load builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
                 # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
