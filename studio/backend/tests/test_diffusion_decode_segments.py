@@ -15,8 +15,7 @@ from core.inference import diffusion_vae_oom as O  # noqa: E402
 
 
 class _FakeTorch:
-    """Allocator settings as ``AllocatorConfig::parseArgs`` keeps them: each call resets max_split_size /
-    garbage_collection_threshold / roundup to defaults, applies the keys it names and records the string."""
+    """Mimics ``AllocatorConfig::parseArgs``: each call resets unnamed keys to defaults and records the string."""
 
     def __init__(self, *, backend = "native", hip = None, compiling = False, capturing = False,
                  setter = True, legacy = False, fail = False, live = "", settings = True):  # fmt: skip
@@ -156,7 +155,7 @@ def test_restores_after_a_failing_decode(fresh):
         {"compiling": True},
         {"capturing": True},
         {"setter": False},
-        {"settings": False},  # live settings unreadable: they could not be restored
+        {"settings": False},  # live settings unreadable
     ],
 )
 def test_never_touches_the_allocator_when_not_allowed(fresh, fake_kwargs):

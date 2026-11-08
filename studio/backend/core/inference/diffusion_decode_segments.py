@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator): its growing
-activations and cuDNN workspaces otherwise each map a new fixed segment (SDXL 1024^2: 11.3 -> 10.1 GiB reserved).
-UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
+"""Run each image VAE decode in one expandable allocator segment (Linux CUDA, native allocator; SDXL 1024^2:
+11.3 -> 10.1 GiB reserved). UNSLOTH_DIFFUSION_DECODE_EXPANDABLE=0 turns it off.
 
-The toggle starts from the live allocator settings, not the environment: every ``set_allocator_settings`` call resets
-``max_split_size_mb`` / ``garbage_collection_threshold`` / ``roundup_power2_divisions`` to their defaults unless the
-string names them again (``AllocatorConfig::parseArgs``, torch 2.6 through 2.12), so both flips re-send the last
-applied string with only ``expandable_segments`` changed, and a restore that does not read back equal ends it."""
+``set_allocator_settings`` resets unnamed keys to defaults (``AllocatorConfig::parseArgs``), so both flips re-send
+the last applied live string with only ``expandable_segments`` changed; a restore that does not read back equal ends it."""
 
 from __future__ import annotations
 
@@ -75,8 +72,7 @@ _LAST_SETTINGS = "PYTORCH_CUDA_ALLOC_CONF"
 
 
 def _live_settings(torch: Any) -> Optional[dict]:
-    """The allocator's live settings (``memory._snapshot()['allocator_settings']``, torch 2.6+): the last applied
-    string under ``PYTORCH_CUDA_ALLOC_CONF`` plus the values it produced. None when this torch cannot say."""
+    """``memory._snapshot()['allocator_settings']`` (torch 2.6+), or None when unavailable."""
     try:
         settings = torch.cuda.memory._snapshot().get("allocator_settings")
     except Exception:  # noqa: BLE001
@@ -89,8 +85,7 @@ def _live_settings(torch: Any) -> Optional[dict]:
 
 
 def _base_conf(settings: dict) -> Optional[str]:
-    """The string the decode flips from, or None when it must not: already on (turning it off after would be
-    wrong) or switched off on purpose. The string a previous restore wrote stands for the one it replaced."""
+    """String to flip from, or None if already on or switched off on purpose; a prior restore's string maps back."""
     if bool(settings["expandable_segments"]):
         return None
     last = settings[_LAST_SETTINGS]
@@ -139,7 +134,6 @@ def _decide(torch: Any) -> bool:
             return False
     except Exception:  # noqa: BLE001
         return False
-    # Settings that cannot be read back cannot be restored.
     return _live_settings(torch) is not None
 
 
