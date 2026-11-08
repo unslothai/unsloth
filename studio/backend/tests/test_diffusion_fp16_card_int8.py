@@ -239,8 +239,6 @@ def test_dense_blocker_accepts_float16_only_when_asked():
 
 
 def test_dense_blocker_still_refuses_fp8_storage_with_float16_allowed():
-    if not hasattr(torch, "float8_e4m3fn"):
-        pytest.skip("no fp8 dtype")
     model = _Toy().to(torch.float16)
     model.to_q.weight.data = model.to_q.weight.data.to(torch.float8_e4m3fn)
     pipe = types.SimpleNamespace(transformer = model)
