@@ -398,7 +398,14 @@ def test_the_pinned_pair_installs_and_runs_on_this_interpreter(tmp_path):
     info = hp.interpreter_info(sys.executable)
     chosen = hp.select(info["tags"], CATALOG)
     assert all(chosen.values()), f"no pinned wheel for {info['tags'][:3]}"
-    files = [str(hp.obtain(w, CATALOG, tmp_path / "cache", 1e18, True)[0]) for w in chosen.values()]
+    files = [
+        str(
+            hp.slim_wheel(
+                hp.obtain(w, CATALOG, tmp_path / "cache", 1e18, True)[0], tmp_path / "slim"
+            )
+        )
+        for w in chosen.values()
+    ]
     target = tmp_path / "site"
     uv = hp._uv()
     if uv:
@@ -429,7 +436,167 @@ def test_the_pinned_pair_installs_and_runs_on_this_interpreter(tmp_path):
     subprocess.run(cmd, check = True, capture_output = True)
     ok, reason = hp.probe(sys.executable, extra_path = str(target))
     assert ok, reason
+    size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
+    libs = [f for f in target.rglob("*") if f.is_file() and f.read_bytes()[:4] == b"\x7fELF"]
+    debug = [f.name for f in libs if any(n.startswith(".debug") for n in _sections(f.read_bytes()))]
     shutil.rmtree(target, ignore_errors = True)
+    # Unstripped, Linux x86_64 is ~60 MB on disk; every platform's slim pair is under 15 MB.
+    assert size < 15e6, f"installed pair is {size / 1e6:.1f} MB"
+    assert not debug, f"debug info left in {debug}"
+
+
+def _elf(tail_segment: bool) -> bytes:
+    """A tiny ELF64 shaped like the PyPI builds: code, then DWARF, then (as patchelf leaves them)
+    another loaded segment and the symbol / string tables, section headers last."""
+    import struct
+
+    align, debug = 0x1000, 3 * 0x1000 + 123
+    names = b"\0.text\0.debug_info\0.extra\0.symtab\0.strtab\0.shstrtab\0"
+    off = {
+        n: names.index(n.encode() + b"\0")
+        for n in (".text", ".debug_info", ".extra", ".symtab", ".strtab", ".shstrtab")
+    }
+    body = bytearray(b"\0" * 0x1000)
+    text = (0x1000, b"\xc3" * 64)
+    body += text[1] + b"\0" * (0x1000 - 64)
+    dbg_at = len(body)
+    body += b"D" * debug
+    body += b"\0" * (-len(body) % align)
+    extra_at = len(body)
+    body += b"E" * 256
+    sym_at = len(body)
+    body += b"\0" * 48
+    str_at = len(body)
+    body += b"\0x\0"
+    shs_at = len(body)
+    body += names
+    body += b"\0" * (-len(body) % 8)
+    shoff = len(body)
+    phdrs = [(1, 5, 0, 0, 0, 0x1040, 0x1040, align)]
+    if tail_segment:
+        phdrs.append((1, 6, extra_at, 0x10000, 0x10000, 256, 256, align))
+    secs = [
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (off[".text"], 1, 0x6, 0x1000, 0x1000, 64, 0, 0, 16, 0),
+        (off[".debug_info"], 1, 0, 0, dbg_at, debug, 0, 0, 1, 0),
+        (
+            off[".extra"],
+            1,
+            0x3 if tail_segment else 0,
+            0x10000 if tail_segment else 0,
+            extra_at,
+            256,
+            0,
+            0,
+            8,
+            0,
+        ),
+        (off[".symtab"], 2, 0, 0, sym_at, 48, 5, 1, 8, 24),
+        (off[".strtab"], 3, 0, 0, str_at, 3, 0, 0, 1, 0),
+        (off[".shstrtab"], 3, 0, 0, shs_at, len(names), 0, 0, 1, 0),
+    ]
+    for sec in secs:
+        body += struct.pack("<IIQQQQIIQQ", *sec)
+    struct.pack_into("<4sBBBB8xHHIQQQIHHHHHH", body, 0, b"\x7fELF", 2, 1, 1, 0, 3, 62, 1, 0, 64,
+                     shoff, 0, 64, 56, len(phdrs), 64, len(secs), 6)  # fmt: skip
+    for k, ph in enumerate(phdrs):
+        struct.pack_into("<IIQQQQQQ", body, 64 + k * 56, *ph)
+    return bytes(body)
+
+
+def _sections(data: bytes) -> dict:
+    import struct
+
+    (shoff,) = struct.unpack_from("<Q", data, 0x28)
+    shnum, shstrndx = struct.unpack_from("<HH", data, 0x3C)
+    secs = [struct.unpack_from("<IIQQQQIIQQ", data, shoff + k * 64) for k in range(shnum)]
+    base = secs[shstrndx][4]
+    out = {}
+    for sec in secs[1:]:
+        nm = data[base + sec[0] : data.index(b"\0", base + sec[0])].decode()
+        out[nm] = (sec, data[sec[4] : sec[4] + sec[5]])
+    return out
+
+
+@pytest.mark.parametrize("tail_segment", [False, True])
+def test_debug_info_is_cut_without_moving_any_loaded_byte(tail_segment):
+    import struct
+
+    raw = _elf(tail_segment)
+    slim = hp.strip_elf_debug(raw)
+    assert slim is not None and len(slim) <= len(raw) - 3 * 0x1000
+    before, after = _sections(raw), _sections(slim)
+    assert ".debug_info" in before and ".debug_info" not in after
+    for name in (".text", ".extra", ".symtab", ".strtab"):
+        assert after[name][1] == before[name][1], name
+    assert after[".symtab"][0][6] == list(after).index(".strtab") + 1  # sh_link remapped
+    (phoff,) = struct.unpack_from("<Q", slim, 0x20)
+    (phnum,) = struct.unpack_from("<H", slim, 0x38)
+    for k in range(phnum):
+        _, _, off, vaddr, _, filesz, _, align = struct.unpack_from(
+            "<IIQQQQQQ", slim, phoff + k * 56
+        )
+        assert (off - vaddr) % align == 0
+        src = _elf(tail_segment)
+        o_off = struct.unpack_from("<IIQQQQQQ", src, 64 + k * 56)[2]
+        if k:
+            assert slim[off : off + filesz] == src[o_off : o_off + filesz]
+
+
+@pytest.mark.parametrize(
+    "data", [b"", b"MZ\x90\x00" * 40, b"\xcf\xfa\xed\xfe" * 40, b"\x7fELF" + b"\x01" * 60]
+)
+def test_non_elf64_or_unsafe_files_are_left_alone(data):
+    assert hp.strip_elf_debug(data) is None
+
+
+def test_a_kept_section_inside_the_debug_run_is_not_touched():
+    import struct
+
+    raw = bytearray(_elf(False))
+    (shoff,) = struct.unpack_from("<Q", raw, 0x28)
+    dbg = list(struct.unpack_from("<IIQQQQIIQQ", raw, shoff + 2 * 64))
+    sym = list(struct.unpack_from("<IIQQQQIIQQ", raw, shoff + 4 * 64))
+    sym[4] = dbg[4] + 8  # overlap: symtab inside the debug bytes
+    struct.pack_into("<IIQQQQIIQQ", raw, shoff + 4 * 64, *sym)
+    assert hp.strip_elf_debug(bytes(raw)) is None
+
+
+def test_slim_wheel_rewrites_record_and_leaves_other_wheels_alone(tmp_path):
+    import base64
+    import hashlib
+    import zipfile
+
+    lib = _elf(True)
+    src = tmp_path / "numkong-7.8.6-cp312-cp312-manylinux_2_28_x86_64.whl"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("numkong/_numkong.so", lib)
+        z.writestr("numkong/__init__.py", "x = 1\n")
+        z.writestr("numkong-7.8.6.dist-info/RECORD",
+                   "numkong/_numkong.so,sha256=old,%d\nnumkong/__init__.py,sha256=keep,6\n"
+                   "numkong-7.8.6.dist-info/RECORD,,\n" % len(lib))  # fmt: skip
+    out = hp.slim_wheel(src, tmp_path / "slim")
+    assert out != src and out.name == src.name
+    with zipfile.ZipFile(out) as z:
+        so = z.read("numkong/_numkong.so")
+        record = z.read("numkong-7.8.6.dist-info/RECORD").decode().splitlines()
+        assert z.read("numkong/__init__.py") == b"x = 1\n"
+    digest = base64.urlsafe_b64encode(hashlib.sha256(so).digest()).rstrip(b"=").decode()
+    assert len(so) < len(lib) and record[0] == f"numkong/_numkong.so,sha256={digest},{len(so)}"
+    assert record[1:] == ["numkong/__init__.py,sha256=keep,6", "numkong-7.8.6.dist-info/RECORD,,"]
+    mac = tmp_path / "usearch-2.26.6-cp312-cp312-macosx_11_0_arm64.whl"
+    with zipfile.ZipFile(mac, "w") as z:
+        z.writestr("usearch/compiled.so", b"\xcf\xfa\xed\xfe" + b"\0" * 100)
+        z.writestr("usearch-2.26.6.dist-info/RECORD", "usearch/compiled.so,sha256=x,104\n")
+    assert hp.slim_wheel(mac, tmp_path / "slim") == mac
+
+
+def test_a_ready_install_leaves_no_wheels_behind_in_the_venv(flow, tmp_path):
+    cache = tmp_path / hp.CACHE
+    cache.mkdir(parents = True)
+    (cache / "leftover.whl").write_bytes(b"x")
+    assert hp.ensure("py")["status"] == "ready"
+    assert not cache.parent.exists()
 
 
 def test_a_probe_failure_must_repeat_before_it_counts(monkeypatch):

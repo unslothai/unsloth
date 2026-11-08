@@ -8,15 +8,18 @@ Exit 0 for every outcome (2 bad arguments; 1 with --strict unless ready); --json
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.request
+import zipfile
 from pathlib import Path
 
 # Gate pasted from backend/utils/native_tls.py inline_gate_source(); test_native_tls_entrypoints.py checks it.
@@ -355,6 +358,149 @@ def obtain(
     raise RuntimeError(f"{wheel['filename']}: " + "; ".join(errors or ["no source allowed"]))
 
 
+_SHF_ALLOC = 0x2
+_SHF_INFO_LINK = 0x40
+_SHT_NOBITS, _SHT_REL, _SHT_RELA = 8, 9, 4
+
+
+def strip_elf_debug(data: bytes) -> bytes | None:
+    """``data`` without its .debug_* sections (the PyPI Linux builds ship full DWARF: ~90% of numkong).
+
+    Each run of debug bytes is cut by a whole multiple of the largest segment alignment and later
+    bytes move down by that amount, so every segment keeps its offset-to-address congruence and no
+    loaded byte changes. None when this is not a little-endian ELF64 it can rewrite safely."""
+    if len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return None
+    phoff, shoff = struct.unpack_from("<QQ", data, 0x20)
+    phentsize, phnum, shentsize, shnum, shstrndx = struct.unpack_from("<HHHHH", data, 0x36)
+    if shentsize != 64 or phentsize != 56 or not shnum or shstrndx >= shnum:
+        return None
+    if shoff + shnum * 64 > len(data) or phoff + phnum * 56 > len(data):
+        return None
+    secs = [list(struct.unpack_from("<IIQQQQIIQQ", data, shoff + k * 64)) for k in range(shnum)]
+    phdrs = [list(struct.unpack_from("<IIQQQQQQ", data, phoff + k * 56)) for k in range(phnum)]
+    names = secs[shstrndx]
+
+    def name(sec) -> bytes:
+        start = names[4] + sec[0]
+        return data[start : data.index(b"\0", start)]
+
+    drop = {
+        k
+        for k, sec in enumerate(secs)
+        if k
+        and not sec[2] & _SHF_ALLOC
+        and sec[1] != _SHT_NOBITS
+        and name(sec).startswith((b".debug", b".zdebug"))
+    }
+    for k, sec in enumerate(secs):  # relocations for a dropped section go with it
+        if k and sec[1] in (_SHT_REL, _SHT_RELA) and not sec[2] & _SHF_ALLOC and sec[7] in drop:
+            drop.add(k)
+    if not drop or shstrndx in drop:
+        return None
+    if any(secs[k][6] in drop for k in range(shnum) if k not in drop):
+        return None  # a kept section links into the debug info
+    # Contiguous runs of dropped bytes; nothing kept (segment, section, headers) may sit inside one.
+    spans = sorted((secs[k][4], secs[k][4] + secs[k][5]) for k in drop)
+    runs = []
+    for a, b in spans:
+        if runs and a <= runs[-1][1]:
+            runs[-1][1] = max(runs[-1][1], b)
+        else:
+            runs.append([a, b])
+    kept = [(ph[2], ph[2] + ph[5]) for ph in phdrs if ph[5]]
+    kept += [
+        (sec[4], sec[4] + sec[5])
+        for k, sec in enumerate(secs)
+        if k and k not in drop and sec[1] != _SHT_NOBITS and sec[5]
+    ]
+    kept += [(0, 64), (phoff, phoff + phnum * 56)]
+    if any(a < rb and ra < b for a, b in kept for ra, rb in runs):
+        return None
+    align = max([ph[7] for ph in phdrs if ph[0] == 1 and ph[7]] or [1])
+    if align & (align - 1) or align > 1 << 21:
+        return None
+    cuts = []  # (offset, bytes removed there)
+    for a, b in runs:
+        n = (b - a) // align * align
+        if n:
+            cuts.append((a, n))
+    old_table = (shoff, shoff + shnum * 64)
+    if not cuts and old_table[1] != len(data):
+        return None
+
+    def moved(off: int) -> int:
+        return off - sum(n for at, n in cuts if at + n <= off)
+
+    out = bytearray()
+    pos = 0
+    for at, n in cuts:
+        out += data[pos:at]
+        pos = at + n
+    end = len(data)
+    if old_table[1] == end and all(old_table[0] >= at + n for at, n in cuts):
+        end = old_table[0]  # the old section table is the file's tail: rewrite it in place
+    out += data[pos:end]
+    for k, ph in enumerate(phdrs):
+        ph[2] = moved(ph[2])
+        struct.pack_into("<IIQQQQQQ", out, moved(phoff) + k * 56, *ph)
+    keep = [k for k in range(shnum) if k not in drop]
+    index = {old: new for new, old in enumerate(keep)}
+    out += b"\0" * (-len(out) % 8)
+    new_shoff = len(out)
+    for k in keep:
+        sec = list(secs[k])
+        if k:
+            sec[4] = moved(sec[4])
+        sec[6] = index.get(sec[6], 0)
+        if sec[1] in (_SHT_REL, _SHT_RELA) or sec[2] & _SHF_INFO_LINK:
+            sec[7] = index.get(sec[7], 0)
+        out += struct.pack("<IIQQQQIIQQ", *sec)
+    struct.pack_into("<QQ", out, 0x20, moved(phoff), new_shoff)
+    struct.pack_into("<HH", out, 0x3C, len(keep), index[shstrndx])
+    return bytes(out) if len(out) < len(data) else None
+
+
+def _record_hash(data: bytes) -> str:
+    return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
+def slim_wheel(src: Path, dest_dir: Path) -> Path:
+    """A copy of ``src`` with debug info stripped from its ELF libraries and RECORD updated, or ``src``
+    itself when nothing shrinks (macOS / Windows wheels are already small)."""
+    try:
+        with zipfile.ZipFile(src) as zin:
+            infos = zin.infolist()
+            blobs = {i.filename: zin.read(i) for i in infos}
+        changed = {}
+        for fn, data in blobs.items():
+            if data[:4] == b"\x7fELF":
+                slim = strip_elf_debug(data)
+                if slim is not None and len(slim) < len(data):
+                    changed[fn] = slim
+        record = next((fn for fn in blobs if fn.endswith(".dist-info/RECORD")), None)
+        if not changed or record is None:
+            return src
+        lines = []
+        for line in blobs[record].decode("utf-8").splitlines():
+            path = line.rsplit(",", 2)[0] if line.count(",") >= 2 else line
+            if path in changed:
+                line = f"{path},{_record_hash(changed[path])},{len(changed[path])}"
+            lines.append(line)
+        blobs.update(changed)
+        blobs[record] = ("\n".join(lines) + "\n").encode("utf-8")
+        dest_dir.mkdir(parents = True, exist_ok = True)
+        dest = dest_dir / src.name
+        part = dest.with_name(dest.name + ".part")
+        with zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as zout:
+            for info in infos:
+                zout.writestr(info, blobs[info.filename], compress_type = zipfile.ZIP_DEFLATED)
+        os.replace(part, dest)
+        return dest
+    except Exception:  # noqa: BLE001 - the original pinned wheel still installs
+        return src
+
+
 def _uv(prefix: str | None = None) -> str | None:
     # Studio venvs are made by uv without pip, and a Desktop launch can have a minimal PATH: also look
     # in Studio's private uv dir (<studio home>/uv, the venv's parent by default) and the installers' dirs.
@@ -397,7 +543,12 @@ def _pip_cmd(
     cmds = []
     uv = _uv(prefix)
     if uv:
-        extra = ["--no-deps", "--no-index", "--no-config"] if verb == "install" else ["--no-config"]
+        # --no-cache: the shared uv cache would keep a second unpacked copy of local wheels.
+        extra = (
+            ["--no-deps", "--no-index", "--no-config", "--no-cache"]
+            if verb == "install"
+            else ["--no-config"]
+        )
         cmds.append([uv, "pip", verb, "--python", python, *extra, *args])
     if verb == "install":
         cmds.append(
@@ -409,6 +560,7 @@ def _pip_cmd(
                 "--no-deps",
                 "--no-index",
                 "--no-user",
+                "--no-cache-dir",
                 "--disable-pip-version-check",
                 *args,
             ]
@@ -571,7 +723,8 @@ def ensure(
             files, sources = [], set()
             for wheel in chosen.values():
                 path, source = obtain(wheel, catalog, cache, deadline, network)
-                files.append(str(path))
+                # Pinned bytes verified above; only then drop their Linux debug info (~10x smaller).
+                files.append(str(slim_wheel(path, cache.parent / "slim")))
                 sources.add(source)
             source = "+".join(sorted(sources))
             remaining = max(30.0, deadline - time.monotonic())
@@ -585,6 +738,8 @@ def ensure(
                 except Exception:  # noqa: BLE001 - the failed marker still keeps Studio off it
                     pass
             _write_marker(prefix, fp, ok, reason)
+            # The cache sits in this venv, so nothing outside it could reuse the wheels.
+            shutil.rmtree(cache.parent if ok else cache.parent / "slim", ignore_errors = True)
             info = interpreter_info(python)
             return _result("ready" if ok else "failed", reason, info, source)
     except TimeoutError as exc:
