@@ -2657,7 +2657,9 @@ def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[st
         return None  # not built on Windows
     try:
         torch = _torch()
-        if getattr(getattr(torch, "version", None), "hip", None):
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch):
             return None
         major, minor = (int(x) for x in str(torch.__version__).split("+")[0].split(".")[:2])
         if (major, minor) >= FP8_ROWWISE_STREAMK_FIXED:
