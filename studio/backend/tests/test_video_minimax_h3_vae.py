@@ -419,6 +419,63 @@ def test_tile_batching_matches_the_stock_tile_loop(monkeypatch):
             torch.testing.assert_close(fast._decode_clip(z), ref, rtol = 1e-5, atol = 1e-5)
 
 
+@pytest.mark.parametrize("batch", ["1", "2", "3"])
+@pytest.mark.parametrize("shape", [(6, 9), (4, 4), (10, 5), (3, 12)])
+def test_streamed_stitch_equals_the_stock_stitch_bit_for_bit(monkeypatch, batch, shape):
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, batch)
+    z = torch.randn(1, 8, 3, *shape, generator = torch.Generator().manual_seed(5))
+    with torch.no_grad():
+        monkeypatch.setenv(H.H3_VAE_STREAM_STITCH_ENV, "0")
+        ref = vae._decode_clip(z)
+        monkeypatch.delenv(H.H3_VAE_STREAM_STITCH_ENV)
+        got = vae._decode_clip(z)
+    assert got.dtype == ref.dtype and got.shape == ref.shape and got.is_contiguous()
+    assert torch.equal(got, ref)
+
+
+def test_streamed_stitch_releases_each_decoder_batch(monkeypatch):
+    from torch.multiprocessing.reductions import StorageWeakRef
+
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "2")
+    stock_decoder = vae.decoder.forward
+
+    def run(stream):
+        outs, alive = [], []
+
+        def decoder(x):
+            alive.append(sum(not r.expired() for r in outs))
+            out = stock_decoder(x)
+            outs.append(StorageWeakRef(out.untyped_storage()))
+            return out
+
+        monkeypatch.setattr(vae.decoder, "forward", decoder)
+        if stream:
+            monkeypatch.delenv(H.H3_VAE_STREAM_STITCH_ENV, raising = False)
+        else:
+            monkeypatch.setenv(H.H3_VAE_STREAM_STITCH_ENV, "0")
+        with torch.no_grad():
+            vae._decode_clip(torch.randn(1, 8, 3, 10, 9))
+        return alive
+
+    assert run(stream = False)[-1] > 0, "stock keeps every decoded batch until the stitch"
+    assert set(run(stream = True)) == {0}
+
+
+def test_streamed_stitch_keeps_stock_for_an_unknown_stitch(monkeypatch):
+    vae = _tiny_vae()
+    assert H._install_tile_batch(vae)
+    calls = []
+    stock = vae._stitch_tiles
+    monkeypatch.setattr(vae, "_stitch_tiles", lambda *a: calls.append(1) or stock(*a))
+    with torch.no_grad():
+        vae._decode_clip(torch.randn(1, 8, 3, 6, 9))
+    assert calls == [1]
+
+
 def test_int8_decoder_replaces_block_linears_and_stays_close():
     vae = _tiny_vae()
     fast = copy.deepcopy(vae)
