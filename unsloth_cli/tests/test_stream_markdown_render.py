@@ -7,6 +7,7 @@ import io
 import rich.markdown
 from rich.console import Console
 
+import unsloth_cli._inference as inference
 from unsloth_cli._inference import stream_markdown
 
 PARA = "Some **bold** text with `code` and a list:\n\n- one\n- two\n\n"
@@ -24,20 +25,27 @@ def _render(chunks, show_thinking, *, terminal):
 
 
 def test_parses_per_frame_not_per_chunk(monkeypatch):
-    built = []
+    built, filtered = [], []
     real_init = rich.markdown.Markdown.__init__
+    real_visible = inference.visible_text
 
     def _counting(self, *args, **kwargs):
         built.append(1)
         real_init(self, *args, **kwargs)
 
+    def _counting_visible(*args, **kwargs):
+        filtered.append(1)
+        return real_visible(*args, **kwargs)
+
     monkeypatch.setattr(rich.markdown.Markdown, "__init__", _counting)
+    monkeypatch.setattr(inference, "visible_text", _counting_visible)
     text = PARA * 60
     chunks = _chunks(text)
     raw, _ = _render(chunks, False, terminal = False)
     assert raw == text
     assert len(chunks) > 1000
     assert len(built) < 50
+    assert len(filtered) < 50
 
 
 def test_final_output_matches_the_full_reply():
