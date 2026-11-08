@@ -1456,6 +1456,7 @@ def start_text_encoder(
     budget_mib: Optional[int] = None,
     te_quant: Optional[str] = None,
     base_repo: Optional[str] = None,
+    bind_device: bool = False,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
     load overlaps the DiT load. ``base_repo`` is the upstream pack id (``repo`` may be its local snapshot); an int8
@@ -1497,8 +1498,23 @@ def start_text_encoder(
     share = user_budget_reserve_share()
     if share > 0:
         client.config["vram_reserve_share"] = share
+    if bind_device:
+        # the worker makes this card current (by UUID: a spawned child may enumerate cards in another order)
+        client.config.update(bind_device = True, device_uuid = _cuda_device_uuid(device))
     client.start()
     return client
+
+
+def _cuda_device_uuid(device: str) -> Optional[str]:
+    try:
+        import torch
+
+        index = torch.device(device).index
+        if torch.device(device).type != "cuda" or index is None:
+            return None
+        return str(torch.cuda.get_device_properties(index).uuid)
+    except Exception:  # noqa: BLE001 -- the worker then binds the ordinal as given
+        return None
 
 
 def attach_to_pipeline(
