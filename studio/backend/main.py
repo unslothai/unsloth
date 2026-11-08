@@ -306,6 +306,11 @@ from utils.happy_eyeballs import activate_happy_eyeballs
 activate_native_tls()
 activate_happy_eyeballs()
 
+# accelerate's meta init patches torch process-wide; Studio builds skeletons from several threads at once.
+from utils.meta_init import install_on_import as _install_thread_safe_meta_init
+
+_install_thread_safe_meta_init()
+
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
 
