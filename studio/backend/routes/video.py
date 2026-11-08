@@ -2282,7 +2282,7 @@ async def _start_openai_video(
         maybe_auto_switch_media_model,
         resident_answers_media_request,
     )
-    from core.inference.video import get_video_backend
+    from core.inference.video import get_video_backend, video_failure_detail
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_MODEL_CHANGED_MSG,
@@ -2410,7 +2410,7 @@ async def _start_openai_video(
                     continue
                 raise _openai_video_error(409, msg, code = "model_changed", param = "model")
             logger.error("openai_videos.generate_failed: %s", exc, exc_info = True)
-            raise HTTPException(status_code = 500, detail = "Video generation failed.")
+            raise HTTPException(status_code = 500, detail = video_failure_detail(exc))
         break
 
     _note_generation_account()

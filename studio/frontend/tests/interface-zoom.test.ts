@@ -251,7 +251,7 @@ test("the zoom popup takes the find bar's corner", () => {
   assert.match(provider, /data-blocking-screen=""\s*className="fixed inset-0 z-40 bg-background"/);
   assert.match(
     readSrc("components/tauri/startup-screen.tsx"),
-    /data-blocking-screen=""\s*className="pointer-events-auto fixed inset-0 z-\[9999\]"/,
+    /data-blocking-screen=""\s*className="pointer-events-auto modal-pe-live fixed inset-0 z-\[9999\]"/,
   );
   assert.match(
     readSrc("features/interface-zoom/components/interface-zoom.tsx"),
