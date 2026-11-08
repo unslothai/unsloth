@@ -27,6 +27,8 @@ _PER_TEXT_METHODS = {
     "ZImage": "_encode_prompt",
 }
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
+# "0": H3 calls with vision inputs bypass the cache.
+_ENV_H3_VISION = "UNSLOTH_H3_VISION_PROMPT_CACHE"
 
 
 def enabled() -> bool:
@@ -397,6 +399,24 @@ def _modular_text_encoder(pipe: Any) -> Any:
         return None
 
 
+def _vision_fingerprint(vision: Any) -> list:
+    """Host-side content key of H3 vision tensors; TypeError (= bypass) for device tensors or unknown values."""
+    if (os.environ.get(_ENV_H3_VISION) or "").strip().lower() in _FALSE_TOKENS:
+        raise TypeError("vision inputs")
+    if not isinstance(vision, dict):
+        raise TypeError(type(vision).__name__)
+    torch = _torch()
+    out = []
+    for name in sorted(vision):
+        t = vision[name]
+        if not isinstance(t, torch.Tensor) or t.device.type != "cpu" or t.is_sparse:
+            raise TypeError(f"vision input {name}")
+        flat = t.detach().contiguous().reshape(-1)
+        digest = hashlib.sha256(memoryview(flat.view(torch.uint8).numpy())).hexdigest()
+        out.append([str(name), str(t.dtype), list(t.shape), digest])
+    return out
+
+
 def _make_h3_shim(original: Any, logger: Any) -> Any:
     try:
         signature = inspect.signature(original)
@@ -419,17 +439,17 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
         cache, load_fp = registered
         key = None
         try:
-            if arguments.get("vision_inputs"):
-                raise TypeError("vision inputs")
-            key = _hash(
-                {
-                    "load": load_fp,
-                    "encoder": [type(text_encoder).__name__, id(text_encoder)],
-                    "token_ids": _plain(list(arguments.get("token_ids") or ())),
-                    "layer": _plain(arguments.get("text_encoder_layer")),
-                    "dtype": _plain(arguments.get("dtype")),
-                }
-            )
+            payload = {
+                "load": load_fp,
+                "encoder": [type(text_encoder).__name__, id(text_encoder)],
+                "token_ids": _plain(list(arguments.get("token_ids") or ())),
+                "layer": _plain(arguments.get("text_encoder_layer")),
+                "dtype": _plain(arguments.get("dtype")),
+            }
+            vision = arguments.get("vision_inputs")
+            if vision:
+                payload["vision"] = _vision_fingerprint(vision)
+            key = _hash(payload)
             hit = cache.get(key, arguments.get("device"))
         except TypeError:
             cache.stats["bypassed"] += 1
