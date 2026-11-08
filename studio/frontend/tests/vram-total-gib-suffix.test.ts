@@ -49,8 +49,9 @@ test("VRAM and RAM totals are labelled GiB, not GB", () => {
   );
 });
 
+// The floating monitor formats through monitor-memory.tsx.
 const HELPER_RENDERERS = [
-  "components/floating-monitor.tsx",
+  "components/monitor-memory.tsx",
   "features/settings/tabs/resources-tab.tsx",
 ];
 

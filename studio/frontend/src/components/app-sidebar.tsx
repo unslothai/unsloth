@@ -97,6 +97,7 @@ import {
   type AudioWorkflowId,
 } from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
+import { SIDEBAR_SURFACE } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
@@ -274,6 +275,7 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   isSurfaceBackgrounded,
+  surfaceElements,
   useShortcutLabel,
   useShortcut,
 } from "@/features/settings/hooks/use-shortcut";
@@ -778,7 +780,7 @@ const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 // a spinner, so it is re-read sooner than the background MLX self-heal check. A re-read outstanding
 // longer than the stall window is given up on rather than latching the poll off.
 const SELECTION_ACTION_GRACE_MS = 750;
-const SIDEBAR_SELECTOR = '[data-slot="sidebar"]';
+const SIDEBAR_SELECTOR = SIDEBAR_SURFACE;
 const VERDICT_UNKNOWN_POLL_MS = 3000;
 const SELF_HEAL_POLL_MS = 15000;
 const VERDICT_POLL_STALL_MS = 30000;
@@ -4124,7 +4126,7 @@ export function AppSidebar() {
     // open drawer is itself a dialog hiding the root, and the sidebar in it is the foreground.
     return (
       typeof document !== "undefined" &&
-      document.querySelector(SIDEBAR_SELECTOR) === null &&
+      surfaceElements(SIDEBAR_SELECTOR).length === 0 &&
       isSurfaceBackgrounded("#root")
     );
   };

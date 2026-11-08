@@ -7,7 +7,8 @@ attention sinks survive the exchange. Two gloo CPU ranks vs one process: the los
 
 Configs are the tiny test repos' (tiny_models.py: hf-internal-testing/tiny-random-Gemma3ForCausalLM,
 trl-internal-testing/tiny-Qwen3ForCausalLM, trl-internal-testing/tiny-GptOssForCausalLM) with random weights, a
-small vocabulary, and a window shorter than a shard so it crosses the seam."""
+small vocabulary, and a window shorter than a shard so it crosses the seam. DeepSeek-V2 and MiniMax-M2 have no tiny
+repo: their configs are written out (_built_config)."""
 
 import os
 import tempfile
@@ -36,9 +37,75 @@ REPOS = {
 }
 
 
+def _built_config(kind):
+    """Configs with no tiny hub repo: written out (random weights). DeepSeek-V2: multi-head latent attention,
+    query / key head dim 24 (nope 16 + rope 8) against value head dim 16, YaRN scaling, MoE after one dense layer.
+    MiniMax-M2: grouped query attention (4 heads / 2 kv heads) with q / k norms over all heads, MoE layers."""
+    if kind == "deepseek_v2":
+        from transformers import DeepseekV2Config
+        return DeepseekV2Config(
+            vocab_size = 96,
+            hidden_size = 64,
+            intermediate_size = 128,
+            moe_intermediate_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 4,
+            kv_lora_rank = 16,
+            q_lora_rank = 24,
+            qk_rope_head_dim = 8,
+            v_head_dim = 16,
+            qk_nope_head_dim = 16,
+            n_routed_experts = 4,
+            n_shared_experts = 1,
+            num_experts_per_tok = 2,
+            first_k_dense_replace = 1,
+            rope_parameters = {
+                "rope_type": "yarn",
+                "rope_theta": 10000.0,
+                "factor": 4.0,
+                "beta_fast": 32,
+                "beta_slow": 1,
+                "mscale": 0.707,
+                "mscale_all_dim": 0.707,
+                "original_max_position_embeddings": 64,
+            },
+            attention_dropout = 0.0,
+            use_cache = False,
+            pad_token_id = 0,
+        )
+    from transformers.models.minimax_m2 import MiniMaxM2Config
+
+    return MiniMaxM2Config(
+        vocab_size = 96,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        output_router_logits = False,
+        attention_dropout = 0.0,
+        use_cache = False,
+        bos_token_id = 1,
+        eos_token_id = 2,
+        pad_token_id = 0,
+    )
+
+
+BUILT = ("deepseek_v2", "minimax_m2")
+
+
 def _config(kind):
     from transformers import AutoConfig
 
+    if kind in BUILT:
+        try:
+            return _built_config(kind)
+        except ImportError as e:  # an older transformers without the architecture
+            pytest.skip(f"{kind}: {e}")
     try:
         config = AutoConfig.from_pretrained(REPOS[kind])
     except Exception as e:  # offline host without the tiny repo cached
@@ -250,10 +317,22 @@ _OUT = os.environ.get("UNSLOTH_TEST_PARITY_OUT", "")
         ("qwen3", "sdpa", False),  # plain causal: sdpa's is_causal path
         ("qwen3", "sdpa", True),
         ("gpt_oss", "eager", False),  # attention sinks (local heads' slice) + sliding window
+        ("deepseek_v2", "sdpa", False),  # MLA: query / key and value head dims differ, YaRN scale
+        ("deepseek_v2", "eager", False),
+        ("minimax_m2", "sdpa", False),  # GQA with q / k norms over all heads, MoE
     ],
 )
 def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     _config(kind)  # skip before forking when the repo is unavailable
+    if kind in BUILT and int(transformers.__version__.split(".")[0]) < 5:
+        model = _model(kind, implementation)
+        if not cp._supports_context_parallel(model, "ulysses"):
+            # A refusal before training, not a wrong gradient: transformers 4.x builds DeepSeek-V2's experts as
+            # per-expert modules, which the support check declines (_hybrid_config_blocker).
+            pytest.skip(
+                f"{kind}: generic Ulysses is declined on transformers {transformers.__version__}: "
+                f"{cp._hybrid_config_blocker(model)}"
+            )
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
 
 

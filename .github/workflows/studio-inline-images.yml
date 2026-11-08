@@ -43,9 +43,7 @@ concurrency:
 jobs:
   images:
     name: Inline images (${{ matrix.os }})
-    # ubuntu-24.04 for the ubuntu-latest leg, keeping its check name: on the ubuntu-26.04 image ubuntu-latest now resolves to, Playwright's WebKit
-    # exits at launch (TargetClosedError) even after install-deps. Move back once it starts there.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     strategy:
       fail-fast: false

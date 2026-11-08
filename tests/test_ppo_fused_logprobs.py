@@ -497,3 +497,29 @@ def test_ppo_hooked_head_keeps_trl():
     route, trainer = _route(model)
     assert route is None
     assert "output head has hooks or a patched forward" in trainer._unsloth_ppo_fused_fallbacks
+
+
+@pytest.mark.parametrize(
+    "register",
+    [
+        "register_module_forward_hook",
+        "register_module_forward_pre_hook",
+        "register_module_full_backward_hook",
+        "register_module_full_backward_pre_hook",
+    ],
+)
+def test_ppo_global_module_hooks_keep_trl(register):
+    """torch's global module hooks would never see a head the fused kernel reads directly."""
+    from torch.nn.modules import module as module_hooks
+
+    module = _ppo_module()
+    model = _wrapper(module, _Policy())
+    assert _route(model)[0] is not None
+    handle = getattr(module_hooks, register)(lambda *a: None)
+    try:
+        route, trainer = _route(model)
+    finally:
+        handle.remove()
+    assert route is None
+    assert "output head has hooks or a patched forward" in trainer._unsloth_ppo_fused_fallbacks
+    assert _route(model)[0] is not None

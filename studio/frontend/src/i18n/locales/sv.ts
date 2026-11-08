@@ -2688,7 +2688,7 @@ export const sv = {
         apiDescription: "Se vad andra appar skickar till den här serverns API när det kommer in.",
         summary: "Begäranden, fel och tokenanvändning i realtid",
         status: "{active} aktiva · {recent} senaste · {model}",
-        noModelLoaded: "ingen modell inläst",
+        noModelLoaded: "Ingen modell inläst",
         autoOpen: "Den flytande övervakaren öppnas automatiskt",
         autoOpenDescription: "Öppnar en liten panel när API-trafik anländer.",
         cpu: "CPU",
@@ -2704,11 +2704,25 @@ export const sv = {
         gpuUnusableDetail: "Identifierad, men PyTorch kan inte använda den",
         detailedView: "Detaljerad vy",
         detailedViewDescription:
-          "Visa CPU-belastning samt belastning, temperatur och effekt för varje GPU i det flytande fönstret.",
-        cpuLoad: "CPU-belastning",
+          "Visa belastning, temperatur och effekt för varje GPU i det flytande fönstret.",
         gpuLoad: "GPU-belastning",
         temperature: "Temperatur",
         power: "Effekt",
+        memory: "Minne",
+        gpuInUse: "Används av GPU",
+        availableForModels: "Tillgängligt för modeller",
+        refreshRate: "Uppdateringsfrekvens",
+        refreshRateDescription: "Hur ofta den flytande monitorn läser minnes- och GPU-användning medan den är öppen.",
+        refreshEvery: "Var {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andra appar",
+        otherInUse: "Övrig användning",
+        freeLabel: "Ledigt",
+        unslothApp: "Unsloth-appen",
+        unslothShare: "Visa Unsloths andel",
+        unslothShareDescription: "Delar upp minnet i det Unsloth använder, det andra appar använder och det lediga.",
+        modelBreakdown: "Dela upp per modell",
+        modelBreakdownDescription: "Delar upp Unsloths del av minnesstapeln i varje inläst modell och resten av appen.",
       },
       gpu: {
         title: "GPU-enheter",
@@ -3003,7 +3017,7 @@ export const sv = {
       configurationDocs: "dokumentationen",
       configurationFlagsSuffix: "för flaggor.",
       modelNote:
-        "Codex kräver en GGUF-modell som körs av llama-server. Andra agenter kan även använda transformerbaserade modeller; ta bort --model för att använda modellen som redan är inläst i Unsloth.",
+        "Claude Code och Codex kräver en GGUF-modell som körs av llama-server, eller en MLX-modell. Andra agenter kan även använda transformerbaserade modeller; ta bort --model för att använda modellen som redan är inläst i Unsloth.",
       subagent: {
         title: "Använd en lokal modell som underagent",
         description:
@@ -5444,6 +5458,7 @@ export const sv = {
     monitor: {
       dragHandleLabel: "Flytta liveövervakaren. Piltangenterna flyttar den lite i taget, dubbelklick återställer den.",
       reconnecting: "Återansluter …",
+      resizeHint: "Dra i en sida eller ett hörn för att ändra bredden. Dubbelklicka för att återställa den.",
     },
   },
   projectsPage: {

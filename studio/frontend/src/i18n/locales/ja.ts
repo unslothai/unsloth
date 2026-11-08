@@ -2560,11 +2560,25 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
-        cpuLoad: "CPU 負荷",
+          "フローティングウィンドウに、各 GPU の負荷、温度、消費電力を表示します。",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
         power: "消費電力",
+        memory: "メモリ",
+        gpuInUse: "GPU 使用中",
+        availableForModels: "モデルに使用可能",
+        refreshRate: "更新間隔",
+        refreshRateDescription: "フローティングモニターを開いている間、メモリと GPU の使用量を読み取る頻度です。",
+        refreshEvery: "{seconds} 秒ごと",
+        unsloth: "Unsloth",
+        otherApps: "他のアプリ",
+        otherInUse: "その他の使用",
+        freeLabel: "空き",
+        unslothApp: "Unsloth アプリ",
+        unslothShare: "Unsloth の使用分を表示",
+        unslothShareDescription: "メモリを Unsloth、他のアプリ、空きに分けて表示します。",
+        modelBreakdown: "モデル別に表示",
+        modelBreakdownDescription: "メモリバーの Unsloth 分を、読み込んだ各モデルとアプリのその他の分に分けて表示します。",
       },
       gpu: {
         title: "GPU デバイス",
@@ -2836,7 +2850,7 @@ export const ja = {
       configurationDocs: "ドキュメント",
       configurationFlagsSuffix: "を参照してください。",
       modelNote:
-        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
+        "Claude Code と Codex には、llama-server が提供する GGUF モデルか MLX モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
         title: "ローカルモデルをサブエージェントとして使う",
         description:
@@ -5151,6 +5165,7 @@ export const ja = {
     monitor: {
       dragHandleLabel: "ライブモニターを移動します。矢印キーで少しずつ動かせ、ダブルクリックで位置をリセットします。",
       reconnecting: "再接続中...",
+      resizeHint: "辺または角をドラッグして幅を変更します。ダブルクリックでリセットします。",
     },
   },
   projectsPage: {
