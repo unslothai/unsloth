@@ -402,7 +402,7 @@ def test_a_many_chunk_document_clips_its_chunks_in_batched_counts(models, tmp_pa
         return _count
 
     sizes = sorted(len(text.split()) for _, text in chunks)
-    limit = sizes[0]  # the shortest chunk fits, the longer ones are clipped
+    limit = sizes[0]
     assert sizes[0] < sizes[-1]
     monkeypatch.setattr(embeddings, "token_counter", _counter)
     monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: limit)
