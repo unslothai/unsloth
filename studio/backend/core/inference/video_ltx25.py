@@ -1125,6 +1125,7 @@ class Ltx25TextEncoderClient:
         self._cmd: Any = None
         self._resp: Any = None
         self._ready = False
+        self._ready_error: Optional[BaseException] = None
         self._seq = 0
         # Request the worker is still computing (a cancel abandons it).
         self._inflight: Optional[int] = None
@@ -1170,6 +1171,7 @@ class Ltx25TextEncoderClient:
             spawn_on_lifetime_thread(proc.start)
         self._proc = proc
         self._ready = False
+        self._ready_error = None
         try:
             from utils.process_lifetime import adopt_pid
             adopt_pid(proc.pid)
@@ -1242,7 +1244,14 @@ class Ltx25TextEncoderClient:
     def wait_ready(self, cancel: Optional[threading.Event] = None) -> dict:
         if self._ready:
             return self.info
-        msg = self._get(cancel, "loading the Gemma 4 encoder")
+        if getattr(self, "_ready_error", None) is not None:
+            # The worker sends its load error once: a second caller (a placement preview read it first) gets the same one.
+            raise self._ready_error
+        try:
+            msg = self._get(cancel, "loading the Gemma 4 encoder")
+        except TextEncoderWorkerError as exc:
+            self._ready_error = exc
+            raise
         if msg.get("type") != "ready":
             raise TextEncoderWorkerError(
                 f"Unexpected reply from the text encoder worker: {msg.get('type')}"
@@ -1255,6 +1264,7 @@ class Ltx25TextEncoderClient:
     def close(self) -> None:
         proc, self._proc = self._proc, None
         self._ready = False
+        self._ready_error = None
         self._inflight = None
         self._cache.clear()
         if proc is None:

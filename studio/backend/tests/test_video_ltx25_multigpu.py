@@ -86,3 +86,25 @@ def test_cuda_device_uuid_is_none_off_cuda():
     assert L._cuda_device_uuid("cpu") is None
     assert L._cuda_device_uuid("cuda") is None
     assert L._cuda_device_uuid("not a device") is None
+
+
+def test_a_load_error_read_by_a_placement_preview_reaches_the_load(monkeypatch):
+    import queue
+
+    client = L.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cuda:1",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = types.SimpleNamespace(is_alive = lambda: False, exitcode = 1)
+    client._resp.put({"type": "error", "error": "encoder not in the cache", "cache_miss": True})
+    for _ in range(2):  # the preview swallows the first, the load's own wait must still see it
+        with pytest.raises(L.TextEncoderWorkerError) as err:
+            client.wait_ready()
+        assert "not in the cache" in str(err.value) and err.value.cache_miss
