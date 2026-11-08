@@ -17,7 +17,6 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 VAE_FUSED_ENV = "UNSLOTH_VAE_FUSED"
-# 0: launch on the current device as before (Triton refuses a tensor on another card).
 DEVICE_SCOPE_ENV = "UNSLOTH_DIFFUSION_TRITON_DEVICE_SCOPE"
 _FALSE = ("0", "false", "no", "off")
 _MIN_TRITON = (3, 3)
@@ -519,8 +518,7 @@ def _torch():
 
 
 def _on_card(t: Any) -> Any:
-    """``torch.cuda.device(t.device)`` around a launch: Triton launches on the CURRENT device, not the tensor's, so a
-    decode on another card than the thread's fails ("Pointer argument cannot be accessed") and drops to stock."""
+    """Triton launches on the current device: a tensor on another card fails the launch."""
     torch = _torch()
     if (
         torch.compiler.is_compiling()

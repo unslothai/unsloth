@@ -280,7 +280,6 @@ def _launch_qk_rope(q, k, v, qw, kw, cos, sin, heads):
 
 
 def _on_card(t):
-    """The tensor's card around the launch (Triton launches on the current device); shares the VAE kernels' switch."""
     from .diffusion_vae_fused import _on_card as on_card
     return on_card(t)
 
