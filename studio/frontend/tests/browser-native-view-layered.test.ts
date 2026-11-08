@@ -183,7 +183,8 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     };
     const innerPage = { parentElement: outerPage, closest: () => innerPage };
     const unpinned = placeholder.closest;
-    Object.assign(placeholder, { closest: () => innerPage });
+    // a docked page: in no floating window
+    Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-page]" ? innerPage : null) });
     const showsBeforeDrag = calls.filter(({ command }) => command === "browser_view_show").length;
     for (const left of [650, 700, 750]) {
       panelLeft = left;
@@ -465,18 +466,32 @@ test("a dragged floating window shows its layered page as a snapshot, and the li
   const { Image, nativeViewCall } = globals;
   globals.Image = class {
     src = "";
+    style = {};
+    parentElement: unknown = null;
     decode = () => Promise.resolve();
+    remove = () => shown.splice(shown.indexOf(this as unknown as (typeof shown)[number]), 1);
   };
   globals.nativeViewCall = (command: string, args?: Record<string, unknown>) => {
     calls.push({ command, args });
     if (command === "browser_capture") return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
     return Promise.resolve(command === "browser_view_layered" ? true : undefined);
   };
+  // the page is in the floating window
+  const unpinned = placeholder.closest;
+  Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-floating]" ? {} : null) });
+  // the picture is a child laid over the placeholder
+  const shown: { style: Record<string, string>; parentElement: unknown; remove: () => void }[] = [];
+  Object.assign(placeholder, {
+    appendChild: (child: (typeof shown)[number]) => {
+      child.parentElement = placeholder;
+      shown.push(child);
+    },
+  });
   let moving = false;
   doc.querySelector = (selector: string) =>
     selector.startsWith("[data-floating-gesture") ? (moving ? {} : null) : querySelector(selector);
-  // an earlier test left only the section opaque
-  const cut = () => section.attributes.has("data-native-hole");
+  // an earlier test left only the section opaque; the cut stays marked and shrinks to nothing mid-drag
+  const cut = () => section.attributes.has("data-native-hole") && section.vars.get("--native-hole-w") !== "0px";
   useBrowserStore.getState().openUrl("https://drag.example/");
   const stop = startNativeViews();
   try {
@@ -492,7 +507,10 @@ test("a dragged floating window shows its layered page as a snapshot, and the li
     const during = calls.slice(from);
     assert.ok(during.some(({ command, args }) => command === "browser_capture" && args?.tabId === tabId));
     assert.ok(during.some(({ command, args }) => command === "browser_view_show" && args?.parked === true));
-    assert.ok(!cut(), "the snapshot shows, uncut, while the window moves");
+    assert.ok(!cut(), "the picture shows, uncut, while the window moves");
+    assert.ok(section.attributes.has("data-native-hole"), "cuts stay marked, so the app is not restyled");
+    await settle();
+    assert.equal(shown.length, 1, "the picture is laid over the page");
     const parked = calls.length;
     await frame();
     assert.equal(calls.length, parked, "nothing is sent per frame of the drag");
@@ -503,10 +521,44 @@ test("a dragged floating window shows its layered page as a snapshot, and the li
     const dropped = calls.slice(parked);
     assert.ok(dropped.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId && !args?.parked));
     assert.ok(cut(), "cut open again on the drop");
+    assert.equal(shown.length, 1, "the picture stays a moment, while the page draws");
+    const held = calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    assert.equal(shown.length, 0, "and is taken away");
+    assert.ok(
+      calls.slice(held).some(({ command, args }) => command === "browser_capture" && args?.tabId === tabId),
+      "a fresh picture is taken for the next drag, with the pointer still on the bar",
+    );
+    await settle();
+    moving = true;
+    await frame();
+    assert.equal(shown.length, 1, "so the next drag shows it from its first frame");
+    moving = false;
+    await frame();
+    await frame();
   } finally {
     stop();
+    Object.assign(placeholder, { closest: unpinned });
     doc.querySelector = querySelector;
     globals.Image = Image;
     globals.nativeViewCall = nativeViewCall;
+  }
+});
+
+test("a node around a layered page that starts painting later, with no class change, is cut too", async () => {
+  useBrowserStore.getState().openUrl("https://late.example/");
+  const stop = startNativeViews();
+  const before = wrapper.background;
+  try {
+    await frame();
+    await frame();
+    assert.ok(!wrapper.attributes.has("data-native-hole"), "transparent when marked");
+    // e.g. switching to the floating window: the panel's background lands a frame later
+    wrapper.background = "rgb(254, 254, 253)";
+    await frame();
+    assert.ok(wrapper.attributes.has("data-native-hole"), "cut once it paints");
+  } finally {
+    stop();
+    wrapper.background = before;
   }
 });

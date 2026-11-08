@@ -19,7 +19,13 @@ import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } f
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
-import { FLOATING_ATTRIBUTE, FLOATING_MOVE_EVENT, FLOATING_SCALE_VAR, floatingNativeZoom } from "./floating-events";
+import {
+  FLOATING_ATTRIBUTE,
+  FLOATING_MOVE_EVENT,
+  FLOATING_PRESS_EVENT,
+  FLOATING_SCALE_VAR,
+  floatingNativeZoom,
+} from "./floating-events";
 import { outsideThread } from "./outside-thread";
 import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -571,6 +577,10 @@ let holeBounds: Bounds | null = null;
 // by cutting the hole no wider than the panel.
 let holeClip: DOMRect | null = null;
 
+function paints(computed: CSSStyleDeclaration): boolean {
+  return computed.backgroundImage !== "none" || opaque(computed.backgroundColor);
+}
+
 function opaque(color: string): boolean {
   if (color === "transparent") return false;
   const alpha = /\/\s*([\d.]+)%?\s*\)$/.exec(color) ?? /^rgba\([^)]*,\s*([\d.]+)\s*\)$/.exec(color);
@@ -598,17 +608,43 @@ function placeHole(): void {
   for (const node of holed) {
     if (local.includes(node)) continue;
     HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+    cutAt(node, "background", values[0], values[1], values[2], values[3]);
   }
   // No zoom correction: neither a mask nor a box-local cut is a fixed background.
   for (const node of [...local, ...masked]) {
     const box = node.getBoundingClientRect();
-    // Kept inside the box: a negative length voids the whole cut (a page a drag left behind).
-    const x = Math.max(0, rect[0] - box.left);
-    const y = Math.max(0, rect[1] - box.top);
-    const width = Math.max(0, Math.min(box.width, rect[0] + rect[2] - box.left) - x);
-    const height = Math.max(0, Math.min(box.height, rect[1] + rect[3] - box.top) - y);
+    // Not trimmed to the box: a node that grows later (the chat when its panel floats) kept the old
+    // edge. cutAt keeps every length non-negative, which is what a mask needs to stay valid.
+    const x = rect[0] - box.left;
+    const y = rect[1] - box.top;
+    const [width, height] = [rect[2], rect[3]];
     const cut = [x, y, width, height];
     HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${cut[index]}px`));
+    cutAt(node, local.includes(node) ? "background" : "mask", x, y, width, height);
+  }
+}
+
+const CUT_PROPERTIES = [
+  "background-position",
+  "background-size",
+  "mask-position",
+  "mask-size",
+  "-webkit-mask-position",
+  "-webkit-mask-size",
+] as const;
+
+/** Writes the cut as lengths beside the var()s the stylesheet reads: WebKit did not repaint a
+ *  background or mask when only those registered vars changed, so after a floating window moved
+ *  its page stayed white, or the composer under it was drawn over the page. */
+function cutAt(node: HTMLElement, kind: "background" | "mask", x: number, y: number, width: number, height: number): void {
+  const right = x + width;
+  const bottom = y + height;
+  const position = `0 0, 0 ${bottom}px, 0 ${y}px, ${right}px ${y}px`;
+  const size = `100% ${Math.max(0, y)}px, 100% max(0px, calc(100% - ${bottom}px)), ${Math.max(0, x)}px ${height}px, max(0px, calc(100% - ${right}px)) ${height}px`;
+  const prefixes = kind === "background" ? ["background"] : ["mask", "-webkit-mask"];
+  for (const prefix of prefixes) {
+    node.style.setProperty(`${prefix}-position`, position, "important");
+    node.style.setProperty(`${prefix}-size`, size, "important");
   }
 }
 
@@ -627,14 +663,17 @@ function markHole(): boolean {
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
   layers.push(...floatingUnderlay(chain));
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
-  if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
+  // A node can read transparent at the moment of marking (switching to the floating window) and paint
+  // later with no class change: such a node over the page left the floating window white.
+  const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
+  if (signature === holeSignature && !missed && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
   const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
   const colors = chain.map((node) => getComputedStyle(node));
   chain.forEach((node, index) => {
     const computed = colors[index];
-    if (computed.backgroundImage === "none" && !opaque(computed.backgroundColor)) return;
+    if (!paints(computed)) return;
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
     if (index <= floating) local.push(node);
@@ -666,14 +705,14 @@ function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
 function unmarkHole(): void {
   for (const node of holed) {
     node.removeAttribute(HOLE_ATTRIBUTE);
-    for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
+    for (const name of ["--native-hole-bg", ...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
   }
   holed = [];
   for (const node of local) node.removeAttribute(LOCAL_ATTRIBUTE);
   local = [];
   for (const node of masked) {
     node.removeAttribute(MASK_ATTRIBUTE);
-    for (const name of HOLE_VARS) node.style.removeProperty(name);
+    for (const name of [...HOLE_VARS, ...CUT_PROPERTIES]) node.style.removeProperty(name);
   }
   masked = [];
   holeSignature = "";
@@ -696,7 +735,10 @@ function panelArea(element: HTMLElement): HTMLElement | null {
 
 /** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
 function clipHole(element: HTMLElement | null): void {
-  const area = element && layered ? panelArea(element)?.getBoundingClientRect() ?? null : null;
+  // Only a docked panel pins its page through a split drag; a floating window's cut was chopped at a
+  // stale panel edge, leaving the composer under its right side drawn over the page.
+  const docked = element && layered && !element.closest?.(`[${FLOATING_ATTRIBUTE}]`);
+  const area = docked ? panelArea(element)?.getBoundingClientRect() ?? null : null;
   const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
   if (same) return;
   holeClip = area;
@@ -775,13 +817,13 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
-  // A layered page trails a dragged window by a frame: it waits under its snapshot instead.
-  const covered = layered ? movingWindow() : coveredNow(rect);
+  // A page trails a moved or resized window by a frame or more: it waits under its picture instead.
+  const covered = movingWindow() || (!layered && coveredNow(rect));
   return covered ? { ...shown, covered: true } : shown;
 }
 
 function movingWindow(): boolean {
-  return document.querySelector?.('[data-floating-gesture="move"]') != null;
+  return document.querySelector?.("[data-floating-gesture]") != null;
 }
 
 function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
@@ -1005,7 +1047,6 @@ async function coverView(tabId: string, zoom: number, bounds: Bounds): Promise<v
       retryCover();
       return;
     }
-    closeHole();
     await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
     parkedView = tabId;
     staleSnapshot = null;
@@ -1044,10 +1085,143 @@ export function refreshCoveredPage(tabId: string): void {
   });
 }
 
+// A layered page's picture while its floating window is dragged: a child over the placeholder, since
+// the placeholder's own background is the cut's fill. Kept ready (taken on reaching the bar, on the
+// press and after each drop), shown once the drag starts.
+let dragShot: {
+  tabId: string;
+  url: string;
+  image: HTMLImageElement;
+  size: Bounds | null;
+  layoutWidth: number;
+  shown: boolean;
+} | null = null;
+let dragShotTicket = 0;
+
+async function captureForDrag(tabId: string): Promise<void> {
+  const ticket = ++dragShotTicket;
+  const size = shownBounds;
+  // The placeholder's own width, in the floating window's scaled layout (see FLOATING_PAGE_STYLE).
+  const layoutWidth = placeholder(tabId)?.clientWidth ?? 0;
+  const png = await call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null);
+  if (!png?.byteLength) return;
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  const image = new Image();
+  image.src = url;
+  // A slower, older capture (the hover's, say) never replaces a newer one.
+  if (!(await image.decode().then(() => true, () => false)) || ticket !== dragShotTicket) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  // Swapped in place when the drag already shows the older one: dropping it first left the window empty.
+  const wasShown = dragShot?.tabId === tabId && dragShot.shown;
+  clearDragShot();
+  dragShot = { tabId, url, image, size, layoutWidth, shown: false };
+  if (wasShown || parkedView === tabId) showDragShot();
+}
+
+// The page's box sits on fractional pixels, so its rounded size moves by a pixel with the window.
+function sameSize(a: Bounds | null, b: Bounds | null): boolean {
+  return !!a && !!b && Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
+}
+
+function showDragShot(): void {
+  const page = dragShot ? placeholder(dragShot.tabId) : null;
+  // Taken at another size (in the panel, before it floated): stretched over the window, it flickered.
+  if (!dragShot || !page || dragShot.shown || !sameSize(dragShot.size, shownBounds)) return;
+  // The decoded image itself, not a CSS background of its URL: WebKit re-decoded that while the
+  // window moved, and the page flickered through the drag.
+  Object.assign(dragShot.image.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    // At the width it was taken, in the window's scaled layout, and its own proportions: it scales with
+    // the window as the page will, and is cropped, never stretched (100% height stretched it).
+    width: dragShot.layoutWidth ? `${dragShot.layoutWidth}px` : "100%",
+    height: "auto",
+    pointerEvents: "none",
+  });
+  page.style.position = "relative";
+  page.style.overflow = "hidden";
+  page.appendChild(dragShot.image);
+  dragShot.shown = true;
+}
+
+function hideDragShot(): void {
+  if (!dragShot?.shown) return;
+  const page = dragShot.image.parentElement;
+  dragShot.image.remove();
+  page?.style.removeProperty("position");
+  page?.style.removeProperty("overflow");
+  dragShot.shown = false;
+}
+
+function clearDragShot(): void {
+  if (!dragShot) return;
+  hideDragShot();
+  URL.revokeObjectURL(dragShot.url);
+  dragShot = null;
+}
+
+function floats(element: HTMLElement): boolean {
+  return element.closest?.(`[${FLOATING_ATTRIBUTE}]`) != null;
+}
+
+/** Shrunk to nothing but kept marked, so the app is not restyled (a flash). */
+function shutHole(): void {
+  if (holeBounds && (holeBounds.width > 0 || holeBounds.height > 0)) {
+    holeBounds = { ...holeBounds, width: 0, height: 0 };
+    placeHole();
+  }
+}
+
+/** The drag's first frame, before the park's round trip: shut the cut and lay the picture over it now. */
+function coverForDrag(tabId: string): void {
+  shutHole();
+  if (dragShot?.tabId === tabId) showDragShot();
+}
+
+// The page moved back on a drop draws a moment after it lands (WebKit may have dropped its tiles while
+// it was off-window): the picture, the same pixels, stays over it until then.
+const DROP_HOLD_MS = 400;
+let dropTimer = 0;
+
+function clearDragShotAfterDrop(): void {
+  window.clearTimeout(dropTimer);
+  dropTimer = window.setTimeout(() => {
+    if (parkedView !== null || movingWindow()) return;
+    hideDragShot();
+    // A fresh one for the next drag: the pointer is usually still on the bar after a drop, so no hover
+    // capture comes, and a page that just floated has none at its new size.
+    const page = shownView ? placeholder(shownView) : null;
+    if (shownView && page && floats(page)) void captureForDrag(shownView);
+  }, DROP_HOLD_MS);
+}
+
+/** A page under a moved or resized floating window: parked under its picture (and, layered, its cut
+ *  shrunk to nothing; cuts stay marked, so the app is not restyled, a flash, at each end). */
+let parking: string | null = null;
+
+async function parkForDrag(tabId: string): Promise<void> {
+  if (parkedView === tabId || parking === tabId) return;
+  parking = tabId;
+  coverForDrag(tabId);
+  await call("browser_view_show", { tabId, bounds: shownBounds, parked: true }).finally(() => {
+    parking = null;
+  });
+  parkedView = tabId;
+  setShownView(null);
+  if (dragShot?.tabId === tabId) showDragShot();
+  else void captureForDrag(tabId);
+}
+
 async function applyView(desired: Desired): Promise<void> {
+  if (desired && "covered" in desired && movingWindow() && parkable(desired.tabId)) {
+    await parkForDrag(desired.tabId);
+    return;
+  }
   if (!desired || "covered" in desired) {
-    // Cut open until the snapshot is up (coverView), or the window flashes blank.
-    if (!(layered && desired && parkable(desired.tabId))) closeHole();
+    closeHole();
     // keep the snapshot if an overlay reopens during capture.
     if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
     // Another tab under a lasting cover (the find bar): show it first so it can be captured, not left blank.
@@ -1076,12 +1250,34 @@ async function applyView(desired: Desired): Promise<void> {
   };
   try {
     openedTabs.add(tabId);
+    // Back from a resize, or docked to floating: zoomed while parked, so the page isn't seen at the old
+    // scale first. A page on top of the app (Windows, Linux) is parked for it here; a layered one sits
+    // behind its shut cut instead (below).
+    const rezoom = existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom;
+    const resized = JSON.stringify(bounds) !== JSON.stringify(shownBounds);
+    if (rezoom && !layered && shownView === tabId && resized) {
+      await call("browser_view_show", { tabId, bounds: shownBounds, parked: true });
+      if (stale()) return;
+      parkedView = tabId;
+    }
+    if (rezoom && parkedView === tabId) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     parkedView = null;
     staleSnapshot = null;
     coverFails = 0;
     clearSnapshot();
+    clearDragShotAfterDrop();
+    // A layered page is shown at its new scale (floating), not zoomed once already visible.
+    if (layered && existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom) {
+      zooms.set(tabId, zoom);
+      await call("browser_view_zoom", { tabId, zoom });
+      if (stale()) return;
+    }
     // After the move, so hole and page update together.
     if (layered) openHole(tabId, bounds);
     shownBounds = bounds;
@@ -1174,8 +1370,17 @@ export function startNativeViews(): () => void {
     if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
+    if (desired && movingWindow() && desired.tabId === shownView) coverForDrag(desired.tabId);
     pruneViews(desired?.tabId ?? null);
     const element = desired ? placeholder(desired.tabId) : null;
+    // Docked to floating or back: a layered cut would sit at the old place until the page moves, with
+    // the page showing through it there. Shut until applyView reopens it at the new place.
+    if (layered !== null && element && resized && element !== resized && desired?.tabId === shownView && floats(element) !== floats(resized)) {
+      if (layered) shutHole();
+      // The chat's panels animate to their new widths, and the window's backgrounds paint a few
+      // frames late: cut again every frame until both settle.
+      motionUntil = performance.now() + MOTION_MS;
+    }
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
       if (resizedArea) areaObserver.unobserve(resizedArea);
@@ -1185,6 +1390,8 @@ export function startNativeViews(): () => void {
       resized = element;
     }
     clipHole(element);
+    // Boxes under the cut change on their own (the chat widens as its panel floats): measure again.
+    placeHole();
     if (performance.now() < motionUntil) schedule();
     const key = JSON.stringify([epoch, coverRetry, desired]);
     if (key === sent) return;
@@ -1223,9 +1430,21 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerup", schedule, true);
   // A layered page follows the floating window; one on top waits for the drop (see sync).
   const floatingMoved = () => {
+    // In the frame the window first moves: a sync a frame later showed the live page left behind. A page
+    // on top of the app (Windows, Linux) is parked now too, as nothing syncs during the gesture there.
+    if (shownView && movingWindow()) {
+      const tabId = shownView;
+      coverForDrag(tabId);
+      if (!layered && parkable(tabId)) void parkForDrag(tabId);
+    }
     if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
   };
   window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+  // Captured on reaching the bar and again on the press, so a drag shows the picture from its first frame.
+  const floatingPressed = () => {
+    if (layered !== null && shownView) void captureForDrag(shownView);
+  };
+  window.addEventListener(FLOATING_PRESS_EVENT, floatingPressed);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -1242,6 +1461,7 @@ export function startNativeViews(): () => void {
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
     window.removeEventListener(FLOATING_MOVE_EVENT, floatingMoved);
+    window.removeEventListener(FLOATING_PRESS_EVENT, floatingPressed);
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;
@@ -1252,6 +1472,7 @@ export function startNativeViews(): () => void {
     parkedView = null;
     setShownView(null);
     clearSnapshot();
+    clearDragShot();
     closeHole();
     sendInput(NO_INPUT);
     insetToasts(null);
