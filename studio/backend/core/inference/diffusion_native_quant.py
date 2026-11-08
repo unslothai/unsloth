@@ -14,6 +14,8 @@ import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
+from .diffusion_fp8_dequant import dequant_rows, fused_dequant_enabled
+
 NATIVE_INT8 = "int8"
 NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
@@ -509,8 +511,25 @@ def native_linear_class():
             self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
             self._int8pack_scales: dict = {}
 
+        def _widen(self, codes: Any) -> Any:
+            """Exact float32 values of a row slice of ``weight_q``, as the eager branches below."""
+            if self.scheme != NATIVE_FP8:
+                return codes.to(torch.float32)
+            if codes.device.type == "mps":
+                lut = fp8_lookup_table(self.fp8_format, str(codes.device))
+                return lut.index_select(0, codes.reshape(-1).int()).view(codes.shape)
+            return codes.view(getattr(torch, self.fp8_format)).to(torch.float32)
+
         def _stored_weight(self, dtype: Any) -> Any:
             scale = self.weight_scale.view(torch.float32)
+            if not torch.compiler.is_compiling() and fused_dequant_enabled():
+                return dequant_rows(
+                    self.weight_q,
+                    scale,
+                    dtype,
+                    self._widen,
+                    self.fp8_format if self.scheme == NATIVE_FP8 else None,
+                )
             if self.scheme != NATIVE_FP8:
                 wide = self.weight_q.to(torch.float32)
             elif torch.compiler.is_compiling():
