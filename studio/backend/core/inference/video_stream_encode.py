@@ -350,6 +350,8 @@ class StreamEncode:
                 spool.seek(0, os.SEEK_END)
                 offset = spool.tell()
                 spool.write(memoryview(frames.reshape(-1)))
+                # a full disk must fail here, while the chunk is still in memory, not at the compare's seek
+                spool.flush()
                 chunk.offset = offset
                 chunk.host = None
                 chunk.done = None
@@ -426,7 +428,11 @@ class StreamEncode:
                 host, done, offset = chunk.host, chunk.done, chunk.offset
             theirs = final[start : start + chunk.frames]
             if host is None:
-                same = self._spool_equal(offset, theirs, scratch)
+                try:
+                    same = self._spool_equal(offset, theirs, scratch)
+                except Exception:  # noqa: BLE001 - an unreadable spool: encode the clip normally
+                    self.invalidate("spool unreadable")
+                    return False
             else:
                 if done is not None:
                     done.synchronize()

@@ -632,3 +632,48 @@ def test_the_session_holds_no_raw_frames_once_they_are_encoded():
     ), f"{_raw_bytes_held(session)} of {final.numel()} raw bytes still held"
     assert session._matches(final)
     session.close()
+
+
+class _FullDisk:
+    """A spool whose writes are buffered and whose flush reports ENOSPC, like a filling temp filesystem."""
+
+    def __init__(self):
+        import io
+        self.buf, self.closed = io.BytesIO(), False
+
+    def write(self, data):
+        return self.buf.write(data)
+
+    def flush(self):
+        raise OSError(28, "No space left on device")
+
+    def seek(self, *a):
+        raise OSError(28, "No space left on device")
+
+    def tell(self):
+        return self.buf.tell()
+
+    def readinto(self, b):
+        raise OSError(5, "Input/output error")
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_spool_that_fills_on_flush_keeps_the_chunks(monkeypatch):
+    monkeypatch.setattr(vse.tempfile, "TemporaryFile", lambda *a, **k: _FullDisk())
+    session, final = _spool_session()
+    session._join()
+    assert all(chunk.host is not None for chunk in session.chunks)
+    assert session._matches(final)
+    session.close()
+
+
+def test_an_unreadable_spool_falls_back_instead_of_raising(monkeypatch):
+    session, final = _spool_session()
+    assert _drained(session, spooled = True)
+    monkeypatch.setattr(
+        session, "_spool_equal", lambda *a: (_ for _ in ()).throw(OSError(5, "EIO"))
+    )
+    assert session.take(final, 8) is None
+    assert vse.STATS["last"] == "spool unreadable"
