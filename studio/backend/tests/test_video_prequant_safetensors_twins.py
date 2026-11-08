@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A video family's declared ``<stem>.pt`` is preceded by its ``<stem>.safetensors`` twin, with the image rules:
-a new user fetches only the twin, a cached .pt is kept, an unreadable twin is skipped, offline is unchanged."""
+"""Video pre-quant chains are .safetensors only: a declared ``<stem>.pt`` resolves as its ``<stem>.safetensors``
+twin, a cached .pt is never opened or preferred, and an unreadable or unhosted twin leads to runtime quantisation
+of the dense weights rather than to the pickle."""
 
 from __future__ import annotations
 
@@ -24,11 +25,12 @@ def _fam(name):
     return next(f for f in vf._FAMILIES if f.name == name)
 
 
-# (family, scheme, base, task) -> (chain before, chain now). Before = origin/main, read with the real tables.
+# (family, scheme, base, task) -> (chain on origin/main, chain now). The pickle names are gone; each declared .pt
+# became its .safetensors twin, which every one of these repos hosts except Wan2.2 A14B's.
 CHAINS = {
     ("minimax-h3", "fp8", None, "ref2va"): (
         ["MiniMax-H3-Ref2VA-FP8.pt"],
-        ["MiniMax-H3-Ref2VA-FP8.safetensors", "MiniMax-H3-Ref2VA-FP8.pt"],
+        ["MiniMax-H3-Ref2VA-FP8.safetensors"],
     ),
     ("minimax-h3", "int8", None, None): (
         [
@@ -37,38 +39,31 @@ CHAINS = {
             "MiniMax-H3-INT8.pt",
             "transformer_int8.pt",
         ],
-        [
-            "MiniMax-H3-INT8-ConvRot.safetensors",
-            "MiniMax-H3-INT8-ConvRot.pt",
-            "MiniMax-H3-INT8.safetensors",
-            "MiniMax-H3-INT8.pt",
-            "transformer_int8.pt",
-        ],
+        ["MiniMax-H3-INT8-ConvRot.safetensors", "MiniMax-H3-INT8.safetensors"],
     ),
     ("minimax-h3", "int8", None, "ref2va"): (
         ["MiniMax-H3-Ref2VA-INT8-ConvRot.pt"],
-        ["MiniMax-H3-Ref2VA-INT8-ConvRot.safetensors", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"],
+        ["MiniMax-H3-Ref2VA-INT8-ConvRot.safetensors"],
     ),
     ("wan2.2-t2v-a14b", "fp8", None, "transformer_2"): (
         ["Wan2.2-T2V-A14B-FP8-2.pt"],
-        ["Wan2.2-T2V-A14B-FP8-2.safetensors", "Wan2.2-T2V-A14B-FP8-2.pt"],
+        ["Wan2.2-T2V-A14B-FP8-2.safetensors"],
     ),
     ("wan2.2-t2v-a14b", "int8", None, "transformer_2"): (
         ["Wan2.2-T2V-A14B-INT8-2.pt"],
-        ["Wan2.2-T2V-A14B-INT8-2.safetensors", "Wan2.2-T2V-A14B-INT8-2.pt"],
+        ["Wan2.2-T2V-A14B-INT8-2.safetensors"],
     ),
-    # Already twin-first (derived chain or declared safetensors): unchanged.
     ("minimax-h3", "fp8", None, None): (
         ["MiniMax-H3-FP8.safetensors", "MiniMax-H3-FP8.pt", "transformer_fp8.pt"],
-        ["MiniMax-H3-FP8.safetensors", "MiniMax-H3-FP8.pt", "transformer_fp8.pt"],
+        ["MiniMax-H3-FP8.safetensors"],
     ),
     ("wan2.2-ti2v-5b", "fp8", None, None): (
         ["Wan2.2-TI2V-5B-FP8.safetensors", "Wan2.2-TI2V-5B-FP8.pt", "transformer_fp8.pt"],
-        ["Wan2.2-TI2V-5B-FP8.safetensors", "Wan2.2-TI2V-5B-FP8.pt", "transformer_fp8.pt"],
+        ["Wan2.2-TI2V-5B-FP8.safetensors"],
     ),
     ("wan2.2-t2v-a14b", "int8", None, None): (
         ["Wan2.2-T2V-A14B-INT8.safetensors", "Wan2.2-T2V-A14B-INT8.pt", "transformer_int8.pt"],
-        ["Wan2.2-T2V-A14B-INT8.safetensors", "Wan2.2-T2V-A14B-INT8.pt", "transformer_int8.pt"],
+        ["Wan2.2-T2V-A14B-INT8.safetensors"],
     ),
     ("ltx-2.5", "int8", "lightricks/ltx-2.5-diffusers", None): (
         [
@@ -77,16 +72,11 @@ CHAINS = {
             "LTX-2.5-INT8.pt",
             "transformer_int8.pt",
         ],
-        [
-            "LTX-2.5-INT8-ConvRot.safetensors",
-            "LTX-2.5-INT8.safetensors",
-            "LTX-2.5-INT8.pt",
-            "transformer_int8.pt",
-        ],
+        ["LTX-2.5-INT8-ConvRot.safetensors", "LTX-2.5-INT8.safetensors"],
     ),
     ("ltx-2", "fp8", "lightricks/ltx-2.3", None): (
         ["LTX-2.3-FP8.safetensors", "LTX-2.3-FP8.pt", "transformer_fp8.pt"],
-        ["LTX-2.3-FP8.safetensors", "LTX-2.3-FP8.pt", "transformer_fp8.pt"],
+        ["LTX-2.3-FP8.safetensors"],
     ),
 }
 
@@ -113,6 +103,7 @@ def _env(monkeypatch):
     for name in (TWINS_ENV, pq.PREFER_SAFETENSORS_ENV, pq.PREQUANT_MIRROR_ENV):
         monkeypatch.delenv(name, raising = False)
     pq._logged_twin_choices.clear()
+    pq._HEADER_PROBE_MEMO.clear()
 
 
 def _chain(key):
@@ -123,18 +114,24 @@ def _chain(key):
 
 
 @pytest.mark.parametrize("key", sorted(CHAINS, key = str), ids = lambda k: "-".join(map(str, k)))
-def test_chain_requests_the_twin_right_before_each_declared_pickle(key):
+def test_chain_is_safetensors_only_and_keeps_every_twin_of_the_old_chain(key):
     src, chain = _chain(key)
-    assert chain == CHAINS[key][1]
-    # The twin is a guess, never a declared name: planners still require proof it exists.
-    added = set(chain) - set(CHAINS[key][0])
-    assert not added.intersection(src.declared_filenames)
+    before, now = CHAINS[key]
+    assert chain == now
+    assert all(n.endswith(".safetensors") for n in chain), chain
+    # every artifact the old chain named survives as its .safetensors spelling (the legacy name has none)
+    twins = [
+        n.rsplit(".", 1)[0] + ".safetensors" for n in before if not n.startswith("transformer_")
+    ]
+    assert chain == list(dict.fromkeys(twins))
+    assert all(n.endswith(".safetensors") for n in src.declared_filenames)
 
 
 @pytest.mark.parametrize("key", sorted(CHAINS, key = str), ids = lambda k: "-".join(map(str, k)))
-def test_kill_switch_restores_the_old_chain(key, monkeypatch):
-    monkeypatch.setenv(TWINS_ENV, "0")
-    assert _chain(key)[1] == CHAINS[key][0]
+@pytest.mark.parametrize("value", ["0", "1"])
+def test_the_twins_kill_switch_is_inert(key, value, monkeypatch):
+    monkeypatch.setenv(TWINS_ENV, value)
+    assert _chain(key)[1] == CHAINS[key][1]
 
 
 @pytest.mark.parametrize("twins", [None, "0"], ids = ["twins_on", "twins_off"])
@@ -159,23 +156,22 @@ def test_no_video_family_declares_an_nvfp4_pickle():
     assert all(entry[-1].endswith(".safetensors") for _name, entry in rows), rows
 
 
-def test_every_declared_video_pickle_gets_its_twin_first():
-    """Over the whole table, so a new family row cannot skip the rule."""
+def test_every_declared_video_row_resolves_its_safetensors_name_and_no_pickle():
+    """Over the whole table, so a new family row cannot reintroduce a pickle."""
     seen = 0
     for fam in vf._FAMILIES:
         for entry in getattr(fam, "prequant_filenames", ()) or ():
             scheme, name = entry[0], entry[-1]
-            if not name.endswith(".pt"):
-                continue
+            assert name.endswith(".safetensors"), (fam.name, entry)
             task = entry[1] if len(entry) == 3 else None
             src = pq.resolve_prequant_source(fam, scheme, task = task)
             if src is None or src.kind != "repo":
                 continue
             chain = list(pq.candidate_filenames_of(src))
-            twin = name[: -len(".pt")] + ".safetensors"
-            assert chain.index(twin) == chain.index(name) - 1, (fam.name, chain)
+            assert name in chain, (fam.name, chain)
+            assert all(n.endswith(".safetensors") for n in chain), (fam.name, chain)
             seen += 1
-    assert seen >= 4
+    assert seen >= 8
 
 
 class FakeHub:
@@ -281,14 +277,21 @@ def test_new_user_fetches_only_the_twin(cell, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("cell", CELLS, ids = CELL_IDS)
 @pytest.mark.parametrize("offline", [False, True], ids = ["online", "offline"])
-def test_cached_pickle_is_kept_and_the_twin_never_downloaded(cell, offline, tmp_path, monkeypatch):
+def test_a_cached_pickle_is_ignored_and_never_opened(cell, offline, tmp_path, monkeypatch):
     src, scheme, stem, hub = _setup(cell, tmp_path, monkeypatch)
     hub.cache(stem + ".pt")
-    got = _resolve(src, scheme, local_files_only = offline)
-    assert got == hub.cached[(src.location, stem + ".pt")]
-    assert hub.downloads == [(stem + ".pt", offline)]
-    # the cache probe agrees with what the resolver opened
-    assert pq.cached_checkpoint_path(src, online = not offline) == got
+    if offline:
+        # only the pickle is cached: nothing usable, so the load quantises the dense weights
+        with pytest.raises(LocalEntryNotFoundError):
+            _resolve(src, scheme, local_files_only = True)
+    else:
+        assert _resolve(src, scheme) == hub.cached[(src.location, stem + ".safetensors")]
+    assert stem + ".pt" not in hub.fetched
+    # the cache probe never credits the pickle either
+    assert pq.cached_checkpoint_path(src, online = not offline) in (
+        None,
+        hub.cached.get((src.location, stem + ".safetensors")),
+    )
 
 
 @pytest.mark.parametrize("cell", CELLS, ids = CELL_IDS)
@@ -303,24 +306,39 @@ def test_prefer_safetensors_still_fetches_the_twin_over_a_cached_pickle(
 
 
 @pytest.mark.parametrize("cell", CELLS, ids = CELL_IDS)
-def test_unreadable_twin_is_skipped_for_the_pickle(cell, tmp_path, monkeypatch):
+def test_unreadable_twin_is_refused_not_swapped_for_the_pickle(cell, tmp_path, monkeypatch):
     src, scheme, stem, hub = _setup(
         cell,
         tmp_path,
         monkeypatch,
         readable = lambda scheme = None, filename = None: not str(filename).endswith(".safetensors"),
     )
-    assert _resolve(src, scheme) == hub.cached[(src.location, stem + ".pt")]
-    assert hub.fetched == [stem + ".pt"]
+    hub.cache(stem + ".pt")
+    with pytest.raises(ValueError, match = "cannot be read here"):
+        _resolve(src, scheme)
+    assert hub.fetched == []
 
 
 @pytest.mark.parametrize("cell", CELLS, ids = CELL_IDS)
-def test_twin_not_hosted_falls_back_to_the_pickle(cell, tmp_path, monkeypatch):
+def test_twin_not_hosted_never_falls_back_to_the_pickle(cell, tmp_path, monkeypatch):
+    import core.inference.prequant_header_probe as hp
+
     src, scheme, stem, hub = _setup(cell, tmp_path, monkeypatch, hosted_twin = False)
-    assert _resolve(src, scheme) == hub.cached[(src.location, stem + ".pt")]
-    assert hub.fetched == [stem + ".safetensors", stem + ".pt"]
-    # the recorded 404 lets a later offline plan count the cached .pt
-    assert pq.cached_checkpoint_path(src, online = True) == hub.cached[(src.location, stem + ".pt")]
+    with pytest.raises(EntryNotFoundError):
+        _resolve(src, scheme)
+    assert stem + ".pt" not in hub.fetched
+    assert all(n.endswith(".safetensors") for n in hub.fetched)
+    assert pq.cached_checkpoint_path(src, online = True) is None
+    # the header probe sees every .safetensors name 404 and refuses up front, so planning stages the dense weights
+    monkeypatch.setattr(
+        hp,
+        "read_hub_checkpoint_header",
+        lambda repo, name, token = None, **_: (None, True if name in hub.hosted else False),
+    )
+    monkeypatch.setattr(pq, "hub_offline", lambda: False)
+    assert "no .safetensors checkpoint is hosted" in (
+        pq.hosted_prequant_refusal(src, scheme, hf_token = f"tok-{stem}") or ""
+    )
 
 
 @pytest.mark.parametrize("cell", CELLS, ids = CELL_IDS)

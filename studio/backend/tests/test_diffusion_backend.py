@@ -4241,7 +4241,7 @@ def _fake_zimage_hub(monkeypatch):
         {
             "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
             "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
-            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.safetensors", 6 * GB)],
         },
     )
     monkeypatch.setattr(
@@ -6191,8 +6191,8 @@ def test_dense_quant_prefetch_needed_gates(fake_runtime, monkeypatch):
 _HOSTED_PREQUANT = types.SimpleNamespace(
     kind = "repo",
     location = "unsloth/Z-Image-Turbo-FP8",
-    filename = "Z-Image-Turbo-FP8.pt",
-    fallback_filenames = ("transformer_fp8.pt",),
+    filename = "Z-Image-Turbo-FP8.safetensors",
+    fallback_filenames = (),
 )
 
 
@@ -8613,7 +8613,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
             "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
             "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
             "unsloth/FLUX.1-schnell-FP8": [
-                _FakeSibling("text_encoder_2-fp8.pt", 1 * GB),
+                _FakeSibling("text_encoder_2-fp8.safetensors", 1 * GB),
                 _FakeSibling("README.md", 100),
             ],
         },
@@ -8630,7 +8630,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
                 "text_encoder_2": types.SimpleNamespace(
                     kind = "repo",
                     location = "unsloth/FLUX.1-schnell-FP8",
-                    filename = "text_encoder_2-fp8.pt",
+                    filename = "text_encoder_2-fp8.safetensors",
                 )
             }
             if te_quant_mode == "fp8"
@@ -8647,7 +8647,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     )
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert "unsloth/FLUX.1-schnell-FP8" in by_repo
-    assert by_repo["unsloth/FLUX.1-schnell-FP8"]["files"] == ["text_encoder_2-fp8.pt"]
+    assert by_repo["unsloth/FLUX.1-schnell-FP8"]["files"] == ["text_encoder_2-fp8.safetensors"]
     base = by_repo["unsloth/FLUX.1-dev"]
     assert not any(
         f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"]
@@ -8808,7 +8808,7 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     )
 
     staged = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
-    assert ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt") in staged
+    assert ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.safetensors") in staged
     assert plan["required_bytes"] == plan["total_bytes"]
     baseline = DiffusionBackend().download_plan(
         "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
@@ -8829,8 +8829,8 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
     source = types.SimpleNamespace(
         kind = "repo",
         location = "unsloth/Qwen-Image-FP8",
-        filename = "Qwen-Image-INT8.pt",
-        fallback_filenames = ("transformer_int8.pt",),
+        filename = "Qwen-Image-INT8.safetensors",
+        fallback_filenames = (),
     )
     _fake_hf_api(
         monkeypatch,
@@ -8900,14 +8900,16 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
             **kwargs,
         )
         assert plan["required_bytes"] == plan["total_bytes"], kwargs
-        assert not any(f.endswith("-FP8.pt") for e in plan["entries"] for f in e["files"]), kwargs
+        assert not any(
+            f.endswith("-FP8.safetensors") for e in plan["entries"] for f in e["files"]
+        ), kwargs
 
     resident = DiffusionBackend().download_plan(
         "unsloth/Z-Image-GGUF",
         gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
         transformer_quant = "fp8",
     )
-    assert any(f.endswith("-FP8.pt") for e in resident["entries"] for f in e["files"])
+    assert any(f.endswith("-FP8.safetensors") for e in resident["entries"] for f in e["files"])
 
 
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
@@ -8919,7 +8921,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
     auto = DiffusionBackend().download_plan(
         "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf", speed_mode = "off"
     )
-    assert not any(f.endswith("-FP8.pt") for e in auto["entries"] for f in e["files"])
+    assert not any(f.endswith("-FP8.safetensors") for e in auto["entries"] for f in e["files"])
 
     explicit = DiffusionBackend().download_plan(
         "unsloth/Z-Image-GGUF",
@@ -8927,7 +8929,7 @@ def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypa
         speed_mode = "off",
         transformer_quant = "fp8",
     )
-    assert any(f.endswith("-FP8.pt") for e in explicit["entries"] for f in e["files"])
+    assert any(f.endswith("-FP8.safetensors") for e in explicit["entries"] for f in e["files"])
 
 
 def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):

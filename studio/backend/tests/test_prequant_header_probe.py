@@ -251,26 +251,25 @@ def test_a_stale_hosted_checkpoint_is_refused_before_any_weight_download(hub):
     assert "txt_in" in (pq.last_prequant_failure() or "")
 
 
-def test_a_pickle_checkpoint_is_never_read_and_never_refused_early(hub):
-    """The probe reads safetensors headers only. A ``.pt`` that comes first in the resolver's order is
-    "unknown": no range read of it at all, and the load goes on to download and validate it as before."""
+def test_a_pickle_checkpoint_is_never_read_or_downloaded(hub):
+    """The probe reads safetensors headers only, and a stale chain naming only a ``.pt`` has nothing to probe:
+    no range read of it at all, and the load never downloads or opens it (it quantises the dense weights)."""
     repo = "unsloth/Qwen-Image-2512-FP8"
     name = "Qwen-Image-2512-INT8.pt"
     _write_pt(_repo_file(hub, repo, name), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
     assert pq.hosted_prequant_refusal(_source(repo, name), "int8") is None
     assert hub.server.sent == 0
-    _load(_source(repo, name))
-    assert hub.downloads == [name]
+    assert _load(_source(repo, name)) is None
+    assert hub.downloads == []
 
 
 def test_the_first_existing_name_decides_like_the_resolver(hub):
-    """Safetensors ahead of the pickle, as the resolver orders them: a stale .safetensors is refused even
-    with a .pt behind it, and a missing .safetensors leaves the .pt to the loader."""
+    """Only the .safetensors names count: a stale .safetensors is refused even with a .pt behind it, and a
+    missing .safetensors is a refusal too (the .pt is never the fallback), so planning stages the dense weights."""
     repo = "unsloth/Qwen-Image-2512-FP8"
     _write_pt(_repo_file(hub, repo, "q-INT8.pt"), _qwen_int8_meta(_STALE_INT8_EXCLUDES))
-    assert (
-        pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8") is None
-    )
+    reason = pq.hosted_prequant_refusal(_source(repo, "q-INT8.safetensors", "q-INT8.pt"), "int8")
+    assert reason is not None and "no .safetensors checkpoint is hosted" in reason
     _write_safetensors(
         _repo_file(hub, repo, "q-INT8.safetensors"), _qwen_int8_meta(_STALE_INT8_EXCLUDES)
     )
@@ -282,11 +281,12 @@ def test_a_current_hosted_checkpoint_still_goes_to_the_download(hub):
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     repo = "unsloth/Qwen-Image-FP8"
-    path = _repo_file(hub, repo, "Qwen-Image-INT8.pt")
-    _write_pt(path, _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image")))
-    source = _source(repo, "Qwen-Image-INT8.pt")
+    path = _repo_file(hub, repo, "Qwen-Image-INT8.safetensors")
+    _write_safetensors(path, _qwen_int8_meta(exclude_tokens_for_scheme("int8", "qwen-image")))
+    source = _source(repo, "Qwen-Image-INT8.safetensors")
+    assert pq.hosted_prequant_refusal(source, "int8") is None
     _load(source)
-    assert hub.downloads == ["Qwen-Image-INT8.pt"]
+    assert hub.downloads == ["Qwen-Image-INT8.safetensors"]
 
 
 def test_planning_sees_a_stale_hosted_checkpoint_as_no_source(hub):
@@ -537,18 +537,19 @@ def _current_int8_meta(**overrides):
 
 
 def test_an_offline_load_plans_without_any_hub_request(hub, monkeypatch):
-    """``local_files_only`` reaches the planning probe, explicitly or from the load's scope: a cache miss
-    is "unknown" (usable, today's answer) and costs no HEAD, no range read and no probe timeout."""
+    """``local_files_only`` reaches the planning probe, explicitly or from the load's scope: an uncached
+    hosted name cannot be fetched, so it is no source, and that costs no HEAD, no range read and no probe
+    timeout."""
     calls = _counting_hub(hub, monkeypatch)
     fam, base = _hosted_qwen_int8(hub, _qwen_int8_meta(_STALE_INT8_EXCLUDES))
 
-    assert pq.usable_prequant_source(fam, "int8", base_repo = base, local_files_only = True) is not None
+    assert pq.usable_prequant_source(fam, "int8", base_repo = base, local_files_only = True) is None
 
     @pq.scoped_local_files_only
     def offline_load(**kwargs):
         return pq.usable_prequant_source(fam, "int8", base_repo = base)
 
-    assert offline_load(local_files_only = True) is not None
+    assert offline_load(local_files_only = True) is None
     assert calls == [] and hub.server.sent == 0
 
     assert pq.usable_prequant_source(fam, "int8", base_repo = base) is None

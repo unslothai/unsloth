@@ -34,8 +34,9 @@ def test_ti2v_5b_resolves_its_hosted_artifact(scheme):
     assert sources is not None and set(sources) == {"transformer"}
     names = _names(sources["transformer"])
     stem = f"Wan2.2-TI2V-5B-{scheme.upper()}"
-    # A safetensors twin, once hosted, is tried first; today's pickle is next.
-    assert names[:2] == (f"{stem}.safetensors", f"{stem}.pt")
+    # Only the .safetensors name: the repo hosts just the pickle today, which is never asked for, so the load
+    # quantises the dense weights until the .safetensors is uploaded.
+    assert names == (f"{stem}.safetensors",)
 
 
 @pytest.mark.parametrize("scheme", ["fp8", "int8"])
@@ -45,12 +46,9 @@ def test_t2v_a14b_seeds_both_experts_from_their_own_files(scheme):
     sources = denoiser_prequant_sources(fam, scheme, T2V_A14B)
     assert sources is not None and set(sources) == {"transformer", "transformer_2"}
     tag = scheme.upper()
-    assert f"Wan2.2-T2V-A14B-{tag}.pt" in _names(sources["transformer"])
+    assert _names(sources["transformer"]) == (f"Wan2.2-T2V-A14B-{tag}.safetensors",)
     # Expert 2 is served by its own row only: falling back to expert 1's name would load the wrong weights.
-    assert _names(sources["transformer_2"]) == (
-        f"Wan2.2-T2V-A14B-{tag}-2.safetensors",
-        f"Wan2.2-T2V-A14B-{tag}-2.pt",
-    )
+    assert _names(sources["transformer_2"]) == (f"Wan2.2-T2V-A14B-{tag}-2.safetensors",)
     assert sources["transformer_2"].location == "unsloth/Wan2.2-T2V-A14B-FP8"
 
 

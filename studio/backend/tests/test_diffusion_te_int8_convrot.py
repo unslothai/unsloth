@@ -207,11 +207,7 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
     sources = tpq.te_prequant_sources_for_base(fam, BASE, te_quant_mode = "int8", target = CUDA_BF16)
     src = sources["text_encoder"]
     assert (src.kind, src.location) == ("repo", REPO)
-    assert tpq.te_candidate_filenames(src) == (
-        INT8_NAME,
-        FP8_NAME,
-        "Qwen-Image-2.1-text_encoder-FP8.pt",
-    )
+    assert tpq.te_candidate_filenames(src) == (INT8_NAME, FP8_NAME)
     fp8 = tpq.te_prequant_sources(fam, te_quant_mode = "fp8", target = CUDA_BF16)["text_encoder"]
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)
     # Families without a hosted int8 encoder resolve nothing for int8, as before.

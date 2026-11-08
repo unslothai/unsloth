@@ -339,10 +339,9 @@ def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it()
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = pq.resolve_prequant_source(fam, "int8")
     assert src.location == "unsloth/MiniMax-H3-FP8"
-    # the declared .pt's safetensors twin goes first; the .pt stays right behind it
+    # safetensors only: the rotated artifact first, the plain one behind it, never a pickle
     assert src.filename == "MiniMax-H3-INT8-ConvRot.safetensors"
-    assert src.fallback_filenames[0] == "MiniMax-H3-INT8-ConvRot.pt"
-    assert "MiniMax-H3-INT8.pt" in src.fallback_filenames
+    assert src.fallback_filenames == ("MiniMax-H3-INT8.safetensors",)
     assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.safetensors"
 
 
@@ -376,12 +375,14 @@ class _FakeTransformer(nn.Module):
 def _load_rotated(monkeypatch, tmp_path, ckpt):
     """Drive ``load_prequantized_transformer`` over ``ckpt`` with real torch."""
     _FakeTransformer.calls = {}
-    monkeypatch.setattr(torch, "load", lambda *a, **k: ckpt)
+    import core.inference.prequant_safetensors as ps
+
+    monkeypatch.setattr(ps, "load_prequant_safetensors", lambda *a, **k: ckpt)
     accelerate = types.ModuleType("accelerate")
     accelerate.init_empty_weights = lambda: contextlib.nullcontext()
     monkeypatch.setitem(sys.modules, "accelerate", accelerate)
     monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
-    path = tmp_path / "ckpt.pt"
+    path = tmp_path / "ckpt.safetensors"
     path.write_bytes(b"x")
     return pq.load_prequantized_transformer(
         _FakeTransformer,

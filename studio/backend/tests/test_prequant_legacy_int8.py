@@ -32,14 +32,16 @@ def test_a_torchao_that_still_ships_the_classes_keeps_the_old_path(monkeypatch):
 def test_int8_support_is_answered_by_the_rebuild_when_the_classes_are_gone(monkeypatch):
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set(pq._SCHEME_REQUIRED_GLOBALS["fp8"]))
+    # The converter-only pickle reader; the load path never answers yes for a pickle.
     monkeypatch.setattr(li, "legacy_int8_decode_supported", lambda: False)
-    assert not pq.restricted_prequant_load_supported("int8", "X-INT8.pt")
+    assert not pq.pickle_prequant_load_supported("int8")
     monkeypatch.setattr(li, "legacy_int8_decode_supported", lambda: True)
-    assert pq.restricted_prequant_load_supported("int8", "X-INT8.pt")
-    assert pq.restricted_prequant_load_supported("int8")
-    assert pq.restricted_prequant_load_supported("fp8", "X-FP8.pt")
-    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", {"torch.torch_version.TorchVersion"})
+    assert pq.pickle_prequant_load_supported("int8")
+    assert pq.pickle_prequant_load_supported("fp8")
+    assert not pq.restricted_prequant_load_supported("int8", "X-INT8.pt")
     assert not pq.restricted_prequant_load_supported("fp8", "X-FP8.pt")
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", {"torch.torch_version.TorchVersion"})
+    assert not pq.pickle_prequant_load_supported("fp8")
 
 
 def test_a_refusal_for_any_other_global_is_not_retried(monkeypatch):
@@ -75,12 +77,13 @@ def test_unreadable_hosted_checkpoint_is_named_for_status(monkeypatch):
     )
     note = pq.prequant_unreadable_reason(fam, "int8")
     assert "org/Model-FP8" in note and "no longer ships" in note
+    # Any readable .safetensors candidate means the install can read the hosted checkpoint: no status line.
     monkeypatch.setattr(
         pq,
         "restricted_prequant_load_supported",
         lambda scheme, name = None: bool(name) and name.endswith(".safetensors"),
     )
-    assert pq.prequant_unreadable_reason(fam, "int8") is not None
+    assert pq.prequant_unreadable_reason(fam, "int8") is None
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme, name = None: True)
     assert pq.prequant_unreadable_reason(fam, "int8") is None
     assert pq.prequant_unreadable_reason(fam, "fp8") is None

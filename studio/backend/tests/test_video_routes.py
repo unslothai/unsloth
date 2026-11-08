@@ -1419,7 +1419,7 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
             _Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000),
             _Sibling("ltx-2.3-22b-dev.safetensors", 46_000_000_000),
         ],
-        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.safetensors", 19_057_628_489)],
         "unsloth/LTX-2.3-GGUF": [
             _Sibling("vae/ltx-2.3-22b-distilled_video_vae.safetensors", 2_400_000_000),
             _Sibling("vae/ltx-2.3-22b-distilled_audio_vae.safetensors", 200_000_000),
@@ -1499,7 +1499,7 @@ def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypat
 
     repos = {
         "Lightricks/LTX-2.3": [_Sibling("ltx-2.3-22b-distilled.safetensors", 46_000_000_000)],
-        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+        "unsloth/LTX-2.3-FP8": [_Sibling("LTX-2.3-FP8.safetensors", 19_057_628_489)],
         "unsloth/LTX-2.3-GGUF": [],
         "Lightricks/LTX-2": [_Sibling("model_index.json", 1000)],
     }

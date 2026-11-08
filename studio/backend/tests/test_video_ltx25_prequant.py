@@ -73,7 +73,7 @@ def test_only_the_hosted_schemes_resolve(fam, scheme):
 def test_fp8_asks_for_its_own_file_first(fam):
     src = resolve_prequant_source(fam, "fp8", base_repo = PACK)
     assert (src.kind, src.location, src.filename) == ("repo", REPO, "LTX-2.5-FP8.safetensors")
-    assert src.fallback_filenames[0] == "LTX-2.5-FP8.pt"
+    assert src.fallback_filenames == ()
 
 
 @pytest.mark.parametrize(
@@ -81,14 +81,18 @@ def test_fp8_asks_for_its_own_file_first(fam):
     [
         (None, "LTX-2.5-INT8-ConvRot.safetensors", "LTX-2.5-INT8.safetensors"),
         ("1", "LTX-2.5-INT8-ConvRot.safetensors", "LTX-2.5-INT8.safetensors"),
-        ("0", "LTX-2.5-INT8.safetensors", "LTX-2.5-INT8.pt"),
+        ("0", "LTX-2.5-INT8.safetensors", None),
     ],
 )
 def test_int8_asks_for_the_rotated_file_unless_convrot_is_off(fam, monkeypatch, env, first, second):
     if env is not None:
         monkeypatch.setenv(INT8_CONVROT_ENV, env)
     src = resolve_prequant_source(fam, "int8", base_repo = PACK)
-    assert (src.location, src.filename, src.fallback_filenames[0]) == (REPO, first, second)
+    assert (src.location, src.filename, (src.fallback_filenames or (None,))[0]) == (
+        REPO,
+        first,
+        second,
+    )
     # The plain file stays in the chain behind the rotated one, so a repo without it still serves int8.
     assert "LTX-2.5-INT8.safetensors" in (src.filename,) + tuple(src.fallback_filenames)
 

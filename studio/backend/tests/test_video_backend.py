@@ -3484,8 +3484,8 @@ _H3_BASE_SIBLINGS = [
 ]
 
 _H3_PREQUANT_SIBLINGS = [
-    _PlanSibling("MiniMax-H3-INT8.pt", 20),
-    _PlanSibling("MiniMax-H3-FP8.pt", 20),
+    _PlanSibling("MiniMax-H3-INT8.safetensors", 20),
+    _PlanSibling("MiniMax-H3-FP8.safetensors", 20),
 ]
 
 
@@ -3510,7 +3510,7 @@ def test_download_plan_stages_the_prequant_denoiser_it_drops_the_dense_shards_fo
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
     # int8 and fp8 share one repo, so the SCHEME picks the file, not the repo.
-    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-INT8.pt"]
+    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-INT8.safetensors"]
     base = by_repo["MiniMaxAI/MiniMax-H3"]
     assert not any(f.startswith("transformer/diffusion_pytorch_model") for f in base["files"])
     assert "transformer/config.json" in base["files"]
@@ -3595,7 +3595,7 @@ def test_download_plan_still_drops_the_reference_shards_its_artifact_replaces(mo
         {
             "MiniMaxAI/MiniMax-H3": _H3_REF_BASE_SIBLINGS,
             "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS
-            + [_PlanSibling("MiniMax-H3-Ref2VA-FP8.pt", 20)],
+            + [_PlanSibling("MiniMax-H3-Ref2VA-FP8.safetensors", 20)],
         },
     )
 
@@ -3608,7 +3608,7 @@ def test_download_plan_still_drops_the_reference_shards_its_artifact_replaces(mo
     )
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
-    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-Ref2VA-FP8.pt"]
+    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-Ref2VA-FP8.safetensors"]
     base = by_repo["MiniMaxAI/MiniMax-H3"]["files"]
     assert not any(f.startswith("transformer_ref/diffusion_pytorch_model") for f in base)
     assert "transformer_ref/config.json" in base
@@ -3637,7 +3637,7 @@ def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(m
     def _use(names):
         monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api(names))
 
-    _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-INT8-ConvRot.pt"])
+    _use(["MiniMax-H3-FP8.safetensors", "MiniMax-H3-INT8-ConvRot.safetensors"])
     assert (
         backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None)
         is False
@@ -3647,7 +3647,7 @@ def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(m
         is True
     )
 
-    _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-Ref2VA-FP8.pt"])
+    _use(["MiniMax-H3-FP8.safetensors", "MiniMax-H3-Ref2VA-FP8.safetensors"])
     assert (
         backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None)
         is True
@@ -5984,7 +5984,7 @@ def _cuda_bf16_target(monkeypatch):
     )
 
 
-_LTX2_FP8_SIBLINGS = [_PlanSibling("LTX-2-text_encoder-FP8.pt", 13_000_000_000)]
+_LTX2_FP8_SIBLINGS = [_PlanSibling("LTX-2-text_encoder-FP8.safetensors", 13_000_000_000)]
 
 
 def test_base_download_files_skips_precast_text_encoder_weights():
@@ -6026,7 +6026,7 @@ def test_download_plan_swaps_the_dense_encoder_for_the_precast_checkpoint(monkey
     )
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
-    assert by_repo["unsloth/LTX-2-FP8"]["files"] == ["LTX-2-text_encoder-FP8.pt"]
+    assert by_repo["unsloth/LTX-2-FP8"]["files"] == ["LTX-2-text_encoder-FP8.safetensors"]
     base = by_repo["Lightricks/LTX-2"]
     assert not any(f.startswith("text_encoder/") for f in base["files"])
     assert "scheduler/scheduler_config.json" in base["files"]
@@ -6091,7 +6091,7 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
     # The dense skip is earned by the pre-cast file being on disk; an unreachable checkpoint must report nothing.
     backend = VideoBackend()
     source = types.SimpleNamespace(
-        kind = "repo", location = "unsloth/LTX-2-FP8", filename = "LTX-2-text_encoder-FP8.pt"
+        kind = "repo", location = "unsloth/LTX-2-FP8", filename = "LTX-2-text_encoder-FP8.safetensors"
     )
 
     def _boom(
@@ -6108,7 +6108,7 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
 
     monkeypatch.setattr(
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
-        lambda repo, filename, token, cancel_event = None, **kwargs: "/tmp/precast.pt",
+        lambda repo, filename, token, cancel_event = None, **kwargs: "/tmp/precast.safetensors",
     )
     assert backend._fetch_te_prequant({"text_encoder": source}, None) == ("text_encoder",)
     local = types.SimpleNamespace(kind = "path", location = "/tmp/x.pt", filename = None)
@@ -12670,7 +12670,7 @@ def test_ltx23_prequant_source_resolves_the_hosted_fp8_only():
     assert source is not None and source.location == "unsloth/LTX-2.3-FP8"
     from core.inference.diffusion_prequant import candidate_filenames_of
 
-    assert "LTX-2.3-FP8.pt" in candidate_filenames_of(
+    assert "LTX-2.3-FP8.safetensors" in candidate_filenames_of(
         source
     )  # the artifact the repo actually hosts
     assert resolve_prequant_source(fam, "int8", base_repo = LTX23_PREQUANT_BASE) is None
@@ -13001,7 +13001,7 @@ def _load_ltx23_single_file_fp8(
 def test_ltx23_single_file_fp8_seeds_the_hosted_denoiser(fake_runtime, tmp_path, monkeypatch):
     seeded_dit = object()
     source = types.SimpleNamespace(
-        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.safetensors"
     )
     backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
     assert calls["prequant"][0] == "fp8" and calls["prequant"][2] == "Lightricks/LTX-2"
@@ -13071,7 +13071,7 @@ def test_ltx23_single_file_fp8_is_planned_at_the_hosted_dit_size(
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 30_000)
     seeded_dit = object()
     source = types.SimpleNamespace(
-        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.safetensors"
     )
     backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
     assert calls["override"] is seeded_dit
@@ -13087,7 +13087,7 @@ def test_ltx23_single_file_fp8_is_priced_at_the_hosted_artifact_not_the_scaled_f
     priced = _ltx23_fp8_plan_at(monkeypatch, fits_mib = 20_000)
     seeded_dit = object()
     source = types.SimpleNamespace(
-        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.pt"
+        location = "unsloth/LTX-2.3-FP8", kind = "repo", filename = "LTX-2.3-FP8.safetensors"
     )
     backend, calls = _load_ltx23_single_file_fp8(tmp_path, monkeypatch, (seeded_dit, source))
     assert calls["override"] is seeded_dit
@@ -13147,8 +13147,8 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
             ],
             "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
             "unsloth/LTX-2.3-FP8": [
-                _PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489),
-                _PlanSibling("LTX-2.3-INT8.pt", 19_000_000_000),
+                _PlanSibling("LTX-2.3-FP8.safetensors", 19_057_628_489),
+                _PlanSibling("LTX-2.3-INT8.safetensors", 19_000_000_000),
             ],
             "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
         },
@@ -13175,7 +13175,7 @@ def test_download_plan_stages_the_hosted_fp8_dit_for_the_ltx23_distilled_single_
     by_repo = {
         e["repo_id"]: e for e in _plan("ltx-2.3-22b-distilled.safetensors", "fp8")["entries"]
     }
-    assert by_repo["unsloth/LTX-2.3-FP8"]["files"] == ["LTX-2.3-FP8.pt"]
+    assert by_repo["unsloth/LTX-2.3-FP8"]["files"] == ["LTX-2.3-FP8.safetensors"]
     assert "ltx-2.3-22b-distilled.safetensors" in by_repo["Lightricks/LTX-2.3"]["files"]
     for filename, quant in (
         ("ltx-2.3-22b-distilled.safetensors", None),
@@ -13204,7 +13204,7 @@ def test_download_plan_stages_the_hosted_fp8_dit_only_on_an_fp8_card(monkeypatch
                 _PlanSibling("ltx-2.3-22b-distilled.safetensors", 46_149_345_038)
             ],
             "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
-            "unsloth/LTX-2.3-FP8": [_PlanSibling("LTX-2.3-FP8.pt", 19_057_628_489)],
+            "unsloth/LTX-2.3-FP8": [_PlanSibling("LTX-2.3-FP8.safetensors", 19_057_628_489)],
             "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
         },
     )

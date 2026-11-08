@@ -41,18 +41,15 @@ def _fam(
 
 
 def test_repo_filename_convention():
-    # safetensors first, legacy pickle second: both are live and the reader takes either.
+    # safetensors only: a hosted .pt twin is never asked for.
     assert te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8") == (
         "LTX-2-text_encoder-FP8.safetensors",
-        "LTX-2-text_encoder-FP8.pt",
     )
     assert te_prequant_repo_filenames("org/Some-Model-quantized", "text_encoder_2", "fp8") == (
         "Some-Model-text_encoder_2-FP8.safetensors",
-        "Some-Model-text_encoder_2-FP8.pt",
     )
     assert te_prequant_repo_filenames("org/PlainRepo", "text_encoder", "fp8") == (
         "PlainRepo-text_encoder-FP8.safetensors",
-        "PlainRepo-text_encoder-FP8.pt",
     )
 
 
@@ -81,15 +78,15 @@ def test_resolve_priority_and_scheme_gate():
     src = resolve_te_prequant_source(fam, "text_encoder", "fp8")
     assert src.kind == "repo" and src.location == "org/hosted-fp8"
     assert src.filename == "hosted-text_encoder-FP8.safetensors"
-    assert src.fallback_filenames == ("hosted-text_encoder-FP8.pt",)
+    assert src.fallback_filenames == ()
     assert resolve_te_prequant_source(_fam(), "text_encoder", "fp8") is None
     # v1 hosts the layerwise fp8 storage scheme only.
     assert resolve_te_prequant_source(fam, "text_encoder", "int8") is None
     assert resolve_te_prequant_source(fam, "text_encoder", "fp8_dynamic") is None
 
 
-def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resolves(monkeypatch):
-    """Resolver must ask for safetensors as well as .pt, or the dense encoder loads silently."""
+def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_is_a_miss(monkeypatch):
+    """Resolver asks for the safetensors only; a repo hosting just the .pt is a miss (dense encoder + cast)."""
     from huggingface_hub.errors import EntryNotFoundError
 
     asked = []
@@ -116,10 +113,9 @@ def test_a_hosted_safetensors_encoder_is_asked_for_and_a_pickle_repo_still_resol
 
     hosted = {"hosted-text_encoder-FP8.pt"}
     asked.clear()
-    assert tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache") == (
-        "/cache/hosted-text_encoder-FP8.pt"
-    )
-    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"]
+    with pytest.raises(EntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/cache")
+    assert asked == ["hosted-text_encoder-FP8.safetensors"]
 
     # The miss must surface, not become a None indistinguishable from "hosts nothing".
     hosted = set()
@@ -222,20 +218,23 @@ def test_hosted_checkpoint_and_config_honor_cache_only_and_the_active_root(monke
 
     def fake_download(**kwargs):
         seen["download"].update(kwargs)
-        return "/cache/encoder.pt"
+        return "/cache/encoder.safetensors"
 
     def fake_config(repo_id, **kwargs):
         seen["config"] = {"repo_id": repo_id, **kwargs}
         raise FileNotFoundError("stop after config lookup")
 
+    import core.inference.prequant_safetensors as ps
+
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
-    monkeypatch.setattr(torch, "load", lambda *_a, **_k: _good_ckpt())
+    monkeypatch.setattr(torch, "load", lambda *_a, **_k: pytest.fail("a pickle is never opened"))
+    monkeypatch.setattr(ps, "load_plain_prequant_safetensors", lambda *_a, **_k: _good_ckpt())
     monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", fake_config)
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(tmp_path))
     out = tpq.load_prequant_text_encoder(
         "Lightricks/LTX-2",
         "text_encoder",
-        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.pt"),
+        TePrequantSource(kind = "repo", location = "org/hosted", filename = "encoder.safetensors"),
         dtype = None,
         local_files_only = True,
     )
@@ -508,15 +507,12 @@ def test_hosted_te_prequant_entries():
     )
     assert te_prequant_repo_filenames("unsloth/Qwen-Image-FP8", "text_encoder", "fp8") == (
         "Qwen-Image-text_encoder-FP8.safetensors",
-        "Qwen-Image-text_encoder-FP8.pt",
     )
     assert te_prequant_repo_filenames("unsloth/FLUX.2-dev-FP8", "text_encoder", "fp8") == (
         "FLUX.2-dev-text_encoder-FP8.safetensors",
-        "FLUX.2-dev-text_encoder-FP8.pt",
     )
     assert te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8") == (
         "LTX-2-text_encoder-FP8.safetensors",
-        "LTX-2-text_encoder-FP8.pt",
     )
     # HiDream's heavyweight is TE4 (Llama-3.1-8B), engaged via hidream_te4_kwargs since the generic pass only covers
     # text_encoder.._3; its text_encoder_3 is FLUX.1's T5-XXL, loaded from FLUX.1's text_encoder_2 file.
@@ -526,14 +522,12 @@ def test_hosted_te_prequant_entries():
     )
     assert te_prequant_repo_filenames("unsloth/HiDream-I1-Full-FP8", "text_encoder_4", "fp8") == (
         "HiDream-I1-Full-text_encoder_4-FP8.safetensors",
-        "HiDream-I1-Full-text_encoder_4-FP8.pt",
     )
     assert detect_family("black-forest-labs/FLUX.1-schnell").te_prequant_repos == (
         ("fp8", "text_encoder_2", "unsloth/FLUX.1-schnell-FP8"),
     )
     assert te_prequant_repo_filenames("unsloth/FLUX.1-schnell-FP8", "text_encoder_2", "fp8") == (
         "FLUX.1-schnell-text_encoder_2-FP8.safetensors",
-        "FLUX.1-schnell-text_encoder_2-FP8.pt",
     )
     assert detect_family("Alpha-VLLM/Lumina-Image-2.0").te_prequant_repos == (
         ("fp8", "text_encoder", "unsloth/Lumina-Image-2.0-FP8"),
@@ -894,7 +888,9 @@ def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
         kind = "repo",
         location = "unsloth/LTX-2-FP8",
         filename = "LTX-2-text_encoder-FP8.safetensors",
-        fallback_filenames = ("LTX-2-text_encoder-FP8.pt",),
+        fallback_filenames = (
+            "LTX-2-text_encoder-FP8.pt",
+        ),  # a stale chain: the pickle is still never planned
     )
 
     class _Sib:
@@ -917,26 +913,30 @@ def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
         return tpq.te_prequant_hub_files({"text_encoder": src}, _Api(hosted), None)
 
     pt, st = "LTX-2-text_encoder-FP8.pt", "LTX-2-text_encoder-FP8.safetensors"
-    assert plan([_Sib(pt, 9_000_000_000)]) == {"text_encoder": [(pt, 9_000_000_000)]}
+    # A repo hosting only the pickle plans no pre-cast encoder: the dense one is downloaded and cast.
+    assert plan([_Sib(pt, 9_000_000_000)]) == {}
     assert plan([_Sib(st, 9_400_000_000)]) == {"text_encoder": [(st, 9_400_000_000)]}
-    # Both hosted: the preferred one wins, matching the resolver's download order.
     assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {
         "text_encoder": [(st, 9_400_000_000)]
     }
     assert plan([_Sib("unrelated.bin", 1)]) == {}
 
-    # Without safetensors support, plan the pickle; planning a refused file leaves no encoder.
-    monkeypatch.setattr(tpq, "te_candidate_is_readable", lambda n: bool(n) and n.endswith(".pt"))
-    assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {
-        "text_encoder": [(pt, 9_000_000_000)]
-    }
+    # Without safetensors support nothing is planned: the pickle is never the fallback.
+    monkeypatch.setattr(tpq, "te_candidate_is_readable", lambda n: False)
+    assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {}
 
 
 def test_the_te_capability_question_is_not_the_transformers_one():
-    """A pre-cast encoder pickle is plain tensors read under a bare ``weights_only`` load, so it
-    needs no constructor allowlist. Asking the DiT's question would refuse a ``.pt`` encoder on
-    every install whose torchao lacks some DiT scheme's constructors."""
-    assert tpq.te_candidate_is_readable("X-text_encoder-FP8.pt") is True
+    """A pre-cast encoder is plain tensors in a safetensors file, so it needs no torchao: asking the DiT's
+    question would refuse it on every install whose torchao cannot rebuild some DiT scheme. A pickle is
+    never readable."""
+    from core.inference.prequant_safetensors import plain_safetensors_supported
+
+    assert (
+        tpq.te_candidate_is_readable("X-text_encoder-FP8.safetensors")
+        is plain_safetensors_supported()
+    )
+    assert tpq.te_candidate_is_readable("X-text_encoder-FP8.pt") is False
     assert tpq.te_candidate_is_readable(None) is False
 
 
@@ -981,13 +981,14 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
     # Online, the error surfaces and the 2nd candidate is only cache-checked (no network attempt).
     with pytest.raises(LocalEntryNotFoundError, match = "Hub unreachable"):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
-    assert online == [True, False], online
+    # The stale chain's pickle is never asked for, online or from the cache.
+    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
+    assert online == [True], online
 
     asked.clear()
     with pytest.raises(LocalEntryNotFoundError):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = True)
-    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
+    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
 
     asked.clear()
 
@@ -998,9 +999,10 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
         return "/cache/hosted-text_encoder-FP8.pt"
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", only_pt)
-    got = tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    assert got == "/cache/hosted-text_encoder-FP8.pt", got
-    assert len(asked) == 2, asked
+    # A real 404 on the only .safetensors name surfaces; the hosted pickle is never fetched.
+    with pytest.raises(EntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
+    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
 
 
 def test_the_video_prefetch_advances_only_on_a_missing_name():

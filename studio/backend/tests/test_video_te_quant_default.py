@@ -169,7 +169,6 @@ def test_wan_int8_resolves_the_convrot_file_then_the_fp8_one():
         assert tpq.te_candidate_filenames(source) == (
             "Wan2.2-TI2V-5B-text_encoder-INT8-ConvRot.safetensors",
             "Wan2.2-TI2V-5B-text_encoder-FP8.safetensors",
-            "Wan2.2-TI2V-5B-text_encoder-FP8.pt",
         ), name
 
 

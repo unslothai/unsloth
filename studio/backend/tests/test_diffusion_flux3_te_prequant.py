@@ -37,7 +37,6 @@ def _names(stem):
     return (
         f"{stem}-text_encoder-INT8-ConvRot.safetensors",
         f"{stem}-text_encoder-FP8.safetensors",
-        f"{stem}-text_encoder-FP8.pt",
     )
 
 
@@ -176,7 +175,7 @@ def mirror(tmp_path, monkeypatch):
     int8 = _int8_state(_encoder(seed = 3))
     fp8 = _fp8_state(_encoder(seed = 3))
     for _base, repo, stem in VARIANTS.values():
-        int8_name, fp8_name, _pt = _names(stem)
+        int8_name, fp8_name = _names(stem)
         _write(root / repo / int8_name, int8, tpq.TE_PREQUANT_FORMAT_INT8_CONVROT, "int8")
         _write(root / repo / fp8_name, fp8, tpq.TE_PREQUANT_FORMAT, "fp8")
     monkeypatch.setenv(tpq.TE_PREQUANT_MIRROR_ENV, str(root))
@@ -278,7 +277,7 @@ def test_fp8_request_loads_the_fp8_file(mirror, family):
 
 def test_fp8_request_refuses_an_int8_file_and_int8_never_reports_an_fp8_file(mirror, monkeypatch):
     _base, repo, stem = VARIANTS["flux.3-klein"]
-    int8_name, fp8_name, _pt = _names(stem)
+    int8_name, fp8_name = _names(stem)
     # Swap the two files: the int8 bytes under the fp8 name, the fp8 bytes under the int8 name.
     a, b = mirror / repo / int8_name, mirror / repo / fp8_name
     tmp = a.with_suffix(".swap")
