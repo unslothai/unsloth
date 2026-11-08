@@ -97,7 +97,34 @@ def test_module_casts_and_moves_never_touch_the_packed_buffers(block_file):
     for name, buf in layer.named_buffers():
         if name != "bias":
             assert buf.dtype == before[name].dtype and torch.equal(buf, before[name]), name
-    assert _same(layer.weight, weight)  # the compute dtype is the load's, not the cast's
+    assert layer.compute_dtype == torch.float16  # the widen target follows the cast
+    model.to(torch.bfloat16)
+    assert _same(layer.weight, weight)  # and back: the load's exact weight again
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+@pytest.mark.parametrize("cast", ["to", "method"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_a_cast_packed_model_forwards_like_a_dense_load_in_that_dtype(block_file, fmt, cast, dtype):
+    path, _tensors, _expected = block_file(fmt)
+    packed = _load(path, dtype = torch.bfloat16, fp8_storage = True)
+    if cast == "to":
+        packed.to(dtype)
+    else:
+        packed.half() if dtype == torch.float16 else packed.float()
+    dense = _load(path, dtype = dtype)
+    state = dense.state_dict()
+    x = torch.randn(3, 5, DIM, generator = torch.Generator().manual_seed(2)).to(dtype)
+    for name in LINEARS:
+        layer = packed.get_submodule(name)
+        assert pb.is_packed_block_linear(layer), name
+        assert layer.weight_q.dtype == torch.uint8 and layer.weight_sf.dtype == torch.uint8
+        assert _same(layer.weight, state[name + ".weight"]), name
+        out = layer(x)
+        assert out.dtype == dtype, name
+        # the bias went through the cast (bf16 then the new dtype), as a dense model's would
+        want = torch.nn.functional.linear(x, state[name + ".weight"], layer.bias)
+        assert _same(out, want), name
 
 
 def _parts(
