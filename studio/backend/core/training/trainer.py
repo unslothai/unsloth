@@ -3626,7 +3626,12 @@ class UnslothTrainer:
                 total_rows = len(dataset)
                 start = dataset_slice_start if dataset_slice_start is not None else 0
                 end = dataset_slice_end if dataset_slice_end is not None else total_rows - 1
-                start = max(0, min(start, total_rows - 1))
+                if start >= total_rows:
+                    raise ValueError(
+                        f"Train Split Start {start} is past the last row of this dataset "
+                        f"({total_rows} rows)."
+                    )
+                start = max(0, start)
                 end = max(start, min(end, total_rows - 1))
                 dataset = dataset.select(range(start, end + 1))
                 logger.info(
