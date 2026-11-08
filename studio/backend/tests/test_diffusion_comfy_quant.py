@@ -1026,7 +1026,8 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
 
 
 def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
-    """Qwen-Image-2.1's sinusoidal timestep table is computed in fp32; bf16 frequencies shift every timestep."""
+    """fp32 tables built in __init__ (Qwen-Image-2.1's timesteps, MiniMax-H3's RoPE) stay fp32, as from_pretrained
+    leaves them; a float64 one still follows the compute dtype."""
     path, _, _ = comfy_file
 
     class QwenImage21TemporalTimesteps(nn.Module):
@@ -1040,6 +1041,7 @@ def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
             super().__init__(**kwargs)
             self.time_proj = QwenImage21TemporalTimesteps()
             self.register_buffer("rope", torch.ones(4, dtype = torch.float32), persistent = False)
+            self.register_buffer("wide", torch.ones(4, dtype = torch.float64), persistent = False)
 
     model = cq.load_comfy_quant_transformer(
         _Timed,
@@ -1051,9 +1053,8 @@ def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
     )
     assert model.time_proj.freqs.dtype == torch.float32
     assert torch.equal(model.time_proj.freqs, QwenImage21TemporalTimesteps().freqs)
-    assert (
-        model.rope.dtype == torch.bfloat16
-    )  # every other __init__ buffer still follows the compute dtype
+    assert model.rope.dtype == torch.float32
+    assert model.wide.dtype == torch.bfloat16
 
 
 def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):

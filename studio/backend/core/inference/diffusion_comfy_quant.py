@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
 from .diffusion_fp8_dequant import chunk_rows, dequant_rows, fused_dequant_enabled
+from .diffusion_init_buffers import is_fp32_init_table
 from .diffusion_single_file_converters import host_ram_budget_scope
 from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
@@ -54,8 +55,6 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
-# __init__ buffers kept as built: Qwen-Image-2.1's fp32 timestep table in bf16 moved renders (LPIPS 0.106 -> 0.174).
-FP32_INIT_BUFFER_MODULES = frozenset({"QwenImage21TemporalTimesteps"})
 # Container prefixes a declaration may omit while its weight carries one.
 _DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
 
@@ -1782,14 +1781,14 @@ def load_comfy_quant_transformer(
         model.load_state_dict(converted, strict = False, assign = True)
     loaded = set(converted)
     del converted
-    # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
+    # __init__ buffers follow the compute dtype except fp32 tables; checkpoint buffers keep theirs (H3 curve)
     for module_name, module in model.named_modules():
         if module_name in block_native or module_name in block_packed:
             continue  # fp32 scales / alpha the block kernels need; codes are not floating
-        if type(module).__name__ in FP32_INIT_BUFFER_MODULES:
-            continue
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
+                continue
+            if is_fp32_init_table(module, buffer_name, buffer):
                 continue
             if buffer is not None and buffer.is_floating_point():
                 want = _dtype_for(f"{module_name}.{buffer_name}")

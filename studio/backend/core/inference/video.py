@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
@@ -8966,6 +8967,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
