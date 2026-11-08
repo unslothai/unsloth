@@ -3711,6 +3711,7 @@ export const zhTW = {
         description:
           "每個開啟的工具都會增加代理程式開始前要讀取的內容，所以請關閉不需要的工具。代理程式永遠看不到已關閉的工具，對它的呼叫會被拒絕。已連線的代理程式在重新連線後才會看到變更。",
         saveError: "無法儲存 Unsloth MCP 工具設定。",
+        chatNote: "聊天永遠不會取得 {tools}。",
         groups: {
           models: "模型",
           generate: "生成",

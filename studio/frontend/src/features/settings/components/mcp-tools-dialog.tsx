@@ -233,6 +233,7 @@ export function McpToolsDialog({
   tools,
   error,
   onSave,
+  footnote,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -240,6 +241,7 @@ export function McpToolsDialog({
   error: string | null;
   /** Receives the tools to change, by name; the server merges them into its list. */
   onSave: (states: Record<string, boolean>) => void;
+  footnote?: string | null;
 }): ReactElement {
   const t = useT();
   const groups = groupMcpTools(tools);
@@ -309,6 +311,11 @@ export function McpToolsDialog({
                 </div>
               </section>
           ))}
+          {footnote ? (
+            <p className="px-3 text-xs leading-snug text-muted-foreground">
+              {footnote}
+            </p>
+          ) : null}
         </div>
 
         {/* A rule shows only while more of the list is below, so nothing hides behind the footer. */}
