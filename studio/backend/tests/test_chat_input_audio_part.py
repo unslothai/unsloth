@@ -849,3 +849,73 @@ def test_a_spoken_question_can_call_a_client_tool(monkeypatch, stream, cut, choi
         calls = [t["function"] for t in chunks[0]["message"].get("tool_calls") or []]
     promoted = [{"name": "lookup", "arguments": '{"q": "Paris"}'}] if choice != "none" else []
     assert (calls, chunks[-1]["finish_reason"] == "tool_calls") == (promoted, bool(promoted))
+
+
+def test_a_spoken_reply_with_extra_clips_is_a_client_error(monkeypatch):
+    from types import SimpleNamespace
+
+    seen = {}
+
+    def _generate(**kwargs):
+        seen.update(kwargs)
+        yield "unreached"
+
+    backend = SimpleNamespace(active_model_name = "m", generate_audio_input_response = _generate)
+    backend.models = {"m": {"is_mlx": False, "has_audio_input": True, "speaks": True}}
+    idle = SimpleNamespace(is_loaded = False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_decode_audio_clips", lambda clips: [[0.0]] * len(clips))
+    body = {
+        "model": "m",
+        "messages": [{"role": "user", "content": ""}],
+        "audio_base64": AUDIO_B64,
+        "extra_audio_base64": [AUDIO_B64],
+        "modalities": ["text", "audio"],
+    }
+    with _route_client() as client:
+        response = client.post("/chat/completions", json = body)
+
+    assert response.status_code == 400 and not seen
+    assert "one audio clip" in response.text
+
+
+_CALL = {"id": "c1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+
+
+@pytest.mark.parametrize("trailing_tool", [True, False])
+def test_a_spoken_reply_refuses_tool_turns_after_the_question(monkeypatch, trailing_tool):
+    from types import SimpleNamespace
+
+    seen = {}
+
+    def _generate(**kwargs):
+        seen.update(kwargs)
+        yield "ok"
+
+    backend = SimpleNamespace(active_model_name = "m", generate_audio_input_response = _generate)
+    backend.models = {"m": {"is_mlx": False, "has_audio_input": True, "speaks": True}}
+    idle = SimpleNamespace(is_loaded = False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_decode_audio_clips", lambda clips: [[0.0]] * len(clips))
+    tool_turns = [
+        {"role": "assistant", "content": "", "tool_calls": [_CALL]},
+        {"role": "tool", "tool_call_id": "c1", "content": "Paris"},
+    ]
+    question = [{"role": "user", "content": ""}]
+    messages = question + tool_turns if trailing_tool else tool_turns + question
+    body = {
+        "model": "m",
+        "messages": messages,
+        "audio_base64": AUDIO_B64,
+        "modalities": ["text", "audio"],
+    }
+    with _route_client() as client:
+        response = client.post("/chat/completions", json = body)
+
+    if trailing_tool:
+        assert response.status_code == 400 and not seen
+        assert "tool turns after it" in response.text
+    else:
+        assert seen.get("speak") is True

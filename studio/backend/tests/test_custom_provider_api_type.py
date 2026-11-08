@@ -169,6 +169,8 @@ def test_base_url_query_survives_native_provider_calls(monkeypatch):
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
             monkeypatch.setattr(ep, "_http_client", transport)
             monkeypatch.setattr(ep, "_openrouter_catalog", {})
+            # Empty, so the Anthropic output-cap lookup is made here whatever ran before.
+            monkeypatch.setattr(ep, "_anthropic_output_caps", {})
             await drain(
                 ExternalProviderClient("anthropic", "https://gw.example/v1?tenant=a", "k"),
                 "claude-sonnet-4-5",
@@ -185,6 +187,8 @@ def test_base_url_query_survives_native_provider_calls(monkeypatch):
 
     asyncio.run(run())
     assert [(r.url.path, r.url.query.decode()) for r in sent] == [
+        # The output-cap lookup before an Anthropic stream with no max_tokens (#16953).
+        ("/v1/models/claude-sonnet-4-5", "tenant=a"),
         ("/v1/messages", "tenant=a"),
         ("/v1beta/models/gemini-2.5-flash:streamGenerateContent", "tenant=a&alt=sse"),
         ("/api/v1/models", "tenant=a"),

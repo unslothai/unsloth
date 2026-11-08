@@ -46,6 +46,7 @@ import { watchModalPointerLock } from "./lib/modal-pointer-lock";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 import { pinPointerListenerRegions } from "./lib/pointer-listener-pin";
 import { watchSpellCheck } from "./lib/spellcheck";
+import { trustSurfaceRegistry } from "./lib/surface-registry";
 import { watchTimeFormat } from "./lib/time-format";
 
 markAppSessionStart();
@@ -65,6 +66,8 @@ const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
+// Everything rendered into the root that a shortcut check looks for registers itself.
+trustSurfaceRegistry(rootElement);
 const root = createRoot(rootElement);
 
 if (isTauri) {
