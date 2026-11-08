@@ -211,4 +211,8 @@ test("a rate picked or restored mid-load goes through the pending preset rate", 
   assert.match(page, /setPickedFps = useCallback\(\s*\(picked: number\) => \{\s*setPendingPresetFps\(null\);/);
   // A gallery restore during a load waits for the incoming family, like a preset.
   assert.match(page, /if \(!statusKnown\) \{\s*setPendingPresetFps\(\{ fps: video\.fps \}\);/);
+  // Its frame count too: a reload at an unchanged rate and family reseats nothing.
+  assert.match(page, /setPendingPresetFps\(\{ fps: video\.fps \}\);[^}]*setNumFrames\(video\.num_frames\);/);
+  const edge = videoDurationOptions([1, 2, 3, 5], 24, 4, 1, 5, 149);
+  assert.equal(keptNumFrames(edge, 121, 121 / 24, false), 121);
 });
