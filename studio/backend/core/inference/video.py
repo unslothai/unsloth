@@ -12102,6 +12102,11 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        try:
+            from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+            install_h3_chunked_reference_encode(logger)
+        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+            logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
         try:
