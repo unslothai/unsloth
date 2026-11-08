@@ -86,6 +86,7 @@ test("Conversations keeps per-chat setup and compaction", () => {
       "settings.chat.currentDate.label",
       "settings.chat.projectAttachments",
       "settings.general.autoTitleNewChats",
+      "settings.general.customTitlePrompt",
       "settings.chat.autoCompact",
     ],
   );
