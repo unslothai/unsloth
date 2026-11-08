@@ -3830,7 +3830,7 @@ def test_positive_budget_probe_error_is_not_remembered(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda binary: {})
     )
-    outcomes = [llama_cpp_module.subprocess.TimeoutExpired("llama-server", 10), 0]
+    outcomes = [llama_cpp_module.subprocess.TimeoutExpired("llama-server", 10), -11, 0xC0000005, 0]
 
     def _run(cmd, **kwargs):
         outcome = outcomes.pop(0)
@@ -3840,8 +3840,9 @@ def test_positive_budget_probe_error_is_not_remembered(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llama_cpp_module.subprocess, "run", _run)
     kwargs = dict(extra_args = None, reasoning_budget = 256, reasoning_budget_message = "")
-    with pytest.raises(ValueError):
-        LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
+    for _ in range(3):
+        with pytest.raises(ValueError):
+            LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
     caps = LlamaCppBackend.validate_reasoning_budget_capabilities(str(binary), **kwargs)
     assert caps["supports_reasoning_budget_value:256"] is True
     assert outcomes == []

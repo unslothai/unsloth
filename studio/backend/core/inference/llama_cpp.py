@@ -10921,8 +10921,9 @@ class LlamaCppBackend:
                             **_windows_hidden_subprocess_kwargs(),
                         )
                         caps[value_key] = result.returncode == 0
-                        # Only a finished probe is remembered; a spawn error, timeout or crash probes again.
-                        if value_cache_key is not None and result.returncode >= 0:
+                        # Only a finished probe is remembered: a spawn error, timeout, POSIX signal or
+                        # Windows NTSTATUS crash (0xC0000000+, unsigned) probes again.
+                        if value_cache_key is not None and 0 <= result.returncode < 0xC0000000:
                             with cls._capability_cache_lock:
                                 cls._reasoning_budget_value_cache[value_cache_key] = caps[value_key]
                     except (OSError, subprocess.SubprocessError):
