@@ -298,7 +298,10 @@ def _flux3_cached_forward(
             compact = True,
             target_temb = target_temb,
         )
-        _stats(self)["compact"] = _stats(self).get("compact", 0) + 1
+        if (
+            not torch.compiler.is_compiling()
+        ):  # a module int Dynamo would guard on: one recompile per call
+            _stats(self)["compact"] = _stats(self).get("compact", 0) + 1
     if not compact:
         image_temb = image_temb.expand(batch_size, image_seq_len, -1)
 
@@ -408,6 +411,10 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     import torch
 
     if args or kwargs.get(COND_KWARG) is not None or not module.__dict__.get("_unsloth_cond_live"):
+        return None
+    if (
+        torch.compiler.is_compiling()
+    ):  # a whole-model compile: identity cache and counters stay out of the graph
         return None
     if torch.is_grad_enabled() or kwargs.get("target_timestep") is not None:
         return None

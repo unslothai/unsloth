@@ -100,6 +100,41 @@ def test_cached_steps_match_stock_bitwise(refs, monkeypatch):
     assert not model.__dict__["_unsloth_cond_cache"]
 
 
+@pytest.mark.parametrize("refs", [False, True])
+@pytest.mark.parametrize("armed", [False, True])
+@pytest.mark.parametrize("fullgraph", [False, True])
+def test_whole_transformer_compile_traces_once(refs, armed, fullgraph, monkeypatch):
+    """Studio compiles blocks, but a caller may compile the whole denoiser: no counter may become a guard."""
+    from torch._dynamo.testing import CompileCounter
+
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.COMPACT_MOD_ENV, raising = False)
+    model = _tiny(cls)
+    model.__dict__["_unsloth_cond_text_only"] = armed
+    kw = _inputs(refs)
+    with torch.no_grad():
+        want = _tiny(cls)(**kw)[0]
+        assert cb.prepare(model)
+        if armed:
+            assert cb.begin_render(model)
+        model(
+            **kw
+        )  # an eager render first, as before Studio's deferred compile: the counters are already set
+        torch._dynamo.reset()
+        cc = CompileCounter()
+        fn = torch.compile(model, backend = cc, fullgraph = fullgraph)
+        try:
+            outs = [fn(**kw)[0] for _ in range(12)]
+        finally:
+            if armed:
+                cb.end_render(model)
+            torch._dynamo.reset()
+    assert cc.frame_count == 1
+    for out in outs:
+        torch.testing.assert_close(out, want)
+
+
 def test_new_conditioning_tensor_recomputes(monkeypatch):
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
