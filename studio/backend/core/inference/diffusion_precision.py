@@ -715,7 +715,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         pass
 
 
-# "0": after each forward the layerwise hooks cast the compute copies back to fp8 again (diffusers' default).
 TE_FP8_RESTORE_ENV = "UNSLOTH_TE_FP8_RESTORE_STORAGE"
 
 
@@ -730,7 +729,6 @@ def te_fp8_restore_enabled() -> bool:
 
 
 def _floating_slots(module: Any) -> list:
-    """(table, name, tensor) for every floating parameter / buffer ``module.to(dtype)`` converts."""
     out = []
     for sub in module.modules():
         for table in (sub._parameters, sub._buffers):
@@ -741,9 +739,8 @@ def _floating_slots(module: Any) -> list:
 
 
 def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
-    """``pre_forward`` keeps the module's fp8 tensors alive across the upcast; ``post_forward`` puts them back instead
-    of casting the compute copies down again. Frozen weights make the bytes identical (every fp8 value is exact in
-    bf16 / fp16 / fp32); a slot something else replaced during the forward takes the stock downcast."""
+    """Put the kept fp8 tensors back after the forward instead of downcasting the compute copies (exact: every fp8
+    value is representable in bf16 / fp16 / fp32). A slot replaced during the forward takes the stock downcast."""
     import torch
 
     kept: dict = {}
@@ -752,7 +749,7 @@ def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
         if not te_fp8_restore_enabled() or module.training:
             kept.pop(id(module), None)
             return stock_pre(module, *args, **kwargs)
-        # a parameter keeps its object (``module.to`` swaps ``.data``); a buffer entry is replaced
+        # ``module.to`` swaps a parameter's ``.data`` but replaces a buffer entry
         stored = [
             (table, name, value.data if isinstance(value, torch.nn.Parameter) else value)
             for table, name, value in _floating_slots(module)
@@ -786,7 +783,6 @@ def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
                 current.data = old
             else:
                 table[name] = old
-        # anything the hook did not keep (a float tensor that was not fp8 storage) still goes through the stock cast
         if any(v.dtype == hook.compute_dtype for _t, _n, v in _floating_slots(module)):
             return stock_post(module, output)
         return output
@@ -795,7 +791,7 @@ def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
 
 
 def _install_storage_restore(encoder: Any) -> int:
-    """Swap each layerwise fp8 hook's pre / post forward for the restoring pair; idempotent. Returns the hooks changed."""
+    """Idempotent; returns the number of hooks changed."""
     if not te_fp8_restore_enabled():
         return 0
     try:

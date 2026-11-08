@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Layerwise fp8 text encoders: after a forward the fp8 storage is the same tensor again, not a fresh downcast of the
-compute copy; outputs and stored bytes are identical to diffusers' round trip."""
+"""Layerwise fp8 encoders keep their fp8 storage across a forward; outputs and bytes match diffusers' round trip."""
 
 from __future__ import annotations
 
@@ -107,7 +106,6 @@ def test_forward_keeps_the_fp8_tensors_and_matches_the_round_trip(monkeypatch):
         assert torch.equal(a, b)
     assert ref_casts > 0 and casts == 0  # no downcast after any forward
     for name, (ptr, dtype, raw) in before.items():
-        # the same storage, same dtype, same bytes: nothing was re-created
         assert (
             after[name][0] == ptr and after[name][1] == dtype and torch.equal(after[name][2], raw)
         )
