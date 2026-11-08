@@ -18,9 +18,17 @@ from pathlib import Path
 
 import pytest
 
-from ._sparse_file import extend_sparse
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._sparse_file import extend_sparse
+except ImportError:
+    from _sparse_file import extend_sparse
 
-from ._torchao_installed import needs_torchao
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
 
 from core.inference.diffusion import (
     DiffusionBackend,

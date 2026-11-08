@@ -20,7 +20,9 @@ import pytest
 
 try:
     from ._sparse_file import extend_sparse
-except ImportError:  # loaded by path, with no parent package (test_h3_native_resident.py)
+except (
+    ImportError
+):  # imported top-level by a sibling test, or by file path (test_h3_native_resident.py)
     import importlib.util as _importlib_util
 
     _sparse_spec = _importlib_util.spec_from_file_location(
