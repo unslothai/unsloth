@@ -3446,6 +3446,16 @@ _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# Streamed partial placement of a phase-seeded family: size the resident blocks from the denoise phase seed, and lend
+# them to the VAE decode (release_for_decode streams the shortfall again only if free memory is short then). The
+# whole-render seed is the untiled decode (FLUX.3: 2_437 vs denoise 901 MiB), which is not concurrent with the block
+# stream: at a 6 GiB budget it kept 936 of 6_144 MiB resident and streamed 5.1 GiB per step. "0" restores it.
+STREAMED_DECODE_LEND_ENV = "UNSLOTH_DIFFUSION_STREAMED_DECODE_LEND"
+# Measured families only (L4, int8 and fp8 at 6 GiB); the other phase-seeded families keep the whole-render seed.
+_STREAMED_DECODE_LEND_FAMILIES = frozenset({"flux.3-klein", "flux.3-klein-base"})
+# _MEASURED_IMAGE_ACTIVATION_MIB column of the denoise phase and of the untiled decode.
+_PHASE_DENOISE_COLUMN = 1
+_PHASE_DECODE_COLUMN = 2
 # "0": Qwen-Image t2i streams with the borrowed Edit figure again.
 QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
 _QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
@@ -3584,9 +3594,11 @@ def measured_image_runtime_mib(
     dense_bf16: bool = False,
     small_host_int8: bool = False,
     streamed: bool = False,
+    seed_phase: Optional[int] = None,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``streamed``: use ``_MEASURED_STREAMED_IMAGE_PEAK_MIB`` (window excluded) where present.
+    ``seed_phase``: the ``_MEASURED_IMAGE_ACTIVATION_MIB`` column to seed from instead of the worst of the first three.
     ``phase`` (``diffusion_measured_peaks.PHASES``) reads that phase's learned peak instead of the whole render's.
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
@@ -3633,8 +3645,9 @@ def measured_image_runtime_mib(
         if seed is None and phase_seeds:
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
-                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier
-                seed = max(phases[1 if speed_mode == "max" else 0][:3])
+                row = phases[1 if speed_mode == "max" else 0]
+                # worst of encoder / denoise / untiled decode at 1024x1024 for this tier, or the one phase asked for
+                seed = row[seed_phase] if seed_phase is not None else max(row[:3])
     w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
     h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
     batch = max(1, int(batch_size or 1))
@@ -4105,6 +4118,28 @@ def _stream_window_mib(pipe: Any) -> int:
         return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
     except Exception:  # noqa: BLE001
         return -1
+
+
+def _streamed_decode_lend_seed(
+    pipe: Any, family: Optional[str], speed_mode: Optional[str]
+) -> Optional[int]:
+    """The untiled decode seed (MiB, no margin) when a streamed partial placement of ``family`` may size its resident
+    blocks from the denoise phase and lend them to the decode; None keeps the whole-render seed."""
+    name = str(family or "").lower()
+    if (
+        _env_off(STREAMED_DECODE_LEND_ENV)
+        or name not in _STREAMED_DECODE_LEND_FAMILIES
+        or not bool(getattr(pipe, "_unsloth_phase_seeds", False))
+        or str(speed_mode or "") not in _MEASURED_PEAK_SPEED_MODES
+    ):
+        return None
+    phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(name)
+    if phases is None:
+        return None
+    row = phases[1 if speed_mode == "max" else 0]
+    if row[_PHASE_DENOISE_COLUMN] >= row[_PHASE_DECODE_COLUMN]:
+        return None
+    return int(row[_PHASE_DECODE_COLUMN])
 
 
 def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, window_mib: int) -> int:
@@ -4770,6 +4805,7 @@ def _refine_plan_from_loaded_weights(
                 # partial: the encode keeps the flat room (install_encode_release)
                 window = _stream_window_mib(pipe)
                 streamed_headroom = headroom
+                lend_decode = None
                 if static_seed and not small_host_int8:
                     streamed_headroom = min(
                         headroom,
@@ -4784,6 +4820,24 @@ def _refine_plan_from_loaded_weights(
                         )
                         or headroom,
                     )
+                    lend_decode = _streamed_decode_lend_seed(pipe, family, speed_mode)
+                    if lend_decode is not None:
+                        from .diffusion_measured_peaks import PHASE_PRE_DECODE
+                        denoise_headroom = measured_image_runtime_mib(
+                            family,
+                            speed_mode,
+                            compute_bytes = compute_bytes or 2,
+                            quant = read_quant,
+                            phase_seeds = True,
+                            static_seed = static_seed,
+                            streamed = True,
+                            seed_phase = _PHASE_DENOISE_COLUMN,
+                            phase = PHASE_PRE_DECODE,
+                        )
+                        if denoise_headroom is not None and denoise_headroom < streamed_headroom:
+                            streamed_headroom = denoise_headroom
+                        else:
+                            lend_decode = None
                 streamed_room = min(
                     _streamed_dit_room_mib(memory, streamed_headroom, other, window), dit
                 )
@@ -4795,6 +4849,15 @@ def _refine_plan_from_loaded_weights(
                         estimates["measured_streamed_headroom_mib"] = streamed_headroom
                         # seed covers denoise only; flat encode room on top overran at 16 GiB
                         encode_room = 0
+                    if lend_decode is not None:
+                        # the resident blocks are lent to the decode (decode_lend_from_plan / release_for_decode)
+                        estimates.update(
+                            measured_streamed_seed_phase = _PHASE_DENOISE_COLUMN,
+                            decode_lend_transformer_mib = int(streamed_room),
+                            measured_decode_peak_mib = int(lend_decode),
+                            measured_decode_peak_pixels = DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT,
+                            measured_decode_peak_quadratic = False,
+                        )
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         )
@@ -5250,7 +5313,10 @@ def decode_lend_from_plan(plan: Any) -> Optional[tuple[int, int, int, bool]]:
     estimates = getattr(plan, "estimates", None) or {}
     lend = estimates.get("decode_lend_text_encoder_mib")
     if not lend or not getattr(plan, "resident_text_encoder_mib", None):
-        return None
+        # a streamed partial placement sized from the denoise phase lends its resident blocks instead
+        lend = estimates.get("decode_lend_transformer_mib")
+        if not lend or not getattr(plan, "resident_transformer_mib", None):
+            return None
     return (
         int(lend),
         int(estimates.get("measured_decode_peak_mib") or 0),
@@ -5853,8 +5919,14 @@ def measured_request_extra_mib(
     sized["dense_bf16"] = bool(len(reserve) > 10 and reserve[10])
     sized["small_host_int8"] = bool(len(reserve) > 11 and reserve[11])
     sized["streamed"] = bool(len(reserve) > 12 and reserve[12])
+    seed_phase = reserve[13] if len(reserve) > 13 else None
+    if seed_phase is not None:
+        from .diffusion_measured_peaks import PHASE_PRE_DECODE
+
+        # placed from the denoise phase: the decode is priced by release_for_decode, not here
+        sized.update(seed_phase = int(seed_phase), phase = PHASE_PRE_DECODE)
     need = measured_image_runtime_mib(family, speed_mode, **sized)
-    learned = reserve[5] if len(reserve) > 5 else None
+    learned = reserve[5] if len(reserve) > 5 and seed_phase is None else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False
     # tier and phase seeds were measured on text-to-image: an unsized reference is not covered
