@@ -9,7 +9,12 @@ import types
 
 import pytest
 
-from ._sparse_file import extend_sparse
+try:
+    from ._sparse_file import extend_sparse
+except (
+    ImportError
+):  # a sibling test put this directory on sys.path and imported this file top-level
+    from _sparse_file import extend_sparse
 
 torch = pytest.importorskip("torch")
 
