@@ -5928,6 +5928,11 @@ def measured_request_extra_mib(
         # the decode is priced by release_for_decode
         sized.update(seed_phase = int(seed_phase), phase = PHASE_PRE_DECODE)
     need = measured_image_runtime_mib(family, speed_mode, **sized)
+    if seed_phase is not None and isinstance(identity, tuple) and len(identity) == 3:
+        # the learned pre-decode peak the placement read, scaled to this request by the store
+        stored = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+        if stored is not None:
+            need = stored if need is None else max(need, stored)
     learned = reserve[5] if len(reserve) > 5 and seed_phase is None else None
     # placed from a peak recorded without CFG: a request that runs it doubles the denoiser batch no measurement covers
     cfg_unmeasured = bool(len(reserve) > 9 and reserve[9]) and cfg is not False

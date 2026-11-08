@@ -294,3 +294,36 @@ def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
         torch.testing.assert_close(model(x), want)
     # 6 mode blocks become groups of their own; the stock grouping folds them into the top-level group
     assert counts["1"] == counts["0"] + (6 if supported else 0)
+
+
+def test_requests_scale_the_learned_pre_decode_peak(pipe, monkeypatch):
+    import core.inference.diffusion_measured_peaks as peaks
+
+    new = _refine(pipe, _plan())
+    _reserve(pipe, new)
+    pipe._unsloth_peak_identity = ("flux.3-klein", "int8|learned", "default")
+    seen = []
+
+    def lookup(
+        *,
+        family,
+        quant,
+        speed_mode,
+        width = None,
+        height = None,
+        batch_size = 1,
+        phase = None,
+        **kw,
+    ):
+        seen.append((quant, phase))
+        if quant != "int8|learned" or phase != peaks.PHASE_PRE_DECODE:
+            return None
+        return 1800 * max(1, int(batch_size or 1))
+
+    monkeypatch.setattr(peaks, "lookup", lookup)
+    # a learned 1800 MiB pre-decode peak above the 901 MiB seed is what a request is priced from, scaled by the store
+    one = dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, cfg = False)
+    two = dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, batch_size = 2, cfg = False)
+    assert one == -(-1800 * 115 // 100 // 256) * 256 - DENOISE_HEADROOM
+    assert two > one > 0
+    assert ("int8|learned", peaks.PHASE_PRE_DECODE) in seen
