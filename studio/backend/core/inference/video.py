@@ -4733,11 +4733,13 @@ def _video_single_card_for_sidecar(
     return fallback
 
 
-def _video_sidecar_card_reserve_mib(pipe: Any) -> Optional[dict[int, int]]:
-    """``{ordinal: MiB}`` the sidecar encoder holds at its peak on its card (context, plus the resident weights or the
-    on-card encode's need), which ``_loaded_component_mib`` does not see; None when it cannot be priced (the caller then
-    keeps one card). Waits for the worker's load report: the need depends on what it loaded. A worker that failed to
-    load raises here, as the load's own wait would (its message is read once)."""
+def _video_sidecar_card_reserve_mib(pipe: Any, plan: Any = None) -> Optional[dict[int, int]]:
+    """``{ordinal: MiB}`` the sidecar encoder holds at its peak on its card, which ``_loaded_component_mib`` does not
+    see: its context plus the resident weights, or for an encoder kept on the host the part of its on-card encode the
+    primary's denoise working memory does not already cover (the encode runs before the denoise, as the worker's own
+    room check assumes, and a split leaves no blocks to lend). None when it cannot be priced (the caller then keeps one
+    card). Waits for the worker's load report: the need depends on what it loaded. A worker that failed to load raises
+    here, as the load's own wait would (its message is read once)."""
     client = getattr(pipe, "_unsloth_ltx25_encoder", None)
     config = getattr(client, "config", None) or {}
     device = str(config.get("device") or "")
@@ -4751,20 +4753,29 @@ def _video_sidecar_card_reserve_mib(pipe: Any) -> Optional[dict[int, int]]:
         from .video_ltx25_te_worker import ENCODE_MARGIN_MIB
 
         ordinal = torch.device(device).index
+        ordinal = int(ordinal if ordinal is not None else torch.cuda.current_device())
         weights = int(info.get("weights_mib") or 0)
         if weights <= 0:
             return None
         if info.get("resident"):
             need = weights
         else:
-            # an encode runs before the denoise, but a split leaves nothing to lend: the card must hold the encode
             stream = info.get("stream_need_mib")
             need = int(stream) if stream else weights + ENCODE_MARGIN_MIB
-        return {
-            int(ordinal if ordinal is not None else torch.cuda.current_device()): int(
-                need + LTX25_WORKER_RESIDENT_GB * 1024
-            )
-        }
+            from .diffusion_multigpu import current_selection
+
+            selection = current_selection()
+            if selection is not None and int(selection.primary) == ordinal:
+                # the headroom refine_plan_for_multigpu keeps free on the primary for the denoise
+                estimates = getattr(plan, "estimates", None) or {}
+                flat = (
+                    estimates.get("calibrated_headroom_mib")
+                    or estimates.get("calibrated_split_headroom_mib")
+                    or estimates.get("runtime_headroom_mib")
+                )
+                headroom = int(estimates.get("measured_runtime_headroom_mib") or flat or 0)
+                need = max(0, need - headroom)
+        return {ordinal: int(need + LTX25_WORKER_RESIDENT_GB * 1024)}
     except Exception as exc:  # noqa: BLE001 -- unpriced: one card, the worker's load error surfaces later
         logger.info("video.multigpu: the sidecar encoder could not be priced (%s)", exc)
         return None
@@ -4797,7 +4808,7 @@ def _video_refine_for_multigpu(
     ):
         # resident on one card: refinement keeps it without pricing anything, so do not wait for the worker
         return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = {})
-    reserve = _video_sidecar_card_reserve_mib(pipe)
+    reserve = _video_sidecar_card_reserve_mib(pipe, plan)
     if reserve is None:
         return plan
     return refine_plan_for_multigpu(pipe, plan, logger, card_reserve_mib = reserve)

@@ -1862,9 +1862,13 @@ class _FakeEncoderClient:
 def test_ltx25_worker_reserve_prices_its_card():
     from core.inference import video as vid
 
-    def reserve(device, info):
+    def reserve(
+        device,
+        info,
+        plan = None,
+    ):
         pipe = _types_ns(_unsloth_ltx25_encoder = _FakeEncoderClient(device, info))
-        return vid._video_sidecar_card_reserve_mib(pipe)
+        return vid._video_sidecar_card_reserve_mib(pipe, plan)
 
     assert reserve("cuda:0", {"resident": True, "weights_mib": 13000}) == {0: 13000 + 1024}
     assert reserve(
@@ -1872,6 +1876,20 @@ def test_ltx25_worker_reserve_prices_its_card():
     ) == {1: 6000 + 1024}
     # a non-resident encoder that cannot stream onloads whole: weights plus the encode margin
     assert reserve("cuda:0", {"resident": False, "weights_mib": 13000}) == {0: 13000 + 4096 + 1024}
+    # on the primary of a selection the encode (before the denoise) reuses the denoise working memory; resident
+    # weights never do, nor does a worker on the partner (the primary holds that working memory)
+    plan = _types_ns(estimates = {"runtime_headroom_mib": 5000})
+    streamed = {"resident": False, "weights_mib": 13000, "stream_need_mib": 6000}
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert reserve("cuda:0", streamed, plan) == {0: 1000 + 1024}
+        assert reserve(
+            "cuda:0", {"resident": False, "weights_mib": 16, "stream_need_mib": 4112}, plan
+        ) == {0: 1024}
+        assert reserve("cuda:0", {"resident": True, "weights_mib": 13000}, plan) == {
+            0: 13000 + 1024
+        }
+        assert reserve("cuda:1", streamed, plan) == {1: 6000 + 1024}
+    assert reserve("cuda:0", streamed, plan) == {0: 6000 + 1024}
     assert reserve("cpu", {"resident": True, "weights_mib": 13000}) is None
     assert reserve("cuda:0", {"resident": True}) is None
     # a worker that failed to load fails the load here, with its own message (read once from the queue)
