@@ -299,8 +299,7 @@ def _file_mapped(path) -> bool:
 
 
 def test_offload_repoint_releases_the_hosted_file(tmp_path):
-    # Group offload re-points every weight (``.data =``) at its pinned host copy. A safetensors view keeps its
-    # base, and so the whole file mapping, alive through that, doubling the host footprint of an offloaded DiT.
+    # Group offload re-points each weight at its pinned copy; a view's base would keep the file mapped.
     path, cfg_dir, _built = _write_hosted(tmp_path)
     model = _load(path, cfg_dir)
     assert model is not None
@@ -308,7 +307,7 @@ def test_offload_repoint_releases_the_hosted_file(tmp_path):
     assert all(t._base is None for t in tensors)
     if not os.path.exists("/proc/self/maps"):
         return
-    assert _file_mapped(path)  # the codes are read in place, not copied
+    assert _file_mapped(path)
     for t in tensors:
         t.data = t.data.clone()
     del t, tensors

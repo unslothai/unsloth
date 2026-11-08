@@ -366,8 +366,6 @@ def _file_mapped(path) -> bool:
 
 
 def test_offload_repoint_releases_the_cache_entry(base_dir):
-    # Group offload re-points every weight (``.data =``) at its pinned host copy; a safetensors view would keep the
-    # whole entry mapped through that for the model's life.
     import gc
 
     fam = _family()
