@@ -318,6 +318,15 @@ def test_fp8_stored_bytes_are_half_the_widened_bf16_bytes(tmp_path, monkeypatch)
     assert priced is not None and widened_mib is not None and priced <= widened_mib
 
 
+def test_a_single_file_keeps_the_fp32_rope_the_hosted_checkpoint_keeps(tmp_path, monkeypatch):
+    path, base, _ = _write(tmp_path, _tiny(), FP8_NAME, "float8_e4m3fn")
+    target = _host(monkeypatch, "sm80")
+    model = _load(path, base, target, dtype = torch.bfloat16, **nq.h3_comfy_backends(target))
+    fresh = diffusers.MiniMaxH3Transformer3DModel(**TINY)
+    assert model.rope.inv_freq.dtype == torch.float32
+    assert torch.equal(model.rope.inv_freq, fresh.rope.inv_freq)
+
+
 @pytest.mark.parametrize("kind", ["rocm", "mps"])
 def test_int8_file_on_native_hosts_keeps_int8_codes(tmp_path, monkeypatch, kind):
     path, base, _ = _write(tmp_path, _tiny(), INT8_NAME, "int8_tensorwise")
