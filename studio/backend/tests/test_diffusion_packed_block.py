@@ -218,8 +218,6 @@ def test_the_triton_widen_is_bit_identical_under_the_interpreter():
         text = True,
         timeout = 600,
     )
-    if "BAD" not in proc.stdout and "No module named 'triton'" in proc.stderr:
-        pytest.skip("Triton is not installed")
     assert "BAD []" in proc.stdout, proc.stdout + proc.stderr[-2000:]
 
 
