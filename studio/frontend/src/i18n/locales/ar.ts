@@ -2579,11 +2579,25 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
-        cpuLoad: "حمل المعالج",
+          "اعرض حمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
         power: "الطاقة",
+        memory: "الذاكرة",
+        gpuInUse: "مستخدمة بواسطة GPU",
+        availableForModels: "متاحة للنماذج",
+        refreshRate: "معدل التحديث",
+        refreshRateDescription: "عدد مرات قراءة الشاشة العائمة لاستخدام الذاكرة وGPU أثناء فتحها.",
+        refreshEvery: "كل {seconds} ث",
+        unsloth: "Unsloth",
+        otherApps: "تطبيقات أخرى",
+        otherInUse: "استخدام آخر",
+        freeLabel: "متاح",
+        unslothApp: "تطبيق Unsloth",
+        unslothShare: "إظهار حصة Unsloth",
+        unslothShareDescription: "تقسيم الذاكرة بين ما يستخدمه Unsloth وما تستخدمه التطبيقات الأخرى والمتاح.",
+        modelBreakdown: "التفصيل حسب النموذج",
+        modelBreakdownDescription: "تقسيم حصة Unsloth في شريط الذاكرة إلى كل نموذج محمّل وبقية التطبيق.",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -2854,7 +2868,7 @@ export const ar = {
       configurationDocs: "التوثيق",
       configurationFlagsSuffix: "لمعرفة الخيارات (flags).",
       modelNote:
-        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
+        "يتطلب Claude Code وCodex نموذج GGUF يقدّمه llama-server أو نموذج MLX. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
         title: "استخدام نموذج محلي كوكيل فرعي",
         description:
@@ -5200,6 +5214,7 @@ export const ar = {
     monitor: {
       dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
       reconnecting: "جارٍ إعادة الاتصال...",
+      resizeHint: "اسحب جانبًا أو زاوية لتغيير العرض. انقر نقرًا مزدوجًا لإعادته.",
     },
   },
   projectsPage: {

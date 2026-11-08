@@ -327,6 +327,24 @@ def test_automatic_replica_is_not_built_on_a_card_another_job_keeps_busy(monkeyp
     assert "80.0% busy" in router.disabled_reason
 
 
+def test_automatic_replica_build_reads_utilisation_before_opening_its_own_context(monkeypatch):
+    unet = UNet2DConditionModel()
+    router, replicas = _router(unet)
+    router.automatic_idle_only = True
+    opened = []
+
+    def free_total():
+        opened.append(True)
+        return 14798, 14911
+
+    monkeypatch.setattr(router, "_secondary_free_total_mib", free_total)
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda _o: 7.0 if opened else 0.0)
+    lat = torch.randn(1, 4, 8, 8)
+    _sdxl_loop(unet, lat, steps = 2)
+    assert router.disabled_reason is None
+    assert len(replicas) == 1 and router.stats["steps_parallel"] == 2
+
+
 def test_group_offloaded_denoiser_runs_cfg_parallel_from_its_onload_card(monkeypatch):
     from core.inference import diffusion_memory as dm
 

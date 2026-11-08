@@ -2767,7 +2767,22 @@ export const vi = {
           "Xem những gì các ứng dụng khác gửi tới API của máy chủ này ngay khi đến.",
         summary: "Yêu cầu trực tiếp, lỗi và mức sử dụng token",
         status: "{active} đang hoạt động · {recent} gần đây · {model}",
-        noModelLoaded: "chưa nạp mô hình",
+        noModelLoaded: "Chưa nạp mô hình",
+        memory: "Bộ nhớ",
+        gpuInUse: "GPU đang dùng",
+        availableForModels: "Còn trống cho mô hình",
+        refreshRate: "Tần suất làm mới",
+        refreshRateDescription: "Tần suất màn hình nổi đọc mức dùng bộ nhớ và GPU khi đang mở.",
+        refreshEvery: "Mỗi {seconds} giây",
+        unsloth: "Unsloth",
+        otherApps: "Ứng dụng khác",
+        otherInUse: "Đang dùng khác",
+        freeLabel: "Trống",
+        unslothApp: "Ứng dụng Unsloth",
+        unslothShare: "Hiện phần của Unsloth",
+        unslothShareDescription: "Chia bộ nhớ thành phần Unsloth dùng, phần các ứng dụng khác dùng và phần còn trống.",
+        modelBreakdown: "Chia theo mô hình",
+        modelBreakdownDescription: "Chia phần của Unsloth trên thanh bộ nhớ thành từng mô hình đã tải và phần còn lại của ứng dụng.",
         autoOpen: "Tự động mở trình giám sát nổi",
         autoOpenDescription: "Mở một bảng nhỏ khi có lưu lượng API.",
         cpu: "CPU",
@@ -2783,8 +2798,7 @@ export const vi = {
         gpuUnusableDetail: "Đã phát hiện nhưng PyTorch không thể sử dụng",
         detailedView: "Chế độ xem chi tiết",
         detailedViewDescription:
-          "Hiển thị tải CPU cùng tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
-        cpuLoad: "Tải CPU",
+          "Hiển thị tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
         gpuLoad: "Tải GPU",
         temperature: "Nhiệt độ",
         power: "Công suất",
@@ -3086,7 +3100,7 @@ export const vi = {
       configurationDocs: "tài liệu",
       configurationFlagsSuffix: "để biết các cờ.",
       modelNote:
-        "Codex yêu cầu mô hình GGUF do llama-server phục vụ. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
+        "Claude Code và Codex yêu cầu mô hình GGUF do llama-server phục vụ, hoặc mô hình MLX. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
       subagent: {
         title: "Dùng mô hình cục bộ làm tác tử phụ",
         description:
@@ -5596,6 +5610,7 @@ export const vi = {
     monitor: {
       dragHandleLabel:
         "Di chuyển bảng giám sát trực tiếp. Phím mũi tên để dịch chuyển nhẹ, nhấp đúp để đặt lại.",
+      resizeHint: "Kéo một cạnh hoặc góc để đổi chiều rộng. Nhấp đúp để đặt lại.",
       reconnecting: "Đang kết nối lại...",
     },
   },

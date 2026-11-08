@@ -2780,7 +2780,22 @@ export const cs = {
           "Sledujte, co ostatní aplikace posílají do API tohoto serveru, hned jak to dorazí.",
         summary: "Živé požadavky, chyby a využití tokenů",
         status: "Aktivní: {active} · nedávné: {recent} · {model}",
-        noModelLoaded: "žádný model není načten",
+        noModelLoaded: "Žádný model není načten",
+        memory: "Paměť",
+        gpuInUse: "Využití GPU",
+        availableForModels: "K dispozici pro modely",
+        refreshRate: "Obnovovací frekvence",
+        refreshRateDescription: "Jak často plovoucí monitor čte využití paměti a GPU, když je otevřený.",
+        refreshEvery: "Každých {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Ostatní aplikace",
+        otherInUse: "Ostatní využití",
+        freeLabel: "Volné",
+        unslothApp: "Aplikace Unsloth",
+        unslothShare: "Zobrazit podíl Unsloth",
+        unslothShareDescription: "Rozdělí paměť na to, co používá Unsloth, co používají ostatní aplikace a co je volné.",
+        modelBreakdown: "Rozpis podle modelu",
+        modelBreakdownDescription: "Rozdělí část paměťového pruhu patřící Unsloth na jednotlivé načtené modely a zbytek aplikace.",
         autoOpen: "Automaticky otevírat plovoucí sledování",
         autoOpenDescription: "Když dorazí provoz API, otevře malý panel.",
         cpu: "CPU",
@@ -2796,8 +2811,7 @@ export const cs = {
         gpuUnusableDetail: "Rozpoznáno, ale PyTorch ho nemůže použít",
         detailedView: "Podrobné zobrazení",
         detailedViewDescription:
-          "Zobrazovat v plovoucím okně zatížení CPU a zatížení, teplotu a příkon každého GPU.",
-        cpuLoad: "Zatížení CPU",
+          "Zobrazovat v plovoucím okně zatížení, teplotu a příkon každého GPU.",
         gpuLoad: "Zatížení GPU",
         temperature: "Teplota",
         power: "Příkon",
@@ -3104,7 +3118,7 @@ export const cs = {
       configurationDocs: "dokumentace",
       configurationFlagsSuffix: "s popisem příznaků.",
       modelNote:
-        "Codex vyžaduje model GGUF obsluhovaný přes llama-server. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
+        "Claude Code a Codex vyžadují model GGUF obsluhovaný přes llama-server nebo model MLX. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
       subagent: {
         title: "Použít místní model jako subagenta",
         description:
@@ -5614,6 +5628,7 @@ export const cs = {
     monitor: {
       dragHandleLabel:
         "Přesunout živý monitor. Šipky ho posunou, dvojklik ho vrátí na výchozí místo.",
+      resizeHint: "Přetažením okraje nebo rohu změníte šířku. Dvojklik ji obnoví.",
       reconnecting: "Opětovné připojování...",
     },
   },

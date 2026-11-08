@@ -303,7 +303,7 @@
       "_parse_deepseek_tool_calls": "core.inference.tool_call_parser._parse_deepseek_tool_calls(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True) -> 'list[dict]'",
       "_parse_function_xml": "core.inference.tool_call_parser._parse_function_xml(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True) -> 'list[dict]'",
       "_parse_gemma_tool_calls": "core.inference.tool_call_parser._parse_gemma_tool_calls(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True, enabled_tool_names: 'Optional[set]' = None) -> 'list[dict]'",
-      "_parse_glm_tool_calls": "core.inference.tool_call_parser._parse_glm_tool_calls(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True) -> 'list[dict]'",
+      "_parse_glm_tool_calls": "core.inference.tool_call_parser._parse_glm_tool_calls(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True, raw_values: 'bool' = False) -> 'list[dict]'",
       "_parse_glued_deepseek_envelopes": "core.inference.tool_call_parser._parse_glued_deepseek_envelopes(content: 'str', pos: 'int', *, id_offset: 'int') -> 'list[dict]'",
       "_parse_kimi_section_body": "core.inference.tool_call_parser._parse_kimi_section_body(body: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True) -> 'list[dict]'",
       "_parse_kimi_tool_calls": "core.inference.tool_call_parser._parse_kimi_tool_calls(content: 'str', *, id_offset: 'int', allow_incomplete: 'bool' = True) -> 'list[dict]'",
