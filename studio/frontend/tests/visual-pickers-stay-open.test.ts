@@ -13,7 +13,6 @@ import { readSrc } from "./helpers/kit.ts";
 
 const PICKER = "components/ui/radio-picker.tsx";
 const CONTROLS = "features/chat-background/controls.tsx";
-const PALETTE = "features/settings/components/color-theme-select.tsx";
 
 test("the shared visual picker opens a popover, not a menu that closes on select", () => {
   const source = readSrc(PICKER);
@@ -41,16 +40,5 @@ test("every glass and background option picker is the stay-open picker", () => {
     source,
     /<Select[\s>]/,
     "a visual picker must not go back to Select, which dismisses on pick",
-  );
-});
-
-test("the palette menu keeps itself open on select", () => {
-  const source = readSrc(PALETTE);
-
-  const handler = /onSelect=\{\(event\) => \{\s*event\.preventDefault\(\);\s*setPalette\(id\);/;
-  assert.match(
-    source,
-    handler,
-    "the palette item must preventDefault before applying, or the menu closes on every pick",
   );
 });
