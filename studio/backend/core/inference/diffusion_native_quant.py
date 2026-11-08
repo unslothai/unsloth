@@ -398,7 +398,8 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
         _FUSED_STATE["failed"] = "no inductor runtime"
         log.info("diffusion.native_quant: int8 W8A8 linear stays eager (no inductor runtime)")
         return None
-    if is_rocm_torch(torch):
+    # The current card (no device) or a HIP input's card; a CPU input has no arch to judge.
+    if is_rocm_torch(torch) and (device is None or key.type == "cuda"):
         refusal = _rocm_fused_w8a8_refusal(torch, key.index if key.type == "cuda" else None)
         if refusal is not None:
             devices[key] = refusal

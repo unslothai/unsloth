@@ -201,10 +201,11 @@ def test_a_failing_compile_falls_back_once_and_stays_eager(monkeypatch):
         raise RuntimeError("inductor exploded")
 
     nq._FUSED_STATE["fn"] = boom
-    assert layer._forward_fused(torch.randn(64, 512, dtype = torch.bfloat16)) is None
+    x = torch.randn(64, 512, dtype = torch.bfloat16)
+    assert layer._forward_fused(x) is None
     state = nq.fused_w8a8_state()
     assert "inductor exploded" in state["failed"]
-    assert nq._fused_w8a8() is None
+    assert nq._fused_w8a8(x.device) is None  # that input's device stays eager
 
 
 def test_an_oom_propagates_and_keeps_the_compiled_linear(monkeypatch):
@@ -504,3 +505,15 @@ def test_each_real_card_runs_the_compiled_linear_bit_identical_to_eager(monkeypa
             assert nq.fused_w8a8_state()["calls"] == calls + 1
             assert got.device == dev and torch.equal(got, ref)
     assert nq.fused_w8a8_state()["devices"] == {"cuda:0": None, "cuda:1": None}
+
+
+def test_a_cpu_input_on_a_rocm_torch_is_not_judged_by_a_card_arch(monkeypatch):
+    # ROCm torch, no visible card (HIP masked): a CPU input has no gfx arch to refuse on.
+    import core.inference.rocm_bf16 as rb
+
+    monkeypatch.setattr(torch.version, "hip", "7.13", raising = False)
+    monkeypatch.setattr(
+        rb, "_device_gfx_arch", lambda _torch, _ordinal: pytest.fail("arch read for a CPU input")
+    )
+    nq._FUSED_STATE["fn"] = fn = lambda *_a: None
+    assert nq._fused_w8a8(torch.device("cpu")) is fn
