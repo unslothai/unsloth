@@ -1303,7 +1303,7 @@ class Ltx25TextEncoderClient:
         with self._lock:
             for i, (cached_key, value) in enumerate(self._cache):
                 if cached_key == key:
-                    # Least recently used goes first: a fixed negative prompt hit every render stays cached.
+                    # LRU: a negative prompt hit every render is never the one evicted.
                     self._cache.append(self._cache.pop(i))
                     return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():

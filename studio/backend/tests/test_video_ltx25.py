@@ -1029,7 +1029,6 @@ def test_a_fixed_negative_prompt_stays_cached_across_alternating_prompts():
         )
 
     client._cmd.put = fake_put
-    # CFG renders encode the positive, then the shared negative.
     for positive in ("p1", "p2", "p1", "p2"):
         client.encode([positive], 2)
         client.encode(["neg"], 2)
