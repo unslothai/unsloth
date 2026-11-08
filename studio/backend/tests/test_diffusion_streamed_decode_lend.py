@@ -327,3 +327,26 @@ def test_requests_scale_the_learned_pre_decode_peak(pipe, monkeypatch):
     assert one == -(-1800 * 115 // 100 // 256) * 256 - DENOISE_HEADROOM
     assert two > one > 0
     assert ("int8|learned", peaks.PHASE_PRE_DECODE) in seen
+
+
+def test_a_learned_decode_peak_raises_the_lend(pipe, monkeypatch):
+    import core.inference.diffusion_measured_peaks as peaks
+
+    def bucket(*, phase = None, **kw):
+        return (4000, 2048 * 2048, False) if phase == peaks.PHASE_DECODE_UNPADDED else None
+
+    monkeypatch.setattr(peaks, "lookup_bucket", bucket)
+    new = _refine(pipe, _plan())
+    lend = dm.decode_lend_from_plan(new)
+    assert lend[1:] == (4000, 2048 * 2048, False)
+    assert dm.decode_need_mib(lend, width = 1024, height = 1024) == -(-4000 * 115 // 100)
+
+    # a learned decode peak below the seed keeps the seed
+    monkeypatch.setattr(
+        peaks,
+        "lookup_bucket",
+        lambda *, phase = None, **kw: (1000, 1024 * 1024, False)
+        if phase == peaks.PHASE_DECODE_UNPADDED
+        else None,
+    )
+    assert dm.decode_lend_from_plan(_refine(pipe, _plan()))[1:] == (2437, 1024 * 1024, False)

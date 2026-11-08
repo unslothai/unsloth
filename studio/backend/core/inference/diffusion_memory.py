@@ -4854,12 +4854,32 @@ def _refine_plan_from_loaded_weights(
                         # seed covers denoise only; flat encode room on top overran at 16 GiB
                         encode_room = 0
                     if lend_decode is not None:
+                        from .diffusion_measured_peaks import PHASE_DECODE_UNPADDED
+
+                        decode = (
+                            int(lend_decode),
+                            DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT,
+                            False,
+                        )
+                        # a larger learned decode peak (with its own bucket) wins over the seed
+                        learned_decode = lookup_bucket(
+                            family = family,
+                            quant = read_quant,
+                            speed_mode = speed_mode,
+                            phase = PHASE_DECODE_UNPADDED,
+                        )
+                        if learned_decode is not None and int(learned_decode[0]) > decode[0]:
+                            decode = (
+                                int(learned_decode[0]),
+                                int(learned_decode[1]),
+                                bool(learned_decode[2]),
+                            )
                         estimates.update(
                             measured_streamed_seed_phase = _PHASE_DENOISE_COLUMN,
                             decode_lend_transformer_mib = int(streamed_room),
-                            measured_decode_peak_mib = int(lend_decode),
-                            measured_decode_peak_pixels = DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT,
-                            measured_decode_peak_quadratic = False,
+                            measured_decode_peak_mib = decode[0],
+                            measured_decode_peak_pixels = decode[1],
+                            measured_decode_peak_quadratic = decode[2],
                         )
         te_room = (
             min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
