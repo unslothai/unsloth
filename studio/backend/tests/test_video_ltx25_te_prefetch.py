@@ -417,3 +417,22 @@ def test_one_lease_refuses_a_mismatched_negative_batch_before_encoding(monkeypat
     with pytest.raises(ValueError):
         pipe.encode_prompt(prompt = ["a", "b"], negative_prompt = ["x"], max_sequence_length = 4)
     assert events == []
+
+
+def test_an_encode_with_no_pinned_layer_never_creates_the_copy_stream(monkeypatch):
+    """The lookahead's stream is made on the first upload, so a pageable host copy costs no stream-pool memory."""
+    made = []
+    monkeypatch.setattr(torch.cuda, "Stream", lambda *a, **k: made.append(1) or object())
+    monkeypatch.setattr(torch.Tensor, "is_pinned", lambda self: False)
+    monkeypatch.setattr(worker, "_lookahead_ops", lambda device: worker._CudaUploads("cuda:0"))
+    model = _three_layer_model()
+    reference = _reference(model)
+    parts = worker._stream_parts(model)
+    ids, mask = _inputs()
+    with worker._streamed(parts, "cpu", {}), torch.inference_mode():
+        out = worker._pack_hidden_states(model, ids, mask)
+    assert torch.equal(out, reference) and made == []
+    ops = worker._CudaUploads("cuda:0")
+    ops.drain()
+    assert made == []
+    assert ops.stream is ops.stream and made == [1]

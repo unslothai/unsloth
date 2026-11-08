@@ -885,7 +885,15 @@ class _CudaUploads:
 
         self.torch = torch
         self.device = torch.device(device)
-        self.stream = torch.cuda.Stream(device = self.device)
+        self._stream: Any = None
+
+    @property
+    def stream(self) -> Any:
+        # Created on the first upload: an encode with no pinned layer never touches the stream pool (whose first use
+        # costs the worker ~20 MiB of card memory).
+        if self._stream is None:
+            self._stream = self.torch.cuda.Stream(device = self.device)
+        return self._stream
 
     def _compute(self) -> Any:
         return self.torch.cuda.current_stream(self.device)
@@ -915,8 +923,10 @@ class _CudaUploads:
         return event
 
     def drain(self) -> None:
-        self.stream.wait_stream(self._compute())
-        self.stream.synchronize()
+        if self._stream is None:
+            return
+        self._stream.wait_stream(self._compute())
+        self._stream.synchronize()
 
 
 def _lookahead_ops(device: str) -> Any:
