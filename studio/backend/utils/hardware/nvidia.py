@@ -672,30 +672,6 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
     return identities
 
 
-# Driver API only: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER
-# without creating a context, and runs in a child so the Studio process never initialises CUDA.
-_CUDA_BUS_ID_SCRIPT = r"""
-import ctypes, sys
-lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
-if lib.cuInit(0) != 0:
-    sys.exit(3)
-count = ctypes.c_int(0)
-if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
-    sys.exit(4)
-for ordinal in range(count.value):
-    dev = ctypes.c_int(0)
-    buf = ctypes.create_string_buffer(64)
-    integrated = ctypes.c_int(0)
-    if (
-        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
-        or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0
-        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
-    ):
-        sys.exit(5)
-    print(buf.value.decode(), integrated.value)
-"""
-
-
 def _normalize_bus_id(bus_id: str) -> Optional[tuple[int, str]]:
     """'00000000:3B:00.0' (nvidia-smi) and '0000:3b:00.0' (driver API) -> (domain, 'BUS:DEV.FN')."""
     domain, sep, rest = bus_id.strip().partition(":")
@@ -711,25 +687,14 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
     """nvidia-smi row index for each CUDA ordinal of this process's environment, matched by PCI bus id.
 
     Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
-    context here: the ordinals come from a short child on the driver API, the rows from nvidia-smi.
+    context here: the ordinals come from the driver query (get_cuda_device_info), the rows from nvidia-smi.
     None when either side is unreadable or the two do not join; [] when an integrated card is among them,
     whose nvidia-smi memory is a carve-out rather than its shared pool.
     """
-    import sys
-
-    from utils.child_stdio import utf8_child_env
-
+    devices = get_cuda_device_info()
+    if not devices or any(device is None for device in devices):
+        return None
     try:
-        child = subprocess.run(
-            [sys.executable, "-c", _CUDA_BUS_ID_SCRIPT],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 15,
-            env = utf8_child_env(child_env_without_native_path_secret()),
-            **_windows_hidden_subprocess_kwargs(),
-        )
         smi = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
             capture_output = True,
@@ -742,7 +707,7 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if child.returncode != 0 or smi.returncode != 0:
+    if smi.returncode != 0:
         return None
     row_by_bus: dict[tuple[int, str], int] = {}
     for line in smi.stdout.strip().splitlines():
@@ -752,16 +717,149 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
             return None
         row_by_bus[key] = int(index)
     rows = []
-    for line in child.stdout.strip().splitlines():
-        bus_id, _, integrated = line.strip().partition(" ")
+    for bus_id, integrated, _total, _name in devices:
         key = _normalize_bus_id(bus_id)
-        if key not in row_by_bus or integrated not in ("0", "1"):
+        if key not in row_by_bus:
             return None
-        if integrated == "1":
+        if integrated:
             # The row is a carve-out or N/A; only torch reports the shared pool. Known, so cacheable.
             return []
         rows.append(row_by_bus[key])
-    return rows or None
+    return rows
+
+
+# Exit 2 (no NVIDIA driver) and no output (no device) are definite answers.
+_CUDA_DEVICE_INFO_SCRIPT = r"""
+import ctypes, sys
+try:
+    lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+except OSError:
+    sys.exit(2)
+rc = lib.cuInit(0)
+if rc == 100:  # CUDA_ERROR_NO_DEVICE
+    sys.exit(0)
+if rc != 0:
+    sys.exit(3)
+count = ctypes.c_int(0)
+if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
+    sys.exit(4)
+total_mem = lib.cuDeviceTotalMem_v2
+total_mem.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]
+for ordinal in range(count.value):
+    dev = ctypes.c_int(0)
+    bus = ctypes.create_string_buffer(64)
+    name = ctypes.create_string_buffer(256)
+    integrated = ctypes.c_int(0)
+    total = ctypes.c_size_t(0)
+    if (
+        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
+        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
+        or total_mem(ctypes.byref(total), dev) != 0
+        or lib.cuDeviceGetName(name, 256, dev) != 0
+    ):
+        print("ERR")  # this ordinal did not answer; the others still count
+        continue
+    # The bus id is informational: a driver that cannot report it (some virtualised ones) still answers.
+    bus_id = bus.value.decode() if lib.cuDeviceGetPCIBusId(bus, 64, dev) == 0 and bus.value else "-"
+    print(bus_id, integrated.value, total.value, name.value.decode(errors = "replace"))
+"""
+
+
+_CUDA_DEVICE_INFO_RETRY_S = 60.0
+_CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
+
+
+def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    """(bus id or "", integrated, total bytes, name) per CUDA ordinal (None: no answer); [] no device, None unknown.
+    A driver-API child, never get_device_properties: that initialises CUDA here, then device calls pin contexts."""
+    # Per mask and inventory generation: hardware re-detection (gpu_query.invalidate_static) asks again.
+    key = (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query.static_generation(),
+    )
+    hit = _CUDA_DEVICE_INFO_CACHE.get(key)
+    if hit is not None and (
+        hit[0] is None or time.monotonic() - hit[0] < _CUDA_DEVICE_INFO_RETRY_S
+    ):
+        return None if hit[1] is None else list(hit[1])
+    info = _query_cuda_device_info()
+    complete = info is not None and all(device is not None for device in info)
+    _CUDA_DEVICE_INFO_CACHE[key] = (None if complete else time.monotonic(), info)
+    return None if info is None else list(info)
+
+
+def cuda_device_info_or_torch(
+    torch_mod: Any = None,
+) -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    """get_cuda_device_info() with unanswered ordinals filled from get_device_properties: detection only widens."""
+    import sys
+
+    info = get_cuda_device_info()
+    torch = sys.modules.get("torch") if torch_mod is None else torch_mod
+    cuda = getattr(torch, "cuda", None)
+    try:
+        count = int(cuda.device_count()) if cuda is not None else None
+    except Exception:
+        count = None
+    if count is None or (
+        info is not None and len(info) == count and all(d is not None for d in info)
+    ):
+        return info
+    out = list(info) if info is not None and len(info) == count else [None] * count
+    for ordinal, device in enumerate(out):
+        if device is not None:
+            continue
+        try:
+            props = cuda.get_device_properties(ordinal)
+        except Exception:
+            continue
+        integrated = bool(
+            getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
+        )
+        out[ordinal] = ("", integrated, int(props.total_memory), str(props.name or ""))
+    return out if info is not None or any(d is not None for d in out) else None
+
+
+def _query_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    import sys
+
+    from utils.child_stdio import utf8_child_env
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CUDA_DEVICE_INFO_SCRIPT],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = utf8_child_env(child_env_without_native_path_secret()),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if child.returncode == 2:
+        return []
+    if child.returncode != 0:
+        return None
+    devices: list[Optional[tuple[str, bool, int, str]]] = []
+    for line in child.stdout.strip().splitlines():
+        if line.strip() == "ERR":
+            devices.append(None)
+            continue
+        parts = line.strip().split(" ", 3)
+        if len(parts) < 3 or parts[1] not in ("0", "1") or not parts[2].isdigit():
+            return None
+        devices.append(
+            (
+                "" if parts[0] == "-" else parts[0],
+                parts[1] == "1",
+                int(parts[2]),
+                parts[3] if len(parts) > 3 else "",
+            )
+        )
+    return devices
 
 
 def get_pci_bus_ids() -> dict[int, tuple[int, str]]:

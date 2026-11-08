@@ -57,6 +57,36 @@ def _checkpoint(tmp, arch = "llama"):
 
     from test_tp_native_oracle import LLAMA, QWEN3, QWEN3_MOE, build
 
+    if arch == "qwen3_5":
+        # Hybrid: Gated DeltaNet (linear attention) layers beside attention, 4 heads / 2 kv heads, 4 value heads
+        # over 2 key heads in the linear layers, so Ulysses cp 2 splits both kinds. No hub weights: random init.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        config = transformers.Qwen3_5TextConfig(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            intermediate_size = 64,
+            num_hidden_layers = N_LAYERS,
+            layer_types = ["linear_attention", "full_attention"] * (N_LAYERS // 2),
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            linear_num_key_heads = 2,
+            linear_num_value_heads = 4,
+            linear_key_head_dim = 8,
+            linear_value_head_dim = 8,
+            linear_conv_kernel_dim = 4,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+        )
+        torch.manual_seed(0)
+        model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
     if arch in ("qwen3_moe", "qwen3", "qwen3_moe_wide"):
         # qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), router aux loss off as shipped.
         # qwen3_moe_wide: hidden and expert widths of 32, so Unsloth's Triton grouped GEMM takes the experts (it
@@ -437,6 +467,21 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    gdn_calls = []
+    if arch == "qwen3_5":
+        # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
+        from test_ulysses_hybrid import _force_torch_kernels
+
+        from unsloth.utils import ulysses_hybrid as gdn
+
+        _force_torch_kernels(model)
+        original_gdn = gdn.ulysses_gated_delta_forward
+
+        def counted_gdn(*a, **k):
+            gdn_calls.append(1)
+            return original_gdn(*a, **k)
+
+        gdn.ulysses_gated_delta_forward = counted_gdn
     gc_stats = {"checkpoint_calls": 0, "offloaded": 0, "restored": 0}
     if gc != "none":
         _install_unsloth_checkpoint(model, gc, gc_stats)
@@ -716,6 +761,7 @@ def _case_train(
         "query": query,
         "exchanges": exchanges,
         "n_layers": int(trainer.model.config.num_hidden_layers),
+        "gdn_calls": len(gdn_calls),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -1120,6 +1166,46 @@ def test_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
         assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= N_LAYERS
         assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
         _close(res, ref, what = (env, rank))
+
+
+def _needs_qwen3_5():
+    import transformers
+    if not hasattr(transformers, "Qwen3_5TextConfig"):
+        pytest.skip(f"transformers {transformers.__version__} has no Qwen3.5")
+
+
+def test_hybrid_qwen3_5_under_cp_matches_one_process():
+    """Qwen3.5 hybrid (Gated DeltaNet + attention) under Ulysses cp 2: both layer kinds exchange, one process's
+    numbers."""
+    _needs_qwen3_5()
+    ref = _ref(2, arch = "qwen3_5")
+    assert ref["gdn_calls"] == 0 and ref["ulysses_calls"] == 0
+    for rank, res in enumerate(_spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["cp_group"] == [0, 1] and res["seen_lengths"] == [SEQ // 2]
+        # Every forward of a training step: N_LAYERS // 2 linear attention and as many attention layers.
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        _close(res, ref, what = ("qwen3_5 cp2", rank))
+
+
+@pytest.mark.parametrize(
+    "env, sft_cp",
+    [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
+    ids = ["fsdp2_env_cp_config", "unsloth_parallel"],
+)
+def test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process(env, sft_cp):
+    """The registry's hybrid cp x native FSDP2 cell: strict mode (unverified layouts refused) trains it, FSDP2
+    shards over (dp_shard, cp), the Gated DeltaNet and attention exchanges run, one process's numbers."""
+    _needs_qwen3_5()
+    ref = _ref(4, arch = "qwen3_5")
+    env = {**env, "UNSLOTH_PARALLEL_STRICT": "1"}
+    for rank, res in enumerate(_spawn("train", 4, env, bs = 2, cp = 2, sft_cp = sft_cp, arch = "qwen3_5")):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["native_fsdp2"] and res["cp_group"] == [rank - rank % 2, rank - rank % 2 + 1]
+        assert res["seen_lengths"] == [SEQ // 2]
+        assert res["gdn_calls"] >= N_LAYERS // 2 and res["ulysses_calls"] >= N_LAYERS // 2, res
+        assert "FSDP2 shards and reduces over dp_shard x cp" in (res["banner"] or ""), res["banner"]
+        _close(res, ref, what = ("qwen3_5", env, rank), state_atol = 1e-5)
 
 
 def test_dense_qwen3_under_cp_matches_one_process():

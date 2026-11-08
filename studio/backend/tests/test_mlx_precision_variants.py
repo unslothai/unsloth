@@ -498,9 +498,19 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     assert mlx_memory._snapshot_config(picked)["model_type"] == "raon1_mini"
 
 
-@pytest.mark.parametrize("resident_folder, expected", [(None, "reuse"), ("6-bit", "load")])
-def test_a_root_request_never_reuses_a_resident_precision_folder(
-    monkeypatch, resident_folder, expected
+@pytest.mark.parametrize(
+    "resident_folder, requested, expected",
+    [
+        (None, None, "reuse"),
+        ("6-bit", None, "reload"),
+        ("6-bit", "6-bit", "reuse"),
+        ("6-bit", "8bit", "reload"),
+        ("6-bit", "6-BIT", "reload"),
+        (None, "6-bit", "reload"),
+    ],
+)
+def test_a_request_reuses_only_the_resident_precision_folder(
+    monkeypatch, resident_folder, requested, expected
 ):
     from hub.services.models import account_access
     from models.inference import LoadRequest
@@ -550,10 +560,12 @@ def test_a_root_request_never_reuses_a_resident_precision_folder(
     with pytest.raises(Exception):
         asyncio.run(
             inference._load_model_impl(
-                LoadRequest(model_path = _REPO), fastapi_request, current_subject = "user"
+                LoadRequest(model_path = _REPO, gguf_variant = requested),
+                fastapi_request,
+                current_subject = "user",
             )
         )
-    assert calls[:1] == [expected]
+    assert (calls[:1] == ["reuse"]) == (expected == "reuse")
 
 
 def test_a_caller_refused_the_cache_learns_nothing_from_it(monkeypatch, tmp_path):
@@ -586,3 +598,16 @@ def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as missing:
         asyncio.run(gguf_variants.get_gguf_variants_answer("org/absent", offline = True))
     assert missing.value.status_code == 404
+
+
+def test_the_resident_folder_survives_the_worker_hop():
+    from core.inference.orchestrator import _mirrored_model_entry
+
+    assert (
+        _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
+    )
+    worker = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text(
+        encoding = "utf-8"
+    )
+    projection = worker[worker.index('"gguf_variant",\n') :][:200]
+    assert '"precision_folder",' in projection

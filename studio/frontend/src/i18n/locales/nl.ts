@@ -2803,7 +2803,22 @@ export const nl = {
           "Zie direct wat andere apps naar de API van deze server sturen.",
         summary: "Live verzoeken, fouten en tokengebruik",
         status: "{active} actief · {recent} recent · {model}",
-        noModelLoaded: "geen model geladen",
+        noModelLoaded: "Geen model geladen",
+        memory: "Geheugen",
+        gpuInUse: "GPU in gebruik",
+        availableForModels: "Beschikbaar voor modellen",
+        refreshRate: "Verversingssnelheid",
+        refreshRateDescription: "Hoe vaak de zwevende monitor geheugen- en GPU-gebruik leest terwijl hij open is.",
+        refreshEvery: "Elke {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Andere apps",
+        otherInUse: "Overig in gebruik",
+        freeLabel: "Vrij",
+        unslothApp: "Unsloth-app",
+        unslothShare: "Aandeel van Unsloth tonen",
+        unslothShareDescription: "Verdeel het geheugen in wat Unsloth gebruikt, wat andere apps gebruiken en wat vrij is.",
+        modelBreakdown: "Uitsplitsen per model",
+        modelBreakdownDescription: "Verdeel het deel van Unsloth in de geheugenbalk over elk geladen model en de rest van de app.",
         autoOpen: "Zwevende monitor opent automatisch",
         autoOpenDescription:
           "Opent een klein paneel wanneer er API-verkeer binnenkomt.",
@@ -2820,8 +2835,7 @@ export const nl = {
         gpuUnusableDetail: "Gedetecteerd, maar PyTorch kan hem niet gebruiken",
         detailedView: "Gedetailleerde weergave",
         detailedViewDescription:
-          "CPU-belasting en per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
-        cpuLoad: "CPU-belasting",
+          "Per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
         gpuLoad: "GPU-belasting",
         temperature: "Temperatuur",
         power: "Vermogen",
@@ -2838,7 +2852,7 @@ export const nl = {
         detecting: "Zoeken naar GPU's...",
         unreadable: "Kan de hardware van deze server niet uitlezen.",
         noGpu:
-          "Geen zichtbare GPU gedetecteerd. Hierboven worden alleen CPU-bronnen getoond.",
+          "Geen aparte GPU gedetecteerd.",
         noUsableGpu:
           "Geen enkele GPU op deze machine is bruikbaar voor PyTorch.",
         mismatchCpuBuild:
@@ -2929,7 +2943,7 @@ export const nl = {
           "llama.cpp backend gguf inferentie inference cuda rocm hip vulkan metal cpu gpu versneller accelerator prebuilt wisselen engine aangepast pad map directory llama-server uitvoerbaar bestand binary",
       },
       modelMemory: {
-        title: "Modelgeheugen",
+        title: "Model laden",
         keepResident: "Model in GPU-geheugen houden",
         keepResidentDescription: "Tussen prompts in VRAM blijven.",
         keepResidentHint:
@@ -3128,7 +3142,7 @@ export const nl = {
       configurationDocs: "documentatie",
       configurationFlagsSuffix: "voor flags.",
       modelNote:
-        "Codex vereist een GGUF-model dat door llama-server wordt aangeboden. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
+        "Claude Code en Codex vereisen een GGUF-model dat door llama-server wordt aangeboden, of een MLX-model. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
       subagent: {
         title: "Een lokaal model als subagent gebruiken",
         description:
@@ -3205,6 +3219,8 @@ export const nl = {
     },
     chat: {
       groups: {
+        replies: { title: "Antwoorden" },
+        thinkingTools: { title: "Denken en tools" },
         conversations: {
           title: "Gesprekken",
         },
@@ -3303,11 +3319,20 @@ export const nl = {
         "Onder elk antwoord tonen wanneer het klaar was.",
       showReplyTimesKeywords:
         "tijdstempel tijd klok datum uur wanneer voltooid aangekomen antwoord reactie bericht timestamp time",
-      showGenerationDetails: "Generatiedetails",
+      showGenerationDetails: "Gedetailleerde snelheids- en laadinfo",
       showGenerationDetailsDescription:
-        "Live prompt- en antwoordsnelheden tonen met aantallen tokens, en waar de lagen van een model zijn geladen.",
+        "Voegt promptleessnelheid, tokenaantallen en conceptacceptatie toe aan de live weergaven en toont waar de lagen van een model zijn geladen.",
       showGenerationDetailsKeywords:
         "uitgebreid ontwikkelaar statistieken snelheid tok/s prefill decode lagen offload vram experts verbose developer stats speed layers",
+      generationStatsUpdates: "Snelheids- en contextstatistieken",
+      generationStatsUpdatesDescription:
+        "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",
+      generationStatsUpdatesHint:
+        "Realtime ververst de weergave van tokens per seconde onder een antwoord en de contextbalk boven in de chat een paar keer per seconde terwijl het antwoord wordt geschreven. Na afloop werkt ze één keer bij, als elk antwoord klaar is. Realtime kan vertraging of tragere prestaties veroorzaken, vooral op oudere of drukke computers.",
+      generationStatsUpdatesSettled: "Na afloop",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live bijwerken snelheid context statistieken realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
@@ -5643,6 +5668,7 @@ export const nl = {
     monitor: {
       dragHandleLabel:
         "De live monitor verplaatsen. Pijltoetsen verschuiven hem, dubbelklikken zet hem terug.",
+      resizeHint: "Sleep een zijkant of hoek om de breedte te wijzigen. Dubbelklik om te herstellen.",
       reconnecting: "Opnieuw verbinden...",
     },
   },

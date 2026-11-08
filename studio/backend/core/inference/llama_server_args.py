@@ -1716,10 +1716,17 @@ def _pageable_env_value(
 
 
 def force_pageable_load(
-    argv: Optional[Iterable[str]], env: Optional[dict] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[dict] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens."""
+    """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens.
+
+    ``auto_unmapped``: auto is none on this child, so an unset mode gets ``--load-mode mmap``."""
     tokens = [str(a) for a in (argv or [])]
+    if auto_unmapped and load_mode_left_auto(tokens, env):
+        return [*tokens, "--load-mode", "mmap"], ["auto, which is none on this GPU"]
     # Only RAM-reserving launches are rewritten; pageable dio or mmap keeps every token, mlock included.
     _mlock_now, _reserves_now = resolve_effective_memory_state(tokens, env)
     drop_shadowed_mlock = _reserves_now and not _mlock_now
@@ -1772,6 +1779,9 @@ def force_pageable_load(
             else:
                 env[name] = new_value
             overridden.append(name)
+    # Dropping none/--no-mmap leaves auto, which is none again here.
+    if overridden and auto_unmapped and load_mode_left_auto(out, env):
+        out.extend(["--load-mode", "mmap"])
     return out, overridden
 
 
@@ -1793,10 +1803,15 @@ _LOAD_MODE_RESERVING_VALUES = frozenset({"none", "mlock"})
 
 
 def resolve_effective_memory_state(
-    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[bool, bool]:
     """What the child runs with: env supplies defaults, argv overrides last-wins, as llama.cpp does."""
-    mlock, reserves_ram, _direct_io = resolve_effective_load_state(argv, env)
+    mlock, reserves_ram, _direct_io = resolve_effective_load_state(
+        argv, env, auto_unmapped = auto_unmapped
+    )
     return mlock, reserves_ram
 
 
@@ -1808,37 +1823,63 @@ def resolve_effective_direct_io(
 
 
 def resolve_effective_load_state(
-    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+    argv: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    auto_unmapped: bool = False,
 ) -> tuple[bool, bool, bool]:
     """``(mlock, reserves_ram, direct_io)``. Every branch that resolves the mode
-    assigns all three, so the DirectIO bit cannot fall out of step with the pair."""
+    assigns all three, so the DirectIO bit cannot fall out of step with the pair.
+
+    ``auto_unmapped``: a device lacks ``mmap_support`` (an iGPU), so ``auto`` is ``none``
+    (``load_tensors``), not mmap."""
+    mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
+    if auto and auto_unmapped:
+        return False, True, False
+    return mlock, reserves_ram, direct_io
+
+
+def load_mode_left_auto(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether nothing selects a mode other than ``auto``. Legacy flags count: only builds
+    without ``auto`` accept them."""
+    return _resolve_load_state(argv, env)[3]
+
+
+def _resolve_load_state(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[bool, bool, bool, bool]:
+    """``(mlock, reserves_ram, direct_io, auto)``, last selector wins, env before argv."""
     env = env or {}
     mlock = False
     reserves_ram = False
     direct_io = False
+    auto = True
     # Env vars run the flag's handler in registration order, so a later one overwrites the mode.
     if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
         # Either mode it can mean maps or buffers the weights; neither streams.
-        mlock, direct_io = True, False
+        mlock, direct_io, auto = True, False, False
     # LLAMA_ARG_NO_<NAME> present forces false whatever the value, and beats the affirmative var.
     _mmap_env = "0" if "LLAMA_ARG_NO_MMAP" in env else str(env.get("LLAMA_ARG_MMAP", ""))
     _mmap_env = _mmap_env.strip().lower()
     if _mmap_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram, direct_io = False, False, False
+        mlock, reserves_ram, direct_io, auto = False, False, False, False
     elif _mmap_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram, direct_io = False, True, False
+        mlock, reserves_ram, direct_io, auto = False, True, False, False
     # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
     _dio_env = "0" if "LLAMA_ARG_NO_DIO" in env else str(env.get("LLAMA_ARG_DIO", ""))
     _dio_env = _dio_env.strip().lower()
     if _dio_env in _ENV_TRUE_VALUES:
-        mlock, reserves_ram, direct_io = False, False, True
+        mlock, reserves_ram, direct_io, auto = False, False, True, False
     elif _dio_env in _ENV_FALSE_VALUES:
-        mlock, reserves_ram, direct_io = False, True, False
+        mlock, reserves_ram, direct_io, auto = False, True, False, False
     _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
     if _mode_env:
         mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
         reserves_ram = _mode_env in _LOAD_MODE_RESERVING_VALUES
         direct_io = _mode_env == "dio"
+        auto = _mode_env == "auto"
 
     tokens = [str(a) for a in (argv or [])]
     i, n = 0, len(tokens)
@@ -1850,30 +1891,34 @@ def resolve_effective_load_state(
             continue
         if flag in _MLOCK_FLAGS:
             # Only the mlock bit matters: mlock and mmap+mlock both replace an earlier DirectIO mode.
-            mlock, direct_io = True, False
+            mlock, direct_io, auto = True, False, False
             i += 1
         elif flag in _NO_MMAP_FLAGS:
             # --no-mmap resets the whole mode, clearing an earlier --mlock.
             mlock = False
             reserves_ram = True
             direct_io = False
+            auto = False
             i += 1
         elif flag in _DIO_ON_FLAGS:
             # Deprecated load-mode selector resets the mode, dropping mlock; DirectIO holds no full host copy.
             mlock = False
             reserves_ram = False
             direct_io = True
+            auto = False
             i += 1
         elif flag in _DIO_OFF_FLAGS:
             # Not plain mmap: upstream maps these to mode `none` (full host buffer).
             mlock = False
             reserves_ram = True
             direct_io = False
+            auto = False
             i += 1
         elif flag == "--mmap":
             mlock = False
             reserves_ram = False
             direct_io = False
+            auto = False
             i += 1
         elif flag in _LOAD_MODE_FLAGS:
             if "=" in tok:
@@ -1887,10 +1932,11 @@ def resolve_effective_load_state(
                 mlock = value in _LOAD_MODE_MLOCK_VALUES
                 reserves_ram = value in _LOAD_MODE_RESERVING_VALUES
                 direct_io = value == "dio"
+                auto = value == "auto"
             i += step
         else:
             i += 1
-    return mlock, reserves_ram, direct_io
+    return mlock, reserves_ram, direct_io, auto
 
 
 def memory_state_satisfies_settings(

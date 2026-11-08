@@ -106,7 +106,7 @@ test("a closing dialog gives up focus when its exit animation starts", () => {
 test("the side pane sits under the same modal cover as the thread", () => {
   const css = readSrc("index.css");
   const selector =
-    'body[style*="pointer-events: none"] .chat-artifact-pop-surface .side-pane-lock-cover::after';
+    "[data-modal-lock-region] .chat-artifact-pop-surface .side-pane-lock-cover::after,\n\t[data-modal-lock-region].chat-artifact-pop-surface .side-pane-lock-cover::after";
   const cover = rule(css, selector);
   // will-change: its own layer, or Chromium's compositor scrolls the pane's scroller under it.
   for (const declaration of ['content: "";', "position: absolute;", "inset: 0;", "pointer-events: auto;", "will-change: transform;"]) {
@@ -116,8 +116,8 @@ test("the side pane sits under the same modal cover as the thread", () => {
   assert.ok(z > 0 && z < 50, `cover z-index ${z} must sit under the z-50 portaled layers`);
   // The shown pane opts out of the body lock, which is why it needs the cover.
   assert.match(rule(css, '.chat-artifact-pop-surface[data-artifact-surface-visible="true"]'), /pointer-events: auto;/);
-  // Keyed on a static class on the pane roots, which also position the cover: an attribute or :is()
-  // subject here made every lock toggle restyle the thread (gate: 120 ms at 200 turns).
+  // Keyed on a static class on the pane roots, which also position the cover: an :is() subject
+  // here made every lock toggle restyle the thread (gate: 120 ms at 200 turns).
   assert.match(readSrc("features/browser/browser-panel.tsx"), /"side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden/);
   assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /"relative flex min-h-0 flex-col[\s\S]{0,120}variant === "panel" && "side-pane-lock-cover"/);
 });
@@ -125,15 +125,17 @@ test("the side pane sits under the same modal cover as the thread", () => {
 test("pointer-events-auto restorations go inert in a lower modal layer, not in the page", () => {
   const css = readSrc("index.css");
   const lower =
-    ':is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *)';
+    ':is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[data-modal-lock-lower] .pointer-events-auto:not([data-radix-popper-content-wrapper] *)';
   assert.match(rule(css, lower), /pointer-events: none !important;/);
   // The Skills rows (the confirmed case) restore pointer-events with exactly this class.
   assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
   // No page-wide rule: dialogs portaled into the page (Recipe Studio) host live comboboxes there.
   assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
-  // Page restorations (toolbars, the Downloads card) go inert under the body lock, with one rule.
-  const page =
-    'body[style*="pointer-events: none"] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
+  // Page restorations (toolbars, the Downloads card) go inert under the body lock, with one rule:
+  // inside a page region, or on a region root or a thread root's ancestor itself.
+  const not =
+    ':not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
+  const page = `[data-modal-lock-region] :is(.pointer-events-auto, .sidebar-row-action)${not},\n\t:is([data-modal-lock-region], [data-modal-lock-path]):is(.pointer-events-auto, .sidebar-row-action)${not}`;
   assert.match(rule(css, page), /pointer-events: none !important;/);
   assert.match(readSrc("features/hub/download-manager/download-manager-panel.tsx"), /"hub-download-panel pointer-events-auto /);
   // What is meant to work over a modal stays live.

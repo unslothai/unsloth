@@ -9,6 +9,7 @@ import {
   UNIVERSAL_AGENT,
   agentRunsOnActiveModel,
   fallbackAgent,
+  pickAgentVariant,
   pickCompatibleAgent,
   resolveGgufCompatibility,
   statusGgufVerdict,
@@ -289,6 +290,15 @@ test("a server that names what it holds still decides", () => {
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", undefined), null);
 });
 
+test("an MLX model runs Claude Code and Codex like a GGUF", () => {
+  const mlx = statusGgufVerdict("mlx-community/Qwen3-4B-4bit", false, true);
+  assert.equal(mlx, true);
+  assert.equal(pickCompatibleAgent([], "claude", mlx as boolean, VISIBLE_AGENTS), null);
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, undefined), false);
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, false), false);
+  assert.equal(statusGgufVerdict(null, false, true), null);
+});
+
 test("a verdict about one model never gates a different one", () => {
   // Status and catalog polls run on separate timers, so a swap can reach one first.
   assert.equal(
@@ -391,5 +401,39 @@ test("an answer about the model on screen still decides, and the server wins", (
       "unsloth/X-GGUF",
     ),
     true,
+  );
+});
+
+test("a root-loaded MLX resident keeps its root checkpoint instead of a folder", () => {
+  const folders = new Set(["2-bit", "4bit"]);
+  const choice = {
+    remembered: null,
+    preferred: "2-bit",
+    defaultVariant: "4bit",
+    first: "2-bit",
+    keepRoot: true,
+  };
+  assert.equal(pickAgentVariant(folders, choice), null);
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, remembered: "4bit" }),
+    "4bit",
+  );
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, keepRoot: false }),
+    "2-bit",
+  );
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, keepRoot: false, preferred: null }),
+    "4bit",
+  );
+  assert.equal(
+    pickAgentVariant(new Set(["Q8_0"]), {
+      ...choice,
+      keepRoot: false,
+      preferred: null,
+      defaultVariant: null,
+      first: "Q8_0",
+    }),
+    "Q8_0",
   );
 });

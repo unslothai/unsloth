@@ -92,7 +92,7 @@ test("the Seed field has Random and Reuse last seed buttons", () => {
   );
   assert.match(
     page,
-    /const runSeed = lastSeedOf\(res\.images\);\n\s+if \(runSeed !== null\) setSessionSeed\(runSeed\);/,
+    /const runSeed = lastSeedOf\(res\.images\);[\s\S]{0,300}if \(runSeed !== null && runAt >= sessionSeedAt\.current\) \{[\s\S]{0,120}setSessionSeed\(runSeed\);/,
   );
   assert.match(page, /<Shuffle className="size-4" strokeWidth=\{1\.5\} \/>/);
   assert.match(page, /<HugeiconsIcon icon=\{HistoryIcon\} className="size-4" strokeWidth=\{1\.5\} \/>/);
@@ -179,7 +179,7 @@ test("a run whose response was lost still becomes the seed Reuse last seed picks
   assert.match(page, /seed: runBaseSeed,/);
   assert.match(
     page,
-    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\((?:compare\?\.sentSeed\(i\) \?\? )?runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
+    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external && gainedAt >= sessionSeedAt\.current\) \{[\s\S]{0,120}setSessionSeed\(compare\?\.sentSeed\(i\) \?\? runBaseSeed\);\n\s+\}\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
   );
 });
 

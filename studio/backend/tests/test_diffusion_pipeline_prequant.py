@@ -13,6 +13,12 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
+
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod
 from core.inference import diffusion_transformer_quant as tqmod
@@ -201,6 +207,7 @@ def _plan_backend(
     return backend
 
 
+@needs_torchao
 def test_the_plan_counts_and_stages_the_hosted_checkpoint(monkeypatch, hub):
     backend = _plan_backend(monkeypatch, planned = "fp8")
     plan = backend.download_plan(Z_IMAGE_REPO, model_kind = "pipeline")
@@ -235,6 +242,7 @@ def test_a_declined_plan_keeps_the_released_shards(monkeypatch, hub):
     assert all(shard in entries[Z_IMAGE_REPO]["files"] for shard in DENOISER_SHARDS)
 
 
+@needs_torchao
 def test_the_artifact_carries_the_denoiser_share_of_the_unified_memory_verdict(monkeypatch, hub):
     """The unified-memory refusal prices the denoiser from the artifact, not the dropped shards."""
     backend = _plan_backend(monkeypatch, planned = "fp8")
@@ -1963,6 +1971,7 @@ def test_a_large_variant_of_a_small_dit_family_quantises_under_auto(fake_runtime
     assert spy.quantised == ["auto"]
 
 
+@needs_torchao
 @pytest.mark.parametrize("shared_repo", [False, True])
 def test_denoiser_is_a_checkpoint_and_encoder_only_is_an_asset(monkeypatch, hub, shared_repo):
     backend = _plan_backend(monkeypatch, planned = "fp8")

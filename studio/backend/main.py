@@ -61,6 +61,7 @@ if sys.platform == "win32":
 _SYSTEM_GPU_CACHE_TTL_SECONDS = 10.0
 _system_gpu_cache_lock = threading.Lock()
 _system_gpu_cache: Optional[tuple[float, tuple[dict[str, Any], dict[str, Any]]]] = None
+_system_gpu_probe_s = 0.0
 
 _CPU_PERCENT_MIN_WINDOW_S = 1.0
 _cpu_percent_lock = threading.Lock()
@@ -100,6 +101,48 @@ def _cpu_usage_percent() -> float:
 _prime_cpu_percent()
 
 
+_PACKAGE_VERSIONS_TTL_S = 60.0
+_package_versions_cache: Optional[tuple] = None
+
+
+def _ml_package_versions(read: Any, not_found: type) -> dict:
+    global _package_versions_cache
+    now = time.monotonic()
+    cached = _package_versions_cache
+    if cached is not None and cached[1] is read and now - cached[0] < _PACKAGE_VERSIONS_TTL_S:
+        return dict(cached[2])
+    packages = {}
+    for pkg in ("torch", "transformers", "mlx_lm", "mlx_vlm"):
+        try:
+            packages[pkg] = read(pkg)
+        except not_found:
+            pass
+        except Exception as e:
+            logger.debug(f"Failed to read {pkg} version: {e}")
+    _package_versions_cache = (now, read, packages)
+    return dict(packages)
+
+
+# Off Linux psutil scans every process to find children; reuse the set briefly.
+_DESCENDANTS_TTL_S = 5.0
+_descendants_cache: dict = {}
+
+
+def _cached_descendants(process: Any) -> list:
+    import psutil
+
+    if not isinstance(process, psutil.Process):
+        return process.children(recursive = True)
+    now = time.monotonic()
+    cached = _descendants_cache.get(process.pid)
+    if cached is not None and now - cached[0] < _DESCENDANTS_TTL_S:
+        return cached[1]
+    children = process.children(recursive = True)
+    _descendants_cache.clear()
+    _descendants_cache[process.pid] = (now, children)
+    return children
+
+
 def _process_tree_rss_mb(process: Any) -> int:
     """RSS of this process and its children (llama-server, the training worker), best effort."""
     import psutil
@@ -121,7 +164,7 @@ def _process_tree_rss_mb(process: Any) -> int:
                     continue
     if children is None:
         try:
-            children = process.children(recursive = True)
+            children = _cached_descendants(process)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             children = []
     for child in children:
@@ -1721,6 +1764,35 @@ async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     await send({"type": "http.response.body", "body": payload, "more_body": False})
 
 
+_ZSTD_BODY_PATH = "/v1/systemone"
+_ZSTD_MIN_DECODED_BYTES = 8 * 1024 * 1024
+_ZSTD_MAX_RATIO = 64
+_ZSTD_MAX_FRAMES = 1024
+
+
+def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
+    view = memoryview(data)
+    frames = []
+    total = 0
+    pos = 0
+    while True:
+        if len(frames) == _ZSTD_MAX_FRAMES:
+            raise zstd.ZstdError("too many zstd frames")
+        # Slice by get_frame_size, not unused_data: that copies the rest per frame (quadratic).
+        end = pos + zstd.get_frame_size(view[pos:])
+        decompressor = zstd.ZstdDecompressor()
+        frame = decompressor.decompress(view[pos:end], max_length = limit + 1 - total)
+        total += len(frame)
+        if total > limit:
+            return None
+        if not decompressor.eof:
+            raise zstd.ZstdError("truncated zstd frame")
+        frames.append(frame)
+        pos = end
+        if pos == len(data):
+            return b"".join(frames)
+
+
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
@@ -1845,6 +1917,49 @@ class MaxBodyMiddleware:
             if not msg.get("more_body", False):
                 break
 
+        body = b"".join(chunks)
+        headers = scope.get("headers", [])
+        if (
+            path.rstrip("/") == _ZSTD_BODY_PATH
+            and dict(headers).get(b"content-encoding", b"").strip().lower() == b"zstd"
+        ):
+            try:
+                from compression import zstd  # novermin
+            except ImportError:
+                try:
+                    from backports import zstd
+                except ImportError:
+                    await JSONResponse(
+                        {
+                            "detail": "zstd request bodies need Python 3.14 or the backports.zstd package."
+                        },
+                        status_code = 415,
+                    )(scope, receive, send)
+                    return
+            limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
+            try:
+                body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
+            except zstd.ZstdError:
+                await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
+                    scope, receive, send
+                )
+                return
+            if body is None:
+                await JSONResponse(
+                    {"detail": f"Decoded zstd request body is larger than {limit:,} bytes."},
+                    status_code = 413,
+                )(scope, receive, send)
+                return
+            scope = dict(
+                scope,
+                headers = [
+                    (name, value)
+                    for name, value in headers
+                    if name not in (b"content-encoding", b"content-length")
+                ]
+                + [(b"content-length", str(len(body)).encode("ascii"))],
+            )
+
         replayed = {"sent": False}
 
         async def replay_receive():
@@ -1852,7 +1967,7 @@ class MaxBodyMiddleware:
                 replayed["sent"] = True
                 return {
                     "type": "http.request",
-                    "body": b"".join(chunks),
+                    "body": body,
                     "more_body": False,
                 }
             # After replay, fall through so http.disconnect still propagates.
@@ -2469,8 +2584,52 @@ def _schedule_shutdown(request: Request) -> dict:
     return {"status": "shutting_down"}
 
 
+_SYSTEM_GPU_MIN_AGE_SECONDS = 1.0
+# Slow probes (about 1.5 s on Windows ROCm) space fast polls out.
+_SYSTEM_GPU_PROBE_SPACING = 4.0
+
+
+def _system_gpu_max_age_s(requested: Optional[float]) -> float:
+    if requested is None or not isinstance(requested, (int, float)) or requested != requested:
+        return _SYSTEM_GPU_CACHE_TTL_SECONDS
+    return min(_SYSTEM_GPU_CACHE_TTL_SECONDS, max(_SYSTEM_GPU_MIN_AGE_SECONDS, float(requested)))
+
+
+_gguf_pin_support_cache: Optional[tuple[float, tuple[bool, bool]]] = None
+
+
+def _gguf_pin_support(logger, refresh: bool = False) -> tuple[bool, bool]:
+    """(llama.cpp uses Vulkan, gpu_ids can be pinned)."""
+    global _gguf_pin_support_cache
+    now = time.monotonic()
+    cached = _gguf_pin_support_cache
+    if not refresh and cached is not None and now - cached[0] < _SYSTEM_GPU_CACHE_TTL_SECONDS:
+        return cached[1]
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        from utils.hardware import DeviceType, get_device
+
+        llama_uses_vulkan = LlamaCppBackend._is_vulkan_backend()
+        if llama_uses_vulkan:
+            # Vulkan ordinals live in another namespace; a failed probe must not expose torch indices.
+            gpu_ids_supported = False
+        else:
+            # XPU pins are unsafe across Level Zero FLAT/COMPOSITE; CPU-only llama.cpp cannot pin.
+            gpu_ids_supported = (
+                get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
+            )
+    except Exception as e:
+        logger.debug(f"Could not resolve gpu_ids support: {e}")
+        return False, True
+    _gguf_pin_support_cache = (now, (llama_uses_vulkan, gpu_ids_supported))
+    return llama_uses_vulkan, gpu_ids_supported
+
+
 def _get_cached_system_gpu_info(
-    logger, *, refresh_memory: bool = False
+    logger,
+    *,
+    refresh_memory: bool = False,
+    max_age_s: float = _SYSTEM_GPU_CACHE_TTL_SECONDS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return training and inference GPU info with bounded live-probe churn."""
     import contextlib
@@ -2486,12 +2645,21 @@ def _get_cached_system_gpu_info(
         gpu_query,
     )
 
-    global _system_gpu_cache
-    now = time.monotonic()
+    global _system_gpu_cache, _system_gpu_probe_s
     with _system_gpu_cache_lock:
+        now = time.monotonic()
+        max_age_s = min(
+            _SYSTEM_GPU_CACHE_TTL_SECONDS,
+            max(max_age_s, _SYSTEM_GPU_PROBE_SPACING * _system_gpu_probe_s),
+        )
+        within_window = (
+            not refresh_memory
+            and _system_gpu_cache is not None
+            and now - _system_gpu_cache[0] < _SYSTEM_GPU_CACHE_TTL_SECONDS
+        )
         if not refresh_memory and _system_gpu_cache is not None:
             cached_at, cached_gpu_info = _system_gpu_cache
-            if now - cached_at < _SYSTEM_GPU_CACHE_TTL_SECONDS:
+            if now - cached_at < max_age_s:
                 return cached_gpu_info
 
         try:
@@ -2555,23 +2723,7 @@ def _get_cached_system_gpu_info(
             d.get("index") for d in utilization_info.get("devices", [])
         } == {d.get("index") for d in enriched_devices}
 
-        try:
-            from core.inference.llama_cpp import LlamaCppBackend
-            from utils.hardware import DeviceType, get_device
-
-            llama_uses_vulkan = LlamaCppBackend._is_vulkan_backend()
-            if llama_uses_vulkan:
-                # Vulkan ordinals live in another namespace; a failed probe must not expose torch indices.
-                gpu_ids_supported = False
-            else:
-                # XPU pins are unsafe across Level Zero FLAT/COMPOSITE; CPU-only llama.cpp cannot pin.
-                gpu_ids_supported = (
-                    get_device() != DeviceType.XPU and not LlamaCppBackend._backend_lacks_gpu_lib()
-                )
-        except Exception as e:
-            logger.debug(f"Could not resolve gpu_ids support: {e}")
-            llama_uses_vulkan = False
-            gpu_ids_supported = True
+        llama_uses_vulkan, gpu_ids_supported = _gguf_pin_support(logger, refresh = not within_window)
         # physical_devices and mismatch hold GPUs the OS sees but PyTorch cannot open; devices is usable.
         gpu_info = {
             **visibility_info,
@@ -2622,6 +2774,7 @@ def _get_cached_system_gpu_info(
 
         combined_info = (gpu_info, inference_gpu_info)
         _system_gpu_cache = (time.monotonic(), combined_info)
+        _system_gpu_probe_s = _system_gpu_cache[0] - now
         return combined_info
 
 
@@ -2681,10 +2834,22 @@ def _refresh_dense_quant_capability() -> bool:
     return _dense_quant_capability
 
 
+_DENSE_QUANT_REPROBE_S = 5.0
+_dense_quant_probed_at: Optional[float] = None
+
+
 def _dense_quant_supported() -> bool:
     """Reads only already-loaded state: importing torch or torchao on this polled route stalls the GIL."""
+    global _dense_quant_probed_at
     if "torch" in sys.modules and "torchao" in sys.modules:
-        return _refresh_dense_quant_capability()
+        now = time.monotonic()
+        if (
+            _dense_quant_capability is None
+            or _dense_quant_probed_at is None
+            or now - _dense_quant_probed_at >= _DENSE_QUANT_REPROBE_S
+        ):
+            _dense_quant_probed_at = now
+            return _refresh_dense_quant_capability()
     return bool(_dense_quant_capability)
 
 
@@ -2789,6 +2954,7 @@ def _dense_quant_schemes() -> list[str]:
 def get_system_info(
     current_subject: str = Depends(get_current_subject),
     refresh_memory: bool = False,
+    gpu_max_age: Optional[float] = None,
     probe_media: bool = False,
 ):
     """Get system information.
@@ -2829,7 +2995,9 @@ def get_system_info(
                     logger.debug("quantised streaming capability unavailable: %s", exc)
 
     gpu_info, inference_gpu_info = _get_cached_system_gpu_info(
-        logger, refresh_memory = refresh_memory
+        logger,
+        refresh_memory = refresh_memory,
+        **({} if gpu_max_age is None else {"max_age_s": _system_gpu_max_age_s(gpu_max_age)}),
     )
 
     memory = psutil.virtual_memory()
@@ -2894,14 +3062,7 @@ def get_system_info(
     # Read versions from metadata so a 3s poll never imports heavy ML libs (or 500s on their import errors).
     from importlib.metadata import PackageNotFoundError, version as pkg_version
 
-    ml_packages = {}
-    for pkg in ("torch", "transformers", "mlx_lm", "mlx_vlm"):
-        try:
-            ml_packages[pkg] = pkg_version(pkg)
-        except PackageNotFoundError:
-            pass
-        except Exception as e:
-            logger.debug(f"Failed to read {pkg} version: {e}")
+    ml_packages = _ml_package_versions(pkg_version, PackageNotFoundError)
 
     return {
         "memory_refreshed": refresh_memory,

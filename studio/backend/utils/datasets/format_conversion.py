@@ -4,6 +4,7 @@
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
 import contextvars
+import functools
 import os
 
 from .cells import cell_text
@@ -460,6 +461,33 @@ def _fetch_row_image(url):
     return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
+def _settle_in_order(rows, task, record, num_workers):
+    """Calls ``record(row, future)`` in row order; ``future`` runs ``task(row)`` on a pool (None if serial or ``task`` gives None)."""
+    if num_workers <= 1:
+        for row in rows:
+            record(row, None)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Settling here keeps output, random caption picks and the first-failure log as serial; 2x workers bounds images held.
+    pending = deque()
+    with ThreadPoolExecutor(max_workers = num_workers) as executor:
+        try:
+            for row in rows:
+                fn = task(row)
+                # A fresh context copy per task: it sees the caller's account / HF cache settings.
+                future = None if fn is None else executor.submit(contextvars.copy_context().run, fn)
+                pending.append((row, future))
+                if len(pending) > 2 * num_workers:
+                    record(*pending.popleft())
+            while pending:
+                record(*pending.popleft())
+        except BaseException:
+            executor.shutdown(wait = False, cancel_futures = True)
+            raise
+
+
 def _non_null_rows(dataset, column):
     """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
     try:
@@ -523,8 +551,20 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
+    def _fetch_repo_image(name):
+        from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        local_path = hf_hub_download(
+            dataset_name,
+            _image_lookup[name],
+            repo_type = "dataset",
+            cache_dir = active_hf_hub_cache(),
+        )
+        return Image.open(local_path).convert("RGB")
+
     def _convert_single_sample(sample, fetched = None):
-        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's or repo file's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -532,16 +572,7 @@ def convert_to_vlm_format(
                 image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
-                from huggingface_hub import hf_hub_download
-                from utils.hf_cache_settings import active_hf_hub_cache
-
-                local_path = hf_hub_download(
-                    dataset_name,
-                    _image_lookup[image_data],
-                    repo_type = "dataset",
-                    cache_dir = active_hf_hub_cache(),
-                )
-                image_data = Image.open(local_path).convert("RGB")
+                image_data = fetched if fetched is not None else _fetch_repo_image(image_data)
             else:
                 image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
         elif image_data is None:
@@ -772,15 +803,34 @@ def convert_to_vlm_format(
             unit = "sample",
             **_quiet_bar_kwargs(),
         )
-        for sample in pbar:
+
+        def _record(sample, future = None):
+            nonlocal failed_count
             try:
-                converted_list.append(_convert_single_sample(sample))
+                fetched = future.result() if future is not None else None
+                converted_list.append(_convert_single_sample(sample, fetched))
             except Exception as e:
                 failed_count += 1
                 if failed_count == 1:
                     logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-        pbar.close()
+
+        from utils.hardware import safe_thread_num_proc
+
+        num_workers = (
+            min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS) if _image_lookup is not None else 1
+        )
+
+        def _repo_fetch(sample):
+            name = sample[image_column]
+            if isinstance(name, str) and name in _image_lookup:
+                return functools.partial(_fetch_repo_image, name)
+            return None
+
+        try:
+            _settle_in_order(pbar, _repo_fetch, _record, num_workers)
+        finally:
+            pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
@@ -841,6 +891,227 @@ def convert_to_vlm_format(
     _notify(f"Converted {len(converted_list):,}/{total:,} images successfully")
 
     return converted_list
+
+
+class _HubClips:
+    """Repo-relative clip names of a Hub dataset, resolved by download the way bare image filenames are."""
+
+    def __init__(
+        self,
+        dataset_name,
+        revision = None,
+    ):
+        self.repo, self.revision, self.files, self.listed = dataset_name, revision, None, False
+        if (
+            not isinstance(dataset_name, str)
+            or dataset_name.count("/") != 1
+            or os.path.exists(dataset_name)
+        ):
+            self.repo = None
+
+    def resolve(self, path):
+        if self.repo is None or os.path.exists(path) or "://" in path or os.path.isabs(path):
+            return None
+        if self.files is None:
+            from huggingface_hub import HfApi
+
+            from .format_detection import _VIDEO_EXTENSIONS
+
+            self.files, ambiguous = {}, {}
+            try:
+                repo_files = HfApi().list_repo_files(
+                    self.repo, repo_type = "dataset", revision = self.revision
+                )
+                self.listed = True
+            except Exception as e:  # noqa: BLE001 -- not a Hub repo or offline: paths stay local
+                logger.info(f"Could not list {self.repo} to resolve video filenames: {e}")
+                repo_files = []
+            for f in repo_files:
+                if f.lower().endswith(_VIDEO_EXTENSIONS + (".webm",)):
+                    ambiguous.setdefault(os.path.basename(f), []).append(f)
+            for f in repo_files:
+                if f.lower().endswith(_VIDEO_EXTENSIONS + (".webm",)):
+                    name = os.path.basename(f)
+                    # A name in several folders resolves to its list, refused below: one copy is a guess.
+                    self.files.setdefault(name, f if len(ambiguous[name]) == 1 else ambiguous[name])
+                    self.files[f] = f
+        from huggingface_hub import hf_hub_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        if path not in self.files:
+            if self.listed:
+                return None
+            # Offline: an exact repo path may still be in the cache.
+            try:
+                return hf_hub_download(
+                    self.repo,
+                    path,
+                    repo_type = "dataset",
+                    revision = self.revision,
+                    cache_dir = active_hf_hub_cache(),
+                    local_files_only = True,
+                )
+            except Exception:  # noqa: BLE001 -- not cached: the path stays local
+                return None
+        if isinstance(self.files[path], list):
+            raise ValueError(
+                f"Video '{path}' matches several files in {self.repo} ({', '.join(self.files[path])}); "
+                "use the repo-relative path."
+            )
+        return hf_hub_download(
+            self.repo,
+            self.files[path],
+            repo_type = "dataset",
+            revision = self.revision,
+            cache_dir = active_hf_hub_cache(),
+        )
+
+
+def _own_video_part(
+    video,
+    account,
+    hub = None,
+):
+    from .format_detection import encoded_video
+
+    video = encoded_video(video)
+    embedded = isinstance(video, dict) and bool(video.get("bytes"))
+    if isinstance(video, dict):
+        video = video.get("path")
+    # Before any stat: probing a UNC path can already contact the share.
+    if isinstance(video, str) and is_network_share(video) and not private_sources_allowed():
+        raise OSError(
+            f"Refusing a video path on a network share: {video}. "
+            "Set UNSLOTH_ALLOW_PRIVATE_URL_FETCH=1 to load videos from shares you trust."
+        )
+    # An embedded clip's path is often just its original filename, with no file behind it.
+    if embedded and not (isinstance(video, str) and os.path.isfile(video)):
+        resolved = (
+            hub.resolve(video)
+            if hub is not None and isinstance(video, str) and video.strip()
+            else None
+        )
+        if resolved is not None:
+            return resolved
+        raise ValueError(
+            "A video is stored as embedded bytes with no readable file path; training reads clips from "
+            "files, so save the clips to files and point the column at their paths."
+        )
+    if not isinstance(video, str) or not video.strip():
+        raise ValueError("Row has no video")
+    if video.strip().lower().startswith(("http://", "https://")):
+        # The collator would fetch it unguarded; the image fetchers' 64 MB cap does not fit clips.
+        raise ValueError(
+            f"Remote video URLs are not fetched for training: {video}. "
+            "Download the clips and point the column at local files or a Hub dataset."
+        )
+    resolved = hub.resolve(video) if hub is not None else None
+    if resolved is not None:
+        return resolved
+    return _own_image_path(video, account)
+
+
+def own_message_videos(
+    rows,
+    dataset_name = None,
+    dataset_revision = None,
+):
+    """VLM messages rows as a list, every video path checked like an image path."""
+    from utils.account_context import current_account
+    from .format_detection import video_parts
+
+    account = current_account()
+    hub = _HubClips(dataset_name, dataset_revision)
+    rows = [row for row in rows]
+    for row in rows:
+        if not isinstance(row.get("messages"), list):
+            continue
+        for message in row["messages"]:
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                continue
+            # Arrow fills absent keys with None; templates and the collator read key presence.
+            content[:] = [
+                {k: v for k, v in part.items() if v is not None} if isinstance(part, dict) else part
+                for part in content
+            ]
+        for part in video_parts(row["messages"]):
+            part["video"] = _own_video_part(part["video"], account, hub)
+    return rows
+
+
+def convert_video_to_vlm_format(
+    dataset,
+    video_column,
+    text_column,
+    question_column = None,
+    instruction = None,
+    video_columns = None,
+    dataset_name = None,
+    dataset_revision = None,
+):
+    """Flat video + text rows to VLM messages; clips stay paths for the collator to decode."""
+    from utils.account_context import current_account
+
+    from .format_detection import _holds_images, _is_image_value
+
+    account = current_account()
+    hub = _HubClips(dataset_name, dataset_revision)
+    answer_feature = (getattr(dataset, "features", None) or {}).get(text_column)
+    as_label = getattr(answer_feature, "int2str", None)
+    default_instruction = instruction or "Describe this video."
+    converted = []
+    for row in dataset:
+        answer = row.get(text_column)
+        clip_columns = video_columns or [video_column]
+        # Detection probes a few rows; an image further down would otherwise be dropped silently.
+        images = [
+            c
+            for c, v in row.items()
+            if c not in clip_columns and (_is_image_value(v) or _holds_images(v))
+        ]
+        if images:
+            raise ValueError(
+                f"Rows mix video with image columns {images}; video conversion would drop the images, "
+                "so remove those columns or split the dataset."
+            )
+        clips = [
+            row[c]
+            for c in clip_columns
+            if row.get(c) is not None and not (isinstance(row[c], str) and not row[c].strip())
+        ]
+        if not clips or answer is None or not str(answer).strip():
+            continue
+        answer = as_label(answer) if as_label and isinstance(answer, int) else str(answer)
+        question = row.get(question_column) if question_column else None
+        if not isinstance(question, str) or not question.strip():
+            question = default_instruction
+        converted.append(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            *(
+                                {"type": "video", "video": _own_video_part(clip, account, hub)}
+                                for clip in clips
+                            ),
+                            {"type": "text", "text": question},
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+                ]
+            }
+        )
+    if not converted:
+        raise ValueError(
+            f"No rows have both a video in '{video_column}' and text in '{text_column}'"
+        )
+    skipped = len(dataset) - len(converted) if hasattr(dataset, "__len__") else 0
+    if skipped:
+        logger.info(f"Skipping {skipped} rows without a video or text")
+    return converted
 
 
 def convert_sharegpt_with_images_to_vlm_format(
@@ -999,20 +1270,17 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    def _record(future_or_sample):
+    def _record(sample, future):
         nonlocal failed_count
         try:
-            if isinstance(future_or_sample, Future):
-                converted_list.append(future_or_sample.result())
-            else:
-                converted_list.append(_convert_single_sample(future_or_sample))
+            converted_list.append(
+                future.result() if future is not None else _convert_single_sample(sample)
+            )
         except Exception as e:
             failed_count += 1
             if failed_count == 1:
                 logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
         pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-
-    from concurrent.futures import Future
 
     num_workers = 1
     if _image_lookup is not None or (
@@ -1029,31 +1297,12 @@ def convert_sharegpt_with_images_to_vlm_format(
         **_quiet_bar_kwargs(),
     )
     try:
-        if num_workers <= 1:
-            for sample in pbar:
-                _record(sample)
-        else:
-            from collections import deque
-            from concurrent.futures import ThreadPoolExecutor
-
-            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
-            pending = deque()
-            with ThreadPoolExecutor(max_workers = num_workers) as executor:
-                try:
-                    for sample in pbar:
-                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
-                        pending.append(
-                            executor.submit(
-                                contextvars.copy_context().run, _convert_single_sample, sample
-                            )
-                        )
-                        if len(pending) > 2 * num_workers:
-                            _record(pending.popleft())
-                    while pending:
-                        _record(pending.popleft())
-                except BaseException:
-                    executor.shutdown(wait = False, cancel_futures = True)
-                    raise
+        _settle_in_order(
+            pbar,
+            lambda sample: functools.partial(_convert_single_sample, sample),
+            _record,
+            num_workers,
+        )
     finally:
         pbar.close()
 
