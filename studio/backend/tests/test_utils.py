@@ -91,7 +91,8 @@ class TestGetDevice:
 
     @needs_torch
     def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
-        # failed CUDA initialization can crash later, so log its cause at error rather than debug
+        # a failed device-0 probe can mean a broken CUDA setup that crashes later, so log its cause at
+        # error rather than debug. The NVIDIA name comes from the driver query (no CUDA init here).
         monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
         monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
         monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")
@@ -102,7 +103,7 @@ class TestGetDevice:
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
             patch("torch.cuda.device_count", return_value = 1),
-            patch("torch.cuda.get_device_properties", side_effect = error),
+            patch("utils.hardware.nvidia.get_cuda_device_info", side_effect = error),
             patch.object(_hw_module, "logger") as logger,
         ):
             assert _reset_and_detect() == DeviceType.CUDA

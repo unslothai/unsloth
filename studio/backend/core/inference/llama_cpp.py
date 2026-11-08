@@ -12487,6 +12487,29 @@ class LlamaCppBackend:
         """True if the integrated-CUDA answer is cached for this mask; the preflight never probes, since the budget is already taken and both arms fill the cache."""
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
+    # nvidia.get_cuda_device_info() per visibility mask, a definite answer only; shared by the two lookups below.
+    _CUDA_DEVICE_INFO: dict[tuple, list[tuple[str, bool, int, str]]] = {}
+
+    @staticmethod
+    def _cuda_device_info():
+        """(bus id, integrated, total bytes, name) per CUDA ordinal, from the driver API in a child process;
+        None for an ordinal that did not answer.
+
+        Never torch.cuda.get_device_properties: that initialises CUDA in this process, after which torch's
+        next device call (mem_get_info, set_device, an allocation) opens a context of hundreds of MiB on each
+        card it touches; a CPU-only flow, and a training process sharing the host, must not pay that. None
+        when unknown; only a complete answer is cached."""
+        key = LlamaCppBackend._integrated_cuda_mask_key()
+        cached = LlamaCppBackend._CUDA_DEVICE_INFO.get(key)
+        if cached is not None:
+            return cached
+        from utils.hardware import nvidia
+
+        info = nvidia.get_cuda_device_info()
+        if info is not None and all(device is not None for device in info):
+            LlamaCppBackend._CUDA_DEVICE_INFO[key] = info
+        return info
+
     @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible integrated CUDA GPUs; ROCm is left to _rocm_unified_memory_gpu_ids."""
@@ -12503,29 +12526,21 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                # Unknown: returned but not cached, so the next call asks again.
+                return set()
             # Same ordinal-to-physical map as the ROCm twin, so masked CUDA_VISIBLE_DEVICES=2 hosts stay correct.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            integrated: set[int] = set()
-            # An incomplete pass is returned but not cached, so a failed query is retried.
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                except Exception:
-                    complete = False
-                    continue
-                # Both attribute spellings: torch renamed `integrated`.
-                if not (
-                    getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
-                ):
-                    continue
-                integrated.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-            # Cached for the preflight only if the pass reached every device; a torch that raised says nothing.
-            if complete:
+            integrated = {
+                physical_ids[ordinal]
+                if physical_ids is not None and ordinal < len(physical_ids)
+                else ordinal
+                for ordinal, device in enumerate(info)
+                if device is not None and device[1]
+            }
+            # Cached for the preflight only if every device answered; an ordinal that did not says nothing.
+            if all(device is not None for device in info):
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
                 ] = integrated
@@ -12538,7 +12553,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _integrated_cuda_pool_total_mib() -> dict[int, int]:
-        """Pool MiB per integrated CUDA device, from props.total_memory: what it can actually allocate."""
+        """Pool MiB per integrated CUDA device, from the driver's total memory: what it can actually allocate."""
         key = LlamaCppBackend._integrated_cuda_mask_key()
         cached = LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB.get(key)
         if cached is not None:
@@ -12547,24 +12562,22 @@ class LlamaCppBackend:
         if not integrated:
             return {}
         try:
-            import torch
-
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return {}
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             totals: dict[int, int] = {}
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
+            # Any ordinal that did not answer may be an integrated device the set above could not see yet.
+            complete = all(device is not None for device in info)
+            for ordinal, device in enumerate(info):
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if idx not in integrated:
+                if device is None or idx not in integrated:
                     continue
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                    totals[idx] = int(props.total_memory) // (1024 * 1024)
-                except Exception:
-                    complete = False
+                totals[idx] = int(device[2]) // (1024 * 1024)
             if complete:
                 LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB[key] = totals
             return totals
@@ -12728,17 +12741,18 @@ class LlamaCppBackend:
                 return False  # ROCm reuses torch.cuda.*; not a CUDA part
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            count = torch.cuda.device_count()
+            # Names from the driver API in a child (_cuda_device_info), never get_device_properties, which
+            # initialises CUDA in this process.
+            info = LlamaCppBackend._cuda_device_info() or []
 
             # Mirror _get_gpu_free_memory; unset or unparsable CUDA_VISIBLE_DEVICES keeps physical id == ordinal.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
             names_by_id: dict[int, str] = {}
-            for ordinal in range(count):
-                try:
-                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
-                except Exception:
+            for ordinal, device in enumerate(info):
+                if device is None:
                     continue
+                name = (device[3] or "").lower()
                 pid = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)

@@ -456,6 +456,8 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            # torch's view of GPUs 1 and 3 would be this host's real cards; a GPU-less host has none
+            patch("utils.hardware.hardware._torch_get_device_module", return_value = (None, None)),
             patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
             mock_run.return_value = SimpleNamespace(
@@ -485,6 +487,8 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
         with (
             patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True),
             patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            # torch's view of GPUs 1 and 3 would be this host's real cards; a GPU-less host has none
+            patch("utils.hardware.hardware._torch_get_device_module", return_value = (None, None)),
             patch("utils.hardware.nvidia.subprocess.run") as mock_run,
         ):
             mock_run.return_value = SimpleNamespace(
