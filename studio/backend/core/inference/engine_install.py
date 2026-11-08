@@ -1392,7 +1392,7 @@ def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
 def _install_flashinfer_kernels(
     engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
 ) -> bool:
-    """Best effort: any failure removes the wheel and keeps the JIT compiles."""
+    """Best effort: a failure removes the wheel and keeps JIT; one that cannot be removed fails."""
     wheel = flashinfer_kernel_wheel(engine)
     if wheel is None:
         return False
@@ -1426,7 +1426,6 @@ def _install_flashinfer_kernels(
     except RuntimeError:
         if cancel.is_set():
             raise
-        # A wheel that cannot be removed fails the install, keeping the active environment.
         _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
         return False
 

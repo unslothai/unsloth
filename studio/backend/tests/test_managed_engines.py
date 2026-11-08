@@ -2914,7 +2914,6 @@ def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
 
 @pytest.fixture
 def kernel_host(monkeypatch):
-    """Linux x86_64 with one A100."""
     rows = [["580.82.07", "8.0"]]
     monkeypatch.setattr(install.sys, "platform", "linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
