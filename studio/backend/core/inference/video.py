@@ -9523,8 +9523,8 @@ class VideoBackend:
                 _video_plan_label(plan),
             )
             if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
-                # The pre-download probe priced it resident (it omits the sidecar encoder's card share): read the
-                # hosted file as the offload-safe native build instead of quantising the dense shards at load.
+                # The pre-download probe did not plan this read (it planned a resident seed): read the hosted file
+                # as the offload-safe native build instead of quantising the dense shards at load.
                 _video_native_hosted_planned = _video_native_hosted_scheme(
                     fam, denoiser_seed_scheme, target
                 )
