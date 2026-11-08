@@ -1068,3 +1068,25 @@ def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
         assert a.dtype == b.dtype == torch.float32
         assert 0 < float((a - b).abs().max()) < 1e-2
     assert dd.float64_device("cpu") == "cpu"
+
+
+def test_float64_device_probes_the_operands_xpu(monkeypatch):
+    """VAE tiling's blend weights (``float64_device``) take the reconstructed target, not ``_xpu_target``:
+    an fp64-less card must build them on CPU, and the probe must ask about the operand's own index."""
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(has_fp64 = index != 1)
+
+    xpu = types.SimpleNamespace(current_device = lambda: 1, get_device_properties = props)
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    monkeypatch.delenv(_PROBE_ENV, raising = False)
+    assert dd.float64_device("xpu:1") == "cpu"
+    assert dd.float64_device("xpu:0") == "xpu:0"
+    assert dd.float64_device("xpu") == "cpu"  # no index: the current card (1)
+    assert asked == [1, 0, 1]
+    monkeypatch.setenv(_PROBE_ENV, "0")
+    assert dd.float64_device("xpu:1") == "xpu:1"
