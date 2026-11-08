@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from ._torchao_installed import needs_torchao
+
 from core.inference.diffusion import (
     DiffusionBackend,
     DiffusionModelReplacedError,
@@ -8797,6 +8799,7 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
     assert plan["total_bytes"] == 4 * GB + base["bytes"] < 17 * GB
 
 
+@needs_torchao
 def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monkeypatch):
     _fake_zimage_hub(monkeypatch)
     _stub_hosted_prequant(monkeypatch, cached = False)
@@ -8883,6 +8886,7 @@ def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
     assert not any(source.filename in entry["files"] for entry in plan["entries"])
 
 
+@needs_torchao
 def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
     # Balanced / low_vram offload by MODE, so the load keeps the GGUF and never fetches the prequant.
     _fake_zimage_hub(monkeypatch)
@@ -8910,6 +8914,7 @@ def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkey
     assert any(f.endswith("-FP8.pt") for e in resident["entries"] for f in e["files"])
 
 
+@needs_torchao
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
     # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
     # skips the fast path, so nothing is fetched and the footprint must not claim it.
@@ -11823,6 +11828,7 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
     assert diffusion_mod.generation_in_flight() is False
 
 
+@needs_torchao
 def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
     from types import SimpleNamespace
 
@@ -14202,6 +14208,8 @@ def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeyp
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", dense_transformer_supported)
+    # The unified-memory check reads the host's free memory; a fixed 64 GB Mac keeps the runner's out of it.
+    monkeypatch.setattr(dmod, "settled_snapshot_device_memory", _unified_snapshot(64))
     # z-image defaults to its hosted int8 ConvRot encoder, which this offline fixture does not carry; MPS budgets
     # for that file alone, so the encoder is not what is under test here.
     status = _load_gguf(backend, tmp_path, text_encoder_quant = "none")
