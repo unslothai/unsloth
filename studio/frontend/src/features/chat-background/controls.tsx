@@ -1,17 +1,11 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+﻿// SPDX-License-Identifier: AGPL-3.0-only
 import { useRef, useState } from "react";
 import { Cancel01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
+import { RadioPicker } from "@/components/ui/radio-picker";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { useT, type TranslationKey } from "@/i18n";
@@ -33,7 +27,6 @@ import {
 	LENS_MODES,
 	type LensMode,
 	MATERIALS,
-	type WindowMaterial,
 	IMAGE_SIZING,
 	type ImageSizing,
 	POSITIONS,
@@ -98,24 +91,15 @@ function GlassStyleRow() {
 			label={t("chatBackground.materialStyle")}
 			description={note ? t(note) : undefined}
 		>
-			<Select
+			<RadioPicker
+				ariaLabel={t("chatBackground.materialStyle")}
 				value={shown}
-				onValueChange={(next) => setMaterial(next as WindowMaterial)}
-			>
-				<SelectTrigger
-					aria-label={t("chatBackground.materialStyle")}
-					className="w-52"
-				>
-					<SelectValue />
-				</SelectTrigger>
-				<SelectContent>
-					{options.map((m) => (
-						<SelectItem key={m} value={m}>
-							{t(MATERIAL_LABELS[m])}
-						</SelectItem>
-					))}
-				</SelectContent>
-			</Select>
+				onValueChange={(option) => setMaterial(option)}
+				options={options.map((option) => ({
+					value: option,
+					label: t(MATERIAL_LABELS[option]),
+				}))}
+			/>
 		</SettingsRow>
 	);
 }
@@ -152,21 +136,15 @@ function GlassScopeRow() {
 	const { scope, setScope } = useMaterialStore();
 	return (
 		<SettingsRow label={t("chatBackground.scope")}>
-			<Select
+			<RadioPicker
+				ariaLabel={t("chatBackground.scope")}
 				value={scope}
-				onValueChange={(next) => setScope(next as BackgroundScope)}
-			>
-				<SelectTrigger aria-label={t("chatBackground.scope")} className="w-52">
-					<SelectValue />
-				</SelectTrigger>
-				<SelectContent>
-					{SCOPES.map((option) => (
-						<SelectItem key={option} value={option}>
-							{t(scopeLabels[option])}
-						</SelectItem>
-					))}
-				</SelectContent>
-			</Select>
+				onValueChange={(option) => setScope(option)}
+				options={SCOPES.map((option) => ({
+					value: option,
+					label: t(scopeLabels[option]),
+				}))}
+			/>
 		</SettingsRow>
 	);
 }
@@ -230,22 +208,16 @@ function LensRow() {
 			label={t("chatBackground.lens")}
 			description={t("chatBackground.lensDescription")}
 		>
-			<Select
-				disabled={off}
+			<RadioPicker
+				ariaLabel={t("chatBackground.lens")}
 				value={lens}
-				onValueChange={(next) => setLens(next as LensMode)}
-			>
-				<SelectTrigger aria-label={t("chatBackground.lens")} className="w-52">
-					<SelectValue />
-				</SelectTrigger>
-				<SelectContent>
-					{LENS_MODES.map((mode) => (
-						<SelectItem key={mode} value={mode}>
-							{t(lensLabels[mode])}
-						</SelectItem>
-					))}
-				</SelectContent>
-			</Select>
+				onValueChange={(option) => setLens(option)}
+				disabled={off}
+				options={LENS_MODES.map((option) => ({
+					value: option,
+					label: t(lensLabels[option]),
+				}))}
+			/>
 		</SettingsRow>
 	);
 }
@@ -416,50 +388,28 @@ export function ChatBackgroundControls() {
 			{value && (
 				<>
 					<SettingsRow label={t("chatBackground.scope")} className="mt-3 items-start">
-						<Select
-							disabled={busy}
+						<RadioPicker
+							ariaLabel={t("chatBackground.scope")}
 							value={adjustments.scope}
-							onValueChange={(scope) =>
-								patchBackground({ scope: scope as BackgroundScope })
-							}
-						>
-							<SelectTrigger
-								aria-label={t("chatBackground.scope")}
-								className="w-52"
-							>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{SCOPES.map((scope) => (
-									<SelectItem key={scope} value={scope}>
-										{t(scopeLabels[scope])}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
+							onValueChange={(option) => patchBackground({ scope: option })}
+							disabled={busy}
+							options={SCOPES.map((option) => ({
+								value: option,
+								label: t(scopeLabels[option]),
+							}))}
+						/>
 					</SettingsRow>
 					<SettingsRow label={t("chatBackground.effect")} className="items-start">
-						<Select
-							disabled={!value || busy}
+						<RadioPicker
+							ariaLabel={t("chatBackground.effect")}
 							value={adjustments.effect}
-							onValueChange={(effect) =>
-								patchBackground({ effect: effect as BackgroundEffect })
-							}
-						>
-							<SelectTrigger
-								aria-label={t("chatBackground.effect")}
-								className="w-52"
-							>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{EFFECTS.map((effect) => (
-									<SelectItem key={effect} value={effect}>
-										{t(labels[effect])}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
+							onValueChange={(option) => patchBackground({ effect: option })}
+							disabled={!value || busy}
+							options={EFFECTS.map((option) => ({
+								value: option,
+								label: t(labels[option]),
+							}))}
+						/>
 					</SettingsRow>
 					<SettingsRow label={t("chatBackground.sizingPosition")} className="items-start">
 						<Popover>
