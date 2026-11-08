@@ -5,6 +5,7 @@
 // fixed rate, so its page and requests must not change.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
@@ -202,4 +203,12 @@ test("a pending preset without a rate resets to the family default, as it does w
   assert.equal(resolvePresetFps(edge, 30, 24), 30);
   assert.equal(resolvePresetFps(edge, 31, 24), 24);
   assert.equal(resolvePresetFps(null, 30, 24), null);
+});
+
+test("a rate picked or restored mid-load goes through the pending preset rate", () => {
+  const page = readFileSync(new URL("../src/features/video/video-page.tsx", import.meta.url), "utf8");
+  // A later pick supersedes a pending preset rate instead of being overwritten when the load lands.
+  assert.match(page, /setPickedFps = useCallback\(\s*\(picked: number\) => \{\s*setPendingPresetFps\(null\);/);
+  // A gallery restore during a load waits for the incoming family, like a preset.
+  assert.match(page, /if \(!statusKnown\) \{\s*setPendingPresetFps\(\{ fps: video\.fps \}\);/);
 });

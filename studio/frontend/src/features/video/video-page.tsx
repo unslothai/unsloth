@@ -1531,8 +1531,12 @@ function VideoGenerator({
   const loadedFamily = status?.loaded ? status.family : null;
   // Scoped to its family in render: a reset effect would land after the next family's defaults are seeded.
   const fps = resolveVideoFps(status?.defaults, pickedFpsFor(fpsPick, loadedFamily));
+  // A rate picked now supersedes one still pending for an in-flight load.
   const setPickedFps = useCallback(
-    (picked: number) => setFpsPick({ family: loadedFamily, fps: picked }),
+    (picked: number) => {
+      setPendingPresetFps(null);
+      setFpsPick({ family: loadedFamily, fps: picked });
+    },
     [loadedFamily],
   );
   const durationTargets =
@@ -2443,8 +2447,12 @@ function VideoGenerator({
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
-      // Restore the clip's rate too; its count only when this family's window takes it.
-      if (fpsOptions?.includes(video.fps)) {
+      // Restore the clip's rate too; its count only when this family's window takes it. Mid-load, both wait
+      // for the incoming family, like a preset's rate.
+      if (!statusKnown) {
+        setPendingPresetFps({ fps: video.fps });
+        setDurationIntentSeconds(video.num_frames / video.fps);
+      } else if (fpsOptions?.includes(video.fps)) {
         const option = restoredClipDuration(
           videoDurationOptions(durationTargets, video.fps, frameStep, frameOffset, minFrames, maxFrames),
           video.num_frames,
@@ -2462,7 +2470,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps],
+    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames, setPickedFps, statusKnown],
   );
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
