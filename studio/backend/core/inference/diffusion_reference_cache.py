@@ -58,10 +58,44 @@ def _overrides(module: Any) -> tuple:
     return tuple(sorted(out, key = lambda item: item[0]))
 
 
-def _vae_key(vae: Any) -> Optional[tuple]:
+def _weights_revision(vae: Any) -> Optional[tuple]:
+    # Version counters move on every in-place write (load_state_dict, copy_) but not on the
+    # offload hooks' device moves, which swap ``.data``. Inference tensors carry no counter.
+    try:
+        tensors = [*vae.parameters(), *vae.buffers()]
+        return (len(tensors), sum(t._version for t in tensors))
+    except Exception:  # noqa: BLE001 - untracked weights are never cached
+        return None
+
+
+def _autocast_key(device_types: set) -> Optional[tuple]:
+    # Autocast changes the encode's arithmetic and output dtype without touching parameter dtypes.
+    import torch
+
+    out = []
+    for device_type in sorted(device_types):
+        try:
+            enabled = torch.is_autocast_enabled(device_type)
+            dtype = torch.get_autocast_dtype(device_type) if enabled else None
+        except Exception:  # noqa: BLE001 - an unreadable autocast state is never cached
+            return None
+        out.append((device_type, enabled, str(dtype)))
+    return tuple(out)
+
+
+def _vae_key(vae: Any, image: Any, latent_channels: Any) -> Optional[tuple]:
     try:
         param = next(vae.parameters())
     except Exception:  # noqa: BLE001 - no parameters / an unreadable VAE is never cached
+        return None
+    weights = _weights_revision(vae)
+    autocast = _autocast_key({"cpu", param.device.type, image.device.type})
+    if weights is None or autocast is None:
+        return None
+    config = getattr(vae, "config", None)
+    try:
+        config = repr(sorted(dict(config).items())) if config is not None else None
+    except Exception:  # noqa: BLE001
         return None
     # Not the device or address: offload hooks move parameters between renders.
     state = tuple(repr(getattr(vae, name, None)) for name in _VAE_STATE)
@@ -69,6 +103,10 @@ def _vae_key(vae: Any) -> Optional[tuple]:
     return (
         id(vae),
         str(param.dtype),
+        weights,
+        autocast,
+        config,
+        repr(latent_channels),
         state,
         _overrides(vae),
         _overrides(encoder) if encoder is not None else (),
@@ -142,8 +180,8 @@ def install(pipe: Any, logger: Any = None) -> bool:
         if disabled() or vae is None or torch.is_grad_enabled():
             STATS["bypassed"] += 1
             return stock(image, generator)
-        vae_key = _vae_key(vae)
         pixels = _pixels_key(image)
+        vae_key = _vae_key(vae, image, getattr(owner, "latent_channels", None)) if pixels else None
         if vae_key is None or pixels is None:
             STATS["bypassed"] += 1
             return stock(image, generator)

@@ -162,3 +162,41 @@ def test_the_cache_is_bounded(monkeypatch):
     _prepare(pipe, sets[2], 0)  # still cached
     assert len(calls) == 4
     assert len(getattr(pipe, rc._MARK).entries) == 2
+
+
+def _encode(
+    pipe,
+    image,
+    autocast = False,
+):
+    with torch.inference_mode(), torch.autocast("cpu", dtype = torch.bfloat16, enabled = autocast):
+        return pipe._encode_vae_image(image, None), pipe._encode_vae_image.__wrapped__(image, None)
+
+
+def test_autocast_is_part_of_the_key():
+    pipe = _pipe()
+    image = _images(n = 1)[0]
+    rc.install(pipe)
+    _encode(pipe, image)
+    got, want = _encode(pipe, image, autocast = True)
+    assert got.dtype == want.dtype == torch.bfloat16 and torch.equal(got, want)
+    got, want = _encode(pipe, image)
+    assert got.dtype == torch.float32 and torch.equal(got, want)
+    assert rc.STATS["misses"] == 2 and rc.STATS["hits"] == 1
+
+
+def test_reloaded_weights_and_config_encode_again():
+    pipe = _pipe()
+    image = _images(n = 1)[0]
+    rc.install(pipe)
+    _encode(pipe, image)
+    pipe.vae.to(torch.float64).to(torch.float32)  # an offload-style move keeps the entry
+    _encode(pipe, image)
+    assert rc.STATS["hits"] == 1
+    pipe.vae.load_state_dict(_vae(seed = 9).state_dict())  # same object, new weights
+    got, want = _encode(pipe, image)
+    assert torch.equal(got, want)
+    pipe.vae.register_to_config(latents_mean = [0.5, 0.5, 0.5, 0.5])
+    got, want = _encode(pipe, image)
+    assert torch.equal(got, want)
+    assert rc.STATS["misses"] == 3 and rc.STATS["hits"] == 1
