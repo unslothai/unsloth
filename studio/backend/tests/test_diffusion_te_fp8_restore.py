@@ -157,3 +157,55 @@ def test_switch_off_at_runtime_uses_the_stock_cast(monkeypatch):
         _, casts = _fp8_casts(lambda: enc(ids))
     assert casts > 0
     assert all(p.dtype == torch.float8_e4m3fn for n, p in enc.named_parameters() if "blocks" in n)
+
+
+@pytest.mark.parametrize("mode", ["inference", "no_grad"])
+def test_an_in_place_write_during_the_forward_is_kept(mode):
+    enc = _encoder()
+    lin = enc.blocks[0].up
+    ref = lin._diffusers_hook._fn_refs[-1]
+    below = ref.forward
+
+    def write(*a, **k):
+        lin.weight.add_(1.0)
+        return below(*a, **k)
+
+    ref.forward = write
+    before = lin.weight.float().clone()
+    ctx = torch.inference_mode() if mode == "inference" else torch.no_grad()
+    with ctx:
+        enc(torch.randint(0, 50, (1, 5)))
+    assert lin.weight.dtype == torch.float8_e4m3fn
+    assert (
+        float((lin.weight.float() - before).abs().max()) >= 0.5
+    )  # the stock downcast kept the write
+
+
+def _compiled_breaks(enc, xs):
+    torch._dynamo.reset()
+    torch._dynamo.utils.counters.clear()
+    compiled = torch.compile(enc, backend = "eager", dynamic = True)
+    with torch.no_grad():
+        outs = [compiled(x) for x in xs]
+    return outs, sum(torch._dynamo.utils.counters["graph_break"].values())
+
+
+def test_a_dynamic_compiled_encoder_traces_like_the_stock_hooks(monkeypatch):
+    pytest.importorskip("torch._dynamo")
+    xs = [
+        torch.randint(0, 50, (n, 5), generator = torch.Generator().manual_seed(n))
+        for n in (3, 5, 7, 3)
+    ]
+    monkeypatch.setenv(prec.TE_FP8_RESTORE_ENV, "0")
+    stock = _encoder()
+    ref, stock_breaks = _compiled_breaks(stock, xs)
+    monkeypatch.delenv(prec.TE_FP8_RESTORE_ENV)
+    enc = _encoder()
+    try:
+        got, breaks = _compiled_breaks(enc, xs)
+    finally:
+        torch._dynamo.reset()
+    for a, b in zip(ref, got):
+        assert torch.equal(a, b)
+    assert breaks == stock_breaks
+    assert all(p.dtype == torch.float8_e4m3fn for n, p in enc.named_parameters() if "blocks" in n)
