@@ -924,9 +924,11 @@ def comfy_int8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    lora: bool = False,
 ) -> Optional[str]:
     """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16. A GPU with neither
-    (pre-Ampere NVIDIA, XPU) keeps the codes on the native layer as weight-only storage (``int8_storage_scheme``)."""
+    (pre-Ampere NVIDIA, XPU) keeps the codes on the native layer as weight-only storage (``int8_storage_scheme``),
+    except under a LoRA, which needs the dense Linears."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:
@@ -944,7 +946,7 @@ def comfy_int8_backend(
             == TQ_INT8
         ):
             return "torchao"
-        if int8_storage_scheme(target, family, offload = offload) == TQ_INT8:
+        if not lora and int8_storage_scheme(target, family, offload = offload) == TQ_INT8:
             return "native"
     except Exception:  # noqa: BLE001 -- an unanswerable probe takes the exact dense path
         pass

@@ -9946,6 +9946,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        lora = _has_active_lora(loras),
                                     ),
                                     fp8_backend = comfy_fp8_backend(
                                         target,
@@ -11585,7 +11586,8 @@ class DiffusionBackend:
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
+                keep_int8 = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
+                is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 **_comfy_keep_fp32_pricing(fam, target),

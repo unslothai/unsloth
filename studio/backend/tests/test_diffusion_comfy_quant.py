@@ -1596,3 +1596,16 @@ def test_int8_storage_convrot_rotates_activations_like_the_native_route(monkeypa
     x = torch.randn(5, DIM).to(torch.float16)
     for got, want in zip(_run(stored, x), _run(expanded, x)):
         assert _cos(got, want) > 0.9999
+
+
+def test_int8_storage_stays_off_under_a_lora(monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.delenv(_STORAGE_ENV, raising = False)
+    t4 = _target("cuda", torch.float16)
+    assert cq.comfy_int8_backend(t4, "z-image", offload = True) == "native"
+    assert cq.comfy_int8_backend(t4, "z-image", offload = True, lora = True) is None
+    # the runtimes a host already has ignore the flag
+    assert (
+        cq.comfy_int8_backend(_target("cuda", torch.bfloat16), "z-image", offload = True, lora = True)
+        == "native"
+    )
