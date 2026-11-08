@@ -4139,8 +4139,10 @@ def _parse_glm_tool_calls(
     *,
     id_offset: int,
     allow_incomplete: bool = True,
+    raw_values: bool = False,
 ) -> list[dict]:
-    """GLM 4.x: back-to-back <tool_call> blocks, no envelope, each with arg_key/arg_value pairs."""
+    """GLM 4.x: back-to-back <tool_call> blocks, no envelope, each with arg_key/arg_value pairs.
+    ``raw_values`` leaves every value a string, for a caller that types them by the tool's schema."""
     out: list[dict] = []
     pos = 0
     while pos < len(content):
@@ -4197,7 +4199,7 @@ def _parse_glm_tool_calls(
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
             # Keep the value raw so string whitespace survives (matches vLLM glm4_moe).
             probe = raw_val.strip()
-            if (
+            if not raw_values and (
                 probe[:1] in "{["
                 or probe in ("true", "false", "null")
                 or _GLM_JSON_NUMERIC_RE.fullmatch(probe)

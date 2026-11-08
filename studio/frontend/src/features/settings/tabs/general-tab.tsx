@@ -95,8 +95,10 @@ import {
   DOWNLOAD_DIR_STORAGE_KEY,
   TRANSPORT_MODE_STORAGE_KEY,
 } from "@/features/hub";
+import { DownloadSpeedLimitRow } from "../components/download-speed-limit-row";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
+import { MlWarmupSection } from "../components/ml-warmup-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -226,8 +228,14 @@ async function resetAllPrefs() {
       // ignore
     }
   }
-  // The account keeps its own scale: mark the reset default as an unsent edit so it wins after the reload.
-  writePending({ ...readPending(), scale: true });
+  // Unsent, so the defaults beat the account's saved copy after the reload.
+  writePending({
+    ...readPending(),
+    scale: true,
+    chat: true,
+    timeFormat: true,
+    spellcheck: true,
+  });
   window.location.reload();
 }
 
@@ -765,6 +773,7 @@ export function GeneralTab() {
 
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
+        <DownloadSpeedLimitRow />
       </SettingsSection>
 
       <SettingsSection title={t("settings.general.uploads.sectionTitle")}>
@@ -811,6 +820,8 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+
+      <MlWarmupSection />
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow

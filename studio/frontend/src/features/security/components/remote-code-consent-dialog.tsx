@@ -15,9 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  CodeXmlIcon,
   SecurityWarningIcon,
   ShieldBanIcon,
-  SourceCodeSquareIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode } from "react";
@@ -121,7 +121,7 @@ function UnsafeFileCard({ file }: { file: UnsafeFile }) {
         {file.level}
       </Badge>
       <span className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground">
-        <HugeiconsIcon icon={SourceCodeSquareIcon} className="size-3.5 shrink-0" />
+        <HugeiconsIcon icon={CodeXmlIcon} className="size-3.5 shrink-0" />
         <span className="truncate">{file.path}</span>
       </span>
     </div>
@@ -145,7 +145,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
         </Badge>
         <span className="text-sm font-medium">{finding.check}</span>
         <span className="ml-auto flex shrink-0 items-center gap-1 font-mono text-xs text-muted-foreground">
-          <HugeiconsIcon icon={SourceCodeSquareIcon} className="size-3.5" />
+          <HugeiconsIcon icon={CodeXmlIcon} className="size-3.5" />
           {fileLabel}
         </span>
       </div>

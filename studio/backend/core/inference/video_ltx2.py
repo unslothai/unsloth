@@ -1259,6 +1259,8 @@ def load_ltx23_comfy_transformer(
     local_files_only: bool = False,
     int8_backend: Optional[str] = None,
     fp8_backend: Optional[str] = None,
+    nvfp4_backend: Optional[str] = None,
+    mxfp8_backend: Optional[str] = None,
     fp8_storage: Optional[bool] = None,
     fp8_widen_chosen: bool = False,
     family: Optional[str] = None,
@@ -1285,6 +1287,8 @@ def load_ltx23_comfy_transformer(
         },
         int8_backend = int8_backend,
         fp8_backend = fp8_backend,
+        nvfp4_backend = nvfp4_backend,
+        mxfp8_backend = mxfp8_backend,
         fp8_storage = fp8_storage,
         fp8_widen_chosen = fp8_widen_chosen,
         family = family,
@@ -1326,6 +1330,8 @@ def load_ltx23_transformer(
     # The load plan's commit for that hub-id config (absent for an unpinned load).
     kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        install_lowbit_iq()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         # Else the meta load copies every tensor back to the host.
@@ -1628,6 +1634,9 @@ def _assemble_ltx23_pipeline(
     if state is None and transformer_override is not None and not is_gguf:
         state = _load_checkpoint_without_dit(checkpoint_path)
     if state is None:
+        if is_gguf:
+            from .diffusion_gguf_lowbit import install_lowbit_iq
+            install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
         state = load_single_file_checkpoint(str(checkpoint_path))
     groups = _split_checkpoint(state)
     del state

@@ -248,6 +248,35 @@ def _oversampler(factor: int = 4, taps_per_phase: int = 12) -> np.ndarray:
     return taps.reshape(taps_per_phase, factor).T
 
 
+# Past this many candidate spans per phase the whole chunk is convolved instead.
+_PEAK_SPANS_MAX = 128
+
+
+def _phase_peak(
+    window: np.ndarray, taps: np.ndarray, peak: float, screen: Optional[np.ndarray], err: float
+) -> float:
+    """max(peak, max |np.convolve(window, taps, "valid")|), convolving only where ``screen`` (+-err) allows."""
+    if screen is None:
+        return max(peak, float(np.max(np.abs(np.convolve(window, taps, mode = "valid")))))
+    top = float(screen.max())
+    # |output j - screen[j]| <= err: below top - 2 err cannot be the max, below peak - err cannot raise it.
+    floor = max(top - 2.0 * err, peak - err)
+    if floor > top:
+        return peak
+    idx = np.flatnonzero(screen >= floor)
+    length = len(taps)
+    breaks = np.flatnonzero(np.diff(idx) > length) + 1
+    if breaks.size >= _PEAK_SPANS_MAX:
+        return _phase_peak(window, taps, peak, None, err)
+    firsts = idx[np.concatenate(([0], breaks))].tolist()
+    lasts = idx[np.concatenate((breaks - 1, [idx.size - 1]))].tolist()
+    for first, last in zip(firsts, lasts):
+        # Same memory, same dot product per output as the whole-chunk np.convolve.
+        part = np.convolve(window[first : last + length], taps, mode = "valid")
+        peak = max(peak, float(np.max(np.abs(part))))
+    return peak
+
+
 def true_peak(data: np.ndarray) -> float:
     """The largest absolute sample after 4x oversampling (BS.1770 Annex 2), linear."""
     phases = _oversampler()
@@ -255,6 +284,9 @@ def true_peak(data: np.ndarray) -> float:
     # np.convolve's "same" output i reads input i - before .. i + after.
     after = (length - 1) // 2
     before = length - 1 - after
+    # np.convolve(window, taps, "valid")[j] is sum(taps[k] * window[j + length - 1 - k]).
+    flipped = phases[:, ::-1].astype(np.float32)
+    reach = float(np.abs(phases).sum(axis = 1).max())
     peak = 0.0
     for channel in range(data.shape[1]):
         x = data[:, channel]
@@ -262,8 +294,22 @@ def true_peak(data: np.ndarray) -> float:
             stop = min(start + _CHUNK, len(x))
             peak = max(peak, float(np.max(np.abs(x[start:stop]))))
             window = _padded(x, start - before, stop + after)
-            for taps in phases:
-                peak = max(peak, float(np.max(np.abs(np.convolve(window, taps, mode = "valid")))))
+            scale = float(np.max(np.abs(window)))
+            screens, err = [None] * len(phases), 0.0
+            if 2.0**-60 <= scale <= 2.0**60:
+                # Screen and np.convolve each lie within ~14 * 2**-24 * reach * scale of the exact
+                # sum in any summation order; 2**-19 leaves 2x margin.
+                err = reach * scale * 2.0**-19
+                samples = window.astype(np.float32, copy = False)
+                cols = len(window) - length + 1
+                # Plain ufuncs, not BLAS: independent of the caller's BLAS thread setting.
+                screens = flipped[:, :1] * samples[:cols]
+                term = np.empty_like(screens)
+                for k in range(1, length):
+                    screens += np.multiply(flipped[:, k : k + 1], samples[k : k + cols], out = term)
+                np.abs(screens, out = screens)
+            for taps, screen in zip(phases, screens):
+                peak = _phase_peak(window, taps, peak, screen, err)
     return peak
 
 

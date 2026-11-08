@@ -3463,6 +3463,50 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch, fresh_cut_memory):
+    from core.inference import checkpoint
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    rounds = 16
+    streams = [
+        _structured_tool_call("python", {"code": f"print(open('f{i}').read())"}, f"call_{i}")
+        for i in range(rounds)
+    ] + [[_sse({"content": "Done."}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    backend._effective_context_length = 8192
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(len(str(m.get("content") or "")) for m in candidate),
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "x" * 1200
+    )
+
+    _run_tool_loop(
+        backend,
+        [{"role": "system", "content": "agent"}, {"role": "user", "content": "read every file"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        max_tool_iterations = rounds,
+        max_tokens = 512,
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+
+    heads = [json.dumps(payload["messages"][:3]) for payload in payloads]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(payloads) // 2, moves
+
+
 def test_tool_loop_compacts_text_history_around_latest_audio(monkeypatch):
     """Unpriced media must not disable compaction that the text alone requires."""
     backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])

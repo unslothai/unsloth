@@ -186,6 +186,8 @@ class PatchContext:
     dtype: Any = None
     device: Any = None
     speed_mode: Optional[str] = None
+    # The user asked for speed "off" (an unset request also resolves to off on dense loads); None = speed_mode == "off".
+    explicit_off: Optional[bool] = None
     offload_active: bool = False
     denoiser_offloaded: Optional[bool] = None
     backend: str = "image"
@@ -420,9 +422,21 @@ def _builtin_specs() -> list[PatchSpec]:
         from ..diffusion_flux2_rope import uninstall
         uninstall()
 
+    def flux3_rope(ctx: PatchContext) -> bool:
+        from ..diffusion_flux3_rope import install_for_pipe
+        return install_for_pipe(ctx.pipe, ctx.device, ctx.logger)
+
+    def flux3_rope_uninstall() -> None:
+        from ..diffusion_flux3_rope import uninstall
+        uninstall()
+
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
-        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger)
+
+        exact = ctx.explicit_off
+        if exact is None:
+            exact = str(ctx.speed_mode or "").strip().lower() == "off"
+        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger, adaln = not exact)
 
     def rocm_fused_uninstall() -> None:
         from ..diffusion_rocm_fused import uninstall
@@ -528,6 +542,15 @@ def _builtin_specs() -> list[PatchSpec]:
             group = GROUP_FUSED_DIT,
             backends = ("image",),
             env = "UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE",
+        ),
+        PatchSpec(
+            "flux3_rope",
+            STAGE_LOAD,
+            flux3_rope,
+            flux3_rope_uninstall,
+            group = GROUP_FUSED_DIT,
+            backends = ("image",),
+            env = "UNSLOTH_DIFFUSION_FLUX3_FUSED_ROPE",
         ),
         PatchSpec(
             "rocm_fused",

@@ -98,6 +98,38 @@ def test_family_records():
     assert base.uses_negative_prompt is True
 
 
+def test_fp16_only_cards_promote_flux3_to_fp32():
+    import torch
+
+    from core.inference.diffusion import _resolve_diffusion_compute_dtype
+    for fam in (detect_family(DISTILLED), detect_family(BASE)):
+        assert fam.fp16_incompatible is True and fam.fp16_guard is None
+        assert _resolve_diffusion_compute_dtype(fam, torch.float16) is torch.float32
+        assert _resolve_diffusion_compute_dtype(fam, torch.bfloat16) is torch.bfloat16
+        assert _resolve_diffusion_compute_dtype(fam, torch.float32) is torch.float32
+
+
+@pytest.mark.parametrize(
+    "value, promoted", [("1", False), ("true", False), ("0", True), ("", True)]
+)
+def test_flux3_fp16_kill_switch(value, promoted):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "UNSLOTH_STUDIO_FLUX3_FP16": value, "PYTHONPATH": str(backend)}
+    code = (
+        "from core.inference.diffusion_families import detect_family as d;"
+        f"print(d({DISTILLED!r}).fp16_incompatible, d({BASE!r}).fp16_incompatible)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd = backend, env = env, capture_output = True, text = True
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.split()[-2:] == [str(promoted)] * 2
+
+
 def test_modular_index_class_names_identify_the_family(tmp_path):
     assert (
         detect_family_by_pipeline_class("Flux3DistilledModularPipeline").name

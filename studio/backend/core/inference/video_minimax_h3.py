@@ -98,18 +98,26 @@ def estimate_h3_diffusers_vram_gb(
             H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
         )
         activations = H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+        from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
         return max(
             text_encoder + H3_DIFFUSERS_VRAM_OVERHEAD_GB,
             max(H3_TRANSFORMER_STREAMED_GB, H3_VAE_RESIDENT_GB)
             + H3_DIFFUSERS_VRAM_OVERHEAD_GB
-            + activations,
+            + max(activations, sol_decode_need_gb(width, height, num_frames)),
         )
     base = h3_diffusers_vram_base_gb(
         text_encoder_gb = text_encoder_gb,
         transformer_gb = transformer_gb,
         transformer_pinned = transformer_pinned,
     )
-    return base + (H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames)
+    from .video_minimax_h3_sol_vae import sol_decode_need_gb
+
+    # 0.0 unless UNSLOTH_H3_SOL_VAE=1: the Sol decode runs after the denoise, so it is a max, not a sum
+    return base + max(
+        H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames,
+        sol_decode_need_gb(width, height, num_frames),
+    )
 
 
 # Shipped values kept: offload tier at 132 GB VRAM; no measurement here justifies moving it.

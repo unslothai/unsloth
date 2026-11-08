@@ -64,7 +64,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
     /<UsageExamples\s+part="chat"/,
     /<MediaApiExamples[^>]*showHeading=\{false\}/,
     /<AudioApiExamples[^>]*showHeading=\{false\}/,
-    /<DecisionApiSection showHeading=\{false\} \/>/,
+    /<DecisionApiSection[^>]*showHeading=\{false\}/,
   ]) {
     assert.match(tabs, card);
   }
@@ -107,8 +107,10 @@ test("keyless API access is edited on Remote & LAN; the API tab links there and 
   const remoteLan = readSrc("features/settings/tabs/remote-lan-tab.tsx");
   assert.match(remoteLan, /scrollTarget !== "remote-lan-keyless"/);
   assert.match(remoteLan, /<div ref=\{keylessRef\}>\s*<KeylessApiAccessSection \/>/);
-  assert.match(TAB, /loadKeylessApiAccess\(\)/);
-  assert.match(TAB, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
+  assert.match(TAB, /useKeylessExampleAccess\(isOwner\)/);
+  const hook = readSrc("features/settings/hooks/use-keyless-example-access.ts");
+  assert.match(hook, /loadKeylessApiAccess\(\)/);
+  assert.match(hook, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
   assert.doesNotMatch(TAB, /<KeylessApiAccessSection/);
 });
 

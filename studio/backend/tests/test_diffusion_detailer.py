@@ -1411,3 +1411,66 @@ def test_a_template_inheriting_the_negative_saves_it_resolved(
     assert saved == expected_saved
     # Restored with no main negative (the base recorded none), the saved template expands the same.
     assert det.detection_prompt(saved, "", 0) == expected_seen[0]
+
+
+@pytest.mark.parametrize(
+    "crop, expected",
+    [
+        ("resident", "resident"),
+        ("streamed", None),
+        # a failed pass keeps the render, so its crop does not count
+        (RuntimeError("CUDA out of memory"), "resident"),
+    ],
+)
+def test_a_kept_crop_reconciles_the_recorded_placement(monkeypatch, crop, expected):
+    _patch_detect(monkeypatch, [[_face((150, 60, 200, 120))]])
+
+    def _generate(**kwargs):
+        if isinstance(crop, Exception):
+            raise crop
+        image = Image.open(
+            __import__("io").BytesIO(
+                __import__("base64").b64decode(kwargs["init_image"].split(",", 1)[1])
+            )
+        )
+        return {"images": [image.convert("RGB")], "denoiser_offload": crop}
+
+    result = {"images": [_scene()], "seeds": [1], "denoiser_offload": "resident"}
+    det.detail_result(
+        _generate,
+        result,
+        det.DetailerSettings(),
+        prompt_for = lambda i: "p",
+        negative_prompt = None,
+        steps = 4,
+        guidance = 1.0,
+        generate_kwargs = {},
+    )
+    assert result["denoiser_offload"] == expected
+
+
+def test_a_queued_jobs_ticket_reaches_its_detailer_pass(monkeypatch):
+    """Stopping one queued job ends its Detailer pass without cancelling anyone else's."""
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    seen = []
+    monkeypatch.setattr(
+        det,
+        "_detail_images",
+        lambda generate, result, images, settings, stop, **k: seen.append(stop),
+    )
+    ticket = GenerationTicket()
+    with generation_ticket(ticket):
+        det.detail_result(
+            lambda **k: None,
+            {"images": [object()]},
+            det.DetailerSettings(),
+            prompt_for = lambda i: "p",
+            negative_prompt = None,
+            steps = 4,
+            guidance = 1.0,
+            generate_kwargs = {},
+        )
+    assert len(seen) == 1 and not seen[0].is_set()
+    ticket.stop()
+    assert seen[0].is_set()

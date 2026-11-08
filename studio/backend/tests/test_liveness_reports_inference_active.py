@@ -283,8 +283,8 @@ def test_liveness_covers_the_image_persist_tail():
 
 
 _PERSIST_COUNTER = "_diffusion_persist_active"
-# The two image routes' run bodies: the Unsloth /images/generate and the OpenAI-compatible /images/generations.
-_PERSIST_ROUTES = {"_generate_diffusion_image_run", "_generate_openai_images"}
+# The image routes' run bodies: /images/generate, its X/Y grid, and the OpenAI-compatible /images/generations.
+_PERSIST_ROUTES = {"_generate_diffusion_image_run", "_generate_openai_images", "_generate_xy_grid"}
 
 
 def _persist_marker_violations(source: str) -> list[str]:

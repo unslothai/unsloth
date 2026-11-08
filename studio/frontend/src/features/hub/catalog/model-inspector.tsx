@@ -53,6 +53,7 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
+import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -423,6 +424,7 @@ export type ModelInspectorRuntime = {
   } | null;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unifiedLoadBudgetGb?: number | null;
 };
@@ -464,6 +466,7 @@ export const ModelInspector = memo(function ModelInspector({
     vramInfo,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
     unifiedLoadBudgetGb,
   } = runtime;
@@ -604,9 +607,7 @@ export const ModelInspector = memo(function ModelInspector({
       : undefined;
   // A precision folder downloads as it loads, so it need not be on device.
   const isMlx =
-    !model.isGguf &&
-    (model.libraryName?.toLowerCase() === "mlx" ||
-      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
@@ -741,6 +742,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -771,6 +773,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               unifiedLoadBudgetGb={
                 runsOnMediaRuntime ? null : unifiedLoadBudgetGb

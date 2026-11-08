@@ -308,6 +308,21 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
     assert asyncio.run(inf.get_status("s")).serving == ["org/A-GGUF"]
 
 
+def test_a_status_read_does_not_count_as_use_for_eviction(backends, monkeypatch):
+    # The Loaded models poll sizes every kept model by name; that must not reorder the LRU.
+    _, extra = backends
+    extra.last_used = 1.0
+
+    async def slot_status(subject):
+        return InferenceStatusResponse(active_model = inf.get_llama_cpp_backend().model_identifier)
+
+    monkeypatch.setattr(inf, "_slot_status", slot_status)
+    named = asyncio.run(inf.get_status("s", model = "org/B-GGUF"))
+    assert named.active_model == "org/B-GGUF"
+    assert extra.last_used == 1.0
+    assert _routed("org/B-GGUF")[0] is extra and extra.last_used > 1.0
+
+
 def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(backends, monkeypatch):
     _, extra = backends
     local, twin = "/home/alice/models/B-local.gguf", "/home/alice/other/B-local.gguf"
@@ -1121,7 +1136,7 @@ def test_the_model_list_marks_kept_models_loaded(backends, monkeypatch):
     _, extra = backends
     fake = FakeOrchestrator()
     fake.default_models = []
-    monkeypatch.setattr(models_routes, "get_inference_backend", lambda: fake)
+    monkeypatch.setattr(models_routes, "peek_inference_backend", lambda: fake)
     model_slots.slots.append(model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
     app = FastAPI()
     app.include_router(models_routes.router, prefix = "/api/models")

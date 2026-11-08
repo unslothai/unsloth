@@ -52,6 +52,10 @@ NOT_BATCHABLE: dict[str, str] = {
     "MOSSImageTransformer": "the negative branch skips block 22 (uncond_skip_layers): per-branch compute",
     "Cosmos3OmniTransformer": "each branch packs its own variable-length token sequence",
     "MiniMaxH3Transformer3DModel": "one denoiser call per step (no guidance pair to batch)",
+    "ChromaTransformer2DModel": "not measured batched: each branch passes its own T5 attention mask, and Chroma "
+    "runs eager",
+    "CosmosTransformer3DModel": "Anima's modular guider runs each branch as its own guider batch "
+    "(prepare_models before each call)",
     # Measured (Colab L4, 1024x1024, 8 steps): 1.817 vs 1.454 s/step eager, 1.312 vs 1.078 compiled. A single call
     # packs each prompt at its own caption length with no mask; the doubled call pads both to the longer one and runs
     # masked attention.
@@ -1016,6 +1020,10 @@ class CfgBatchRouter:
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         """How the second call's arguments relate to the first's: the latent, a first-branch tensor (same object, or a
         small per-call scalar recomputed with equal bytes), or a constant of the second branch."""
+        if getattr(kwargs.get("unsloth_cond"), "pending", False):
+            # FLUX.3 conditioning still computing (diffusion_cond_blocks): later steps pass its states instead
+            self.template = None
+            return
         mg = _mg()
         torch = _torch()
         b0_leaves = dict(mg._leaves(self.b0)) if self.b0 is not None else {}

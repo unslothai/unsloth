@@ -96,6 +96,14 @@ from utils.chat_preferences_settings import (
     migrate_show_model_disclaimer,
     set_show_model_disclaimer,
 )
+from utils.ml_warmup_settings import (
+    ML_WARMUP_FEATURES,
+    MlWarmupFeature,
+    effective_ml_warmup_features,
+    get_ml_warmup_features,
+    ml_warmup_disabled_by_env,
+    set_ml_warmup_features,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -104,6 +112,10 @@ from utils.helper_precache_settings import (
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils import video_cpu_settings
+from utils.download_speed_limit import (
+    get_download_speed_limit_mbps,
+    set_download_speed_limit_mbps,
+)
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -745,6 +757,7 @@ class SystemOneSettingsResponse(BaseModel):
     input_modalities: list[str] = ["text"]
     # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
     layout: Optional[str] = None
+    has_gguf_form: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -763,6 +776,16 @@ class SystemOneDownloadPlan(BaseModel):
     size_bytes: int
     cached: bool
     error: Optional[str] = None
+
+
+class MlWarmupPayload(BaseModel):
+    features: list[MlWarmupFeature]
+
+
+class MlWarmupResponse(BaseModel):
+    features: list[MlWarmupFeature]
+    effective_features: list[MlWarmupFeature]
+    disabled_by_env: bool
 
 
 class HelperPrecachePayload(BaseModel):
@@ -803,6 +826,14 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class DownloadSpeedLimitPayload(BaseModel):
+    mbps: Optional[float] = Field(default = None, ge = 0)
+
+
+class DownloadSpeedLimitResponse(BaseModel):
+    mbps: Optional[float] = None
 
 
 class HubSettingsPayload(BaseModel):
@@ -1190,6 +1221,16 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
         max_upload_size_label = upload_limit_label(limit_mb),
         default_upload_size_mb = default_upload_limit_mb(),
         audio_input_max_bytes = audio_input_max_bytes(limit_mb),
+    )
+
+
+def _ml_warmup_response(features: frozenset[str] | None = None) -> MlWarmupResponse:
+    selected = get_ml_warmup_features() if features is None else features
+    effective = effective_ml_warmup_features(selected)
+    return MlWarmupResponse(
+        features = [feature for feature in ML_WARMUP_FEATURES if feature in selected],
+        effective_features = [feature for feature in ML_WARMUP_FEATURES if feature in effective],
+        disabled_by_env = ml_warmup_disabled_by_env(),
     )
 
 
@@ -1617,6 +1658,19 @@ def update_tool_result_limit(
     return _tool_result_limit_response()
 
 
+@_shared_settings_router.get("/ml-warmup", response_model = MlWarmupResponse)
+def get_ml_warmup(current_subject: str = Depends(get_current_subject)) -> MlWarmupResponse:
+    return _ml_warmup_response()
+
+
+@_owner_settings_router.put("/ml-warmup", response_model = MlWarmupResponse)
+def update_ml_warmup(
+    payload: MlWarmupPayload, current_subject: str = Depends(get_current_subject)
+) -> MlWarmupResponse:
+    """Save the selected ML warmup features for the next Unsloth startup."""
+    return _ml_warmup_response(set_ml_warmup_features(payload.features))
+
+
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
 def get_helper_precache(
     current_subject: str = Depends(get_current_subject),
@@ -1682,7 +1736,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
     only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
     if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        only = {} if only_mlx else {"llama_cpp_only": True}
+        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
+        only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
@@ -1698,6 +1753,12 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from core.systemone.native_worker import reuse_found_binary
+    with reuse_found_binary():
+        return _systemone_answer(request)
+
+
+def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
@@ -1773,6 +1834,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
         layout = getattr(configured, "layout", None),
+        has_gguf_form = laya_runtime.has_native_form(configured),
     )
 
 
@@ -1944,6 +2006,30 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+@_shared_settings_router.get("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def get_download_speed_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> DownloadSpeedLimitResponse:
+    return DownloadSpeedLimitResponse(mbps = get_download_speed_limit_mbps())
+
+
+@_owner_settings_router.put("/download-speed-limit", response_model = DownloadSpeedLimitResponse)
+def update_download_speed_limit(
+    payload: DownloadSpeedLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> DownloadSpeedLimitResponse:
+    try:
+        mbps = set_download_speed_limit_mbps(payload.mbps)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid download speed limit."),
+            event = "settings.update_download_speed_limit_failed",
+            log = logger,
+        ) from exc
+    return DownloadSpeedLimitResponse(mbps = mbps)
 
 
 def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
@@ -4905,8 +4991,9 @@ class PersonalizationCustomization(BaseModel):
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
+    elementOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "system"
+    reduceMotion: Literal["system", "on", "off"] = "off"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
@@ -5096,9 +5183,54 @@ class BrowserPrefsPayload(BaseModel):
     annotationScreenshots: Optional[Literal["always", "never"]] = None
 
 
+_DisplayVisibility = Literal["collapsed", "auto", "expanded"]
+
+
+class ChatPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    plainTextComposer: Optional[bool] = None
+    showContextWindowUsage: Optional[bool] = None
+    sendShortcut: Optional[Literal["enter", "mod-enter-multiline", "mod-enter"]] = None
+    followUpBehavior: Optional[Literal["queue", "steer"]] = None
+    confirmDeleteChats: Optional[bool] = None
+    alwaysDeleteChatFiles: Optional[bool] = None
+    showResponseModel: Optional[bool] = None
+    showLinkPreviews: Optional[bool] = None
+    showReplyTimes: Optional[bool] = None
+    showGenerationDetails: Optional[bool] = None
+    showInlineEditResponse: Optional[bool] = None
+    thinkingVisibility: Optional[_DisplayVisibility] = None
+    toolVisibility: Optional[_DisplayVisibility] = None
+    foldToolActivityIntoThinking: Optional[bool] = None
+    pastedTextMinChars: Optional[Literal[0, 2000, 4000, 8000, 16000]] = None
+    autoScrollWhileGenerating: Optional[bool] = None
+    newChatComposerPosition: Optional[int] = Field(None, ge = 0, le = 100)
+    showTurnNavigation: Optional[bool] = None
+    richTextPaste: Optional[bool] = None
+    generationStatsUpdates: Optional[Literal["settled", "realtime"]] = None
+
+
+_PlusMenuId = Annotated[str, Field(max_length = 64)]
+_PinnedId = Annotated[str, Field(max_length = 256)]
+
+
+class PlusMenuPrefsPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    pins: Optional[dict[_PlusMenuId, bool]] = Field(None, max_length = 64)
+    order: Optional[list[_PlusMenuId]] = Field(None, max_length = 64)
+    pinnedPromptIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+    pinnedListIds: Optional[list[_PinnedId]] = Field(None, max_length = 500)
+
+
 class ClientPreferencesPayload(BaseModel):
     interfaceScale: Optional[int] = Field(None, ge = 50, le = 200)
     browser: Optional[BrowserPrefsPayload] = None
+    chat: Optional[ChatPrefsPayload] = None
+    plusMenu: Optional[PlusMenuPrefsPayload] = None
+    timeFormat: Optional[Literal["system", "12h", "24h"]] = None
+    spellcheck: Optional[bool] = None
 
 
 class ClientPreferencesResponse(ClientPreferencesPayload):
@@ -5108,7 +5240,7 @@ class ClientPreferencesResponse(ClientPreferencesPayload):
 
 def _client_preferences_response(stored: dict) -> ClientPreferencesResponse:
     response = ClientPreferencesResponse.model_validate(
-        {k: stored.get(k) for k in ("interfaceScale", "browser", "updatedAt")}
+        {k: stored.get(k) for k in (*ClientPreferencesPayload.model_fields, "updatedAt")}
     )
     response.saved = bool(stored)
     return response
@@ -5623,8 +5755,12 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     )
     terminal_exe, shell = _sandbox_terminal_target()
     # On Windows the choice above just probed this executable.
+    terminal_force = force and not windows_refresh
+    if sys.platform in ("linux", "darwin") and python.available:
+        # Reuse a successful POSIX probe; an undecided check can leave an older cached pass.
+        terminal_force = False
     terminal = os_sandbox.capability_snapshot(
-        force = force and not windows_refresh,
+        force = terminal_force,
         execution_kind = "terminal",
         selected_executable = terminal_exe,
     )
