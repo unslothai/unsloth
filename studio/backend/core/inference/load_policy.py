@@ -9,7 +9,6 @@ from enum import Enum
 
 
 class LoadPolicy(str, Enum):
-    # Any load "Switch model by request" allows.
     ANY = "any"
     # Only a load that cannot unload the model serving chat (one beside it).
     BESIDE_ONLY = "beside_only"

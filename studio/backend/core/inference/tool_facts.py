@@ -12,7 +12,6 @@ from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 
 # Never deduplicated: an identical call is new work (the page as it is now, another image).
 REPEATABLE = BROWSER_TOOL_NAMES | MEDIA_CHAT_TOOLS
-# Reading an image is not new work that licenses a rerun.
 _BUILT_IN_READS = frozenset({"view_image"})
 # Unsloth's own tools where an identical call is new work: get_job's answer moves while a job runs,
 # and a generator with no seed draws a fresh one.

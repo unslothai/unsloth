@@ -13,10 +13,8 @@ from typing import Optional, Union
 
 from core.inference.load_policy import LoadPolicy, current_load_policy
 
-# The Unsloth Studio page where a user loads each kind of model.
 PAGES = {
     "llm": "Chat",
-    # The arbiter's name for the chat slot.
     "chat": "Chat",
     "tts": "Audio",
     "audio": "Audio",
