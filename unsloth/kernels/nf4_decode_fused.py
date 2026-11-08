@@ -179,7 +179,7 @@ def _nf4_decode_fused_kernel(
     EPI: tl.constexpr,  # output epilogue
     SS_BLOCK: tl.constexpr,  # partial reduction tile
     SEPARATE: tl.constexpr,  # separate projections
-    HAS_BIAS: tl.constexpr,
+    HAS_BIAS: tl.constexpr,  # bias presence
 ):  # fmt: skip
     W = W.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0)
@@ -324,13 +324,13 @@ def _qk_norm_rope_kv_kernel(
     QKV, WQ, WK, COS, SIN, POS, SLOT,
     Q_OUT, K_CACHE, V_CACHE, n_heads, n_kv_heads, stride_cos, stride_cache_h,
     stride_cache_l,
-    HEAD_DIM: tl.constexpr,
-    EPS_Q: tl.constexpr,
-    EPS_K: tl.constexpr,
-    ROUND_ROPE: tl.constexpr = False,
+    HEAD_DIM: tl.constexpr,  # head size
+    EPS_Q: tl.constexpr,  # query epsilon
+    EPS_K: tl.constexpr,  # key epsilon
+    ROUND_ROPE: tl.constexpr = False,  # stock rounding
 ):  # fmt: skip
     h = tl.program_id(0)
-    HALF: tl.constexpr = HEAD_DIM // 2
+    HALF: tl.constexpr = HEAD_DIM // 2  # rotary half size
     j = tl.arange(0, HALF)
     base = h.to(tl.int64) * HEAD_DIM
     x0 = tl.load(QKV + base + j).to(tl.float32)
@@ -792,7 +792,7 @@ def _batch_main_kernel(
     EPI: tl.constexpr,  # output epilogue
     SS_BLOCK: tl.constexpr,  # partial reduction tile
     SEPARATE: tl.constexpr,  # separate projections
-    HAS_BIAS: tl.constexpr,
+    HAS_BIAS: tl.constexpr,  # bias presence
 ):  # fmt: skip
     row = tl.program_id(1).to(tl.int64)
     X = X + row * K
@@ -934,10 +934,10 @@ def _batch_qk_kernel(
     QKV, WQ, WK, COS, SIN, POS, SLOT,
     Q_OUT, K_CACHE, V_CACHE, n_heads, n_kv_heads, stride_cos, stride_cache_h,
     stride_cache_l, cache_batch_stride,
-    HEAD_DIM: tl.constexpr,
-    EPS_Q: tl.constexpr,
-    EPS_K: tl.constexpr,
-    ROUND_ROPE: tl.constexpr = False,
+    HEAD_DIM: tl.constexpr,  # head size
+    EPS_Q: tl.constexpr,  # query epsilon
+    EPS_K: tl.constexpr,  # key epsilon
+    ROUND_ROPE: tl.constexpr = False,  # stock rounding
 ):  # fmt: skip
     row = tl.program_id(1).to(tl.int64)
     QKV = QKV + row * (n_heads + 2 * n_kv_heads) * HEAD_DIM
