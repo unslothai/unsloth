@@ -50,6 +50,7 @@ from core.inference.diffusion_families import (
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
     DiffusionModelReplacedError,
+    require_pinned_checkpoint,
     family_for_checkpoint,
     LoadIdentity,
     detect_family_for_pick,
@@ -458,7 +459,7 @@ def _default_threads(smt: bool = True) -> int:
     windows = None if linux else _windows_cores()
     if physical:
         threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
-    elif windows is not None and smt:
+    elif windows is not None:
         cores, hybrid = windows
         threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
@@ -493,9 +494,9 @@ def _cpus_restricted(cpu: Optional[int]) -> bool:
 
 
 def _explicit_threads() -> Optional[int]:
-    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux) the thread count above whenever it differs from what
-    sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp builds before the fork's topology fix count half
-    the logical CPUs and ignore the affinity mask, so a host without SMT or a cpuset needs the count passed."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or (Linux, Windows) the thread count above whenever it differs
+    from what sd.cpp would pick by itself; None keeps sd.cpp's default. sd.cpp halves the logical CPUs on Windows (and
+    on Linux before the fork's topology fix) and ignores the affinity mask: hosts without SMT need the count passed."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -505,7 +506,7 @@ def _explicit_threads() -> Optional[int]:
     performance_cores = _apple_performance_cores()
     if performance_cores:
         return performance_cores
-    if sys.platform.startswith("linux"):
+    if sys.platform.startswith("linux") or sys.platform == "win32":
         cpu = os.cpu_count()
         threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
@@ -3779,7 +3780,7 @@ class SdCppDiffusionBackend:
 
             @functools.lru_cache(maxsize = 1)
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
-                return sd_cpp_args_mod.model_files_quantized_weight_types(files)
+                return sd_cpp_args_mod.gguf_quantized_weight_types(files.diffusion_model)
 
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
@@ -4619,6 +4620,7 @@ class SdCppDiffusionBackend:
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                 if expected_load is not None and expected_load != loaded_id:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
+                require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                 self._active_generate_cancel = cancel
                 self._active_generate_account = current_account_id()
                 # Publish step 0 before slow setup so a reload probe does not read idle.

@@ -834,6 +834,8 @@ _NEVER_PARKED = ("transformer", "transformer_2", "unconditional_transformer")
 _PARK_HOST_ATTR = "_unsloth_ltx25_park_host"
 # "0" lends only resident denoiser blocks (a short card then encodes on the CPU, as before).
 PARK_COMPANIONS_ENV = "UNSLOTH_LTX25_PARK_FOR_ENCODE"
+# "0" lends the denoiser's room once per prompt encode again, so a CFG request's two misses park and restore twice.
+ONE_LEASE_ENV = "UNSLOTH_LTX25_TE_ONE_LEASE"
 
 
 def _module_tensors(module: Any) -> list:
@@ -1372,17 +1374,18 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
-        def _one(texts: list[str]) -> tuple[Any, Any]:
+        def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
             # Cache miss: lend resident DiT blocks to the worker for the encode.
             is_cached = getattr(client, "cached", None)
-            restore = (
-                lend_resident_dit_for_encode(pipe, client)
-                if callable(is_cached) and not is_cached(texts, max_sequence_length)
-                else None
-            )
+            if not callable(is_cached) or all(is_cached(t, max_sequence_length) for t in texts):
+                return None
+            return lend_resident_dit_for_encode(pipe, client)
+
+        def _hosts(*texts: list[str]) -> list:
+            """Cached (read-only) tensors per prompt list, all encoded under one lease."""
+            restore = _lend(*texts)
             try:
-                # The client's own cached tensors (read only): every op below returns a new tensor.
-                cached, mask = client.encode(texts, max_sequence_length, copy = False)
+                return [client.encode(t, max_sequence_length, copy = False) for t in texts]
             except BaseException:
                 # A cancelled encode may still use the lent memory: stop it before pinning back.
                 stop = getattr(client, "stop_if_busy", None)
@@ -1392,6 +1395,9 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             finally:
                 if restore is not None:
                     restore()
+
+        def _one(texts: list[str], host: Optional[tuple] = None) -> tuple[Any, Any]:
+            cached, mask = host if host is not None else _hosts(texts)[0]
             batch = cached.shape[0]
             embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
@@ -1410,6 +1416,24 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
+        if (
+            prompt_embeds is None
+            and do_classifier_free_guidance
+            and negative_prompt_embeds is None
+            and (os.environ.get(ONE_LEASE_ENV) or "").strip() != "0"
+        ):
+            negative = negative_prompt or ""
+            negative = batch_size * [negative] if isinstance(negative, str) else negative
+            if batch_size != len(negative):
+                raise ValueError(
+                    f"`negative_prompt` has batch size {len(negative)}, but `prompt` has batch size "
+                    f"{batch_size}."
+                )
+            positive_host, negative_host = _hosts(
+                [p.strip() for p in prompt], [p.strip() for p in negative]
+            )
+            prompt_embeds, prompt_attention_mask = _one([], positive_host)
+            negative_prompt_embeds, negative_prompt_attention_mask = _one([], negative_host)
         if prompt_embeds is None:
             prompt_embeds, prompt_attention_mask = _one([p.strip() for p in prompt])
         if do_classifier_free_guidance and negative_prompt_embeds is None:

@@ -51,6 +51,7 @@ from hub.services.models.account_access import media_link_account, media_link_ta
 from utils.account_context import (
     OWNER_ACCOUNT_ID,
     account_thread,
+    arun_as,
     current_account,
     current_account_id,
     is_owner_context,
@@ -3434,6 +3435,9 @@ from models.inference import (
     GalleryImage,
     GalleryListResponse,
     ImageGenerationRequest,
+    ImageQueueJob,
+    ImageQueueMoveRequest,
+    ImageQueueResponse,
     ImageGenerationData,
     ImageGenerationResponse,
     AudioSpeechRequest,
@@ -6101,6 +6105,9 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         from core.inference.llama_cpp import _compaction_branch_states
         from storage import studio_db
 
+        has_truncation = getattr(studio_db, "chat_thread_has_context_truncation", None)
+        if has_truncation is not None and not has_truncation(str(thread_id)):
+            return False
         # As dicts: the completions path sends `ChatMessage`, the resolver uses `.get`.
         states = _compaction_branch_states(
             list(studio_db.list_chat_messages(str(thread_id)) or []),
@@ -38273,6 +38280,11 @@ def _embedding_payload(vector, encoding_format: str):
         import base64
         import numpy as np
         return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    # float16/32/64 numpy rows only: longdouble tolist() keeps numpy scalars.
+    if getattr(vector, "ndim", None) == 1 and getattr(
+        getattr(vector, "dtype", None), "char", None
+    ) in ("e", "f", "d"):
+        return vector.tolist()
     return [float(x) for x in vector]
 
 
@@ -38442,18 +38454,18 @@ async def _studio_embeddings(
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
         inputs = texts
-        token_counts = [count(text) for text in inputs]
+        token_counts = rag_embeddings._many(count, inputs)
         if limit and max(token_counts) > limit:
             if not _embeddings_truncate(body):
                 raise HTTPException(
                     status_code = 400,
                     detail = f"'input' exceeds the {limit}-token limit of {label}.",
                 )
-            inputs = [rag_embeddings.clip_to_limit(text, count, limit)[0] for text in inputs]
+            inputs = [text for text, _ in rag_embeddings.clip_many_to_limit(inputs, count, limit)]
             logger.warning(
                 "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
-            token_counts = [count(text) for text in inputs]
+            token_counts = rag_embeddings._many(count, inputs)
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."
@@ -49527,9 +49539,28 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
-    if request.xy is not None:
-        return await _generate_xy_grid(request)
-    return await _generate_diffusion_image_core(request)
+    global _direct_image_runs, _direct_image_last_end
+    _direct_image_runs += 1
+    headers = http_request.headers if http_request is not None else {}
+    more = headers.get("x-unsloth-more-runs") == "1"
+    sequence = headers.get("x-unsloth-run-sequence") or ""
+    # This run is the continuation its sequence was holding the queue for.
+    _direct_sequences.pop(sequence, None)
+    stops = _direct_stops
+    finished = False
+    try:
+        if request.xy is not None:
+            response = await _generate_xy_grid(request)
+        else:
+            response = await _generate_diffusion_image_core(request)
+        finished = True
+        return response
+    finally:
+        _direct_image_runs -= 1
+        _direct_image_last_end = time.monotonic()
+        # A stopped or failed run ends the sequence: the page sends no more.
+        if more and finished and stops == _direct_stops:
+            _direct_sequences[sequence] = _direct_image_last_end + _DIRECT_SEQUENCE_HOLD_S
 
 
 # Running grids by account: a Stop between cells or before a queued cell finds no denoise to land on.
@@ -49637,7 +49668,7 @@ async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGener
 
 
 async def _generate_diffusion_image_core(
-    request: DiffusionGenerateRequest,
+    request: DiffusionGenerateRequest, pinned_load = None
 ) -> DiffusionGenerateResponse:
     """The local-engine image run, shared by the route and the chat generate_image tool."""
     from core.inference.diffusion_segment import render_fence
@@ -49645,11 +49676,13 @@ async def _generate_diffusion_image_core(
     # From before the run releases the mask segmenter until it ends: a Find cannot reload SAM 3 in the gap before the
     # render takes the engine's generation slot.
     with render_fence():
-        return await _generate_diffusion_image_run(request)
+        return await _generate_diffusion_image_run(request, pinned_load = pinned_load)
 
 
 async def _generate_diffusion_image_run(
-    request: DiffusionGenerateRequest, captured: Optional[list] = None
+    request: DiffusionGenerateRequest,
+    captured: Optional[list] = None,
+    pinned_load = None,
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -49732,6 +49765,8 @@ async def _generate_diffusion_image_run(
         if enhancement.load is not None:
             # Captions are written for one family: a model swapped in since then retries with fresh ones.
             expected_load = enhancement.load
+        if pinned_load is not None:
+            expected_load = pinned_load
         # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
@@ -49797,8 +49832,8 @@ async def _generate_diffusion_image_run(
         except FallbackLoadRefusedError as exc:
             raise exc.http from exc
         except DiffusionModelReplacedError as exc:
-            if attempt > 0:
-                raise HTTPException(status_code = 409, detail = str(exc))
+            if attempt > 0 or pinned_load is not None:
+                raise HTTPException(status_code = 409, detail = str(exc)) from exc
             # The caption was written for the replaced model's family.
             enhancement = await _enhance_generate_prompts(backend, request)
             continue
@@ -51010,6 +51045,11 @@ async def cancel_diffusion_generation(
     ):
         return {"cancelled": grids}
 
+    # Past the account checks: a refused Stop must not end someone else's multi-run sequence.
+    global _direct_stops
+    _direct_sequences.clear()
+    _direct_stops += 1
+
     # A run still upsampling its prompt has not reached the engine yet.
     from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
 
@@ -51025,6 +51065,252 @@ async def cancel_diffusion_generation(
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
     return {"cancelled": bool(cancelled or upsampling or detailing or grids)}
+
+
+# Direct /images/generate runs in flight: the queue waits them out, so a job queued behind one starts after it.
+_direct_image_runs = 0
+_direct_image_last_end = 0.0
+# The page sends a multi-run Generate one request at a time: a queued job must not slip into the gap between two.
+# A request marked X-Unsloth-More-Runs holds the queue until the next run of its X-Unsloth-Run-Sequence arrives (or
+# Stop, or the hold lapses); holds are per sequence, so another client's run never releases one.
+_DIRECT_RUN_SETTLE_S = 1.5
+_DIRECT_SEQUENCE_HOLD_S = 60.0
+_direct_sequences: dict[str, float] = {}
+# Bumped by Stop: a run that still returns (a Detailer keeps its render) must not re-arm the hold.
+_direct_stops = 0
+_image_queue = None
+_QUEUE_MODEL_CHANGED_MSG = (
+    "The image model changed since this job was queued. Queue it again on the loaded model."
+)
+
+
+def _resident_load(status: dict):
+    """(load identity, checkpoint file): a GGUF swapped for another quant of the same repo is a different model."""
+    from core.inference.diffusion_families import load_identity
+
+    if not status.get("loaded"):
+        return None
+    return (
+        load_identity(status.get("repo_id"), status.get("base_repo"), status.get("family")),
+        status.get("gguf_filename"),
+    )
+
+
+def _engine_rendering() -> bool:
+    """Any render on the engine, a chat image included, so a job only reports running once it can render."""
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_keepwarm import engine_if_imported
+
+    progress = getattr(engine_if_imported(DIFFUSION), "generate_progress", None)
+    try:
+        return bool(progress is not None and progress().get("active"))
+    except Exception:  # noqa: BLE001 -- no progress reading: do not hold the queue on it
+        return False
+
+
+def _sequence_held() -> bool:
+    now = time.monotonic()
+    for sequence, until in list(_direct_sequences.items()):
+        if until <= now:
+            _direct_sequences.pop(sequence, None)
+    return bool(_direct_sequences)
+
+
+async def _wait_for_direct_image_runs() -> None:
+    while (
+        _direct_image_runs > 0
+        or _diffusion_persist_active > 0
+        or time.monotonic() - _direct_image_last_end < _DIRECT_RUN_SETTLE_S
+        or _sequence_held()
+        or _engine_rendering()
+    ):
+        await asyncio.sleep(0.25)
+
+
+async def _run_queued_image_job(job) -> list[str]:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import (
+        DIFFUSION_CANCELLED_MSG,
+        DiffusionModelReplacedError,
+        pin_checkpoint,
+    )
+    from core.inference import media_keepwarm
+    from core.inference.generation_ticket import generation_ticket
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.image_queue import JobCancelled
+    from core.inference.llama_keepwarm import InferenceActivityReservation
+
+    async def _run() -> list[str]:
+        # v1 never reloads: a job runs only on the model that was resident when it was queued.
+        status = await asyncio.to_thread(get_active_diffusion_engine().status)
+        if _resident_load(status) != job.load:
+            raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG)
+        if job.ticket.cancelled():
+            raise JobCancelled()
+        # No HTTP request carries a queued job: keep-warm, training guards and account checks need it (as video's queue).
+        activity = InferenceActivityReservation()
+        activity.reserve()
+        try:
+            await activity.start()
+            await media_keepwarm.begin_request(DIFFUSION)
+        except BaseException:
+            activity.finish()
+            raise
+        try:
+            account_access.require_live_account()
+            with generation_ticket(job.ticket), pin_checkpoint(job.load[1]):
+                response = await _generate_diffusion_image_core(job.request, job.load[0])
+        except HTTPException as exc:
+            if exc.status_code == 409 and exc.detail == DIFFUSION_CANCELLED_MSG:
+                raise JobCancelled() from exc
+            if exc.status_code == 409 and isinstance(exc.__cause__, DiffusionModelReplacedError):
+                raise RuntimeError(_QUEUE_MODEL_CHANGED_MSG) from exc
+            detail = exc.detail
+            if isinstance(detail, dict):
+                detail = detail.get("message") or detail.get("detail") or json.dumps(detail)
+            raise RuntimeError(str(detail)) from exc
+        finally:
+            media_keepwarm.end_request(DIFFUSION)
+            activity.finish()
+        job.seed_used = next(
+            (
+                image.batch_seed if image.batch_seed is not None else image.seed
+                for image in response.images
+            ),
+            None,
+        )
+        return [image.id for image in response.images]
+
+    return await arun_as(job.account, _run())
+
+
+def retire_account_image_jobs(account_id: str) -> None:
+    """Called from a worker thread by account disable / delete; the queue lives on the event loop."""
+    queue = _image_queue
+    if queue is not None and queue.loop is not None and not queue.loop.is_closed():
+        queue.loop.call_soon_threadsafe(queue.retire, account_id)
+
+
+def _get_image_queue():
+    global _image_queue
+    if _image_queue is None:
+        from core.inference.image_queue import ImageGenerationQueue
+        _image_queue = ImageGenerationQueue(_run_queued_image_job, _wait_for_direct_image_runs)
+    return _image_queue
+
+
+def _image_queue_job(queue, job) -> ImageQueueJob:
+    request = job.request
+    return ImageQueueJob(
+        id = job.id,
+        status = job.status,
+        position = queue.position(job),
+        prompt = request.prompt,
+        width = request.width,
+        height = request.height,
+        steps = request.steps if "steps" in request.model_fields_set else None,
+        seed = request.seed,
+        batch_size = request.batch_size,
+        workflow = request.workflow,
+        loras = [f"{l.id}:{l.weight:g}" for l in request.loras or []],
+        created_at = job.created_at,
+        started_at = job.started_at,
+        finished_at = job.finished_at,
+        error = job.error,
+        image_ids = job.image_ids,
+        seed_used = job.seed_used,
+    )
+
+
+def _image_queue_response(queue) -> ImageQueueResponse:
+    from core.inference.image_queue import FINISHED, QUEUED, RUNNING
+
+    jobs = queue.jobs(current_account_id())
+    ordered = (
+        [job for job in jobs if job.status == RUNNING]
+        + [job for job in jobs if job.status == QUEUED]
+        + [job for job in reversed(jobs) if job.status in FINISHED]
+    )
+    return ImageQueueResponse(jobs = [_image_queue_job(queue, job) for job in ordered])
+
+
+def _queued_job_or_404(queue, job_id: str):
+    job = queue.get(current_account_id(), job_id)
+    if job is None:
+        raise HTTPException(status_code = 404, detail = "Queued image job not found.")
+    return job
+
+
+@studio_router.post("/images/queue", response_model = ImageQueueJob)
+async def enqueue_diffusion_image(
+    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Add a generate request to the queue. Jobs run one at a time, in queue order, through the same path as
+    POST /images/generate, and their images land in the gallery. A job runs only on the model loaded when it was
+    queued: nothing loaded is a 409 here, and a model swapped in meanwhile fails the job instead of reloading."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import DIFFUSION_NOT_LOADED_MSG
+    from core.inference.image_queue import QueueFull
+
+    if request.provider_id:
+        raise HTTPException(
+            status_code = 400,
+            detail = "The queue runs on the loaded image model; a saved connection generates directly.",
+        )
+    if request.xy is not None:
+        raise HTTPException(
+            status_code = 400, detail = "An XY grid generates directly; it cannot be queued."
+        )
+    status = await asyncio.to_thread(get_active_diffusion_engine().status)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_generation_access, status, "diffusion")
+        await asyncio.to_thread(account_access.require_media_adapters, request)
+    load = _resident_load(status)
+    if load is None:
+        raise HTTPException(status_code = 409, detail = DIFFUSION_NOT_LOADED_MSG)
+    queue = _get_image_queue()
+    try:
+        job = queue.enqueue(current_account(), request, load)
+    except QueueFull as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return _image_queue_job(queue, job)
+
+
+@studio_router.get("/images/queue", response_model = ImageQueueResponse)
+async def list_diffusion_queue(current_subject: str = Depends(get_current_subject)):
+    return _image_queue_response(_get_image_queue())
+
+
+@studio_router.post("/images/queue/{job_id}/cancel", response_model = ImageQueueJob)
+async def cancel_diffusion_queue_job(
+    job_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """Cancel one job. A queued job never runs; the running one stops its own render, and the queue moves on."""
+    queue = _get_image_queue()
+    job = _queued_job_or_404(queue, job_id)
+    queue.cancel(job.account_id, job.id)
+    return _image_queue_job(queue, job)
+
+
+@studio_router.post("/images/queue/{job_id}/move", response_model = ImageQueueResponse)
+async def move_diffusion_queue_job(
+    job_id: str,
+    payload: ImageQueueMoveRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    queue = _get_image_queue()
+    job = _queued_job_or_404(queue, job_id)
+    if queue.move(job.account_id, job.id, payload.index) is None:
+        raise HTTPException(status_code = 409, detail = "Only a queued job can be moved.")
+    return _image_queue_response(queue)
+
+
+@studio_router.delete("/images/queue", response_model = ImageQueueResponse)
+async def clear_diffusion_queue(current_subject: str = Depends(get_current_subject)):
+    """Drop your queued and finished jobs. A running job finishes; Stop it to end it early."""
+    queue = _get_image_queue()
+    queue.clear(current_account_id())
+    return _image_queue_response(queue)
 
 
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────

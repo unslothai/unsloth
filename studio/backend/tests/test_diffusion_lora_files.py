@@ -11,6 +11,8 @@ torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_lora_files as lf  # noqa: E402
 
+REWRITE_METADATA_ENV = "UNSLOTH_DIFFUSION_LORA_REWRITE_METADATA"
+
 
 def test_alpha_folds_into_lora_b_and_down_up_rename():
     a, b = torch.randn(4, 8), torch.randn(6, 4)
@@ -440,3 +442,187 @@ def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_st
     assert torch.allclose(out.float(), expected.float(), atol = 0.25, rtol = 0.05)
     lf.unload_adapters(pipe)
     assert torch.equal(net(x), bare)
+
+
+def _moss_transformer():
+    from core.inference.diffusion_moss_image import MOSSImageTransformer
+    torch.manual_seed(1)
+    return MOSSImageTransformer(
+        dim = 16,
+        ffn_dim = 32,
+        num_heads = 2,
+        num_layers = 1,
+        text_dim = 16,
+        freq_dim = 8,
+        latent_channels = 8,
+    )
+
+
+@pytest.mark.parametrize("spelling", ["lora_A", "lora_down"])
+def test_a_rewritten_file_keeps_the_strength_its_metadata_sets(tmp_path, monkeypatch, spelling):
+    # Same tensors, same lora_adapter_metadata: only the key spelling decides whether the file is rewritten.
+    pytest.importorskip("diffusers")
+    pytest.importorskip("peft")
+    import json
+
+    from safetensors.torch import save_file
+
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+    from core.inference.diffusion_torchao_patches import install_peft_torchao_dispatch_guard
+
+    install_peft_torchao_dispatch_guard()
+    monkeypatch.delenv(REWRITE_METADATA_ENV, raising = False)
+    model = _moss_transformer()
+    x = torch.randn(3, 16)
+    base = model.layers[0].proj.q(x).detach()
+    torch.manual_seed(2)
+    a, b = torch.randn(2, 16), torch.randn(16, 2)
+    up = "lora_B" if spelling == "lora_A" else "lora_up"
+    path = tmp_path / f"{spelling}.safetensors"
+    save_file(
+        {
+            f"transformer.layers.0.proj.q.{spelling}.weight": a,
+            f"transformer.layers.0.proj.q.{up}.weight": b,
+        },
+        str(path),
+        metadata = {
+            "lora_adapter_metadata": json.dumps(
+                {
+                    "transformer.r": 2,
+                    "transformer.lora_alpha": 8,
+                    "transformer.target_modules": ["layers.0.proj.q"],
+                }
+            )
+        },
+    )
+    lf.load_adapter(MOSSImagePipeline(model, scheduler = None), str(path), "m", "moss-image")
+    delta = model.layers[0].proj.q(x).detach() - base
+    expected = 4.0 * (x @ a.T @ b.T)  # lora_alpha 8 / r 2
+    assert (delta - expected).norm() / expected.norm() < 1e-6
+
+
+def test_the_metadata_kill_switch_keeps_unit_strength(tmp_path, monkeypatch):
+    import json
+
+    from safetensors.torch import save_file
+
+    path = tmp_path / "kohya.safetensors"
+    b = torch.randn(24, 2)
+    save_file(
+        {
+            "diffusion_model.blocks.1.proj.q.lora_down.weight": torch.randn(2, 24),
+            "diffusion_model.blocks.1.proj.q.lora_up.weight": b,
+        },
+        str(path),
+        metadata = {
+            "lora_adapter_metadata": json.dumps({"transformer.r": 2, "transformer.lora_alpha": 8})
+        },
+    )
+    key = "diffusion_model.blocks.1.proj.q.lora_B.weight"
+    monkeypatch.delenv(REWRITE_METADATA_ENV, raising = False)
+    pipe = _RecordingPipe()
+    lf.load_adapter(pipe, str(path), "on", "krea-2")
+    assert torch.equal(pipe.loaded["on"][key], b * 4.0)
+    monkeypatch.setenv(REWRITE_METADATA_ENV, "0")
+    lf.load_adapter(pipe, str(path), "off", "krea-2")
+    assert pipe.loaded["off"][key] is not None and torch.equal(pipe.loaded["off"][key], b)
+
+
+def test_metadata_scales_follow_peft_patterns_and_yield_to_alpha_tensors():
+    a, b = torch.randn(4, 8), torch.randn(6, 4)
+    meta = {"r": 4, "lora_alpha": 8, "alpha_pattern": {"attn.wk": 2}}
+    state = {
+        "diffusion_model.blocks.0.attn.wq.lora_A.weight": a,
+        "diffusion_model.blocks.0.attn.wq.lora_B.weight": b,
+        "diffusion_model.blocks.0.attn.wk.lora_A.weight": a,
+        "diffusion_model.blocks.0.attn.wk.lora_B.weight": b,
+        "diffusion_model.blocks.0.attn.wv.lora_down.weight": a,
+        "diffusion_model.blocks.0.attn.wv.lora_up.weight": b,
+        "diffusion_model.blocks.0.attn.wv.alpha": torch.tensor(1.0),  # the tensor alpha wins
+    }
+    out = lf.normalize_lora(state, "krea-2", meta)
+    stem = "diffusion_model.blocks.0.attn."
+    assert torch.allclose(out[stem + "wq.lora_B.weight"], b * 2.0)
+    assert torch.allclose(out[stem + "wk.lora_B.weight"], b * 0.5)  # alpha_pattern 2 / 4
+    assert torch.allclose(out[stem + "wv.lora_B.weight"], b * 0.25)
+    rs = lf.normalize_lora(state, "krea-2", dict(meta, use_rslora = True))
+    assert torch.allclose(rs[stem + "wq.lora_B.weight"], b * 4.0)
+    dora = lf.normalize_lora(state, "krea-2", dict(meta, use_dora = True))
+    assert dora[stem + "wq.lora_B.weight"] is b
+    assert lf.normalize_lora(state, "krea-2")[stem + "wq.lora_B.weight"] is b
+
+
+def test_moss_fused_qkv_metadata_scales_every_split_projection():
+    a, b = torch.randn(4, 6), torch.randn(9, 4)
+    out = lf.normalize_lora(
+        {
+            "diffusion_model.layers.0.proj.qkv.lora_A.weight": a,
+            "diffusion_model.layers.0.proj.qkv.lora_B.weight": b,
+        },
+        "moss-image",
+        {"r": 4, "lora_alpha": 2},
+    )
+    for i, name in enumerate("qkv"):
+        assert torch.allclose(
+            out[f"diffusion_model.layers.0.proj.{name}.lora_B.weight"], b[i * 3 : (i + 1) * 3] * 0.5
+        )
+
+
+def test_only_the_transformers_metadata_is_read(tmp_path):
+    import json
+
+    from safetensors.torch import save_file
+
+    def write(meta):
+        path = tmp_path / "m.safetensors"
+        save_file(
+            {"x.lora_A.weight": torch.zeros(1, 1)},
+            str(path),
+            metadata = None if meta is None else {"lora_adapter_metadata": json.dumps(meta)},
+        )
+        return lf.read_lora_metadata(str(path))
+
+    assert write(
+        {"transformer.r": 2, "transformer.lora_alpha": 8, "text_encoder.lora_alpha": 1}
+    ) == {
+        "r": 2,
+        "lora_alpha": 8,
+    }
+    assert (
+        write({"r": 2, "lora_alpha": 8}) is None
+    )  # diffusers drops unprefixed keys under its prefix
+    assert write(None) is None
+    assert lf.REWRITE_METADATA_ENV == REWRITE_METADATA_ENV
+    assert lf.read_lora_metadata(str(tmp_path / "missing.safetensors")) is None
+
+
+def test_a_caret_pattern_is_anchored_at_both_ends_as_in_peft():
+    peft_other = pytest.importorskip("peft.utils.other")
+    meta = {"r": 4, "lora_alpha": 4, "alpha_pattern": {r"^layers\.0\.proj\.q": 8}}
+    for stem in ("layers.0.proj.q", "layers.0.proj.qkv"):
+        want = (
+            8
+            if peft_other.get_pattern_key(meta["alpha_pattern"], stem) in meta["alpha_pattern"]
+            else 4
+        )
+        assert lf._metadata_scale(meta, stem, 4) == want / 4
+    assert lf._metadata_scale(meta, "layers.0.proj.qkv", 4) == 1.0
+
+
+@pytest.mark.parametrize("source", ["alpha", "metadata"])
+def test_the_folded_scale_covers_the_lora_b_bias(source):
+    a, b, bias = torch.randn(2, 8), torch.randn(6, 2), torch.randn(6)
+    stem = "diffusion_model.blocks.0.attn.wq"
+    state = {
+        f"{stem}.lora_down.weight": a,
+        f"{stem}.lora_up.weight": b,
+        f"{stem}.lora_up.bias": bias,
+    }
+    meta = None
+    if source == "alpha":
+        state[f"{stem}.alpha"] = torch.tensor(8.0)
+    else:
+        meta = {"r": 2, "lora_alpha": 8}
+    out = lf.normalize_lora(state, "krea-2", meta)
+    assert torch.allclose(out[f"{stem}.lora_B.weight"], b * 4.0)
+    assert torch.allclose(out[f"{stem}.lora_B.bias"], bias * 4.0)

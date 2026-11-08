@@ -814,6 +814,8 @@ MOE_FAMILIES = (
     "gpt_oss",
     "deepseek_v3",
     "kimi_linear",
+    "minimax",
+    "minimax_m2",
     "olmoe",
     "mixtral",
     "qwen2_moe",
@@ -875,6 +877,11 @@ _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accu
 # fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
 _KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
 _KIMI_EAGER = "eager: remote code, no compiled region"
+# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
+# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
+# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+_MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
+_MINIMAX_EAGER = "eager: block compile not measured for this family"
 # Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
 _MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
@@ -915,6 +922,36 @@ _MOE_EVIDENCE = {
     )
     * 2
     + (_KIMI_EAGER,),
+    ("minimax", "full", False, "cp"): (
+        _MINIMAX + "[m1_cp2|m1_cp4|m1_dp2_cp2|m1_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora|m1_cp2_lora_checkpoint|m1_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora_experts|m1_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "full", False, "cp"): (
+        _MINIMAX + "[m2_cp2|m2_cp4_gqa|m2_dp2_cp2|m2_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora|m2_cp2_lora_reentrant|m2_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora_experts|m2_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
 }
 
 

@@ -2039,6 +2039,10 @@ def _sticky_compaction_details(
     try:
         from storage import studio_db
 
+        # Boundaries live only in a stored row's contextTruncation; most threads have none.
+        has_truncation = getattr(studio_db, "chat_thread_has_context_truncation", None)
+        if has_truncation is not None and not has_truncation(thread_id):
+            return 0, False, False
         stored = list(studio_db.list_chat_messages(thread_id) or [])
         states = _compaction_branch_states(stored, branch_messages)
         if not states:
@@ -10248,6 +10252,8 @@ class LlamaCppBackend:
     _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
+    # Not on the caps dict: probe_server_capabilities returns a fresh copy on --fit-target builds.
+    _reasoning_budget_value_cache: dict[tuple[str, int, int, int], bool] = {}
     _capability_cache_lock = threading.Lock()
 
     # Older builds take a bare boolean -fa and exit on a following "on".
@@ -10884,27 +10890,47 @@ class LlamaCppBackend:
             value_key = f"supports_reasoning_budget_value:{effective_budget}"
             if value_key not in caps:
                 probe_binary = cls._exec_path_for_launch(binary)
-                probe_env = cls._llama_server_env_for_binary(probe_binary)
-                # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
-                for name in tuple(probe_env):
-                    if name.startswith("LLAMA_ARG_"):
-                        probe_env.pop(name, None)
-                if sys.platform == "darwin":
-                    probe_env["GGML_METAL_DEVICES"] = "0"
                 try:
-                    result = subprocess.run(
-                        [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
-                        capture_output = True,
-                        text = True,
-                        encoding = "utf-8",
-                        errors = "replace",
-                        timeout = 10,
-                        check = False,
-                        env = probe_env,
+                    probe_stat = Path(probe_binary).stat()
+                    value_cache_key = (
+                        str(probe_binary),
+                        probe_stat.st_mtime_ns,
+                        probe_stat.st_size,
+                        effective_budget,
                     )
-                    caps[value_key] = result.returncode == 0
-                except (OSError, subprocess.SubprocessError):
-                    caps[value_key] = False
+                except OSError:
+                    value_cache_key = None
+                with cls._capability_cache_lock:
+                    known = cls._reasoning_budget_value_cache.get(value_cache_key)
+                if known is not None:
+                    caps[value_key] = known
+                else:
+                    probe_env = cls._llama_server_env_for_binary(probe_binary)
+                    # llama-server parses LLAMA_ARG_* before argv, so clear stale inherited values.
+                    for name in tuple(probe_env):
+                        if name.startswith("LLAMA_ARG_"):
+                            probe_env.pop(name, None)
+                    if sys.platform == "darwin":
+                        probe_env["GGML_METAL_DEVICES"] = "0"
+                    try:
+                        result = subprocess.run(
+                            [probe_binary, "--reasoning-budget", str(effective_budget), "--help"],
+                            capture_output = True,
+                            text = True,
+                            encoding = "utf-8",
+                            errors = "replace",
+                            timeout = 10,
+                            check = False,
+                            env = probe_env,
+                            **_windows_hidden_subprocess_kwargs(),
+                        )
+                        caps[value_key] = result.returncode == 0
+                        # Spawn errors, timeouts, signals and NTSTATUS crashes (unsigned) probe again.
+                        if value_cache_key is not None and 0 <= result.returncode < 0xC0000000:
+                            with cls._capability_cache_lock:
+                                cls._reasoning_budget_value_cache[value_cache_key] = caps[value_key]
+                    except (OSError, subprocess.SubprocessError):
+                        caps[value_key] = False
             if not caps[value_key]:
                 raise ValueError(
                     f"llama-server at {binary} does not accept positive reasoning budgets. "
@@ -12488,6 +12514,11 @@ class LlamaCppBackend:
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
     @staticmethod
+    def _cuda_device_info():
+        from utils.hardware import nvidia
+        return nvidia.cuda_device_info_or_torch()
+
+    @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
         """PHYSICAL ids of visible integrated CUDA GPUs; ROCm is left to _rocm_unified_memory_gpu_ids."""
         cached = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
@@ -12503,29 +12534,19 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return set()
             # Same ordinal-to-physical map as the ROCm twin, so masked CUDA_VISIBLE_DEVICES=2 hosts stay correct.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            integrated: set[int] = set()
-            # An incomplete pass is returned but not cached, so a failed query is retried.
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                except Exception:
-                    complete = False
-                    continue
-                # Both attribute spellings: torch renamed `integrated`.
-                if not (
-                    getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
-                ):
-                    continue
-                integrated.add(
-                    physical_ids[ordinal]
-                    if physical_ids is not None and ordinal < len(physical_ids)
-                    else ordinal
-                )
-            # Cached for the preflight only if the pass reached every device; a torch that raised says nothing.
-            if complete:
+            integrated = {
+                physical_ids[ordinal]
+                if physical_ids is not None and ordinal < len(physical_ids)
+                else ordinal
+                for ordinal, device in enumerate(info)
+                if device is not None and device[1]
+            }
+            if all(device is not None for device in info):
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
                 ] = integrated
@@ -12538,7 +12559,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _integrated_cuda_pool_total_mib() -> dict[int, int]:
-        """Pool MiB per integrated CUDA device, from props.total_memory: what it can actually allocate."""
+        """Pool MiB per integrated CUDA device, from the driver's total memory: what it can actually allocate."""
         key = LlamaCppBackend._integrated_cuda_mask_key()
         cached = LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB.get(key)
         if cached is not None:
@@ -12547,24 +12568,21 @@ class LlamaCppBackend:
         if not integrated:
             return {}
         try:
-            import torch
-
+            info = LlamaCppBackend._cuda_device_info()
+            if info is None:
+                return {}
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             totals: dict[int, int] = {}
-            complete = True
-            for ordinal in range(torch.cuda.device_count()):
+            complete = all(device is not None for device in info)
+            for ordinal, device in enumerate(info):
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                if idx not in integrated:
+                if device is None or idx not in integrated:
                     continue
-                try:
-                    props = torch.cuda.get_device_properties(ordinal)
-                    totals[idx] = int(props.total_memory) // (1024 * 1024)
-                except Exception:
-                    complete = False
+                totals[idx] = int(device[2]) // (1024 * 1024)
             if complete:
                 LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB[key] = totals
             return totals
@@ -12728,17 +12746,16 @@ class LlamaCppBackend:
                 return False  # ROCm reuses torch.cuda.*; not a CUDA part
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            count = torch.cuda.device_count()
+            info = LlamaCppBackend._cuda_device_info() or []
 
             # Mirror _get_gpu_free_memory; unset or unparsable CUDA_VISIBLE_DEVICES keeps physical id == ordinal.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
             names_by_id: dict[int, str] = {}
-            for ordinal in range(count):
-                try:
-                    name = (torch.cuda.get_device_properties(ordinal).name or "").lower()
-                except Exception:
+            for ordinal, device in enumerate(info):
+                if device is None:
                     continue
+                name = (device[3] or "").lower()
                 pid = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
