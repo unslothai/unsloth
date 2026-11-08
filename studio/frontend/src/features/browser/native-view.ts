@@ -1435,7 +1435,11 @@ export function startNativeViews(): () => void {
     if (shownView && movingWindow()) {
       const tabId = shownView;
       coverForDrag(tabId);
-      if (!layered && parkable(tabId)) void parkForDrag(tabId);
+      if (!layered && parkable(tabId)) {
+        // Outside apply: forgotten, or a drop back at the same place would match it and never show the page.
+        sent = "";
+        void parkForDrag(tabId);
+      }
     }
     if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
   };
