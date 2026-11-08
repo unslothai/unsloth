@@ -908,7 +908,7 @@ def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
     return copied
 
 
-# "0": the H3 conditioner records every decoder hidden state again (stock), not just the one H3 reads.
+# "0": the H3 conditioner records every hidden state again.
 H3_TE_READ_CAPTURE_ENV = "UNSLOTH_H3_TE_READ_CAPTURE"
 
 
@@ -928,12 +928,9 @@ def install_h3_te_read_capture(
     layer: int = H3_TE_READ_LAYER,
     logger: Any = None,
 ) -> bool:
-    """H3's helper calls ``text_encoder.model(output_hidden_states=True)`` and reads ``hidden_states[layer]`` alone,
-    so the stock call keeps every layer's ``(1, tokens, 5120)`` state alive until it returns (52 for the hosted
-    50-layer conditioner). Here that call runs without recording and a pre-hook keeps the input of decoder layer
-    ``layer``: the same tensor in transformers 4.x and 5.x once ``layer`` is past the DeepStack layers (5.x records
-    the output before the visual merge), so the others stay stock. Returned states are ``None`` but the read one.
-    Instance-scoped, idempotent; never raises."""
+    """H3 reads only ``hidden_states[layer]``: run without recording and keep layer ``layer``'s input via a pre-hook.
+    Past the DeepStack layers that input equals ``hidden_states[layer]`` in transformers 4.x and 5.x (5.x records
+    those layers before the visual merge), so DeepStack layers are refused. Idempotent; never raises."""
     try:
         model = getattr(text_encoder, "model", None)
         layers = getattr(getattr(model, "language_model", None), "layers", None)
@@ -968,7 +965,6 @@ def install_h3_te_read_capture(
         finally:
             handle.remove()
         if len(captured) != 1 or captured[0] is None:
-            # unreachable for a Qwen3-VL stack; the stock call is the answer if a layout ever differs
             del out, captured
             return stock(*args, **kwargs)
         states = [None] * (len(layers) + 1)
