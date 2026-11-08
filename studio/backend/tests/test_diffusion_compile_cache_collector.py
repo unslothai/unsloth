@@ -170,6 +170,7 @@ def _compiled_lifecycle(
     name: str,
     net,
     shapes = ((4, 16),),
+    reset_dynamo = False,
 ):
     ctx = cc.begin(
         family = name,
@@ -180,6 +181,8 @@ def _compiled_lifecycle(
         compile_kwargs = {"fullgraph": False, "dynamic": False},
     )
     assert ctx is not None
+    if reset_dynamo:
+        torch._dynamo.reset()
     compiled = torch.compile(net, dynamic = False)
     for shape in shapes:
         x = torch.randn(*shape)
@@ -229,3 +232,13 @@ def test_a_reload_that_compiles_a_new_shape_keeps_the_shape_it_reused(real_compi
     assert reloaded.key == first.key and saved
     keys = _inductor_keys(reloaded)
     assert _inductor_keys(first) < keys
+
+
+def test_a_graph_recompiled_at_an_unchanged_entry_count_is_still_kept(real_compile):
+    first, _ = _compiled_lifecycle("model_a", _Net(1.0))
+    # a reset, then a recompile at another shape: the forward is back at one cache entry, holding a new graph
+    second, _ = _compiled_lifecycle("model_b", _Net(2.0), shapes = ((8, 16),), reset_dynamo = True)
+    third, saved = _compiled_lifecycle("model_c", _Net(3.0), shapes = ((8, 16),))
+    assert saved and _inductor_keys(second) - _inductor_keys(first)
+    # model_c runs model_b's graph from memory; model_a's graph is gone from Dynamo, so its artifacts are not carried
+    assert _inductor_keys(third) == _inductor_keys(second)

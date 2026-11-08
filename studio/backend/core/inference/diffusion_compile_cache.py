@@ -863,22 +863,23 @@ def _module_forwards(transformer: Any) -> frozenset:
     return frozenset(codes)
 
 
-def _dynamo_entry_counts() -> Optional[dict[int, tuple[Any, int]]]:
-    """``id(code) -> (code, cache entries)`` for every code Dynamo holds compiled entries for; None when this torch
-    does not expose them (then the collector is never reset)."""
+def _dynamo_entries() -> Optional[dict[int, tuple[Any, tuple]]]:
+    """``id(code) -> (code, the compiled code of each cache entry)`` for every code Dynamo holds compiled entries for;
+    None when this torch does not expose them (then the collector is never reset). Each compile makes a new compiled
+    code object, so a replaced entry (a reset, then a recompile) differs even at an unchanged entry count."""
     try:
         from torch._dynamo import convert_frame  # noqa: PLC0415
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
 
-        counts = {}
+        entries = {}
         for ref in list(convert_frame.input_codes.seen):
             code = ref()
             if code is None:
                 continue
-            n = len(_debug_get_cache_entry_list(code))
-            if n:
-                counts[id(code)] = (code, n)
-        return counts
+            compiled = tuple(entry.code for entry in _debug_get_cache_entry_list(code))
+            if compiled:
+                entries[id(code)] = (code, compiled)
+        return entries
     except Exception:  # noqa: BLE001
         return None
 
@@ -900,10 +901,16 @@ def _serves(code: Any, forwards: Any) -> bool:
     )
 
 
-def _still_compiled(codes: frozenset) -> bool:
+def _still_compiled(collection: "_Collection") -> bool:
+    """Dynamo still holds a cache entry compiled during ``collection`` (it holds them alive, so ids are stable)."""
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
-        return any(_debug_get_cache_entry_list(code) for code in codes)
+        ids = {id(c) for c in collection.compiled}
+        return any(
+            id(entry.code) in ids
+            for code in collection.codes
+            for entry in _debug_get_cache_entry_list(code)
+        )
     except Exception:  # noqa: BLE001 - cannot tell, so keep it
         return True
 
@@ -913,8 +920,9 @@ class _Collection:
     """What torch collected between two collector resets, kept while Dynamo can still run the code compiled then."""
 
     data: bytes
-    # Codes that gained compiled entries in this collection.
+    # Codes that gained compiled entries in this collection, and those entries' compiled code.
     codes: frozenset
+    compiled: tuple
     # Some of them are not a module forward of the models it served (a resume function, a compiled helper), so any
     # later model may run them.
     any_model: bool
@@ -923,8 +931,8 @@ class _Collection:
 # Every earlier collection Dynamo may still serve from memory; a reset only ever moves torch's collection here.
 _collections_lock = threading.Lock()
 _collections: list[_Collection] = []
-# The collection torch is building now: entry counts at its start and the forwards of the models it serves.
-_collecting_since: Optional[dict[int, tuple[Any, int]]] = None
+# The collection torch is building now: Dynamo's entries at its start and the forwards of the models it serves.
+_collecting_since: Optional[dict[int, tuple[Any, tuple]]] = None
 _collecting_forwards: set = set()
 # Host RAM bound on kept collections; past it the collector simply keeps accumulating (torch's own behaviour).
 _COLLECTIONS_MAX_BYTES = 2 << 30
@@ -956,15 +964,20 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
     if acquire is not None and not acquire(blocking = False):
         return False
     try:
-        counts = _dynamo_entry_counts()
-        if counts is None:
+        entries = _dynamo_entries()
+        if entries is None:
             return False
         with _collections_lock:
             since = _collecting_since if _collecting_since is not None else {}
-            grown = frozenset(
-                code for key, (code, n) in counts.items() if n > since.get(key, (None, 0))[1]
-            )
-            _collections[:] = [c for c in _collections if _still_compiled(c.codes)]
+            # identity, not count: ``since`` holds its compiled codes alive, so their ids cannot be reused
+            new = {}
+            for key, (code, compiled) in entries.items():
+                before = {id(c) for c in since.get(key, (None, ()))[1]}
+                fresh = tuple(c for c in compiled if id(c) not in before)
+                if fresh:
+                    new[code] = fresh
+            grown = frozenset(new)
+            _collections[:] = [c for c in _collections if _still_compiled(c)]
             if grown:
                 # what torch would add to the next bundle anyway: the whole collection since the last reset
                 result = torch.compiler.save_cache_artifacts()
@@ -976,14 +989,15 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
                         _Collection(
                             data = data,
                             codes = grown,
+                            compiled = tuple(c for fresh in new.values() for c in fresh),
                             any_model = not all(
                                 _serves(code, _collecting_forwards) for code in grown
                             ),
                         )
                     )
-            # no code gained entries: nothing compiled then can be run without compiling (and recording) again
+            # no new entry: nothing compiled then can be run without compiling (and recording) again
             CacheArtifactManager.clear()
-            _collecting_since = counts
+            _collecting_since = entries
             _collecting_forwards.clear()
             _collecting_forwards.update(forwards)
         return True
@@ -1005,7 +1019,7 @@ def _with_reused_collections(
             c.data
             for c in _collections
             if (c.any_model or any(_serves(code, ctx.forwards) for code in c.codes))
-            and _still_compiled(c.codes)
+            and _still_compiled(c)
         ]
     if not reused:
         return None if data is None else _one_group_per_type(data, logger)
