@@ -734,7 +734,7 @@ def unlisted_config(index: int) -> Optional[tuple]:
                 _UNLISTED_PROBE[index] = _probe(index, _FALLBACK_CONFIG)
             if _UNLISTED_PROBE[index]:
                 tile = _FALLBACK_CONFIG if mode == "force" else _unlisted_tile(index)
-                key = (index, mode, tile)  # the latency verdict is the kept tile's
+                key = (index, mode, tile)
                 if key not in _UNLISTED_OK:
                     ok = True
                     if mode != "force":

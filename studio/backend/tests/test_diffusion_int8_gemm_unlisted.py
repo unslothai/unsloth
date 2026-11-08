@@ -455,7 +455,7 @@ def test_race_switch_acts_between_loads_after_a_winner_is_kept(monkeypatch):
     assert g8.device_config(0) == _L4_TILE
     monkeypatch.setenv(g8.INT8_GEMM_RACE_ENV, "0")
     assert g8.device_config(0) == g8._FALLBACK_CONFIG
-    assert fake.timed[-1] == g8._FALLBACK_CONFIG  # the fallback gets its own latency verdict
+    assert fake.timed[-1] == g8._FALLBACK_CONFIG
     monkeypatch.delenv(g8.INT8_GEMM_RACE_ENV)
     assert g8.device_config(0) == _L4_TILE
     assert len(fake.raced) == 1  # the kept winner, not a second race
