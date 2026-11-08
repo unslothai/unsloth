@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import re
 import sys
 import threading
@@ -63,6 +64,15 @@ def _unmeasured_torchao(monkeypatch):
     monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
     # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
     monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
+    # Whether this host can torch.compile (Triton and MSVC on Windows) must not decide the plans either: answer as
+    # Linux does, TORCHDYNAMO_DISABLE still honoured. Tests of the declined path patch compile_eligible themselves.
+    from core.inference import diffusion_speed
+
+    monkeypatch.setattr(
+        diffusion_speed,
+        "torch_compile_runtime_available",
+        lambda: os.environ.get("TORCHDYNAMO_DISABLE", "").strip() in ("", "0"),
+    )
 
 
 def test_clamp_max_side_bounds_oversized_init():
@@ -11286,7 +11296,11 @@ def test_generate_allow_oversized_runs_a_refused_request(fake_runtime, tmp_path,
 def test_generate_guard_leaves_a_large_batch_to_the_oom_backoff(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # The chunk loop halves failed batches to singletons, so the guard budgets one image.
+    # The chunk loop halves failed batches to singletons, so the guard budgets one image. Off Windows only: WDDM
+    # never raises an OOM, so there _activation_guard_batch budgets the whole chunk instead.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod.sys, "platform", "linux")
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
     out = backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 4, batch_size = 8)
     assert len(out["images"]) == 8

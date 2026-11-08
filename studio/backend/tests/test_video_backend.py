@@ -2776,7 +2776,7 @@ def test_wan_a14b_gguf_pair_loads_high_as_transformer_and_low_as_transformer_2(
     pick = high if picked == "high" else low
     VideoBackend().load_pipeline(
         str(tmp_path),
-        gguf_filename = str(pick.relative_to(tmp_path)),
+        gguf_filename = pick.relative_to(tmp_path).as_posix(),  # a hub path, '/' on every OS
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         family_override = "wan2.2-t2v-a14b",
     )
