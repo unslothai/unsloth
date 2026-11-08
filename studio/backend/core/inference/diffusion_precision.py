@@ -701,6 +701,7 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         # Keep nn.Embedding full precision: fp8 puts every prompt token on the coarse grid.
         skip_modules_classes = (torch.nn.Embedding,),
     )
+    _install_storage_restore(encoder)
 
     # Module.dtype would report fp8 storage, which randn_tensor cannot take; shadow it on the ORIGINAL class, since a __class__ swap breaks output recording.
     compute_dtype = getattr(target, "dtype", None)
@@ -712,6 +713,114 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         encoder._unsloth_te_cast_complete = True
     except Exception:  # noqa: BLE001 - real HF encoders are heap-type nn.Modules; only doubles fail
         pass
+
+
+# "0": after each forward the layerwise hooks cast the compute copies back to fp8 again (diffusers' default).
+TE_FP8_RESTORE_ENV = "UNSLOTH_TE_FP8_RESTORE_STORAGE"
+
+
+def te_fp8_restore_enabled() -> bool:
+    import os
+    return (os.environ.get(TE_FP8_RESTORE_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _floating_slots(module: Any) -> list:
+    """(table, name, tensor) for every floating parameter / buffer ``module.to(dtype)`` converts."""
+    out = []
+    for sub in module.modules():
+        for table in (sub._parameters, sub._buffers):
+            for name, value in table.items():
+                if value is not None and value.is_floating_point():
+                    out.append((table, name, value))
+    return out
+
+
+def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
+    """``pre_forward`` keeps the module's fp8 tensors alive across the upcast; ``post_forward`` puts them back instead
+    of casting the compute copies down again. Frozen weights make the bytes identical (every fp8 value is exact in
+    bf16 / fp16 / fp32); a slot something else replaced during the forward takes the stock downcast."""
+    import torch
+
+    kept: dict = {}
+
+    def pre_forward(module: Any, *args: Any, **kwargs: Any) -> Any:
+        if not te_fp8_restore_enabled() or module.training:
+            kept.pop(id(module), None)
+            return stock_pre(module, *args, **kwargs)
+        # a parameter keeps its object (``module.to`` swaps ``.data``); a buffer entry is replaced
+        stored = [
+            (table, name, value.data if isinstance(value, torch.nn.Parameter) else value)
+            for table, name, value in _floating_slots(module)
+            if value.dtype == hook.storage_dtype
+        ]
+        result = stock_pre(module, *args, **kwargs)
+        entries = []
+        for table, name, old in stored:
+            new = table.get(name)
+            if new is None:
+                continue
+            entries.append((table, name, old, new.data_ptr(), new.dtype))
+        kept[id(module)] = entries
+        return result
+
+    def post_forward(module: Any, output: Any) -> Any:
+        entries = kept.pop(id(module), None)
+        if not entries or not te_fp8_restore_enabled():
+            return stock_post(module, output)
+        stale = False
+        for table, name, old, ptr, dtype in entries:
+            current = table.get(name)
+            if current is None or current.data_ptr() != ptr or current.dtype != dtype:
+                stale = True
+                break
+        if stale:
+            return stock_post(module, output)
+        for table, name, old, _ptr, _dtype in entries:
+            current = table[name]
+            if isinstance(current, torch.nn.Parameter):
+                current.data = old
+            else:
+                table[name] = old
+        # anything the hook did not keep (a float tensor that was not fp8 storage) still goes through the stock cast
+        if any(v.dtype == hook.compute_dtype for _t, _n, v in _floating_slots(module)):
+            return stock_post(module, output)
+        return output
+
+    return pre_forward, post_forward
+
+
+def _install_storage_restore(encoder: Any) -> int:
+    """Swap each layerwise fp8 hook's pre / post forward for the restoring pair; idempotent. Returns the hooks changed."""
+    if not te_fp8_restore_enabled():
+        return 0
+    try:
+        from diffusers.hooks.layerwise_casting import LayerwiseCastingHook
+    except Exception:  # noqa: BLE001 - diffusers without layerwise casting: nothing to change
+        return 0
+    import torch
+
+    changed = 0
+    for module in encoder.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        for ref in getattr(registry, "_fn_refs", None) or ():
+            hook = getattr(getattr(ref, "pre_forward", None), "__self__", None)
+            if (
+                not isinstance(hook, LayerwiseCastingHook)
+                or getattr(ref, "_unsloth_fp8_restore", False)
+                or hook.storage_dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)
+            ):
+                continue
+            ref.pre_forward, ref.post_forward = _restoring_hooks(
+                hook, ref.pre_forward, ref.post_forward
+            )
+            ref._unsloth_fp8_restore = True
+            changed += 1
+    return changed
 
 
 def _install_dtype_override(cls: type) -> None:
