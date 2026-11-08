@@ -1082,7 +1082,7 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
         )  # the last view would otherwise hold the whole decoder batch through the next call
         start += len(group)
     if stitch is not None:
-        return stitch.canvas
+        return stitch.result()
     rows = [decoded[r * cols : (r + 1) * cols] for r in range(len(y_indices))]
     return self._stitch_tiles(rows, y_overlaps, x_overlaps)
 
@@ -1108,12 +1108,13 @@ _STITCH_KNOWN: dict = {}
 
 
 class _TileStitcher:
-    """``_stitch_tiles`` fed one tile at a time, in raster order, into a preallocated canvas.
+    """``_stitch_tiles`` fed one tile at a time, in raster order.
 
     The stock stitch blends each tile with its ORIGINAL upper and left neighbours, so only the bottom strip of the
     row above and the right strip of the tile to the left are kept (copies, so a decoder batch's storage goes as
-    soon as its tiles are placed); every tile still goes through the same ``_blend`` calls, so the canvas equals
-    ``torch.cat`` of the stock rows bit for bit."""
+    soon as its tiles are placed). Each row is written into its own buffer as it fills (no more than the tiles it
+    replaces at any decoder call) and the rows are joined once, after the last decoder call. Every tile goes
+    through the same ``_blend`` calls, so the frame equals ``torch.cat`` of the stock rows bit for bit."""
 
     __slots__ = (
         "vae",
@@ -1123,10 +1124,9 @@ class _TileStitcher:
         "x_overlaps",
         "below",
         "left",
-        "canvas",
-        "y0",
+        "done",
+        "row",
         "x0",
-        "h",
     )
 
     def __init__(self, vae: Any, rows: int, cols: int, y_overlaps: list, x_overlaps: list) -> None:
@@ -1134,18 +1134,14 @@ class _TileStitcher:
         self.y_overlaps, self.x_overlaps = y_overlaps, x_overlaps
         self.below: list = [None] * cols
         self.left = None
-        self.canvas = None
-        self.y0 = self.x0 = self.h = 0
+        self.done: list = []
+        self.row = None
+        self.x0 = 0
 
     def add(self, index: int, tile: Any) -> None:
         import torch
 
         i, j = divmod(index, self.cols)
-        if j == 0:
-            self.left = None
-            if i > 0:
-                self.y0 += self.h
-            self.x0 = 0
         out = tile
         if i > 0:
             out = self.vae._blend(self.below[j], out, self.y_overlaps[i - 1], dim = -2)
@@ -1161,25 +1157,25 @@ class _TileStitcher:
             ov = self.x_overlaps[j]
             self.left = tile[..., :, -min(tile.shape[-1], ov) :].clone()
             out = out[..., :, :-ov]
-        if self.canvas is None:
-            height = sum(
-                self._kept(tile.shape[-2], self.y_overlaps, r, self.rows) for r in range(self.rows)
-            )
+        else:
+            self.left = None
+        if j == 0:
             width = sum(
-                self._kept(tile.shape[-1], self.x_overlaps, c, self.cols) for c in range(self.cols)
+                tile.shape[-1] - self.x_overlaps[c] if c < self.cols - 1 else tile.shape[-1]
+                for c in range(self.cols)
             )
-            self.canvas = torch.empty(
-                (*tile.shape[:-2], height, width), dtype = tile.dtype, device = tile.device
-            )
-        self.canvas[
-            ..., self.y0 : self.y0 + out.shape[-2], self.x0 : self.x0 + out.shape[-1]
-        ].copy_(out)
-        self.h = out.shape[-2]
+            self.row = torch.empty((*out.shape[:-1], width), dtype = out.dtype, device = out.device)
+            self.x0 = 0
+        self.row[..., self.x0 : self.x0 + out.shape[-1]].copy_(out)
         self.x0 += out.shape[-1]
+        if j == self.cols - 1:
+            self.done.append(self.row)
+            self.row = None
 
-    @staticmethod
-    def _kept(size: int, overlaps: list, k: int, n: int) -> int:
-        return size - overlaps[k] if k < n - 1 else size
+    def result(self) -> Any:
+        import torch
+        rows, self.done = self.done, []
+        return rows[0] if len(rows) == 1 else torch.cat(rows, dim = -2)
 
 
 def _install_tile_batch(vae: Any) -> bool:
