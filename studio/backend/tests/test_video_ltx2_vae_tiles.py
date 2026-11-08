@@ -345,7 +345,6 @@ def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, sha
     with torch.no_grad():
         out = vt._decode_tiles(vae, z, None, False, *tile, True)
     hs, ws = vt.tile_starts(shape[-2], tile[0]), vt.tile_starts(shape[-1], tile[1])
-    # each band but the last leaves in one DMA (no host-side scatter); the last stays on the card
     assert all(moved) and len(moved) == len(hs if len(hs) > 1 else ws) - 1
     assert out.dtype == ref.dtype and out.shape == ref.shape
     assert torch.equal(out, ref)

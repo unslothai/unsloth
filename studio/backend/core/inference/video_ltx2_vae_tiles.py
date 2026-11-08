@@ -236,8 +236,7 @@ def _to_host(
     torch: Any,
     stream: Any = None,
 ) -> Any:
-    """A contiguous copy in pinned RAM (one DMA, no host-side scatter); pageable if pinning is refused. On ``stream``
-    the copy overlaps the next tile's decode."""
+    """Contiguous pinned-RAM copy (one DMA), pageable if pinning is refused; overlaps the next decode on ``stream``."""
     try:
         host = torch.empty(chunk.shape, dtype = chunk.dtype, pin_memory = True)
     except Exception:  # noqa: BLE001 - pinned allocation refused (e.g. Windows limits)
@@ -263,8 +262,7 @@ def _decode_bands(
     wy: list,
     wx: list,
 ) -> Any:
-    """``_decode_tiles``'s sums, order and cast with one band on the card; finished bands wait in host RAM, the last
-    one is cast into the clip on the card."""
+    """``_decode_tiles``'s math with one band on the card; done bands wait in host RAM, the last stays on the card."""
     import torch
 
     _, _, _, height, width = (int(x) for x in z.shape)
