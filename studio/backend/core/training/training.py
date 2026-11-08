@@ -367,6 +367,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "subject": values.get("subject"),
         "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
+        "parallelism_mode": values.get("parallelism_mode", "auto"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
     }
@@ -1829,6 +1830,12 @@ class TrainingBackend:
         # Explicit gpu_ids are validated here (400 before teardown); auto selection ranks by FREE
         # VRAM, so it waits until after the VRAM hook clears GPUs.
         from utils.hardware import hardware as _hw
+
+        # The ranks rendezvous over NCCL, which PyTorch ships for Linux only.
+        if config.get("parallelism_mode") == "ddp" and (
+            _hw.DEVICE != _hw.DeviceType.CUDA or _hw.IS_ROCM or platform.system() != "Linux"
+        ):
+            raise ValueError("Studio DDP currently requires NVIDIA CUDA GPUs on Linux.")
 
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(

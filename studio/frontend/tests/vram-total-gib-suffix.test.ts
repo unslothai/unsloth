@@ -16,14 +16,13 @@ const RENDERERS = [
   "features/model-picker/components/model-config-page.tsx",
   "features/images/images-page.tsx",
   "features/video/video-page.tsx",
-  "features/studio/wizard/run-preview-card.tsx",
   "features/hub/hub-page.tsx",
   "features/settings/tabs/about-tab.tsx",
 ];
 
 // `[^`$]*` keeps the match inside one literal segment, so an unrelated "GB"
 // later in the file cannot be paired with an earlier total.
-const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb|gpuMemoryGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
+const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb|gpuMemoryGb|displayedGpuMemoryGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
 
 test("VRAM and RAM totals are labelled GiB, not GB", () => {
   const offenders: string[] = [];
@@ -60,6 +59,7 @@ const LOCALES = new URL("../src/i18n/locales/", import.meta.url);
 // Binary first: GiB has to win the alternation before GB can match its tail.
 const UNIT = /\{total\}\s*(GiB|Gio|ГиБ|GB|Go|ГБ)/;
 const BINARY_UNITS = ["GiB", "Gio", "ГиБ"];
+const PREVIEW_TOTAL = /totalVram:\s*"[^"]*\{total\}\s*(GiB|Gio|ГиБ|GB|Go|ГБ)[^"]*"/;
 
 test("localized GPU totals name a binary unit", () => {
   const files = readdirSync(LOCALES).filter((f) => f.endsWith(".ts"));
@@ -68,8 +68,8 @@ test("localized GPU totals name a binary unit", () => {
   for (const file of files) {
     const source = readFileSync(new URL(file, LOCALES), "utf8");
     for (const line of source.split("\n")) {
-      if (!/\b(vramNeeds|vramTight):/.test(line)) continue;
-      const unit = line.match(UNIT);
+      if (!/\b(vramNeeds|vramTight|totalVram):/.test(line)) continue;
+      const unit = line.match(/\btotalVram:/.test(line) ? PREVIEW_TOTAL : UNIT);
       assert.ok(unit, `${file}: no unit after {total} in ${line.trim()}`);
       assert.ok(
         BINARY_UNITS.includes(unit[1]),
@@ -77,6 +77,15 @@ test("localized GPU totals name a binary unit", () => {
       );
     }
   }
+});
+
+test("training GPU preview labels its inline VRAM with GiB", () => {
+  const source = readFileSync(
+    new URL("features/studio/wizard/training-gpu-preview.tsx", SRC),
+    "utf8",
+  );
+  assert.match(source, /memoryTotalGb\.toFixed\(1\)\} GiB/);
+  assert.match(source, /totalMemoryGb\.toFixed\(1\)\} GiB/);
 });
 
 test("helper-formatted totals pick the GiB helper, not the disk one", () => {

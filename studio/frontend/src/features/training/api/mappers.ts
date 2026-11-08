@@ -326,6 +326,9 @@ export function buildTrainingStartPayload(
     ...(sendsDrafter(config, system, cpuTrainingHost)
       ? { drafter: drafterRequestFrom(config) }
       : {}),
+    parallelism_mode: config.parallelismMode,
+    gpu_ids:
+      config.parallelismMode === "auto" ? null : config.selectedGpuIds,
   };
 }
 

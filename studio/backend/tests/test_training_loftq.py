@@ -111,7 +111,8 @@ def _prepare(monkeypatch, quantized):
         for n in tree.body
         if (
             isinstance(n, ast.FunctionDef)
-            and n.name in ("normalize_gradient_checkpointing", "_loftq_peft_kwargs")
+            and n.name
+            in ("normalize_gradient_checkpointing", "_loftq_peft_kwargs", "_ddp_peft_kwargs")
         )
         or (
             isinstance(n, ast.Assign)
@@ -127,6 +128,7 @@ def _prepare(monkeypatch, quantized):
         "Union": Union,
         "FastLanguageModel": SimpleNamespace(get_peft_model = adapter),
         "_has_quantized_weights": lambda model: quantized,
+        "world_size_from_env": lambda: 1,
     }
     monkeypatch.setitem(sys.modules, "unsloth", ModuleType("unsloth"))
     exec(
