@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import types
 
@@ -1317,6 +1318,11 @@ def test_fp8_codes_layer_matches_the_dequant_formula_eager_and_compiled(fmt):
     torch._dynamo.reset()
     explained = torch._dynamo.explain(layer)(x)
     assert explained.graph_break_count == 0
+    if sys.platform == "win32" and shutil.which("cl") is None:
+        # Inductor's CPU backend builds C++ with MSVC, which a plain Windows runner does not have on PATH.
+        pytest.skip(
+            "compiled half needs MSVC (cl) on Windows; the eager and graph-break checks above ran"
+        )
     compiled = torch.compile(layer, fullgraph = True)
     assert torch.equal(compiled(x), layer(x))
 
