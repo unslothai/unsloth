@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 reference-video VAE condition, normalised one temporal chunk at a time.
-
-Diffusers' ``encode_vae_condition`` turns the whole ``uint8`` reference clip into float32 on the device, and the VAE's
-``_encode`` then pads that to a whole number of 17-frame chunks with a second full copy, before encoding the chunks
-one by one: ~1.5 GiB of float32 live for a 124-frame 960x544 reference. Normalisation and the dtype cast are
-elementwise and the padding repeats the last frame, so normalising each chunk on its own hands every chunk the same
-values; the posterior, its seeded sample, the float16 rounding and the latent normalisation are unchanged.
-Only for the known diffusers sources (else stock); ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables."""
+"""MiniMax-H3 reference-video VAE condition, normalised per 17-frame chunk instead of as one float32 clip
+(plus the padded copy ``_encode`` makes). Elementwise, so bit-identical; only over the mirrored diffusers 0.42.1
+sources. ``UNSLOTH_H3_CHUNKED_REF_ENCODE=0`` disables."""
 
 from __future__ import annotations
 
@@ -22,7 +17,7 @@ H3_CHUNKED_REF_ENCODE_ENV = "UNSLOTH_H3_CHUNKED_REF_ENCODE"
 _ENCODERS_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
 _FUNC = "encode_vae_condition"
 
-# sha256[:16] of inspect.getsource for the functions this mirrors (diffusers 0.42.1).
+# sha256[:16] of inspect.getsource of the mirrored functions (diffusers 0.42.1).
 _KNOWN_SOURCES = {
     "encode_vae_condition": frozenset({"8dab1fbe60ffab90"}),
     "encode": frozenset({"7bd0682f1598a640"}),
@@ -53,7 +48,6 @@ def _vae_known(vae: Any) -> bool:
             _sha(getattr(cls, name, None)) in _KNOWN_SOURCES[name] for name in ("encode", "_encode")
         )
         _VERIFIED[cls] = known
-    # an instance-level encode / _encode (another wrapper) is not the code mirrored here
     return known and not ({"encode", "_encode"} & set(getattr(vae, "__dict__", {})))
 
 
@@ -76,13 +70,13 @@ def _eligible(vae: Any, pixels: Any) -> bool:
 
 
 def _chunked_moments(vae: Any, pixels: Any, pixel_mean: Any, pixel_std: Any) -> Any:
-    """``vae.encode((pixels / 255 - mean) / std)``'s moments for one clip, building one chunk of float32 at a time."""
+    """Moments of ``vae.encode`` on the normalised clip, one chunk of float32 at a time."""
     import torch
     from diffusers.models.modeling_utils import get_parameter_dtype
 
     hook = getattr(vae, "_hf_hook", None)
     if hook is not None and hasattr(hook, "pre_forward"):
-        hook.pre_forward(vae)  # what ``apply_forward_hook`` on ``encode`` does
+        hook.pre_forward(vae)  # as apply_forward_hook on encode
     clip = vae.config.clip_length
     dtype = get_parameter_dtype(vae.encoder)
     num_frames = pixels.shape[2]
@@ -90,7 +84,7 @@ def _chunked_moments(vae: Any, pixels: Any, pixel_mean: Any, pixel_std: Any) -> 
     for start in range(0, num_frames, clip):
         part = pixels[:, :, start : start + clip]
         if part.shape[2] < clip:
-            # stock pads the normalised clip with its last frame; padding the pixels first gives the same values
+            # stock pads with the last normalised frame: same values
             part = torch.cat(
                 [part, pixels[:, :, -1:].repeat(1, 1, clip - part.shape[2], 1, 1)], dim = 2
             )
@@ -118,7 +112,6 @@ def _make_shim(original: Any) -> Any:
         import torch
         from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
-        # op for op the stock body, but for the chunked moments
         latents_mean = torch.tensor(vae.config.latents_mean).view(1, -1, 1, 1, 1)
         latents_std = torch.tensor(vae.config.latents_std).view(1, -1, 1, 1, 1)
         pixel_mean = torch.tensor(pixel_mean, device = pixels.device).view(1, -1, 1, 1, 1)
@@ -141,7 +134,7 @@ def _make_shim(original: Any) -> Any:
 
 
 def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
-    """Process-wide, idempotent: the modular reference step calls this module global. Never raises."""
+    """Shims the module global the modular step calls; idempotent, never raises."""
     if not enabled():
         return False
     try:
