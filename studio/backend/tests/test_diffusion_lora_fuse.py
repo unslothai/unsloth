@@ -16,6 +16,7 @@ pytest.importorskip("peft")
 from core.inference import diffusion as dmod  # noqa: E402
 
 FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
+HOST_GUARD_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD"
 
 
 def _unet_with_lora():
@@ -73,11 +74,10 @@ class _Pipe(types.SimpleNamespace):
 @pytest.fixture
 def engine(monkeypatch):
     monkeypatch.delenv(FUSE_ENV, raising = False)
-    from core.inference import diffusion_lora_fuse as lf
     from core.inference import diffusion_memory
     from core.inference.diffusion_small_host import HOST_RAM_LIMIT_ENV
 
-    monkeypatch.delenv(lf.HOST_GUARD_ENV, raising = False)
+    monkeypatch.delenv(HOST_GUARD_ENV, raising = False)
     monkeypatch.delenv(HOST_RAM_LIMIT_ENV, raising = False)
     # The host's own free RAM can sit below the reserve (7 GB CI runners); the RAM tests cap it explicitly.
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
@@ -258,7 +258,7 @@ def test_a_host_backup_that_cuts_into_the_ram_reserve_stays_unfused(engine, monk
     assert _merged_layers(engine.unet) == 0
     assert not lf.fused(engine.pipe)
     assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
-    monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")  # the kill switch restores the unguarded backup
+    monkeypatch.setenv(HOST_GUARD_ENV, "0")  # the kill switch restores the unguarded backup
     engine.apply(1.0)
     assert _merged_layers(engine.unet) > 0
 
@@ -293,6 +293,7 @@ def test_the_host_backup_is_pageable_on_an_integrated_gpu(monkeypatch, integrate
     monkeypatch.setattr(
         host_pinning, "device_is_integrated", lambda device = None: asked.append(device) or integrated
     )
+    assert lf.HOST_GUARD_ENV == HOST_GUARD_ENV
     cuda = torch.device("cuda", 1)
     assert lf._host_backup_pinned(cuda) is (not integrated)
     assert asked == [cuda]  # asked about the weights' own card, not the current device
