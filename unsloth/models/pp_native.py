@@ -1061,6 +1061,9 @@ class _StageContext:
         self.moe = None
         self.router_logits = None
         self.aux_losses = []
+        # (coefficient, divisor) when the Trainer's own compute_loss, not the model forward, adds the router
+        # auxiliary loss in one process (stock TRL SFTTrainer on the CPU backend; pp_env._trainer_router_aux).
+        self.trainer_aux = None
 
     def configure(self, start, end, is_first, is_last):
         """The stage about to run (several stages of one rank share this context, one runs at a time)."""
@@ -1223,10 +1226,15 @@ class _PPStageModule(nn.Module):
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
-                term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
-                loss = loss + _forward_aux_weighting(
-                    moe.owner, term, kwargs, ctx.num_items_in_batch
-                )
+                if ctx.trainer_aux is not None:
+                    # TRL's SFTTrainer.compute_loss: loss + its router_aux_loss_coef x aux / accumulation steps.
+                    coef, divisor = ctx.trainer_aux
+                    loss = loss + coef * aux.to(loss.device) / divisor
+                else:
+                    term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                    loss = loss + _forward_aux_weighting(
+                        moe.owner, term, kwargs, ctx.num_items_in_batch
+                    )
             elif carry:
                 # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
                 loss = loss + 0 * carry[0].sum().to(loss.device)
