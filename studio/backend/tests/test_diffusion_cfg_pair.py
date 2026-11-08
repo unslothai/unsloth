@@ -201,8 +201,7 @@ def _q21_loop(
     swap_neg_at = None,
     scale = 4.0,
 ):
-    """The diffusers Qwen-Image-2.1 loop: one input per step (condition image + target tokens), cond then uncond with
-    their own prompt lengths, masks and prefix KV caches; the first step prefills both caches."""
+    """The diffusers Qwen-Image-2.1 loop: per-branch prompts, masks and prefix KV caches; step 1 prefills."""
     qmod = _q21_mod()
     g = torch.Generator().manual_seed(3)
     th, tw, ch, cw = 4, 6, 4, 4
@@ -276,7 +275,6 @@ def test_q21_decode_steps_pair_bit_identical_one_upload_per_block(_q21_fast, con
         assert torch.equal(c, rc) and torch.equal(u, ru)
     # step 1 prefills both caches plain (2 calls per block); steps 2-5 pair (1 call per block)
     assert counts == [2 + 4] * len(counts)
-    # the hooked shared modulation runs once per paired step too (its replay serves the second branch)
     assert len(shared) == 2 + 4
     assert router.stats["paired_steps"] == 4 and router.stats["hits"] == 4
     assert router.stats["misses"] == 0
@@ -315,5 +313,4 @@ def test_q21_kill_switch(monkeypatch):
     assert cb.cfg_pair_decline(_Pipe(model), offload_policy = "group") == (
         "QwenImage21Transformer2DModel has no paired block loop"
     )
-    # the older Qwen-Image keeps pairing under the Qwen-Image-2.1 switch
     assert cb.cfg_pair_decline(_Pipe(_offload(_tiny())), offload_policy = "group") is None

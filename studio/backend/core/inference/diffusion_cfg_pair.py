@@ -20,21 +20,17 @@ PAIRED_CLASSES = {
         "transformer_blocks",
         ("encoder_hidden_states", "hidden_states"),
     ),
-    # Single stream: a block returns the one hidden state.
     "QwenImage21Transformer2DModel": ("transformer_blocks", ("hidden_states",)),
 }
 
-# Classes whose branches each own a per-block cache: (cache kwarg of the denoiser, its entry's block kwarg, the mode
-# kwarg, the one mode that pairs). Qwen-Image-2.1's decode steps only read their branch's prefix K/V; its prefill writes
-# them and walks every block's processor, so it stays plain.
+# (cache kwarg, block entry kwarg, mode kwarg, pairing mode): decode steps only read their branch's prefix K/V; the
+# prefill writes it and walks every block's processor, so it stays plain.
 BRANCH_CACHES = {
     "QwenImage21Transformer2DModel": ("kv_cache", "layer_cache", "kv_cache_mode", "cached"),
 }
 
-# Prologue submodules whose output both branches share when the named denoiser inputs are the same objects: the second
-# branch's prologue / epilogue replay the first's output instead of calling them (block-level offload hooks each child
-# of a Sequential, so a call would upload it again and step its prefetch chain). Qwen-Image-2.1's shared modulation
-# reads only the timestep and the latent's dtype.
+# Prologue modules replayed from the first branch when both pass the same input objects: block-level offload hooks each
+# child of a Sequential, so calling it again would upload it and step its prefetch chain. Modulation reads only those.
 SHARED_PROLOGUE = {
     "QwenImage21Transformer2DModel": (("modulation",), ("timestep", "hidden_states")),
 }
@@ -191,8 +187,7 @@ class PairedForward:
         self.branch_cache = BRANCH_CACHES.get(type(module).__name__)
 
     def align(self, first: tuple, second: tuple) -> tuple:
-        """The predicted second call with its cache mode taken from this step's first call: the template was recorded
-        on the prefill step, while the branches always share the step's mode."""
+        """The template was recorded on the prefill step; both branches share this step's cache mode."""
         if self.branch_cache is None:
             return second
         mode_kw = self.branch_cache[2]
