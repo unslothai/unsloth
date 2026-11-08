@@ -217,6 +217,31 @@ def test_kept_graph_replays_the_next_call_and_training_releases_it(host, llama, 
     llama.eval()
 
 
+def test_kept_graph_hook_is_inert_in_a_compiled_training_forward(host, llama):
+    # A kept graph leaves a forward pre-hook that frees it when training resumes. Dynamo tracing a compiled
+    # training forward must not run it (removing a hook while tracing is a graph break, an error under fullgraph);
+    # the next eager training forward still frees the graph.
+    _gen(llama)
+    state = llama.__dict__[GG._ATTR]
+    assert GG.kept_cache(llama) is not None and state.hook is not None
+    torch._dynamo.reset()
+    llama.train()
+    try:
+        ids, _ = _ids(llama)
+        compiled = torch.compile(
+            lambda x: llama(input_ids = x).logits.float().sum(), fullgraph = True, backend = "eager"
+        )
+        compiled(ids).backward()
+        assert GG.kept_cache(llama) is not None
+        llama.zero_grad(set_to_none = True)
+        llama(input_ids = ids)
+        assert GG.kept_cache(llama) is None and state.hook is None
+    finally:
+        llama.eval()
+        llama.zero_grad(set_to_none = True)
+        torch._dynamo.reset()
+
+
 def test_a_short_call_after_a_long_one_replays_the_kept_graph(host, llama, monkeypatch):
     # transformers 5.x sizes every later cache to the longest call so far (_previous_max_cache_length), so a short
     # call after a long one gets a cache as long as the kept one: it must reuse it, not re-capture every call.

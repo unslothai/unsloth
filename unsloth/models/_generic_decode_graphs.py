@@ -764,6 +764,10 @@ def end(model, keep = False):
 
 def _release_if_training(module, args):
     # Training can resume without for_training() (sampling in a trainer callback): free the kept graph and cache.
+    # Not while Dynamo traces a compiled training forward (removing this hook there is a graph break, an error
+    # under fullgraph): the next generate() re-checks the fingerprint, and for_training() releases as before.
+    if torch.compiler.is_compiling():
+        return
     if module.training and torch.is_grad_enabled():
         release(module)
 
@@ -1417,6 +1421,11 @@ def _fingerprint(model, state = None):
     for b in model.buffers():
         items.append((b.data_ptr(), b.dtype, tuple(b.shape)))
     for module in model.modules():
+        # A LoRA layer's scale is a Python float the captured kernels baked in; PEFT's set_scale / scale_layer
+        # change it without touching a parameter.
+        scaling = module.__dict__.get("scaling")
+        if type(scaling) is dict and scaling:
+            items.append((id(module), tuple(sorted((str(k), v) for k, v in scaling.items()))))
         weight = getattr(module, "weight", None)
         quant_state = getattr(weight, "quant_state", None)
         if quant_state is not None:

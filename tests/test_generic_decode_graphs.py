@@ -112,8 +112,15 @@ class _Host(GG._Cuda):
         if cls.fail:
             error = cls.fail if isinstance(cls.fail, BaseException) else None
             raise error or RuntimeError("operation not permitted when stream is capturing")
-        # A capture launches nothing: host and device length counters are left as they were.
+        # A capture launches nothing: host and device length counters and every cache row are left as they were
+        # (this stand-in runs the step, so it puts back all of them, full-attention rows included).
         snapshot = GG._snapshot(cache)
+        rows = [
+            (t, t.clone())
+            for layer in cache.layers
+            for t in (getattr(layer, "keys", None), getattr(layer, "values", None))
+            if isinstance(t, torch.Tensor)
+        ]
         real_tensor = torch.tensor
 
         def tensor(*args, **kwargs):
@@ -131,6 +138,8 @@ class _Host(GG._Cuda):
             torch.tensor = real_tensor
             cls.recording = False
         GG._restore(snapshot)
+        for live, saved in rows:
+            live.copy_(saved)
         graph = _FakeGraph(fn, outputs, cache, cls.perturb)
         cls.graphs.append(graph)
         return graph, outputs
@@ -197,6 +206,8 @@ def _generate(
             do_sample = False,
             cache_implementation = "static",
             pad_token_id = 0,
+            # transformers 4.57 compiles static-cache generation on CUDA, which the graph path steps aside for.
+            disable_compile = True,
         )
 
 
@@ -493,6 +504,32 @@ def test_fingerprint_invalidation(host, llama, monkeypatch):
     ids, mask = _ids(llama)
     _generate(llama, ids, mask, True)
     assert state.fingerprint != ("stale",)
+
+
+def test_lora_scale_changes_the_fingerprint(host, llama):
+    # PEFT's set_scale / scale_layer move a LoRA layer's Python scale without touching a parameter; the captured
+    # kernels baked it in, so a kept graph must not replay across it.
+    _fresh(llama)
+    proj = llama.model.layers[0].self_attn.o_proj
+    proj.scaling = {"default": 1.0}
+    try:
+        first = GG._fingerprint(llama)
+        assert first == GG._fingerprint(llama)
+        proj.scaling["default"] = 0.0
+        assert GG._fingerprint(llama) != first
+        proj.scaling["default"] = 1.0
+        assert GG._fingerprint(llama) == first
+    finally:
+        del proj.scaling
+    peft = pytest.importorskip("peft")
+    model = peft.get_peft_model(
+        AutoModelForCausalLM.from_pretrained(LLAMA, dtype = torch.float32).eval(),
+        peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["o_proj"]),
+    )
+    first = GG._fingerprint(model)
+    layer = model.base_model.model.model.layers[0].self_attn.o_proj
+    layer.set_scale("default", 0.0)
+    assert GG._fingerprint(model) != first
 
 
 def test_model_on_two_devices_stays_eager_for_the_call(host, llama, monkeypatch):
