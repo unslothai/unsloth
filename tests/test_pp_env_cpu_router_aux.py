@@ -37,7 +37,9 @@ def _trainer(
         raise AssertionError("the pipeline step never calls compute_loss")
 
     if zoo_wrapped:
-        compute_loss._unsloth_cpu = True  # what unsloth_zoo.cpu.trainer._patch_sft_compute_loss marks
+        compute_loss._unsloth_cpu = (
+            True  # what unsloth_zoo.cpu.trainer._patch_sft_compute_loss marks
+        )
     cls = type(
         "CpuSFTTrainer", (), {"compute_loss": compute_loss, "_prepare_inputs": lambda self, x: x}
     )
@@ -55,9 +57,7 @@ def _trainer(
 
 class _Stage:
     def __init__(self, moe = True):
-        self.ctx = types.SimpleNamespace(
-            moe = object() if moe else None, trainer_aux = None
-        )
+        self.ctx = types.SimpleNamespace(moe = object() if moe else None, trainer_aux = None)
         self.seen = []
 
     def step(self, input_ids, labels, **kwargs):
@@ -109,7 +109,9 @@ def test_the_last_accumulation_window_divides_by_its_own_length(plain_helpers):
 def test_without_a_window_token_count_the_term_is_added_once(plain_helpers):
     # TRL adds the aux term undivided then; the step's loss_scale = 1 / GA averages the steps.
     stage = _Stage()
-    pp_env._pp_training_step(_trainer(stage), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = None)
+    pp_env._pp_training_step(
+        _trainer(stage), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = None
+    )
     assert stage.seen == [(0.5, 1.0)]
 
 
@@ -121,7 +123,9 @@ def test_cleared_when_the_stage_raises(plain_helpers):
 
     stage.step = boom
     with pytest.raises(RuntimeError, match = "stage failed"):
-        pp_env._pp_training_step(_trainer(stage), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6)
+        pp_env._pp_training_step(
+            _trainer(stage), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6
+        )
     assert stage.ctx.trainer_aux is None
 
 
@@ -136,7 +140,9 @@ def test_cleared_when_the_stage_raises(plain_helpers):
 )
 def test_the_model_forward_keeps_the_term_elsewhere(plain_helpers, kwargs):
     stage = _Stage()
-    pp_env._pp_training_step(_trainer(stage, **kwargs), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6)
+    pp_env._pp_training_step(
+        _trainer(stage, **kwargs), torch.nn.Linear(2, 2), _batch(), num_items_in_batch = 6
+    )
     assert stage.seen == [None]
 
 

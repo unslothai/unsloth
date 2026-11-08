@@ -880,7 +880,13 @@ def _cpu_chunked_ce_model(trainer, model):
     return None
 
 
-def _trainer_router_aux(trainer, stage, num_items_in_batch, chunked, train = True):
+def _trainer_router_aux(
+    trainer,
+    stage,
+    num_items_in_batch,
+    chunked,
+    train = True,
+):
     """(coefficient, divisor) of the router auxiliary loss when the Trainer's compute_loss adds it in one
     process, else None (the model forward adds it, weighted as pp_native._forward_aux_weighting does).
 
