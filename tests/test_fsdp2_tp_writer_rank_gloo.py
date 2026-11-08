@@ -24,6 +24,7 @@ def _case_tp_fsdp2_writer(
     world,
     tmp,
     flattened = False,
+    layout = None,
 ):
     import torch.distributed as dist
     from torch.distributed.device_mesh import init_device_mesh
@@ -42,14 +43,30 @@ def _case_tp_fsdp2_writer(
     dp = mesh["dp", "cp"]._flatten("dp_cp") if flattened else mesh["dp"]
     model = build(LLAMA)
     tpn.apply_tensor_parallel(model, mesh["tp"])
-    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = dp))
+    config = dict(param_dtype = torch.float32, mesh = dp)
+    if layout == "unsharded":
+        config.update(reshard_after_forward = False, reshard_last_block = False)
+    elif layout in ("ignored", "ignored_compiled"):
+        # Every trainable tp parameter left out of FSDP2 (#16180): only tp-mesh DTensors remain.
+        config["ignored_params"] = {p for p in model.parameters() if p.requires_grad}
+    native.shard_model(model, native.FSDP2Config(**config))
+    if layout == "unsharded":
+        # An eval forward leaves every unit gathered: the parameters are tp-only DTensors.
+        with torch.no_grad():
+            model(input_ids = torch.zeros(1, 4, dtype = torch.long), use_cache = False)
+    if layout == "ignored_compiled":
+        # The recorded dp mesh sits on the root, not on the OptimizedModule wrapper.
+        model = torch.compile(model, backend = "eager")
+    # Before any gather: native_full_state_dict and native_save_optimizer read the writer as is.
+    writer_rank = fsdp2_save.mesh_writer_rank(model)
+    state = native.native_full_state_dict(model, trainable_only = True)
     with fsdp2_save.fsdp2_gathered(model, trainable_only = True) as writer:
         gathered = bool(writer)
-    state = native.native_full_state_dict(model, trainable_only = True)
     dist.barrier()
     return {
         "module": fsdp2_save.__file__,
-        "writer_rank": fsdp2_save.mesh_writer_rank(model),
+        "writer_rank": writer_rank,
+        "writer_rank_after": fsdp2_save.mesh_writer_rank(model),
         "gathered": gathered,
         "state_keys": len(state),
     }
@@ -58,7 +75,11 @@ def _case_tp_fsdp2_writer(
 gloo.CASES["tp_fsdp2_writer"] = _case_tp_fsdp2_writer
 
 
-def _spawn(world, flattened):
+def _spawn(
+    world,
+    flattened,
+    layout = None,
+):
     import tempfile
 
     ctx = multiprocessing.get_context("spawn")
@@ -67,7 +88,14 @@ def _spawn(world, flattened):
         procs = [
             ctx.Process(
                 target = _worker,
-                args = (r, world, port, "tp_fsdp2_writer", tmp, {"flattened": flattened}),
+                args = (
+                    r,
+                    world,
+                    port,
+                    "tp_fsdp2_writer",
+                    tmp,
+                    {"flattened": flattened, "layout": layout},
+                ),
             )
             for r in range(world)
         ]
@@ -87,13 +115,30 @@ def _worker(*args):
     gloo._worker(*args)
 
 
-@pytest.mark.parametrize("flattened", [False, True])
-def test_tp_fsdp2_model_has_one_writer(flattened):
-    results = _spawn(4, flattened)
+@pytest.mark.parametrize(
+    "flattened, layout",
+    [
+        (False, None),
+        (True, None),
+        (False, "unsharded"),
+        (False, "ignored"),
+        (False, "ignored_compiled"),
+    ],
+    ids = [
+        "sharded",
+        "flattened",
+        "unsharded_eval",
+        "all_trainable_ignored",
+        "all_trainable_ignored_compiled",
+    ],
+)
+def test_tp_fsdp2_model_has_one_writer(flattened, layout):
+    results = _spawn(4, flattened, layout)
     if results[0].get("unsupported"):
         pytest.skip(reason = "torch < 2.7: no fully_shard(ignored_params)")
     print("fsdp2_save:", results[0]["module"])
     assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results
+    assert [r["writer_rank_after"] for r in results] == [0, 0, 0, 0], results
     assert [r["gathered"] for r in results] == [True, False, False, False], results
     assert results[0]["state_keys"] > 0, results
     assert [r["state_keys"] for r in results[1:]] == [0, 0, 0], results

@@ -10880,7 +10880,11 @@ class DiffusionBackend:
                     # After the speed layer, so it wraps the fused / single-frame _decode the layer installed.
                     try:
                         from .diffusion_vae_oom import install as install_vae_oom_retry
+
                         install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+                        from .diffusion_decode_segments import enable as enable_decode_expandable
+
+                        enable_decode_expandable(getattr(pipe, "vae", None))
                     except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
                         logger.warning("diffusion.vae_oom: not installed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
