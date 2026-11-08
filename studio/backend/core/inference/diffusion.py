@@ -175,6 +175,7 @@ from .diffusion_flux3 import (
     FLUX3_COMPONENTS,
     FLUX3_COMPONENT_FOLDERS,
     FLUX3_INDEX,
+    flux3_storage_dtype,
     is_flux3_family,
     load_flux3_pipeline,
 )
@@ -9685,6 +9686,11 @@ class DiffusionBackend:
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
                                             family_name = fam.name,
+                                            storage_dtype = flux3_storage_dtype(target, dtype),
+                                            # A transformer quant rebuilds the dense Linears it reads.
+                                            transformer_storage = transformer_quant_pinned is None
+                                            and native_scheme is None
+                                            and native_offload_scheme is None,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10047,6 +10053,7 @@ class DiffusionBackend:
                                         config_source = _base_local_dir,
                                     ).get("text_encoder"),
                                     family_name = fam.name,
+                                    storage_dtype = flux3_storage_dtype(target, dtype),
                                 )
                             elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                 from .diffusion_moss_image import load_moss_image_pipeline
@@ -12181,6 +12188,7 @@ class DiffusionBackend:
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
                 family_name = getattr(fam, "name", None),
+                storage_dtype = flux3_storage_dtype(target, dtype),
             )
             check_cancelled()
             pipe.to(device)
