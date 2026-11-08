@@ -6,7 +6,6 @@ import { PlayIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type KeyboardEvent, type PointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
-import { StopIcon } from "@/lib/media-control-icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   HOLD_TO_STOP_MS,

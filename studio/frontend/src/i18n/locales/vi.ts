@@ -1835,6 +1835,13 @@ export const vi = {
         audioUploadCancel: "Hủy chép lời",
         audioUploadTranscribing: "Đang chép lời âm thanh…",
         sectionTitle: "Đọc chính tả",
+        micTargetLabel: "Nút micrô",
+        micTargetAsr: "Chép lời bằng ASR",
+        micTargetModel: "Gửi âm thanh cho mô hình",
+        micTargetAsrDescription: "Nút micrô nhập những gì bạn nói vào ô tin nhắn.",
+        micTargetModelDescription: "Khi đã tải mô hình nhận đầu vào âm thanh, micrô sẽ ghi một đoạn và đính kèm vào tin nhắn của bạn. Các mô hình khác vẫn dùng đọc chính tả.",
+        micTargetModelUnavailable: "Hãy tải một mô hình nhận đầu vào âm thanh (ví dụ LFM3-Omni) để gửi giọng nói của bạn.",
+        micRecordForModel: "Ghi âm cho mô hình",
         engineLabel: "Công cụ đọc chính tả",
         engineBrowser: "Trình duyệt",
         engineBrowserDescription:

@@ -418,3 +418,78 @@ test("discard tears the graph down without encoding or firing events", () => {
   recorder.stop();
   assert.deepEqual(events, []);
 });
+
+test("stop trims the WAV to maxBytes", async () => {
+  const recorder = newRecorder();
+  let recorded: { data: Blob } | null = null;
+  recorder.addEventListener("dataavailable", (event) => {
+    recorded = event;
+  });
+  recorder.maxBytes = 44 + 3 * 2;
+  recorder.start();
+  FakeAudioContext.last?.processor.emit(new Float32Array([0.5, 0.5]));
+  FakeAudioContext.last?.processor.emit(new Float32Array([0.5, 0.5]));
+  recorder.stop();
+  assert.ok(recorded);
+  assert.equal((recorded as { data: Blob }).data.size, 44 + 3 * 2);
+});
+
+test("PCM recording is supported without MediaRecorder", () => {
+  const saved = {
+    window: Object.getOwnPropertyDescriptor(globalThis, "window"),
+    navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator"),
+    MediaRecorder: Object.getOwnPropertyDescriptor(globalThis, "MediaRecorder"),
+  };
+  const define = (key: string, value: unknown) =>
+    Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+  try {
+    define("MediaRecorder", undefined);
+    define("navigator", { mediaDevices: { getUserMedia: async () => ({}) } });
+    define("window", { isSecureContext: true, AudioContext: FakeAudioContext });
+    assert.equal(PcmRecorder.isSupported(), true);
+    define("window", {
+      isSecureContext: true,
+      webkitAudioContext: FakeAudioContext,
+    });
+    assert.equal(PcmRecorder.isSupported(), true);
+    define("window", { isSecureContext: false, AudioContext: FakeAudioContext });
+    assert.equal(PcmRecorder.isSupported(), false);
+    define("window", { isSecureContext: true });
+    assert.equal(PcmRecorder.isSupported(), false);
+  } finally {
+    for (const [key, descriptor] of Object.entries(saved)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<string, unknown>)[key];
+    }
+  }
+});
+
+test("bytesFor sizes a WAV at the recorder's actual rate", () => {
+  FakeAudioContext.refuseRequestedRate = true;
+  try {
+    const recorder = newRecorder();
+    assert.equal(recorder.sampleRate, 48_000);
+    assert.equal(recorder.bytesFor(1), 44 + 96_000);
+  } finally {
+    FakeAudioContext.refuseRequestedRate = false;
+  }
+});
+
+test("discard closes a recorder that was never started, once", () => {
+  const recorder = newRecorder();
+  const context = FakeAudioContext.last;
+  let closes = 0;
+  if (context) {
+    const close = context.close.bind(context);
+    context.close = () => {
+      closes += 1;
+      return close();
+    };
+  }
+  recorder.discard();
+  assert.equal(context?.closed, true);
+  assert.equal(context?.processor.disconnected, true);
+  recorder.discard();
+  recorder.stop();
+  assert.equal(closes, 1);
+});

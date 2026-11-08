@@ -1563,6 +1563,13 @@ export const it = {
         audioUploadCancel: "Annulla trascrizione",
         audioUploadTranscribing: "Trascrizione audio in corso…",
         sectionTitle: "Dettatura",
+        micTargetLabel: "Pulsante del microfono",
+        micTargetAsr: "Trascrivi con ASR",
+        micTargetModel: "Invia l'audio al modello",
+        micTargetAsrDescription: "Il pulsante del microfono scrive ciò che dici nella casella del messaggio.",
+        micTargetModelDescription: "Con un modello con input audio caricato, il microfono registra una clip e la allega al messaggio. Gli altri modelli continuano a usare la dettatura.",
+        micTargetModelUnavailable: "Carica un modello che accetta input audio (ad esempio LFM3-Omni) per inviargli la tua voce.",
+        micRecordForModel: "Registra audio per il modello",
         engineLabel: "Motore di dettatura",
         engineBrowser: "Browser",
         engineBrowserDescription:

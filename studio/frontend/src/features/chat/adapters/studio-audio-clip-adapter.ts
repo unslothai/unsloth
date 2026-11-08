@@ -5,13 +5,14 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { MAX_AUDIO_SIZE, MAX_AUDIO_SIZE_LABEL } from "@/lib/audio-utils";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
-import { micClipFilename } from "../utils/mic-target";
+import { type MicClipRoom, micClipFilename } from "../utils/mic-target";
 import { startDictationLevelMeter } from "./dictation-level";
 import {
   beginDictationSession,
   markDictationClip,
   markDictationFailed,
 } from "./dictation-outcome";
+import { holdMicClipRoom, releaseMicClipRoom } from "./mic-clip-state";
 import { PcmRecorder } from "./pcm-recorder";
 import {
   type StudioDictationSession,
@@ -22,6 +23,7 @@ import {
  *  WAV because the audio attachment path takes it as is; MediaRecorder's webm reads as video. */
 export function listenForAudioClip(
   onClip: (file: File) => Promise<unknown> | unknown,
+  room: MicClipRoom = { maxBytes: MAX_AUDIO_SIZE },
 ): StudioDictationSession {
   beginDictationSession();
   const speechStartCallbacks = new Set<() => void>();
@@ -40,6 +42,7 @@ export function listenForAudioClip(
   });
 
   const release = () => {
+    releaseMicClipRoom(session);
     clearTimeout(limitTimer);
     stopLevelMeter();
     for (const track of stream?.getTracks() ?? []) track.stop();
@@ -70,6 +73,7 @@ export function listenForAudioClip(
       active.addEventListener(
         "dataavailable",
         (event) => {
+          releaseMicClipRoom(session);
           if (event.data.size === 0) return;
           delivering = true;
           const file = new File([event.data], micClipFilename(), {
@@ -116,6 +120,16 @@ export function listenForAudioClip(
     },
   };
 
+  if ("reason" in room) {
+    // Refuse before recording rather than after: the attachment adapter would drop the clip.
+    toast.error(room.reason);
+    markDictationFailed();
+    queueMicrotask(() => finish("error"));
+    return session;
+  }
+  const maxBytes = room.maxBytes;
+  holdMicClipRoom(session);
+
   void (async () => {
     const { micDeviceId } = useVoiceSettingsStore.getState();
     const audio: MediaTrackConstraints = {
@@ -135,6 +149,8 @@ export function listenForAudioClip(
         if (micDeviceId === "default" || !isMissingDeviceError(error)) {
           throw error;
         }
+        // Cancelled while the saved device was asked for: open no second mic.
+        if (ended) return;
         stream = await navigator.mediaDevices.getUserMedia({ audio });
       }
       if (ended) {
@@ -142,12 +158,25 @@ export function listenForAudioClip(
         return;
       }
       recorder = new PcmRecorder(stream);
+      // The pre-check assumes 16 kHz; a device-rate fallback needs more room for the same second.
+      if (maxBytes < recorder.bytesFor(1)) {
+        recorder.discard();
+        recorder = null;
+        toast.error(
+          `Audio files together exceed the ${MAX_AUDIO_SIZE_LABEL} per-message limit`,
+        );
+        markDictationFailed();
+        finish("error");
+        return;
+      }
+      // The timer leaves a second of slack, but on a small room that slack is the whole clip.
+      recorder.maxBytes = maxBytes;
       recorder.start();
-      // The attachment refuses a clip over the audio limit, so stop just under it instead.
+      // The attachment refuses a clip over what is left of the audio limit, so stop just under it.
       limitTimer = setTimeout(() => {
         toast.info(`Recording stopped at the ${MAX_AUDIO_SIZE_LABEL} audio limit.`);
         void session.stop();
-      }, recorder.secondsWithin(MAX_AUDIO_SIZE) * 1000);
+      }, recorder.secondsWithin(maxBytes) * 1000);
       stopLevelMeter = startDictationLevelMeter(stream);
       session.status = { type: "running" };
       for (const callback of speechStartCallbacks) callback();
@@ -164,4 +193,35 @@ export function listenForAudioClip(
   })();
 
   return session;
+}
+
+type ModelState = {
+  params: { checkpoint: string | null | undefined };
+  modelLoading?: boolean;
+  loadingModelPick?: unknown;
+};
+type CheckpointStore = {
+  getState: () => ModelState;
+  subscribe: (listener: (state: ModelState) => void) => () => void;
+};
+
+/** The clip was sized and gated for the model it started on; the attachment adapter checks the one active at Stop.
+ *  A local load only moves `checkpoint` once it succeeds, so a load starting counts as a change too. */
+export function discardClipWhenModelChanges(
+  session: StudioDictationSession,
+  store: CheckpointStore,
+): void {
+  const startedOn = store.getState().params.checkpoint;
+  const unsubscribe = store.subscribe((state) => {
+    const switching =
+      state.params.checkpoint !== startedOn ||
+      state.modelLoading === true ||
+      state.loadingModelPick != null;
+    if (!switching) return;
+    unsubscribe();
+    if (session.status.type === "ended") return;
+    toast.info("Recording discarded because the chat model changed.");
+    session.cancel();
+  });
+  session.onEnd?.(unsubscribe);
 }

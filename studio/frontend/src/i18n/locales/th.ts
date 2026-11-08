@@ -1748,6 +1748,13 @@ export const th = {
         audioUploadCancel: "ยกเลิกการถอดเสียง",
         audioUploadTranscribing: "กำลังถอดเสียง…",
         sectionTitle: "การป้อนตามคำบอก",
+        micTargetLabel: "ปุ่มไมโครโฟน",
+        micTargetAsr: "ถอดความด้วย ASR",
+        micTargetModel: "ส่งเสียงไปยังโมเดล",
+        micTargetAsrDescription: "ปุ่มไมโครโฟนจะพิมพ์สิ่งที่คุณพูดลงในช่องข้อความ",
+        micTargetModelDescription: "เมื่อโหลดโมเดลที่รับอินพุตเสียง ไมโครโฟนจะบันทึกคลิปและแนบไปกับข้อความของคุณ โมเดลอื่นยังคงใช้การป้อนตามคำบอก",
+        micTargetModelUnavailable: "โหลดโมเดลที่รับอินพุตเสียงได้ (เช่น LFM3-Omni) เพื่อส่งเสียงของคุณไปให้",
+        micRecordForModel: "บันทึกเสียงสำหรับโมเดล",
         engineLabel: "เอนจินการป้อนตามคำบอก",
         engineBrowser: "เบราว์เซอร์",
         engineBrowserDescription:

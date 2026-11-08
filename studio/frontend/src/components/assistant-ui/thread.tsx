@@ -5401,7 +5401,16 @@ const Composer: FC<{
   // The runtime's dictation adapter attaches a model-bound recording to this composer.
   useEffect(
     () =>
-      setMicAudioClipTarget((file) => aui.composer().addAttachment(file)),
+      setMicAudioClipTarget({
+        add: (file) => aui.composer().addAttachment(file),
+        attached: () =>
+          aui
+            .composer()
+            .getState()
+            .attachments.flatMap((attachment) =>
+              attachment.file ? [attachment.file] : [],
+            ),
+      }),
     [aui],
   );
   const sendAfterDictation = useCallback(() => {
