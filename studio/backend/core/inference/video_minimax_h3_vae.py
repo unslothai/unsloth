@@ -20,9 +20,9 @@ H3_VAE_FAST_ENV = "UNSLOTH_H3_VAE_FAST"
 H3_VAE_INT8_ENV = "UNSLOTH_H3_VAE_INT8"
 H3_VAE_TILE_BATCH_ENV = "UNSLOTH_H3_VAE_TILE_BATCH"
 H3_VAE_INT8_FUSED_ENV = "UNSLOTH_H3_VAE_INT8_FUSED"
-# "0": batched tile decode keeps every decoded tile until diffusers' _stitch_tiles runs (stock ownership).
+# "0": batched tile decode keeps every tile for diffusers' _stitch_tiles.
 H3_VAE_STREAM_STITCH_ENV = "UNSLOTH_H3_VAE_STREAM_STITCH"
-# sha256[:16] of inspect.getsource(AutoencoderKLMiniMaxH3._stitch_tiles) the streamed stitch mirrors (0.42.1).
+# sha256[:16] of the mirrored AutoencoderKLMiniMaxH3._stitch_tiles source (0.42.1).
 _STITCH_TILES_SHA = frozenset({"ae481626afa30528"})
 FP16_ACCUM_DISABLE_ENV = "UNSLOTH_DISABLE_FP16_ACCUM"
 
@@ -1077,9 +1077,7 @@ def _batched_decode_clip(self: Any, z: Any) -> Any:
         else:
             for k in range(len(parts)):
                 stitch.add(start + k, parts[k])
-        del (
-            parts
-        )  # the last view would otherwise hold the whole decoder batch through the next call
+        del parts  # a live view pins its whole decoder batch
         start += len(group)
     if stitch is not None:
         return stitch.result()
@@ -1108,13 +1106,8 @@ _STITCH_KNOWN: dict = {}
 
 
 class _TileStitcher:
-    """``_stitch_tiles`` fed one tile at a time, in raster order.
-
-    The stock stitch blends each tile with its ORIGINAL upper and left neighbours, so only the bottom strip of the
-    row above and the right strip of the tile to the left are kept (copies, so a decoder batch's storage goes as
-    soon as its tiles are placed). Each row is written into its own buffer as it fills (no more than the tiles it
-    replaces at any decoder call) and the rows are joined once, after the last decoder call. Every tile goes
-    through the same ``_blend`` calls, so the frame equals ``torch.cat`` of the stock rows bit for bit."""
+    """``_stitch_tiles`` one tile at a time: keeps only the ORIGINAL neighbour strips the stock blend reads (copies,
+    so each decoder batch is freed), fills one row buffer at a time and joins the rows at the end; bit-identical."""
 
     __slots__ = (
         "vae",
