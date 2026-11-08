@@ -1217,9 +1217,8 @@ def native_quant_scheme(
     return scheme
 
 
-# ``0`` refuses int8 on fp16-only NVIDIA cards again (the torchao schemes need bf16 there).
 FP16_CARD_INT8_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_INT8"
-# Turing (T4, sm75) has int8 tensor cores; sm70 has none, Ampere+ runs bf16 and keeps torchao.
+# sm70 has no int8 tensor cores; Ampere+ runs bf16 through torchao.
 _FP16_CARD_INT8_CAPS = ((7, 5), (8, 0))
 
 

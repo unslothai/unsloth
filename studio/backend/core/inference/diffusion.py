@@ -4504,7 +4504,6 @@ class DiffusionBackend:
                 if native_quant_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif model_kind == "pipeline" and pinned == TQ_INT8 and fp16_card_int8_host(target):
-                # Turing: no bf16 for torchao, so int8 runs on the torchao-free linear (_int_mm).
                 if fp16_card_int8_scheme(target, pinned, family = getattr(fam, "name", None)) is None:
                     reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
             elif (
@@ -10234,8 +10233,7 @@ class DiffusionBackend:
                         and fp16_card_int8_host(target)
                         and pipe_small_host_int8(pipe)
                     ):
-                        # The small-host route already stored the denoiser as per-row int8 weights: on an fp16-only
-                        # card that is the int8 build (a second quantise would only re-round them).
+                        # Already per-row int8 (small-host route): re-quantising would only re-round the codes.
                         transformer_quant_engaged = TQ_INT8
                         act_linears = sum(
                             small_host_enable_int8_act(module)
