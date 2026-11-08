@@ -18,7 +18,17 @@ from pathlib import Path
 
 import pytest
 
-from ._sparse_file import extend_sparse
+try:
+    from ._sparse_file import extend_sparse
+except ImportError:  # loaded by path, with no parent package (test_h3_native_resident.py)
+    import importlib.util as _importlib_util
+
+    _sparse_spec = _importlib_util.spec_from_file_location(
+        "_studio_tests_sparse_file", Path(__file__).with_name("_sparse_file.py")
+    )
+    _sparse_module = _importlib_util.module_from_spec(_sparse_spec)
+    _sparse_spec.loader.exec_module(_sparse_module)
+    extend_sparse = _sparse_module.extend_sparse
 
 import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
