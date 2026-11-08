@@ -29,6 +29,9 @@ _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 _ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
 _ENV_MAX_GB = "UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB"
+# "0": the process-wide artifact collector keeps everything since startup, so each model's bundle also carries
+# every earlier model's artifacts.
+_ENV_ISOLATE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_ISOLATE"
 _DEFAULT_MAX_GB = 20.0
 
 _LEGACY_ROOT = Path.home() / ".cache" / "unsloth" / "diffusion_compile_cache"
@@ -563,11 +566,14 @@ def begin(
     )
 
     # Same reason as restore(): the previous load's save reads the inductor dir that is about to be repointed.
-    if not wait_for_saves():
+    drained = wait_for_saves()
+    if not drained:
         _warn(
             logger,
             f"compile-cache: background save still running after {_SAVE_JOIN_TIMEOUT:.0f}s; continuing",
         )
+    else:
+        _fresh_collector(logger)
 
     try:
         cdir.mkdir(parents = True, exist_ok = True)
@@ -833,6 +839,35 @@ def _compile_lock() -> Any:
         return compile_lock
     except Exception:  # noqa: BLE001 - no dynamo lock on this build: save unlocked, as before
         return contextlib.nullcontext()
+
+
+def _fresh_collector(logger: Any) -> bool:
+    """Empty torch's process-wide artifact collector before a model's first compile, so its bundle holds its own
+    artifacts only (torch appends every artifact since startup to each save). Only with no other bundle live and the
+    save worker idle; an artifact this model reuses from the inductor dir is recorded again on that cache hit."""
+    if (os.environ.get(_ENV_ISOLATE) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    with _live_lock:
+        if _live_dirs:
+            return False
+    try:
+        from torch.compiler._cache import CacheArtifactManager  # noqa: PLC0415
+    except ImportError:
+        return False
+    lock = _compile_lock()
+    acquire = getattr(lock, "acquire", None)
+    # Never wait here: a compile still running holds the lock, and its artifacts are not this model's to drop.
+    if acquire is not None and not acquire(blocking = False):
+        return False
+    try:
+        CacheArtifactManager.clear()
+        return True
+    except Exception as exc:  # noqa: BLE001 - keep torch's collector as it is
+        _warn(logger, f"compile-cache: could not reset the artifact collector: {exc}")
+        return False
+    finally:
+        if acquire is not None:
+            lock.release()
 
 
 def _one_group_per_type(data: bytes, logger: Any) -> bytes:
