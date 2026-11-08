@@ -100,3 +100,8 @@ export function keptNumFrames(
   if (!reseat && options.some((o) => o.frames === current)) return current;
   return nearestDuration(options, intentSeconds)?.frames ?? current;
 }
+
+// Status names the outgoing family until a load finishes, so a preset applied mid-load waits for the incoming one.
+export function presetFamilyKnown(defaults: VideoGenerationDefaults | null | undefined, loading: boolean): boolean {
+  return defaults != null && !loading;
+}

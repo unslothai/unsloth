@@ -147,6 +147,7 @@ import {
   type FpsPick,
   keptNumFrames,
   pickedFpsFor,
+  presetFamilyKnown,
   presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
@@ -1648,7 +1649,7 @@ function VideoGenerator({
       guidance,
       flowShift,
       audioFlowShift,
-      fps: status?.defaults == null ? pendingPresetFps : fpsOptions ? fps : null,
+      fps: pendingPresetFps ?? (status?.defaults != null && fpsOptions ? fps : null),
     };
   }, [audioFlowShift, durationIntentSeconds, flowShift, fps, fpsOptions, guidance, pendingPresetFps, status?.defaults, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
@@ -1658,7 +1659,7 @@ function VideoGenerator({
   const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
   const presetRepoId = status?.repo_id ?? "";
   const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
-  const statusKnown = status?.defaults != null;
+  const statusKnown = presetFamilyKnown(status?.defaults, busy === "loading");
   // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed. Kept as
   // stored until status names the family, or a reload racing the first status read would drop it.
   const presetFps = useCallback(
