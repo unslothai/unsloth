@@ -711,9 +711,9 @@ llama31_template = \
 {%- endif %}
 
 {%- for message in messages %}
-    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}
+    {%- if not (message.role == 'ipython' or message.role == 'tool' or message.tool_calls) %}
         {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] + '<|eot_id|>' }}
-    {%- elif 'tool_calls' in message %}
+    {%- elif message.tool_calls %}
         {%- if not message.tool_calls|length == 1 %}
             {{- raise_exception("This model only supports single tool-calls at once!") }}
         {%- endif %}
@@ -2112,13 +2112,13 @@ gptoss_template = \
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
         {%- endif %}
-        {%- if "tool_calls" in message %}
+        {%- if message.tool_calls %}
             {#- We need very careful handling here - we want to drop the tool call analysis message if the model #}
             {#- has output a later <|final|> message, but otherwise we want to retain it. This is the only case #}
             {#- when we render CoT/analysis messages in inference. #}
             {%- set future_final_message = namespace(found=false) %}
             {%- for future_message in loop_messages[loop.index:] %}
-                {%- if future_message.role == 'assistant' and "tool_calls" not in future_message %}
+                {%- if future_message.role == 'assistant' and not future_message.tool_calls %}
                     {%- set future_final_message.found = true %}
                 {%- endif %}
             {%- endfor %}
