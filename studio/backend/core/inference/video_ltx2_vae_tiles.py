@@ -213,7 +213,9 @@ def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
         return False
     import torch
 
-    if getattr(torch.version, "hip", None):
+    from .rocm_bf16 import is_rocm_torch
+
+    if is_rocm_torch(torch):
         return False
     from .host_pinning import device_is_integrated
 
