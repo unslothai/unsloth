@@ -517,6 +517,9 @@ def _failing_fake_op():
 def _block_compile_checkpoint_worker(rank, world):
     from unsloth.models import _block_compile as bc
 
+    # Other test modules set these at import (e.g. UNSLOTH_COMPILE_DISABLE=1) and spawned ranks inherit them.
+    for key in ("UNSLOTH_BLOCK_COMPILE", "UNSLOTH_COMPILE_DISABLE", "UNSLOTH_FORCE_FLOAT32"):
+        os.environ.pop(key, None)
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model("v32")
