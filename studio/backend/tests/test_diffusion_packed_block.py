@@ -275,3 +275,37 @@ def test_devices_without_fp8_casts_widen_nvfp4_by_table_and_keep_mxfp8_dense(mon
     want = pb.widen_packed("nvfp4", codes, scale, None, None, torch.bfloat16)
     monkeypatch.setattr(pb, "fp8_casts", lambda device: False)
     assert _same(pb.widen_packed("nvfp4", codes, scale, None, None, torch.bfloat16), want)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "needs a CUDA / ROCm GPU to run the Triton widen"
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_the_triton_widen_on_the_gpu_matches_the_load_time_widen(dtype):
+    codes, scale = _exhaustive_nvfp4()
+    rows = codes.shape[0]
+    for rs, pq in (
+        (None, None),
+        (torch.full((rows,), 0.75), None),
+        (torch.full((rows,), 2.0**-9), torch.linspace(0.25, 4.0, 2 * codes.shape[1])),
+    ):
+        want = cb.dequant_block(
+            "nvfp4",
+            codes,
+            scale.view(torch.float8_e4m3fn),
+            tensor_scale = rs,
+            pre_quant_scale = pq,
+            dtype = dtype,
+        )
+        got = pb._triton_widen(
+            codes.cuda(),
+            scale.cuda(),
+            None if rs is None else rs.cuda().view(torch.int32),
+            None if pq is None else pq.cuda().view(torch.int32),
+            dtype,
+        )
+        assert got is not None, pb._TRITON.get("error")
+        nan = torch.isnan(want.float())
+        got = got.cpu()
+        assert torch.equal(torch.isnan(got.float()), nan)
+        assert torch.equal(_bits(got)[~nan], _bits(want)[~nan])
