@@ -1306,18 +1306,12 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     return seg
 
 
-# Set on attention forwards that route prefix_seg_info through the shared-prefix kernel, and readable on a
-# model to declare (True / False) that its forward applies it; see prefix_grouper.prefix_seg_info_applied.
+# Marks forwards that apply prefix_seg_info; a bool on a model overrides detection (prefix_seg_info_applied).
 APPLIES_PREFIX_SEG_INFO = "_unsloth_applies_prefix_seg_info"
 
 
 def applies_prefix_seg_info(forward):
-    """Mark an attention forward that passes ``resolve_prefix_seg_info``'s table to ``run_attention``.
-
-    PrefixGrouper engages only when every decoder layer of the model runs a marked forward: a forward
-    that does not know ``prefix_seg_info`` takes it through ``**kwargs`` and ignores it, so each
-    completion would attend to the earlier completions of its group.
-    """
+    """Mark an attention forward that passes ``resolve_prefix_seg_info``'s table to ``run_attention``."""
     setattr(forward, APPLIES_PREFIX_SEG_INFO, True)
     return forward
 

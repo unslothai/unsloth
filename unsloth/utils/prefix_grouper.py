@@ -100,12 +100,8 @@ def _decoder_layer_count(model):
 def prefix_seg_info_applied(model) -> bool:
     """True only when the forward that runs on ``model`` applies ``prefix_seg_info``.
 
-    Forwards that do not know it (transformers, generic or compiled modules) take it through
-    ``**kwargs`` and drop it, so each completion attends to the earlier completions of its group:
-    0.02 to 0.04 nats on a tiny Qwen3, which passes the 0.7-nat self-verify. So require every decoder
-    layer to run an attention forward marked by ``attention_dispatch.applies_prefix_seg_info``; on
-    the classes pre_patch gates, that holds only for modules marked by ``mark_unsloth_fast_path``.
-    A model can declare its own forward with a bool ``_unsloth_applies_prefix_seg_info``.
+    Other forwards drop it via ``**kwargs`` and leak completions across a group (0.02-0.04 nats, under
+    the 0.7-nat self-verify), so every decoder layer must run a forward marked by ``applies_prefix_seg_info``.
     """
     if model is None:
         return False
