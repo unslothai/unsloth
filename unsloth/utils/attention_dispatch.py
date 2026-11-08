@@ -1306,6 +1306,16 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     return seg
 
 
+# Marks forwards that apply prefix_seg_info; a bool on a model overrides detection (prefix_seg_info_applied).
+APPLIES_PREFIX_SEG_INFO = "_unsloth_applies_prefix_seg_info"
+
+
+def applies_prefix_seg_info(forward):
+    """Mark an attention forward that passes ``resolve_prefix_seg_info``'s table to ``run_attention``."""
+    setattr(forward, APPLIES_PREFIX_SEG_INFO, True)
+    return forward
+
+
 # One dense window mask per (device, shape, window) shared by all layers: at 32K it is 1 GiB.
 _WINDOW_MASK_CACHE: dict = {}
 
@@ -1810,6 +1820,8 @@ __all__ = [
     "AttentionContext",
     "select_attention_backend",
     "resolve_prefix_seg_info",
+    "APPLIES_PREFIX_SEG_INFO",
+    "applies_prefix_seg_info",
     "run_attention",
     "context_parallel_attention",
     "is_context_parallel_attention",

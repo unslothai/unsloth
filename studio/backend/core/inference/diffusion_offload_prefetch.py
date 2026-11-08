@@ -440,11 +440,9 @@ class GroupPrefetcher:
                     _copy_into(buffers[i], src)
                     _point_at(t, buffers[i], is_torchao(t), swap)
                     continue
-                moved = _to_device(src, self.device)
-                if is_torchao(t) and swap is not None:
-                    swap(t, moved)
-                else:
-                    t.data = moved
+                # a wrapper already on the device takes the new inner tensors: swap_tensors would refuse a weight a
+                # compile traced (its fake-mode memo keeps a weakref to it after the compile)
+                _point_at(t, _to_device(src, self.device), is_torchao(t), swap)
         if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1

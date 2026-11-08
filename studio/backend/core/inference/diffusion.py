@@ -56,6 +56,7 @@ from .diffusion_content import (
     whole_pipeline_gguf_family,
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from . import hub_reachability
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -344,6 +345,7 @@ from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_postprocess import install as install_device_postprocess
+from .diffusion_reference_cache import install as install_reference_vae_cache
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -522,6 +524,7 @@ from .diffusion_transformer_quant import (
     mark_source_precision,
     nvfp4_gated_base,
     native_int8_act,
+    rdna_auto_w8a8_reason,
     native_offload_host,
     native_quant_host,
     native_quant_scheme,
@@ -3802,10 +3805,15 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
     Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
+    pipe = getattr(state, "pipe", None)
     return bool(
         getattr(state, "transformer_quant", None)
         or getattr(state, "text_encoder_quant", None)
-        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        or pipe_fp8_stored_layers(pipe)
+        or any(
+            comfy_torchao_quantized(getattr(pipe, attr, None))
+            for attr in ("transformer", "transformer_2")
+        )
     )
 
 
@@ -8292,6 +8300,7 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         _refuse_lora_without_loader(fam, loras)
+        install_single_file_fp32_buffers(logger)
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise BEFORE this load evicts the previous pipeline.
         normalize_transformer_quant(transformer_quant)
@@ -8600,9 +8609,33 @@ class DiffusionBackend:
                         auto_bf16_when_resident_reason(getattr(fam, "name", None))
                         == SMALL_DIT_BF16_WHEN_RESIDENT
                     )
+                # ROCm RDNA AUTO W8A8 (FamilyProfile.rdna_auto_w8a8); resident only, offload / low-VRAM keeps bf16.
+                rdna_auto_w8a8 = (
+                    rdna_auto_w8a8_reason(target, getattr(fam, "name", None))
+                    if transformer_quant == TQ_AUTO
+                    and kind == "pipeline"
+                    and pipeline_seed_scheme is None
+                    and not _memory_request_forces_offload(memory_mode, cpu_offload)
+                    # Compiling tiers only; the fused W8A8 linear compiles regardless.
+                    and (
+                        speed_mode is None
+                        or normalize_speed_mode(speed_mode) in (SPEED_DEFAULT, SPEED_MAX)
+                    )
+                    and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                    else None
+                )
+                if rdna_auto_w8a8 is not None:
+                    logger.info(
+                        "diffusion.transformer_quant: auto picks native int8 W8A8 on this RDNA GPU (%s; "
+                        "UNSLOTH_NATIVE_INT8_ACT=0 keeps bf16)",
+                        rdna_auto_w8a8,
+                    )
+                    transformer_quant = TQ_INT8
                 native_scheme = (
                     native_quant_scheme(
-                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                        target,
+                        TQ_INT8 if rdna_auto_w8a8 is not None else transformer_quant_pinned,
+                        family = getattr(fam, "name", None),
                     )
                     if kind == "pipeline"
                     else None
@@ -9911,6 +9944,9 @@ class DiffusionBackend:
                             elif comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = self._comfy_offload_for(plan, single_file_path)
+                                _comfy_fp8_plan = (
+                                    self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -9927,6 +9963,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        torchao_offload = _comfy_fp8_plan is not None,
                                     ),
                                     **comfy_block_backends(
                                         comfy_scan,
@@ -9948,6 +9985,8 @@ class DiffusionBackend:
                                     ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
+                                if _comfy_fp8_plan is not None and comfy_compile:
+                                    plan = _comfy_fp8_plan
                             else:
                                 if kind != "gguf" and (
                                     not hasattr(transformer_cls, "from_single_file")
@@ -10287,7 +10326,15 @@ class DiffusionBackend:
                                     plan.offload_policy,
                                 )
                             inplace_decline = None
-                            if not keeps_resident and native_scheme is None:
+                            if rdna_auto_w8a8 is not None and not keeps_resident:
+                                # Measured resident only: AUTO keeps bf16 when even the int8 plan offloads.
+                                native_scheme = rdna_auto_w8a8 = None
+                                plan = bf16_plan
+                                inplace_decline = (
+                                    f"auto int8 W8A8 on RDNA is resident-only; the '{plan.offload_policy}' "
+                                    "offload keeps the bf16 transformer"
+                                )
+                            elif not keeps_resident and native_scheme is None:
                                 plan, inplace_decline = _inplace_torchao_placement(
                                     plan,
                                     preview_scheme,
@@ -10338,7 +10385,7 @@ class DiffusionBackend:
                                     {
                                         "offload": plan.offload_policy != OFFLOAD_NONE,
                                         "act_int8": native_scheme == TQ_INT8
-                                        and native_int8_act(target),
+                                        and (native_int8_act(target) or rdna_auto_w8a8 is not None),
                                     }
                                     if native_scheme is not None
                                     else {}
@@ -10512,6 +10559,18 @@ class DiffusionBackend:
                         logger.info(
                             "diffusion.transformer_quant: forcing speed_mode=default "
                             "(quantized transformer must be compiled; eager is ~30x slower)"
+                        )
+                        effective_speed = SPEED_DEFAULT
+                    if (
+                        rdna_auto_w8a8 is not None
+                        and transformer_quant_engaged is not None
+                        and speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                    ):
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (auto int8 W8A8 on RDNA is "
+                            "measured compiled)"
                         )
                         effective_speed = SPEED_DEFAULT
                     if (
@@ -10843,7 +10902,11 @@ class DiffusionBackend:
                     # After the speed layer, so it wraps the fused / single-frame _decode the layer installed.
                     try:
                         from .diffusion_vae_oom import install as install_vae_oom_retry
+
                         install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+                        from .diffusion_decode_segments import enable as enable_decode_expandable
+
+                        enable_decode_expandable(getattr(pipe, "vae", None))
                     except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
                         logger.warning("diffusion.vae_oom: not installed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
@@ -11499,6 +11562,24 @@ class DiffusionBackend:
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
 
+    @staticmethod
+    def _comfy_fp8_stream_plan(plan: Any) -> Any:
+        """The streaming placement torchao fp8 takes under an offloaded ``plan`` (``torchao_offload_plan``), else None."""
+        if plan_keeps_transformer_resident(plan):
+            return None
+        try:
+            placed = torchao_offload_plan(plan, "fp8")
+        except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's fp8 storage
+            return None
+        if placed is None or getattr(placed, "offload_policy", None) not in (
+            OFFLOAD_GROUP,
+            OFFLOAD_STREAMING,
+        ):
+            return None
+        if plan_keeps_transformer_resident(placed):
+            return None
+        return placed
+
     def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
         does the host RAM refusal reserve what that rule keeps free."""
@@ -11547,6 +11628,7 @@ class DiffusionBackend:
                 keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
+                target = target,
                 **_comfy_keep_fp32_pricing(fam, target),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
@@ -13300,8 +13382,7 @@ class DiffusionBackend:
             and transformer_resident is not None
             and not plan_keeps_transformer_resident(plan)
         ):
-            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
-            # price what that load builds, widened and fp8-stored, before choosing storage.
+            # Offloaded: price what the offload=True loader builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
                 # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
@@ -15141,6 +15222,7 @@ class DiffusionBackend:
                             chunk_kwargs = applied_embeddings.rewrite(chunk_kwargs)
                         # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
                         install_device_postprocess(pipe, logger)
+                        install_reference_vae_cache(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
@@ -15883,6 +15965,14 @@ def _lora_load_block_reason(pipe: Any) -> Optional[str]:
             "quantized Linears, which cannot carry adapters. Set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / "
             "UNSLOTH_DIFFUSION_COMFY_MXFP8=0, or name the LoRA in the API load request (Unsloth then dequantizes "
             "those layers)."
+        )
+    from .diffusion_packed_block import PACKED_BLOCK_ENV, packed_block_layers
+
+    if packed_block_layers(getattr(pipe, "transformer", None)):
+        return (
+            "LoRA is not available on this load: the file's nvfp4 / mxfp8 layers are kept packed and "
+            f"widened per layer (no native runtime on this GPU), which cannot carry adapters. Set {PACKED_BLOCK_ENV}=0, "
+            "or name the LoRA in the API load request (Unsloth then dequantizes those layers at load)."
         )
     if fp8_stored_layers(getattr(pipe, "transformer", None)):
         return (

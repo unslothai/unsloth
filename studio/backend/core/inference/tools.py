@@ -8501,6 +8501,8 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         "MPLBACKEND": "Agg",
         # Remaps ChatGPT code-interpreter paths (/mnt/data) onto the sandbox cwd.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
+        # Read by sandbox_site: refuses connects to cloud-metadata addresses at runtime.
+        "_UNSLOTH_SANDBOX_BLOCK_METADATA": "1",
     }
     if venv:
         env["VIRTUAL_ENV"] = venv

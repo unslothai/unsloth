@@ -338,21 +338,35 @@ def stream_to_stdout(stream, show_thinking: bool) -> str:
     return raw
 
 
+class _LatestMarkdown:
+    # visible_text() and Markdown() each scan the whole reply: run them per drawn frame, not per chunk.
+    def __init__(self, show_thinking: bool):
+        self.state = ("", False)  # (raw, final), swapped whole so the Live thread never sees a mix
+        self._show_thinking = show_thinking
+        self._built = None
+
+    def __rich_console__(self, console, options):
+        from rich.markdown import Markdown
+        from rich.text import Text
+
+        state = self.state
+        if self._built is None or self._built[0] is not state:
+            text = visible_text(state[0], self._show_thinking, final = state[1])
+            self._built = (state, Markdown(text) if text.strip() else Text(""))
+        yield self._built[1]
+
+
 def stream_markdown(stream, show_thinking: bool, *, console) -> str:
     from rich.live import Live
-    from rich.markdown import Markdown
-    from rich.text import Text
 
     raw = ""
-    with Live(console = console, refresh_per_second = 12, vertical_overflow = "visible") as live:
+    view = _LatestMarkdown(show_thinking)
+    with Live(view, console = console, refresh_per_second = 12, vertical_overflow = "visible"):
         for chunk in stream:
-            if not isinstance(chunk, str):
-                continue
-            raw = chunk
-            visible = visible_text(chunk, show_thinking)
-            live.update(Markdown(visible) if visible.strip() else Text(""))
-        visible = visible_text(raw, show_thinking, final = True)
-        live.update(Markdown(visible) if visible.strip() else Text(""))
+            if isinstance(chunk, str):
+                raw = chunk
+                view.state = (raw, False)
+        view.state = (raw, True)
     return raw
 
 
