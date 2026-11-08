@@ -22,6 +22,7 @@ _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 _lock = threading.Lock()
 _depth = 0
 _usable: Optional[bool] = None
+_restore: Optional[str] = None  # the live allocator settings the outermost decode found
 STATS = {"engaged": 0, "skipped": 0}
 
 
@@ -79,21 +80,45 @@ def _setter(torch: Any) -> Any:
 
 
 def _decide(torch: Any) -> bool:
-    if not _platform_ok() or _allocator_configured():
-        return False
-    if is_rocm_torch(torch):
+    """What holds for the whole process; the live allocator settings are read per decode (``_live_settings``)."""
+    if not _platform_ok() or is_rocm_torch(torch):
         return False
     if _setter(torch) is None:
         return False
     try:
-        if torch.cuda.memory.get_allocator_backend() != "native":
-            return False
-        # Already on process-wide: switching it off after the decode would be wrong.
-        if any(seg.get("is_expandable") for seg in torch.cuda.memory_snapshot()):
-            return False
+        return torch.cuda.memory.get_allocator_backend() == "native"
     except Exception:  # noqa: BLE001
         return False
-    return True
+
+
+def _live_settings(torch: Any) -> Optional[str]:
+    """The live settings string when expandable segments are off and nothing else is set, else None (leave it alone).
+    Read from the allocator (torch >= 2.6), so an option or opt-in set at runtime after CUDA init counts too."""
+    if _allocator_configured():
+        return None
+    try:
+        snap = torch.cuda.memory._snapshot()
+        live = snap["allocator_settings"]
+        last = live["PYTORCH_CUDA_ALLOC_CONF"]
+        if live["expandable_segments"] is not False or not isinstance(last, str):
+            return None
+        # Setting the flag resets max_split_size / roundup / gc threshold: a string setting any option is left alone.
+        if any(k != "expandable_segments" for k in _conf_keys(last)):
+            return None
+        # Already on process-wide: switching it off after the decode would be wrong.
+        if any(seg.get("is_expandable") for seg in snap["segments"]):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return last
+
+
+def _put_back(torch: Any, live: str) -> None:
+    """Off again, and the settings string exactly as it was (a set without the key leaves the flag as it is)."""
+    setter = _setter(torch)
+    if "expandable_segments" not in _conf_keys(live):
+        setter("expandable_segments:False")
+    setter(live)
 
 
 def _torch() -> Any:
@@ -117,7 +142,7 @@ def _busy(torch: Any) -> bool:
 
 @contextlib.contextmanager
 def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
-    global _depth, _usable
+    global _depth, _usable, _restore
     if not vae.__dict__.get(ENABLED_ATTR, False) or _env_off() or not _cuda_tensor(z):
         yield
         return
@@ -129,10 +154,12 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
     with _lock:
         if _usable is None:
             _usable = _decide(torch)
-        if _usable:
+        live = _live_settings(torch) if _usable and _depth == 0 else None
+        if _usable and (_depth > 0 or live is not None):
             try:
                 if _depth == 0:
                     _setter(torch)("expandable_segments:True")
+                    _restore = live
                 _depth += 1
                 engaged = True
             except Exception:  # noqa: BLE001 - refused: never retry
@@ -149,9 +176,10 @@ def expandable_decode(vae: Any, z: Any) -> Iterator[None]:
                 _depth -= 1
                 if _depth == 0:
                     try:
-                        _setter(torch)("expandable_segments:False")
+                        _put_back(torch, _restore or "")
                     except Exception:  # noqa: BLE001
                         _usable = False
+                    _restore = None
 
 
 def enable(vae: Any) -> bool:
