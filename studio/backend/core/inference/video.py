@@ -7521,7 +7521,6 @@ class VideoBackend:
             if getattr(source, "kind", None) != "repo":
                 continue
             names = list(dict.fromkeys(candidate_filenames_of(source)))
-            # the resolver's filter: readable .safetensors names only (none readable fetches nothing)
             names = [n for n in names if restricted_prequant_load_supported(scheme, n)]
             names = prefer_cached_pickle_twins(
                 source.location,
@@ -7686,7 +7685,6 @@ class VideoBackend:
         files: list[tuple[str, int]] = []
         for src in sources:
             names = list(candidate_filenames_of(src))
-            # the resolver's filter: readable .safetensors names only (none readable keeps the dense DiT)
             names = [n for n in names if restricted_prequant_load_supported(transformer_quant, n)]
             wanted = prefer_cached_pickle_twins(
                 src.location,
@@ -8483,7 +8481,6 @@ class VideoBackend:
             # Local path overrides are validated at injection; they never justify skipping the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
-            # Try every candidate (all .safetensors): a repo that hosts none keeps its dense encoder.
             from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
 
             from .diffusion_prequant import prefer_cached_pickle_twins
@@ -9084,7 +9081,6 @@ class VideoBackend:
                         fetch = _checkpoint_fetch,
                     )
                 )
-                # Trusted repo or not, only an exact *.safetensors name is ever opened; untrusted ones prove the header.
                 assert_pickle_free_single_file(
                     comfy_checkpoint, check_header = not _is_trusted_video_repo(repo_id)
                 )
@@ -9173,8 +9169,7 @@ class VideoBackend:
                 fetch = _checkpoint_fetch,
             )
             # Admitted per file from an untrusted repo: prove each file is a safetensors container before any probe.
-            # Trusted repo or not, only an exact *.safetensors name loads (diffusers torch.loads any other); a file
-            # admitted per file from an untrusted repo also proves its header before any probe.
+            # diffusers torch.loads any single file not named exactly *.safetensors, trusted repo or not.
             checked_single_file = kind == "single_file"
             untrusted_single_file = checked_single_file and not _is_trusted_video_repo(repo_id)
             if checked_single_file:

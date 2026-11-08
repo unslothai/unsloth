@@ -564,7 +564,6 @@ def load_prequant_safetensors(
     state_dict = native_unflatten(tensors, raw, path = path) if native_rebuild_enabled() else None
     reader = "native" if state_dict is not None else "torchao"
     if state_dict is None and unflatten is None:
-        # Below the torchao reader floor only the native rebuild can serve; this file needs torchao's reader.
         raise RuntimeError(
             unreadable + " (the file holds weights the native int8 / fp8 rebuild does not cover)"
         )

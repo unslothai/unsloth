@@ -14,7 +14,6 @@ SAFETENSORS_SUFFIX = ".safetensors"
 # Containers torch.load would unpickle. ``.bin`` is listed for weight files only (callers scope it).
 PICKLE_WEIGHT_SUFFIXES = (".pt", ".pth", ".ckpt", ".bin", ".pkl", ".pickle")
 
-# hf_hub ignore patterns for the pickle containers of a diffusion / video repo.
 PICKLE_IGNORE_PATTERNS = tuple(f"*{s}" for s in PICKLE_WEIGHT_SUFFIXES)
 
 SAFETENSORS_ONLY_MESSAGE = (

@@ -6623,14 +6623,12 @@ class DiffusionBackend:
             )
             return None
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-        # All candidates in loader order (.safetensors only; a hosted pickle is never priced or staged).
         from .diffusion_prequant import (
             candidate_filenames_of,
             prefer_cached_pickle_twins,
             restricted_prequant_load_supported,
         )
 
-        # The resolver's order (pickles dropped), so the plan stages the file the load opens.
         ordered = prefer_cached_pickle_twins(
             source.location,
             candidate_filenames_of(source),
@@ -6895,7 +6893,6 @@ class DiffusionBackend:
                 )
                 # Under the repo it describes: a mirror's commit says nothing about a cached upstream snapshot.
                 _record_revision(revisions_out, listing_repo, info)
-                # A .bin beside the component's safetensors is never fetched (diffusers' own preference, made explicit).
                 skipped = set(pipeline_pickle_files(s.rfilename for s in info.siblings))
                 return [
                     s
@@ -8446,8 +8443,7 @@ class DiffusionBackend:
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
                 if kind == "single_file":
-                    # Trusted repo or not, only an exact *.safetensors name loads (diffusers' single-file loader
-                    # torch.loads any other); a file admitted per file also proves its header before any probe opens it.
+                    # diffusers torch.loads any single file not named exactly *.safetensors, trusted repo or not.
                     assert_pickle_free_single_file(
                         single_file_path, check_header = not _is_trusted_diffusion_repo(repo_id)
                     )
@@ -13466,7 +13462,6 @@ class DiffusionBackend:
             cn_dtype = getattr(torch, str(state.dtype).replace("torch.", ""), None)
             # Force safetensors for untrusted remote repos; if the Hub scan failed open, pickles still load.
             cn_from_pretrained_kwargs: dict[str, Any] = {"cache_dir": hub_cache_dir()}
-            # A local folder that ships safetensors loads them only, never a .bin twin beside them.
             if remote_cn or component_weight_state(resolved_cn.path) is True:
                 cn_from_pretrained_kwargs["use_safetensors"] = True
             cn_model = getattr(diffusers, model_cls_name).from_pretrained(
@@ -16199,7 +16194,6 @@ def _base_file_downloaded(
         # the same exception in video.py's snapshot filter.
         return True
     if is_never_read_pickle(rfilename):
-        # .pt / .pth / .ckpt / .pkl: no component loader reads one, and Studio never unpickles weights.
         return False
     if rfilename.startswith("transformer/"):
         return include_transformer
@@ -16251,7 +16245,6 @@ def _pipeline_file_downloaded(rfilename: str) -> bool:
     if name.endswith((".onnx", ".onnx_data", ".pb", ".msgpack", ".h5")) or is_never_read_pickle(
         name
     ):
-        # .pt / .pth / .ckpt / .pkl: no component loader reads one, and Studio never unpickles weights.
         return False
     if ".fp16." in name or ".bf16." in name or ".non_ema." in name:
         return False

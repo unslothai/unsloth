@@ -484,7 +484,7 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
-# No-op: a cached pickle twin is never used, so the safetensors container is always the one fetched.
+# No-op (a cached pickle is never used).
 PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 
 _PICKLE_SUFFIXES = (".pt", ".pth")
@@ -705,7 +705,7 @@ def prefer_cached_pickle_twins(
     return out
 
 
-# No-op: a declared ``<stem>.pt`` always resolves as its ``<stem>.safetensors`` twin, never as the pickle.
+# No-op (a declared .pt always resolves as its .safetensors twin).
 SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
 
 
@@ -933,7 +933,7 @@ def resolve_prequant_source(
         return None
     override = (path_override or "").strip()
     if override:
-        # Kept as a source even when it is a pickle, so the load refuses it by name instead of silently quantising.
+        # A pickle stays a source so the load refuses it by name rather than silently quantising.
         return PrequantSource(kind = "path", location = override, filename = None)
     preferred = None
     agnostic = None
@@ -969,7 +969,6 @@ def resolve_prequant_source(
             declared = (prequant_repo_filename(repo_id, scheme, ".safetensors"),)
         else:
             declared = (preferred,) if preferred else ()
-        # A declared pickle name means its safetensors twin (the only container loaded).
         declared = tuple(with_declared_safetensors_twins(declared, declared))
         if _is_nvfp4_scheme(scheme):
             # Every hosted nvfp4 repo stores exactly ``<Model>-NVFP4.safetensors``: a real name, not a guess.
@@ -1921,8 +1920,7 @@ def hosted_prequant_refusal(
                 name = candidate
                 break
             if hub_names and len(absent) == len(hub_names):
-                # Every .safetensors name 404s (the repo still hosts only a pickle, which is never used): known
-                # absent, so planning stages the dense weights and the load quantises them at runtime.
+                # Known absent (e.g. the repo hosts only a pickle): plan dense and quantise at load.
                 reason = f"no .safetensors checkpoint is hosted ({', '.join(absent)})"
                 said = (source.location, None, reason)
                 with _HEADER_PROBE_LOCK:
@@ -2056,8 +2054,7 @@ def usable_prequant_source(
 
     if src.kind == "repo" and all(is_safetensors_checkpoint(n) for n in readable):
         declared = set(getattr(src, "declared_filenames", ()) or ())
-        # Offline, an undeclared and uncached name cannot be fetched; online, the header probe below refuses a
-        # name the Hub 404s (a repo that hosts only a pickle), so planning stages the dense weights either way.
+        # Offline an undeclared, uncached name cannot be fetched; online the header probe below refuses a 404.
         if (
             not any(n in declared for n in readable)
             and cached_checkpoint_path(src, cache_dir = cache_dir, names = readable, online = False)
@@ -2670,13 +2667,11 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
-        # Never a pickle name, whatever the source carries.
         names = without_pickles(candidate_filenames_of(source))
         all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
             if not readable and names:
-                # Nothing this install can open: refused by name, so the caller quantises the dense weights.
                 raise ValueError(
                     f"the hosted {scheme} checkpoint ({source.location}) cannot be read here: "
                     f"{_unreadable_why(scheme)}"

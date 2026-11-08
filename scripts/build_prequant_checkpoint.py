@@ -121,11 +121,9 @@ def upload_destination(
             )
     preferred = rotated_name or family_prequant_filename(fam, scheme)
     if not rotated and preferred and "-convrot" in preferred.lower():
-        # The declared name is the rotated artifact: a plain build never goes over it.
         preferred = None
     why = "a rotated checkpoint" if rotated else "a safetensors checkpoint"
     if not preferred:
-        # Plain builds have a derived name; rotated builds still need a declared one.
         if not rotated and upload_repo:
             from core.inference.diffusion_prequant import prequant_repo_filename
             return prequant_repo_filename(upload_repo, scheme, ".safetensors")
@@ -134,7 +132,6 @@ def upload_destination(
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
         )
-    # The declared name's extension must match the container.
     if not preferred.lower().endswith(wanted):
         raise ValueError(
             f"family {getattr(fam, 'name', fam)!r} declares {preferred!r} for {scheme!r}, which "

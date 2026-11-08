@@ -206,7 +206,7 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
                 names += [
                     row[-1] for row in getattr(fam, "prequant_filenames", ()) if row[0] == scheme
                 ]
-                # The .pt spellings older builds cached stay companions, so cleanup can still free them.
+                # Cached .pt spellings from older builds stay companions so cleanup can free them.
                 names += legacy_pickle_names(names, scheme)
                 add(repo, with_comfy_twins(names), owner, _HOSTED_DENOISER)
     except Exception as exc:  # noqa: BLE001 -- no table: those repos keep the pre-table handling
@@ -234,7 +234,6 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
             for repo, component, slot in rows:
                 for scheme in ("fp8", "int8"):
                     names = te_prequant_repo_filenames(repo, component, scheme)
-                    # The .pt twin older builds cached stays a companion (never loaded).
                     add(
                         repo,
                         [*names, *(n[: -len(".safetensors")] + ".pt" for n in names)],
