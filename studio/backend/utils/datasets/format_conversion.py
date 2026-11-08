@@ -4,6 +4,7 @@
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
 import contextvars
+import functools
 import os
 
 from .cells import cell_text
@@ -460,6 +461,33 @@ def _fetch_row_image(url):
     return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
+def _settle_in_order(rows, task, record, num_workers):
+    """Calls ``record(row, future)`` in row order; ``future`` runs ``task(row)`` on a pool (None if serial or ``task`` gives None)."""
+    if num_workers <= 1:
+        for row in rows:
+            record(row, None)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Settling here keeps output, random caption picks and the first-failure log as serial; 2x workers bounds images held.
+    pending = deque()
+    with ThreadPoolExecutor(max_workers = num_workers) as executor:
+        try:
+            for row in rows:
+                fn = task(row)
+                # A fresh context copy per task: it sees the caller's account / HF cache settings.
+                future = None if fn is None else executor.submit(contextvars.copy_context().run, fn)
+                pending.append((row, future))
+                if len(pending) > 2 * num_workers:
+                    record(*pending.popleft())
+            while pending:
+                record(*pending.popleft())
+        except BaseException:
+            executor.shutdown(wait = False, cancel_futures = True)
+            raise
+
+
 def _non_null_rows(dataset, column):
     """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
     try:
@@ -523,8 +551,20 @@ def convert_to_vlm_format(
         instruction_column = None
         uses_dynamic = False
 
+    def _fetch_repo_image(name):
+        from huggingface_hub import hf_hub_download
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        local_path = hf_hub_download(
+            dataset_name,
+            _image_lookup[name],
+            repo_type = "dataset",
+            cache_dir = active_hf_hub_cache(),
+        )
+        return Image.open(local_path).convert("RGB")
+
     def _convert_single_sample(sample, fetched = None):
-        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's already-downloaded image."""
+        """Image may be a PIL Image, local path, URL, or bare filename; ``fetched`` = the URL's or repo file's already-downloaded image."""
         image_data = sample[image_column]
 
         if isinstance(image_data, str):
@@ -532,16 +572,7 @@ def convert_to_vlm_format(
                 image_data = fetched if fetched is not None else _fetch_row_image(image_data)
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
-                from huggingface_hub import hf_hub_download
-                from utils.hf_cache_settings import active_hf_hub_cache
-
-                local_path = hf_hub_download(
-                    dataset_name,
-                    _image_lookup[image_data],
-                    repo_type = "dataset",
-                    cache_dir = active_hf_hub_cache(),
-                )
-                image_data = Image.open(local_path).convert("RGB")
+                image_data = fetched if fetched is not None else _fetch_repo_image(image_data)
             else:
                 image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
         elif image_data is None:
@@ -772,15 +803,34 @@ def convert_to_vlm_format(
             unit = "sample",
             **_quiet_bar_kwargs(),
         )
-        for sample in pbar:
+
+        def _record(sample, future = None):
+            nonlocal failed_count
             try:
-                converted_list.append(_convert_single_sample(sample))
+                fetched = future.result() if future is not None else None
+                converted_list.append(_convert_single_sample(sample, fetched))
             except Exception as e:
                 failed_count += 1
                 if failed_count == 1:
                     logger.info(f"First VLM conversion failure: {type(e).__name__}: {e}")
             pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-        pbar.close()
+
+        from utils.hardware import safe_thread_num_proc
+
+        num_workers = (
+            min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS) if _image_lookup is not None else 1
+        )
+
+        def _repo_fetch(sample):
+            name = sample[image_column]
+            if isinstance(name, str) and name in _image_lookup:
+                return functools.partial(_fetch_repo_image, name)
+            return None
+
+        try:
+            _settle_in_order(pbar, _repo_fetch, _record, num_workers)
+        finally:
+            pbar.close()
 
     if failed_count > 0:
         fail_rate = failed_count / total
@@ -1220,20 +1270,17 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    def _record(future_or_sample):
+    def _record(sample, future):
         nonlocal failed_count
         try:
-            if isinstance(future_or_sample, Future):
-                converted_list.append(future_or_sample.result())
-            else:
-                converted_list.append(_convert_single_sample(future_or_sample))
+            converted_list.append(
+                future.result() if future is not None else _convert_single_sample(sample)
+            )
         except Exception as e:
             failed_count += 1
             if failed_count == 1:
                 logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
         pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-
-    from concurrent.futures import Future
 
     num_workers = 1
     if _image_lookup is not None or (
@@ -1250,31 +1297,12 @@ def convert_sharegpt_with_images_to_vlm_format(
         **_quiet_bar_kwargs(),
     )
     try:
-        if num_workers <= 1:
-            for sample in pbar:
-                _record(sample)
-        else:
-            from collections import deque
-            from concurrent.futures import ThreadPoolExecutor
-
-            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
-            pending = deque()
-            with ThreadPoolExecutor(max_workers = num_workers) as executor:
-                try:
-                    for sample in pbar:
-                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
-                        pending.append(
-                            executor.submit(
-                                contextvars.copy_context().run, _convert_single_sample, sample
-                            )
-                        )
-                        if len(pending) > 2 * num_workers:
-                            _record(pending.popleft())
-                    while pending:
-                        _record(pending.popleft())
-                except BaseException:
-                    executor.shutdown(wait = False, cancel_futures = True)
-                    raise
+        _settle_in_order(
+            pbar,
+            lambda sample: functools.partial(_convert_single_sample, sample),
+            _record,
+            num_workers,
+        )
     finally:
         pbar.close()
 
