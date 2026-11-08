@@ -3121,7 +3121,11 @@ class InferenceBackend:
         prompt_len = int(inputs["input_ids"].shape[1])
         budget = generation_budget_within_context(model, prompt_len, max_new_tokens)
         # Unset: the free window, capped as the MLX path caps it.
-        return inputs, prompt_len, budget if max_new_tokens else min(budget, UNSET_GENERATION_BUDGET)
+        return (
+            inputs,
+            prompt_len,
+            budget if max_new_tokens else min(budget, UNSET_GENERATION_BUDGET),
+        )
 
     def _speak_text(self, text, max_new_tokens, use_adapter, cancel_event, language, audio_options):
         """The loaded LFM3 model reads ``text`` aloud in its TTS mode: ``(wav_bytes, sample_rate)``."""
