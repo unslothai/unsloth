@@ -532,11 +532,14 @@ def _video_comfy_backends(
     resident only; else fp8 storage under offload or a tight MPS plan). ``priced_offload``: the plan was sized with the
     offloaded backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the
     planned DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
-    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
+    ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything. nvfp4 / mxfp8 layers take the image
+    path's native runtimes where their flag, device and family allow; without one, fp8 storage keeps them packed."""
     if not keep:
         return {
             "int8_backend": None,
             "fp8_backend": None,
+            "nvfp4_backend": None,
+            "mxfp8_backend": None,
             "fp8_storage": False,
             "fp8_widen_chosen": False,
         }
@@ -547,9 +550,21 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
+        **_video_block_backends(target, name),
         "fp8_storage": storage,
         "fp8_widen_chosen": not storage
         and _video_fp8_storage(fam, target, store_pays, widened_mib = widened_mib, widen_chosen = True),
+    }
+
+
+def _video_block_backends(target: Any, family: Optional[str]) -> dict:
+    """``comfy_block_backend`` per block format (None = no native runtime here)."""
+    from .diffusion_comfy_block import MXFP8, NVFP4, comfy_block_backend
+
+    dtype = getattr(target, "dtype", None)
+    return {
+        f"{fmt}_backend": comfy_block_backend(fmt, target, family, dtype = dtype)[0]
+        for fmt in (NVFP4, MXFP8)
     }
 
 
@@ -613,10 +628,13 @@ def _video_comfy_resident_mib(
     keep_int8 = keep_fp8 = fp8_stored = False
     exclude: tuple = ()
     filters: dict = {}
+    keep_block: dict = {}
     if keep:
         try:
             from .diffusion_transformer_quant import (
                 DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_MXFP8,
+                TQ_NVFP4,
                 divisible_for_scheme,
                 exclude_tokens_for_scheme,
             )
@@ -624,6 +642,10 @@ def _video_comfy_resident_mib(
             filters = {
                 "min_features": DEFAULT_MIN_LINEAR_FEATURES,
                 "fp8_divisible": divisible_for_scheme(TQ_FP8),
+                "block_divisible": {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
             }
         except Exception:  # noqa: BLE001 -- the estimate then keeps every int8 layer
             exclude = ()
@@ -631,12 +653,19 @@ def _video_comfy_resident_mib(
         keep_int8 = bool(comfy_int8_backend(target, name, base, offload = offload))
         keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None
         fp8_stored = _video_fp8_storage(fam, target, offload)
+        blocks = _video_block_backends(target, name)
+        keep_block = {
+            "keep_nvfp4": blocks["nvfp4_backend"] is not None,
+            "keep_mxfp8": blocks["mxfp8_backend"] is not None,
+        }
     return comfy_resident_mib(
         str(path),
         scan,
         keep_int8 = keep_int8,
         keep_fp8 = keep_fp8,
         fp8_stored = fp8_stored,
+        **keep_block,
+        target = target,
         keep_key = keep_key,
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),

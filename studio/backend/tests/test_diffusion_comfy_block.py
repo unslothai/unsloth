@@ -582,7 +582,7 @@ def test_backends_are_logged_per_format_present(caplog):
     with caplog.at_level(logging.INFO, logger = "comfy_block_test"):
         out = cb.comfy_block_backends(scan, _target("cpu"), "z-image", logger = logger)
     assert out == {"nvfp4_backend": None, "mxfp8_backend": None}
-    assert "3 nvfp4 layer(s) are dequantized" in caplog.text and "mxfp8" not in caplog.text
+    assert "3 nvfp4 layer(s) have no native runtime" in caplog.text and "mxfp8" not in caplog.text
 
 
 def test_a_failed_mxfp8_probe_is_not_cached(monkeypatch):
