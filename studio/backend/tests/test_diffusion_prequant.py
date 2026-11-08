@@ -63,7 +63,6 @@ def test_resolve_path_override_wins():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
     src = resolve_prequant_source(fam, "fp8", path_override = "/tmp/local.safetensors")
     assert src == PrequantSource(kind = "path", location = "/tmp/local.safetensors", filename = None)
-    # A pickle override stays a source so the load refuses it by name rather than silently quantising.
     src = resolve_prequant_source(fam, "fp8", path_override = "/tmp/local.pt")
     assert src == PrequantSource(kind = "path", location = "/tmp/local.pt", filename = None)
 
@@ -82,7 +81,6 @@ def test_resolve_family_repo_by_scheme():
 def test_prequant_repo_filename_convention():
     from core.inference.diffusion_prequant import prequant_repo_filename
 
-    # The default suffix is .safetensors, the only container loaded.
     st = ".safetensors"
     assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "int8") == "Z-Image-Turbo-INT8" + st
     assert prequant_repo_filename("unsloth/Z-Image-Turbo-FP8", "fp8") == "Z-Image-Turbo-FP8" + st
@@ -105,7 +103,6 @@ def test_prequant_repo_filename_convention():
         prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-NVFP4", "nvfp4", component = "transformer")
         == "Wan2.2-T2V-A14B-NVFP4" + st
     )
-    # An explicit suffix is still honoured (the builder names its own outputs with it).
     assert prequant_repo_filename("unsloth/Model-FP8", "fp8", ".pt") == "Model-FP8.pt"
 
 
@@ -685,7 +682,6 @@ def _load(
         monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
     else:
         monkeypatch.delenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, raising = False)
-    # Every scheme is read from safetensors only (the stand-in container is installed above).
     path = tmp_path / "ckpt.safetensors"
     if exists:
         path.write_bytes(b"x")
@@ -954,7 +950,6 @@ def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
     )
     source = PrequantSource(kind = "path", location = "~/ckpt.safetensors", filename = None)
     assert pq._resolve_checkpoint_path(source, None) == str(real)
-    # A local pickle override is refused by name, before any existence check or open.
     pickle = PrequantSource(kind = "path", location = str(tmp_path / "ckpt.pt"), filename = None)
     with pytest.raises(ValueError, match = "safetensors only"):
         pq._resolve_checkpoint_path(pickle, None)
@@ -1227,17 +1222,14 @@ def test_support_is_answered_per_scheme(monkeypatch):
 
     monkeypatch.setattr(legacy_int8, "legacy_int8_decode_supported", lambda: False)
 
-    # The converter's pickle reader answers per scheme ...
     assert pq.pickle_prequant_load_supported("fp8") is True
     assert pq.pickle_prequant_load_supported("int8") is False
-    # nvfp4 never reads a pickle, whatever the allowlist resolves
     assert pq.pickle_prequant_load_supported("nvfp4") is False
     assert pq.pickle_prequant_load_supported() is True
     assert pq.pickle_prequant_load_supported("something-else") is True
     # ... but the load path never reads a pickle of any scheme, whatever the allowlist resolves.
     for scheme in (None, "fp8", "int8", "nvfp4", "something-else"):
         assert pq.restricted_prequant_load_supported(scheme, "x.pt") is False, scheme
-    # and the load path's per-scheme answer is the safetensors one.
     import core.inference.prequant_safetensors as ps
 
     monkeypatch.setattr(ps, "safetensors_scheme_supported", lambda scheme = None: scheme == "fp8")
@@ -1289,7 +1281,6 @@ def test_the_allowlist_is_registered_once_and_never_withdrawn(monkeypatch):
         lambda *a, **k: pytest.fail("the load must not scope the allowlist to itself"),
     )
     monkeypatch.setattr(torch, "load", lambda *a, **k: {"ok": True})
-    # The converter's reader (never the load path) still registers the allowlist once.
     assert pq._torch_load_prequant("/x.pt", map_location = "cpu") == {"ok": True}
     assert pq._torch_load_prequant("/x.pt", map_location = "cpu") == {"ok": True}
     assert len(calls) == 1, "registered once for the process, not per load"
@@ -2461,14 +2452,12 @@ def test_the_plan_only_commits_to_a_hosted_name_this_install_can_open(monkeypatc
     assert DiffusionBackend._prequant_source_hub_entry(source, None, failures, scheme = "fp8") is None
     assert failures, "an unopenable artifact has to leave the plan marked partial"
 
-    # A hosted safetensors this install can open is what the plan stages ...
     _Info.siblings = [_Sibling("Model-FP8.pt", 4096), _Sibling("Model-FP8.safetensors", 4097)]
     assert DiffusionBackend._prequant_source_hub_entry(source, None, scheme = "fp8") == (
         "unsloth/Model-FP8",
         "Model-FP8.safetensors",
         4097,
     )
-    # ... and one it cannot open leaves the plan partial instead of falling back to the pickle.
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: False)
     failures = []
     assert DiffusionBackend._prequant_source_hub_entry(source, None, failures, scheme = "fp8") is None
@@ -2580,7 +2569,6 @@ def test_an_unreachable_hub_is_reported_as_itself_not_blamed_on_the_last_candida
     asked.clear()
     with pytest.raises(EntryNotFoundError):
         pq._resolve_checkpoint_path(source, None, None, local_files_only = True)
-    # (pickle names are never asked for)
     assert asked == ["Hosted-FP8.safetensors", "Hosted-FP8-Alt.safetensors"], asked
 
 

@@ -1528,7 +1528,6 @@ def test_an_offline_pick_with_no_cached_safetensors_seed_keeps_the_released_weig
     monkeypatch.setattr(
         DiffusionBackend, "_released_transformer_cached", staticmethod(lambda _base: False)
     )
-    # Offline, an uncached hosted checkpoint cannot be fetched, so nothing is planned on it.
     assert _settle(backend, local_files_only = True) is None
 
 

@@ -210,7 +210,6 @@ def test_a_bin_only_component_keeps_the_library_default(tmp_path):
         },
     )
     assert ds.pipeline_safetensors_kwargs(str(root)) == {}
-    # supplied pre-built, the .bin-only component is never read from the folder
     assert ds.pipeline_safetensors_kwargs(str(root), passed = {"text_encoder": object()}) == {
         "use_safetensors": True
     }
@@ -317,10 +316,8 @@ def _calls_with_helper(path: Path, helper: str) -> int:
 def test_every_dense_diffusers_load_asks_for_safetensors():
     image = _BACKEND / "core" / "inference" / "diffusion.py"
     video = _BACKEND / "core" / "inference" / "video.py"
-    # three pipeline builds + the dense transformer in diffusion.py
     assert _calls_with_helper(image, "pipeline_safetensors_kwargs") == 3
     assert _calls_with_helper(image, "component_safetensors_kwargs") == 1
-    # three pipeline builds (through the local wrapper) + the dense denoiser reload in video.py
     assert _calls_with_helper(video, "_safetensors_kwargs") == 3
     assert _calls_with_helper(video, "component_safetensors_kwargs") == 1
 

@@ -273,7 +273,6 @@ def test_a_legacy_int8_pickle_loads_as_int8tensor_with_the_same_weights(monkeypa
         Exception, match = "LinearActivationQuantizedTensor|was not an allowed global"
     ):
         torch.load(str(path), weights_only = True)
-    # The converter's reader (the load path refuses any pickle before opening it).
     with pytest.raises(ValueError, match = "safetensors only"):
         pq._load_prequant_checkpoint(str(path), map_location = "cpu")
     ckpt = pq._torch_load_prequant(str(path), map_location = "cpu")

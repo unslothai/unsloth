@@ -484,7 +484,6 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
-# No-op (a cached pickle is never used).
 PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 
 _PICKLE_SUFFIXES = (".pt", ".pth")
@@ -705,7 +704,6 @@ def prefer_cached_pickle_twins(
     return out
 
 
-# No-op (a declared .pt always resolves as its .safetensors twin).
 SAFETENSORS_TWINS_ENV = "UNSLOTH_PREQUANT_SAFETENSORS_TWINS"
 
 

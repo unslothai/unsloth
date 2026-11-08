@@ -667,7 +667,6 @@ def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, varia
     wanted = f"{model}-{stem}.safetensors"
     # first after any ComfyUI twin (int8 tries a "-ComfyUI" name first, which neither repo hosts)
     assert [n for n in names if "-ComfyUI" not in n][0] == wanted
-    # Safetensors only: no pickle name is ever in the chain.
     assert all(n.endswith(".safetensors") for n in names), names
 
 

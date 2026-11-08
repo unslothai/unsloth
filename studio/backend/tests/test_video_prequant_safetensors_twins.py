@@ -287,7 +287,6 @@ def test_a_cached_pickle_is_ignored_and_never_opened(cell, offline, tmp_path, mo
     else:
         assert _resolve(src, scheme) == hub.cached[(src.location, stem + ".safetensors")]
     assert stem + ".pt" not in hub.fetched
-    # the cache probe never credits the pickle either
     assert pq.cached_checkpoint_path(src, online = not offline) in (
         None,
         hub.cached.get((src.location, stem + ".safetensors")),

@@ -266,7 +266,6 @@ def test_te_hub_files_planner_never_prices_a_pickle(hub):
     api = _Api(["Model-text_encoder-FP8.safetensors", "Model-text_encoder-FP8.pt"])
     files = tpq.te_prequant_hub_files({"text_encoder": _te()}, api, None)
     assert files == {"text_encoder": [("Model-text_encoder-FP8.safetensors", 100)]}
-    # a repo that hosts only the pickle keeps the dense encoder
     files = tpq.te_prequant_hub_files(
         {"text_encoder": _te()}, _Api(["Model-text_encoder-FP8.pt"]), None
     )
@@ -282,7 +281,6 @@ def test_dit_planner_stages_the_safetensors_even_with_a_cached_pickle(hub, monke
     entry = DiffusionBackend._prequant_source_hub_entry(_dit(), None, scheme = "int8")
     assert entry == (REPO, "Model-INT8.safetensors", 100)
     assert entry[1] == _resolve(_dit()).rsplit("/", 1)[-1]
-    # a listing with only the pickle stages nothing: the dense shards stay in the plan
     api.names = ["Model-INT8.pt"]
     failures = []
     assert (
@@ -529,7 +527,6 @@ def test_video_cached_repo_probe_follows_the_same_rule(hub, monkeypatch):
         staticmethod(lambda repo, name, *a, **k: (repo, name) in hub.cached),
     )
     probe = VideoBackend._denoiser_prequant_cached_repo
-    # a cached pickle alone never makes the hosted denoiser "cached"
     assert probe(None, "int8", "base/Model", online = True) is None
     assert probe(None, "int8", "base/Model", online = False) is None
     hub.cache("Model-INT8.safetensors")
@@ -598,7 +595,6 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
         fam, "base/Model", None, "int8"
     )
-    # only the pickle is cached: nothing loads from the cache, so nothing is priced from it
     assert components == ("text_encoder",)
     assert exact is False
     hub.absent.clear()

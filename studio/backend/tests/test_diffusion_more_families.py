@@ -385,7 +385,6 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
 
 
 def test_qwen_image_2512_prequant_filenames_match_its_repo():
-    # The repo serves both containers; only the .safetensors one is ever asked for.
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
     fam = detect_family("Qwen/Qwen-Image-2512")
     for scheme, safetensors_name, pickle_name in (

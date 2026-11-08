@@ -734,7 +734,6 @@ def test_plain_encoder_gate_requires_safetensors(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "safetensors", None)
     assert not te_candidate_is_readable("encoder.safetensors")
-    # A pickle is never readable, with or without safetensors.
     assert not te_candidate_is_readable("encoder.pt")
 
 

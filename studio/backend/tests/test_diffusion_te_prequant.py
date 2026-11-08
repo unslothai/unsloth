@@ -41,7 +41,6 @@ def _fam(
 
 
 def test_repo_filename_convention():
-    # safetensors only: a hosted .pt twin is never asked for.
     assert te_prequant_repo_filenames("unsloth/LTX-2-FP8", "text_encoder", "fp8") == (
         "LTX-2-text_encoder-FP8.safetensors",
     )
@@ -921,7 +920,6 @@ def test_the_plan_recognises_the_pt_repos_that_already_exist(monkeypatch):
     }
     assert plan([_Sib("unrelated.bin", 1)]) == {}
 
-    # Without safetensors support nothing is planned: the pickle is never the fallback.
     monkeypatch.setattr(tpq, "te_candidate_is_readable", lambda n: False)
     assert plan([_Sib(pt, 9_000_000_000), _Sib(st, 9_400_000_000)]) == {}
 
@@ -981,7 +979,6 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
     # Online, the error surfaces and the 2nd candidate is only cache-checked (no network attempt).
     with pytest.raises(LocalEntryNotFoundError, match = "Hub unreachable"):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    # The stale chain's pickle is never asked for, online or from the cache.
     assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
     assert online == [True], online
 

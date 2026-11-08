@@ -434,7 +434,6 @@ def test_any_mirrored_name_wins_before_the_hub_is_asked(tmp_path, monkeypatch):
         pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == str(pt.resolve())
         and calls == []
     )
-    # A mirrored pickle is never served, not even as its own name.
     (pickle,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.pt")
     assert pq.prequant_mirror_path("unsloth/Model-INT8", "Model-INT8.pt") is None
     assert pickle.is_file()
@@ -461,7 +460,6 @@ def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, m
     assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(
         pt.resolve()
     )
-    # A mirror holding only the pickle serves nothing: the unreachable Hub surfaces instead.
     pt.unlink()
     _mirror(tmp_path, monkeypatch, "unsloth/Model-FP8/Model-text_encoder-FP8.pt")
     with pytest.raises(LocalEntryNotFoundError):

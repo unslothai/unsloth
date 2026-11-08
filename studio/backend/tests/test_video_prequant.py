@@ -155,7 +155,6 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
     fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
     assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.safetensors"
     assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.safetensors"
-    # Safetensors only: no derived .pt or legacy transformer_<scheme>.pt fallback.
     assert resolve_prequant_source(fam, "int8").fallback_filenames == ()
 
 

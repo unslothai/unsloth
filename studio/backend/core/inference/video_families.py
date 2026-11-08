@@ -820,7 +820,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
         # fp8 / int8: expert 2 is <name>-2.safetensors, not the derived transformer_2 name, so it needs its own row.
-        # Only the .pt files are hosted today (never loaded), so both experts quantise at load until uploaded.
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),

@@ -130,7 +130,6 @@ def _cached_snapshot_dir(repo_id: str, probe: str, cache_dir: Optional[str]) -> 
         except Exception:  # noqa: BLE001
             continue
         if isinstance(hit, str) and os.path.isfile(hit):
-            # <snapshot>/<probe>: climb one level per path segment of the probe
             return Path(hit).parents[len(probe.split("/")) - 1]
     return None
 

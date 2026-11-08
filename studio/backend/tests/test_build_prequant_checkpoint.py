@@ -45,7 +45,6 @@ def test_a_rotated_upload_goes_to_the_name_the_loader_asks_for_not_the_legacy_fa
         build.upload_destination(h3, "int8", rotated = True, safetensors = True)
         == "MiniMax-H3-INT8-ConvRot.safetensors"
     )
-    # A plain build never goes over the rotated name: it takes the derived one.
     assert (
         build.upload_destination(
             h3, "int8", rotated = False, safetensors = True, upload_repo = "unsloth/MiniMax-H3-FP8"
@@ -88,7 +87,6 @@ def test_a_safetensors_upload_needs_a_name_the_loader_would_ask_for():
     build = _script()
     zimage = detect_family("Tongyi-MAI/Z-Image-Turbo", override = "z-image")
     assert zimage is not None
-    # Without an upload repo there is no derived name, and the family declares none.
     with pytest.raises(ValueError, match = "prequant_filenames"):
         build.upload_destination(zimage, "fp8", rotated = False, safetensors = True)
     assert (

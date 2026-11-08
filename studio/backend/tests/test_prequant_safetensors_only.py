@@ -47,7 +47,6 @@ def _dit_rows():
 
 @pytest.fixture(autouse = True)
 def _nvfp4_on(monkeypatch):
-    # Cover the nvfp4 rows too.
     monkeypatch.setenv("UNSLOTH_NVFP4_DIFFUSION", "1")
 
 
