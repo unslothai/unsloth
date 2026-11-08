@@ -2643,6 +2643,29 @@ def _download_checkpoint_name(
     )
 
 
+def _comfy_readable_names(source: Any, names: Sequence[str], cache_dir: Optional[str]) -> list:
+    """Candidates the ComfyUI-format loader opens without torchao (its native and bf16 backends): a ComfyUI-format
+    name, or a cached file whose header scans as ComfyUI-format. A plain name is never fetched to find out."""
+    try:
+        from .diffusion_comfy_quant import scan_comfy_quant
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for name in names:
+        if is_comfy_prequant_filename(name):
+            out.append(name)
+            continue
+        for root in dict.fromkeys((cache_dir, None)):
+            hit = _cached_in_root(source, root, name)
+            try:
+                if hit is not None and scan_comfy_quant(hit) is not None:
+                    out.append(name)
+                    break
+            except Exception:  # noqa: BLE001 - an unreadable header is not a ComfyUI file
+                continue
+    return out
+
+
 def _resolve_checkpoint_path(
     source: PrequantSource,
     hf_token: Optional[str],
@@ -2671,6 +2694,8 @@ def _resolve_checkpoint_path(
         all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
+            if not readable and names and not _is_nvfp4_scheme(scheme):
+                readable = _comfy_readable_names(source, names, cache_dir)
             if not readable and names:
                 raise ValueError(
                     f"the hosted {scheme} checkpoint ({source.location}) cannot be read here: "
@@ -2679,16 +2704,19 @@ def _resolve_checkpoint_path(
             names = readable
         if not names:
             return None
+        allowed = frozenset(names)
+
+        def _ok(n: str) -> bool:
+            return n in allowed
+
         # Mirror first for EVERY name: else a Hub copy of an earlier name is downloaded and the mirror never used.
-        mirrored = _first_mirrored(
-            source.location, names, lambda n: restricted_prequant_load_supported(scheme, n)
-        )
+        mirrored = _first_mirrored(source.location, names, _ok)
         if mirrored is not None:
             return mirrored
         names = prefer_cached_pickle_twins(
             source.location,
             names,
-            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+            readable = _ok,
             cache_dir = cache_dir,
             logger = logger,
             roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
@@ -2710,7 +2738,7 @@ def _resolve_checkpoint_path(
                     name,
                     all_names,
                     names,
-                    readable = lambda n: restricted_prequant_load_supported(scheme, n),
+                    readable = _ok,
                     logger = logger,
                 )
                 return path

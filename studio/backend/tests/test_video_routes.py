@@ -1401,8 +1401,15 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
+@pytest.fixture
+def readable_safetensors(monkeypatch):
+    """The hosted fp8 safetensors reads here, so the plan tests do not depend on this host's torchao."""
+    import core.inference.prequant_safetensors as pst
+    monkeypatch.setattr(pst, "safetensors_scheme_supported", lambda scheme = None: True)
+
+
 def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
-    client, monkeypatch
+    client, monkeypatch, readable_safetensors
 ):
     import types
 
@@ -1485,7 +1492,9 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
         assert "unsloth/LTX-2.3-FP8" not in _staged(memory_mode), memory_mode
 
 
-def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
+def test_video_download_plan_does_not_probe_fp8_while_training(
+    client, monkeypatch, readable_safetensors
+):
     import types
 
     import core.inference.diffusion_device as devmod

@@ -199,6 +199,30 @@ def test_unreadable_safetensors_never_falls_back_to_a_pickle(monkeypatch):
         pq._resolve_checkpoint_path(src, None, scheme = "fp8")
 
 
+def test_a_cached_comfy_file_is_still_read_where_torchao_cannot_rebuild(monkeypatch, tmp_path):
+    import core.inference.diffusion_comfy_quant as cq
+
+    src = pq.PrequantSource(
+        kind = "repo", location = "unsloth/Foo-INT8", filename = "Foo-INT8.safetensors"
+    )
+    cached = tmp_path / "Foo-INT8.safetensors"
+    cached.write_bytes(b"x")
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, name = None: False
+    )
+    monkeypatch.setattr(pq, "_cached_in_root", lambda source, root, name = None: str(cached))
+    monkeypatch.setattr(pq, "_first_mirrored", lambda *a, **k: None)
+    monkeypatch.setattr(pq, "_download_checkpoint_name", lambda source, name, *a, **k: str(cached))
+    monkeypatch.setattr(cq, "scan_comfy_quant", lambda path: object())
+    # The ComfyUI-format loader has torchao-free backends, so a cached ComfyUI file is not refused.
+    assert pq._resolve_checkpoint_path(src, None, scheme = "int8") == str(cached)
+    monkeypatch.setattr(cq, "scan_comfy_quant", lambda path: None)
+    with pytest.raises(ValueError, match = "cannot be read here"):
+        pq._resolve_checkpoint_path(src, None, scheme = "int8")
+    with pytest.raises(ValueError, match = "cannot be read here"):
+        pq._resolve_checkpoint_path(src, None, scheme = "nvfp4")
+
+
 def test_the_mirror_serves_the_safetensors_twin_never_the_pickle(tmp_path, monkeypatch):
     root = tmp_path / "mirror" / "unsloth" / "Foo-FP8"
     root.mkdir(parents = True)

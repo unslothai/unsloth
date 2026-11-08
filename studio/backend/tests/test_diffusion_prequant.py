@@ -41,6 +41,13 @@ def _pin_prequant_safe_globals(real_prequant_safe_globals):
     return real_prequant_safe_globals
 
 
+@pytest.fixture
+def readable_safetensors(monkeypatch):
+    """Every safetensors name reads here, so cache-lookup tests do not depend on this host's torchao."""
+    import core.inference.prequant_safetensors as pst
+    monkeypatch.setattr(pst, "safetensors_scheme_supported", lambda scheme = None: True)
+
+
 def _fam(prequant_repos = (), prequant_variant_repos = ()):
     return DiffusionFamily(
         name = "z-image",
@@ -1566,7 +1573,9 @@ def test_pin_kernel_preference_no_torchao(monkeypatch):
     assert sd["a.weight"].kernel_preference == _FakeKernelPreference.AUTO
 
 
-def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
+def test_prequant_checkpoint_cached_reads_only_the_cache(
+    monkeypatch, tmp_path, readable_safetensors
+):
     # memory planning calls this, so it must be a pure lookup: no Hub call, no raise
     from core.inference.diffusion_prequant import prequant_checkpoint_cached
 
@@ -1610,7 +1619,9 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     assert prequant_checkpoint_cached(source, online = False) is False
 
 
-def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
+def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(
+    monkeypatch, tmp_path, readable_safetensors
+):
     # hf_hub_download(cache_dir=live) revalidates; returning raw would pin a stale checkpoint
     live = tmp_path / "live-hub"
     live.mkdir()
@@ -1651,7 +1662,9 @@ def _other_root_source():
     return _prequant_source()
 
 
-def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
+def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(
+    monkeypatch, tmp_path, readable_safetensors
+):
     # rerun the download through the root holding the copy: one HEAD, no re-fetch, no stale pin
     default_root = tmp_path / "default-hub"
     default_root.mkdir()
