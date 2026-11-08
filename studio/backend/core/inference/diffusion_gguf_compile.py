@@ -10,11 +10,8 @@ stock forward runs the compiled dequant (fp16 out, several kernels) and then an 
 linear per forward. The fused kernel keeps the fp16 rounding of ``d * q`` before the cast (see ``_q8_0_blocks_dequant_cast``),
 so the weight it produces is bit-identical to the stock one.
 
-Every other type that dequantises to fp16 under a bf16 compute dtype (the K-quants and legacy types) is cast in place:
-the compiled dequant's fp16 weight becomes the bf16 one in its own buffer, so a linear no longer holds both copies; the
-values are the stock cast's, by construction (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables). Compiling the cast into the
-dequant instead was not bit-identical for Q4_K / Q5_K: pinning the fp16 rounding makes inductor store the fp16 weight
-anyway, and without the pin it rounds once."""
+Other fp16-dequantised types under a bf16 compute dtype are cast in the dequant's own buffer, bit-identical to the stock
+cast (UNSLOTH_DIFFUSION_GGUF_FUSED_CAST=0 disables); a compiled-in cast was not bit-identical for Q4_K / Q5_K."""
 
 from __future__ import annotations
 
@@ -216,12 +213,12 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
             else:
                 if not fused_cast or dtype != torch.bfloat16 or quant_type is None:
                     return stock_forward(self, inputs)
-                half = gguf_utils.dequantize_gguf_tensor(weight)  # the installed (compiled) dequant
+                half = gguf_utils.dequantize_gguf_tensor(weight)
                 if half.dtype == torch.float16 and half.is_contiguous():
                     dense = _cast_in_place(half, dtype)
                 else:
                     dense = half.to(dtype)
-                del half  # an fp32 dequant must not outlive its cast through the matmul, as in the stock forward
+                del half  # as in the stock forward, an fp32 dequant is freed before the matmul
             bias = self.bias.to(dtype) if self.bias is not None else None
             return F.linear(inputs, dense, bias)
 
