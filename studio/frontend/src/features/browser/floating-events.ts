@@ -4,7 +4,7 @@
 export const FLOATING_ATTRIBUTE = "data-browser-floating";
 /** Per frame of a move, so a native page follows (native-view.ts). */
 export const FLOATING_MOVE_EVENT = "unsloth-browser-floating-move";
-/** The pointer reaching or pressing the window's header, before a drag: a layered page snapshots itself then. */
+/** Pointer at or pressing the window's header: the page is captured for a drag. */
 export const FLOATING_PRESS_EVENT = "unsloth-browser-floating-press";
 export const FLOATING_SCALE_VAR = "--browser-floating-scale";
 /** `browser_view_zoom`'s floor (browser_webview.rs): below it the call fails and the tab shows an error. */

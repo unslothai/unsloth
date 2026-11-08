@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// macOS desktop: a floating window's page showed white because the fixed-background cuts inside the
-// window missed it. Read from source: no DOM here.
+// Floating window paths, read from source (no DOM here).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -63,9 +62,7 @@ test("switching between docked and floating shuts the cut until the page is move
   const zoom = apply.indexOf(call, show);
   assert.ok(zoom > show, "zoomed after the move");
   assert.ok(zoom < apply.indexOf("if (layered) openHole(tabId, bounds);"), "and before the cut opens");
-  // Back from a parked drag or resize, on any platform: zoomed before the page is shown again.
   const parked = apply.indexOf("if (rezoom && parkedView === tabId) {");
-  // On top of the app the page is parked for it first, only when it moves (not a plain zoom change).
   assert.match(apply, /if \(rezoom && !layered && shownView === tabId && resized\) \{\s*await call\("browser_view_show", \{ tabId, bounds: shownBounds, parked: true \}\);/);
   assert.ok(parked >= 0 && apply.indexOf(call, parked) < show);
 });
@@ -74,8 +71,6 @@ test("a moved or resized floating window parks its page under the picture on eve
   assert.match(NATIVE, /function movingWindow\(\): boolean \{\s*return document\.querySelector\?\.\("\[data-floating-gesture\]"\) != null;/);
   assert.match(NATIVE, /const covered = movingWindow\(\) \|\| \(!layered && coveredNow\(rect\)\);/);
   assert.match(body("applyView"), /if \(desired && "covered" in desired && movingWindow\(\) && parkable\(desired\.tabId\)\) \{\s*await parkForDrag/);
-  // On top of the app nothing syncs during the gesture, so the first frame parks it.
-  // and, on every platform, forgets what was last sent, so a gesture ending where it started shows the page again.
   assert.match(NATIVE, /coverForDrag\(tabId\);\s*(\/\/[^\n]*\n\s*)*sent = "";\s*if \(!layered && parkable\(tabId\)\) void parkForDrag\(tabId\);/);
   assert.match(readSrc("features/browser/floating-preview.ts"), /event\.preventDefault\(\);\s*announceGrab\(\);/);
 });
@@ -83,7 +78,6 @@ test("a moved or resized floating window parks its page under the picture on eve
 test("a drag picture taken at another size (before the page floated) is never shown", () => {
   assert.match(body("showDragShot"), /!sameSize\(dragShot\.size, shownBounds\)\) return;/);
   assert.match(body("captureForDrag"), /const size = shownBounds;/);
-  // but a pixel of rounding, as the window moves, is the same size
   assert.match(body("sameSize"), /Math\.abs\(a\.width - b\.width\) <= 2 && Math\.abs\(a\.height - b\.height\) <= 2/);
 });
 

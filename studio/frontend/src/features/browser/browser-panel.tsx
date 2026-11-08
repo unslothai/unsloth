@@ -1740,7 +1740,6 @@ function BrowserFileToolbar({
         </IconButton>
         <IconButton
           label={t(kind === "html" ? "browser.file.runAgain" : "browser.reload")}
-          // "Run again" isn't obvious from the icon; reload is.
           tooltip={kind === "html"}
           onClick={runAgain}
           className={NAV_BUTTON}

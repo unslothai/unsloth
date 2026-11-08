@@ -561,8 +561,7 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
-// Inside the floating window a fixed background misses the page (its own layer, a drag's transform),
-// so those cut in their own box instead. Backgrounds only: UI drawn over the page (annotations) stays.
+// In the floating window a fixed background misses the page: cut in the node's own box, backgrounds only.
 const LOCAL_ATTRIBUTE = "data-native-hole-local";
 let local: HTMLElement[] = [];
 // The wallpaper is no ancestor of the page, so it is masked instead.
@@ -613,8 +612,7 @@ function placeHole(): void {
   // No zoom correction: neither a mask nor a box-local cut is a fixed background.
   for (const node of [...local, ...masked]) {
     const box = node.getBoundingClientRect();
-    // Not trimmed to the box: a node that grows later (the chat when its panel floats) kept the old
-    // edge. cutAt keeps every length non-negative, which is what a mask needs to stay valid.
+    // Untrimmed: a node that grows later (the chat as its panel floats) kept the old edge.
     const x = rect[0] - box.left;
     const y = rect[1] - box.top;
     const [width, height] = [rect[2], rect[3]];
@@ -633,9 +631,7 @@ const CUT_PROPERTIES = [
   "-webkit-mask-size",
 ] as const;
 
-/** Writes the cut as lengths beside the var()s the stylesheet reads: WebKit did not repaint a
- *  background or mask when only those registered vars changed, so after a floating window moved
- *  its page stayed white, or the composer under it was drawn over the page. */
+/** Also as lengths: WebKit doesn't repaint a background or mask when only registered vars change. */
 function cutAt(node: HTMLElement, kind: "background" | "mask", x: number, y: number, width: number, height: number): void {
   const right = x + width;
   const bottom = y + height;
@@ -663,8 +659,7 @@ function markHole(): boolean {
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
   layers.push(...floatingUnderlay(chain));
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
-  // A node can read transparent at the moment of marking (switching to the floating window) and paint
-  // later with no class change: such a node over the page left the floating window white.
+  // A node can start painting later with no class change (just floated): uncut, the page stayed white.
   const missed = chain.some((node) => !node.hasAttribute?.(HOLE_ATTRIBUTE) && paints(getComputedStyle(node)));
   if (signature === holeSignature && !missed && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
@@ -735,8 +730,7 @@ function panelArea(element: HTMLElement): HTMLElement | null {
 
 /** Re-cuts the hole when the panel's edges move; cheap, so it runs every frame of a drag. */
 function clipHole(element: HTMLElement | null): void {
-  // Only a docked panel pins its page through a split drag; a floating window's cut was chopped at a
-  // stale panel edge, leaving the composer under its right side drawn over the page.
+  // Docked only: in a floating window this chopped the cut at a stale panel edge.
   const docked = element && layered && !element.closest?.(`[${FLOATING_ATTRIBUTE}]`);
   const area = docked ? panelArea(element)?.getBoundingClientRect() ?? null : null;
   const same = area && holeClip ? area.left === holeClip.left && area.right === holeClip.right : area === holeClip;
@@ -817,7 +811,6 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
-  // A page trails a moved or resized window by a frame or more: it waits under its picture instead.
   const covered = movingWindow() || (!layered && coveredNow(rect));
   return covered ? { ...shown, covered: true } : shown;
 }
@@ -1085,9 +1078,7 @@ export function refreshCoveredPage(tabId: string): void {
   });
 }
 
-// A layered page's picture while its floating window is dragged: a child over the placeholder, since
-// the placeholder's own background is the cut's fill. Kept ready (taken on reaching the bar, on the
-// press and after each drop), shown once the drag starts.
+// The page's picture while its floating window moves: a child, as the placeholder's background is the cut's fill.
 let dragShot: {
   tabId: string;
   url: string;
@@ -1101,42 +1092,38 @@ let dragShotTicket = 0;
 async function captureForDrag(tabId: string): Promise<void> {
   const ticket = ++dragShotTicket;
   const size = shownBounds;
-  // The placeholder's own width, in the floating window's scaled layout (see FLOATING_PAGE_STYLE).
   const layoutWidth = placeholder(tabId)?.clientWidth ?? 0;
   const png = await call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null);
   if (!png?.byteLength) return;
   const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
   const image = new Image();
   image.src = url;
-  // A slower, older capture (the hover's, say) never replaces a newer one.
   if (!(await image.decode().then(() => true, () => false)) || ticket !== dragShotTicket) {
     URL.revokeObjectURL(url);
     return;
   }
-  // Swapped in place when the drag already shows the older one: dropping it first left the window empty.
+  // Swapped in place: removing the old one first left the window empty.
   const wasShown = dragShot?.tabId === tabId && dragShot.shown;
   clearDragShot();
   dragShot = { tabId, url, image, size, layoutWidth, shown: false };
   if (wasShown || parkedView === tabId) showDragShot();
 }
 
-// The page's box sits on fractional pixels, so its rounded size moves by a pixel with the window.
+// The box is fractional, so its rounded size moves by a pixel with the window.
 function sameSize(a: Bounds | null, b: Bounds | null): boolean {
   return !!a && !!b && Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2;
 }
 
 function showDragShot(): void {
   const page = dragShot ? placeholder(dragShot.tabId) : null;
-  // Taken at another size (in the panel, before it floated): stretched over the window, it flickered.
+  // Taken at another size (before it floated): stretched, it flickered.
   if (!dragShot || !page || dragShot.shown || !sameSize(dragShot.size, shownBounds)) return;
-  // The decoded image itself, not a CSS background of its URL: WebKit re-decoded that while the
-  // window moved, and the page flickered through the drag.
+  // The decoded image, not a CSS background: WebKit re-decoded that while the window moved.
   Object.assign(dragShot.image.style, {
     position: "absolute",
     left: "0",
     top: "0",
-    // At the width it was taken, in the window's scaled layout, and its own proportions: it scales with
-    // the window as the page will, and is cropped, never stretched (100% height stretched it).
+    // Its own proportions: scales with the window like the page, cropped, never stretched.
     width: dragShot.layoutWidth ? `${dragShot.layoutWidth}px` : "100%",
     height: "auto",
     pointerEvents: "none",
@@ -1167,7 +1154,7 @@ function floats(element: HTMLElement): boolean {
   return element.closest?.(`[${FLOATING_ATTRIBUTE}]`) != null;
 }
 
-/** Shrunk to nothing but kept marked, so the app is not restyled (a flash). */
+/** Kept marked, so the app isn't restyled (a flash). */
 function shutHole(): void {
   if (holeBounds && (holeBounds.width > 0 || holeBounds.height > 0)) {
     holeBounds = { ...holeBounds, width: 0, height: 0 };
@@ -1175,14 +1162,12 @@ function shutHole(): void {
   }
 }
 
-/** The drag's first frame, before the park's round trip: shut the cut and lay the picture over it now. */
 function coverForDrag(tabId: string): void {
   shutHole();
   if (dragShot?.tabId === tabId) showDragShot();
 }
 
-// The page moved back on a drop draws a moment after it lands (WebKit may have dropped its tiles while
-// it was off-window): the picture, the same pixels, stays over it until then.
+// A dropped page redraws a moment after it lands (its off-window tiles may be gone): the picture stays till then.
 const DROP_HOLD_MS = 400;
 let dropTimer = 0;
 
@@ -1191,17 +1176,13 @@ function clearDragShotAfterDrop(): void {
   dropTimer = window.setTimeout(() => {
     if (parkedView !== null || movingWindow()) return;
     hideDragShot();
-    // A fresh one for the next drag: the pointer is usually still on the bar after a drop, so no hover
-    // capture comes, and a page that just floated has none at its new size.
+    // No hover capture comes before the next drag, and a page that just floated has none at its size.
     const page = shownView ? placeholder(shownView) : null;
     if (shownView && page && floats(page)) void captureForDrag(shownView);
   }, DROP_HOLD_MS);
 }
 
-/** A page under a moved or resized floating window: parked under its picture (and, layered, its cut
- *  shrunk to nothing; cuts stay marked, so the app is not restyled, a flash, at each end). */
-// The park started outside the apply pump (the first frame of a gesture): applyView waits for it, or a
-// quick drop's restore could finish first and then be undone by this park's late continuation.
+// Started outside the apply pump: applyView waits for it, or it could undo a quick drop's restore.
 let parking: { tabId: string; done: Promise<void> } | null = null;
 
 function parkForDrag(tabId: string): Promise<void> {
@@ -1259,9 +1240,7 @@ async function applyView(desired: Desired): Promise<void> {
   };
   try {
     openedTabs.add(tabId);
-    // Back from a resize, or docked to floating: zoomed while parked, so the page isn't seen at the old
-    // scale first. A page on top of the app (Windows, Linux) is parked for it here; a layered one sits
-    // behind its shut cut instead (below).
+    // Zoomed while hidden, so the page isn't seen at the old scale (on top: parked here; layered: cut shut).
     const rezoom = existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom;
     const resized = JSON.stringify(bounds) !== JSON.stringify(shownBounds);
     if (rezoom && !layered && shownView === tabId && resized) {
@@ -1281,7 +1260,6 @@ async function applyView(desired: Desired): Promise<void> {
     coverFails = 0;
     clearSnapshot();
     clearDragShotAfterDrop();
-    // A layered page is shown at its new scale (floating), not zoomed once already visible.
     if (layered && existed && loaded === entry && (zooms.get(tabId) ?? 1) !== zoom) {
       zooms.set(tabId, zoom);
       await call("browser_view_zoom", { tabId, zoom });
@@ -1375,19 +1353,16 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
-    // A parked page waits out a floating drag under its snapshot, not a capture per frame.
     if (parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
     if (desired && movingWindow() && desired.tabId === shownView) coverForDrag(desired.tabId);
     pruneViews(desired?.tabId ?? null);
     const element = desired ? placeholder(desired.tabId) : null;
-    // Docked to floating or back: a layered cut would sit at the old place until the page moves, with
-    // the page showing through it there. Shut until applyView reopens it at the new place.
+    // Docked <-> floating: the old cut showed the page through the chat until it moved.
     if (layered !== null && element && resized && element !== resized && desired?.tabId === shownView && floats(element) !== floats(resized)) {
       if (layered) shutHole();
-      // The chat's panels animate to their new widths, and the window's backgrounds paint a few
-      // frames late: cut again every frame until both settle.
+      // The chat's panels animate and the window's backgrounds paint late: re-cut every frame.
       motionUntil = performance.now() + MOTION_MS;
     }
     if (element !== resized) {
@@ -1399,7 +1374,7 @@ export function startNativeViews(): () => void {
       resized = element;
     }
     clipHole(element);
-    // Boxes under the cut change on their own (the chat widens as its panel floats): measure again.
+    // Boxes under the cut resize on their own (the chat as its panel floats).
     placeHole();
     if (performance.now() < motionUntil) schedule();
     const key = JSON.stringify([epoch, coverRetry, desired]);
@@ -1439,20 +1414,17 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerup", schedule, true);
   // A layered page follows the floating window; one on top waits for the drop (see sync).
   const floatingMoved = () => {
-    // In the frame the window first moves: a sync a frame later showed the live page left behind. A page
-    // on top of the app (Windows, Linux) is parked now too, as nothing syncs during the gesture there.
+    // In the move's own frame (a sync is a frame late); on top of the app nothing syncs mid-gesture.
     if (shownView && movingWindow()) {
       const tabId = shownView;
       coverForDrag(tabId);
-      // Outside apply: forgotten, or a gesture ending where it started (before any sync) would match it
-      // and never reopen the cut or show the page.
+      // Outside apply: forgotten, or a gesture ending where it started never shows the page again.
       sent = "";
       if (!layered && parkable(tabId)) void parkForDrag(tabId);
     }
     if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
   };
   window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
-  // Captured on reaching the bar and again on the press, so a drag shows the picture from its first frame.
   const floatingPressed = () => {
     if (layered !== null && shownView) void captureForDrag(shownView);
   };

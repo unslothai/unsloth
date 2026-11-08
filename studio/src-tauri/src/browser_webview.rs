@@ -123,8 +123,7 @@ const PAGE_GUARD_SCRIPT: &str = r#"(() => {
 
 const PAGE_RESTORE_SCRIPT: &str = "window.__unslothPageGuard?.();";
 
-/// Studio's own scrollbar (index.css) in pages, instead of the system's wide track. First in the
-/// document, so a page that styles its scrollbar keeps its own.
+/// Studio's scrollbar in pages; first in the document, so a page's own scrollbar styles win.
 const PAGE_SCROLLBAR_SCRIPT: &str = r#"(() => {
   const css = "::-webkit-scrollbar{width:8px;height:8px;background:transparent}"
     + "::-webkit-scrollbar-track,::-webkit-scrollbar-track-piece,::-webkit-scrollbar-corner{background:transparent;border:none;box-shadow:none}"

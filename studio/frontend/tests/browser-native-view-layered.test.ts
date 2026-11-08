@@ -183,7 +183,6 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     };
     const innerPage = { parentElement: outerPage, closest: () => innerPage };
     const unpinned = placeholder.closest;
-    // a docked page: in no floating window
     Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-page]" ? innerPage : null) });
     const showsBeforeDrag = calls.filter(({ command }) => command === "browser_view_show").length;
     for (const left of [650, 700, 750]) {
@@ -476,10 +475,8 @@ test("a dragged floating window shows its layered page as a snapshot, and the li
     if (command === "browser_capture") return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
     return Promise.resolve(command === "browser_view_layered" ? true : undefined);
   };
-  // the page is in the floating window
   const unpinned = placeholder.closest;
   Object.assign(placeholder, { closest: (selector: string) => (selector === "[data-browser-floating]" ? {} : null) });
-  // the picture is a child laid over the placeholder
   const shown: { style: Record<string, string>; parentElement: unknown; remove: () => void }[] = [];
   Object.assign(placeholder, {
     appendChild: (child: (typeof shown)[number]) => {
@@ -490,7 +487,7 @@ test("a dragged floating window shows its layered page as a snapshot, and the li
   let moving = false;
   doc.querySelector = (selector: string) =>
     selector.startsWith("[data-floating-gesture") ? (moving ? {} : null) : querySelector(selector);
-  // an earlier test left only the section opaque; the cut stays marked and shrinks to nothing mid-drag
+  // an earlier test left only the section opaque
   const cut = () => section.attributes.has("data-native-hole") && section.vars.get("--native-hole-w") !== "0px";
   useBrowserStore.getState().openUrl("https://drag.example/");
   const stop = startNativeViews();
