@@ -272,8 +272,7 @@ def _apply(
     device: Any,
     only: Optional[set] = None,
 ) -> None:
-    """``only``: the layer indices to merge (the rest keep their codes). A layer's seed stays its index in the full
-    list, so a subset merges to the codes a full re-merge would give it."""
+    """``only``: layer indices to merge; seeds stay full-list indices, so a subset matches a full re-merge."""
     import torch
 
     # No TF32: the same weights must merge to the same codes before and after a speed profile engages.
@@ -373,7 +372,7 @@ def set_weights(pipe: Any, weights: dict) -> bool:
             break
     only = None
     if _incremental():
-        # A layer's merged codes depend only on its own adapters' weights: the others keep theirs (bit-equal).
+        # a layer's codes depend only on its own adapters' weights
         old = state["weights"]
         changed = {n for n in set(old) | set(weights) if old.get(n, 0.0) != weights.get(n, 0.0)}
         only = {i for i, e in enumerate(layers) if any(t.adapter in changed for t in e.terms)}

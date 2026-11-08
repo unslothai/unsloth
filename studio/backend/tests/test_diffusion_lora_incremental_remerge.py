@@ -103,7 +103,7 @@ def test_a_weight_change_re_merges_only_the_layers_of_the_changed_adapters(monke
     assert all(torch.equal(t, k_before[k]) for k, t in qm._tensors(k_layer.weight, "int8").items())
     incremental = net.codes()
 
-    # the reference: every layer restored and re-merged at the same weights
+    # reference: a full re-merge
     monkeypatch.setenv(INCREMENTAL_ENV, "0")
     ref = _TwoLayerNet(shared)
     assert qm.merge(ref.pipe, [ref], weights, "cpu")
