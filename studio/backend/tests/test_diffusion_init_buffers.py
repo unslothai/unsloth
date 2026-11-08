@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""fp32 tables a denoiser builds in __init__ stay fp32 through diffusers' from_single_file, as from_pretrained
-leaves them (Qwen-Image-2.1's timestep freqs: LPIPS 0.106 -> 0.174 in bf16)."""
+"""fp32 __init__ tables survive diffusers' from_single_file, as they do from_pretrained."""
 
 from __future__ import annotations
 
@@ -81,7 +80,6 @@ def test_single_file_keeps_the_timestep_table_fp32(qwen21_files, monkeypatch):
     table = model.time_text_embed.time_proj.freqs
     assert table.dtype == torch.float32 and torch.equal(table, freqs)
     assert {p.dtype for p in model.parameters()} == {torch.bfloat16}
-    # Same buffers as the diffusers-repo route.
     ref = cls.from_pretrained(str(repo), subfolder = "transformer", torch_dtype = torch.bfloat16)
     ours = {n: b.dtype for n, b in model.named_buffers()}
     assert ours == {n: b.dtype for n, b in ref.named_buffers()}

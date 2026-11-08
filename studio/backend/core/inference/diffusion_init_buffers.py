@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Float32 tables a denoiser builds in ``__init__`` stay float32 on every load route.
-
-Qwen-Image-2.1's timestep ``freqs`` and MiniMax-H3's RoPE ``inv_freq`` are non-persistent fp32 buffers that the
-forward reads in fp32 (``timestep.float() * freqs``). diffusers' ``from_pretrained`` never casts them (it loads the
-checkpoint tensors with the dtype and leaves ``__init__`` buffers as built), but ``from_single_file`` ends with
-``model.to(torch_dtype)`` (``diffusers/loaders/single_file_model.py``), which rounds them to bf16 / fp16. Persistent
-buffers and float64 ones keep following the load dtype, as both diffusers loaders do."""
+"""fp32 tables built in ``__init__`` (Qwen-Image-2.1 timestep ``freqs``, MiniMax-H3 RoPE ``inv_freq``) stay fp32.
+``from_pretrained`` leaves them as built; ``from_single_file`` ends with ``model.to(torch_dtype)``, rounding them."""
 
 from __future__ import annotations
 
@@ -18,7 +13,6 @@ _MARK = "_unsloth_fp32_init_buffers"
 
 
 def is_fp32_init_table(module: Any, name: str, buffer: Any) -> bool:
-    """``module.<name>`` is an fp32 buffer built in ``__init__``: no checkpoint carries it."""
     import torch
     return (
         buffer is not None
@@ -38,8 +32,7 @@ def _rounded(model: Any) -> bool:
 
 
 def restore_fp32_init_buffers(model: Any, logger: Any = None) -> list:
-    """Rebuilds the fp32 ``__init__`` buffers a dtype cast rounded; returns their names. Call before any offload hook,
-    which keeps its own references to the module's tensors."""
+    """Rebuilds the fp32 tables a cast rounded; call before offload hooks, which hold their own tensor refs."""
     if not callable(getattr(type(model), "from_config", None)) or not _rounded(model):
         return []
     from accelerate import init_empty_weights
@@ -72,11 +65,10 @@ def restore_fp32_init_buffers(model: Any, logger: Any = None) -> list:
 
 
 def install_single_file_fp32_buffers(logger: Optional[Any] = None) -> bool:
-    """Wraps diffusers' ``FromOriginalModelMixin.from_single_file`` once (every model and pipeline single-file load
-    goes through it). Idempotent; never fails a load."""
+    """Wraps ``FromOriginalModelMixin.from_single_file`` (every model / pipeline single-file load) once."""
     try:
         from diffusers.loaders.single_file_model import FromOriginalModelMixin
-    except Exception:  # noqa: BLE001 - no diffusers: nothing to wrap
+    except Exception:  # noqa: BLE001
         return False
     current = FromOriginalModelMixin.__dict__.get("from_single_file")
     func = getattr(current, "__func__", None)
