@@ -637,8 +637,6 @@ SCOPED_ENV = "UNSLOTH_DIFFUSION_TE_SCOPED_LORA_KEY"
 
 
 class _AdapterPipe(_EncodePipe):
-    """A pipe that reports which components carry each adapter, as diffusers' get_list_adapters does."""
-
     def __init__(self, listed = None):
         super().__init__()
         self.transformer = torch.nn.Linear(2, 2)
@@ -686,7 +684,7 @@ def test_a_denoiser_only_strength_sweep_reuses_the_text_embeddings(monkeypatch):
     prompt_cache.install(pipe)
     first = pipe.encode_prompt("a cat")
     calls = _sweep(pipe, *((("style", "/x/style.safetensors", w),) for w in (0.25, 0.5, 0.75, 1.0)))
-    assert calls == 1  # 5 encodes before: one per strength
+    assert calls == 1
     pipe._unsloth_loras = ()
     assert torch.equal(pipe.encode_prompt("a cat")[0], first[0]) and pipe.calls == 1
 

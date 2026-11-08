@@ -231,9 +231,7 @@ def _scoped_lora_key() -> bool:
 
 
 def _encode_skips_denoisers(cls: Any, name: str) -> bool:
-    """True only when ``cls.<name>`` provably runs no denoiser: its source and that of every ``self`` method it calls
-    reads no denoiser attribute but ``.dtype`` / ``.device`` / ``.config``, never hands ``self`` to another callable
-    and never resolves attributes dynamically. Anything unreadable answers False (the full LoRA key)."""
+    """True only when ``cls.<name>`` and the ``self`` methods it calls provably run no denoiser; unprovable = False."""
     import ast
     import textwrap
 
@@ -250,7 +248,7 @@ def _encode_skips_denoisers(cls: Any, name: str) -> bool:
         if isinstance(func, (staticmethod, classmethod)):
             func = func.__func__
         if func is None or not callable(func):
-            continue  # a plain attribute read
+            continue
         try:
             tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(func))))
         except (OSError, TypeError, SyntaxError, ValueError):
@@ -299,8 +297,7 @@ def _encode_skips_denoisers(cls: Any, name: str) -> bool:
 
 
 def _adapter_components(owner: Any) -> Optional[dict]:
-    """Adapter name -> the pipeline components it patches (PEFT, LoKR slots, adapters merged into quantised
-    denoiser weights), or None when the owner cannot say."""
+    """Adapter name -> the components it patches, or None when the owner cannot say."""
     out: dict = {}
     try:
         listed = (
@@ -342,7 +339,6 @@ def _lora_state(pipe: Any, skips_denoisers: bool = False) -> Any:
     if skips_denoisers and loras and _scoped_lora_key():
         components = _adapter_components(pipe)
         if components is not None:
-            # Denoiser-only adapters cannot change what an encode that runs no denoiser returns.
             loras = tuple(
                 entry
                 for entry in loras
@@ -451,7 +447,6 @@ def _wrap_encode_prompt(
     except (TypeError, ValueError):
         return False
     try:
-        # an instance-level override is not the class body read here
         skips_denoisers = name not in getattr(pipe, "__dict__", {}) and _encode_skips_denoisers(
             type(pipe), name
         )
