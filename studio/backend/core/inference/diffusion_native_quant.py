@@ -320,6 +320,26 @@ def _rocm_fused_w8a8_refusal(torch: Any) -> Optional[str]:
     return f"ROCm {arch or 'unknown arch'}"
 
 
+def rocm_rdna_w8a8_ready() -> bool:
+    """ROCm RDNA device where the compiled W8A8 linear can run (UNSLOTH_NATIVE_INT8_FUSED not off)."""
+    if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
+        return False
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if not is_rocm_torch(torch) or not torch.cuda.is_available():
+            return False
+        if _rocm_fused_w8a8_refusal(torch) is not None:
+            return False
+        from .diffusion_speed import torch_compile_runtime_available
+
+        return bool(torch_compile_runtime_available())
+    except Exception:  # noqa: BLE001 - unknown device: keep the weight-only default
+        return False
+
+
 def _fused_w8a8() -> Optional[Callable[..., Any]]:
     """Compiled ``_w8a8_rows``, or None if disabled, no inductor runtime, a ROCm arch other than RDNA3 / RDNA4, or
     already failed."""
