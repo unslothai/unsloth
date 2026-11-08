@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton widen for packed nvfp4 (``diffusion_packed_block``); imported only where Triton is. Module level: Triton
-resolves the helpers a kernel calls through its globals."""
+"""Triton widen for packed nvfp4; helpers are module level because Triton resolves them via globals."""
 
 import triton
 import triton.language as tl
@@ -90,7 +89,7 @@ def nvfp4_widen_kernel(
     b = tl.load(q_ptr + r64[:, None] * half_k + j64[None, :], mask = mask, other = 0)
     b = b.to(tl.int32)
     s = tl.load(sf_ptr + r64[:, None] * blocks + (j64 // 8)[None, :], mask = mask, other = 0)
-    # same order as dequant_block: (scale * tensor scale), times the codes, times the smoothing
+    # same multiply order as dequant_block (bit-identical)
     step = _e4m3(s.to(tl.int32))
     if HAS_RS:
         step = step * tl.load(rs_ptr + r64, mask = rmask, other = 1.0)[:, None]
@@ -99,7 +98,7 @@ def nvfp4_widen_kernel(
     if HAS_PQ:
         lo = lo * tl.load(pq_ptr + 2 * j64, mask = jmask, other = 1.0)[None, :]
         hi = hi * tl.load(pq_ptr + 2 * j64 + 1, mask = jmask, other = 1.0)[None, :]
-    # even column = low nibble: interleave into one contiguous row segment (one coalesced store)
+    # even column = low nibble
     w = tl.reshape(tl.join(lo, hi), (BLOCK_R, 2 * BLOCK_C))
     c = tl.program_id(1).to(tl.int64) * (2 * BLOCK_C) + tl.arange(0, 2 * BLOCK_C)
     dst = out_ptr + r64[:, None] * (2 * half_k) + c[None, :]

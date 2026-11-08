@@ -1287,8 +1287,7 @@ def load_comfy_quant_transformer(
         packed_block_runs_on,
     )
 
-    # The fp8-storage pick (widening would offload or leave the host under its reserve) also keeps nvfp4 / mxfp8
-    # layers that no native runtime takes packed, widened per forward to the same weights.
+    # fp8 storage also keeps nvfp4 / mxfp8 layers without a native runtime packed (widened per forward).
     packed = bool(fp8_storage) and key_map is None and packed_block_enabled()
     if keep_key is None:
         state = load_file(str(path))

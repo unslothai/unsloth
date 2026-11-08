@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""nvfp4 / mxfp8 layers with no native runtime, kept packed and widened per forward (W4A16 / W8A16).
-
-The weight a forward widens is bit-identical to the one ``diffusion_comfy_block.dequant_block`` builds at load, so
-the output equals a dense load's; only the bytes held between forwards change (0.5625 B / weight for nvfp4 instead
-of 2). Activations are never quantized. Codes, scales and fp32 factors are integer buffers, so offload hooks move
-them and a module-wide ``.to(dtype)`` never casts them. torch is imported lazily."""
+"""nvfp4 / mxfp8 layers with no native runtime, kept packed and widened per forward, bit-identical to
+``dequant_block`` at load. All state is integer buffers so a module-wide ``.to(dtype)`` never casts it."""
 
 from __future__ import annotations
 
@@ -21,7 +17,7 @@ PACKED_BLOCK_ENV = "UNSLOTH_DIFFUSION_PACKED_BLOCK_FALLBACK"
 PACKED_BLOCK_ATTR = "_unsloth_packed_block"
 _OFF = ("0", "off", "false", "no")
 
-# Row chunks of the torch widen keep its float32 / int32 intermediates under this many bytes (host / accelerator).
+# Torch widen intermediate cap per row chunk (host / accelerator).
 _HOST_CHUNK_BYTES = 16 << 20
 _DEVICE_CHUNK_BYTES = 256 << 20
 
@@ -32,7 +28,6 @@ _OP: dict = {}
 
 
 def packed_block_enabled() -> bool:
-    """``UNSLOTH_DIFFUSION_PACKED_BLOCK_FALLBACK=0`` widens such layers at load again, as before."""
     return (os.environ.get(PACKED_BLOCK_ENV) or "").strip().lower() not in _OFF
 
 
@@ -59,7 +54,6 @@ def packed_block_runs_on(fmt: str, target: Any) -> bool:
 def _torch_widen(
     fmt: str, codes: Any, scale: Any, row_scale: Any, pre_quant: Any, dtype: Any
 ) -> Any:
-    """``dequant_block`` with per-row tensor scales, in row chunks sized for the device."""
     from .diffusion_comfy_block import dequant_block
 
     import torch
@@ -91,7 +85,6 @@ def _torch_widen(
 
 
 def _triton_kernel() -> Any:
-    """The fused nvfp4 widen kernel, or None (no Triton). Built once per process."""
     with _TRITON_LOCK:
         if "kernel" in _TRITON:
             return _TRITON["kernel"]
@@ -114,7 +107,6 @@ def _triton_failed(exc: BaseException) -> None:
 def _triton_widen(
     codes: Any, scale: Any, row_scale: Any, pre_quant: Any, dtype: Any
 ) -> Optional[Any]:
-    """nvfp4 widened by one fused kernel, or None to take the torch path."""
     import torch
 
     built = _triton_kernel()
@@ -274,7 +266,6 @@ def packed_block_linear_class():
 
         @property
         def weight(self) -> Any:
-            """The dense weight, rebuilt on each read (nothing holds it)."""
             return self.dequantized_weight()
 
         def forward(self, x: Any) -> Any:
