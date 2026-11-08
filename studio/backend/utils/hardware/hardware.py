@@ -1529,26 +1529,15 @@ def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
         return DEVICE is not None and DETECTION_COMPLETE.is_set() and not CHAT_ONLY
 
 
-_CUDA_DEVICE_NAMES: dict[tuple, list] = {}
-
-
 def _cuda_device_names() -> list:
     """NVIDIA device name per CUDA ordinal from the driver API in a child process (no CUDA context);
-    None for an ordinal that did not answer. Raises when the answer is unknown. A complete answer is
-    kept per mask, so the banner and the device list share one child."""
-    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
-    cached = _CUDA_DEVICE_NAMES.get(key)
-    if cached is not None:
-        return list(cached)
+    None for an ordinal that did not answer. Raises when the answer is unknown."""
     from utils.hardware import nvidia
 
     info = nvidia.get_cuda_device_info()
     if not info:
         raise RuntimeError("the CUDA driver did not list the devices")
-    names = [device[3] if device is not None else None for device in info]
-    if all(name is not None for name in names):
-        _CUDA_DEVICE_NAMES[key] = names
-    return list(names)
+    return [device[3] if device is not None else None for device in info]
 
 
 def _cuda_device0_name() -> str:

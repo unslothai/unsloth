@@ -55,7 +55,7 @@ class _CountingTorch(types.ModuleType):
 def host(monkeypatch):
     """Six discrete cards and one integrated SoC behind an unset mask, as the driver child reports them."""
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    for cache in ("_INTEGRATED_CUDA_IDS", "_INTEGRATED_CUDA_POOL_MIB", "_CUDA_DEVICE_INFO"):
+    for cache in ("_INTEGRATED_CUDA_IDS", "_INTEGRATED_CUDA_POOL_MIB"):
         monkeypatch.setattr(LlamaCppBackend, cache, {}, raising = False)
     torch = _CountingTorch(7)
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -63,11 +63,13 @@ def host(monkeypatch):
     devices = [(f"0000:{i + 1:02x}:00.0", False, 180 * GIB, "NVIDIA B200") for i in range(6)]
     devices.append(("0000:0f:00.0", True, 120 * GIB, "NVIDIA GB10"))
 
-    def _info():
+    def _child():
         queries.append(1)
         return list(devices)
 
-    monkeypatch.setattr(nvidia, "get_cuda_device_info", _info, raising = False)
+    # The real query and its per-mask cache, on a faked driver child.
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
+    monkeypatch.setattr(nvidia, "_query_cuda_device_info", _child)
     return types.SimpleNamespace(torch = torch, queries = queries)
 
 
@@ -93,7 +95,6 @@ def test_an_ordinal_that_did_not_answer_is_used_but_not_settled(host, monkeypatc
     )
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
-    assert LlamaCppBackend._CUDA_DEVICE_INFO == {}
 
 
 def test_an_unknown_answer_is_not_cached(host, monkeypatch):
@@ -160,7 +161,7 @@ def test_a_child_that_times_out_is_unknown(monkeypatch):
 
 def test_an_unknown_answer_is_not_asked_again_for_a_while(monkeypatch):
     """A slow or failing cuInit must not start a child on every lookup: unknown and partial answers are
-    reused for the retry window, per mask; a complete one is left to the callers' caches."""
+    reused for the retry window, per mask; a complete one for the process."""
     monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     clock = [1000.0]
@@ -186,6 +187,9 @@ def test_an_unknown_answer_is_not_asked_again_for_a_while(monkeypatch):
     assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4"), None]
     assert len(runs) == 2
     clock[0] += nvidia._CUDA_DEVICE_INFO_RETRY_S + 1
+    assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4")]
+    assert len(runs) == 3
+    clock[0] += 10 * nvidia._CUDA_DEVICE_INFO_RETRY_S  # a complete answer is kept for the process
     assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4")]
     assert len(runs) == 3
 
@@ -242,7 +246,6 @@ def test_the_inventory_poll_reads_nvidia_cards_from_the_driver(host, monkeypatch
 def test_the_device_list_keeps_the_names_that_answered(host, monkeypatch, capsys):
     from utils.hardware import hardware as hw
 
-    monkeypatch.setattr(hw, "_CUDA_DEVICE_NAMES", {})
     monkeypatch.setattr(
         nvidia,
         "get_cuda_device_info",

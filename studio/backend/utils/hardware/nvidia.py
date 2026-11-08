@@ -672,30 +672,6 @@ def get_card_identities() -> dict[int, tuple[str, ...]]:
     return identities
 
 
-# Driver API only: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES / CUDA_DEVICE_ORDER
-# without creating a context, and runs in a child so the Studio process never initialises CUDA.
-_CUDA_BUS_ID_SCRIPT = r"""
-import ctypes, sys
-lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
-if lib.cuInit(0) != 0:
-    sys.exit(3)
-count = ctypes.c_int(0)
-if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
-    sys.exit(4)
-for ordinal in range(count.value):
-    dev = ctypes.c_int(0)
-    buf = ctypes.create_string_buffer(64)
-    integrated = ctypes.c_int(0)
-    if (
-        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
-        or lib.cuDeviceGetPCIBusId(buf, 64, dev) != 0
-        or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
-    ):
-        sys.exit(5)
-    print(buf.value.decode(), integrated.value)
-"""
-
-
 def _normalize_bus_id(bus_id: str) -> Optional[tuple[int, str]]:
     """'00000000:3B:00.0' (nvidia-smi) and '0000:3b:00.0' (driver API) -> (domain, 'BUS:DEV.FN')."""
     domain, sep, rest = bus_id.strip().partition(":")
@@ -711,25 +687,14 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
     """nvidia-smi row index for each CUDA ordinal of this process's environment, matched by PCI bus id.
 
     Establishes the ordinal mapping under any CUDA_DEVICE_ORDER / numeric mask without opening a CUDA
-    context here: the ordinals come from a short child on the driver API, the rows from nvidia-smi.
+    context here: the ordinals come from the driver query (get_cuda_device_info), the rows from nvidia-smi.
     None when either side is unreadable or the two do not join; [] when an integrated card is among them,
     whose nvidia-smi memory is a carve-out rather than its shared pool.
     """
-    import sys
-
-    from utils.child_stdio import utf8_child_env
-
+    devices = get_cuda_device_info()
+    if not devices or any(device is None for device in devices):
+        return None
     try:
-        child = subprocess.run(
-            [sys.executable, "-c", _CUDA_BUS_ID_SCRIPT],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 15,
-            env = utf8_child_env(child_env_without_native_path_secret()),
-            **_windows_hidden_subprocess_kwargs(),
-        )
         smi = gpu_query.run_nvidia_smi(
             [_nvidia_smi_executable(), "--query-gpu=index,pci.bus_id", "--format=csv,noheader"],
             capture_output = True,
@@ -742,7 +707,7 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if child.returncode != 0 or smi.returncode != 0:
+    if smi.returncode != 0:
         return None
     row_by_bus: dict[tuple[int, str], int] = {}
     for line in smi.stdout.strip().splitlines():
@@ -752,20 +717,20 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
             return None
         row_by_bus[key] = int(index)
     rows = []
-    for line in child.stdout.strip().splitlines():
-        bus_id, _, integrated = line.strip().partition(" ")
+    for bus_id, integrated, _total, _name in devices:
         key = _normalize_bus_id(bus_id)
-        if key not in row_by_bus or integrated not in ("0", "1"):
+        if key not in row_by_bus:
             return None
-        if integrated == "1":
+        if integrated:
             # The row is a carve-out or N/A; only torch reports the shared pool. Known, so cacheable.
             return []
         rows.append(row_by_bus[key])
-    return rows or None
+    return rows
 
 
-# Same driver-API child as _CUDA_BUS_ID_SCRIPT, plus the total memory and name. Exit 2: no NVIDIA driver;
-# no output after cuInit's CUDA_ERROR_NO_DEVICE (100): no device. Both are definite answers.
+# Driver API only, in a child: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES /
+# CUDA_DEVICE_ORDER without creating a context, so the Studio process never initialises CUDA. Exit 2: no
+# NVIDIA driver; no output after cuInit's CUDA_ERROR_NO_DEVICE (100): no device. Both are definite answers.
 _CUDA_DEVICE_INFO_SCRIPT = r"""
 import ctypes, sys
 try:
@@ -802,34 +767,32 @@ for ordinal in range(count.value):
 """
 
 
-# An unknown or partial answer, per (mask, device order), reused for this long: callers retry those on
-# every lookup, and a host whose cuInit is slow or failing must not start a child each time.
+# Per (mask, device order): a complete answer for the life of the process (the driver's device list does not
+# change under a fixed mask); an unknown or partial one for _CUDA_DEVICE_INFO_RETRY_S, so a host whose cuInit
+# is slow or failing does not start a child on every lookup.
 _CUDA_DEVICE_INFO_RETRY_S = 60.0
-_CUDA_DEVICE_INFO_RECENT: dict[tuple, tuple[float, Any]] = {}
+_CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
 
 
 def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
     """(PCI bus id, integrated, total bytes, name) per CUDA ordinal of this process's environment, None for
     an ordinal that did not answer; the bus id is "" when the driver cannot report it.
 
-    The CUDA driver API in a short child: it enumerates devices under the inherited CUDA_VISIBLE_DEVICES /
-    CUDA_DEVICE_ORDER and reads their attributes without creating a context, and the Studio process never
-    initialises CUDA. torch.cuda.get_device_properties instead initialises CUDA in the calling process,
-    after which torch's device calls open a context (hundreds of MiB) on each card they touch. [] when
-    there is no NVIDIA driver or no device; None when the answer is unknown (the child failed or timed
-    out), so a caller does not cache it. Unknown and partial answers are reused for
-    _CUDA_DEVICE_INFO_RETRY_S before the driver is asked again.
+    The CUDA driver API in a short child (_CUDA_DEVICE_INFO_SCRIPT): torch.cuda.get_device_properties would
+    instead initialise CUDA in the calling process, after which torch's device calls open a context
+    (hundreds of MiB) on each card they touch. [] when there is no NVIDIA driver or no device; None when
+    the answer is unknown (the child failed or timed out).
     """
     key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
-    recent = _CUDA_DEVICE_INFO_RECENT.get(key)
-    if recent is not None and time.monotonic() - recent[0] < _CUDA_DEVICE_INFO_RETRY_S:
-        return None if recent[1] is None else list(recent[1])
+    hit = _CUDA_DEVICE_INFO_CACHE.get(key)
+    if hit is not None and (
+        hit[0] is None or time.monotonic() - hit[0] < _CUDA_DEVICE_INFO_RETRY_S
+    ):
+        return None if hit[1] is None else list(hit[1])
     info = _query_cuda_device_info()
-    if info is None or any(device is None for device in info):
-        _CUDA_DEVICE_INFO_RECENT[key] = (time.monotonic(), info)
-    else:
-        _CUDA_DEVICE_INFO_RECENT.pop(key, None)
-    return info
+    complete = info is not None and all(device is not None for device in info)
+    _CUDA_DEVICE_INFO_CACHE[key] = (None if complete else time.monotonic(), info)
+    return None if info is None else list(info)
 
 
 def _query_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:

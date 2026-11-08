@@ -235,13 +235,7 @@ def _no_real_cuda_device_query(monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(nvidia, "get_cuda_device_info", _cuda_device_info_from_the_test_torch)
-    monkeypatch.setattr(nvidia, "_CUDA_DEVICE_INFO_RECENT", {}, raising = False)
-    llama_cpp = sys.modules.get("core.inference.llama_cpp")
-    if llama_cpp is not None:
-        monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_CUDA_DEVICE_INFO", {})
-    hardware = sys.modules.get("utils.hardware.hardware")
-    if hardware is not None and hasattr(hardware, "_CUDA_DEVICE_NAMES"):
-        monkeypatch.setattr(hardware, "_CUDA_DEVICE_NAMES", {})
+    monkeypatch.setattr(nvidia, "_CUDA_DEVICE_INFO_CACHE", {}, raising = False)
 
 
 @pytest.hookimpl(trylast = True)

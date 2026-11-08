@@ -12487,28 +12487,12 @@ class LlamaCppBackend:
         """True if the integrated-CUDA answer is cached for this mask; the preflight never probes, since the budget is already taken and both arms fill the cache."""
         return LlamaCppBackend._integrated_cuda_mask_key() in LlamaCppBackend._INTEGRATED_CUDA_IDS
 
-    # nvidia.get_cuda_device_info() per visibility mask, a definite answer only; shared by the two lookups below.
-    _CUDA_DEVICE_INFO: dict[tuple, list[tuple[str, bool, int, str]]] = {}
-
     @staticmethod
     def _cuda_device_info():
-        """(bus id, integrated, total bytes, name) per CUDA ordinal, from the driver API in a child process;
-        None for an ordinal that did not answer.
-
-        Never torch.cuda.get_device_properties: that initialises CUDA in this process, after which torch's
-        next device call (mem_get_info, set_device, an allocation) opens a context of hundreds of MiB on each
-        card it touches; a CPU-only flow, and a training process sharing the host, must not pay that. None
-        when unknown; only a complete answer is cached."""
-        key = LlamaCppBackend._integrated_cuda_mask_key()
-        cached = LlamaCppBackend._CUDA_DEVICE_INFO.get(key)
-        if cached is not None:
-            return cached
+        """nvidia.get_cuda_device_info(), cached there per mask: the driver API in a child, never
+        torch.cuda.get_device_properties, which initialises CUDA in this process."""
         from utils.hardware import nvidia
-
-        info = nvidia.get_cuda_device_info()
-        if info is not None and all(device is not None for device in info):
-            LlamaCppBackend._CUDA_DEVICE_INFO[key] = info
-        return info
+        return nvidia.get_cuda_device_info()
 
     @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:
