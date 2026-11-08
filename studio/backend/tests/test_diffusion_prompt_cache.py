@@ -631,3 +631,162 @@ def test_cfg_negative_per_text_kill_switch(monkeypatch):
     for text in ("a cat", "a dog"):
         pipe.encode_prompt(text, negative_prompt = "blurry")
     assert [c[0] for c in pipe.calls] == ["a cat", "blurry", "a dog", "blurry"]
+
+
+SCOPED_ENV = "UNSLOTH_DIFFUSION_TE_SCOPED_LORA_KEY"
+
+
+class _AdapterPipe(_EncodePipe):
+    """A pipe that reports which components carry each adapter, as diffusers' get_list_adapters does."""
+
+    def __init__(self, listed = None):
+        super().__init__()
+        self.transformer = torch.nn.Linear(2, 2)
+        self.listed = listed or {}
+
+    def get_list_adapters(self):
+        return self.listed
+
+
+class _DenoiserReadingPipe(_AdapterPipe):
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        return (self.transformer(torch.ones(1, 2)) + float(len(prompt)),)
+
+
+class _DtypeOnlyPipe(_AdapterPipe):
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+    ):
+        self.calls += 1
+        dtype = (
+            self.text_encoder.weight.dtype
+            if self.text_encoder is not None
+            else self.transformer.dtype
+        )
+        return (torch.full((1, 2), float(len(prompt)), dtype = dtype),)
+
+
+def _sweep(pipe, *entries):
+    for entry in entries:
+        pipe._unsloth_loras = entry
+        pipe.encode_prompt("a cat")
+    return pipe.calls
+
+
+def test_a_denoiser_only_strength_sweep_reuses_the_text_embeddings(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _AdapterPipe({"transformer": ["style"]})
+    prompt_cache.install(pipe)
+    first = pipe.encode_prompt("a cat")
+    calls = _sweep(pipe, *((("style", "/x/style.safetensors", w),) for w in (0.25, 0.5, 0.75, 1.0)))
+    assert calls == 1  # 5 encodes before: one per strength
+    pipe._unsloth_loras = ()
+    assert torch.equal(pipe.encode_prompt("a cat")[0], first[0]) and pipe.calls == 1
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        {"text_encoder": ["style"]},  # a text-encoder adapter
+        {"transformer": ["style"], "text_encoder": ["style"]},  # one file patching both
+        {},  # nothing says where it sits: the conservative key
+    ],
+)
+def test_an_adapter_that_may_reach_the_text_encoder_still_misses(monkeypatch, listed):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _AdapterPipe(listed)
+    prompt_cache.install(pipe)
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 2
+
+
+def test_an_encode_that_runs_the_denoiser_keys_its_adapters(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _DenoiserReadingPipe({"transformer": ["style"]})
+    prompt_cache.install(pipe)
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 2
+
+
+def test_a_denoiser_dtype_read_runs_no_layer(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _DtypeOnlyPipe({"transformer": ["style"]})
+    prompt_cache.install(pipe)
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 1
+
+
+def test_the_scoped_key_switch_keys_every_adapter(monkeypatch):
+    monkeypatch.setenv(SCOPED_ENV, "0")
+    pipe = _AdapterPipe({"transformer": ["style"]})
+    prompt_cache.install(pipe)
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 2
+    assert prompt_cache._ENV_SCOPED_LORA_KEY == SCOPED_ENV
+
+
+def test_adapters_merged_into_quantized_denoiser_weights_are_denoiser_only(monkeypatch):
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _AdapterPipe({})  # merged adapters leave PEFT: only the merge state names them
+    prompt_cache.install(pipe)
+    setattr(pipe, qm._MERGED_ATTR, {"layers": [], "weights": {"style": 0.5}, "device": "cpu"})
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 1
+
+
+def test_an_instance_level_encode_override_keeps_the_full_key(monkeypatch):
+    monkeypatch.delenv(SCOPED_ENV, raising = False)
+    pipe = _AdapterPipe({"transformer": ["style"]})
+    original = pipe.encode_prompt
+
+    def encode_prompt(prompt, device = None):
+        return original(prompt, device = device)
+
+    pipe.encode_prompt = encode_prompt
+    prompt_cache.install(pipe)
+    assert _sweep(pipe, (("style", "/x", 0.5),), (("style", "/x", 0.7),)) == 2
+
+
+def test_the_static_check_on_real_pipelines():
+    diffusers = pytest.importorskip("diffusers")
+    qwen = getattr(diffusers, "QwenImagePipeline", None)
+    if qwen is not None:
+        assert prompt_cache._encode_skips_denoisers(qwen, "encode_prompt")
+
+    class _Helper:
+        def encode_prompt(self, prompt):
+            return _run(self, prompt)  # noqa: F821 - self handed away: unprovable
+
+    class _Inherited(_AdapterPipe):
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+        ):
+            return super().encode_prompt(prompt, device = device)
+
+    class _Dynamic(_AdapterPipe):
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+        ):
+            return getattr(self, "transformer")(torch.ones(1, 2))
+
+    class _Indirect(_AdapterPipe):
+        def encode_prompt(
+            self,
+            prompt,
+            device = None,
+        ):
+            return self._inner(prompt)
+
+        def _inner(self, prompt):
+            return self.unet(prompt)
+
+    for cls in (_Helper, _Inherited, _Dynamic, _Indirect):
+        assert not prompt_cache._encode_skips_denoisers(cls, "encode_prompt"), cls
