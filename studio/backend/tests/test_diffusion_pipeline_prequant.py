@@ -13,11 +13,10 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
 try:
     from ._torchao_installed import needs_torchao
-except (
-    ImportError
-):  # a sibling test put this directory on sys.path and imported this file top-level
+except ImportError:
     from _torchao_installed import needs_torchao
 
 from core.inference import diffusion as dmod
