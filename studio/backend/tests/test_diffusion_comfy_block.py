@@ -1065,3 +1065,30 @@ def test_untiling_padded_blocks_checks_both_live_copies(monkeypatch):
     monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
     assert torch.equal(cb.untile_scales(tiled, rows, blocks), plain)
     assert seen == [_ceil(rows, 128) * _ceil(blocks, 4) + rows * blocks]
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+def test_a_compact_storage_load_holds_block_layers_at_their_file_size(block_file, fmt):
+    """The fp8-storage pick (widening would offload) keeps nvfp4 / mxfp8 layers no runtime takes near their file
+    size, not as a bf16 copy, and their weights stay the dense load's."""
+    path, _tensors, _expected = block_file(fmt)
+    dense = _load(path, dtype = torch.bfloat16)
+    compact = _load(path, dtype = torch.bfloat16, fp8_storage = True)
+    names = [f"blocks.{b}.{n}" for b in range(2) for n in ("to_q", "to_k", "to_v", "to_out")]
+
+    def held(model, name):
+        mod = model.get_submodule(name)
+        tensors = [
+            t for n, t in list(mod.named_parameters()) + list(mod.named_buffers()) if n != "bias"
+        ]
+        return sum(t.numel() * t.element_size() for t in tensors)
+
+    bf16 = sum(held(dense, n) for n in names)
+    kept = sum(held(compact, n) for n in names)
+    assert bf16 == 8 * DIM * DIM * 2
+    assert kept < (0.3 if fmt == "nvfp4" else 0.6) * bf16, (kept, bf16)
+    for name in names:
+        assert torch.equal(
+            compact.get_submodule(name).weight.view(torch.int16),
+            dense.get_submodule(name).weight.view(torch.int16),
+        ), name
