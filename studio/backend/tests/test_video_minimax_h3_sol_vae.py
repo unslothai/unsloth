@@ -141,7 +141,6 @@ def test_the_streamed_decode_holds_at_most_two_block_slots():
 
 
 def test_window_attention_compiles_fullgraph_on_full_and_padded_windows():
-    """The padding mask comes from the geometry: no device-to-host read per window."""
     model = _tiny()
     seen: list = []
     orig = model._window_attn
