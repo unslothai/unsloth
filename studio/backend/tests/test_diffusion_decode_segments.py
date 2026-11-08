@@ -142,6 +142,15 @@ def test_a_runtime_opt_in_after_an_engaged_decode_is_kept(fresh):
     assert fake.calls == [] and fake.settings == "expandable_segments:True"
 
 
+def test_segments_an_earlier_decode_left_do_not_stop_the_next(fresh):
+    # The flag is read live, so expandable segments still cached from the last scope are not "already on".
+    fake = fresh(_FakeTorch(segments = [{"is_expandable": True}]))
+    vae = _vae()
+    _decode(vae, fake)
+    _decode(vae, fake)
+    assert fake.calls == ["expandable_segments:True", "expandable_segments:False", ""] * 2
+
+
 def test_a_flag_left_on_by_an_earlier_string_is_kept(fresh):
     # "expandable_segments:True" then "" leaves the flag on with an empty string: only the live flag shows it
     fake = fresh(_FakeTorch())
@@ -178,7 +187,6 @@ def test_restores_after_a_failing_decode(fresh):
 @pytest.mark.parametrize(
     "fake_kwargs",
     [
-        {"segments": [{"is_expandable": True}]},  # already on process-wide
         {"backend": "cudaMallocAsync"},
         {"hip": "6.4"},
         {"compiling": True},
@@ -447,3 +455,26 @@ def test_cuda_device_keeps_a_runtime_opt_in_and_restores_the_settings(monkeypatc
             else "expandable_segments:False"
         )
         D._setter(torch)(before["PYTORCH_CUDA_ALLOC_CONF"])
+
+
+@pytest.mark.skipif(
+    not (_real_gpu and not getattr(torch.version, "hip", None))
+    or not D._platform_ok()
+    or D._allocator_configured(),
+    reason = "Linux CUDA device with the default allocator only",
+)
+def test_cuda_device_engages_every_decode_not_only_the_first(monkeypatch):
+    monkeypatch.setattr(D, "_usable", None)
+    monkeypatch.setattr(D, "_depth", 0)
+    torch.cuda.init()
+    if torch.cuda.memory._snapshot()["allocator_settings"]["expandable_segments"]:
+        pytest.skip("expandable segments already on in this process")
+    vae = _Vae()
+    D.enable(vae)
+    z = torch.zeros(1, device = "cuda")
+    engaged = D.STATS["engaged"]
+    for _ in range(3):
+        with D.expandable_decode(vae, z):
+            held = torch.empty(64 << 20, dtype = torch.uint8, device = "cuda")
+            del held
+    assert D.STATS["engaged"] - engaged == 3

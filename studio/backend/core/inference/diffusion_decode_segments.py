@@ -103,9 +103,6 @@ def _live_settings(torch: Any) -> Optional[str]:
         # Setting the flag resets max_split_size / roundup / gc threshold: a string setting any option is left alone.
         if any(k != "expandable_segments" for k in _conf_keys(last)):
             return None
-        # Already on process-wide: switching it off after the decode would be wrong.
-        if any(seg.get("is_expandable") for seg in snap["segments"]):
-            return None
     except Exception:  # noqa: BLE001
         return None
     return last
