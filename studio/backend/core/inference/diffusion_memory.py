@@ -316,10 +316,12 @@ def _pin_host_weights(
     layout: Optional[list] = None,
     exact: bool = False,
     device: Any = None,
+    plan: Optional[list] = None,
 ) -> int:
     """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides.
     ``layout`` (if given) receives ``(chunk, [(name, start, view), ...])`` per chunk for ``_upload_pinned_chunks``.
-    ``exact`` (video loads, see ``_exact_pin_supported``) sizes each chunk to its bytes instead of a power of two."""
+    ``exact`` (video loads, see ``_exact_pin_supported``) sizes each chunk to its bytes instead of a power of two.
+    ``plan`` (exact only): receives ``[params, slots, chunks]`` and nothing is pinned; the bytes it would pin are returned."""
     import torch
 
     mode = _pin_mode()
@@ -388,6 +390,9 @@ def _pin_host_weights(
                     available / 2**30,
                 )
             return 0
+    if exact and plan is not None:
+        plan[:] = [params, slots, chunks]
+        return need
     if exact:
         try:
             return _pin_host_weights_exact(
@@ -509,20 +514,7 @@ def _fill_exact_chunks(
     pinned = 0
     for index, size in enumerate(chunks):
         try:
-            holder = _RegisteredHostBuffer(size)
-            buf = torch.from_numpy(np.asarray(holder))
-            placed = []
-            for item, start in members[index]:
-                name, p, attr, src = params[item]
-                view = buf[start : start + src.nbytes].view(src.dtype)
-                view = (
-                    view.view(src.shape)
-                    if src.is_contiguous()
-                    else view.as_strided(src.shape, src.stride())
-                )
-                view.copy_(src)
-                placed.append((item, start, view))
-            holder.register()
+            buf, placed = _fill_exact_chunk(size, members[index], params)
         except Exception:
             if not done:
                 raise
@@ -558,6 +550,222 @@ def _fill_exact_chunks(
     if layout is not None:
         layout[:] = [(buf, entries) for buf, entries in done if entries]
     return pinned
+
+
+def _fill_exact_chunk(size: int, items: list, params: list) -> tuple:
+    """One registered chunk holding copies of ``params[item]`` at ``start``: ``(buf, [(item, start, view), ...])``."""
+    import numpy as np
+    import torch
+
+    holder = _RegisteredHostBuffer(size)
+    buf = torch.from_numpy(np.asarray(holder))
+    placed = []
+    for item, start in items:
+        _name, _p, _attr, src = params[item]
+        view = buf[start : start + src.nbytes].view(src.dtype)
+        view = (
+            view.view(src.shape)
+            if src.is_contiguous()
+            else view.as_strided(src.shape, src.stride())
+        )
+        view.copy_(src)
+        placed.append((item, start, view))
+    holder.register()
+    return buf, placed
+
+
+# Video whole-module offload. "0" pins each component on its first onload, inside the first render, as before.
+BACKGROUND_EXACT_PIN_ENV = "UNSLOTH_VIDEO_BACKGROUND_EXACT_PIN"
+
+
+def _background_exact_pin_enabled() -> bool:
+    return (os.environ.get(BACKGROUND_EXACT_PIN_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+class _HookLock:
+    """Re-entrant lock kept in a module's offload state; a copied module gets its own."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+
+    def __enter__(self) -> "_HookLock":
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._lock.release()
+
+    def __deepcopy__(self, _memo: dict) -> "_HookLock":
+        return _HookLock()
+
+    def __reduce__(self) -> tuple:
+        return (_HookLock, ())
+
+
+class _WholeModulePinner:
+    """Pins a whole-module-offloaded component's exact chunks on a worker thread, started by its first onload.
+
+    Pinning inside that onload held LTX-2.5's first render: 23.4 GiB of DiT took 51-93 s on a Colab A100 host.
+    Each chunk is filled outside the hook lock and committed under it. A weight still at its source is re-pointed at
+    its pinned copy (on the host), or only its kept host copy is (onloaded: the offload re-points it). A weight that
+    changed meanwhile keeps its source. Onloads use the chunks committed so far and never wait for the rest."""
+
+    def __init__(
+        self,
+        module: Any,
+        state: dict,
+        lock: Any,
+        plan: list,
+        device: Any,
+        logger: Any = None,
+    ):
+        import weakref
+
+        self._module = weakref.ref(module)
+        self.label = type(module).__name__
+        self._state = state
+        self._lock = lock
+        self._params, self._slots, self._chunks = plan
+        self._device = device
+        self._logger = logger
+        self._stop = threading.Event()
+        self.pinned = 0
+        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+
+    def __deepcopy__(self, _memo: dict) -> None:
+        return None  # a copied module's state has no worker
+
+    def __reduce__(self) -> tuple:
+        return (type(None), ())
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self, timeout: Optional[float] = 30.0) -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout)
+
+    def join(self, timeout: Optional[float] = None) -> bool:
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def _run(self) -> None:
+        import time
+
+        import torch
+
+        began = time.perf_counter()
+        members: list = [[] for _ in self._chunks]
+        for item, (index, start) in enumerate(self._slots):
+            members[index].append((item, start))
+        target = torch.device(self._device) if self._device is not None else None
+        scope = (
+            torch.cuda.device(target)
+            if target is not None and target.type == "cuda" and target.index is not None
+            else contextlib.nullcontext()
+        )
+        try:
+            with scope:
+                for index, size in enumerate(self._chunks):
+                    if self._stop.is_set():
+                        break
+                    try:
+                        buf, placed = _fill_exact_chunk(size, members[index], self._params)
+                    except Exception as exc:  # noqa: BLE001 - the rest stays pageable
+                        if not self.pinned:
+                            with self._lock:
+                                # Nothing moved: the next onload pins through the stock allocator, as the sync path.
+                                self._state["exact_pin"] = False
+                                self._state["pin_tried"] = False
+                        if self._logger is not None:
+                            self._logger.info(
+                                "diffusion.memory: background pin of %s stopped after %d of %d chunks (%s)",
+                                self.label,
+                                index,
+                                len(self._chunks),
+                                exc,
+                            )
+                        break
+                    if not self._commit(buf, placed):
+                        break
+                    self.pinned += size
+        except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
+            pass
+        finally:
+            self._params = None
+            with self._lock:
+                if self._state.get("pin_worker") is self:
+                    self._state.pop("pin_worker", None)
+        if self.pinned and self._logger is not None:
+            self._logger.info(
+                "diffusion.memory: pinned %.1f GiB of %s host weights in the background in %.1f s",
+                self.pinned / 2**30,
+                self.label,
+                time.perf_counter() - began,
+            )
+
+    def _commit(self, buf: Any, placed: list) -> bool:
+        import torch
+
+        module = self._module()
+        if module is None:
+            return False
+        state = self._state
+        host, owner = state["host"], state["owner"]
+        buffer_host = state.setdefault("buffer_host", {})
+        entries: list = []
+        wrapped: dict = {}
+        with self._lock:
+            if self._stop.is_set():
+                return False
+            buffers = dict(_named_buffers(module))
+            for item, start, view in placed:
+                name, p, attr, src = self._params[item]
+                self._params[item] = None
+                if name.startswith("\0"):
+                    leaf = name[1:]
+                    if buffer_host.get(leaf) is not p:
+                        continue
+                    if buffers.get(leaf) is p:
+                        if not torch.equal(p, view):
+                            continue
+                        _set_buffer(module, leaf, view)
+                    buffer_host[leaf] = view
+                elif owner.get(name) is not p or host.get(name) is None:
+                    continue
+                elif attr is None:
+                    if host[name].data_ptr() != src.data_ptr():
+                        continue
+                    if p.device.type == "cpu":
+                        # On the host the weights are live: a write since the copy keeps the source.
+                        if p.data.data_ptr() != src.data_ptr() or not torch.equal(src, view):
+                            continue
+                        p.data = view
+                    host[name] = view
+                else:
+                    inner = dict(_wrapper_inner(p.data) or ()) if p.device.type == "cpu" else {}
+                    held = inner.get(attr)
+                    if (
+                        held is None
+                        or held.data_ptr() != src.data_ptr()
+                        or _tensor_ptr(host[name]) != _tensor_ptr(p.data)
+                        or not torch.equal(src, view)
+                    ):
+                        continue  # an onloaded wrapper weight keeps its pageable host copy
+                    setattr(p, attr, view)
+                    wrapped[name] = p
+                entries.append((name, start, view))
+            for name, p in wrapped.items():
+                host[name] = p.data  # the kept host weight now reads the pinned inner tensors
+            if entries:
+                state.setdefault("pin_layout", []).append((buf, entries))
+        return True
 
 
 OFFLOAD_FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_FAST_UPLOAD"
@@ -832,6 +1040,8 @@ def _wrap_cpu_offload_hook(
     # Plain buffers too: the stock offload re-copied them every call.
     buffer_host = state.setdefault("buffer_host", {})
     buffer_version = state.setdefault("buffer_version", {})
+    # Held by both hooks and by a background pin's commits (_WholeModulePinner).
+    lock = state.setdefault("lock", _HookLock())
 
     def _capture(mod: Any) -> None:
         host.clear()
@@ -845,9 +1055,10 @@ def _wrap_cpu_offload_hook(
             if b.device.type == "cpu" and _keepable_buffer(b):
                 buffer_host[name] = b
 
-    _capture(module)
-    version.clear()
-    buffer_version.clear()
+    with lock:
+        _capture(module)
+        version.clear()
+        buffer_version.clear()
     init_hook, pre_forward = hook.init_hook, hook.pre_forward
 
     def _init_hook(mod: Any) -> Any:
@@ -895,6 +1106,7 @@ def _wrap_cpu_offload_hook(
     def _pre_forward(mod: Any, *args: Any, **kwargs: Any) -> Any:
         # `host` gate: an all-subclass module (torchao) never fills `version`, so would rescan every forward.
         onload = not version and not buffer_version and bool(host or buffer_host)
+        worker = None
         if onload:
             for name, p in mod.named_parameters():
                 kept = host.get(name)
@@ -915,6 +1127,7 @@ def _wrap_cpu_offload_hook(
             # Once per module, on its first onload, so loading pays nothing.
             state["pin_tried"] = True
             layout: list = []
+            plan = [] if state.get("exact_pin") and _background_exact_pin_enabled() else None
             try:
                 pinned = _pin_host_weights(
                     mod,
@@ -924,8 +1137,16 @@ def _wrap_cpu_offload_hook(
                     layout = layout,
                     exact = bool(state.get("exact_pin")),
                     device = state.get("exact_pin_device"),
+                    plan = plan,
                 )
             except Exception:  # noqa: BLE001 - pinning is an optimisation, never a failure
+                pinned = 0
+            if plan:
+                # Started once this onload has moved the module: the copies overlap the render, not delay it.
+                worker = _WholeModulePinner(
+                    mod, state, lock, plan, state.get("exact_pin_device"), logger
+                )
+                state["pin_worker"] = worker
                 pinned = 0
             if pinned:
                 state["pin_layout"] = layout
@@ -998,8 +1219,19 @@ def _wrap_cpu_offload_hook(
                     and _buffer_version(b) is not None
                 ):
                     buffer_version[name] = (b, _buffer_version(b), b.data_ptr())
+        if worker is not None:
+            worker.start()
         return out
 
+    def _locked(fn: Callable) -> Callable:
+        @functools.wraps(fn)
+        def run(*args: Any, **kwargs: Any) -> Any:
+            with lock:
+                return fn(*args, **kwargs)
+
+        return run
+
+    _init_hook, _pre_forward = _locked(_init_hook), _locked(_pre_forward)
     try:
         import torch
 
@@ -7407,7 +7639,12 @@ def defer_late_expert_pins(
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
-    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for module in (getattr(pipe, "components", None) or {}).values():
+        worker = (getattr(module, "__dict__", {}).get(_KEEP_ATTR) or {}).get("pin_worker")
+        if worker is not None:
+            pinners.append(worker)
+    for pinner in pinners:
         try:
             pinner.stop(timeout)
         except Exception:  # noqa: BLE001 - teardown is best effort
