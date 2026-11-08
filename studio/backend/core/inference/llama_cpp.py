@@ -12489,10 +12489,11 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cuda_device_info():
-        """nvidia.get_cuda_device_info(), cached there per mask: the driver API in a child, never
-        torch.cuda.get_device_properties, which initialises CUDA in this process."""
+        """The driver API in a child (nvidia.get_cuda_device_info, cached there per mask), not
+        torch.cuda.get_device_properties, which initialises CUDA in this process; torch only fills an
+        ordinal the driver did not answer."""
         from utils.hardware import nvidia
-        return nvidia.get_cuda_device_info()
+        return nvidia.cuda_device_info_or_torch()
 
     @staticmethod
     def _integrated_cuda_gpu_ids() -> set[int]:

@@ -87,20 +87,56 @@ def test_metadata_lookups_never_initialise_torch_cuda(host):
     assert len(host.queries) == 1
 
 
+def _torch_cannot_answer_either(host, count):
+    def _raise(ordinal):
+        raise RuntimeError("no properties")
+
+    host.torch.cuda.device_count = lambda: count
+    host.torch.cuda.get_device_properties = _raise
+
+
 def test_an_ordinal_that_did_not_answer_is_used_but_not_settled(host, monkeypatch):
     monkeypatch.setattr(
         nvidia,
         "get_cuda_device_info",
         lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None],
     )
+    _torch_cannot_answer_either(host, 2)
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
 
 
-def test_an_unknown_answer_is_not_cached(host, monkeypatch):
+def test_an_unknown_answer_neither_side_knows_is_not_cached(host, monkeypatch):
     monkeypatch.setattr(nvidia, "get_cuda_device_info", lambda: None)
+    _torch_cannot_answer_either(host, 2)
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == set()
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
+
+
+def _torch_with_an_integrated_card(host):
+    def _props(ordinal):
+        host.torch.calls.append("get_device_properties")
+        if ordinal == 1:
+            return types.SimpleNamespace(
+                name = "NVIDIA GB10", total_memory = 120 * GIB, is_integrated = 1
+            )
+        return types.SimpleNamespace(name = "NVIDIA B200", total_memory = 180 * GIB, is_integrated = 0)
+
+    host.torch.cuda.device_count = lambda: 2
+    host.torch.cuda.get_device_properties = _props
+
+
+@pytest.mark.parametrize(
+    "driver_answer", [None, [], [("0000:01:00.0", False, 180 * GIB, "NVIDIA B200"), None]]
+)
+def test_a_failed_driver_probe_never_hides_a_card_torch_sees(host, monkeypatch, driver_answer):
+    """Unknown, empty while torch counts cards, or partial: the missing ordinals come from
+    get_device_properties, as before this change, so detection only ever widens."""
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", lambda: driver_answer)
+    _torch_with_an_integrated_card(host)
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == {1}
+    assert LlamaCppBackend._integrated_cuda_pool_total_mib() == {1: 120 * 1024}
+    assert host.torch.calls.count("get_device_properties") >= 1
 
 
 def _child(
@@ -223,6 +259,7 @@ def test_an_ordinal_that_did_not_answer_leaves_the_pool_unsettled(host, monkeypa
         "get_cuda_device_info",
         lambda: [("0000:01:00.0", True, 120 * GIB, "NVIDIA GB10"), None],
     )
+    _torch_cannot_answer_either(host, 2)
     assert LlamaCppBackend._integrated_cuda_pool_total_mib() == {0: 120 * 1024}
     assert LlamaCppBackend._INTEGRATED_CUDA_POOL_MIB == {}
 
@@ -251,10 +288,9 @@ def test_the_device_list_keeps_the_names_that_answered(host, monkeypatch, capsys
         "get_cuda_device_info",
         lambda: [None, ("0000:02:00.0", False, 180 * GIB, "NVIDIA B200")],
     )
-    host.torch.cuda.device_count = lambda: 2
+    _torch_cannot_answer_either(host, 2)
     hw._print_cuda_device_list(False)
     out = capsys.readouterr().out
     assert "[0] <unavailable>" in out and "[1] NVIDIA B200" in out
-    assert host.torch.calls == []
     with pytest.raises(RuntimeError, match = "device 0"):
         hw._cuda_device0_name()

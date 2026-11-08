@@ -795,6 +795,40 @@ def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]
     return None if info is None else list(info)
 
 
+def cuda_device_info_or_torch(
+    torch_mod: Any = None,
+) -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
+    """get_cuda_device_info() for the cards torch sees, each ordinal the driver query did not answer filled
+    from torch.cuda.get_device_properties (bus id ""), so a failed probe never hides a card the torch path
+    would have found. Only that fallback initialises CUDA here. None when neither knows."""
+    import sys
+
+    info = get_cuda_device_info()
+    torch = sys.modules.get("torch") if torch_mod is None else torch_mod
+    cuda = getattr(torch, "cuda", None)
+    try:
+        count = int(cuda.device_count()) if cuda is not None else None
+    except Exception:
+        count = None
+    if count is None or (
+        info is not None and len(info) == count and all(d is not None for d in info)
+    ):
+        return info
+    out = list(info) if info is not None and len(info) == count else [None] * count
+    for ordinal, device in enumerate(out):
+        if device is not None:
+            continue
+        try:
+            props = cuda.get_device_properties(ordinal)
+        except Exception:
+            continue
+        integrated = bool(
+            getattr(props, "is_integrated", False) or getattr(props, "integrated", False)
+        )
+        out[ordinal] = ("", integrated, int(props.total_memory), str(props.name or ""))
+    return out if info is not None or any(d is not None for d in out) else None
+
+
 def _query_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
     import sys
 

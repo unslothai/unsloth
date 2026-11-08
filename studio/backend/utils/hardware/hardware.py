@@ -1534,7 +1534,7 @@ def _cuda_device_names() -> list:
     None for an ordinal that did not answer. Raises when the answer is unknown."""
     from utils.hardware import nvidia
 
-    info = nvidia.get_cuda_device_info()
+    info = nvidia.cuda_device_info_or_torch()
     if not info:
         raise RuntimeError("the CUDA driver did not list the devices")
     return [device[3] if device is not None else None for device in info]
@@ -3165,7 +3165,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
         # after that a later mem_get_info anywhere in the server pins a context on each card.
         from utils.hardware import nvidia
 
-        info = nvidia.get_cuda_device_info()
+        info = nvidia.cuda_device_info_or_torch(torch_mod)
         nvidia_devices = []
         for ordinal, phys_idx in enumerate(device_indices):
             device = info[ordinal] if info is not None and ordinal < len(info) else None
