@@ -1063,7 +1063,7 @@ def test_fp64_less_xpu_demotes_ltx2_rope_to_float32(monkeypatch):
     assert dd.force_float32_rope(pipe, dd._xpu_target(_fake_xpu_torch(False))) == 1
     assert not rope.double_precision
     got = rope(coords, device = "cpu")
-    # the float32 frequency base MPS already uses: measured 9.8e-4 here, 4.9e-3 at LTX-2.5's 4096 dims
+    # MPS's float32 frequency base: 9.8e-4 here, 4.9e-3 at 4096 dims
     for a, b in zip(got, oracle):
         assert a.dtype == b.dtype == torch.float32
         assert 0 < float((a - b).abs().max()) < 1e-2

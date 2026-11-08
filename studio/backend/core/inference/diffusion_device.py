@@ -832,12 +832,12 @@ def _cuda_or_rocm_target(
     )
 
 
-# Arc A-series has no fp64: a float64 kernel raises "Required aspect fp64". 0 skips the probe (float64 assumed).
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
 XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
 
 
 def _xpu_has_fp64(xpu: Any) -> bool:
-    """The current XPU's ``has_fp64``; True when the probe is off or cannot answer, as before it existed."""
+    """``has_fp64`` of the current XPU; True when off or unanswerable."""
     if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return True
     try:
