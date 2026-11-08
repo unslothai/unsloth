@@ -212,15 +212,13 @@ def _rope_kernel_launches(fn, *args):
 
 @pytest.mark.parametrize("one_launch", [True, False], ids = ["one_launch", "per_tensor"])
 def test_rope_compiled_positions_one_launch_each_way(monkeypatch, one_launch):
-    """Compiled positions RoPE rotates Q and K in one launch forward and one backward, as eager;
-    UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH=0 (the module flag) keeps one launch per tensor. Both
-    are byte-identical to eager."""
+    """Compiled positions RoPE: one launch each way (per tensor with the flag off), eager's bytes."""
     if not TRACEABLE:
         pytest.skip("this torch has no torch.library.triton_op")
     monkeypatch.setattr(rope_embedding, "COMPILED_ROPE_QK_ONE_LAUNCH", one_launch)
     compiled = _compile(lambda q, k, c, s, i: fast_rope_embedding(q, k, c, s, i))
     shape = (2, 37, 8, 2, 64)
-    _rope_case(compiled, *shape, CDTYPE, False, pure = True)  # compile outside the profiler
+    _rope_case(compiled, *shape, CDTYPE, False, pure = True)
     got, launches = _rope_kernel_launches(
         _rope_case,
         compiled,

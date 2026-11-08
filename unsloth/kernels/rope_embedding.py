@@ -503,8 +503,7 @@ if _TRACEABLE:
     def _rope_embedding_rows_qk_op(
         Q: torch.Tensor, K: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, backward: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # unsloth::rope_embedding on Q and K ([batch, seq_len, n_heads, head_dim] at any strides)
-        # in one launch: the same kernel, flags and per-head math, so the outputs are bitwise equal.
+        # unsloth::rope_embedding on Q and K in one launch (same kernel and flags: bitwise equal).
         Q_out = torch.empty(Q.shape, dtype = Q.dtype, device = Q.device)
         K_out = torch.empty(K.shape, dtype = K.dtype, device = K.device)
         _rope_launch(
@@ -673,8 +672,7 @@ def _fast_rope_embedding_eager(Q, K, cos, sin, rope_embedding_indices):
 
 _fast_rope_embedding_untraced = torch.compiler.disable(_fast_rope_embedding_eager)
 
-# Compiled graphs rotate Q and K in one launch each way, as the eager path does;
-# UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH=0 restores one launch per tensor.
+# UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH=0: compiled RoPE launches once per tensor instead of once for Q and K.
 COMPILED_ROPE_QK_ONE_LAUNCH = os.environ.get(
     "UNSLOTH_COMPILED_ROPE_QK_ONE_LAUNCH", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
