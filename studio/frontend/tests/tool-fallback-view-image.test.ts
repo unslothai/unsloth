@@ -10,12 +10,19 @@ import { readSrc } from "./helpers/kit.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
 const PATH = "components/assistant-ui/tool-fallback.tsx";
-const source = ts.createSourceFile(PATH, readSrc(PATH), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const source = ts.createSourceFile(
+  PATH,
+  readSrc(PATH),
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX,
+);
 
 function findDeclaration(name: string): ts.VariableDeclaration {
   let found: ts.VariableDeclaration | undefined;
   (function visit(node: ts.Node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) found = node;
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name)
+      found = node;
     if (!found) ts.forEachChild(node, visit);
   })(source);
   assert.ok(found, `${PATH}: no ${name}`);
@@ -38,7 +45,8 @@ test("the view_image picture renders outside the collapsible pane", () => {
   const impl = findDeclaration("ToolFallbackImpl");
   const images: ts.Node[] = [];
   (function visit(node: ts.Node) {
-    if (openingTag(node)?.tagName.getText(source) === "ToolFallbackImages") images.push(node);
+    if (openingTag(node)?.tagName.getText(source) === "ToolFallbackImages")
+      images.push(node);
     ts.forEachChild(node, visit);
   })(impl);
   assert.equal(images.length, 1, "the card renders the picture once");
@@ -53,5 +61,8 @@ test("only a finished view_image result moves out of the pane", () => {
 });
 
 test("the pane shows only the text of a picture that moved out", () => {
-  assert.match(source.text, /<ToolFallbackResult result=\{picture \? picture\.text : shown\} \/>/);
+  assert.match(
+    source.text,
+    /<ToolFallbackResult result=\{picture \? picture\.text : shown\} \/>/,
+  );
 });
