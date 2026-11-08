@@ -31,9 +31,7 @@ _STOP = object()
 STREAM_COMPARE_ENV = "UNSLOTH_STUDIO_VIDEO_STREAM_COMPARE_SLICED"
 # 128 KiB bool scratch stays under numpy's 4 MiB hugepage madvise threshold.
 _COMPARE_WORDS = 1 << 17
-# "0" = keep every raw chunk in memory until take() (the old way).
 SHARED_OUTPUT_ENV = "UNSLOTH_VIDEO_STREAM_SHARED_OUTPUT"
-# 1 MiB read-back window for comparing spooled chunks.
 _SPOOL_READ = _COMPARE_WORDS * 8
 
 STATS = {"streamed": 0, "fallback": 0, "last": ""}
@@ -146,7 +144,6 @@ class StreamEncode:
         )
         self._side = None
         self.chunks: list = []
-        # encoded chunks land here and drop their host copy; None when disabled or after a failed write
         self._spool: Any = None
         self._spool_on = _spool_enabled()
         self._spool_lock = threading.Lock()
@@ -317,7 +314,7 @@ class StreamEncode:
                 for frame in frames:
                     for packet in stream.encode(av.VideoFrame.from_ndarray(frame, format = "rgb24")):
                         container.mux(packet)
-                # the loop's last frame is a view: it would keep the whole chunk alive
+                # the last ``frame`` is a view that would pin the whole chunk
                 frames = host = frame = None
                 if item.spool:
                     self._spool_chunk(item)
@@ -347,7 +344,7 @@ class StreamEncode:
             frames = chunk.host.numpy()
             with self._spool_lock:
                 if self._spool is None:
-                    # unlinked at once on POSIX, removed on close on Windows
+                    # unlinked at once on POSIX, deleted on close on Windows
                     self._spool = tempfile.TemporaryFile(dir = os.path.dirname(self.path) or None)
                 spool = self._spool
                 spool.seek(0, os.SEEK_END)
@@ -378,7 +375,7 @@ class StreamEncode:
                 if flat is not None:
                     want = flat[pos : pos + part.size]
                 else:
-                    # a strided final clip: copy only the frames this window spans
+                    # strided clip: copy only this window's frames
                     first, last = pos // frame, (pos + part.size - 1) // frame
                     span = np.ascontiguousarray(theirs[first : last + 1]).reshape(-1)
                     want = span[pos - first * frame : pos - first * frame + part.size]
@@ -425,7 +422,7 @@ class StreamEncode:
         start = 0
         for chunk in self.chunks:
             with self._spool_lock:
-                # a local reference: the encoder may spool (and drop) the chunk while it is compared here
+                # local refs: the encoder may spool the chunk meanwhile
                 host, done, offset = chunk.host, chunk.done, chunk.offset
             theirs = final[start : start + chunk.frames]
             if host is None:
@@ -472,7 +469,7 @@ class StreamEncode:
             if self.valid and self._matches(video_frames):
                 streamed = sum(chunk.frames for chunk in self.chunks)
                 if streamed < len(video_frames):
-                    # a view of the caller's clip: encoded, never spooled
+                    # the caller's frames: never spooled
                     tail = video_frames[streamed:]
                     self._queue.put(_Chunk(tail, None, len(tail), spool = False))
                 self._join()

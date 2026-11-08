@@ -534,7 +534,6 @@ def test_encode_mp4_claims_an_h3_stream_with_its_soundtrack():
     assert vse._mp4_frame_count(data, frames.shape[1:3]) == len(frames)
 
 
-# Encoded chunks move to a spool and drop their host copy; the exact compare reads them back.
 class _NoVae:
     config = None
     decoder = None
@@ -566,7 +565,6 @@ def _drained(session, spooled):
 def test_encoded_chunks_are_spooled_and_released(tmp_path):
     session, final = _spool_session()
     assert len(session.chunks) == 7
-    # every encoded chunk dropped its host frames; only the spool holds them
     assert _drained(session, spooled = True)
     assert all(chunk.offset is not None for chunk in session.chunks)
     spool = session._spool
@@ -588,7 +586,7 @@ def test_a_spooled_chunk_that_differs_falls_back(frame):
 def test_shared_output_off_keeps_every_chunk(monkeypatch):
     monkeypatch.setenv(vse.SHARED_OUTPUT_ENV, "0")
     session, final = _spool_session()
-    session._join()  # the encoder has seen every chunk
+    session._join()
     assert all(chunk.host is not None for chunk in session.chunks) and session._spool is None
     assert session._matches(final)
     session.close()
@@ -628,7 +626,7 @@ def _raw_bytes_held(session):
 
 def test_the_session_holds_no_raw_frames_once_they_are_encoded():
     session, final = _spool_session()
-    session._join()  # the encoder has encoded (and spooled) every chunk
+    session._join()
     assert (
         _raw_bytes_held(session) == 0
     ), f"{_raw_bytes_held(session)} of {final.numel()} raw bytes still held"
