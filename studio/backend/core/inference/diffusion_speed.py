@@ -2055,7 +2055,8 @@ def _quantised_projections(pipe: Any) -> bool:
     from .diffusion_native_quant import is_native_linear
     from .diffusion_packed_block import is_packed_block_linear
 
-    for model in (*_denoiser_dits(pipe), _denoiser_unet(pipe)):
+    # the pipe-level fuse reaches any U-Net, not only the whole-compile ones
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
         if model is None or not callable(getattr(model, "modules", None)):
             continue
         try:
