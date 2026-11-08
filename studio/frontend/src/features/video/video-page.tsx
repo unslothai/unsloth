@@ -1291,10 +1291,8 @@ function VideoGenerator({
     numFrames / FALLBACK_FPS,
   );
   const [fpsPick, setFpsPick] = useState<FpsPick | null>(null);
-  // A preset rate restored before status names the family; kept in the saved params until it can be validated.
-  // Boxed: a preset without a rate (null) is still pending, and resolves to the family default.
+  // Rate of a preset or clip applied before the family is known; boxed so a null rate (family default) still waits.
   const [pendingPresetFps, setPendingPresetFps] = useState<{ fps: number | null } | null>(null);
-  // A reload learns of an in-flight load only after its first status read.
   const [loadProbed, setLoadProbed] = useState(false);
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
@@ -1531,7 +1529,6 @@ function VideoGenerator({
   const loadedFamily = status?.loaded ? status.family : null;
   // Scoped to its family in render: a reset effect would land after the next family's defaults are seeded.
   const fps = resolveVideoFps(status?.defaults, pickedFpsFor(fpsPick, loadedFamily));
-  // A rate picked now supersedes one still pending for an in-flight load.
   const setPickedFps = useCallback(
     (picked: number) => {
       setPendingPresetFps(null);
@@ -1636,8 +1633,7 @@ function VideoGenerator({
   const presetRepoId = status?.repo_id ?? "";
   const familyFps = status?.defaults?.fps ?? FALLBACK_FPS;
   const statusKnown = presetFamilyKnown(status?.defaults, busy === "loading" || !loadProbed);
-  // A preset's rate, or the family default for one saved without a rate; null where the rate is fixed. Kept as
-  // stored until status names the family, or a reload racing the first status read would drop it.
+  // Null where the rate is fixed; kept as stored until the family is known.
   const presetFps = useCallback(
     (stored: number | null | undefined) =>
       !statusKnown
@@ -2447,12 +2443,10 @@ function VideoGenerator({
       setAspect(matched.key);
       setPortrait(matched.portrait);
       setMatchSource(false);
-      // Restore the clip's rate too; its count only when this family's window takes it. Mid-load, both wait
-      // for the incoming family, like a preset's rate.
+      // The clip's count only when this family's window takes it.
       if (!statusKnown) {
         setPendingPresetFps({ fps: video.fps });
         setDurationIntentSeconds(video.num_frames / video.fps);
-        // Kept when the incoming window offers it, else reseated from the intent.
         setNumFrames(video.num_frames);
       } else if (fpsOptions?.includes(video.fps)) {
         const option = restoredClipDuration(
@@ -4762,7 +4756,6 @@ function VideoGenerator({
                   variant="primary"
                   className="relative z-10 h-11 px-8 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerate}
-                  // A deferred preset rate is not in fps yet, so it would generate at the outgoing rate.
                   disabled={busy !== null || !status?.loaded || !statusKnown || pendingPresetFps != null}
                 >
                   Generate
