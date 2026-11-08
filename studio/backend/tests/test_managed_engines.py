@@ -2923,7 +2923,7 @@ def kernel_host(monkeypatch):
 
 
 def test_every_vllm_lock_has_its_flashinfer_kernel_wheel(kernel_host, monkeypatch):
-    table = json.loads(install._FLASHINFER_KERNELS.read_text())
+    table = json.loads(install._FLASHINFER_KERNELS.read_text(encoding = "utf-8"))
     for engine, entry in install.PROFILES.items():
         for release in entry["releases"]:
             monkeypatch.setattr(install, "_release", lambda engine, release = release: release)
@@ -3126,7 +3126,7 @@ def test_download_size_counts_the_flashinfer_kernel_wheel(isolated, kernel_host,
     with_kernels = install.download_bytes("vllm")
     monkeypatch.setenv("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "0")
     version = install._pins("vllm")["flashinfer-python"][0]
-    table = json.loads(install._FLASHINFER_KERNELS.read_text())
+    table = json.loads(install._FLASHINFER_KERNELS.read_text(encoding = "utf-8"))
     assert (
         with_kernels - install.download_bytes("vllm") == table[f"{version}+cu130"]["x86_64"]["size"]
     )
