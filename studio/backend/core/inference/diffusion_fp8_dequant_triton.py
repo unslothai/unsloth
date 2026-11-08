@@ -9,6 +9,25 @@ import triton.language as tl
 
 
 @triton.jit
+def _fp16_bits(value):
+    """float32 -> float16 bits, round to nearest even by integer ops (overflow to inf, subnormals kept), as torch
+    casts on every device; ROCm's own conversion differs."""
+    u = value.to(tl.uint32, bitcast = True)
+    sign = (u >> 16) & 0x8000
+    a = u & 0x7FFFFFFF
+    r = a - (112 << 23)
+    normal = (r + 0x0FFF + ((r >> 13) & 1)) >> 13
+    # below 2**-14: the subnormal count, |x| * 2**24 rounded to the nearest even integer (exact scaling, one add)
+    scaled = (a.to(tl.float32, bitcast = True) * 16777216.0 + 8388608.0) - 8388608.0
+    sub = scaled.to(tl.uint32)
+    bits = tl.where(a >= 0x38800000, normal, sub)
+    bits = tl.where(a >= 0x477FF000, 0x7C00, bits)
+    # NaN: quieted, top payload bits kept, as the hardware conversion torch uses
+    bits = tl.where(a > 0x7F800000, 0x7E00 | ((a >> 13) & 0x3FF), bits)
+    return (bits | sign).to(tl.uint16)
+
+
+@triton.jit
 def dequant_rows_kernel(
     codes_ptr,
     scale_ptr,
@@ -57,5 +76,9 @@ def dequant_rows_kernel(
         out = tl.where((bits & 0x7FFFFFFF) > 0x7F800000, BF16_NAN, rne).to(tl.int16)
         out = out.to(tl.bfloat16, bitcast = True)
     else:
-        out = prod.to(out_ptr.dtype.element_ty)
+        if out_ptr.dtype.element_ty == tl.float16:
+            # nearest even by integer ops: ROCm's own fp32 -> fp16 conversion differs from torch's
+            out = _fp16_bits(prod).to(tl.float16, bitcast = True)
+        else:
+            out = prod.to(out_ptr.dtype.element_ty)
     tl.store(out_ptr + offs, out, mask = mask)
