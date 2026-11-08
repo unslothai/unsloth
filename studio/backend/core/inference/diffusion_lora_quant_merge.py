@@ -18,8 +18,21 @@ _FP8_MAX = 448.0
 _INT8_MAX = 127.0
 
 
+# "0": a weight change restores and re-merges every merged layer, not only those of the adapters it changes.
+INCREMENTAL_ENV = "UNSLOTH_DIFFUSION_LORA_INCREMENTAL_REMERGE"
+
+
 def enabled() -> bool:
     return (os.environ.get(MERGE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _incremental() -> bool:
+    return (os.environ.get(INCREMENTAL_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def merged(pipe: Any) -> bool:
@@ -253,7 +266,14 @@ def _host_room(layers: list) -> bool:
     return (int(available) << 20) - nbytes >= _HOST_RESERVE
 
 
-def _apply(layers: list, weights: dict, device: Any) -> None:
+def _apply(
+    layers: list,
+    weights: dict,
+    device: Any,
+    only: Optional[set] = None,
+) -> None:
+    """``only``: the layer indices to merge (the rest keep their codes). A layer's seed stays its index in the full
+    list, so a subset merges to the codes a full re-merge would give it."""
     import torch
 
     # No TF32: the same weights must merge to the same codes before and after a speed profile engages.
@@ -262,6 +282,8 @@ def _apply(layers: list, weights: dict, device: Any) -> None:
     try:
         with torch.no_grad():
             for index, entry in enumerate(layers):
+                if only is not None and index not in only:
+                    continue
                 module = entry.module
                 kind = _weight_kind(module.weight)
                 live = [t for t in entry.terms if weights.get(t.adapter, 0.0)]
@@ -276,10 +298,12 @@ def _apply(layers: list, weights: dict, device: Any) -> None:
         torch.backends.cuda.matmul.allow_tf32 = tf32
 
 
-def _restore(layers: list) -> None:
+def _restore(layers: list, only: Optional[set] = None) -> None:
     import torch
     with torch.no_grad():
-        for entry in layers:
+        for index, entry in enumerate(layers):
+            if only is not None and index not in only:
+                continue
             kind = _weight_kind(entry.module.weight)
             for key, live in _tensors(entry.module.weight, kind).items():
                 live.copy_(entry.backup[key])
@@ -347,9 +371,15 @@ def set_weights(pipe: Any, weights: dict) -> bool:
         if live.device.type != "meta":
             device = live.device
             break
-    _restore(layers)
+    only = None
+    if _incremental():
+        # A layer's merged codes depend only on its own adapters' weights: the others keep theirs (bit-equal).
+        old = state["weights"]
+        changed = {n for n in set(old) | set(weights) if old.get(n, 0.0) != weights.get(n, 0.0)}
+        only = {i for i, e in enumerate(layers) if any(t.adapter in changed for t in e.terms)}
+    _restore(layers, only)
     try:
-        _apply(layers, weights, device)
+        _apply(layers, weights, device, only)
     except Exception:
         # Never leave half the layers merged: the base weights, then the error.
         _restore(layers)
