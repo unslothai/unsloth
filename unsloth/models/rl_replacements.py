@@ -6171,6 +6171,31 @@ def _unsloth_gkd_layout(source):
     return {"shift": "prompt" if is_prompt else "shift", "num_items_in_batch": bool(calls[0])}
 
 
+def _unsloth_global_module_hooks():
+    # torch's register_module_*_hook globals apply to every module, the head included.
+    from torch.nn.modules import module as _module
+    return bool(
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
+        or getattr(_module, "_global_backward_pre_hooks", None)
+    )
+
+
+def _unsloth_gkd_head_hooks(head):
+    # TRL activation_offloading puts a pre / post forward pair on lm_head that only pauses offloading around
+    # the logits; skipping both is safe and keeps the chunked JSD on, so only other hooks count.
+    forward = (*head._forward_hooks.values(), *head._forward_pre_hooks.values())
+    return bool(
+        any(
+            getattr(hook, "__module__", None) != "trl.models.activation_offloading"
+            for hook in forward
+        )
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
+    )
+
+
 def _unsloth_gkd_dense_head(model):
     """The output head when it is a plain dense ``[vocab, hidden]`` projection the chunked loss can read directly.
     Rejects bnb heads (``nn.Linear`` subclasses with packed weights), PEFT heads and ZeRO-3 partitioned weights.
@@ -6407,6 +6432,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         return _unsloth_gkd_note_fallback(self, "output head is not a dense nn.Linear")
     if student_head.weight.shape[0] != teacher_head.weight.shape[0]:
         return _unsloth_gkd_note_fallback(self, "vocab mismatch")
+    # The JSD bypasses head calls, so head / global hooks would not fire; accelerate's _hf_hook is fine.
+    if _unsloth_global_module_hooks() or any(
+        _unsloth_gkd_head_hooks(head) for head in (student_head, teacher_head)
+    ):
+        return _unsloth_gkd_note_fallback(self, "output head has forward / backward hooks")
     # MiniCPM3 divides hidden states by logits_scaling before lm_head; a wrapped forward's hidden_states[-1] predates it.
     for unwrapped in (unwrapped_student, unwrapped_teacher):
         for config in _unsloth_text_configs(_unsloth_get_model_config(unwrapped)):
@@ -6590,6 +6620,8 @@ for _gkd_item in (
     _unsloth_gkd_jsd_supported,
     _unsloth_gkd_note_fallback,
     _unsloth_gkd_dense_head,
+    _unsloth_gkd_head_hooks,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_gkd_project,
     _unsloth_gkd_chunk_size,
@@ -6685,7 +6717,8 @@ def _unsloth_pref_chunked_head(self, model):
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
         return None
-    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+    # hooks, torch's global module hooks) is not
     # F.linear(h, W, b), and its backward hooks would never see the gradient.
     if (
         hasattr(head, "_hf_hook")
@@ -6694,6 +6727,7 @@ def _unsloth_pref_chunked_head(self, model):
         or head._forward_pre_hooks
         or head._backward_hooks
         or getattr(head, "_backward_pre_hooks", None)
+        or _unsloth_global_module_hooks()
     ):
         return None
     # MiniCPM3 divides hidden states by logits_scaling before the head.
@@ -6927,6 +6961,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_stock_logps_hook,
         _unsloth_pref_chunked_head,
         _unsloth_gkd_logit_transforms,
@@ -7010,7 +7045,8 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
-        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward
+        # hooks, torch's global module hooks) is not
         # F.linear(h, W, b), and its backward hooks would never see the gradient.
         elif (
             hasattr(head, "_hf_hook")
@@ -7019,6 +7055,7 @@ def _unsloth_dpo_chunked_head(
             or head._forward_pre_hooks
             or head._backward_hooks
             or getattr(head, "_backward_pre_hooks", None)
+            or _unsloth_global_module_hooks()
         ):
             reason = "output head has hooks or a patched forward"
     if reason is None:
@@ -7436,6 +7473,7 @@ for _dpo_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -7660,6 +7698,7 @@ for _kto_item in (
     _unsloth_grpo_hidden_states_signal,
     _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
+    _unsloth_global_module_hooks,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
     _unsloth_stock_logps_hook,
@@ -8588,6 +8627,7 @@ for _odpo_trainer in ("bco_trainer", "online_dpo_trainer", "xpo_trainer", "nash_
         _unsloth_grpo_hidden_states_signal,
         _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
+        _unsloth_global_module_hooks,
         _unsloth_gkd_logit_transforms,
         _unsloth_pref_logit_transforms,
         _unsloth_stock_logps_hook,
