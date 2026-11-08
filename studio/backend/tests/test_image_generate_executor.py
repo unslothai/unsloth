@@ -22,7 +22,7 @@ _ACCOUNT = contextvars.ContextVar("account", default = None)
 def _queued_renders_then_a_status_read(n_renders: int, workers: int) -> tuple[float, list]:
     """``n_renders`` generations queued behind one held render slot, then a default-executor read (status)."""
     slot = threading.Lock()
-    slot.acquire()  # the active render
+    slot.acquire()
     seen = []
 
     def generate(i):

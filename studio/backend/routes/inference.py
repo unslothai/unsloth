@@ -278,15 +278,13 @@ _OLLAMA_LEASE_EXECUTOR = ThreadPoolExecutor(
 # Own workers so a cancel is not queued behind generations blocking the default executor; kept off the loop since native cancel kills a process tree.
 _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-cancel")
 
-# Image generations wait for the engine's one-render slot inside their worker thread: on the default executor a few
-# queued renders hold every worker, stalling status, gallery and chat streaming until a render ends. "0" restores
-# asyncio.to_thread.
+# Queued renders wait for the one-render slot inside their thread; on the default executor they would hold every worker.
 _IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
 _IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
 
 
 async def _image_generate_in_thread(func, /, *args, **kwargs):
-    """``asyncio.to_thread`` (same context copy: account scope, progress) on the image-generation pool."""
+    """``asyncio.to_thread`` (same context copy) on the image-generation pool."""
     if (os.environ.get(_IMAGE_GENERATE_EXECUTOR_ENV) or "").strip().lower() in (
         "0",
         "off",
