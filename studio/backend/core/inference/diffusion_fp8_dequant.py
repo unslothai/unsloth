@@ -126,13 +126,14 @@ def dequant_rows(
     import torch
 
     if triton_ok and _triton_ok(codes, dtype):
+        out = torch.empty(codes.shape, dtype = dtype, device = codes.device)
         try:
-            out = torch.empty(codes.shape, dtype = dtype, device = codes.device)
             launch_triton(codes, scale.contiguous(), out, fmt)
             _WARM.add(_warm_key(codes, dtype))
             return out
         except Exception as exc:  # noqa: BLE001 - no Triton / launch failure: chunked torch below
             _triton_failed(exc)
+        del out  # the fallback allocates its own output
     rows = codes.shape[0]
     cols = codes.numel() // max(1, rows)
     step = chunk_rows(rows, cols, codes.device, 8 if codes.device.type == "mps" else 4)
