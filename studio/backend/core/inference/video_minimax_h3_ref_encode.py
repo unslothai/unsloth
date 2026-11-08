@@ -138,8 +138,7 @@ def install_h3_chunked_reference_encode(logger: Any = None) -> bool:
     if not enabled():
         return False
     try:
-        import importlib
-        module = importlib.import_module(_ENCODERS_MODULE)
+        from diffusers.modular_pipelines.minimax_h3 import encoders as module
     except Exception:  # noqa: BLE001 - not an H3-capable diffusers
         return False
     with _LOCK:
