@@ -53,9 +53,7 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
-# Modules whose __init__ buffers stay as built, as the diffusers pipeline load keeps them. Qwen-Image-2.1's timestep
-# table runs in fp32 (t * 1000 * freqs): bf16 freqs moved a 1024 x 1024 fp8 render from LPIPS 0.106 to 0.174
-# against bf16, and with fp32 freqs the torchao fp8 render matched Studio's own FP8 checkpoint pixel for pixel.
+# __init__ buffers kept as built: Qwen-Image-2.1's fp32 timestep table in bf16 moved renders (LPIPS 0.106 -> 0.174).
 FP32_INIT_BUFFER_MODULES = frozenset({"QwenImage21TemporalTimesteps"})
 # Container prefixes a declaration may omit while its weight carries one.
 _DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
@@ -964,9 +962,8 @@ def comfy_fp8_backend(
     quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
     older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
     ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
-    ``torchao_offload``: the offloaded plan streams the denoiser through group offload, which moves a
-    ``Float8Tensor`` as Studio's own fp8 checkpoints are moved (``torchao_offload_plan``), so torchao runs
-    there too. ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
+    ``torchao_offload``: the plan streams the denoiser (``torchao_offload_plan``), which torchao survives.
+    ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:

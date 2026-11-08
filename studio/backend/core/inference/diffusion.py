@@ -3808,7 +3808,6 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
         getattr(state, "transformer_quant", None)
         or getattr(state, "text_encoder_quant", None)
         or pipe_fp8_stored_layers(pipe)
-        # a single file's int8 / fp8 layers on torchao (streamed fp8 under group offload)
         or any(
             comfy_torchao_quantized(getattr(pipe, attr, None))
             for attr in ("transformer", "transformer_2")
@@ -9984,7 +9983,6 @@ class DiffusionBackend:
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                                 if _comfy_fp8_plan is not None and comfy_compile:
-                                    # torchao fp8 under offload streams the blocks, as Studio's own fp8 does there.
                                     plan = _comfy_fp8_plan
                             else:
                                 if kind != "gguf" and (
@@ -11555,9 +11553,7 @@ class DiffusionBackend:
 
     @staticmethod
     def _comfy_fp8_stream_plan(plan: Any) -> Any:
-        """The placement an offloaded ``plan`` takes when the single file's fp8 layers run on torchao, else None.
-        Only group streaming (``torchao_offload_plan``, as for Studio's own fp8 checkpoints: a whole-module plan
-        whose quantised parts do not fit becomes streaming); sequential and whole-module offload keep fp8 storage."""
+        """The streaming placement torchao fp8 takes under an offloaded ``plan`` (``torchao_offload_plan``), else None."""
         if plan_keeps_transformer_resident(plan):
             return None
         try:
@@ -13374,8 +13370,7 @@ class DiffusionBackend:
             and transformer_resident is not None
             and not plan_keeps_transformer_resident(plan)
         ):
-            # Offloaded: the loader probes the backends with offload=True (torchao fp8 only under group streaming, at the
-            # fp8 size storage prices too), so price what that load builds, widened and fp8-stored, before choosing storage.
+            # Offloaded: price what the offload=True loader builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
                 # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
