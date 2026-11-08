@@ -396,3 +396,45 @@ def test_hosted_conversion_refuses_a_layout_it_cannot_hold():
     lin._parameters["weight"] = Float8Tensor()
     with pytest.raises(ValueError, match = "cannot hold"):
         nq.h3_hosted_fp8_to_native(torch.nn.Sequential(lin))
+
+
+# ── on this host's real GPU (CUDA / ROCm / MPS): the backends it picks, run there ──
+
+
+def _gpu_target():
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+
+    target = resolve_diffusion_device_target()
+    if getattr(target, "device", None) not in ("cuda", "mps"):
+        pytest.skip("no GPU here")
+    return target
+
+
+@pytest.mark.parametrize("fmt,name", [("float8_e4m3fn", FP8_NAME), ("int8_tensorwise", INT8_NAME)])
+def test_the_host_backends_run_on_its_gpu_like_the_dequantized_model(tmp_path, fmt, name):
+    target = _gpu_target()
+    device = target.torch_device
+    path, base, _ = _write(tmp_path, _tiny(), name, fmt)
+    backends = nq.h3_comfy_backends(target)
+    scheme_runs = (
+        backends["int8_backend"]
+        if fmt.startswith("int8")
+        else (backends["fp8_backend"] or backends["fp8_storage"])
+    )
+    if not scheme_runs:
+        pytest.skip(f"{fmt} has no runtime on this host: {backends}")
+    model = _load(path, base, target, dtype = torch.bfloat16, **backends).to(device)
+    info = model._unsloth_comfy_quant
+    kept = info["int8"] if fmt.startswith("int8") else info["fp8"] + info.get("fp8_stored", 0)
+    assert kept > 0 and info["dequantized"] == 0, info
+    reference = _load(
+        path, base, target, dtype = torch.bfloat16, int8_backend = None, fp8_backend = None
+    ).to(device)
+    kw = {k: (v.to(device) if torch.is_tensor(v) else v) for k, v in _inputs().items()}
+    with torch.no_grad():
+        got = torch.cat([t.float().reshape(-1) for t in model(**kw) if torch.is_tensor(t)])
+        want = torch.cat([t.float().reshape(-1) for t in reference(**kw) if torch.is_tensor(t)])
+    assert torch.isfinite(got).all()
+    # weight-only twins widen the same codes the reference widened at load; W8A8 int8 adds activation rounding
+    rel = (got - want).norm() / want.norm().clamp_min(1e-12)
+    assert rel < (5e-2 if fmt.startswith("int8") else 1e-2), (backends, float(rel))
