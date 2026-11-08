@@ -607,30 +607,28 @@ def test_the_middleware_hands_each_request_its_root_path():
     assert studio_tools_mcp._root_path.get() == ""
 
 
-def test_dropping_nulls_keeps_empty_lists_false_and_zero():
+def test_dropping_nulls_keeps_empty_lists_false_zero_and_recipe_rows():
     from mcp.types import TextContent
 
-    text = '{"a":null,"b":[],"c":false,"d":0,"e":[{"f":null}]}'
-    blocks = [TextContent(type = "text", text = text), TextContent(type = "text", text = "not json {")]
-    structured = {"a": None, "b": {"c": None, "d": 1}}
-    result = studio_tools_mcp._without_nulls(
-        SimpleNamespace(content = blocks, structured_content = structured)
-    )
-    texts = [block.text for block in result.content]
-    assert texts == ['{"b":[],"c":false,"d":0,"e":[{}]}', "not json {"]
-    assert result.structured_content == {"b": {"d": 1}}
-
-
-def test_dropping_nulls_leaves_recipe_rows_as_written():
-    from mcp.types import TextContent
-
-    rows = [{"text": "x", "label": None}, {"text": "y", "label": None}]
-    text = json.dumps({"status": "completed", "error": None, "data_rows": rows})
-    result = studio_tools_mcp._without_nulls(
-        SimpleNamespace(
-            content = [TextContent(type = "text", text = text)],
-            structured_content = {"error": None, "data_rows": rows},
+    def strip(texts, structured):
+        blocks = [TextContent(type = "text", text = text) for text in texts]
+        return studio_tools_mcp._without_nulls(
+            SimpleNamespace(content = blocks, structured_content = structured)
         )
+
+    result = strip(
+        ['{"a":null,"b":[],"c":false,"d":0,"e":[{"f":null}]}', "not json {"],
+        {"a": None, "b": {"c": None, "d": 1}},
+    )
+    assert [block.text for block in result.content] == [
+        '{"b":[],"c":false,"d":0,"e":[{}]}',
+        "not json {",
+    ]
+    assert result.structured_content == {"b": {"d": 1}}
+    rows = [{"text": "x", "label": None}, {"text": "y", "label": None}]
+    result = strip(
+        [json.dumps({"status": "completed", "error": None, "data_rows": rows})],
+        {"error": None, "data_rows": rows},
     )
     assert json.loads(result.content[0].text) == {"status": "completed", "data_rows": rows}
     assert result.structured_content == {"data_rows": rows}
@@ -728,14 +726,7 @@ def test_only_a_chats_still_running_video_is_watched(
 ):
     seen = []
 
-    async def answer(
-        caller,
-        tool,
-        args,
-        ticket = None,
-        config_check = None,
-        follow_until = None,
-    ):
+    async def answer(caller, tool, args, *_rest, **_kw):
         return SimpleNamespace(content = [], structured_content = {"id": "v1", "status": status})
 
     studio(monkeypatch, RUN_PAYLOADS)
