@@ -13,7 +13,11 @@ import types
 
 import pytest
 
-from ._torchao_installed import needs_torchao
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._torchao_installed import needs_torchao
+except ImportError:
+    from _torchao_installed import needs_torchao
 
 from core.inference import diffusion as dmod
 from core.inference import diffusion_prequant as pqmod

@@ -303,6 +303,56 @@ def test_kimi_linear_moe_under_cp_follows_its_gloo_evidence(mode, expert_lora):
             caps.check(caps.Query(**kw, **extra))
 
 
+@pytest.mark.parametrize("family", ["minimax", "minimax_m2"])
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_minimax_moe_under_cp_follows_its_gloo_evidence(family, mode, expert_lora):
+    # tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream: sdpa / eager, none / HF
+    # checkpointing, cp 2 and dp 2 x cp 2. Unsloth's checkpoint, FSDP2 x cp and the router loss stay refused.
+    kw = dict(
+        trainer = "sft",
+        family = family,
+        moe = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+    )
+    for extra in ({}, {"memory": "gc"}, {"attention": "eager"}, {"dp": 2}):
+        query = caps.Query(**kw, **extra)
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_minimax_model_matches_upstream" in cell.parity, (
+            extra,
+            cell,
+        )
+        caps.check(query)
+    for extra, match in (
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+        ({"mode": "qlora"}, "4-bit experts"),
+    ):
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**{**kw, **extra}))
+
+
+def test_minimax_evidence_ids_are_real_parity_cases():
+    # Every case a MiniMax cell names exists in the parity test, so a renamed case cannot leave a cell
+    # pointing at nothing.
+    import re
+
+    from tests import test_ulysses_minimax_parity as parity
+    for cell in caps.CELLS:
+        if cell.parity and "test_minimax_model_matches_upstream[" in cell.parity:
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.MODEL_CASES), (cell.name, ids)
+
+
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):

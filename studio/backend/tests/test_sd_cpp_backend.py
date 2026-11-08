@@ -3530,26 +3530,18 @@ def test_a_k_quant_diffusion_gguf_keeps_mmq(monkeypatch, weight_types):
 
 
 @pytest.mark.parametrize(
-    "companions,expected",
+    "companions",
     [
-        ({"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))}, None),
-        (
-            {
-                "llm": ("/m/llm.gguf", frozenset({"Q8_0"})),
-                "vae": ("/m/vae.gguf", frozenset({"Q5_K"})),
-            },
-            None,
-        ),
-        ({"llm": ("/m/llm.gguf", None)}, None),
-        (
-            {"llm": ("/m/llm.gguf", frozenset({"Q8_0"})), "vae": ("/m/vae.gguf", frozenset())},
-            "1024",
-        ),
+        {"llm": ("/m/llm.gguf", frozenset({"Q4_K", "Q6_K"}))},
+        {"llm": ("/m/llm.gguf", frozenset({"Q8_0"})), "vae": ("/m/vae.gguf", frozenset({"Q5_K"}))},
+        {"llm": ("/m/llm.gguf", None)},
+        {"qwen2vl": ("/m/te.gguf", frozenset({"Q4_K"})), "llm_vision": ("/m/mm.gguf", frozenset())},
     ],
 )
-def test_a_q8_0_diffusion_gguf_with_a_k_quant_companion_keeps_mmq(
-    monkeypatch, companions, expected
+def test_a_q8_0_diffusion_gguf_takes_the_route_whatever_its_companions_hold(
+    monkeypatch, companions
 ):
+    # The route follows the diffusion GGUF: a k-quant / unreadable encoder or VAE GGUF no longer keeps it on MMQ.
     monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
     monkeypatch.setattr(bk, "_torch_cuda_capabilities", lambda ordinal: [(10, 0)])
     types_by_path = {"/m/z.gguf": frozenset({"Q8_0"})}
@@ -3565,10 +3557,10 @@ def test_a_q8_0_diffusion_gguf_with_a_k_quant_companion_keeps_mmq(
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers, device = "cuda", asset_paths = paths)
-    want = None if expected is None else {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": expected}
+    want = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
     assert servers[-1].env == want
-    assert dict(b._state.child_env) == (want or {})
-    assert "/m/llm.gguf" in seen
+    assert dict(b._state.child_env) == want
+    assert seen == ["/m/z.gguf"]
 
 
 def test_a_user_quant_cublas_value_reaches_sd_server_unchanged(monkeypatch):

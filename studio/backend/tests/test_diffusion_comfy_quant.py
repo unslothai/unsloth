@@ -739,18 +739,30 @@ def test_fp8_storage_keeps_fp32_modules_and_the_torchao_layers_apart(tmp_path, m
 
 
 @pytest.mark.parametrize(
-    "native, supported, offload, dtype, env, want",
+    "native, supported, offload, streams, dtype, env, want",
     [
-        (None, "fp8", False, "bfloat16", None, "torchao"),
-        (None, "fp8", True, "bfloat16", None, None),  # offloaded torchao fp8: dequantize, as before
-        (None, None, False, "bfloat16", None, None),  # no fp8 GEMM (older GPU, CPU, MPS)
-        ("fp8", None, False, "bfloat16", None, "native"),  # ROCm / stubbed torchao
-        (None, "fp8", False, "float16", None, None),
-        (None, "fp8", False, "bfloat16", "0", None),  # kill switch
+        (None, "fp8", False, False, "bfloat16", None, "torchao"),
+        (
+            None,
+            "fp8",
+            True,
+            False,
+            "bfloat16",
+            None,
+            None,
+        ),  # offloaded torchao fp8: dequantize, as before
+        (None, "fp8", True, True, "bfloat16", None, "torchao"),  # streamed through group offload
+        (None, None, True, True, "bfloat16", None, None),  # streamed, but no fp8 GEMM (A100)
+        (None, "fp8", True, True, "float16", None, None),
+        (None, "fp8", True, True, "bfloat16", "0", None),
+        (None, None, False, False, "bfloat16", None, None),  # no fp8 GEMM (older GPU, CPU, MPS)
+        ("fp8", None, False, False, "bfloat16", None, "native"),  # ROCm / stubbed torchao
+        (None, "fp8", False, False, "float16", None, None),
+        (None, "fp8", False, False, "bfloat16", "0", None),  # kill switch
     ],
 )
 def test_fp8_backend_follows_studios_own_fp8_rule(
-    monkeypatch, native, supported, offload, dtype, env, want
+    monkeypatch, native, supported, offload, streams, dtype, env, want
 ):
     import core.inference.diffusion_transformer_quant as tq
 
@@ -761,7 +773,45 @@ def test_fp8_backend_follows_studios_own_fp8_rule(
     else:
         monkeypatch.setenv(cq.COMFY_FP8_ENV, env)
     target = types.SimpleNamespace(device = "cuda", dtype = getattr(torch, dtype))
-    assert cq.comfy_fp8_backend(target, "z-image", offload = offload) == want
+    assert cq.comfy_fp8_backend(target, "z-image", offload = offload, torchao_offload = streams) == want
+
+
+@pytest.mark.parametrize(
+    "policy, stream, placed, want",
+    [
+        ("group", True, "same", "same"),
+        ("streaming", True, "same", "same"),
+        # whole-module offload whose quantised parts do not fit: streamed, as Studio's own fp8 is
+        ("model", True, "streaming", "streaming"),
+        ("model", True, "same", None),  # fits whole: whole-module offload keeps fp8 storage
+        (
+            "group",
+            True,
+            None,
+            None,
+        ),  # torchao or diffusers too old, or the pin does not fit host RAM
+        ("sequential", True, None, None),
+        ("group", False, "same", None),  # resident denoiser: the resident rule already applies
+        ("none", True, "same", None),
+    ],
+)
+def test_single_file_fp8_takes_torchao_only_when_offload_streams_it(
+    monkeypatch, policy, stream, placed, want
+):
+    import core.inference.diffusion as d
+
+    plan = types.SimpleNamespace(offload_policy = policy, stream_transformer = stream)
+    streamed = types.SimpleNamespace(offload_policy = "streaming", stream_transformer = True)
+    seen = []
+
+    def offload_plan(p, scheme):
+        seen.append(scheme)
+        return {"same": p, "streaming": streamed, None: None}[placed]
+
+    monkeypatch.setattr(d, "torchao_offload_plan", offload_plan)
+    got = d.DiffusionBackend._comfy_fp8_stream_plan(plan)
+    assert got is {"same": plan, "streaming": streamed, None: None}[want]
+    assert seen in ([], ["fp8"])
 
 
 # ------------------------------------------------------------------------------------- hosted prequant route
@@ -973,6 +1023,37 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
     )
     assert model.freqs.dtype == torch.bfloat16
     assert model.blocks[0].to_q.weight_q.dtype == torch.int8
+
+
+def test_a_timestep_table_built_in_fp32_stays_fp32(comfy_file):
+    """Qwen-Image-2.1's sinusoidal timestep table is computed in fp32; bf16 frequencies shift every timestep."""
+    path, _, _ = comfy_file
+
+    class QwenImage21TemporalTimesteps(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            freqs = torch.exp(-torch.arange(0, 128, dtype = torch.float32) / 128 * 9.21)
+            self.register_buffer("freqs", freqs, persistent = False)
+
+    class _Timed(_Tiny):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.time_proj = QwenImage21TemporalTimesteps()
+            self.register_buffer("rope", torch.ones(4, dtype = torch.float32), persistent = False)
+
+    model = cq.load_comfy_quant_transformer(
+        _Timed,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.bfloat16, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = "native",
+        family = "qwen-image-2.1",
+    )
+    assert model.time_proj.freqs.dtype == torch.float32
+    assert torch.equal(model.time_proj.freqs, QwenImage21TemporalTimesteps().freqs)
+    assert (
+        model.rope.dtype == torch.bfloat16
+    )  # every other __init__ buffer still follows the compute dtype
 
 
 def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):
