@@ -5,7 +5,11 @@
 
 Runs this PR's GPU metadata code (studio/backend/utils/hardware/nvidia.py: the CUDA driver API, read in a child
 process) against torch.cuda on a real NVIDIA machine, under several CUDA_VISIBLE_DEVICES masks and device
-orders, and checks that the checking process itself never loads the CUDA driver. Works on Windows, WSL and Linux
+orders, and checks that the checking process itself never loads the CUDA driver. The verdict covers what Studio
+uses: the device list after reconciling with torch's device count (cuda_device_info_or_torch), and the
+nvidia-smi row mapping where Studio uses it (its length matches the visible devices). A raw driver answer
+that differs from torch is printed as a NOTE (on Windows the driver treats an empty CUDA_VISIBLE_DEVICES as
+unset, while torch reads it as "no GPU"). Works on Windows, WSL and Linux
 with any Python that has a CUDA build of torch (for example Unsloth Desktop's).
 
     python pr17120_gpu_metadata_check.py [path/to/nvidia.py]
@@ -36,6 +40,7 @@ KEEP_DEF = {
     "get_cuda_device_info",
     "_query_cuda_device_info",
     "get_cuda_ordinal_smi_rows",
+    "cuda_device_info_or_torch",
 }
 
 TORCH_CHILD = r"""
@@ -197,26 +202,62 @@ def main() -> int:
                     if any(d[2] for d in torch_devs)
                     else [rows_by_bus.get(norm(d[3])) for d in torch_devs]
                 )
+            # What Studio uses: the driver answer reconciled with torch's own count (torch's real answers,
+            # from the child, so this process never loads torch or the driver).
+            fake_torch = None
+            if torch_devs is not None:
+                fake_torch = types.SimpleNamespace(
+                    cuda = types.SimpleNamespace(
+                        device_count = lambda n = len(torch_devs): n,
+                        get_device_properties = lambda i, d = torch_devs: types.SimpleNamespace(
+                            name = d[i][0], total_memory = d[i][1], is_integrated = d[i][2]
+                        ),
+                    )
+                )
+            studio = None if fake_torch is None else ns["cuda_device_info_or_torch"](fake_torch)
+            studio_ok = (
+                want is not None
+                and studio is not None
+                and len(studio) == len(want)
+                and all(
+                    s is not None and tuple(s[1:]) == w[1:] and (not s[0] or norm(s[0]) == w[0])
+                    for s, w in zip(studio, want)
+                )
+            )
+            # Studio joins rows only when their count equals the visible devices; otherwise it keeps torch.
+            rows_used = rows is not None and torch_devs is not None and len(rows) == len(torch_devs)
             case = {
                 "order": order,
                 "mask": mask,
-                "info_matches_torch": got == want,
+                "studio_matches_torch": studio_ok,
+                "raw_driver_matches_torch": got == want,
                 "rows": rows,
                 "want_rows": want_rows,
-                "rows_match": rows == want_rows,
+                "rows_used_by_studio": rows_used,
+                "rows_match": rows == want_rows if rows_used else None,
                 "cached": again == info,
                 "query_ms": round(query_ms, 1),
                 "cached_ms": round(cached_ms, 3),
                 "n": None if info is None else len(info),
             }
             cases.append(case)
-            ok = case["info_matches_torch"] and case["rows_match"] and case["cached"]
+            ok = studio_ok and case["rows_match"] is not False and case["cached"]
+            note = (
+                ""
+                if case["raw_driver_matches_torch"]
+                else (
+                    f"  NOTE raw driver sees {case['n']}, torch {len(want) if want is not None else '?'}; Studio follows torch"
+                )
+            )
             print(
                 f"  order={str(order):13s} mask={str(mask):5s} devices={str(case['n']):4s} "
-                f"{'ok' if ok else 'MISMATCH'}  query {case['query_ms']} ms, cached {case['cached_ms']} ms"
+                f"{'ok' if ok else 'MISMATCH'}  query {case['query_ms']} ms, cached {case['cached_ms']} ms{note}"
             )
             if not ok:
-                failures.append(case | {"got": got, "want": want, "torch_err": tc.stderr[-500:]})
+                failures.append(
+                    case
+                    | {"got": got, "want": want, "studio": studio, "torch_err": tc.stderr[-500:]}
+                )
     parent_clean = not driver_loaded_here() and "torch" not in sys.modules
     res = {
         "host": platform.platform(),
@@ -226,6 +267,11 @@ def main() -> int:
         "gpus": gpus,
         "cases": len(cases),
         "failures": failures,
+        "raw_driver_notes": [
+            {"order": c["order"], "mask": c["mask"], "raw_devices": c["n"]}
+            for c in cases
+            if not c["raw_driver_matches_torch"]
+        ],
         "parent_never_loaded_the_driver": parent_clean,
     }
     print("RESULT " + json.dumps(res))
