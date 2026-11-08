@@ -747,7 +747,6 @@ def _is_compiling() -> bool:
 
 
 def _slot_version(value: Any) -> Any:
-    # None when untracked (inference tensors): the caller then takes the stock downcast.
     try:
         return value._version
     except Exception:  # noqa: BLE001

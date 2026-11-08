@@ -111,9 +111,7 @@ def test_forward_keeps_the_fp8_tensors_and_matches_the_round_trip(monkeypatch):
         )
     stock_after = _storage(stock)
     for name in before:
-        assert torch.equal(
-            stock_after[name][2], after[name][2]
-        )  # diffusers' round trip lands on the same bytes
+        assert torch.equal(stock_after[name][2], after[name][2])
 
 
 def test_install_is_idempotent_and_counts_each_hook():
@@ -143,9 +141,7 @@ def test_a_slot_replaced_during_the_forward_takes_the_stock_downcast():
     stored = lin.weight.data_ptr()
     with torch.inference_mode():
         _, casts = _fp8_casts(lambda: enc(torch.randint(0, 50, (1, 5))))
-    assert (
-        lin.weight.dtype == torch.float8_e4m3fn and lin.weight.data_ptr() != stored
-    )  # the stock downcast
+    assert lin.weight.dtype == torch.float8_e4m3fn and lin.weight.data_ptr() != stored
     assert casts > 0
 
 
@@ -176,9 +172,7 @@ def test_an_in_place_write_during_the_forward_is_kept(mode):
     with ctx:
         enc(torch.randint(0, 50, (1, 5)))
     assert lin.weight.dtype == torch.float8_e4m3fn
-    assert (
-        float((lin.weight.float() - before).abs().max()) >= 0.5
-    )  # the stock downcast kept the write
+    assert float((lin.weight.float() - before).abs().max()) >= 0.5
 
 
 def _compiled_breaks(enc, xs):
