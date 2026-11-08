@@ -731,7 +731,11 @@ def _rss_anon_bytes():
         ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
     except OSError:
         pass
-    with open("/proc/self/status") as status:
+    try:
+        status = open("/proc/self/status")
+    except OSError:  # no procfs (Windows, macOS): callers skip on None
+        return None
+    with status:
         for line in status:
             if line.startswith("RssAnon:"):
                 return int(line.split()[1]) * 1024
