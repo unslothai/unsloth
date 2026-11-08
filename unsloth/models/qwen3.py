@@ -72,7 +72,7 @@ except:
 
 
 @applies_prefix_seg_info
-@context_parallel_attention
+@context_parallel_attention(rl = True)
 def Qwen3Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,

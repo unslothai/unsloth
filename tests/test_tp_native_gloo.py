@@ -665,6 +665,66 @@ def _case_tp_fsdp2_trainable_norms(rank, world, tmp):
     }
 
 
+def _case_tp_fsdp2_writer(
+    rank,
+    world,
+    tmp,
+    head_only = False,
+    compiled = False,
+):
+    """dp 2 x tp 2: the collective saves name one writer for the model, not one per tp group."""
+    import importlib
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    native = _load_native()
+    save = importlib.import_module("unsloth.models.fsdp2_save")
+    mesh = init_device_mesh("cpu", (2, world // 2), mesh_dim_names = ("dp", "tp"))
+    model = build(*ARCHS["llama"], **({"target_modules": ["lm_head"]} if head_only else {}))
+    expected = {name: p.detach().clone() for name, p in model.named_parameters()}
+    tpn.apply_tensor_parallel(model, mesh["tp"])
+    if not native._supports_ignored_params(native._fsdp_api()[2]):
+        return {"unsupported": "torch 2.7+"}
+    native.shard_model(model, native.FSDP2Config(param_dtype = torch.float32, mesh = mesh["dp"]))
+    unwrapped_model = model
+    if compiled:
+        model = torch.compile(model, backend = "eager")
+    res = {"writer_rank": save.mesh_writer_rank(model)}
+    with save.fsdp2_gathered(model) as writer:
+        res["writer"] = writer
+        if writer:
+            for name, param in unwrapped_model.named_parameters():
+                torch.testing.assert_close(param, expected[name])
+    state = native.native_full_state_dict(model)
+    res["full_keys"] = len(state)
+    if rank == 0:
+        for name, param in expected.items():
+            torch.testing.assert_close(state[name], param)
+    return res
+
+
+def _case_tp_fsdp2_writer_pipeline_slice(rank, world, tmp):
+    import importlib
+    from torch.distributed.device_mesh import init_device_mesh
+    from test_fsdp2_native_units import _load_native
+
+    from torch.distributed.tensor.parallel import ColwiseParallel, parallelize_module
+
+    native = _load_native()
+    save = importlib.import_module("unsloth.models.fsdp2_save")
+    mesh = init_device_mesh("cpu", (2, 1, 2), mesh_dim_names = ("pp", "dp", "tp"))
+    # One pipeline stage per pp rank: a tp layer sharded by FSDP2 over the stage's dp slice.
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    model[0].weight.requires_grad_(False)
+    parallelize_module(model[0], mesh["tp"], ColwiseParallel())
+    parallelize_module(model[1], mesh["tp"], ColwiseParallel())
+    fully_shard = native._fsdp_api()[2]
+    if not native._supports_ignored_params(fully_shard):
+        return {"unsupported": "torch 2.7+"}
+    fully_shard(model, mesh = mesh["dp"], ignored_params = set(model[1].parameters()))
+    return {"writer_rank": save.mesh_writer_rank(model)}
+
+
 class _Rows(torch.utils.data.Dataset):
     def __init__(self, ids):
         self.ids = ids
@@ -981,6 +1041,8 @@ CASES = {
     "sharded_lora_init": _case_sharded_lora_init,
     "tp_fsdp2": _case_tp_fsdp2,
     "tp_fsdp2_trainable_norms": _case_tp_fsdp2_trainable_norms,
+    "tp_fsdp2_one_writer": _case_tp_fsdp2_writer,
+    "tp_fsdp2_writer_pipeline_slice": _case_tp_fsdp2_writer_pipeline_slice,
     "trainer": _case_trainer,
     "sampler": _case_sampler,
     "sampler_resume": _case_sampler_resume,
@@ -1369,6 +1431,27 @@ def test_tp2_x_fsdp2_dp2_matches_one_process(arch, fit_layout, lora_kwargs):
 def test_tp_x_fsdp2_refuses_trainable_head_norms():
     for res in _spawn("tp_fsdp2_trainable_norms", 4):
         assert res["error"] and "trainable per-head norms" in res["error"], res
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("head_only", [False, True])
+def test_tp2_x_fsdp2_dp2_saves_from_one_writer(head_only, compiled):
+    """A frozen tp weight's mesh is its own tp group: the writer must not follow it (two writers,
+    two concurrent writes of the same optimizer.pt / scheduler.pt and two Hub pushes)."""
+    skip_unsupported("llama")
+    results = _spawn("tp_fsdp2_one_writer", 4, head_only = head_only, compiled = compiled)
+    if "unsupported" in results[0]:
+        pytest.skip("torch < 2.7: tensor parallel x FSDP2 is refused")
+    assert [r["writer_rank"] for r in results] == [0, 0, 0, 0], results
+    assert [r["writer"] for r in results] == [True, False, False, False], results
+    assert [r["full_keys"] > 0 for r in results] == [True, False, False, False], results
+
+
+def test_tp_fsdp2_writer_keeps_pipeline_stages_separate():
+    results = _spawn("tp_fsdp2_writer_pipeline_slice", 4)
+    if "unsupported" in results[0]:
+        pytest.skip("torch < 2.7: no fully_shard(ignored_params)")
+    assert [r["writer_rank"] for r in results] == [0, 0, 2, 2], results
 
 
 def test_trainer_splits_mixed_optimizer_groups_for_tp_only():
