@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Triton kernel for ``diffusion_fp8_dequant``; imported only where Triton is. Module level: a compiled kernel
-resolves ``tl`` through its globals, not a closure."""
+"""Triton kernel for ``diffusion_fp8_dequant`` (module level: a compiled kernel resolves ``tl`` via globals)."""
 
 import triton
 import triton.language as tl
@@ -66,11 +65,9 @@ def dequant_rows_kernel(
         mag = tl.where(e == 0, sub, normal)
         mag = tl.where(special, special_bits, mag)
         wide = (mag | ((b & 0x80) << 24)).to(tl.float32, bitcast = True)
-    # One fp32 multiply, one rounding to the output dtype.
     prod = wide * s
     if BF16:
-        # Round to nearest even by integer ops (the interpreter truncates a bf16 cast); NaN is the bits torch's
-        # own cast gives on this device (_bf16_nan).
+        # nearest even by integer ops (the interpreter truncates); NaN as torch's cast on this device
         bits = prod.to(tl.int32, bitcast = True)
         rne = (bits + 0x7FFF + ((bits >> 16) & 1)) >> 16
         out = tl.where((bits & 0x7FFFFFFF) > 0x7F800000, BF16_NAN, rne).to(tl.int16)

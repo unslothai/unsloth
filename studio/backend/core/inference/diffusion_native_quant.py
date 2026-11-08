@@ -523,7 +523,6 @@ def native_linear_class():
         def _stored_weight(self, dtype: Any) -> Any:
             scale = self.weight_scale.view(torch.float32)
             if not torch.compiler.is_compiling() and fused_dequant_enabled():
-                # Eager: one kernel / bounded row chunks, no full float32 temporaries.
                 return dequant_rows(
                     self.weight_q,
                     scale,
