@@ -83,7 +83,6 @@ def test_flux3_manual_cast_is_bit_identical_to_the_float32_load():
     stored = [m for m in linears if m.weight.dtype is torch.bfloat16]
     assert stored and len(stored) >= len(linears) - 1
     assert all(type(m).__name__ == "ManualCastLinear" for m in stored)
-    # nothing half is left outside the manual-cast Linears
     for m in cast_model.modules():
         if type(m).__name__ == "ManualCastLinear":
             continue
@@ -160,7 +159,6 @@ def test_manual_cast_leaves_subclassed_linears_alone():
         torch.bfloat16
     )
     mc.apply_manual_cast_(m, torch.float32)
-    # the first float parameter's owner converts whole so ``dtype`` lookups answer float32
     assert type(m[0]) is torch.nn.Linear and m[0].weight.dtype is torch.float32
     assert type(m[1]) is Quantised and m[1].weight.dtype is torch.float32
     assert type(m[2]).__name__ == "ManualCastLinear" and m[2].weight.dtype is torch.bfloat16
@@ -224,7 +222,7 @@ def test_manual_cast_load_reads_the_stored_dtype(tmp_path, dtypes, stored):
         assert type(module[1]).__name__ == "ManualCastLinear"
         assert module[1].weight.dtype is torch.bfloat16
     else:
-        # anything not exactly bf16 on disk keeps today's widened load (bf16 storage would round it)
+        # not exactly bf16 on disk: widened load (bf16 would round it)
         assert seen == [torch.float32]
         assert mc.manual_cast_info(module) is None
 
@@ -260,7 +258,7 @@ def test_every_flux3_load_site_passes_the_storage_dtype():
     for call in calls:
         kw = {k.arg: ast.unparse(k.value) for k in call.keywords}
         assert kw.get("storage_dtype", "").startswith("flux3_storage_dtype(target"), kw
-    # the dense load keeps a quantised transformer widened: its quantiser rebuilds the Linears it reads
+    # a quantised transformer stays widened: its quantiser rebuilds the Linears
     gated = [c for c in calls if any(k.arg == "transformer_storage" for k in c.keywords)]
     assert len(gated) == 1
     text = ast.unparse(next(k.value for k in gated[0].keywords if k.arg == "transformer_storage"))

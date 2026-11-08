@@ -583,9 +583,8 @@ class _Flux3KleinPipelineMixin:
 
 
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 when a CUDA load computes FLUX.3 in float32 (fp16-only cards, where float16 overflows): the bf16 weights
-    are then kept as stored and upcast per op (diffusion_manual_cast) instead of being widened to float32 on the host,
-    which doubles the load (about 40 GB for klein) and the bytes every offloaded step streams. None otherwise."""
+    """bf16 when a CUDA load computes FLUX.3 in float32: keep bf16 weights and upcast per op instead of doubling
+    the load (about 40 GB for klein). None otherwise."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -600,8 +599,7 @@ def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
 def _component_files(
     repo_id: str, subfolder: str, hf_token: Optional[str], local_files_only: bool
 ) -> list[Path]:
-    """The safetensors files from_pretrained reads for ``subfolder`` (fetched here when missing, the same files the
-    load would fetch). Empty when they cannot be resolved."""
+    """Safetensors files from_pretrained reads for ``subfolder``; empty when unresolvable."""
     from .diffusion_small_host import _weight_files
 
     root = Path(str(repo_id)).expanduser()
@@ -639,8 +637,7 @@ def _stored_as(
     hf_token: Optional[str],
     local_files_only: bool,
 ) -> bool:
-    """True when every float tensor of ``subfolder`` is stored as ``storage_dtype`` (read from the safetensors
-    headers), so loading at that dtype is lossless."""
+    """True when every float tensor of ``subfolder`` is stored as ``storage_dtype`` (lossless load)."""
     from .diffusion_small_host import _safetensors_bytes_by_dtype
 
     want = str(storage_dtype).replace("torch.", "")
@@ -671,8 +668,7 @@ def _manual_cast_load(
     hf_token: Optional[str],
     local_files_only: bool,
 ) -> Any:
-    """``loader(load_dtype)`` at ``storage_dtype`` with per-op upcasting to ``dtype`` when the stored weights are
-    exactly ``storage_dtype``; else the widened load at ``dtype`` as before."""
+    """Load at ``storage_dtype`` with per-op upcast to ``dtype`` if stored exactly so; else the widened load."""
     if storage_dtype is None or not _stored_as(
         repo_id, name, storage_dtype, hf_token, local_files_only
     ):

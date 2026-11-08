@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Manual cast: Linear / Embedding weights stay at their stored half dtype and upcast to the compute dtype at call
-time, so a float32 load holds half-size weights in host RAM, in VRAM and on the offload path. Upcasting bf16 or fp16
-to float32 is exact, so outputs match a float32 load. UNSLOTH_STUDIO_MANUAL_CAST=0 disables."""
+"""Linear / Embedding weights stay at stored half dtype and upcast exactly per call. UNSLOTH_STUDIO_MANUAL_CAST=0
+disables."""
 
 from __future__ import annotations
 
@@ -26,8 +25,6 @@ def _classes() -> tuple[Any, Any]:
         import torch.nn.functional as F
 
         class ManualCastLinear(torch.nn.Linear):
-            """``nn.Linear`` whose weight (and bias) upcast to ``_unsloth_compute_dtype`` per call."""
-
             def forward(self, x):
                 dtype = self._unsloth_compute_dtype
                 weight = self.weight if self.weight.dtype == dtype else self.weight.to(dtype)
@@ -37,8 +34,6 @@ def _classes() -> tuple[Any, Any]:
                 return F.linear(x if x.dtype == dtype else x.to(dtype), weight, bias)
 
         class ManualCastEmbedding(torch.nn.Embedding):
-            """``nn.Embedding`` gathering stored rows, then upcasting them (exact, and only the gathered rows)."""
-
             def forward(self, ids):
                 out = F.embedding(
                     ids,
@@ -64,9 +59,7 @@ def _keep_fp32_patterns(module: Any) -> tuple[str, ...]:
 
 
 def _first_float_owner(module: Any, keep: tuple[str, ...]) -> Optional[str]:
-    """Owner of the parameter ``module.dtype`` reads (diffusers and transformers: the first floating parameter outside
-    the fp32-kept modules). Converting it whole keeps ``module.dtype`` on the compute dtype, which the pipelines use
-    to cast latents and prompt embeddings."""
+    """Owner of the param ``module.dtype`` reads; converted whole so pipelines cast latents to the compute dtype."""
     for name, param in module.named_parameters():
         if keep and any(k in name for k in keep):
             continue
@@ -76,9 +69,8 @@ def _first_float_owner(module: Any, keep: tuple[str, ...]) -> Optional[str]:
 
 
 def apply_manual_cast_(module: Any, compute_dtype: Any) -> int:
-    """Swap every plain ``nn.Linear`` / ``nn.Embedding`` stored in bf16 / fp16 for its manual-cast twin (weights left
-    as stored) and convert every other half tensor to ``compute_dtype``. Returns the bytes left at storage dtype.
-    Subclasses (quantised, GGUF, LoRA-wrapped linears) are left alone: they run their own dequant / cast."""
+    """Swap plain half Linear / Embedding for manual-cast twins, convert other half tensors; returns bytes kept.
+    Subclasses (quantised, GGUF, LoRA) are left alone: they do their own cast."""
     import torch
 
     linear_cls, embedding_cls = _classes()
