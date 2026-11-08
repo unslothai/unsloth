@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 prompt encoding without the text encoder's K/V cache (UNSLOTH_QWEN21_TE_NO_KV=0 disables).
-
-The pipeline's ``_get_qwen_prompt_embeds`` runs one Qwen3-VL forward for hidden states and never passes ``use_cache``,
-so the config default builds a DynamicCache of every decoder layer's K/V that is read by nobody. Only that call is
-changed; any other use of the same encoder keeps its own ``use_cache``."""
+"""Qwen-Image-2.1 prompt encoding without the text encoder's K/V cache (UNSLOTH_QWEN21_TE_NO_KV=0 disables): the
+pipeline's one hidden-state forward never passes ``use_cache``, so the config default built a cache nobody reads."""
 
 from __future__ import annotations
 
@@ -45,7 +42,7 @@ def skip_text_encoder_kv_cache(pipe: Any, logger: Any = None) -> bool:
 
     @functools.wraps(original)
     def _get_qwen_prompt_embeds(*args: Any, **kwargs: Any) -> Any:
-        # The encoder is read at call time: a later load step may swap it for a quantised copy.
+        # read at call time: a later load step may swap in a quantised copy
         current = getattr(pipe, "text_encoder", None)
         if not hasattr(current, "register_forward_pre_hook"):
             return original(*args, **kwargs)
