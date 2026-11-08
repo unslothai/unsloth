@@ -38273,6 +38273,11 @@ def _embedding_payload(vector, encoding_format: str):
         import base64
         import numpy as np
         return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    # float16/32/64 numpy rows only: longdouble tolist() keeps numpy scalars.
+    if getattr(vector, "ndim", None) == 1 and getattr(
+        getattr(vector, "dtype", None), "char", None
+    ) in ("e", "f", "d"):
+        return vector.tolist()
     return [float(x) for x in vector]
 
 
@@ -38442,7 +38447,7 @@ async def _studio_embeddings(
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
         inputs = texts
-        token_counts = [count(text) for text in inputs]
+        token_counts = rag_embeddings._many(count, inputs)
         if limit and max(token_counts) > limit:
             if not _embeddings_truncate(body):
                 raise HTTPException(
@@ -38453,7 +38458,7 @@ async def _studio_embeddings(
             logger.warning(
                 "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
-            token_counts = [count(text) for text in inputs]
+            token_counts = rag_embeddings._many(count, inputs)
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."

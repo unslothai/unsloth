@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import copy
+import json
 import os
 import sys
 import threading
@@ -1621,3 +1622,39 @@ def test_resident_embedding_gguf_cancel_during_the_retry_is_499(studio_embedder)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(request, "tester"))
     assert exc.value.status_code == 499
+
+
+def test_batch_counts_tokens_in_one_call_with_the_same_usage(studio_embedder):
+    calls = {"single": 0, "many": 0}
+
+    def _counter(model_name = None):
+        def _count(text):
+            calls["single"] += 1
+            return len(text)
+
+        def _many(texts):
+            calls["many"] += 1
+            return [len(text) for text in texts]
+
+        _count.many = _many
+        return _count
+
+    studio_embedder.setattr(rag_embeddings, "token_counter", _counter)
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    texts = [f"text {i} " * (i % 7 + 1) for i in range(64)]
+    payload = _call({"input": texts})
+    assert calls == {"single": 0, "many": 1}
+    assert payload["usage"]["prompt_tokens"] == sum(len(text) for text in texts)
+    assert [row["embedding"] for row in payload["data"]] == [[1.0, 0.0]] * 64
+
+
+def test_float_rows_serialize_like_the_element_loop():
+    rows = np.random.default_rng(0).standard_normal((4, 33)).astype(np.float32)
+    rows[0, :3] = [np.nan, np.inf, -0.0]
+    for row in rows:
+        fast = inference_route._embedding_payload(row, "float")
+        assert json.dumps(fast) == json.dumps([float(x) for x in row])
+        assert all(type(x) is float for x in fast)
+    assert inference_route._embedding_payload([0.5, 1], "float") == [0.5, 1.0]
