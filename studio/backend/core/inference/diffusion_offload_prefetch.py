@@ -1121,6 +1121,31 @@ def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
     return getattr(module, PREFETCHER_ATTR, None)
 
 
+def match_skipped_order(module: Any, skipped: list, *, skipping: bool) -> None:
+    """Call after ``begin``: drop (``skipping``) or restore the groups wholly inside ``skipped`` in the order."""
+    pf = module_prefetcher(module)
+    if pf is None or not pf.active or pf.seen or pf.pos or not pf.order:
+        return
+    inside = {id(m) for block in skipped for m in block.modules()}
+    ids = {
+        gid
+        for gid, group in pf.by_id.items()
+        if getattr(group, "modules", None) and all(id(m) in inside for m in group.modules)
+    }
+    if not ids:
+        return
+    kept = [gid for gid in pf.order if gid not in ids]
+    if skipping:
+        if len(kept) != len(pf.order):
+            pf.__dict__["_unsloth_full_order"] = list(pf.order)
+            pf.order = kept
+    else:
+        full = pf.__dict__.get("_unsloth_full_order")
+        if full and len(kept) == len(pf.order) and [g for g in full if g not in ids] == kept:
+            pf.order = list(full)
+    pf.on_order = bool(pf.order)
+
+
 def _pinned_done(pinner: Any, group: Any) -> bool:
     event = getattr(pinner, "_done", {}).get(id(group))
     return event is None or event.is_set()

@@ -662,9 +662,8 @@ def load_flux3_pipeline(
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
     if reason is not None:
         raise ValueError(reason)
-    if blocks == FLUX3_BASE_BLOCKS:
-        # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
-        cond_blocks.prepare(transformer)
+    # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
+    cond_blocks.prepare(transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(

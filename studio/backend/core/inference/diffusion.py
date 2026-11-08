@@ -322,6 +322,7 @@ from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
+from .diffusion_gguf_lowbit import install_lowbit_iq
 from .diffusion_attention import (
     apply_attention_backend,
     attention_status_reason,
@@ -9934,6 +9935,8 @@ class DiffusionBackend:
                             # Before the prefix shim, which cannot wrap an unregistered class.
                             _register_unregistered_single_file_classes(logger)
                             if kind == "gguf":
+                                # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
+                                install_lowbit_iq(logger)
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                                     compute_dtype = dtype
@@ -9968,6 +9971,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        lora = _has_active_lora(loras),
                                     ),
                                     fp8_backend = comfy_fp8_backend(
                                         target,
@@ -10755,8 +10759,8 @@ class DiffusionBackend:
 
                     # Registered patches (diffusion_autoopt.patches), in their original order: the shared and per-arch
                     # compile-safe fusions on a speed tier (uninstalled on `off`, tracked by eager_patched), then the
-                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 fused RoPE, ROCm FLUX.1 / FLUX.2
-                    # one-kernel RoPE + AdaLN).
+                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 / FLUX.3 fused RoPE, ROCm FLUX.1 /
+                    # FLUX.2 one-kernel RoPE + AdaLN).
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD_EAGER,
                         pipe = pipe,
@@ -11659,7 +11663,8 @@ class DiffusionBackend:
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
+                keep_int8 = comfy_int8_backend(target, name, base, offload = offload, lora = lora)
+                is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 target = target,

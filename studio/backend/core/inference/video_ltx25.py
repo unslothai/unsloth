@@ -361,6 +361,9 @@ def load_ltx25_transformer(
 
     from .video_ltx2 import _ltx23_pre_convert, ltx23_is_dit_key
 
+    if is_gguf:
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -587,6 +590,10 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
     """The tensors of ``path`` whose names pass ``keep``, read selectively (GGUF files are read whole)."""
     if not str(path).lower().endswith(".safetensors"):
         from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
@@ -1303,8 +1310,10 @@ class Ltx25TextEncoderClient:
         clone per call is ~40 ms on a B200 host."""
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
-            for cached_key, value in self._cache:
+            for i, (cached_key, value) in enumerate(self._cache):
                 if cached_key == key:
+                    # LRU: a negative prompt hit every render is never the one evicted.
+                    self._cache.append(self._cache.pop(i))
                     return (value[0].clone(), value[1].clone()) if copy else value
             if not self.alive():
                 logger.warning("video.ltx25_te: encoder worker not running; restarting it")

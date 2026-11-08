@@ -276,3 +276,86 @@ def test_small_host_w8a8_kill_switch(monkeypatch):
 
 def test_the_kill_switch_name_matches_the_module():
     assert tq.FP16_CARD_INT8_ENV == KILL_SWITCH
+
+
+# Explicit int8 on Turing (W8A8) vs #17079's checkpoint int8 storage under offload (weight-only): same fp16 target.
+STORAGE_SWITCH = "UNSLOTH_DIFFUSION_INT8_STORAGE"
+ACT_SWITCH = "UNSLOTH_NATIVE_INT8_ACT"
+
+
+def _quantised_layers(dtype, target):
+    model = _Toy().to(dtype)
+    got = tq.quantize_transformer(
+        types.SimpleNamespace(transformer = model), target, mode = "int8", min_features = 64
+    )
+    assert got == "int8"
+    return [m for m in model.modules() if nq.is_native_linear(m)]
+
+
+def test_explicit_int8_on_a_t4_fp16_target_builds_w8a8_although_it_is_a_storage_host(
+    nvidia, monkeypatch
+):
+    _cap(monkeypatch, (7, 5))
+    monkeypatch.delenv(STORAGE_SWITCH, raising = False)
+    monkeypatch.delenv(ACT_SWITCH, raising = False)
+    target = _target(torch.float16)
+    assert tq.int8_storage_host(target)
+    layers = _quantised_layers(torch.float16, target)
+    assert layers and all(m.act_int8 for m in layers)
+    # A caller that passes the storage answer (native_int8_act) still gets the W8A8 build.
+    model = _Toy().to(torch.float16)
+    tq.quantize_transformer(
+        types.SimpleNamespace(transformer = model),
+        target,
+        mode = "int8",
+        min_features = 64,
+        act_int8 = tq.native_int8_act(target),
+    )
+    assert all(m.act_int8 for m in model.modules() if nq.is_native_linear(m))
+
+
+def test_explicit_int8_w8a8_honours_the_native_act_kill_switch(nvidia, monkeypatch):
+    _cap(monkeypatch, (7, 5))
+    monkeypatch.setenv(ACT_SWITCH, "0")
+    layers = _quantised_layers(torch.float16, _target(torch.float16))
+    assert layers and not any(m.act_int8 for m in layers)
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_the_storage_scheme_on_a_t4_keeps_its_merged_answers(nvidia, monkeypatch, offload):
+    import core.inference.diffusion_comfy_quant as cq
+
+    _cap(monkeypatch, (7, 5))
+    monkeypatch.delenv(STORAGE_SWITCH, raising = False)
+    target = _target(torch.float16)
+    # Storage stays weight-only: native_int8_act is False whatever the Turing switch says.
+    for raw in (None, "0"):
+        if raw is None:
+            monkeypatch.delenv(KILL_SWITCH, raising = False)
+        else:
+            monkeypatch.setenv(KILL_SWITCH, raw)
+        assert tq.native_int8_act(target) is False
+        assert tq.int8_storage_scheme(target, offload = offload) == ("int8" if offload else None)
+        assert cq.comfy_int8_backend(target, "qwen-image-2.1", offload = offload) == (
+            "native" if offload else None
+        )
+
+
+@pytest.mark.parametrize("cap,device", [((7, 0), "cuda"), ((6, 1), "cuda"), (None, "xpu")])
+def test_sm70_and_xpu_keep_storage_and_never_get_w8a8(nvidia, monkeypatch, cap, device):
+    _cap(monkeypatch, cap)
+    target = _target(torch.float16, device = device)
+    assert tq.int8_storage_host(target)
+    assert not tq.fp16_card_int8_act(target)
+    assert tq.fp16_card_int8_scheme(target, "int8") is None
+    assert tq.native_int8_act(target) is False
+
+
+def test_storage_kill_switch_does_not_touch_the_turing_w8a8_build(nvidia, monkeypatch):
+    _cap(monkeypatch, (7, 5))
+    monkeypatch.setenv(STORAGE_SWITCH, "0")
+    target = _target(torch.float16)
+    assert not tq.int8_storage_host(target)
+    assert tq.int8_storage_scheme(target, offload = True) is None
+    layers = _quantised_layers(torch.float16, target)
+    assert layers and all(m.act_int8 for m in layers)

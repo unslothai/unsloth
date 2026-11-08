@@ -1020,6 +1020,10 @@ class CfgBatchRouter:
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         """How the second call's arguments relate to the first's: the latent, a first-branch tensor (same object, or a
         small per-call scalar recomputed with equal bytes), or a constant of the second branch."""
+        if getattr(kwargs.get("unsloth_cond"), "pending", False):
+            # FLUX.3 conditioning still computing (diffusion_cond_blocks): later steps pass its states instead
+            self.template = None
+            return
         mg = _mg()
         torch = _torch()
         b0_leaves = dict(mg._leaves(self.b0)) if self.b0 is not None else {}

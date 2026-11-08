@@ -304,7 +304,27 @@ def _w8a8_rows_into(
     out.copy_(_w8a8_rows(x2, rot_h, weight_q, weight_scale, bias))
 
 
-_FUSED_STATE: dict = {"fn": None, "failed": None}
+# "devices": per card, None once it may run the compiled linear, else why not (its arch, or its compile failed).
+_FUSED_STATE: dict = {"fn": None, "failed": None, "devices": {}}
+_UNSEEN = object()
+
+
+def _device_key(device: Any = None) -> Any:
+    """Indexed ``torch.device``; None or an unindexed cuda = the current card (the CPU without one)."""
+    import torch
+
+    if isinstance(device, int):
+        return torch.device("cuda", device)
+    if device is not None:
+        device = torch.device(device)
+        if device.type != "cuda" or device.index is not None:
+            return device
+    try:
+        if torch.cuda.is_available():
+            return torch.device("cuda", int(torch.cuda.current_device()))
+    except Exception:  # noqa: BLE001
+        pass
+    return torch.device("cpu")
 
 
 # ROCm archs where the compiled W8A8 linear was measured: RDNA3 / RDNA3.5 / RDNA4 (gfx11xx / gfx12xx). On gfx1151 it
@@ -312,18 +332,18 @@ _FUSED_STATE: dict = {"fn": None, "failed": None}
 _ROCM_FUSED_W8A8_ARCH = re.compile(r"^gfx1[12][0-9a-f]{2}$")
 
 
-def _rocm_fused_w8a8_refusal(torch: Any) -> Optional[str]:
-    """None when the compiled linear may run on this ROCm device, else why not (other ROCm archs: unmeasured)."""
+def _rocm_fused_w8a8_refusal(torch: Any, ordinal: Optional[int] = None) -> Optional[str]:
+    """None when the compiled linear may run on ROCm card ``ordinal`` (current when None), else why not."""
     from .rocm_bf16 import _device_gfx_arch
 
-    arch = _device_gfx_arch(torch, None)
+    arch = _device_gfx_arch(torch, ordinal)
     if _ROCM_FUSED_W8A8_ARCH.match(arch):
         return None
     return f"ROCm {arch or 'unknown arch'}"
 
 
-def rocm_rdna_w8a8_ready() -> bool:
-    """ROCm RDNA device where the compiled W8A8 linear can run (UNSLOTH_NATIVE_INT8_FUSED not off)."""
+def rocm_rdna_w8a8_ready(ordinal: Optional[int] = None) -> bool:
+    """ROCm RDNA card ``ordinal`` (current when None) where the compiled W8A8 linear can run and has not failed."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return False
     try:
@@ -333,7 +353,10 @@ def rocm_rdna_w8a8_ready() -> bool:
 
         if not is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
-        if _rocm_fused_w8a8_refusal(torch) is not None:
+        key = _device_key(ordinal)
+        if _FUSED_STATE.get("devices", {}).get(key) is not None:
+            return False
+        if _rocm_fused_w8a8_refusal(torch, key.index) is not None:
             return False
         from .diffusion_speed import torch_compile_runtime_available
 
@@ -342,14 +365,21 @@ def rocm_rdna_w8a8_ready() -> bool:
         return False
 
 
-def _fused_w8a8() -> Optional[Callable[..., Any]]:
-    """Compiled ``_w8a8_rows``, or None if disabled, no inductor runtime, a ROCm arch other than RDNA3 / RDNA4, or
-    already failed."""
+def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
+    """Compiled ``_w8a8_rows`` for an input on ``device`` (current card when None), or None if disabled, no inductor
+    runtime, a ROCm arch other than RDNA3 / RDNA4, or already failed on that card."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return None
+    devices = _FUSED_STATE.get("devices")
+    if devices is None:
+        devices = _FUSED_STATE.setdefault("devices", {})
+    key = device if getattr(device, "index", None) is not None else _device_key(device)
+    seen = devices.get(key, _UNSEEN)
     fn = _FUSED_STATE["fn"]
-    if fn is not None:
+    if seen is None and fn is not None:
         return fn
+    if seen is not _UNSEEN and seen is not None:
+        return None
     import torch
 
     from .rocm_bf16 import is_rocm_torch
@@ -365,16 +395,24 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
     except Exception:  # noqa: BLE001
         import logging
         log = logging.getLogger(__name__)
-    if not runtime:
+    if fn is None and not runtime:
         _FUSED_STATE["failed"] = "no inductor runtime"
         log.info("diffusion.native_quant: int8 W8A8 linear stays eager (no inductor runtime)")
         return None
-    if is_rocm_torch(torch):
-        refusal = _rocm_fused_w8a8_refusal(torch)
+    # The current card (no device) or a HIP input's card; a CPU input has no arch to judge.
+    if is_rocm_torch(torch) and (device is None or key.type == "cuda"):
+        refusal = _rocm_fused_w8a8_refusal(torch, key.index if key.type == "cuda" else None)
         if refusal is not None:
-            _FUSED_STATE["failed"] = refusal
-            log.info("diffusion.native_quant: int8 W8A8 linear stays eager (%s)", refusal)
+            devices[key] = refusal
+            log.info(
+                "diffusion.native_quant: int8 W8A8 linear stays eager on %s (%s)",
+                _key_label(key),
+                refusal,
+            )
             return None
+    devices[key] = None
+    if fn is not None:
+        return fn
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
     # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
@@ -388,15 +426,20 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
     return fn
 
 
-def _fused_w8a8_failed(exc: BaseException) -> None:
+def _key_label(key: Any) -> str:
+    return str(key)
+
+
+def _fused_w8a8_failed(exc: BaseException, device: Any = None) -> None:
+    """The compiled linear failed on ``device``'s card: eager there from here on (other cards keep it)."""
     import logging
 
-    _FUSED_STATE["failed"] = repr(exc)
-    _FUSED_STATE["fn"] = None
-    _FUSED_STATE["into"] = None
+    key = _device_key(device)
+    _FUSED_STATE.setdefault("devices", {})[key] = repr(exc)
     logging.getLogger(__name__).warning(
-        "diffusion.native_quant: the compiled int8 W8A8 linear failed (%s); eager kernels from here on "
+        "diffusion.native_quant: the compiled int8 W8A8 linear failed on %s (%s); eager kernels there from here on "
         "(set %s=0 to skip it)",
+        _key_label(key),
         exc,
         NATIVE_INT8_FUSED_ENV,
     )
@@ -411,7 +454,16 @@ def _autocast_on(x: Any) -> bool:
 
 
 def fused_w8a8_state() -> dict:
-    return {"calls": _FUSED_STATE.get("calls", 0), "failed": _FUSED_STATE["failed"]}
+    """``failed``: the process-wide reason, else the first card's; ``devices``: each card's (None = runs it)."""
+    devices = dict(_FUSED_STATE.get("devices", {}))
+    failed = _FUSED_STATE["failed"]
+    if failed is None:
+        failed = next((why for why in devices.values() if why is not None), None)
+    return {
+        "calls": _FUSED_STATE.get("calls", 0),
+        "failed": failed,
+        "devices": {_key_label(k): why for k, why in devices.items()},
+    }
 
 
 @lru_cache(maxsize = 1)
@@ -621,7 +673,7 @@ def native_linear_class():
             # Detailer crops and in-flight background compiles must not compile on this thread (#15063).
             if eager_forced():
                 return None
-            fn = _fused_w8a8()
+            fn = _fused_w8a8(x.device)
             if fn is None:
                 return None
             # Detached: guards on a view's base / Parameter shape would recompile per layout / layer.
@@ -662,7 +714,7 @@ def native_linear_class():
             except torch.cuda.OutOfMemoryError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a compile failure falls back to the eager kernels
-                _fused_w8a8_failed(exc)
+                _fused_w8a8_failed(exc, x.device)
                 return None
             _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
             return out.reshape(*x.shape[:-1], self.out_features)

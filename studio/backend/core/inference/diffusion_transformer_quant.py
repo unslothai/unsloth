@@ -1257,9 +1257,58 @@ def fp16_card_int8_scheme(
     return TQ_INT8
 
 
+def fp16_card_int8_act(target: Any) -> bool:
+    """W8A8 for the explicit-int8 Turing build; ``int8_storage_host`` (also true there) answers only for checkpoint
+    int8 storage, which stays weight-only."""
+    return fp16_card_int8_host(target) and not int8_act_disabled()
+
+
+# Checkpoint int8 codes on a GPU with no Studio int8 runtime (pre-Ampere fp16, XPU) stay int8, widened per layer.
+# Unset: offloaded plans only (resident, the expanded DiT is faster); 1: resident too; 0: always expand.
+INT8_STORAGE_ENV = "UNSLOTH_DIFFUSION_INT8_STORAGE"
+
+
+def _int8_storage_setting() -> str:
+    return (_os.environ.get(INT8_STORAGE_ENV) or "").strip().lower()
+
+
+def int8_storage_host(target: Any) -> bool:
+    """Whether ``target`` keeps checkpoint int8 codes as weight-only storage (no int8 GEMM)."""
+    if _int8_storage_setting() in ("0", "off", "false", "no"):
+        return False
+    device = getattr(target, "device", None)
+    try:
+        import torch
+
+        dtype = getattr(target, "dtype", None)
+        if device == "xpu":
+            return dtype in (torch.bfloat16, torch.float16)
+        if device != "cuda" or torch_is_rocm() or is_stubbed("torchao"):
+            return False
+        return dtype is torch.float16
+    except Exception:
+        return False
+
+
+def int8_storage_scheme(
+    target: Any,
+    family: Optional[str] = None,
+    *,
+    offload: bool = False,
+) -> Optional[str]:
+    if not (offload or _int8_storage_setting() in ("1", "on", "true", "yes")):
+        return None
+    if not int8_storage_host(target) or _family_denied(family, TQ_INT8):
+        return None
+    return TQ_INT8
+
+
 def native_int8_act(target: Any) -> bool:
     # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
+        return False
+    # storage only (int8_storage_scheme): never an int8 GEMM
+    if int8_storage_host(target):
         return False
     if native_quant_host(target):
         return int8_act_requested()
@@ -1281,7 +1330,7 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     # Linux only: Windows ROCm has no compile tier.
     if not _sys.platform.startswith("linux"):
         return None
-    if int8_act_disabled() or not rocm_rdna_w8a8_ready():
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
         return None
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
         return None
@@ -2094,6 +2143,8 @@ def quantize_transformer(
     fp16_card = native is None and fp16_card_int8_scheme(target, mode, family) is not None
     if fp16_card:
         native = TQ_INT8
+        # native_int8_act is False on any fp16 CUDA target (int8_storage_host); this build is the W8A8 one.
+        act_int8 = fp16_card_int8_act(target)
     if native is not None:
         mps = _mps_bf16(target)
         if act_int8 is None or mps:
