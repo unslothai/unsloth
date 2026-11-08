@@ -3,7 +3,9 @@
 
 """FLUX.3 Klein Base conditioning blocks run once per render, bit-identical; cache cleared at start
 and end of each pipeline call; installed only on matching diffusers forward hash, else stock;
-UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables"""
+UNSLOTH_DIFFUSION_COND_BLOCKS=0 disables. Offloaded (CUDA): computed inside the hooked forward,
+UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE=0 keeps stock. Modulation heads project one row per sample,
+not per token (any FLUX.3), UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD=0 restores per-token rows"""
 
 from __future__ import annotations
 
@@ -14,7 +16,13 @@ import weakref
 from typing import Any, Optional
 
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
+OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
+COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
 COND_KWARG = "unsloth_cond"
+# Instance flags: read at load (compact) and per render (offloaded); the pending miss an offloaded forward fills.
+_COMPACT_ATTR = "_unsloth_compact_mod"
+_OFFLOADED_ATTR = "_unsloth_cond_offloaded"
+_PENDING_ATTR = "_unsloth_cond_pending"
 
 # sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
@@ -22,9 +30,20 @@ _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
 _PATCHED: dict[type, Any] = {}
 
 
+def _switch(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def enabled() -> bool:
-    raw = (os.environ.get(COND_BLOCKS_ENV) or "").strip().lower()
-    return raw not in ("0", "off", "false", "no")
+    return _switch(COND_BLOCKS_ENV)
+
+
+def offload_cache_enabled() -> bool:
+    return _switch(OFFLOAD_COND_ENV)
+
+
+def compact_enabled() -> bool:
+    return _switch(COMPACT_MOD_ENV)
 
 
 def _forward_sha(cls: type) -> Optional[str]:
@@ -57,7 +76,8 @@ class _Entry:
 
 
 def _offloaded(module: Any) -> Optional[str]:
-    """Offloaded weights keep the stock path: running conditioning blocks outside the forward reorders prefetch."""
+    """Why ``module``'s weights are offloaded (None: resident). Conditioning blocks then run only inside the hooked
+    forward: run outside it they meet host weights or reorder the prefetch."""
     for name, sub in module.named_modules():
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'} carries an accelerate hook"
@@ -66,6 +86,17 @@ def _offloaded(module: Any) -> Optional[str]:
         if any("offload" in str(k).lower() for k in hooks):
             return f"{name or '<root>'} is group offloaded"
     return None
+
+
+def _offload_device_ok(t: Any) -> bool:
+    """The in-forward cache is proven on CUDA only; ROCm, XPU, MPS and CPU offload keep the stock path."""
+    import torch
+    return bool(t.is_cuda) and getattr(torch.version, "hip", None) is None
+
+
+def _rows(t: Any, batch_size: int, n: int) -> Any:
+    """``t`` as ``n`` per-token rows: a stride-0 view of a compact ``[B, 1, D]`` modulation, else ``t`` itself."""
+    return t if t.shape[1] == n else t.expand(batch_size, n, -1)
 
 
 def flux3_conditioning(
@@ -78,17 +109,27 @@ def flux3_conditioning(
     batch_size: int,
     dtype: Any,
     device: Any,
+    compact: bool = False,
+    target_temb: Any = None,
 ) -> dict:
-    """The conditioning-only part of ``Flux3Transformer2DModel.forward`` for a non-flow-map transformer, op for op:
-    the timestep-0 embedding, the text and reference modulations, projections and RoPE, and their per-mode blocks."""
+    """The conditioning-only part of ``Flux3Transformer2DModel.forward``, op for op: the timestep-0 embedding (plus
+    ``target_temb`` for a flow map), the text and reference modulations, projections and RoPE, and their per-mode
+    blocks. ``compact``: each modulation head projects one row per sample, ``[B, 1, 3 * dim]``, that the blocks
+    broadcast over the tokens (every token of a mode shares one timestep, so the rows are identical)."""
     import torch
     import torch.nn.functional as F
 
     zero_temb = module.time_proj(torch.zeros(batch_size, device = device, dtype = dtype))
     zero_temb = module.timestep_embedder(zero_temb.to(dtype))[:, None, :]
+    if target_temb is not None:
+        zero_temb = zero_temb + target_temb
     zero_temb_act = F.silu(zero_temb)
 
-    txt_temb_act = zero_temb_act.expand(batch_size, encoder_hidden_states.shape[1], -1)
+    txt_temb_act = (
+        zero_temb_act
+        if compact
+        else zero_temb_act.expand(batch_size, encoder_hidden_states.shape[1], -1)
+    )
     txt_early_mod = module.early_stream_modulations["txt"](txt_temb_act)
     txt_single_mod = module.single_stream_modulations["txt"](txt_temb_act)
     txt_states = module.context_embedder(encoder_hidden_states)
@@ -96,7 +137,11 @@ def flux3_conditioning(
 
     out: dict = {}
     if image_cond_hidden_states is not None:
-        cond_temb_act = zero_temb_act.expand(batch_size, image_cond_hidden_states.shape[1], -1)
+        cond_temb_act = (
+            zero_temb_act
+            if compact
+            else zero_temb_act.expand(batch_size, image_cond_hidden_states.shape[1], -1)
+        )
         cond_early_mod = module.early_stream_modulations["image_cond"](cond_temb_act)
         cond_single_mod = module.single_stream_modulations["image_cond"](cond_temb_act)
         cond_states = module.x_embedders["image_cond"](image_cond_hidden_states)
@@ -119,6 +164,48 @@ def flux3_conditioning(
     return out
 
 
+def _compact_call(module: Any, attention_kwargs: Any) -> bool:
+    """The compact forward stands in for the stock one: inference (training keeps stock and its checkpointing) with
+    no per-call LoRA scale (the stock forward's ``apply_lora_scale`` applies it)."""
+    import torch
+
+    if not module.__dict__.get(_COMPACT_ATTR) or torch.is_grad_enabled():
+        return False
+    return not (attention_kwargs and "scale" in attention_kwargs)
+
+
+def _claim_pending(module: Any, hidden_states: Any, sources: tuple) -> Optional[dict]:
+    """An offloaded miss (``_pre_hook``): compute the conditioning here, inside the hooked forward, and cache it. Only
+    for the call the miss was recorded for (same source objects and batch): a merged CFG call keeps stock."""
+    import torch
+
+    pending = module.__dict__.pop(_PENDING_ATTR, None)
+    if pending is None:
+        return None
+    key, recorded = pending
+    if key[1] != int(hidden_states.shape[0]) or any(a is not b for a, b in zip(sources, recorded)):
+        return None
+    if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
+        return None
+    ehs, txt_ids, ich, iid = sources
+    states = flux3_conditioning(
+        module,
+        encoder_hidden_states = ehs,
+        txt_ids = txt_ids,
+        image_cond_hidden_states = ich,
+        image_cond_ids = iid,
+        batch_size = int(hidden_states.shape[0]),
+        dtype = hidden_states.dtype,
+        device = hidden_states.device,
+        compact = bool(module.__dict__.get(_COMPACT_ATTR)),
+    )
+    module.__dict__.setdefault("_unsloth_cond_cache", {})[key] = _Entry(sources, states)
+    stats = _stats(module)
+    stats["misses"] += 1
+    stats["in_forward"] = stats.get("in_forward", 0) + 1
+    return states
+
+
 def _flux3_cached_forward(
     self: Any,
     hidden_states: Any,
@@ -133,10 +220,16 @@ def _flux3_cached_forward(
     return_dict: bool = True,
     unsloth_cond: Optional[dict] = None,
 ) -> Any:
-    """Stock forward op for op, taking precomputed ``unsloth_cond``; without it, it IS the stock forward."""
-    stock = _stock_forward(self)
-    if unsloth_cond is None:
-        return stock(
+    """Stock forward op for op, taking precomputed ``unsloth_cond`` and, when the load armed it, one modulation row
+    per sample; with neither, it IS the stock forward."""
+    if unsloth_cond is None and self.__dict__.get(_PENDING_ATTR) is not None:
+        unsloth_cond = _claim_pending(
+            self,
+            hidden_states,
+            (encoder_hidden_states, txt_ids, image_cond_hidden_states, image_cond_ids),
+        )
+    if unsloth_cond is None and not _compact_call(self, attention_kwargs):
+        return _stock_forward(self)(
             self,
             hidden_states = hidden_states,
             encoder_hidden_states = encoder_hidden_states,
@@ -153,15 +246,47 @@ def _flux3_cached_forward(
     import torch.nn.functional as F
     from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
-    if target_timestep is not None or bool(self.config.flow_map):
-        raise ValueError("cached conditioning states are only valid for a non-flow-map transformer")
-
     batch_size, image_seq_len = hidden_states.shape[:2]
     dtype = hidden_states.dtype
+    compact = bool(self.__dict__.get(_COMPACT_ATTR))
 
     image_temb = self.time_proj(timestep.to(dtype) * 1000)
     image_temb = self.timestep_embedder(image_temb.to(dtype))[:, None, :]
-    image_temb = image_temb.expand(batch_size, image_seq_len, -1)
+    if unsloth_cond is not None:
+        if target_timestep is not None or bool(self.config.flow_map):
+            raise ValueError(
+                "cached conditioning states are only valid for a non-flow-map transformer"
+            )
+    else:
+        # the stock forward's checks; the conditioning streams then run here, as in the stock forward
+        if image_cond_hidden_states is not None and image_cond_ids is None:
+            raise ValueError("`image_cond_hidden_states` requires `image_cond_ids`.")
+        if image_cond_hidden_states is None and image_cond_ids is not None:
+            raise ValueError("`image_cond_ids` was passed without `image_cond_hidden_states`.")
+        if (target_timestep is not None) != bool(self.config.flow_map):
+            raise ValueError(
+                "`target_timestep` is required by, and only by, a flow-map transformer (`flow_map=True`)."
+            )
+        target_temb = None
+        if target_timestep is not None:
+            target_temb = self.time_proj(target_timestep.to(dtype) * 1000)
+            target_temb = self.target_timestep_embedder(target_temb.to(dtype))[:, None, :]
+            image_temb = image_temb + target_temb
+        unsloth_cond = flux3_conditioning(
+            self,
+            encoder_hidden_states = encoder_hidden_states,
+            txt_ids = txt_ids,
+            image_cond_hidden_states = image_cond_hidden_states,
+            image_cond_ids = image_cond_ids,
+            batch_size = batch_size,
+            dtype = dtype,
+            device = hidden_states.device,
+            compact = True,
+            target_temb = target_temb,
+        )
+        _stats(self)["compact"] = _stats(self).get("compact", 0) + 1
+    if not compact:
+        image_temb = image_temb.expand(batch_size, image_seq_len, -1)
 
     encoder_hidden_states = unsloth_cond["txt_states"]
     txt_single_mod = unsloth_cond["txt_single_mod"]
@@ -178,9 +303,17 @@ def _flux3_cached_forward(
         hidden_states = block(hidden_states, image_early_mod, image_rotary_emb)
 
     if has_cond:
+        cond_states = unsloth_cond["cond_states"]
         cond_rotary_emb = (unsloth_cond["cond_cos"], unsloth_cond["cond_sin"])
-        content_states = torch.cat([hidden_states, unsloth_cond["cond_states"]], dim = 1)
-        content_mod = torch.cat([image_single_mod, unsloth_cond["cond_single_mod"]], dim = 1)
+        content_states = torch.cat([hidden_states, cond_states], dim = 1)
+        # the two spans carry different timesteps, so the joint modulation is per token here (one copy per step)
+        content_mod = torch.cat(
+            [
+                _rows(image_single_mod, batch_size, image_seq_len),
+                _rows(unsloth_cond["cond_single_mod"], batch_size, cond_states.shape[1]),
+            ],
+            dim = 1,
+        )
         joint_rotary_emb = (
             torch.cat([txt_rotary_emb[0], image_rotary_emb[0], cond_rotary_emb[0]], dim = 0),
             torch.cat([txt_rotary_emb[1], image_rotary_emb[1], cond_rotary_emb[1]], dim = 0),
@@ -241,9 +374,28 @@ def _stats(module: Any) -> dict:
     return stats
 
 
+def _conditioning_blocks(module: Any, has_cond: bool) -> list:
+    blocks = list(module.txt_mode_blocks)
+    if has_cond:
+        blocks += list(module.mode_blocks["image_cond"])
+    return blocks
+
+
+def _match_prefetch_order(module: Any, has_cond: bool, *, skipping: bool) -> None:
+    """Streamed groups prefetch in the order the last forward ran them; point it at this forward (conditioning
+    blocks skipped on a hit, run on a miss) so both stay on order. Any other mismatch only re-records it."""
+    from .diffusion_offload_prefetch import match_skipped_order
+    try:
+        match_skipped_order(module, _conditioning_blocks(module, has_cond), skipping = skipping)
+    except Exception:  # noqa: BLE001 - prefetch order is a speed hint; a stale one costs one unprefetched forward
+        pass
+
+
 def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     import torch
 
+    # a miss recorded for an earlier call (its forward never ran) must not reach this one
+    module.__dict__.pop(_PENDING_ATTR, None)
     if args or kwargs.get(COND_KWARG) is not None or not module.__dict__.get("_unsloth_cond_live"):
         return None
     if torch.is_grad_enabled() or kwargs.get("target_timestep") is not None:
@@ -266,6 +418,13 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
+    offloaded = bool(module.__dict__.get(_OFFLOADED_ATTR))
+    if offloaded and not _offload_device_ok(hidden_states):
+        stats["skipped"] += 1
+        stats["reason"] = (
+            f"offloaded on {hidden_states.device.type} (the offload cache is CUDA only)"
+        )
+        return None
     sources = (ehs, txt_ids, ich, iid)
     key = (
         tuple(_tkey(t) for t in sources),
@@ -276,6 +435,11 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     cache = module.__dict__.setdefault("_unsloth_cond_cache", {})
     entry = cache.get(key)
     if entry is None or not entry.matches(sources):
+        if offloaded:
+            # host weights: the forward computes these in its hooked scope (and, streamed, in prefetch order)
+            module.__dict__[_PENDING_ATTR] = (key, sources)
+            _match_prefetch_order(module, ich is not None, skipping = False)
+            return None
         states = flux3_conditioning(
             module,
             encoder_hidden_states = ehs,
@@ -285,12 +449,15 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
             batch_size = int(hidden_states.shape[0]),
             dtype = hidden_states.dtype,
             device = hidden_states.device,
+            compact = bool(module.__dict__.get(_COMPACT_ATTR)),
         )
         cache[key] = _Entry(sources, states)
         stats["misses"] += 1
     else:
         states = entry.states
         stats["hits"] += 1
+        if offloaded:
+            _match_prefetch_order(module, ich is not None, skipping = True)
     new_kwargs = dict(kwargs)
     new_kwargs[COND_KWARG] = states
     return args, new_kwargs
@@ -305,14 +472,34 @@ def _applies(transformer: Any) -> Optional[str]:
 
 
 def prepare(transformer: Any, logger: Any = None) -> bool:
-    """Call at load, before the speed layer binds the class forward. True when the cache can arm."""
-    if transformer is None or not enabled():
+    """Call at load, before the speed layer binds the class forward. Arms compact modulation for any FLUX.3 (distilled
+    too); True when the conditioning cache can arm."""
+    cond_on = enabled()
+    compact = compact_enabled()
+    if transformer is None or not (cond_on or compact):
         return False
-    why = _applies(transformer) or patch_class(type(transformer))
+    applies = _applies(transformer)
+    if applies is not None and (not compact or "not a FLUX.3" in applies):
+        if cond_on:
+            _stats(transformer)["reason"] = applies
+            if logger is not None and "not a FLUX.3" not in applies:
+                logger.info("diffusion.cond_blocks: off (%s)", applies)
+        return False
+    why = patch_class(type(transformer))
     if why is not None:
         _stats(transformer)["reason"] = why
-        if logger is not None and "not a FLUX.3" not in why:
+        if logger is not None:
             logger.info("diffusion.cond_blocks: off (%s)", why)
+        return False
+    transformer.__dict__[_COMPACT_ATTR] = compact
+    if compact and logger is not None:
+        logger.info("diffusion.cond_blocks: FLUX.3 modulation heads project one row per sample")
+    if not cond_on:
+        return False
+    if applies is not None:
+        _stats(transformer)["reason"] = applies
+        if logger is not None:
+            logger.info("diffusion.cond_blocks: off (%s)", applies)
         return False
     return True
 
@@ -324,6 +511,7 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         return False
     clear(transformer)
     transformer.__dict__["_unsloth_cond_live"] = False
+    transformer.__dict__.pop(_PENDING_ATTR, None)
     if not enabled() or _applies(transformer) is not None:
         return False
     if (
@@ -333,9 +521,10 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         _stats(transformer)["reason"] = "the class forward was not patched at load"
         return False
     why = _offloaded(transformer)
-    if why is not None:
+    if why is not None and not offload_cache_enabled():
         _stats(transformer)["reason"] = why
         return False
+    transformer.__dict__[_OFFLOADED_ATTR] = why is not None
     handle = transformer.__dict__.get("_unsloth_cond_hook")
     hooks = transformer._forward_pre_hooks
     if handle is None or handle.id not in hooks:
@@ -363,6 +552,7 @@ def end_render(transformer: Any) -> None:
     if transformer is not None:
         clear(transformer)
         transformer.__dict__["_unsloth_cond_live"] = False
+        transformer.__dict__.pop(_PENDING_ATTR, None)
 
 
 def clear(transformer: Any) -> None:
