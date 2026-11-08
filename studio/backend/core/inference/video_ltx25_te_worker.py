@@ -930,7 +930,10 @@ def _lookahead_ops(device: str) -> Any:
         return None
     try:
         import torch
-        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+
+        from .rocm_bf16 import is_rocm_torch
+
+        if is_rocm_torch(torch) or not torch.cuda.is_available():
             return None
         return _CudaUploads(device)
     except Exception:  # noqa: BLE001 -- the synchronous upload still works
