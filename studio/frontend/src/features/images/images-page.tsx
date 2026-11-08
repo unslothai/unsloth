@@ -5670,10 +5670,12 @@ export function ImagesPage({
         : runTarget.current
           ? await cancelConnectionImageGeneration(abort.signal)
           : await cancelDiffusionGeneration(abort.signal);
+      // The page moved on to another job meanwhile: this answer is about the old one.
+      if (runToken.current !== token) return;
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
-      if (!abort.signal.aborted) {
+      if (!abort.signal.aborted && runToken.current === token) {
         cancelAcked.current = false;
         setStopping(false);
         toast.error("Could not reach the server to stop this generation; it is still running");
