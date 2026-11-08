@@ -1127,7 +1127,7 @@ class CfgBatchRouter:
         return mine
 
     def _pair(self, args: tuple, kwargs: dict, latent: Any, shape: _Shape) -> Any:
-        from .diffusion_cfg_pair import NotPairable, root_forward
+        from .diffusion_cfg_pair import NotPairable, SkipStep, root_forward
 
         torch = _torch()
         module = self.module_ref()
@@ -1136,7 +1136,7 @@ class CfgBatchRouter:
             self.disable("the denoiser's own forward is no longer reachable below its hooks")
             return None
         try:
-            second = self._predict(latent)
+            second = self.paired.align((args, kwargs), self._predict(latent))
             snapshots = _snapshot(second)
         except _NotBatchable as exc:
             self._shape_off(shape, f"not pairable: {exc}")
@@ -1146,6 +1146,8 @@ class CfgBatchRouter:
             mine, other = self.paired.run(
                 module, self.orig_forward, root_fn, (args, kwargs), second
             )
+        except SkipStep:
+            return None
         except NotPairable as exc:
             self._shape_off(shape, f"not pairable: {exc}")
             return None
