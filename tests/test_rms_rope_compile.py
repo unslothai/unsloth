@@ -199,6 +199,41 @@ def test_rope_compiled_matches_eager(shape, with_indices, dtype):
         assert _graph_breaks() == 0
 
 
+def _rope_kernel_launches(fn, *args):
+    from torch.profiler import ProfilerActivity, profile
+
+    torch.cuda.synchronize()
+    with profile(activities = [ProfilerActivity.CUDA]) as prof:
+        out = fn(*args)
+        torch.cuda.synchronize()
+    names = [e.name for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+    return out, sum("_rope_embedding_QK" in name for name in names)
+
+
+@pytest.mark.parametrize("one_launch", [True, False], ids = ["one_launch", "per_tensor"])
+def test_rope_compiled_positions_one_launch_each_way(monkeypatch, one_launch):
+    """Compiled positions RoPE: one launch each way (per tensor with the flag off), eager's bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    monkeypatch.setattr(rope_embedding, "COMPILED_ROPE_QK_ONE_LAUNCH", one_launch)
+    compiled = _compile(lambda q, k, c, s, i: fast_rope_embedding(q, k, c, s, i))
+    shape = (2, 37, 8, 2, 64)
+    _rope_case(compiled, *shape, CDTYPE, False, pure = True)
+    got, launches = _rope_kernel_launches(
+        _rope_case,
+        compiled,
+        *shape,
+        CDTYPE,
+        False,
+        True,
+    )
+    assert launches == (2 if one_launch else 4), launches
+    eager = _rope_case(fast_rope_embedding, *shape, CDTYPE, False)
+    for e, c, name in zip(eager, got, ("Q", "K", "dQ", "dK")):
+        assert _bytes_equal(e, c), name
+    assert _graph_breaks() == 0
+
+
 @pytest.mark.parametrize("with_indices", [False, True], ids = ["positions", "rope_indices"])
 def test_rope_eager_is_the_autograd_function(with_indices):
     """Outside torch.compile the public function is still the Fast_RoPE autograd Functions."""
