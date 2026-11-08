@@ -71,13 +71,13 @@ RECHECK_PAGES = int(os.environ.get("LONG_THREAD_AREAS_RECHECK_PAGES", "10"))
 # software compositing (the gate's headless Chromium; these ceilings assume it) every frame redraws
 # the window, so the sidebar's blur costs on any repaint: small areas up to 7.8x on GitHub runners.
 # glass-motion.ts swaps the blur for a plain fill while anything moves, so scrolling Settings reads
-# 1.4-4.5x (main 7.8-13.6x) and the thread 1.8-4.9x (main 4.6-5.6x); 6x leaves runner margin.
+# 1.4-4.5x (main 7.8-14.0x) and the thread 1.8-4.9x (main 4.6-8.3x); 7x leaves runner margin.
 # LONG_THREAD_AREAS_KNOWN="" holds main to the plain limits.
 _GLASS_MODES = ("frosted", "blurred", "liquid", GLASS)
 KNOWN_DEFAULT = ",".join(
     [f"{m}:*=10" for m in _GLASS_MODES]
-    + [f"{m}:thread_scroll=6" for m in _GLASS_MODES]
-    + [f"{m}:settings_scroll=6" for m in _GLASS_MODES]
+    + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
+    + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 

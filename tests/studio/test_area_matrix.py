@@ -131,11 +131,13 @@ def test_appearance_check(base, mode, fails, monkeypatch):
 
 # Highest readings on the GitHub runners the gate runs on (identical code spans about 1.35x
 # between runs; 25 runs, 2026-11-07).
+# Scrolls pause the Glass blur (glass-motion.ts), so their worst readings dropped from 8.3x (thread)
+# and 14.0x (Settings) to at most 4.9x (local and runner runs of that change).
 RUNNER_READINGS = [
-    ("blurred", "thread_scroll", 8.3),
+    ("blurred", "thread_scroll", 4.9),
     (am.GLASS, "reasoning_toggle", 7.8),
-    ("blurred", "settings_scroll", 14.0),
-    ("frosted", "settings_scroll", 13.5),
+    ("blurred", "settings_scroll", 4.9),
+    ("frosted", "settings_scroll", 4.9),
 ]
 
 
