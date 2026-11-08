@@ -43,7 +43,6 @@ def _record(name: str) -> None:
 
 
 def _lifecycle(name: str, restore: bool = True):
-    """Load (begin), compile (an artifact is recorded), save, unload (restore): one model's whole life."""
     ctx = cc.begin(
         transformer = types.SimpleNamespace(_repeated_blocks = [f"{name}Block"]),
         family = name,
@@ -102,7 +101,7 @@ def test_a_running_compile_is_never_waited_for(collector, monkeypatch):
     import threading
 
     lock = threading.Lock()
-    lock.acquire()  # another thread is compiling
+    lock.acquire()
     monkeypatch.setattr(cc, "_compile_lock", lambda: lock)
     _record("pending")
     assert cc._fresh_collector(None) is False

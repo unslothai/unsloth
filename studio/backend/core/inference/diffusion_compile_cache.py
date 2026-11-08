@@ -29,8 +29,7 @@ _ENV_DIR = "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR"
 _ENV_SAVE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SAVE"
 _ENV_SYNC = "UNSLOTH_DIFFUSION_COMPILE_CACHE_SYNC"
 _ENV_MAX_GB = "UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB"
-# "0": the process-wide artifact collector keeps everything since startup, so each model's bundle also carries
-# every earlier model's artifacts.
+# "0": keep torch's process-wide artifact collector, so each bundle also carries earlier models' artifacts.
 _ENV_ISOLATE = "UNSLOTH_DIFFUSION_COMPILE_CACHE_ISOLATE"
 _DEFAULT_MAX_GB = 20.0
 
@@ -842,9 +841,8 @@ def _compile_lock() -> Any:
 
 
 def _fresh_collector(logger: Any) -> bool:
-    """Empty torch's process-wide artifact collector before a model's first compile, so its bundle holds its own
-    artifacts only (torch appends every artifact since startup to each save). Only with no other bundle live and the
-    save worker idle; an artifact this model reuses from the inductor dir is recorded again on that cache hit."""
+    """Empty torch's process-wide artifact collector so this model's bundle holds its own artifacts (hits are recorded
+    again); only with no other bundle live and no compile holding the lock."""
     if (os.environ.get(_ENV_ISOLATE) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     with _live_lock:
@@ -856,7 +854,7 @@ def _fresh_collector(logger: Any) -> bool:
         return False
     lock = _compile_lock()
     acquire = getattr(lock, "acquire", None)
-    # Never wait here: a compile still running holds the lock, and its artifacts are not this model's to drop.
+    # never wait: a running compile's artifacts are not this model's to drop
     if acquire is not None and not acquire(blocking = False):
         return False
     try:
