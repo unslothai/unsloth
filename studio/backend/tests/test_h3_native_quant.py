@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 int8 / fp8 denoisers where torchao's runtime for the format does not run: the routing per host, the
-1-byte twins a tiny H3 single file loads into, their forward against the dequantized model, the hosted fp8
-checkpoint rebuilt as stored fp8, and the ``UNSLOTH_H3_NATIVE_QUANT=0`` kill switch."""
+"""MiniMax-H3 int8 / fp8 files where torchao does not run: routing per host, the 1-byte twins, hosted fp8."""
 
 from __future__ import annotations
 
@@ -59,7 +57,7 @@ def _target(device = "cuda"):
 
 
 def _host(monkeypatch, kind):
-    """Studio's own host predicates for ``kind``: what its torchao smoke probe and platform checks answer there."""
+    """Studio's host predicates as ``kind`` answers them."""
     rocm = kind == "rocm"
     monkeypatch.setattr(dtq, "torch_is_rocm", lambda: rocm)
     monkeypatch.setattr(dtq, "is_stubbed", lambda name: False)
@@ -99,7 +97,6 @@ def test_h3_backends_per_host(monkeypatch, kind, int8, fp8, storage):
     target = _host(monkeypatch, kind)
     got = nq.h3_comfy_backends(target)
     assert got == {"int8_backend": int8, "fp8_backend": fp8, "fp8_storage": storage}
-    # the planner prices exactly what the load keeps
     assert vid._video_fp8_storage(H3, target, False) is storage
     assert vid._video_fp8_storage(H3, target, True) is storage
     assert vid._video_fp8_storage(H3, target, False, widen_chosen = True) is False
@@ -129,7 +126,7 @@ def test_storage_off_switch_and_cpu_never_store(monkeypatch):
 @pytest.mark.parametrize("kind,native", [("sm89", False), ("sm80", True), ("rocm", False)])
 def test_hosted_fp8_native_only_where_torchao_fp8_does_not_run_on_cuda(monkeypatch, kind, native):
     target = _host(monkeypatch, kind)
-    # ROCm: torchao's own probe answers there; it is not this rule's case (a CUDA card without fp8 GEMM).
+    # ROCm keeps torchao's own answer: this rule is for CUDA cards without an fp8 GEMM.
     if kind == "rocm":
         monkeypatch.setattr(dtq, "select_transformer_quant_scheme", lambda *a, **k: dtq.TQ_FP8)
     assert nq.h3_hosted_fp8_native(target) is native
@@ -174,7 +171,7 @@ def _quant(w, fmt):
 
 
 def _write(tmp_path, model, name, fmt):
-    """A ComfyUI-layout H3 file (fused qkv, [gate; value] fc1) whose block Linears hold ``fmt`` codes."""
+    """An original-layout H3 file (fused qkv, [gate; value] fc1), block Linears as ``fmt`` codes."""
     sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
     out = {}
     for key in list(sd):
@@ -288,7 +285,7 @@ def test_fp8_file_on_ampere_loads_stored_fp8_and_matches_the_dequantized_model(
     backends = nq.h3_comfy_backends(target)
     model = _load(path, base, target, **backends)
     info = model._unsloth_comfy_quant
-    # qkv splits into three layers; every block Linear stays 1-byte codes, none dequantized
+    # qkv splits into three layers
     assert info["fp8_stored"] == n_quant + 2 * TINY["num_layers"] + 2 * TINY["num_refiner_layers"]
     assert info["dequantized"] == 0
     twins = _twins(model)
@@ -296,7 +293,6 @@ def test_fp8_file_on_ampere_loads_stored_fp8_and_matches_the_dequantized_model(
     assert all(t.weight_q.element_size() == 1 and t.scheme == "fp8" for t in twins)
     reference = _load(path, base, target, int8_backend = None, fp8_backend = None, fp8_storage = False)
     assert not _twins(reference)
-    # Same codes and scales, widened per layer instead of at load: identical in float32.
     torch.testing.assert_close(_forward(model), _forward(reference), rtol = 0, atol = 0)
 
 
@@ -314,7 +310,6 @@ def test_fp8_stored_bytes_are_half_the_widened_bf16_bytes(tmp_path, monkeypatch)
         return total
 
     assert block_bytes(stored) < 0.55 * block_bytes(widened)
-    # planner and loader agree: the header estimate prices the stored layers at 1 byte
     scan = cq.refuse_comfy_quant(path)
     priced = cq.comfy_resident_mib(path, scan, keep_int8 = False, keep_fp8 = False, fp8_stored = True)
     widened_mib = cq.comfy_resident_mib(
@@ -353,7 +348,6 @@ def test_fp8_file_on_rocm_keeps_fp8_codes(tmp_path, monkeypatch):
 
 
 def test_hosted_float8tensor_layers_become_stored_fp8_with_identical_output():
-    """The hosted fp8 checkpoint's layers are per-row torchao ``Float8Tensor`` weights (what its loader builds)."""
     quant = pytest.importorskip("torchao.quantization")
     model = _tiny().to(torch.bfloat16)
     for name, module in model.named_modules():
@@ -380,7 +374,6 @@ def test_hosted_float8tensor_layers_become_stored_fp8_with_identical_output():
     for name, want in reference.items():
         layer = modules[name]
         assert layer.weight_q.element_size() == 1
-        # the twin's weight is torchao's dequantize, bit for bit
         torch.testing.assert_close(layer.weight, want, rtol = 0, atol = 0)
     assert getattr(model, cq.FP8_STORED_ATTR) == built
     _forward(model)  # runs with no torchao fp8 GEMM
@@ -435,6 +428,6 @@ def test_the_host_backends_run_on_its_gpu_like_the_dequantized_model(tmp_path, f
         got = torch.cat([t.float().reshape(-1) for t in model(**kw) if torch.is_tensor(t)])
         want = torch.cat([t.float().reshape(-1) for t in reference(**kw) if torch.is_tensor(t)])
     assert torch.isfinite(got).all()
-    # weight-only twins widen the same codes the reference widened at load; W8A8 int8 adds activation rounding
+    # W8A8 int8 adds activation rounding
     rel = (got - want).norm() / want.norm().clamp_min(1e-12)
     assert rel < (5e-2 if fmt.startswith("int8") else 1e-2), (backends, float(rel))

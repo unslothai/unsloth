@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 int8 / fp8 denoisers where torchao's runtime for the format does not run.
-
-H3's quantized denoisers were torchao only, so a card without an fp8 GEMM (Ampere: A100, RTX 3090) and the hosts
-whose torchao path is closed (ROCm, MPS, the stubbed torchao) refused the int8 / fp8 files: dequantized, the
-denoiser is the 40 GB bfloat16 model. The codes already in the file are what Studio's torchao-free twin
-(``NativeWeightOnlyLinear``) stores, 1 byte per weight, widened one layer at a time in the forward. These helpers
-pick that twin for an H3 file, by the rules the image path uses (``comfy_int8_backend`` / ``comfy_fp8_backend`` /
-``comfy_fp8_storage``), and rebuild a hosted torchao fp8 checkpoint's ``Float8Tensor`` layers as stored fp8.
-
-``UNSLOTH_H3_NATIVE_QUANT=0`` restores the torchao-only rule (the load refuses where torchao does not run)."""
+"""MiniMax-H3 int8 / fp8 denoisers where torchao's runtime does not run (Ampere fp8, ROCm, MPS, stubbed torchao):
+the file's codes go to the 1-byte ``NativeWeightOnlyLinear`` twin by the image path's rules instead of widening to
+the 40 GB bf16 model. ``UNSLOTH_H3_NATIVE_QUANT=0`` restores the torchao-only refusal."""
 
 from __future__ import annotations
 
@@ -19,7 +12,7 @@ from typing import Any, Optional
 
 H3_NATIVE_QUANT_ENV = "UNSLOTH_H3_NATIVE_QUANT"
 H3_FAMILY = "minimax-h3"
-# Hosts whose bf16 forward runs the stored-fp8 widen (CPU never loads H3 quantized).
+# CPU never loads H3 quantized.
 _STORAGE_DEVICES = ("cuda", "mps")
 
 
@@ -33,10 +26,8 @@ def _storage_device(target: Any) -> bool:
 
 
 def h3_comfy_backends(target: Any, base_repo: Optional[str] = None) -> dict:
-    """``load_comfy_quant_transformer`` backends for an H3 ComfyUI-quantized file on ``target``: torchao where its
-    runtime runs; else the torchao-free twin Studio's own quant runs there (ROCm, MPS int8, the stubbed torchao) and,
-    for fp8 with no fp8 runtime at all (Ampere, MPS), fp8 storage. None / False for a format means no runtime: the
-    load refuses rather than dequantize to the 40 GB bfloat16 model."""
+    """``load_comfy_quant_transformer`` backends for an H3 file: torchao, else the native twin, else (fp8) storage.
+    None / False = no runtime: the load refuses rather than dequantize to 40 GB bf16."""
     from .diffusion_comfy_quant import comfy_fp8_backend, comfy_fp8_storage, comfy_int8_backend
 
     int8 = comfy_int8_backend(target, H3_FAMILY, base_repo)
@@ -55,7 +46,7 @@ def h3_comfy_backends(target: Any, base_repo: Optional[str] = None) -> dict:
 
 
 def h3_fp8_storage(target: Any, base_repo: Optional[str] = None) -> bool:
-    """Whether an H3 ComfyUI fp8 file is stored as fp8 on ``target`` (the planner prices it at 1 byte per weight)."""
+    """The planner's view of ``h3_comfy_backends``: stored fp8 is priced at 1 byte."""
     try:
         return bool(h3_comfy_backends(target, base_repo)["fp8_storage"])
     except Exception:  # noqa: BLE001 -- unanswerable: priced widened, as before
@@ -63,8 +54,7 @@ def h3_fp8_storage(target: Any, base_repo: Optional[str] = None) -> bool:
 
 
 def h3_hosted_fp8_native(target: Any, base_repo: Optional[str] = None) -> bool:
-    """Whether the hosted torchao fp8 H3 checkpoint runs as stored fp8 on ``target``: a CUDA card whose torchao fp8
-    runtime does not run (below sm_89). A card where it runs keeps torchao."""
+    """Hosted fp8 checkpoint as stored fp8: a CUDA card where torchao's fp8 runtime does not run (below sm_89)."""
     if not h3_native_quant_enabled() or getattr(target, "device", None) != "cuda":
         return False
     try:
@@ -84,7 +74,7 @@ def h3_hosted_fp8_native(target: Any, base_repo: Optional[str] = None) -> bool:
 
 
 def _fp8_parts(weight: Any) -> Optional[tuple]:
-    """``(codes, per-row float32 scale)`` of a per-row / per-tensor e4m3 torchao ``Float8Tensor``, else None."""
+    """``(codes, per-row float32 scale)`` of a per-row / per-tensor ``Float8Tensor``, else None."""
     import torch
 
     if type(weight).__name__ != "Float8Tensor":
@@ -101,14 +91,13 @@ def _fp8_parts(weight: Any) -> Optional[tuple]:
     elif scale.numel() == rows:
         scale = scale.reshape(rows)
     else:
-        return None  # block-wise scales: not the per-row layout the twin stores
+        return None  # block-wise scales
     return codes, scale.to(torch.float32).contiguous()
 
 
 def h3_hosted_fp8_to_native(model: Any, logger: Any = None) -> int:
-    """Rebuild every ``Float8Tensor`` Linear of a hosted fp8 H3 denoiser as a stored-fp8 twin (the same codes and
-    per-row scales; ``torchao``'s dequantize is ``qdata * scale`` per row). Returns the layers rebuilt; raises
-    ``ValueError`` if a Float8Tensor layer is left that the twin cannot hold (it could not run here)."""
+    """Rebuild every ``Float8Tensor`` Linear as a stored-fp8 twin (same codes and per-row scales). Raises
+    ``ValueError`` on a layout the twin cannot hold: it could not run here."""
     import torch
 
     from .diffusion_comfy_quant import FP8_STORED_ATTR
@@ -127,7 +116,6 @@ def h3_hosted_fp8_to_native(model: Any, logger: Any = None) -> int:
             raise ValueError(f"{name}: a Float8Tensor layout the stored-fp8 runtime cannot hold")
         codes, scale = parts
         dtype = getattr(weight, "dtype", None) or torch.bfloat16
-        # The twin reads only shapes, compute dtype and bias from this stand-in.
         stand_in = torch.nn.Linear(
             int(module.in_features),
             int(module.out_features),
