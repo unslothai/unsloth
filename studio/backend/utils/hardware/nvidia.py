@@ -790,27 +790,49 @@ for ordinal in range(count.value):
     total = ctypes.c_size_t(0)
     if (
         lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
-        or lib.cuDeviceGetPCIBusId(bus, 64, dev) != 0
         or lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, dev) != 0  # CU_DEVICE_ATTRIBUTE_INTEGRATED
         or total_mem(ctypes.byref(total), dev) != 0
         or lib.cuDeviceGetName(name, 256, dev) != 0
     ):
         print("ERR")  # this ordinal did not answer; the others still count
         continue
-    print(bus.value.decode(), integrated.value, total.value, name.value.decode(errors = "replace"))
+    # The bus id is informational: a driver that cannot report it (some virtualised ones) still answers.
+    bus_id = bus.value.decode() if lib.cuDeviceGetPCIBusId(bus, 64, dev) == 0 and bus.value else "-"
+    print(bus_id, integrated.value, total.value, name.value.decode(errors = "replace"))
 """
+
+
+# An unknown or partial answer, per (mask, device order), reused for this long: callers retry those on
+# every lookup, and a host whose cuInit is slow or failing must not start a child each time.
+_CUDA_DEVICE_INFO_RETRY_S = 60.0
+_CUDA_DEVICE_INFO_RECENT: dict[tuple, tuple[float, Any]] = {}
 
 
 def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
     """(PCI bus id, integrated, total bytes, name) per CUDA ordinal of this process's environment, None for
-    an ordinal that did not answer.
+    an ordinal that did not answer; the bus id is "" when the driver cannot report it.
 
     The CUDA driver API in a short child: it enumerates devices under the inherited CUDA_VISIBLE_DEVICES /
     CUDA_DEVICE_ORDER and reads their attributes without creating a context, and the Studio process never
     initialises CUDA. torch.cuda.get_device_properties instead initialises CUDA in the calling process,
-    after which torch's device calls open a context (hundreds of MiB) on each card they touch. [] when there is no NVIDIA driver or no device; None when the
-    answer is unknown (the child failed or timed out), so a caller does not cache it.
+    after which torch's device calls open a context (hundreds of MiB) on each card they touch. [] when
+    there is no NVIDIA driver or no device; None when the answer is unknown (the child failed or timed
+    out), so a caller does not cache it. Unknown and partial answers are reused for
+    _CUDA_DEVICE_INFO_RETRY_S before the driver is asked again.
     """
+    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    recent = _CUDA_DEVICE_INFO_RECENT.get(key)
+    if recent is not None and time.monotonic() - recent[0] < _CUDA_DEVICE_INFO_RETRY_S:
+        return None if recent[1] is None else list(recent[1])
+    info = _query_cuda_device_info()
+    if info is None or any(device is None for device in info):
+        _CUDA_DEVICE_INFO_RECENT[key] = (time.monotonic(), info)
+    else:
+        _CUDA_DEVICE_INFO_RECENT.pop(key, None)
+    return info
+
+
+def _query_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
     import sys
 
     from utils.child_stdio import utf8_child_env
@@ -841,7 +863,12 @@ def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]
         if len(parts) < 3 or parts[1] not in ("0", "1") or not parts[2].isdigit():
             return None
         devices.append(
-            (parts[0], parts[1] == "1", int(parts[2]), parts[3] if len(parts) > 3 else "")
+            (
+                "" if parts[0] == "-" else parts[0],
+                parts[1] == "1",
+                int(parts[2]),
+                parts[3] if len(parts) > 3 else "",
+            )
         )
     return devices
 

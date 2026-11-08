@@ -133,6 +133,8 @@ def _child(
             "0000:3b:00.0 0 85899345920 NVIDIA H100\nERR\n",
             [("0000:3b:00.0", False, 85899345920, "NVIDIA H100"), None],
         ),
+        # a driver that cannot report the PCI bus id still answers the rest
+        (0, "- 1 128000000000 NVIDIA GB10\n", [("", True, 128000000000, "NVIDIA GB10")]),
         (0, "", []),  # cuInit: CUDA_ERROR_NO_DEVICE
         (2, "", []),  # no NVIDIA driver
         (3, "", None),  # cuInit failed otherwise: unknown
@@ -154,6 +156,46 @@ def test_a_child_that_times_out_is_unknown(monkeypatch):
 
     monkeypatch.setattr(nvidia.subprocess, "run", _run)
     assert nvidia.get_cuda_device_info() is None
+
+
+def test_an_unknown_answer_is_not_asked_again_for_a_while(monkeypatch):
+    """A slow or failing cuInit must not start a child on every lookup: unknown and partial answers are
+    reused for the retry window, per mask; a complete one is left to the callers' caches."""
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    clock = [1000.0]
+    monkeypatch.setattr(nvidia.time, "monotonic", lambda: clock[0])
+    answers = iter(
+        [
+            (3, ""),
+            (0, "0000:01:00.0 0 8589934592 NVIDIA T4\nERR\n"),
+            (0, "0000:01:00.0 0 8589934592 NVIDIA T4\n"),
+        ]
+    )
+    runs = []
+
+    def _run(cmd, **kw):
+        runs.append(1)
+        rc, out = next(answers)
+        return subprocess.CompletedProcess(cmd, rc, out, "")
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
+    assert nvidia.get_cuda_device_info() is None
+    assert nvidia.get_cuda_device_info() is None and len(runs) == 1
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")  # another mask is its own question
+    assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4"), None]
+    assert len(runs) == 2
+    clock[0] += nvidia._CUDA_DEVICE_INFO_RETRY_S + 1
+    assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4")]
+    assert len(runs) == 3
+
+
+def test_the_real_query_answers_no_device_under_an_empty_mask(monkeypatch):
+    """End to end on this host, whatever it is (Linux, Windows, macOS, x86_64 or ARM64, a driver or none):
+    with every GPU hidden the query is a definite empty answer and never raises."""
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert nvidia.get_cuda_device_info() == []
 
 
 def test_the_driver_child_runs_and_finds_no_device_under_an_empty_mask():
