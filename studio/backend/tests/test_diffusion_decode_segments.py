@@ -152,7 +152,7 @@ def test_a_flag_left_on_by_an_earlier_string_is_kept(fresh):
 
 def test_unreadable_live_settings_never_engage(fresh):
     fake = fresh(_FakeTorch())
-    fake.cuda.memory._snapshot = lambda: {"segments": []}  # no allocator_settings
+    fake.cuda.memory._snapshot = lambda: {"segments": []}
     _decode(_vae(), fake)
     assert fake.calls == []
 
@@ -311,7 +311,7 @@ def test_oom_scope_wraps_the_whole_decode(fresh):
 def _real_live():
     try:
         return torch.cuda.memory._snapshot()["allocator_settings"]
-    except Exception:  # noqa: BLE001 - a build without the CUDA allocator
+    except Exception:  # noqa: BLE001
         return None
 
 

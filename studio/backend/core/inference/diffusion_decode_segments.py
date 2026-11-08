@@ -22,7 +22,7 @@ _ALLOC_CONF_VARS = ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF")
 _lock = threading.Lock()
 _depth = 0
 _usable: Optional[bool] = None
-_restore: Optional[str] = None  # the live allocator settings the outermost decode found
+_restore: Optional[str] = None
 STATS = {"engaged": 0, "skipped": 0}
 
 
@@ -80,7 +80,6 @@ def _setter(torch: Any) -> Any:
 
 
 def _decide(torch: Any) -> bool:
-    """What holds for the whole process; the live allocator settings are read per decode (``_live_settings``)."""
     if not _platform_ok() or is_rocm_torch(torch):
         return False
     if _setter(torch) is None:
@@ -92,8 +91,7 @@ def _decide(torch: Any) -> bool:
 
 
 def _live_settings(torch: Any) -> Optional[str]:
-    """The live settings string when expandable segments are off and nothing else is set, else None (leave it alone).
-    Read from the allocator (torch >= 2.6), so an option or opt-in set at runtime after CUDA init counts too."""
+    """Live settings string (torch >= 2.6, runtime sets included) if expandable segments are off and nothing else is set."""
     if _allocator_configured():
         return None
     try:
@@ -114,7 +112,7 @@ def _live_settings(torch: Any) -> Optional[str]:
 
 
 def _put_back(torch: Any, live: str) -> None:
-    """Off again, and the settings string exactly as it was (a set without the key leaves the flag as it is)."""
+    """A set that does not name the flag leaves it as is, so switch it off first, then restore the exact string."""
     setter = _setter(torch)
     if "expandable_segments" not in _conf_keys(live):
         setter("expandable_segments:False")
