@@ -3015,7 +3015,7 @@ def test_install_adds_the_flashinfer_kernel_wheel_before_the_checks(
     pip = [i for i, argv in enumerate(calls) if isinstance(argv, list) and "-r" in argv]
     if engine == "sglang":
         assert wheel is None and pip == []
-        assert install.installed(engine)["flashinfer_kernels"] is False
+        assert "flashinfer_kernels" not in install.installed(engine)
         return
     assert len(pip) == 1
     argv = calls[pip[0]]
@@ -3050,9 +3050,42 @@ def test_failed_flashinfer_kernels_keep_the_jit_engine(isolated, kernel_host, mo
     monkeypatch.setattr(install, "_run", run)
     install._install("vllm", threading.Event())
     assert install.status("vllm")["job"]["state"] == "success"
-    assert install.installed("vllm")["flashinfer_kernels"] is False
+    assert "flashinfer_kernels" not in install.installed("vllm")
     assert any(a[:3] == ["/uv", "pip", "uninstall"] and "flashinfer-jit-cache" in a for a in calls)
     assert any(install._CHECK in a for a in calls)
+
+
+@_LOCAL_ENGINE_HOST
+def test_a_kernel_wheel_that_cannot_be_removed_keeps_the_active_environment(
+    isolated, kernel_host, monkeypatch
+):
+    marker = active(isolated)
+    before = marker.read_bytes()
+    monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
+
+    def run(engine, argv, cancel):
+        if "import flashinfer_jit_cache, flashinfer" in argv or argv[:3] == [
+            "/uv",
+            "pip",
+            "uninstall",
+        ]:
+            raise RuntimeError("Engine installation failed.")
+        fake_venv(engine, argv, cancel)
+
+    monkeypatch.setattr(install, "_run", run)
+    install._install("vllm", threading.Event())
+    assert install.status("vllm")["job"]["state"] == "error"
+    assert marker.read_bytes() == before
+    assert [p.name for p in marker.parent.iterdir() if p.is_dir()] == ["env-prior"]
+
+
+def test_no_gpu_probe_without_a_kernel_wheel(kernel_host, monkeypatch):
+    probes = []
+    monkeypatch.setattr(install, "_driver_rows", lambda gpu_id, wait = True: probes.append(gpu_id))
+    monkeypatch.setattr(install.platform, "machine", lambda: "aarch64")
+    assert install.flashinfer_kernel_wheel("vllm") is None
+    assert install.flashinfer_kernel_wheel("sglang") is None
+    assert probes == []
 
 
 @_LOCAL_ENGINE_HOST
@@ -3086,7 +3119,7 @@ def test_switched_off_flashinfer_kernels_install_as_before(isolated, kernel_host
     install._install("vllm", threading.Event())
     assert install.status("vllm")["job"]["state"] == "success"
     assert not any("-r" in argv or "flashinfer-jit-cache" in argv for argv in calls)
-    assert install.installed("vllm")["flashinfer_kernels"] is False
+    assert "flashinfer_kernels" not in install.installed("vllm")
 
 
 @_LOCAL_ENGINE_HOST

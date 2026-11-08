@@ -1375,10 +1375,11 @@ def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
             f"{version}+{wanted['cuda']}", {}
         )
         wheel = entry.get(platform.machine())
+        if not wheel:
+            return None
         rows = _driver_rows(None, wait = wait)
         if (
-            not wheel
-            or rows is _PENDING
+            rows is _PENDING
             or not rows
             or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
         ):
@@ -1425,13 +1426,8 @@ def _install_flashinfer_kernels(
     except RuntimeError:
         if cancel.is_set():
             raise
-        try:
-            _run(
-                engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel
-            )
-        except RuntimeError:
-            if cancel.is_set():
-                raise
+        # A wheel that cannot be removed fails the install, keeping the active environment.
+        _run(engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel)
         return False
 
 
@@ -1567,7 +1563,7 @@ def _install(
                     "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
-                    "flashinfer_kernels": kernels,
+                    **({"flashinfer_kernels": True} if kernels else {}),
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
