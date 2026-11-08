@@ -15,6 +15,8 @@ import os
 import weakref
 from typing import Any, Optional
 
+from .rocm_bf16 import is_rocm_torch
+
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 OFFLOAD_COND_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_COND_CACHE"
 COMPACT_MOD_ENV = "UNSLOTH_DIFFUSION_FLUX3_COMPACT_MOD"
@@ -98,7 +100,7 @@ def _fixed_prefetch_chain(module: Any) -> Optional[str]:
 def _offload_device_ok(t: Any) -> bool:
     """Offload cache: CUDA only for now (ROCm, XPU, MPS, CPU keep stock)."""
     import torch
-    return bool(t.is_cuda) and getattr(torch.version, "hip", None) is None
+    return bool(t.is_cuda) and not is_rocm_torch(torch)
 
 
 def _rows(t: Any, batch_size: int, n: int) -> Any:
