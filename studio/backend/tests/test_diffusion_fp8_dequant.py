@@ -416,3 +416,26 @@ def test_cuda_graph_capture_takes_only_a_warm_kernel(monkeypatch):
     fd._WARM.add(fd._warm_key(codes, torch.bfloat16))
     assert fd._triton_ok(codes, torch.bfloat16)
     assert not fd._triton_ok(codes, torch.float16)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "needs a CUDA / ROCm GPU to run the Triton widen"
+)
+@pytest.mark.parametrize("fmt", (*FP8, None))
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_the_triton_widen_on_the_gpu_matches_the_old_formula(monkeypatch, fmt, dtype):
+    monkeypatch.delenv(ENV, raising = False)
+    codes, scale = _exhaustive(fmt)
+    codes = torch.cat(
+        [codes] * 8
+    ).contiguous()  # several rows per scale, every column block masked or full
+    scale = torch.cat([scale] * 8)
+    store = codes.view(getattr(torch, fmt)) if fmt else codes
+    layer = _layer(store, scale, nq.NATIVE_FP8 if fmt else nq.NATIVE_INT8).to("cuda")
+    launches = []
+    real = _fd().launch_triton
+    monkeypatch.setattr(_fd(), "launch_triton", lambda *a: launches.append(1) or real(*a))
+    got = layer._stored_weight(dtype).cpu()
+    assert launches and _fd()._TRITON_STATE["failed"] is None, _fd()._TRITON_STATE["failed"]
+    ref = _old(codes, scale, dtype, fmt)
+    _assert_bitwise(got, ref)
