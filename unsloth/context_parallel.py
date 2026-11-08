@@ -111,6 +111,80 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
+# only these layer types and the window are exempt; chunked attention and softcap still refuse.
+_ULYSSES_OWN_MASK_LAYER_TYPES = {
+    "deepseek_v32": ("deepseek_sparse_attention",),
+    "deepseek_v4": (
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ),
+}
+
+
+# Model types whose Ulysses mixers refuse packed batches, for a model ID string (no modules to walk yet).
+_ULYSSES_HYBRID_PACKING_MODEL_TYPES = {
+    "kimi_linear": "KimiDeltaAttention",
+    "kimi_k3": "KimiDeltaAttention",
+    "minimax": "MiniMaxLightningAttention",
+}
+
+
+def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
+    """Class name of the first module whose Ulysses forward refuses packed batches (Kimi delta,
+    MiniMax Lightning, DeepSeek V3.2 / V4 attention), else None. SFT keeps padding-free off for them.
+    A model ID string (TRL builds it later) is classified by its config's model types instead."""
+    from .utils.ulysses_deepseek import (
+        DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+        DEEPSEEK_ULYSSES_MODEL_TYPES,
+    )
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        for model_type in model_types or ():
+            if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
+                return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
+            if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
+                return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+        ):
+            return type(module).__name__
+    return None
+
+
+def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
+    # The DSA indexer only picks keys (a discrete top-k), so its weights never get a gradient. CP
+    # turns DDP's find_unused_parameters off, so trainable indexer weights (LoRA on V3.2 wq_b, V4
+    # q_b_proj) would stall the gradient reduction: DDP leaves them out instead.
+    names = [
+        f"{attn_name}.{sub}.{p}"
+        for sub, module in attention.named_modules()
+        if sub.rsplit(".", 1)[-1] == "indexer"
+        for p, _ in module.named_parameters()
+    ]
+    if names:
+        ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", ()))
+        model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
+
+
+def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
+    # The eager Ulysses forward is a graph break; the resume function is shared by all layers, so one
+    # layer failing to compile it (fp32 MoE grouped_mm) makes earlier checkpointed layers recompute it
+    # eagerly: CheckpointError (62 vs 61 saved tensors, V3.2 fp32 CP = 2).
+    parent = attn_name.rpartition(".")[0]
+    if not parent:
+        return
+    from .models._block_compile import _OFF
+
+    model.get_submodule(parent).__dict__["_unsloth_block_mode"] = _OFF
+
+
 def _model_heads(model):
     config = getattr(model, "config", None)
     text = getattr(config, "text_config", None) or config
@@ -164,7 +238,14 @@ def _unsupported_attention(
     for c in configs:
         if c is None:
             continue
+        own_mask = (
+            _ULYSSES_OWN_MASK_LAYER_TYPES.get(getattr(c, "model_type", None))
+            if backend == "ulysses"
+            else None
+        )
         layer_types = getattr(c, "layer_types", None)
+        if own_mask and layer_types:
+            layer_types = [t for t in layer_types if t not in own_mask]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -175,14 +256,15 @@ def _unsupported_attention(
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if not windows_ok and (
+        if not (own_mask or windows_ok) and (
             (isinstance(sliding_window, int) and sliding_window > 0)
             or getattr(c, "use_sliding_window", None) is True
         ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
-        if not windows_ok and getattr(c, "attn_logit_softcapping", None):
+        # DeepSeek's own forwards apply no softcap, so it refuses there even on the generic route.
+        if (own_mask or not windows_ok) and getattr(c, "attn_logit_softcapping", None):
             return "attention logit softcapping"
     return None
 
@@ -208,6 +290,10 @@ def get_cp_manager() -> Optional["ContextParallelManager"]:
 
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_deepseek import (
+    DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+    wrap_deepseek_attention_forward,
+)
 from .utils.ulysses_hybrid import (
     GATED_DELTA_ATTENTION_CLASSES,
     check_ulysses_mixer_heads,
@@ -432,11 +518,15 @@ def _uses_unsloth_attention(model, rl = False) -> bool:
 
 def _generic_hf_attention(model) -> bool:
     """Every attention layer is a Hugging Face forward through ALL_ATTENTION_FUNCTIONS, so Ulysses can run the
-    model's own attention function (scaling, softcap, sliding window, sinks) after the exchange."""
+    model's own attention function (scaling, softcap, sliding window, sinks) after the exchange. DeepSeek V3.2 /
+    V4 attention gets its own Ulysses forward instead (utils/ulysses_deepseek.py) under the same model checks."""
     if not isinstance(model, torch.nn.Module) or _stateful_mixers(model):
         return False
     modules = _attention_modules(model)
-    return bool(modules) and all(is_hf_registry_attention(m) for m in modules)
+    return bool(modules) and all(
+        is_hf_registry_attention(m) or type(m).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+        for m in modules
+    )
 
 
 def _supports_context_parallel(
@@ -554,7 +644,14 @@ class ContextParallelManager:
             # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules():
-                if name.endswith("self_attn") and (
+                if (
+                    name.endswith("self_attn")
+                    and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+                ):
+                    wrap_deepseek_attention_forward(module, get_cp_manager)
+                    _ddp_ignore_indexer(model, name, module)
+                    _keep_layer_out_of_block_compile(model, name)
+                elif name.endswith("self_attn") and (
                     type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
                     or (generic and is_hf_registry_attention(module))
                 ):
@@ -1522,7 +1619,7 @@ def _check_cp_model(
             "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3, Mistral, Granite, "
             "Cohere) with either backend, and with Ulysses any Hugging Face attention model (attention through "
             "ALL_ATTENTION_FUNCTIONS, e.g. MiniMax-M2) and the Qwen3-Next / Qwen3.5 Gated DeltaNet, Kimi-Linear and "
-            "MiniMax-M1 Lightning hybrids."
+            "MiniMax-M1 Lightning hybrids, and DeepSeek V3.2 (DSA indexer) / V4 (compressed sink attention)."
         )
 
 

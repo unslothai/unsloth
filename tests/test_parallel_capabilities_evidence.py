@@ -353,6 +353,63 @@ def test_minimax_evidence_ids_are_real_parity_cases():
             assert set(ids) <= set(parity.MODEL_CASES), (cell.name, ids)
 
 
+@pytest.mark.parametrize("family", ["deepseek_v2", "deepseek_v3", "deepseek_v32", "deepseek_v4"])
+@pytest.mark.parametrize(
+    "mode, expert_lora",
+    [("full", False), ("lora", False), ("lora", True)],
+    ids = ["full", "lora", "lora+experts"],
+)
+def test_deepseek_moe_under_cp_follows_its_gloo_evidence(family, mode, expert_lora):
+    # tests/test_ulysses_deepseek_reference.py::test_deepseek_cp_matches_fp64_reference: cp 2 / 4, dp 2 x cp 2,
+    # HF checkpointing, sdpa and eager (V4: eager). Unsloth's checkpoint, FSDP2 x cp and the router loss stay refused.
+    kw = dict(
+        trainer = "sft",
+        family = family,
+        moe = True,
+        mode = mode,
+        expert_lora = expert_lora,
+        cp = 2,
+        cp_backend = "ulysses",
+        torch = (2, 13),
+        attention = "eager",
+    )
+    for extra in ({}, {"memory": "gc"}, {"attention": "sdpa"}, {"dp": 2}, {"cp": 4}):
+        if family == "deepseek_v4" and extra.get("attention") == "sdpa":
+            continue
+        query = caps.Query(**{**kw, **extra})
+        status, cell = caps.cell_status(query)
+        assert status == "supported" and "test_deepseek_cp_matches_fp64_reference" in cell.parity, (
+            extra,
+            cell,
+        )
+        caps.check(query)
+    refused = [
+        ({"memory": "unsloth_offload"}, "Unsloth checkpoint"),
+        ({"fsdp2": True}, "fsdp2_cp"),
+        ({"router_aux_loss": True}, "router auxiliary loss"),
+        ({"compile": "block"}, "no numeric parity"),
+        ({"mode": "qlora"}, "4-bit experts"),
+    ]
+    if family == "deepseek_v4":
+        refused.append(({"attention": "sdpa"}, "no numeric parity"))
+    for extra, match in refused:
+        with pytest.raises(NotImplementedError, match = match):
+            caps.check(caps.Query(**{**kw, **extra}))
+
+
+def test_deepseek_evidence_ids_are_real_parity_cases():
+    import re
+
+    parity = pytest.importorskip("tests.test_ulysses_deepseek_reference")
+    named = 0
+    for cell in caps.CELLS:
+        if cell.parity and "test_deepseek_cp_matches_fp64_reference[" in cell.parity:
+            ids = re.search(r"\[(.*)\]", cell.parity).group(1).split("|")
+            assert set(ids) <= set(parity.CASES), (cell.name, ids)
+            named += 1
+    assert named >= 12
+
+
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):
