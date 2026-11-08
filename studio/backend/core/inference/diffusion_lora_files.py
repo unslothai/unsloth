@@ -6,6 +6,7 @@ adapter names: :func:`set_adapter_weights` / :func:`unload_adapters` replace dif
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional
 
@@ -34,6 +35,48 @@ NORMALIZED_FAMILIES = ("anima", "krea-2", "moss-image")
 def read_lora_file(path: str) -> dict:
     from safetensors.torch import load_file
     return load_file(str(path))
+
+
+# "0": a rewritten file ignores its diffusers lora_adapter_metadata (every module at scale 1, as before).
+REWRITE_METADATA_ENV = "UNSLOTH_DIFFUSION_LORA_REWRITE_METADATA"
+_METADATA_KEY = "lora_adapter_metadata"  # diffusers' LORA_ADAPTER_METADATA_KEY
+
+
+def read_lora_metadata(path: str) -> Optional[dict]:
+    """The transformer's ``LoraConfig`` kwargs diffusers reads from the header on a path load, or None."""
+    import json
+
+    from safetensors import safe_open
+
+    try:
+        with safe_open(str(path), framework = "pt") as handle:
+            raw = (handle.metadata() or {}).get(_METADATA_KEY)
+        metadata = json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001 - unreadable header: no metadata, as diffusers treats it
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    # Every normalised family loads under the "transformer" prefix, so diffusers keeps only those keys.
+    config = {
+        k[len("transformer.") :]: v for k, v in metadata.items() if k.startswith("transformer.")
+    }
+    return config if "lora_alpha" in config else None
+
+
+def _pattern_value(patterns: Any, stem: str, default: Any) -> Any:
+    """PEFT's ``get_pattern_key`` rule: the first key that matches the end of ``stem`` on a dot boundary."""
+    for key, value in (patterns or {}).items():
+        if re.match(rf"(.*\.)?({key})$", stem):
+            return value
+    return default
+
+
+def _metadata_scale(metadata: dict, stem: str, rank: int) -> float:
+    """PEFT's ``scaling`` for module ``stem`` under this config."""
+    import math
+
+    alpha = float(_pattern_value(metadata.get("alpha_pattern"), stem, metadata["lora_alpha"]))
+    return alpha / (math.sqrt(rank) if metadata.get("use_rslora") else rank)
 
 
 def _strip(key: str) -> str:
@@ -69,8 +112,12 @@ def split_lokr(state: dict) -> tuple[dict, dict]:
     return lokr, rest
 
 
-def normalize_lora(state: dict, family: Optional[str]) -> dict:
-    """Plain LoRA tensors as ``lora_A`` / ``lora_B`` with ``.alpha`` folded into ``lora_B`` (alpha / rank)."""
+def normalize_lora(
+    state: dict,
+    family: Optional[str],
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Plain LoRA tensors as ``lora_A`` / ``lora_B``, ``.alpha`` (else ``metadata``'s scale) folded into ``lora_B``."""
     import torch
 
     renamed: dict = {}
@@ -81,13 +128,25 @@ def normalize_lora(state: dict, family: Optional[str]) -> dict:
             continue
         key = key.replace(".lora_down.", ".lora_A.").replace(".lora_up.", ".lora_B.")
         renamed[key] = value
+    scales: dict = {}
     for stem, alpha in alphas.items():
-        a, b = renamed.get(stem + ".lora_A.weight"), renamed.get(stem + ".lora_B.weight")
-        if a is None or b is None:
+        a = renamed.get(stem + ".lora_A.weight")
+        if a is not None:
+            scales[stem] = float(alpha) / int(a.shape[0])
+    if metadata is not None and not metadata.get("use_dora"):
+        for key, a in renamed.items():
+            if key.endswith(".lora_A.weight") and key[: -len(".lora_A.weight")] not in scales:
+                stem = key[: -len(".lora_A.weight")]
+                scales[stem] = _metadata_scale(metadata, _strip(stem), int(a.shape[0]))
+    for stem, scale in scales.items():
+        if renamed.get(stem + ".lora_B.weight") is None:
             continue  # an alpha with no low-rank pair (some converters write it for every module)
-        scale = float(alpha) / int(a.shape[0])
         if scale != 1.0:
-            renamed[stem + ".lora_B.weight"] = (b.to(torch.float32) * scale).to(b.dtype)
+            # PEFT scales the whole lora_B output, its bias included
+            for key in (stem + ".lora_B.weight", stem + ".lora_B.bias"):
+                t = renamed.get(key)
+                if t is not None:
+                    renamed[key] = (t.to(torch.float32) * scale).to(t.dtype)
     if family == "anima":
         renamed = _anima_embedding(renamed)
     elif family == "moss-image":
@@ -412,6 +471,15 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     if plain:
         # A file needing no rewrite loads by path: diffusers reads lora_alpha / rank from its metadata, not a dict.
         unchanged = not lokr and plain.keys() == raw.keys() and all(plain[k] is raw[k] for k in raw)
+        if not unchanged and (os.environ.get(REWRITE_METADATA_ENV) or "").strip().lower() not in (
+            "0",
+            "off",
+            "false",
+            "no",
+        ):
+            metadata = read_lora_metadata(path)
+            if metadata is not None:
+                plain = normalize_lora(rest, family, metadata)
         # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:

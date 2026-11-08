@@ -9,6 +9,12 @@ import types
 
 import pytest
 
+# A sibling test may put this directory on sys.path and import this file top-level.
+try:
+    from ._sparse_file import extend_sparse
+except ImportError:
+    from _sparse_file import extend_sparse
+
 torch = pytest.importorskip("torch")
 
 from core.inference import diffusion as dmod
@@ -39,7 +45,7 @@ def _safetensors(path, tensors):
     with open(path, "wb") as fh:
         fh.write(len(raw).to_bytes(8, "little"))
         fh.write(raw)
-        fh.truncate(8 + len(raw) + offset)
+        extend_sparse(fh, 8 + len(raw) + offset)
     return path
 
 
@@ -257,7 +263,7 @@ def test_gguf_companions_are_priced_at_the_load_dtype(tmp_path, monkeypatch):
     )
     gguf = tmp_path / "t-Q8_0.gguf"
     with open(gguf, "wb") as fh:
-        fh.truncate(1000 * MIB)
+        extend_sparse(fh, 1000 * MIB)
     _card(monkeypatch)
     plan = _plan(torch.bfloat16, kind = "gguf", single_file = str(gguf))
     assert plan.estimates["companion_dense_mib"] == 1100
