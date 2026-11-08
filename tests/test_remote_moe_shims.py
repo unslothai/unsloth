@@ -892,7 +892,8 @@ def _moe_ddp_worker(rank, world, cp_active, lora):
                 if not got.requires_grad:
                     continue
                 expert = int(name.split(".")[1]) if name.startswith("experts.") else None
-                assert got.grad is not None, name  # a zero gradient, never None, for DDP
+                # A zero gradient, never None, for DDP.
+                assert got.grad is not None, f"{name} did not receive grad"
                 if want.grad is None:
                     assert expert is not None and expert not in used, name
                     assert not got.grad.any(), name
