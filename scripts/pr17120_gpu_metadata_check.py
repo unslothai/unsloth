@@ -275,12 +275,19 @@ def main() -> int:
                     )
                     and all(
                         d[3] == gpus[r][1]
-                        and abs(d[2] / 2**20 - float(gpus[r][3])) <= 0.10 * float(gpus[r][3])
+                        and (
+                            # integrated: the driver gives the shared pool, nvidia-smi only the carve-out
+                            d[2] / 2**20 >= float(gpus[r][3])
+                            if d[1]
+                            else abs(d[2] / 2**20 - float(gpus[r][3])) <= 0.10 * float(gpus[r][3])
+                        )
                         for d, r in zip(info, got_rows)
                     )
                 )
-                want, want_rows = None, (exp if ordered else got_rows)
-                rows_used = (
+                # nvidia-smi rows stay unjoined with an integrated card among them (its memory is a carve-out)
+                integrated = bool(info) and any(d is not None and d[1] for d in info)
+                want, want_rows = None, ([] if integrated else exp if ordered else got_rows)
+                rows_used = integrated or (
                     rows is not None and exp is not None and len(rows) == len(exp) and len(exp) > 0
                 )
             case = {
