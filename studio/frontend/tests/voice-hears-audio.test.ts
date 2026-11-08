@@ -87,6 +87,9 @@ test("speech comes back from the model only where it speaks and is the picked vo
 test("the loop keeps and sends the turn's speech through the hearing gate, not the speaking one", () => {
   const loop = readSrc("features/chat/adapters/studio-voice-loop-adapter.ts");
   assert.match(loop, /if \(transcript && voiceHearsAudio\(rt, useVoiceSettingsStore\.getState\(\)\.micTarget\)\) \{\s*turnAudio\.add/);
+  // An emptied edit drops its speech before this turn's is kept.
+  assert.match(loop, /onCleared: \(\) => turnAudio\.clear\(\)/);
+  assert.match(loop, /const editing = !heldEdit\.autoSend\(\);[\s\S]{0,200}turnAudio\.add\(merged, sampleRate\)/);
   const engine = readSrc("features/chat/voice/voice-engine.tsx");
   assert.match(engine, /const turnAudio = voiceHearsAudio\(/);
   assert.doesNotMatch(engine, /const turnAudio = speaksWithChatModel\(\)/);

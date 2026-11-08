@@ -130,3 +130,21 @@ test("a second click while editing is not a second claim", () => {
   edit.reset();
   assert.equal(edit.owned, false);
 });
+
+test("an emptied edit reports itself once, a sent one does not", () => {
+  let box = "draft";
+  let cleared = 0;
+  const edit = createHeldEdit({ readBox: () => box, onCleared: () => (cleared += 1) });
+  assert.equal(edit.claim("draft"), true);
+  assert.equal(edit.autoSend(), false);
+  box = "";
+  assert.equal(edit.autoSend(), true);
+  assert.equal(edit.autoSend(), true);
+  assert.equal(cleared, 1);
+  box = "again";
+  edit.claim("again");
+  edit.sent();
+  box = "";
+  edit.autoSend();
+  assert.equal(cleared, 1);
+});

@@ -317,6 +317,8 @@ export function registerComposerTextReader(read: (() => string) | null): void {
 const heldEdit = createHeldEdit({
   readBox: () => readComposerText(),
   onChange: (owned) => useChatRuntimeStore.getState().setVoiceHeldForEdit(owned),
+  // The speech kept for that draft goes with it, not into the next turn.
+  onCleared: () => turnAudio.clear(),
   trace: voiceTrace,
 });
 
@@ -740,12 +742,13 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
           return;
         }
         settleFinished(Boolean(transcript));
+        // Clicked into: what was said joins the box and waits for the user's send.
+        // Decided before keeping this speech, so an emptied draft's audio is dropped first.
+        const editing = !heldEdit.autoSend();
         const rt = useChatRuntimeStore.getState();
         if (transcript && voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)) {
           turnAudio.add(merged, sampleRate);
         }
-        // Clicked into: what was said joins the box and waits for the user's send.
-        const editing = !heldEdit.autoSend();
         if (transcript && heldTurn) {
           transcript = joinTurn(heldTurn.text, transcript);
           reportLayaOutcome(heldJudgeId, "continued", { text: transcript });
