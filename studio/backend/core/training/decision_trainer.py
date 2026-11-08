@@ -746,7 +746,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         "report_to": "none",
         "disable_tqdm": _hf_stdout_progress_disabled(),
         "warmup_steps": config["warmup_steps"]
-        or round((config["warmup_ratio"] or 0.0) * total_steps),
+        or math.ceil((config["warmup_ratio"] or 0.0) * total_steps),
         "save_strategy": "no",
     }
     if max_steps > 0:

@@ -272,6 +272,55 @@ def test_unusable_hub_rows_end_a_model_download_in_progress(fake_decision_runtim
             decision._abandoned_downloads.pop().join(3)
 
 
+# Expected = transformers 5.22.1 TrainingArguments.get_warmup_steps.
+@pytest.mark.parametrize(
+    "ratio, max_steps, expected",
+    [(0.05, 10, 1), (0.03, 15, 1), (0.1, 25, 3), (0.1, 45, 5), (0.15, 30, 5)],
+)
+def test_warmup_ratio_rounds_up_like_transformers(
+    fake_decision_runtime, monkeypatch, ratio, max_steps, expected
+):
+    model_api, _ = fake_decision_runtime
+    seen = {}
+
+    class ReachedArguments(Exception):
+        pass
+
+    def training_arguments(**arguments):
+        seen.update(arguments)
+        raise ReachedArguments
+
+    monkeypatch.setattr(sys.modules["transformers"], "TrainingArguments", training_arguments)
+    torch_cuda = SimpleNamespace(is_available = lambda: False)
+    monkeypatch.setattr(sys.modules["torch"], "cuda", torch_cuda, raising = False)
+    monkeypatch.setattr(decision, "_load_rows", lambda *_a: ([{"state": "row"}], None))
+    monkeypatch.setattr(decision, "_is_mlx", lambda: False)
+    model_api.from_pretrained = lambda *_a, **_kw: (object(), object())
+    model_api.build_dataset = lambda *_a: (
+        [{"state": "row"}],
+        {"total": 1, "skipped": 0, "reason": None},
+    )
+    model_api.split_holdout = lambda items, seed: (items, [])
+    config = _decision_config(
+        batch_size = 1,
+        gradient_accumulation_steps = 1,
+        max_steps = max_steps,
+        num_epochs = 1,
+        learning_rate = 1e-4,
+        weight_decay = 0.0,
+        lr_scheduler_type = "linear",
+        optim = "adamw_torch",
+        warmup_steps = None,
+        warmup_ratio = ratio,
+        max_grad_norm = None,
+        eval_steps = None,
+        enable_wandb = False,
+    )
+    with pytest.raises(ReachedArguments):
+        decision._run(Queue(), Queue(), config, "unused-output")
+    assert seen["warmup_steps"] == expected
+
+
 def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
     script = textwrap.dedent(
         """
