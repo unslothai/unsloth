@@ -3106,8 +3106,9 @@ def arm_block_graphs(
         return handles
     why = (
         _block_basics(target, family, cache_engaged, speed_mode, family_default)
-        or (None if split else prompt_length_reason(pipe, family))
+        # Before the prompt-length reason, which an env var can force past: this one cannot be.
         or fp8_rowwise_capture_refusal(_denoiser_modules(pipe), _graph_device(target))
+        or (None if split else prompt_length_reason(pipe, family))
     )
     if whole:
         uninstall_all(whole, logger = logger)

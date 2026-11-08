@@ -1232,6 +1232,22 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
     assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
 
 
+def test_the_streamk_fp8_refusal_outranks_the_prompt_length_reason(monkeypatch):
+    """A row-wise fp8 denoiser on sm_89 under torch < 2.12 records nothing (the replay hangs), and the status names that
+    cause, not the prompt-length one an env var could force past."""
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    why = "the row-wise fp8 GEMM on this sm_89 card cannot replay in a CUDA graph"
+    monkeypatch.setattr(cg, "fp8_rowwise_capture_refusal", lambda modules, device = None: why)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = True)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(why)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
 def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
     pipe = _pipe_with(Net(blocks = 3))
     pipe.transformer._hf_hook = types.SimpleNamespace()
