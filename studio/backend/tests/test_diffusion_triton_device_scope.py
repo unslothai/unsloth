@@ -59,12 +59,22 @@ def _cuda_like(index: int):
     return types.SimpleNamespace(is_cuda = True, device = torch.device("cuda", index))
 
 
+@pytest.fixture(autouse = True)
+def _thread_on_card_0(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+
 def test_scope_is_the_tensor_card(monkeypatch):
     monkeypatch.delenv(V.DEVICE_SCOPE_ENV, raising = False)
     scope = V._on_card(_cuda_like(1))
     assert isinstance(scope, torch.cuda.device) and scope.idx == 1
     scope = M._on_card(_cuda_like(3))
     assert isinstance(scope, torch.cuda.device) and scope.idx == 3
+
+
+def test_the_current_card_needs_no_switch(monkeypatch):
+    monkeypatch.delenv(V.DEVICE_SCOPE_ENV, raising = False)
+    assert isinstance(V._on_card(_cuda_like(0)), contextlib.nullcontext)
 
 
 @pytest.mark.parametrize("off", ["0", "off", "false"])

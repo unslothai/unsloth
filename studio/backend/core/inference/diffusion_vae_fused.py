@@ -517,16 +517,21 @@ def _torch():
     return torch
 
 
+_NO_SCOPE = contextlib.nullcontext()
+
+
 def _on_card(t: Any) -> Any:
     """Triton launches on the current device: a tensor on another card fails the launch."""
     torch = _torch()
-    if (
-        torch.compiler.is_compiling()
-        or not t.is_cuda
-        or os.environ.get(DEVICE_SCOPE_ENV, "").strip().lower() in _FALSE
-    ):
-        return contextlib.nullcontext()
-    return torch.cuda.device(t.device)
+    if not t.is_cuda or torch.compiler.is_compiling():
+        return _NO_SCOPE
+    index = t.device.index
+    # same card (every single-card render): no device switch, ~1 us instead of ~4 us per launch
+    if index is None or index == torch.cuda.current_device():
+        return _NO_SCOPE
+    if os.environ.get(DEVICE_SCOPE_ENV, "").strip().lower() in _FALSE:
+        return _NO_SCOPE
+    return torch.cuda.device(index)
 
 
 def _stock_in(t: Any) -> Any:
