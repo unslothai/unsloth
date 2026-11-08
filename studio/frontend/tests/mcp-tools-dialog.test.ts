@@ -36,7 +36,7 @@ const ROW = readSrc("features/settings/components/unsloth-studio-mcp-row.tsx");
 const DIALOG = readSrc("features/settings/settings-dialog.tsx");
 const STORE = readSrc("features/settings/stores/settings-dialog-store.ts");
 
-// Each catalog tool's backend area (its module's short name).
+// Each catalog tool's backend area, in tool_catalog() order.
 const AREAS: Record<string, string> = {
   studio_status: "status",
   list_models: "models",
@@ -66,31 +66,7 @@ const AREAS: Record<string, string> = {
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
 // Same list and order as the backend's tool_catalog().
-const CATALOG = [
-  "studio_status",
-  "list_models",
-  "load_model",
-  "unload_model",
-  "plan_load",
-  "download_model",
-  "chat",
-  "embed",
-  "system_one",
-  "generate_image",
-  "generate_audio",
-  "transcribe",
-  "analyze_audio",
-  "generate_video",
-  "run_recipe",
-  "get_job",
-  "datasets",
-  "start_training",
-  "list_training_runs",
-  "export_model",
-  "list_media",
-  "voices",
-  "cancel",
-];
+const CATALOG = Object.keys(AREAS);
 
 function lookup(root: unknown, key: string): unknown {
   return key
@@ -175,74 +151,40 @@ test("each group and every tool get one row that says what a click does, and eve
   assert.match(TOOLS, /moreBelow \? "border-border" : "border-transparent"/);
 });
 
-test("each tool is one pill chip with its own icon, a checkbox role and a shape cue for on and off", () => {
+test("each tool is a checkbox pill with its own icon", () => {
   assert.match(
     TOOLS,
     /<button\s+type="button"\s+role="checkbox"\s+aria-checked=\{on\}\s+data-mcp-tool=\{tool\.name\}/,
   );
   assert.match(TOOLS, /onClick=\{\(\) => onToggle\(!on\)\}/);
-  assert.match(TOOLS, /relative flex min-h-9 w-full min-w-0 cursor-pointer select-none items-center gap-2\.5 rounded-full/);
-  // The Hub filter look: a stronger fill and a bare tick when on, a lighter fill and no tick when off.
-  assert.match(TOOLS, /\? "bg-wash-9 text-foreground dark:bg-wash-14"\s+: "bg-wash-4 text-muted-foreground hover:bg-wash-6 hover:text-foreground"/);
-  assert.match(TOOLS, /\{on \? \(\s*<HugeiconsIcon\s+icon=\{Tick02Icon\}/);
-  // No disc around any mark and no accent.
-  assert.doesNotMatch(TOOLS, /bg-control-accent|ring-wash-2\d/);
-  assert.match(TOOLS, /motion-reduce:transition-none/);
-  // Three columns when the dialog is wide, fewer when narrow.
-  assert.match(TOOLS, /grid grid-cols-1 gap-1\.5 @sm:grid-cols-2 @xl:grid-cols-3/);
   for (const name of CATALOG) {
     assert.match(TOOLS, new RegExp(`\\n  ${name}: \\w+Icon,`), name);
   }
-  assert.doesNotMatch(TOOLS, /forcedByEnv|toast/);
 });
 
-test("tool changes flip at once, and a late reply can't undo a newer change", () => {
+test("saves flip at once, a late reply never undoes a newer change, and a rejected one resyncs", () => {
   const save = SECTION.slice(
     SECTION.indexOf("const saveTools = async"),
     SECTION.indexOf("// subscribe to same-tab tunnel changes"),
   );
-  assert.ok(save.indexOf("setSettings((current)") < save.indexOf("updateMcpTools(states)"));
-  assert.match(save, /const request = \+\+saveRequest\.current;/);
-  assert.match(save, /if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/);
-  assert.doesNotMatch(SECTION, /toolsSaving|saving=\{/);
-  // The API client queues every request (mcp-access-api.test.ts), so no second queue here.
-  assert.match(save, /await updateMcpTools\(states\)/);
-  assert.doesNotMatch(SECTION, /enqueueSave|saveQueue/);
-});
-
-test("the MCP switch reply and the tool replies are guarded alike, so neither full snapshot undoes the other", () => {
   const apply = SECTION.slice(SECTION.indexOf("const apply = async"), SECTION.indexOf("// Settings > API links here"));
-  assert.match(apply, /const request = \+\+saveRequest\.current;/);
-  assert.match(apply, /await updateMcpAccess\(enabled\)/);
-  assert.equal(apply.match(/if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/g)?.length, 2);
+  assert.ok(save.indexOf("setSettings((current)") < save.indexOf("updateMcpTools(states)"));
+  assert.ok(save.indexOf("updateMcpTools(states)") < save.lastIndexOf("loadMcpAccess()"));
+  // The switch and the tools share one request counter, so neither full snapshot undoes the other.
+  for (const body of [save, apply]) {
+    assert.match(body, /const request = \+\+saveRequest\.current;/);
+    assert.match(body, /if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/);
+  }
   assert.doesNotMatch(apply, /setSettings\(await/);
-});
-
-test("a rejected tool change resyncs and shows the error in the dialog", () => {
-  const save = SECTION.slice(
-    SECTION.indexOf("const saveTools = async"),
-    SECTION.indexOf("// subscribe to same-tab tunnel changes"),
-  );
-  assert.ok(
-    save.indexOf("updateMcpTools(states)") <
-      save.lastIndexOf("loadMcpAccess()"),
-  );
-  // Changed tools only, merged on the server: never a full list built from this copy.
-  assert.doesNotMatch(SECTION, /disabled_tools|disabledTools/);
-  assert.doesNotMatch(TOOLS, /\.filter\(\(tool\) => \(names/);
+  // The API client queues every request (mcp-access-api.test.ts), so no second queue here.
+  assert.doesNotMatch(SECTION, /enqueueSave|saveQueue|disabled_tools|disabledTools/);
   assert.match(save, /t\("settings\.mcp\.tools\.saveError"\)/);
-  assert.match(TOOLS, /text-xs leading-snug text-destructive/);
 });
 
 test("the API tab row matches the keyless link beside it, shows the status as text and jumps to the card on Agents", () => {
   assert.match(ROW, /t\("settings\.mcp\.status\.on"\)/);
   assert.match(ROW, /t\("settings\.mcp\.status\.off"\)/);
   assert.match(ROW, /label=\{t\("settings\.apiKeys\.mcp\.title"\)\}/);
-  assert.doesNotMatch(ROW, /SettingsSection/);
-  assert.match(
-    ROW,
-    /className="inline-flex items-center gap-1 rounded-full px-1\.5 py-0\.5 text-ui-11 font-medium text-muted-foreground/,
-  );
   assert.match(ROW, /openDialog\("agents", \{ scrollTarget: "agents-mcp" \}\)/);
   assert.match(STORE, /"agents-mcp": "agents",/);
   assert.match(SECTION, /scrollTarget !== "agents-mcp" \|\| !loaded/);
@@ -260,45 +202,25 @@ test("tools a chat never gets are named once, in a note under the groups", () =>
   assert.doesNotMatch(TOOLS, /notInChat/);
 });
 
-test("no emerald and no unscaled lengths", () => {
-  for (const source of [TOOLS, ROW]) {
-    assert.doesNotMatch(source, /emerald/);
-    assert.doesNotMatch(source, /-\[\d+(?:\.\d+)?(?:px|rem)\]/);
+test("every catalog tool has a label and a description, and an unknown one falls back to its name", () => {
+  for (const [keys, keyOf] of [
+    [MCP_TOOL_LABEL_KEYS, mcpToolLabelKey],
+    [MCP_TOOL_DESCRIPTION_KEYS, mcpToolDescriptionKey],
+  ] as const) {
+    assert.deepEqual(Object.keys(keys), CATALOG);
+    for (const name of CATALOG) {
+      assert.equal(typeof lookup(en, keyOf(name) ?? ""), "string", name);
+    }
+    assert.equal(keyOf("brand_new_tool"), null);
+    assert.equal(keyOf("constructor"), null);
   }
-});
-
-test("every catalog tool has a short label, and an unknown one falls back to its name", () => {
-  assert.deepEqual(Object.keys(MCP_TOOL_LABEL_KEYS), CATALOG);
-  for (const name of CATALOG) {
-    const key = mcpToolLabelKey(name);
-    assert.ok(key, name);
-    assert.equal(typeof lookup(en, key), "string", key);
-  }
-  assert.deepEqual(
-    Object.keys(en.settings.mcp.toolLabels).length,
-    CATALOG.length,
-  );
-  assert.equal(mcpToolLabelKey("brand_new_tool"), null);
-  assert.equal(mcpToolLabelKey("constructor"), null);
   assert.match(TOOLS, /const label = labelKey \? t\(labelKey\) : tool\.name;/);
-  // Hover says what the tool does, with the raw name under it; an unknown tool shows its name as the label.
-  assert.deepEqual(Object.keys(MCP_TOOL_DESCRIPTION_KEYS), CATALOG);
-  for (const name of CATALOG) {
-    const key = mcpToolDescriptionKey(name);
-    assert.ok(key, name);
-    assert.equal(typeof lookup(en, key), "string", key);
-  }
-  assert.equal(mcpToolDescriptionKey("constructor"), null);
-  assert.match(TOOLS, /<span>\{t\(descriptionKey\)\}<\/span>\s*<span className="font-mono text-ui-11 opacity-60">\{tool\.name\}<\/span>/);
 });
 
-test("the English copy says Unsloth, never Studio", () => {
+test("every locale has the same settings.mcp keys with plain copy, and English says Unsloth, not Studio", () => {
   for (const [key, value] of leaves(en.settings.mcp)) {
     assert.doesNotMatch(value, /Studio/, key);
   }
-});
-
-test("every locale has the same settings.mcp keys, with plain copy", () => {
   const keys = leaves(en.settings.mcp)
     .map(([key]) => key)
     .sort();

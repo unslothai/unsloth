@@ -68,8 +68,8 @@ def _read_from_db() -> _Record:
     )
 
 
-def _record() -> Optional[_Record]:
-    """The cached owner record, or None when the read failed or kept racing writes."""
+def owner_record() -> Optional[_Record]:
+    """One cached snapshot of (stored switch, turned-off tools), or None when the read failed or kept racing writes."""
     global _cached
     # Retry a read that overlaps a write: one save must not briefly hide every tool from agents.
     for _ in range(_RACE_RETRIES):
@@ -89,14 +89,9 @@ def _record() -> Optional[_Record]:
     return None
 
 
-def owner_record() -> Optional[tuple[bool, Optional[frozenset[str]]]]:
-    """One snapshot of (stored switch, turned-off tools), or None when it could not be read."""
-    return _record()
-
-
 def get_mcp_enabled() -> bool:
     """The owner's stored switch, ignoring the environment. Fails closed."""
-    record = _record()
+    record = owner_record()
     return record is not None and record[0]
 
 
@@ -106,7 +101,7 @@ def is_mcp_enabled() -> bool:
 
 def disabled_tools() -> Optional[frozenset[str]]:
     """Names the owner turned off, or None when every tool counts as off."""
-    record = _record()
+    record = owner_record()
     return None if record is None else record[1]
 
 
