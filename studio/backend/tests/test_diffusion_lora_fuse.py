@@ -79,7 +79,7 @@ def engine(monkeypatch):
 
     monkeypatch.delenv(HOST_GUARD_ENV, raising = False)
     monkeypatch.delenv(HOST_RAM_LIMIT_ENV, raising = False)
-    # The host's own free RAM can sit below the reserve (7 GB CI runners); the RAM tests cap it explicitly.
+    # CI runners can sit below the reserve; the RAM tests cap it explicitly.
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
     monkeypatch.setattr(dmod, "_refuse_lora_without_loader", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "_lora_load_block_reason", lambda pipe: None)
@@ -258,7 +258,7 @@ def test_a_host_backup_that_cuts_into_the_ram_reserve_stays_unfused(engine, monk
     assert _merged_layers(engine.unet) == 0
     assert not lf.fused(engine.pipe)
     assert all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
-    monkeypatch.setenv(HOST_GUARD_ENV, "0")  # the kill switch restores the unguarded backup
+    monkeypatch.setenv(HOST_GUARD_ENV, "0")
     engine.apply(1.0)
     assert _merged_layers(engine.unet) > 0
 
@@ -267,8 +267,8 @@ def test_a_host_backup_that_cuts_into_the_ram_reserve_stays_unfused(engine, monk
     "available_mib, nbytes_mib, fits",
     [
         (1 << 20, 4 << 10, True),
-        (4 << 10, 512, True),  # 512 MiB + 3 GiB reserve <= 4 GiB
-        (4 << 10, 2 << 10, False),  # 2 GiB + 3 GiB reserve > 4 GiB
+        (4 << 10, 512, True),
+        (4 << 10, 2 << 10, False),
         (None, 8 << 10, True),  # unreadable host: the allocation decides
     ],
 )
@@ -296,7 +296,7 @@ def test_the_host_backup_is_pageable_on_an_integrated_gpu(monkeypatch, integrate
     assert lf.HOST_GUARD_ENV == HOST_GUARD_ENV
     cuda = torch.device("cuda", 1)
     assert lf._host_backup_pinned(cuda) is (not integrated)
-    assert asked == [cuda]  # asked about the weights' own card, not the current device
+    assert asked == [cuda]  # the weights' card, not the current device
     assert lf._host_backup_pinned(torch.device("cpu")) is False
     monkeypatch.setenv(lf.HOST_GUARD_ENV, "0")
     assert lf._host_backup_pinned(cuda) is True

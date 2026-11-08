@@ -208,8 +208,7 @@ def _host_guard_enabled() -> bool:
 
 
 def _host_backup_pinned(device: Any) -> bool:
-    """Pinned only for a discrete CUDA / ROCm card: on an integrated GPU the card's memory is this RAM, so a pin buys
-    nothing and only takes pages the OS can no longer reclaim (host_pinning)."""
+    """Pinned only on a discrete card: an integrated GPU's memory is this RAM (host_pinning)."""
     if device.type != "cuda":
         return False
     if not _host_guard_enabled():
@@ -220,9 +219,7 @@ def _host_backup_pinned(device: Any) -> bool:
 
 
 def _host_backup_fits(nbytes: int) -> bool:
-    """The host backup leaves the small-host reserve (max(3 GiB, 10% of RAM)) of host RAM free; an unreadable host
-    keeps the allocation (its own failure still stays unfused). UNSLOTH_DIFFUSION_LORA_FUSE_HOST_GUARD=0 skips both
-    host checks (no RAM check, pinned on every CUDA / ROCm device)."""
+    """Leaves the small-host reserve of RAM free; an unreadable host keeps the allocation."""
     if not _host_guard_enabled():
         return True
     try:
