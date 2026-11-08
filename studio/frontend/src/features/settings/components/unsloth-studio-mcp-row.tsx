@@ -19,7 +19,6 @@ export function UnslothStudioMcpRow(): ReactElement {
     let live = true;
     loadMcpAccess().then(
       (next) => live && setEnabled(next.enabled),
-      // The status stays blank; the link still works.
       (err) => console.warn("Couldn't load the Unsloth MCP status.", err),
     );
     return () => {
@@ -34,7 +33,6 @@ export function UnslothStudioMcpRow(): ReactElement {
         ? t("settings.mcp.status.on")
         : t("settings.mcp.status.off");
 
-  // Same shape as the Keyless API access link beside it.
   return (
     <SettingsRow
       icon={

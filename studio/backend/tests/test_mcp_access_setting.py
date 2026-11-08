@@ -83,7 +83,6 @@ def test_a_db_error_reads_false(monkeypatch):
     assert is_mcp_enabled() is False
     assert disabled_tools() is None
     assert tool_enabled("studio_status") is False
-    # Nothing was cached, so the next good read sees the real value.
     monkeypatch.setattr(studio_db, "get_app_settings", real)
     assert get_mcp_enabled() is True
     assert disabled_tools() == frozenset()
@@ -170,7 +169,6 @@ def test_an_unreadable_tool_list_turns_every_tool_off(stored):
     )
     assert disabled_tools() is None
     assert tool_enabled("studio_status") is False
-    # The switch is a separate value and still reads.
     assert get_mcp_enabled() is True
 
 

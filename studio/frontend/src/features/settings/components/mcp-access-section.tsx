@@ -152,7 +152,6 @@ export function McpAccessSection({
   const saveTools = async (states: Record<string, boolean>) => {
     const request = ++saveRequest.current;
     setToolsError(null);
-    // Flip the chips at once; the server reply (or a resync) settles the real state.
     setSettings((current) =>
       current?.tools
         ? {

@@ -154,7 +154,6 @@ function ToolChip({
   const descriptionKey = mcpToolDescriptionKey(tool.name);
   const label = labelKey ? t(labelKey) : tool.name;
   const on = tool.enabled;
-  // The tick, not the color, carries the state.
   const chip = (
     <button
       type="button"

@@ -3,7 +3,6 @@
 
 import type { TranslationKey } from "@/i18n";
 
-// Short labels for the tools served at /mcp/. The raw name shows on hover.
 export const MCP_TOOL_LABEL_KEYS: Readonly<Record<string, TranslationKey>> = {
   studio_status: "settings.mcp.toolLabels.studioStatus",
   list_models: "settings.mcp.toolLabels.listModels",
@@ -30,7 +29,6 @@ export const MCP_TOOL_LABEL_KEYS: Readonly<Record<string, TranslationKey>> = {
   cancel: "settings.mcp.toolLabels.cancel",
 };
 
-// What each tool does, shown on hover above its raw name.
 export const MCP_TOOL_DESCRIPTION_KEYS: Readonly<Record<string, TranslationKey>> = {
   studio_status: "settings.mcp.toolDescriptions.studioStatus",
   list_models: "settings.mcp.toolDescriptions.listModels",
