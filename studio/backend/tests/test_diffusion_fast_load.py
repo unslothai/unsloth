@@ -458,9 +458,7 @@ def test_a_mostly_cached_file_reads_only_its_uncached_chunks(tmp_path, monkeypat
     )
     read = _spy_reads(monkeypatch)
     _join_prefetch(fl.start_prefetch([str(path)], min_bytes = 0, threads = 8))
-    assert (
-        sum(got for name, got in read if name == str(path)) == 1 << 20
-    )  # was 8 MiB: the whole file
+    assert sum(got for name, got in read if name == str(path)) == 1 << 20
 
 
 def test_the_skip_cached_switch_reads_whole_slices(tmp_path, monkeypatch):

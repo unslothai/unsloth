@@ -89,8 +89,7 @@ def _mincore() -> Any:
 
 
 def _chunk_resident(mapped: Any, start: int, length: int) -> bool:
-    """True when every page of ``[start, start + length)`` of the mapped file is in the page cache (Linux
-    ``mincore``); False whenever it cannot tell, so the chunk is read."""
+    """True when every page of the chunk is in the page cache; False when it cannot tell."""
     import ctypes
     import mmap
 
@@ -113,7 +112,7 @@ def _chunk_resident(mapped: Any, start: int, length: int) -> bool:
 
 
 def _residency_map(path: str) -> Any:
-    """A read-only mapping to ask ``mincore`` about, or None (non-Linux, the switch off, an unmappable file)."""
+    """A mapping for ``mincore``, or None (non-Linux, switch off, unmappable)."""
     import sys
 
     if not sys.platform.startswith("linux") or not _switch_on(PREFETCH_SKIP_CACHED_ENV):
@@ -196,7 +195,7 @@ def start_prefetch(
         largest = max(os.path.getsize(path) for path in pending)
         buffer_bytes = max(1 << 20, min(_PREFETCH_READ_BYTES, -(-largest // threads)))
         if available is not None:
-            # Each worker holds one read buffer on top of the pages it warms: fewer workers before none.
+            # each worker's read buffer counts too: fewer workers before none
             room = (int(available) << 20) // 2 - need
             threads = max(1, min(threads, room // buffer_bytes))
         if available is None or need + threads * buffer_bytes > (int(available) << 20) // 2:
@@ -232,7 +231,6 @@ def start_prefetch(
                         at = start
                         while at < end and not stop.is_set():
                             want = min(buffer_bytes, end - at)
-                            # a chunk already in the page cache gains nothing from a copy into the buffer
                             if mapped is not None and _chunk_resident(mapped, at, want):
                                 at += want
                                 continue
