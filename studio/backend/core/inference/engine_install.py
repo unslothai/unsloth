@@ -34,8 +34,7 @@ PROFILES = {
         "driver": 580,
         # FlashInfer fetches trtllm kernels on demand; CUTLASS DSL loads the newest flavour driver 580 runs.
         "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
-        # vLLM's default top-k/top-p sampler is FlashInfer's: its prebuilt kernels skip the first-launch
-        # nvcc build. SGLang, on Studio's triton attention and pytorch sampling, builds none.
+        # vLLM samples with FlashInfer (nvcc JIT at first launch); Studio's SGLang flags never do.
         "flashinfer_kernels": True,
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
@@ -1337,8 +1336,7 @@ def _index_arguments(engine: str) -> list[str]:
     ]
 
 
-# FlashInfer's prebuilt kernels for each locked FlashInfer (flashinfer.ai/whl/cu130), so a first launch
-# loads them instead of JIT-compiling them with nvcc. UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips them.
+# flashinfer.ai/whl/cu130 jit-cache per locked FlashInfer; UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips.
 _FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
 
 
@@ -1355,8 +1353,7 @@ def _kernels_run_on(arches: list[str], capability: str) -> bool:
 
 
 def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
-    """The flashinfer-jit-cache wheel for the engine's locked FlashInfer, when it holds kernels for
-    every GPU here: a GPU it lacks would fail the kernel launch rather than JIT-compile."""
+    """The jit-cache wheel if it has SASS for every GPU here (a missing arch fails, never JITs)."""
     if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
         "0",
         "false",
@@ -1394,7 +1391,7 @@ def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
 def _install_flashinfer_kernels(
     engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
 ) -> bool:
-    """Best effort: a missing wheel, no route to it or a failed import keeps on-demand JIT compiles."""
+    """Best effort: any failure removes the wheel and keeps the JIT compiles."""
     wheel = flashinfer_kernel_wheel(engine)
     if wheel is None:
         return False
@@ -1423,7 +1420,6 @@ def _install_flashinfer_kernels(
             ],
             cancel,
         )
-        # FlashInfer refuses to import beside a jit-cache of another version.
         _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
         return True
     except RuntimeError:

@@ -2914,7 +2914,7 @@ def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
 
 @pytest.fixture
 def kernel_host(monkeypatch):
-    """Linux x86_64 with one A100; tests change the rows for other GPUs."""
+    """Linux x86_64 with one A100."""
     rows = [["580.82.07", "8.0"]]
     monkeypatch.setattr(install.sys, "platform", "linux")
     monkeypatch.setattr(install.platform, "machine", lambda: "x86_64")
@@ -2931,11 +2931,9 @@ def test_every_vllm_lock_has_its_flashinfer_kernel_wheel(kernel_host, monkeypatc
             version = install._pins(engine)["flashinfer-python"][0]
             wheel = install.flashinfer_kernel_wheel(engine)
             if engine != "vllm":
-                # Studio's SGLang flags (triton attention, pytorch sampling) build no FlashInfer kernel.
                 assert wheel is None, release["lock"]
                 continue
             assert wheel == table[f"{version}+cu130"]["x86_64"], release["lock"]
-            # FlashInfer refuses a jit-cache of another version.
             assert f"/flashinfer_jit_cache-{version}+cu130-" in wheel["url"]
             assert wheel["url"].endswith("_x86_64.whl")
             assert len(wheel["sha256"]) == 64 and wheel["size"] > 0
