@@ -12,7 +12,12 @@ import types
 import pytest
 import torch
 
-from ._torchao_installed import needs_torchao
+try:
+    from ._torchao_installed import needs_torchao
+except (
+    ImportError
+):  # imported as a top-level module by sibling tests (`from test_diffusion_backend import ...`)
+    from _torchao_installed import needs_torchao
 
 import core.inference.diffusion_te_prequant as tpq
 from core.inference.video import video_te_quant_request

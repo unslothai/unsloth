@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from ._torchao_installed import needs_torchao
+try:
+    from ._torchao_installed import needs_torchao
+except (
+    ImportError
+):  # imported as a top-level module by sibling tests (`from test_diffusion_backend import ...`)
+    from _torchao_installed import needs_torchao
 
 from core.inference.diffusion import (
     DiffusionBackend,

@@ -11,7 +11,12 @@ import sys
 
 import pytest
 
-from ._torchao_installed import needs_torchao
+try:
+    from ._torchao_installed import needs_torchao
+except (
+    ImportError
+):  # imported as a top-level module by sibling tests (`from test_diffusion_backend import ...`)
+    from _torchao_installed import needs_torchao
 
 import core.inference.diffusion_prequant as pq
 import core.inference.prequant_safetensors as ps
