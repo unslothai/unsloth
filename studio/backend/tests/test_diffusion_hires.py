@@ -574,9 +574,7 @@ def test_inplace_finalise_is_bit_identical_and_drops_full_size_planes(tile, monk
     assert (results["0"] == results["1"]).all()
     plane = 3 * (192 * 4) * (160 * 4) * 4  # one full-size float32 RGB result
     if tile == 64:
-        # seam normalise: no new result plane or clamped weight plane (the peak moves to tile accumulation)
         assert blend["1"] <= blend["0"] - plane
-    # finalise: clamp, multiply and round no longer allocate full-size planes
     assert final["1"] <= final["0"] - plane
 
 

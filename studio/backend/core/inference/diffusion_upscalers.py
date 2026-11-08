@@ -35,7 +35,6 @@ DEFAULT_OVERLAP = 32
 MIN_TILE = 64
 # ComfyUI ImageUpscaleWithModel halves the tile on an OOM and gives up below 128 px.
 OOM_MIN_TILE = 128
-# "0" puts back the out-of-place seam normalise and uint8 finalise (two extra full-size float32 planes each).
 INPLACE_ENV = "UNSLOTH_UPSCALER_INPLACE"
 
 DOWNLOAD_TIMEOUT_S = 600
@@ -368,7 +367,6 @@ def tiled_apply(
         _raise_cancelled()
     if not inplace_enabled():
         return out / weight.clamp_min(1e-8)
-    # Both buffers are this call's own: dividing in place drops a full-size result plane and a clamped weight plane.
     return out.div_(weight.clamp_min_(1e-8))
 
 
@@ -421,8 +419,7 @@ def _load(path: Path, device: Any) -> tuple[Any, Any]:
 
 
 def _to_uint8_hwc(y: Any, source: Any) -> Any:
-    """First sample of a [0, 1] float BCHW result as HWC uint8 numpy. In place on ``y`` unless it shares the source's
-    storage; inference mode because ``y`` is usually an inference tensor."""
+    """In place unless ``y`` shares ``source``'s storage; inference mode because ``y`` is an inference tensor."""
     import torch
 
     if (
