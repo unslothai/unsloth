@@ -25,6 +25,7 @@ import {
 } from "@/config/env";
 import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {
@@ -106,12 +107,6 @@ import {
   prepareSetupWindow,
   shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
-
-// Loaded on use: a static import pulls the chat runtime and chat adapter into the startup bundle.
-const resyncInferenceStatusAfterServerModelChange = (): Promise<void> =>
-  import("@/features/chat/hooks/use-chat-model-runtime").then((runtime) =>
-    runtime.resyncInferenceStatusAfterServerModelChange(),
-  );
 
 interface AppProviderProps {
   children: ReactNode;
