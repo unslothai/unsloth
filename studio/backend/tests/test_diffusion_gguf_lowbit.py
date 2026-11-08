@@ -126,9 +126,8 @@ def test_kill_switch_install_idempotence_and_uninstall(monkeypatch):
     assert lb.install_lowbit_iq() == [] and T.IQ2_XXS not in gguf_utils.dequantize_functions
     monkeypatch.delenv(lb.LOWBIT_IQ_ENV)
     assert lb.install_lowbit_iq() == TYPES
-    assert lb.install_lowbit_iq() == []  # idempotent
+    assert lb.install_lowbit_iq() == []
     assert all(getattr(T, n) in gguf_utils.SUPPORTED_GGUF_QUANT_TYPES for n in TYPES)
-    # types diffusers already handles keep their own functions
     assert gguf_utils.dequantize_functions[T.IQ4_XS] is before[0][T.IQ4_XS]
     lb.uninstall_lowbit_iq()
     assert dict(gguf_utils.dequantize_functions) == before[0]
@@ -169,7 +168,7 @@ def test_cold_fullgraph_dequant_has_no_graph_break(name):
         part = raw[:rows].contiguous()
         got = compiled(gguf_utils.GGUFParameter(part, quant_type = getattr(T, name)))
         assert torch.equal(got.float().view(torch.int32), _oracle(name, part).view(torch.int32))
-    assert counter.frame_count == 1  # one graph over three shapes, no break, no recompile
+    assert counter.frame_count == 1  # no break, no recompile
     torch._dynamo.reset()
 
 
@@ -181,9 +180,7 @@ def test_prepared_tables_are_per_type_and_recompile_at_most_once():
     module = torch.nn.Module()
     raw = torch.from_numpy(_blocks("IQ2_XS", 4, seed = 6))
     module.weight = gguf_utils.GGUFParameter(raw, quant_type = T.IQ2_XS, requires_grad = False)
-    assert (
-        lb.prepare_lowbit_iq_tables("cpu", torch.nn.Linear(2, 2)) == []
-    )  # no IQ weight: nothing built
+    assert lb.prepare_lowbit_iq_tables("cpu", torch.nn.Linear(2, 2)) == []
     assert lb._CONSTS == {}
     torch._dynamo.reset()
     counter = CompileCounter()

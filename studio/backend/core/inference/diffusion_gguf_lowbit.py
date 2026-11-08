@@ -13,11 +13,10 @@ from typing import Any
 
 LOWBIT_IQ_ENV = "UNSLOTH_DIFFUSION_GGUF_LOWBIT_IQ"
 _QK_K = 256
-# table -> gguf-py's grid / sign table on the host, built eagerly (install / first eager use)
+# table -> gguf-py's grid / sign table on the CPU
 _HOST: dict = {}
-# (table, device) -> the same table on that device
+# (table, device) -> that table on the device
 _CONSTS: dict = {}
-# tables each type reads
 _TABLES = {
     "IQ1_S": ("IQ1_S",),
     "IQ1_M": ("IQ1_S",),
@@ -67,16 +66,15 @@ def _const(name: str, device: Any) -> Any:
     if torch.compiler.is_compiling():
         host = _HOST.get(name)
         if host is not None:
-            # Not prepared for this device: a traceable copy of the host table, so no graph break under fullgraph.
+            # unprepared device: a traceable copy, no graph break
             return host.to(device)
-        # Only reachable without install_lowbit_iq: build outside the graph.
+        # only without install_lowbit_iq
         return torch.compiler.disable(_build)(name, device)
     return _build(name, device)
 
 
 def prepare_lowbit_iq_tables(device: Any, *modules: Any) -> list:
-    """Build the tables on ``device`` before any compiled region reads them, so the graph holds a device constant.
-    With ``modules``, only the tables their IQ weights need (none: nothing built). Returns the names built."""
+    """Build on ``device`` before compile so graphs hold a device constant; with ``modules``, only what their IQ weights need."""
     try:
         import torch
 
@@ -93,7 +91,7 @@ def prepare_lowbit_iq_tables(device: Any, *modules: Any) -> list:
             names = sorted({t for tables in _TABLES.values() for t in tables})
         if not names:
             return []
-        # The resolved device ("cuda" -> "cuda:0"), the key a weight's ``.device`` produces.
+        # "cuda" -> "cuda:0", the key a weight's device gives
         device = torch.empty(0, device = device).device
         for name in names:
             if (name, str(device)) not in _CONSTS:
@@ -118,7 +116,6 @@ def _words(raw: Any, width: int) -> Any:
 
 
 def _f16(raw: Any) -> Any:
-    """A (n, 2) little-endian fp16 field as fp32 (n, 1)."""
     import torch
     return raw.contiguous().view(torch.float16).to(torch.float32)
 
@@ -132,7 +129,6 @@ def _sign_bits(byte: Any) -> Any:
 
 
 def _ksign_bits(index: Any) -> Any:
-    """gguf-py's ``ksigns`` lookup of 7-bit sign indices, unpacked to +1 / -1."""
     return _sign_bits(_const("ksigns", index.device)[index])
 
 
@@ -314,8 +310,7 @@ _added: list = []
 
 
 def install_lowbit_iq(logger: Any = None) -> list:
-    """Add the missing low-bit IQ types to diffusers' GGUF dequant table (in place: the loader reads the same list).
-    Idempotent; a type diffusers already dequantises keeps its own function. Returns the type names added."""
+    """Add the missing IQ types to diffusers' table in place (the loader reads the same dict); never replaces one."""
     if not lowbit_iq_enabled():
         return []
     try:
