@@ -15,6 +15,9 @@ torch = pytest.importorskip("torch")
 import core.inference.diffusion_native_quant as nq
 import core.inference.diffusion_transformer_quant as tq
 
+# Literal, not tq.FP16_CARD_INT8_ENV: the behavioural tests below must also run against a tree without the name.
+KILL_SWITCH = "UNSLOTH_DIFFUSION_FP16_CARD_INT8"
+
 
 def _target(dtype, device = "cuda"):
     return types.SimpleNamespace(device = device, dtype = dtype)
@@ -24,7 +27,7 @@ def _target(dtype, device = "cuda"):
 def nvidia(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(tq, "is_stubbed", lambda name: False)
-    monkeypatch.delenv(tq.FP16_CARD_INT8_ENV, raising = False)
+    monkeypatch.delenv(KILL_SWITCH, raising = False)
 
 
 def _cap(monkeypatch, cap):
@@ -93,7 +96,7 @@ def test_rocm_and_the_torchao_stub_keep_their_own_path(monkeypatch):
 @pytest.mark.parametrize("raw", ["0", "false", "off", "no"])
 def test_kill_switch_restores_the_refusal(nvidia, monkeypatch, raw):
     _cap(monkeypatch, (7, 5))
-    monkeypatch.setenv(tq.FP16_CARD_INT8_ENV, raw)
+    monkeypatch.setenv(KILL_SWITCH, raw)
     assert not tq.fp16_card_int8_host(_target(torch.float16))
     assert tq.fp16_card_int8_scheme(_target(torch.float16), "int8") is None
 
@@ -217,7 +220,7 @@ def test_image_gate_still_refuses_other_schemes_on_turing(nvidia, monkeypatch, p
 
 def test_image_gate_kill_switch_refuses_int8_on_turing(nvidia, monkeypatch):
     _cap(monkeypatch, (7, 5))
-    monkeypatch.setenv(tq.FP16_CARD_INT8_ENV, "0")
+    monkeypatch.setenv(KILL_SWITCH, "0")
     with pytest.raises(RuntimeError, match = "needs a CUDA GPU in bf16"):
         _image_gate(monkeypatch, _image_family("qwen-image-2.1"), "int8", torch.float16)
 
@@ -271,3 +274,7 @@ def test_small_host_w8a8_kill_switch(monkeypatch):
     monkeypatch.setenv(sh.INT8_ACT_ENV, "0")
     assert sh.enable_int8_act_(model) == 0
     assert not any(getattr(m, "act_int8", False) for m in model.modules())
+
+
+def test_the_kill_switch_name_matches_the_module():
+    assert tq.FP16_CARD_INT8_ENV == KILL_SWITCH
