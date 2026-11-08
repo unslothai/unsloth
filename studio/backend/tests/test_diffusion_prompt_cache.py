@@ -755,9 +755,14 @@ def test_the_static_check_on_real_pipelines():
     if qwen is not None:
         assert prompt_cache._encode_skips_denoisers(qwen, "encode_prompt")
 
+    def _run(pipe, prompt):
+        return pipe.transformer(prompt)
+
     class _Helper:
         def encode_prompt(self, prompt):
-            return _run(self, prompt)  # noqa: F821 - self handed away: unprovable
+            return _run(
+                self, prompt
+            )  # self handed to a function the check does not follow: unprovable
 
     class _Inherited(_AdapterPipe):
         def encode_prompt(
