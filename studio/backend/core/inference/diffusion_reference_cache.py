@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 / Turbo condition images: the VAE latents of an unchanged reference are kept in host memory and
-reused, so a rerender with the same references (a new seed, prompt or size) skips their encode. The pipeline encodes
-references with the posterior mode, never a sample, so the latents do not depend on the generator and the reuse is
-exact. Keyed by the preprocessed pixels and everything about the VAE that can change them. Kill switch
-UNSLOTH_REFERENCE_VAE_CACHE=0."""
+"""Qwen-Image-2.1 / Turbo: reuse an unchanged condition image's VAE latents across renders (a posterior-mode encode,
+so the generator never enters). Kill switch UNSLOTH_REFERENCE_VAE_CACHE=0."""
 
 from __future__ import annotations
 
@@ -19,7 +16,6 @@ from typing import Any, Optional
 
 CACHE_ENV = "UNSLOTH_REFERENCE_VAE_CACHE"
 _MARK = "_unsloth_reference_vae_cache"
-# Pipelines whose ``_encode_vae_image(image, generator)`` returns the normalised posterior-mode latents.
 _CLASSES = frozenset({"QwenImage21Pipeline"})
 _MAX_ENTRIES = 16
 _MAX_BYTES = 256 << 20
@@ -42,7 +38,6 @@ def disabled() -> bool:
 
 
 def _mode_encode(fn: Any) -> bool:
-    """The stock method reads the posterior mode and never draws from it (checked on the installed source)."""
     try:
         src = inspect.getsource(inspect.unwrap(fn))
     except (OSError, TypeError):
@@ -51,7 +46,6 @@ def _mode_encode(fn: Any) -> bool:
 
 
 def _overrides(module: Any) -> tuple:
-    """Instance-level method overrides (Studio's encode wrappers) and ``_unsloth_*`` scalar state of ``module``."""
     own = getattr(module, "__dict__", {})
     out = []
     for name, value in own.items():
@@ -69,7 +63,7 @@ def _vae_key(vae: Any) -> Optional[tuple]:
         param = next(vae.parameters())
     except Exception:  # noqa: BLE001 - no parameters / an unreadable VAE is never cached
         return None
-    # Not the parameter's device or address: offload hooks move them between renders without changing the encode.
+    # Not the device or address: offload hooks move parameters between renders.
     state = tuple(repr(getattr(vae, name, None)) for name in _VAE_STATE)
     encoder = getattr(vae, "encoder", None)
     return (
@@ -125,7 +119,6 @@ class _Cache:
 
 
 def install(pipe: Any, logger: Any = None) -> bool:
-    """Idempotent; an instance attribute over the stock method, so ``uninstall`` restores it."""
     if disabled() or type(pipe).__name__ not in _CLASSES:
         return False
     if getattr(pipe, _MARK, None) is not None:

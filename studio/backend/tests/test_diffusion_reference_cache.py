@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 condition-image VAE latents reused across renders: same tensors as a fresh encode, invalidated by
-every input that changes them; skipped without Qwen-Image 2.1 in diffusers."""
+"""Reused condition latents equal a fresh encode; every input that changes them encodes again."""
 
 from __future__ import annotations
 
@@ -80,7 +79,6 @@ def test_reuse_is_exact_and_skips_the_encode():
     assert rc.install(pipe) and rc.install(pipe)  # idempotent
     got = [_prepare(pipe, images, s) for s in (3, 4, 3)]
     for (rl, ri, rg), (gl, gi, gg) in zip(ref, got):
-        # condition latents, the target noise and the generator state all match a fresh encode
         assert torch.equal(ri, gi) and torch.equal(rl, gl) and torch.equal(rg, gg)
     assert len(calls) == len(
         images
