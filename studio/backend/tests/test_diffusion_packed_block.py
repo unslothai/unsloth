@@ -144,9 +144,9 @@ def test_row_chunks_splits_and_smoothing_widen_bit_identically(fmt, rows, monkey
         pre_quant = pre_quant,
         compute_dtype = torch.bfloat16,
     )
-    monkeypatch.setattr(pb, "_HOST_CHUNK_BYTES", 4096)  # many chunks
+    monkeypatch.setattr(pb, "_HOST_CHUNK_BYTES", 4096)
     assert _same(layer.weight, want)
-    monkeypatch.setattr(pb, "_HOST_CHUNK_BYTES", 1 << 30)  # one pass
+    monkeypatch.setattr(pb, "_HOST_CHUNK_BYTES", 1 << 30)
     assert _same(layer.weight, want)
 
 
