@@ -411,6 +411,128 @@ class TestArchGateCoexistsWithUnifiedMemory:
         ]
 
 
+# The tail of a ROCm llama-server that split a manual ratio onto a card the build lacks.
+_UNPINNED_CRASH = (
+    "llama_kv_cache:      ROCm2 KV buffer size =  4248.00 MiB\n"
+    "ROCm error: invalid kernel file\n"
+    "  current device: 2, in function ggml_cuda_kernel_launch at common.cuh:1740\n"
+)
+
+
+class TestUnpinnedArchCrashRetry:
+    """A manual split, or a gate that could not read the build's coverage, launches with
+    no mask, so the child's own "current device" is the only name for the bad card."""
+
+    @pytest.fixture(autouse = True)
+    def _rocm_host(self, monkeypatch):
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: False)
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_visibility_masks_are_stacked", staticmethod(lambda: False)
+        )
+        monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising = False)
+
+    def test_drops_the_crashed_card(self):
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == (
+            [2],
+            [0, 1],
+        )
+
+    def test_also_drops_a_shared_memory_igpu(self, monkeypatch):
+        # 7900 XTX + Ryzen iGPU + R9700 on a gfx110X build: the iGPU is uncovered too.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {1})
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == (
+            [2],
+            [0],
+        )
+
+    def test_keeps_the_igpu_when_it_is_all_that_is_left(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 2]) == ([2], [0])
+
+    def test_maps_the_child_ordinal_through_an_inherited_mask(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [1, 3, 5])
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [1, 3, 5]) == (
+            [5],
+            [1, 3],
+        )
+
+    def test_the_childs_own_mask_wins_over_the_parents(self):
+        # A manual split pins the child's order (or the gate pins survivors) without gpu_indices.
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
+
+    def test_ordinal_outside_the_childs_mask_is_not_guessed(self):
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 1)
+        ) == ([], [])
+
+    def test_an_unmappable_mask_is_left_alone(self, monkeypatch):
+        # A UUID/MIG mask resolves to no ids; reading the ordinal as physical could expose a hidden card.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+
+    def test_gpu_device_ordinal_is_left_alone(self, monkeypatch):
+        monkeypatch.setenv("GPU_DEVICE_ORDINAL", "2,0")
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([], [])
+
+    def test_stacked_rocr_and_hip_masks_are_left_alone(self, monkeypatch):
+        # HIP ordinals index the ROCr-filtered set, so the resolved ids are not physical.
+        monkeypatch.setattr(
+            LlamaCppBackend, "_rocm_visibility_masks_are_stacked", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
+
+    def test_the_childs_own_mask_still_maps_under_an_unmappable_parent(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_visibility_mask_is_unmappable", staticmethod(lambda: True)
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(
+            _UNPINNED_CRASH, [0, 1, 2], child_ids = (0, 2, 1)
+        ) == ([1], [0, 2])
+
+    def test_ordinal_outside_the_mask_is_not_guessed(self, monkeypatch):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+        )
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1]) == ([], [])
+
+    def test_no_device_line_means_no_retry(self):
+        out = "ROCm error: invalid kernel file\n"
+        assert LlamaCppBackend._unpinned_arch_crash_retry(out, [0, 1]) == ([], [])
+
+    def test_single_gpu_has_nowhere_to_go(self):
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [2]) == ([2], [])
+
+    def test_cuda_host_is_left_alone(self, monkeypatch):
+        # An unmasked CUDA child orders devices by speed, so its ordinal is not our id.
+        monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: False))
+        assert LlamaCppBackend._unpinned_arch_crash_retry(_UNPINNED_CRASH, [0, 1, 2]) == ([], [])
+
+
 class TestArchCrashRetrySet:
     """The reactive recovery for markerless / custom-linked builds, where the
     proactive gate cannot know what the binary covers."""

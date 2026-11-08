@@ -2780,7 +2780,22 @@ export const cs = {
           "Sledujte, co ostatní aplikace posílají do API tohoto serveru, hned jak to dorazí.",
         summary: "Živé požadavky, chyby a využití tokenů",
         status: "Aktivní: {active} · nedávné: {recent} · {model}",
-        noModelLoaded: "žádný model není načten",
+        noModelLoaded: "Žádný model není načten",
+        memory: "Paměť",
+        gpuInUse: "Využití GPU",
+        availableForModels: "K dispozici pro modely",
+        refreshRate: "Obnovovací frekvence",
+        refreshRateDescription: "Jak často plovoucí monitor čte využití paměti a GPU, když je otevřený.",
+        refreshEvery: "Každých {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Ostatní aplikace",
+        otherInUse: "Ostatní využití",
+        freeLabel: "Volné",
+        unslothApp: "Aplikace Unsloth",
+        unslothShare: "Zobrazit podíl Unsloth",
+        unslothShareDescription: "Rozdělí paměť na to, co používá Unsloth, co používají ostatní aplikace a co je volné.",
+        modelBreakdown: "Rozpis podle modelu",
+        modelBreakdownDescription: "Rozdělí část paměťového pruhu patřící Unsloth na jednotlivé načtené modely a zbytek aplikace.",
         autoOpen: "Automaticky otevírat plovoucí sledování",
         autoOpenDescription: "Když dorazí provoz API, otevře malý panel.",
         cpu: "CPU",
@@ -2796,8 +2811,7 @@ export const cs = {
         gpuUnusableDetail: "Rozpoznáno, ale PyTorch ho nemůže použít",
         detailedView: "Podrobné zobrazení",
         detailedViewDescription:
-          "Zobrazovat v plovoucím okně zatížení CPU a zatížení, teplotu a příkon každého GPU.",
-        cpuLoad: "Zatížení CPU",
+          "Zobrazovat v plovoucím okně zatížení, teplotu a příkon každého GPU.",
         gpuLoad: "Zatížení GPU",
         temperature: "Teplota",
         power: "Příkon",
@@ -2814,7 +2828,7 @@ export const cs = {
         detecting: "Hledání GPU...",
         unreadable: "Hardware tohoto serveru se nepodařilo načíst.",
         noGpu:
-          "Nebylo rozpoznáno žádné viditelné GPU. Výše jsou zobrazeny pouze prostředky CPU.",
+          "Nebyla zjištěna samostatná GPU.",
         noUsableGpu:
           "Na tomto počítači není žádné GPU, které by PyTorch mohl použít.",
         mismatchCpuBuild:
@@ -2904,7 +2918,7 @@ export const cs = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu akcelerátor accelerator předsestavené prebuilt přepnout switch modul engine vlastní custom cesta path složka folder adresář directory llama-server spustitelný soubor executable binary",
       },
       modelMemory: {
-        title: "Paměť modelu",
+        title: "Načítání modelu",
         keepResident: "Ponechat model v paměti GPU",
         keepResidentDescription: "Zůstat ve VRAM mezi prompty.",
         keepResidentHint:
@@ -3104,7 +3118,7 @@ export const cs = {
       configurationDocs: "dokumentace",
       configurationFlagsSuffix: "s popisem příznaků.",
       modelNote:
-        "Codex vyžaduje model GGUF obsluhovaný přes llama-server. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
+        "Claude Code a Codex vyžadují model GGUF obsluhovaný přes llama-server nebo model MLX. Ostatní agenti mohou používat i modely založené na transformers; odeberte --model, chcete-li použít model, který je už načtený v Unsloth.",
       subagent: {
         title: "Použít místní model jako subagenta",
         description:
@@ -3178,6 +3192,8 @@ export const cs = {
     },
     chat: {
       groups: {
+        replies: { title: "Odpovědi" },
+        thinkingTools: { title: "Přemýšlení a nástroje" },
         conversations: {
           title: "Konverzace",
         },
@@ -3276,11 +3292,20 @@ export const cs = {
         "Pod každou odpovědí zobrazovat, kdy byla dokončena.",
       showReplyTimesKeywords:
         "časové razítko čas hodiny datum kdy dokončeno odpověď zpráva timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Podrobnosti generování",
+      showGenerationDetails: "Podrobné informace o rychlosti a načítání",
       showGenerationDetailsDescription:
-        "Zobrazovat živé rychlosti promptu a odpovědi s počty tokenů a kam se načetly vrstvy modelu.",
+        "Přidá do živých údajů rychlost čtení výzvy, počty tokenů a přijetí návrhů a ukáže, kam se načetly vrstvy modelu.",
       showGenerationDetailsKeywords:
         "podrobné vývojář statistiky rychlost vrstvy verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Statistiky rychlosti a kontextu",
+      generationStatsUpdatesDescription:
+        "Režim V reálném čase počítá tokeny za sekundu a využití kontextu během streamování odpovědi. Po dokončení je aktualizuje, až každá odpověď skončí.",
+      generationStatsUpdatesHint:
+        "V reálném čase obnovuje ukazatel tokenů za sekundu pod odpovědí a lištu kontextu nahoře v chatu několikrát za sekundu, zatímco se odpověď píše. Po dokončení je aktualizuje jednou, až každá odpověď skončí. Režim v reálném čase může způsobit zasekávání nebo nižší výkon, hlavně na starších či vytížených počítačích.",
+      generationStatsUpdatesSettled: "Po dokončení",
+      generationStatsUpdatesRealtime: "V reálném čase",
+      generationStatsUpdatesKeywords:
+        "reálný čas živě aktualizace rychlost kontext statistiky realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
@@ -5603,6 +5628,7 @@ export const cs = {
     monitor: {
       dragHandleLabel:
         "Přesunout živý monitor. Šipky ho posunou, dvojklik ho vrátí na výchozí místo.",
+      resizeHint: "Přetažením okraje nebo rohu změníte šířku. Dvojklik ji obnoví.",
       reconnecting: "Opětovné připojování...",
     },
   },

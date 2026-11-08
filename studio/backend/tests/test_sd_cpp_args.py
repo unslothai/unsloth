@@ -62,6 +62,9 @@ def _physical_metal(monkeypatch):
     import core.inference.sd_cpp_args as sd_cpp_args
 
     monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    # Commands are built for a Linux host unless a test sets the platform, so a Mac runner gets the same
+    # commands as Linux (Metal drops direct conv and adds --clip-on-cpu).
+    monkeypatch.setattr("sys.platform", "linux")
     # The real probe is cached and reads sysctl; follow the patched platform.machine() instead.
     import platform
 

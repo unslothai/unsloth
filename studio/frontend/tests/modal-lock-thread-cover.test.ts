@@ -22,7 +22,11 @@ test("the thread scroller does not inherit a modal layer's body pointer-events l
 });
 
 test("while the lock is up a cover keeps the thread unclickable, below portaled layers", () => {
-  const cover = rule('body[style*="pointer-events: none"] .aui-thread-root::after');
+  // Keyed on attributes src/lib/modal-pointer-lock.ts mirrors from the body lock: on the thread
+  // root itself, or on a page region holding a thread root it did not find.
+  const cover = rule(
+    '.aui-thread-root[data-modal-lock-thread]::after,\n\t[data-modal-lock-region] .aui-thread-root::after',
+  );
   assert.match(cover, /content: "";/);
   assert.match(cover, /position: absolute;/);
   assert.match(cover, /inset: 0;/);
@@ -36,5 +40,6 @@ test("while the lock is up a cover keeps the thread unclickable, below portaled 
     readSrc("components/assistant-ui/thread.tsx"),
     /className="aui-root aui-thread-root relative /,
   );
-  assert.equal(CSS.split(".aui-thread-root::after").length - 1, 1);
+  assert.equal(CSS.split(".aui-thread-root[data-modal-lock-thread]::after").length - 1, 1);
+  assert.equal(CSS.split(" .aui-thread-root::after").length - 1, 1);
 });

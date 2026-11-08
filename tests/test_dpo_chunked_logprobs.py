@@ -38,6 +38,7 @@ HELPERS = (
     "_unsloth_grpo_hidden_states_signal",
     "_unsloth_pref_returns_hidden_states",
     "_unsloth_gkd_dense_head",
+    "_unsloth_global_module_hooks",
     "_unsloth_gkd_logit_transforms",
     "_unsloth_pref_logit_transforms",
     "_unsloth_stock_logps_hook",
@@ -326,6 +327,35 @@ def test_use_weighting_falls_back(env):
     assert getattr(trainer, "_unsloth_dpo_chunked_calls", 0) == 0
     assert "use_weighting needs full-vocabulary log-probs" in trainer._unsloth_dpo_chunked_fallbacks
     assert torch.allclose(loss, base_loss, atol = 1e-6)
+
+
+_GLOBAL_HOOKS = {
+    "forward": "register_module_forward_hook",
+    "forward_pre": "register_module_forward_pre_hook",
+    "full_backward": "register_module_full_backward_hook",
+    "full_backward_pre": "register_module_full_backward_pre_hook",
+}
+
+
+@pytest.mark.parametrize("hook", list(_GLOBAL_HOOKS))
+def test_global_module_hook_falls_back(env, hook):
+    # torch's global module hooks apply to every module: the fused path never calls the head.
+    from torch.nn.modules import module as module_hooks
+
+    dpo_mod, forward = env
+    _, base_loss, _, _ = _run(dpo_mod, forward, {}, chunked = False)
+    trainer, _, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    assert trainer._unsloth_dpo_chunked_calls > 0, "control: the fused path runs without hooks"
+    handle = getattr(module_hooks, _GLOBAL_HOOKS[hook])(lambda *a: None)
+    try:
+        trainer, loss, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    finally:
+        handle.remove()
+    assert getattr(trainer, "_unsloth_dpo_chunked_calls", 0) == 0
+    assert "output head has hooks or a patched forward" in trainer._unsloth_dpo_chunked_fallbacks
+    assert torch.allclose(loss, base_loss, atol = 1e-6)
+    trainer, _, _, _ = _run(dpo_mod, forward, {}, chunked = True)
+    assert trainer._unsloth_dpo_chunked_calls > 0, "removing the hook must restore the fused path"
 
 
 TRL_TAGS = [

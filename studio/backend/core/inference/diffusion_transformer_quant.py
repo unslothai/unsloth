@@ -17,7 +17,12 @@ from typing import Any, Callable, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed, torch_is_rocm
-from .diffusion_native_quant import int8_act_disabled, int8_act_requested, is_native_linear
+from .diffusion_native_quant import (
+    int8_act_disabled,
+    int8_act_requested,
+    is_native_linear,
+    rocm_rdna_w8a8_ready,
+)
 from .diffusion_nvfp4_flag import (
     nvfp4_blocked,
     nvfp4_diffusion_enabled,
@@ -208,9 +213,11 @@ def quantize_streamed_weight_only(
     family: Optional[str],
     *,
     min_features: int = DEFAULT_MIN_LINEAR_FEATURES,
+    device: Any = None,
     logger: Any = None,
 ) -> tuple[str, ...]:
     """Quantise the still-dense Linears named by ``streamed_weight_only_tokens_for_scheme``; returns their fqns.
+    Host-placed Linears are quantised on CUDA ``device`` and moved back.
     Weight-only (default): the timestep-embedding outlier channels stay dense beside the int8 codes and the fused GEMV
     runs them (``diffusion_int8_gemv``). An artifact loaded with them already weight-only only gets the GEMV forward.
     Best effort: any failure leaves them dense (the build is still valid, only bigger)."""
@@ -244,9 +251,6 @@ def quantize_streamed_weight_only(
             if mode == "wo"
             else ()
         )
-        if outliers:
-            modules = dict(transformer.named_modules())
-            used = min(split_outliers_(modules[name], outliers) for name in names)
         if mode == "w8a8rot":
             from .diffusion_convrot import DEFAULT_CONVROT_GROUPSIZE, rotate_linears_
             rotate_linears_(
@@ -257,7 +261,21 @@ def quantize_streamed_weight_only(
                     if transformer.get_submodule(n).in_features % DEFAULT_CONVROT_GROUPSIZE == 0
                 ],
             )
-        quantize_(transformer, config, filter_fn = lambda _m, fqn = "": fqn in wanted)
+        modules = dict(transformer.named_modules())
+        splits: list = []
+
+        def _split_and_quantize(module: Any) -> None:
+            if outliers:
+                splits.append(split_outliers_(module, outliers))
+            quantize_(module, config)
+
+        _hop_each(
+            [modules[name] for name in names if name in wanted],
+            _hop_device(device),
+            _split_and_quantize,
+        )
+        if outliers:
+            used = min(splits)
         if mode == "wo":
             install(transformer, names, logger = logger)
         else:
@@ -1207,6 +1225,28 @@ def native_int8_act(target: Any) -> bool:
     return not int8_act_disabled()
 
 
+def _rocm_cuda(target: Any) -> bool:
+    return getattr(target, "device", None) == "cuda" and torch_is_rocm()
+
+
+_FAMILY_RDNA_AUTO_W8A8: dict[str, str] = _profile_table("rdna_auto_w8a8", quant = True)
+
+
+def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
+    """Measured reason AUTO picks W8A8 for ``family`` on ROCm RDNA, else None. Kill switch UNSLOTH_NATIVE_INT8_ACT=0."""
+    reason = _FAMILY_RDNA_AUTO_W8A8.get(str(family or "").strip().lower())
+    if reason is None or not _rocm_cuda(target) or not native_quant_host(target):
+        return None
+    # Linux only: Windows ROCm has no compile tier.
+    if not _sys.platform.startswith("linux"):
+        return None
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready():
+        return None
+    if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
+        return None
+    return reason
+
+
 def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
@@ -2147,6 +2187,115 @@ def _quantize_native(
         return None
 
 
+def _hop_device(device: Any) -> Any:
+    """CUDA ``torch.device`` to quantise host-placed Linears on, else None. An unindexed "cuda" resolves to this
+    thread's current card here: the upload thread does not inherit it and would default to cuda:0."""
+    if device is None:
+        return None
+    try:
+        import torch
+
+        work = torch.device(device)
+        if work.type != "cuda":
+            return None
+        if work.index is None and torch.cuda.is_available():
+            work = torch.device("cuda", torch.cuda.current_device())
+    except Exception:  # noqa: BLE001 - an unparsable device quantises in place
+        return None
+    return work
+
+
+def _hop_each(modules: list, work: Any, fn: Callable[[Any], None]) -> None:
+    """``fn`` on each module, host-placed ones on ``work``; a raise leaves every module on its home device."""
+    if work is None:
+        for module in modules:
+            fn(module)
+        return
+
+    def _home(module: Any) -> Any:
+        weight = getattr(module, "weight", None)
+        return getattr(weight, "device", None)
+
+    from .host_pinning import host_pinning_allowed
+
+    staged = host_pinning_allowed(work)
+
+    def _up(module: Any) -> Any:
+        home = _home(module)
+        if home is None or home.type != "cpu":
+            return None
+        if not (staged and _upload_staged(module, work)):
+            module.to(work)
+        return home
+
+    try:
+        _hop_loop(modules, fn, _up)
+    finally:
+        if staged:
+            from .diffusion_memory import release_pinned_host_memory
+            release_pinned_host_memory()
+
+
+def _upload_staged(module: Any, work: Any) -> bool:
+    """``module.to(work)`` via pinned copies (pageable H2D is 1-2 GB/s on cloud hosts); False = nothing moved."""
+    import torch
+
+    try:
+        tensors = list(module._parameters.items()) + list(module._buffers.items())
+    except AttributeError:  # not an nn.Module
+        return False
+    if any(
+        t is not None and (type(t.data) is not torch.Tensor or not t.data.is_contiguous())
+        for _n, t in tensors
+    ):
+        return False
+    try:
+        moved = {
+            name: t.data.pin_memory().to(work, non_blocking = True)
+            for name, t in tensors
+            if t is not None and t.device.type == "cpu"
+        }
+        torch.cuda.current_stream(work).synchronize()
+    except Exception:  # noqa: BLE001 - pinning refused: the pageable copy still works
+        return False
+    for name, value in moved.items():
+        if name in module._parameters:
+            module._parameters[name].data = value
+        else:
+            module._buffers[name] = value
+    return True
+
+
+def _hop_loop(modules: list, fn: Callable[[Any], None], _up: Callable[[Any], Any]) -> None:
+    """Upload module i + 1 on a helper thread while ``fn`` runs on module i."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    pending = None
+    with ThreadPoolExecutor(max_workers = 1, thread_name_prefix = "quant-hop") as pool:
+        try:
+            pending = (modules[0], pool.submit(_up, modules[0])) if modules else None
+            for i, module in enumerate(modules):
+                home = pending[1].result()
+                pending = (
+                    (modules[i + 1], pool.submit(_up, modules[i + 1]))
+                    if i + 1 < len(modules)
+                    else None
+                )
+                try:
+                    fn(module)
+                finally:
+                    if home is not None:
+                        module.to(home)
+        finally:
+            if pending is not None:
+                try:
+                    home = pending[1].result()
+                except Exception:  # noqa: BLE001 - its upload failed: still home
+                    home = None
+                if home is not None:
+                    pending[0].to(home)
+
+
 def quantize_runtime_leftovers(
     transformer: Any,
     scheme: str,
@@ -2188,23 +2337,13 @@ def quantize_runtime_leftovers(
     ]
     if not targets:
         return 0
-    work = None
-    try:
-        work = torch.device(device) if device is not None else None
-    except Exception:  # noqa: BLE001 - an unparsable device quantises in place
-        work = None
-    if work is not None and work.type != "cuda":
-        work = None
     config = _make_quant_config(scheme)
     t0 = time.perf_counter()
-    for _name, module in targets:
-        home = module.weight.device
-        hop = work is not None and home.type == "cpu"
-        if hop:
-            module.to(work)
-        quantize_(module, config)
-        if hop:
-            module.to(home)
+    _hop_each(
+        [module for _name, module in targets],
+        _hop_device(device),
+        lambda module: quantize_(module, config),
+    )
     if logger is not None:
         logger.info(
             "diffusion.transformer_quant: quantised %d %s Linear(s) the artifact kept dense (%s) in %.1f s",
