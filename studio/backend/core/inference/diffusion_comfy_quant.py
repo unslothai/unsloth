@@ -926,9 +926,8 @@ def comfy_int8_backend(
     offload: bool = False,
     lora: bool = False,
 ) -> Optional[str]:
-    """int8 runtime: torchao when resident, native under offload, None to dequantise to bf16. A GPU with neither
-    (pre-Ampere NVIDIA, XPU) keeps the codes on the native layer as weight-only storage (``int8_storage_scheme``),
-    except under a LoRA, which needs the dense Linears."""
+    """int8 runtime: torchao when resident, native under offload (or as storage, ``int8_storage_scheme``, where neither
+    runs; never under a LoRA), None to dequantise to bf16."""
     if (os.environ.get(COMFY_INT8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
     try:

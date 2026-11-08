@@ -1440,7 +1440,7 @@ def _target(device, dtype):
 def _nvidia(monkeypatch):
     monkeypatch.setattr(tq, "torch_is_rocm", lambda: False)
     monkeypatch.setattr(tq, "is_stubbed", lambda pkg: False)
-    # no torchao smoke probe on this host: the runtime ladder is not what these tests pin
+    # no torchao smoke probe here
     monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: None)
 
 
@@ -1494,7 +1494,6 @@ def test_int8_storage_hosts_never_take_the_int8_gemm(monkeypatch):
     monkeypatch.delenv(_STORAGE_ENV, raising = False)
     assert tq.native_int8_act(_target("cuda", torch.float16)) is False
     assert tq.native_int8_act(_target("xpu", torch.bfloat16)) is False
-    # Ampere+ unchanged
     assert tq.native_int8_act(_target("cuda", torch.bfloat16)) is (not tq.int8_act_disabled())
     monkeypatch.setenv(_STORAGE_ENV, "0")
     assert tq.native_int8_act(_target("cuda", torch.float16)) is (not tq.int8_act_disabled())
@@ -1576,7 +1575,7 @@ def test_int8_storage_keeps_codes_and_matches_the_expanded_dit_bitwise(
             layer = getattr(block, name)
             assert is_native_linear(layer) and not layer.act_int8 and not layer.rot_group
             assert layer.weight_q.dtype == torch.int8
-    # 8 int8 Linears of 512 x 512: one byte per weight plus a 4-byte row scale, against two bytes widened
+    # 1 byte + a 4-byte row scale against itemsize per weight
     assert _held(expanded) - _held(stored) == 8 * (DIM * DIM * (dtype.itemsize - 1) - 4 * DIM)
     x = torch.randn(3, DIM).to(dtype)
     for got, want in zip(_run(stored, x), _run(expanded, x)):
@@ -1604,7 +1603,6 @@ def test_int8_storage_stays_off_under_a_lora(monkeypatch):
     t4 = _target("cuda", torch.float16)
     assert cq.comfy_int8_backend(t4, "z-image", offload = True) == "native"
     assert cq.comfy_int8_backend(t4, "z-image", offload = True, lora = True) is None
-    # the runtimes a host already has ignore the flag
     assert (
         cq.comfy_int8_backend(_target("cuda", torch.bfloat16), "z-image", offload = True, lora = True)
         == "native"
