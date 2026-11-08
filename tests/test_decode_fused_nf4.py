@@ -331,6 +331,42 @@ def test_replaced_attention_or_mlp_blocks_make_the_plan_stale(monkeypatch):
         setattr(owner, name, held)
 
 
+def test_replaced_rope_makes_the_plan_stale(monkeypatch):
+    D, plan, _ = _norm_plan(monkeypatch)
+    entry = plan.layers[0]
+    assert not D._plan_stale(plan)
+    entry.attn.rotary_emb = object()
+    assert D._plan_stale(plan)
+    entry.attn.rotary_emb = entry.rope
+    assert not D._plan_stale(plan)
+
+
+def test_a_rebuilt_plan_over_a_replaced_attention_is_not_reused(monkeypatch):
+    # A replaced attention block holding the same projection tensors gives an equal signature and equal tables:
+    # the old plan (its attention, cache and RoPE) must not be kept with the new bindings copied in.
+    D, plan, _ = _norm_plan(monkeypatch)
+    monkeypatch.setattr(D, "_same_tables", lambda a, b: True)
+    plan.signature = ("same",)
+
+    def rebuilt(attn = None, rope = None):
+        built = D._Plan()
+        built.signature = ("same",)
+        built.layers = []
+        for entry in plan.layers:
+            layer = D._Layer()
+            layer.attn = entry.attn if attn is None else attn
+            layer.rope = entry.rope if rope is None else rope
+            built.layers.append(layer)
+        return built
+
+    assert D._reusable(plan, rebuilt())
+    assert not D._reusable(plan, rebuilt(attn = types.SimpleNamespace()))
+    assert not D._reusable(plan, rebuilt(rope = object()))
+    shorter = rebuilt()
+    shorter.layers = shorter.layers[:-1]
+    assert not D._reusable(plan, shorter)
+
+
 def test_every_segment_must_share_the_launch_device(monkeypatch):
     # q on cuda:0 and k on cuda:1: the kernel would read k through a cuda:0 launch.
     from torch._subclasses.fake_tensor import FakeTensorMode
@@ -1136,12 +1172,12 @@ def test_requantized_weights_at_reused_addresses_rebuild_the_plan(changed):
     # Equal pointers (the allocator reused every address) with different copied NF4 tables: the old
     # plan's code / absmax2 code / nested offsets copies are stale, so it must not be kept.
     D = _driver()
+    attn, rope = object(), object()
 
     def plan(tables):
         site = types.SimpleNamespace(nested = True, **tables)
-        return types.SimpleNamespace(
-            signature = ("same",), layers = [types.SimpleNamespace(sites = {"qkv": site})]
-        )
+        layer = types.SimpleNamespace(sites = {"qkv": site}, attn = attn, rope = rope)
+        return types.SimpleNamespace(signature = ("same",), layers = [layer])
 
     tables = {
         "code": torch.linspace(-1, 1, 16),

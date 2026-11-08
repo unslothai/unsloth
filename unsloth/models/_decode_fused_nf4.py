@@ -193,8 +193,14 @@ def _same_tables(a, b):
 
 
 def _reusable(plan, built):
-    # Keep the previous plan (and the graphs that captured its buffers) only for identical weights.
-    return built.signature == plan.signature and _same_tables(built, plan)
+    # Keep the previous plan (and the graphs that captured its buffers) only for identical weights and the same
+    # attention / RoPE modules (a replaced block holding the same tensors still has its own cache and tables).
+    return (
+        built.signature == plan.signature
+        and len(built.layers) == len(plan.layers)
+        and all(a.attn is b.attn and a.rope is b.rope for a, b in zip(plan.layers, built.layers))
+        and _same_tables(built, plan)
+    )
 
 
 def _signature(plan):
@@ -446,6 +452,7 @@ def _build(model, X):
         entry.ln2 = layer.post_attention_layernorm.weight
         entry.head_dim, entry.n_heads, entry.n_kv_heads = head_dim, n_heads, n_kv_heads
         entry.rope = attn.rotary_emb
+        bindings.append((attn, "rotary_emb", entry.rope))
         sites = {}
         for kind, owner, names, K in (
             ("qkv", attn, ("q_proj", "k_proj", "v_proj"), hidden),
