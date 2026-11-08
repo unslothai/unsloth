@@ -1200,22 +1200,31 @@ function clearDragShotAfterDrop(): void {
 
 /** A page under a moved or resized floating window: parked under its picture (and, layered, its cut
  *  shrunk to nothing; cuts stay marked, so the app is not restyled, a flash, at each end). */
-let parking: string | null = null;
+// The park started outside the apply pump (the first frame of a gesture): applyView waits for it, or a
+// quick drop's restore could finish first and then be undone by this park's late continuation.
+let parking: { tabId: string; done: Promise<void> } | null = null;
 
-async function parkForDrag(tabId: string): Promise<void> {
-  if (parkedView === tabId || parking === tabId) return;
-  parking = tabId;
+function parkForDrag(tabId: string): Promise<void> {
+  if (parkedView === tabId) return Promise.resolve();
+  if (parking?.tabId === tabId) return parking.done;
   coverForDrag(tabId);
-  await call("browser_view_show", { tabId, bounds: shownBounds, parked: true }).finally(() => {
-    parking = null;
+  const done = call("browser_view_show", { tabId, bounds: shownBounds, parked: true }).then(
+    () => {
+      parkedView = tabId;
+      setShownView(null);
+      if (dragShot?.tabId === tabId) showDragShot();
+      else void captureForDrag(tabId);
+    },
+    () => undefined,
+  ).finally(() => {
+    if (parking?.done === done) parking = null;
   });
-  parkedView = tabId;
-  setShownView(null);
-  if (dragShot?.tabId === tabId) showDragShot();
-  else void captureForDrag(tabId);
+  parking = { tabId, done };
+  return done;
 }
 
 async function applyView(desired: Desired): Promise<void> {
+  if (parking) await parking.done;
   if (desired && "covered" in desired && movingWindow() && parkable(desired.tabId)) {
     await parkForDrag(desired.tabId);
     return;

@@ -94,3 +94,8 @@ test("a resize crops the drag picture instead of stretching it", () => {
   assert.match(show, /page\.style\.overflow = "hidden";/);
   assert.match(body("hideDragShot"), /removeProperty\("overflow"\)/);
 });
+
+test("a park started on a gesture's first frame finishes before the drop's restore", () => {
+  assert.match(body("applyView"), /function applyView\(desired: Desired\): Promise<void> \{\s*if \(parking\) await parking\.done;/);
+  assert.match(body("parkForDrag"), /if \(parking\?\.tabId === tabId\) return parking\.done;/);
+});
