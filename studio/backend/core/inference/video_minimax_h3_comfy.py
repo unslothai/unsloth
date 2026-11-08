@@ -188,7 +188,7 @@ def load_h3_comfy_transformer(
     fp8_backend: Optional[str],
     target: Any = None,
     logger: Any = None,
-    # H3's pin / stream / residency path is built on torchao weights: dequantize what torchao does not take
+    # fp8 layers no fp8 runtime takes stay 1-byte codes widened per layer (``h3_comfy_backends``); False dequantizes
     fp8_storage: Optional[bool] = False,
 ) -> Any:
     """The H3 denoiser of a ComfyUI-quantized file, int8 / fp8 codes kept, curve adaLN installed."""
