@@ -22,6 +22,13 @@ def _studio():
     return _studio_mod
 
 
+@pytest.fixture(autouse = True)
+def _no_cloudflared_download(monkeypatch):
+    """`--secure` asks whether cloudflared can be fetched, a real download on a runner without a
+    cached binary (a GitHub 504 then fails the run). These tests only check the re-exec argv."""
+    monkeypatch.setattr(_studio(), "_tunnel_binary_confirmed_unavailable", lambda: False)
+
+
 _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 
 
