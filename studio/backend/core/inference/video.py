@@ -12326,7 +12326,16 @@ class VideoBackend:
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
+        from .video_minimax_h3_te import install_h3_te_read_capture
 
+        try:
+            install_h3_te_read_capture(
+                pipe.text_encoder,
+                layer = getattr(pipe, "text_encoder_layer", 50),
+                logger = logger,
+            )
+        except Exception:  # noqa: BLE001 - a lazy component that is not loaded
+            pass
         diffusion_prompt_cache.install(
             pipe,
             identity = {
@@ -12548,6 +12557,10 @@ class VideoBackend:
                 "input_reference cannot be combined with explicit conditioning inputs."
             )
         cancel = threading.Event()
+        from core.inference.generation_ticket import bind_generation_cancel
+
+        # A chat tools call that is stopped cancels this job too.
+        bind_generation_cancel(cancel)
         job_token = object()  # this reservation's identity; only its own worker may finalise it
         while True:
             with self._lock:

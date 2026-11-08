@@ -3512,6 +3512,7 @@ export const he = {
           jobs: "משימות",
           other: "אחר",
         },
+        chatNote: "הצ'אט אף פעם לא מקבל את {tools}.",
       },
       status: {
         on: "פועל",

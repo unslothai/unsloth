@@ -3476,6 +3476,7 @@ export const fr = {
           jobs: "Tâches",
           other: "Autres",
         },
+        chatNote: "Le chat ne reçoit jamais {tools}.",
       },
       status: {
         on: "Activé",

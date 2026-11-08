@@ -3899,6 +3899,7 @@ export const id = {
         description:
           "Setiap alat yang aktif menambah apa yang dibaca agen sebelum mulai, jadi nonaktifkan yang tidak Anda perlukan. Agen tidak pernah melihat alat yang nonaktif, dan panggilan ke alat itu ditolak. Agen yang sudah terhubung melihat perubahannya saat terhubung ulang.",
         saveError: "Tidak dapat menyimpan pengaturan alat Unsloth MCP.",
+        chatNote: "Chat tidak pernah mendapatkan {tools}.",
         groups: {
           models: "Model",
           generate: "Hasilkan",

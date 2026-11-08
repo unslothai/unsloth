@@ -3899,6 +3899,7 @@ export const vi = {
         description:
           "Mỗi công cụ bạn bật sẽ thêm vào những gì agent đọc trước khi bắt đầu, vì vậy hãy tắt những công cụ bạn không cần. Agent không bao giờ thấy công cụ đã tắt và các lệnh gọi đến nó bị từ chối. Agent đã kết nối sẽ thấy thay đổi khi kết nối lại.",
         saveError: "Không thể lưu cài đặt công cụ Unsloth MCP.",
+        chatNote: "Cuộc trò chuyện không bao giờ nhận được {tools}.",
         groups: {
           models: "Mô hình",
           generate: "Tạo",

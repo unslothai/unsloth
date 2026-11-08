@@ -3916,6 +3916,7 @@ export const cs = {
         description:
           "Každý zapnutý nástroj přidává k tomu, co agenti čtou před začátkem, takže vypněte ty, které nepotřebujete. Agenti vypnutý nástroj nikdy nevidí a jeho volání jsou odmítnuta. Už připojení agenti uvidí změnu po opětovném připojení.",
         saveError: "Nastavení nástrojů Unsloth MCP se nepodařilo uložit.",
+        chatNote: "Chat nikdy nedostane {tools}.",
         groups: {
           models: "Modely",
           generate: "Generování",

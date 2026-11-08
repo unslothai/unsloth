@@ -3944,6 +3944,7 @@ export const nl = {
         description:
           "Elke tool die aan staat telt mee in wat agents lezen voordat ze beginnen, dus zet uit wat je niet nodig hebt. Agents zien een uitgezette tool nooit, en aanroepen ervan worden geweigerd. Al verbonden agents zien de wijziging als ze opnieuw verbinden.",
         saveError: "Kon de instelling voor Unsloth MCP-tools niet opslaan.",
+        chatNote: "De chat krijgt nooit {tools}.",
         groups: {
           models: "Modellen",
           generate: "Genereren",

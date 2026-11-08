@@ -16,6 +16,7 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
+MLP_FAST_ACT_QUANT_ENV = "UNSLOTH_DIFFUSION_INT8_MLP_FAST_ACT_QUANT"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs more than 16 rows; torchao's own safe_int_mm handles the rest, so small M keeps the stock path.
 _MIN_ROWS = 17
@@ -36,6 +37,8 @@ _RQ_HANDLE: Any = None
 _RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
+# MLP_FAST_ACT_QUANT_ENV at the last install: a global, so traced forwards never read os.environ
+_MLP_FAST_ACTQ = True
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
@@ -825,6 +828,13 @@ def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
     return _act_quant(x2d, weight)
 
 
+def _mlp_act_quant(x2d: Any, weight: Any) -> tuple:
+    """``_fast_act_quant`` for ``_plain_int8_weight`` weights, torchao's quant under the kill switch."""
+    if _MLP_FAST_ACTQ:
+        return _fast_act_quant(x2d, weight)
+    return _act_quant(x2d, weight)
+
+
 @lru_cache(maxsize = 8)
 def _device_ok(index: int) -> bool:
     """CUDA NVIDIA, Triton new enough, toolchain present, kernel compiles and matches the reference once."""
@@ -1098,7 +1108,7 @@ def _ff_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) -> Any
         or hidden_states.dtype != torch.bfloat16
     ):
         return type(self).forward(self, hidden_states, *args, **kwargs)
-    xq, xs = _act_quant(x2d, proj.weight)
+    xq, xs = _mlp_act_quant(x2d, proj.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), proj.weight)
     q, s = _OP_HANDLE.gelu(c, xs.reshape(-1), proj.weight.scale.flatten(), proj.bias, None)
     y = _linear_from_q(q, s, down.weight, down.bias, hidden_states.dtype)
@@ -1134,7 +1144,7 @@ def _flux_single_forward(
     residual = hidden_states
     norm_hidden_states, gate = self.norm(hidden_states, emb = temb)
     x2d = norm_hidden_states.reshape(rows, -1)
-    xq, xs = _act_quant(x2d, self.proj_mlp.weight)
+    xq, xs = _mlp_act_quant(x2d, self.proj_mlp.weight)
     c = _int_mm(xq.reshape(rows, -1), self.proj_mlp.weight)
     joint_attention_kwargs = joint_attention_kwargs or {}
     attn_output = self.attn(
@@ -1373,7 +1383,7 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     if in_group:
         xq, xs = _rotated_act_quant(x2d, in_group, fused_in.weight)
     else:
-        xq, xs = _act_quant(x2d, fused_in.weight)
+        xq, xs = _mlp_act_quant(x2d, fused_in.weight)
     c = _int_mm(xq.reshape(-1, xq.shape[-1]), fused_in.weight)
     if down_group:
         ws = fused_in.weight.scale.flatten()
@@ -1581,7 +1591,13 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _RQ_DEVICES, _LINEAR_OFF, _MLP_FAST_ACTQ
+    _MLP_FAST_ACTQ = (os.environ.get(MLP_FAST_ACT_QUANT_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
     if int8_fused_disabled():
         # process-global: a previous load's probe must not outlive the kill switch
         _ACTQ_HANDLE = None

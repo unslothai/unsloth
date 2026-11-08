@@ -996,8 +996,8 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
-    from .diffusion_int8_fused import _act_quant
-    return _act_quant(x2d, weight)
+    from .diffusion_int8_fused import _mlp_act_quant
+    return _mlp_act_quant(x2d, weight)
 
 
 @lru_cache(maxsize = 4)

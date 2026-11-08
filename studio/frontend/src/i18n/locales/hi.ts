@@ -3439,6 +3439,7 @@ export const hi = {
           jobs: "जॉब",
           other: "अन्य",
         },
+        chatNote: "चैट को {tools} कभी नहीं मिलते।",
       },
       status: {
         on: "चालू",

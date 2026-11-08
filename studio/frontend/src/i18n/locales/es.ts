@@ -3469,6 +3469,7 @@ export const es = {
           jobs: "Trabajos",
           other: "Otras",
         },
+        chatNote: "El chat nunca recibe {tools}.",
       },
       status: {
         on: "Activado",
