@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
+from .diffusion_fp8_dequant import chunk_rows, dequant_rows, fused_dequant_enabled
 from .diffusion_single_file_converters import host_ram_budget_scope
 from .diffusion_small_host import FP8_STORAGE_HOST_RESERVE_MIB
 
@@ -53,6 +54,8 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
+# __init__ buffers kept as built: Qwen-Image-2.1's fp32 timestep table in bf16 moved renders (LPIPS 0.106 -> 0.174).
+FP32_INIT_BUFFER_MODULES = frozenset({"QwenImage21TemporalTimesteps"})
 # Container prefixes a declaration may omit while its weight carries one.
 _DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
 
@@ -374,6 +377,28 @@ def fp8_stored_by_header(
     return fmt in FP8_FORMATS and len(shape or ()) == 2 and not keeps_fp32(name, keep_fp32)
 
 
+def _packed_runs(fmt: str, target: Any) -> bool:
+    from .diffusion_packed_block import packed_block_runs_on
+    return packed_block_runs_on(fmt, target)
+
+
+def packed_block_by_header(
+    fmt: str,
+    shape: Any,
+    name: str = "",
+    keep_fp32: Any = (),
+) -> bool:
+    """Header rule for nvfp4 / mxfp8 layers that fp8 storage keeps packed when no native runtime runs them
+    (``diffusion_packed_block``); a key-mapped load and a split with mixed input smoothing still widen."""
+    from .diffusion_packed_block import packed_block_enabled
+    return (
+        fmt in BLOCK_SIZES
+        and len(shape or ()) == 2
+        and not keeps_fp32(name, keep_fp32)
+        and packed_block_enabled()
+    )
+
+
 def comfy_resident_mib(
     path: Optional[str],
     scan: Optional[ComfyQuantScan] = None,
@@ -392,6 +417,7 @@ def comfy_resident_mib(
     key_map: Any = None,
     keep_fp32: Any = (),
     keep_fp32_bytes: Optional[int] = None,
+    target: Any = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -402,8 +428,9 @@ def comfy_resident_mib(
     leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
     not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
     file). ``keep_fp32``: the transformer's ``_keep_in_fp32_modules``; those layers are never fp8-stored and, widened,
-    cost ``keep_fp32_bytes`` per element (4 on an fp16 load, default ``compute_bytes``). None when the header cannot
-    be read. Torch-free."""
+    cost ``keep_fp32_bytes`` per element (4 on an fp16 load, default ``compute_bytes``). Under ``fp8_stored`` an
+    nvfp4 / mxfp8 layer no native runtime keeps is priced packed where it can widen on ``target``. None when the
+    header cannot be read. Torch-free."""
     fp32_bytes = compute_bytes if keep_fp32_bytes is None else int(keep_fp32_bytes)
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
@@ -460,6 +487,12 @@ def comfy_resident_mib(
                     fp8_stored_by_header(layer.format, shape, n, keep_fp32)
                     for n in _names(name + ".weight", shape)
                 )
+            )
+            or (
+                fp8_stored
+                and key_map is None
+                and packed_block_by_header(layer.format, shape, name + ".weight", keep_fp32)
+                and _packed_runs(layer.format, target)
             )
             or (
                 {NVFP4: keep_nvfp4, MXFP8: keep_mxfp8}.get(layer.format, False)
@@ -594,10 +627,23 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     from .diffusion_single_file_converters import charge_host_ram
 
     rows = codes.shape[0]
+    out_size = torch.empty((), dtype = dtype).element_size()
+    if not group and codes.dim() == 2 and rows and fused_dequant_enabled():
+        cols = codes.shape[1]
+        step = chunk_rows(rows, cols, codes.device)
+        if step:
+            # Row chunks into the output: the output plus one float32 chunk is the peak.
+            charge_host_ram(codes.numel() * out_size + step * cols * 4)
+            return dequant_rows(
+                codes,
+                scale.to(torch.float32).reshape(-1).expand(rows),
+                dtype,
+                lambda c: c.to(torch.float32, copy = True),
+                triton_ok = False,
+            )
     # Peak, not just the output: the float32 codes and their float32 product are live together (8 bytes per
     # element); ConvRot's batched matmul holds the product, a float32 copy of it and its float32 result (12,
     # measured); last the product and the output.
-    out_size = torch.empty((), dtype = dtype).element_size()
     charge_host_ram(codes.numel() * max(12 if group else 8, 4 + out_size))
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
     if group:
@@ -952,6 +998,7 @@ def comfy_fp8_backend(
     base_repo: Optional[str] = None,
     *,
     offload: bool = False,
+    torchao_offload: bool = False,
 ) -> Optional[str]:
     """Which of Studio's fp8 runtimes takes the ``float8_e4m3fn`` layers, by the rule its own fp8 quant
     follows: ``"torchao"`` (the per-row ``Float8Tensor`` and ``_scaled_mm``) on a resident plan whose GPU
@@ -959,6 +1006,7 @@ def comfy_fp8_backend(
     quant runs natively (ROCm, the stubbed torchao), None (dequantize to bf16) where neither runs: an
     older GPU, CPU, MPS, or an offloaded plan on the torchao path (the model offload hooks cannot move a
     ``Float8Tensor``: "Attempted to set the storage of a tensor on device cuda:0 to a storage on ... cpu").
+    ``torchao_offload``: the plan streams the denoiser (``torchao_offload_plan``), which torchao survives.
     ``UNSLOTH_DIFFUSION_COMFY_FP8=0`` never takes an fp8 GEMM."""
     if (os.environ.get(COMFY_FP8_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return None
@@ -974,7 +1022,7 @@ def comfy_fp8_backend(
         if native_quant_scheme(target, TQ_FP8, family = family, offload = offload) == TQ_FP8:
             return "native"
         if (
-            not offload
+            (not offload or torchao_offload)
             and getattr(target, "dtype", None) is torch.bfloat16
             and select_transformer_quant_scheme(target, TQ_FP8, family = family, base_repo = base_repo)
             == TQ_FP8
@@ -997,8 +1045,12 @@ def fp8_stored_layers(model: Any) -> int:
 
 
 def pipe_fp8_stored_layers(pipe: Any) -> int:
+    """fp8-stored plus packed nvfp4 / mxfp8 Linears of the denoisers: buffers widened per forward."""
+    from .diffusion_packed_block import packed_block_layers
     return sum(
-        fp8_stored_layers(getattr(pipe, attr, None)) for attr in ("transformer", "transformer_2")
+        fp8_stored_layers(getattr(pipe, attr, None))
+        + packed_block_layers(getattr(pipe, attr, None))
+        for attr in ("transformer", "transformer_2")
     )
 
 
@@ -1245,6 +1297,16 @@ def load_comfy_quant_transformer(
         mxfp8_backend = None
     if fp8_storage is None:
         fp8_storage = fp8_storage_forced() and comfy_fp8_storage(target)
+    from .diffusion_packed_block import (
+        PACKED_BLOCK_ATTR,
+        packed_block_args,
+        packed_block_enabled,
+        packed_block_linear_class,
+        packed_block_runs_on,
+    )
+
+    # fp8 storage also keeps nvfp4 / mxfp8 layers without a native runtime packed (widened per forward).
+    packed = bool(fp8_storage) and key_map is None and packed_block_enabled()
     if keep_key is None:
         state = load_file(str(path))
     else:
@@ -1312,10 +1374,20 @@ def load_comfy_quant_transformer(
             and fp8_stored_by_header(layer.format, shape, layer.name, keep_fp32)
         )
 
+    def _packed(layer: Any) -> bool:
+        shape = header_shapes.get(layer.name + ".weight")
+        return (
+            packed
+            and shape is not None
+            and not backends.get(layer.format)
+            and packed_block_runs_on(layer.format, target)
+            and packed_block_by_header(layer.format, shape, layer.name, keep_fp32)
+        )
+
     _widened = {
         layer.name + ".weight": (
             (2 if layer.format == NVFP4 or layer.packed_int4 else 1)
-            if not (backends.get(layer.format) or _stored(layer))
+            if not (backends.get(layer.format) or _stored(layer) or _packed(layer))
             or (layer.format in BLOCK_SIZES and key_map is not None)
             else 0
         )
@@ -1324,7 +1396,7 @@ def load_comfy_quant_transformer(
     _stored_scale_bytes = sum(
         4 * int(header_shapes[layer.name + ".weight"][0])
         for layer in scan.layers.values()
-        if _stored(layer) and not backends.get(layer.format)
+        if (_stored(layer) or _packed(layer)) and not backends.get(layer.format)
     )
     # The header estimate refuses early; the budget it activates is charged by every allocating helper
     # below, so a layer the estimate cannot see (runtime filters, nibble swaps) still cannot OOM the host.
@@ -1377,7 +1449,10 @@ def load_comfy_quant_transformer(
             codes = codes.view(getattr(torch, layer.format))
         # A key-mapped (original-layout) family moves rows whole, which the tiled block scales do not survive.
         if (
-            backends.get(layer.format) or fp16_keep or (fp8_storage and layer.format in FP8_FORMATS)
+            backends.get(layer.format)
+            or fp16_keep
+            or (fp8_storage and layer.format in FP8_FORMATS)
+            or (packed and extra is not None and packed_block_runs_on(layer.format, target))
         ) and not (extra is not None and key_map is not None):
             sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
@@ -1523,6 +1598,7 @@ def load_comfy_quant_transformer(
     native: dict = {}
     stored: dict = {}  # fqn -> (codes, scale)
     block_native: dict = {}  # fqn -> (fmt, codes, scale, tensor_scale, input_scale, bias)
+    block_packed: dict = {}  # fqn -> (fmt, codes, scale, row_scale, pre_quant, bias)
     built = {TQ_INT8: 0, TQ_FP8: 0, TQ_NVFP4: 0, TQ_MXFP8: 0}
     for name, value in list(converted.items()):
         if isinstance(value, _BlockWeight):
@@ -1546,6 +1622,23 @@ def load_comfy_quant_transformer(
                 del converted[name]
                 built[schemes[fmt]] += 1
             else:
+                args = (
+                    packed_block_args(value.parts)
+                    if packed
+                    and packed_block_runs_on(fmt, target)
+                    and isinstance(module, torch.nn.Linear)
+                    and name.endswith(".weight")
+                    and _dtype_for(name) == dtype
+                    and not any(m in fqn.split(".") for m in keep_fp32)
+                    else None
+                )
+                if args is not None:
+                    bias = converted.get(fqn + ".bias")
+                    if torch.is_tensor(bias):
+                        bias = bias.to(dtype)
+                    block_packed[fqn] = (fmt, *args, bias)
+                    del converted[name]
+                    continue
                 converted[name] = _dequant_parts(fmt, value.parts, _dtype_for(name))
                 dequantized += 1
             continue
@@ -1646,6 +1739,26 @@ def load_comfy_quant_transformer(
             setattr(parent, leaf, layer)
             for buffer_name, buffer in layer.named_buffers(recurse = False):
                 converted[f"{fqn}.{buffer_name}"] = buffer
+        if block_packed:
+            packed_cls = packed_block_linear_class()
+        for fqn, (fmt, codes, scale, row_scale, pre_quant, bias) in block_packed.items():
+            parent_name, _, leaf = fqn.rpartition(".")
+            parent = model.get_submodule(parent_name) if parent_name else model
+            linear = getattr(parent, leaf)
+            layer = packed_cls(
+                fmt,
+                linear.in_features,
+                linear.out_features,
+                codes = codes,
+                scale = scale,
+                row_scale = row_scale,
+                pre_quant = pre_quant,
+                bias = bias,
+                compute_dtype = dtype,
+            )
+            setattr(parent, leaf, layer)
+            for buffer_name, buffer in layer.named_buffers(recurse = False):
+                converted[f"{fqn}.{buffer_name}"] = buffer
 
     _install_native(model)
     missing, unexpected = model.load_state_dict(converted, strict = False, assign = True)
@@ -1671,8 +1784,10 @@ def load_comfy_quant_transformer(
     del converted
     # __init__ buffers (Wan's float64 rope) follow the compute dtype; checkpoint buffers keep theirs (H3 curve table)
     for module_name, module in model.named_modules():
-        if module_name in block_native:
+        if module_name in block_native or module_name in block_packed:
             continue  # fp32 scales / alpha the block kernels need; codes are not floating
+        if type(module).__name__ in FP32_INIT_BUFFER_MODULES:
+            continue
         for buffer_name, buffer in list(module._buffers.items()):
             if (f"{module_name}.{buffer_name}" if module_name else buffer_name) in loaded:
                 continue
@@ -1731,7 +1846,7 @@ def load_comfy_quant_transformer(
             "diffusion.comfy_quant: %s loaded from a ComfyUI checkpoint (%s): %d int8 layers kept as "
             "int8 (%s, %d ConvRot), %d fp8 layers kept as fp8 (%s), %d nvfp4 layers kept as nvfp4 (%s), "
             "%d mxfp8 layers kept as mxfp8 (%s), %d fp8 layers stored as fp8 and widened per layer to %s, "
-            "%d layers dequantized to %s",
+            "%d nvfp4 / mxfp8 layers kept packed and widened per layer, %d layers dequantized to %s",
             transformer_cls.__name__,
             ", ".join(f"{k} x{v}" for k, v in sorted(scan.counts().items())),
             built[TQ_INT8],
@@ -1745,6 +1860,7 @@ def load_comfy_quant_transformer(
             f"{mxfp8_backend} runtime" if built[TQ_MXFP8] else "no mxfp8 runtime",
             len(stored),
             str(dtype).replace("torch.", ""),
+            len(block_packed),
             dequantized,
             str(dtype).replace("torch.", ""),
         )
@@ -1760,6 +1876,12 @@ def load_comfy_quant_transformer(
         if stored:
             info["fp8_stored"] = len(stored)
             setattr(model, FP8_STORED_ATTR, len(stored))
+        if block_packed:
+            for fmt in (NVFP4, MXFP8):
+                count = sum(1 for v in block_packed.values() if v[0] == fmt)
+                if count:
+                    info[f"{fmt}_packed"] = count
+            setattr(model, PACKED_BLOCK_ATTR, len(block_packed))
         for fmt, backend in ((NVFP4, nvfp4_backend), (MXFP8, mxfp8_backend)):
             if scan.counts().get(fmt):
                 info[f"{fmt}_backend"] = backend if built[schemes[fmt]] else None

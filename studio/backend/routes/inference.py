@@ -9010,10 +9010,12 @@ async def _reap_exited_workers() -> None:
         await asyncio.to_thread(_reap_dead_workers, exited)
 
 
-async def _route_to_extra_slot(requested: Optional[str]) -> Optional[_ExtraSlot]:
+async def _route_to_extra_slot(
+    requested: Optional[str], touch: bool = True
+) -> Optional[_ExtraSlot]:
     """Route this request to the kept model serving *requested*, if any. The primary wins a tie."""
     await _reap_exited_workers()
-    return await model_slots.route(requested, _loaded_satisfies)
+    return await model_slots.route(requested, _loaded_satisfies, touch)
 
 
 def _model_key(request: LoadRequest) -> str:
@@ -22394,10 +22396,10 @@ async def inference_status(
 
 async def get_status(current_subject: str, model: Optional[str] = None):
     """Status of the slot serving ``model`` (the primary one by default), listing every loaded model."""
-    slot = await _route_to_extra_slot(model)
+    slot = await _route_to_extra_slot(model, touch = False)
     response = await _slot_status(current_subject)
     if isinstance(response, InferenceStatusResponse) and response.is_gguf:
-        response.resident_mib = _llama_resident_mib()
+        response.resident_mib, response.resident_on_gpu = _llama_resident()
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
@@ -22420,13 +22422,26 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     return response
 
 
-def _llama_resident_mib() -> Optional[int]:
-    """The routed slot's llama-server footprint; None when not loaded or unreadable."""
+def _llama_resident() -> "tuple[Optional[int], Optional[bool]]":
+    """The routed slot's llama-server footprint, and whether it is model buffers on the GPUs /api/system
+    reports: True (parsed buffers), False (a CPU-only build's RSS), None (unknown)."""
     try:
         llama = get_llama_cpp_backend()
-        return llama.resident_memory_mib() if getattr(llama, "is_loaded", False) else None
+        if not getattr(llama, "is_loaded", False):
+            return None, None
+        mib = llama.resident_memory_mib()
+        if mib is None:
+            return None, None
+        # resident_memory_mib() reports these buffers when there are any, else falls back to RSS.
+        buffers = getattr(llama, "reclaimable_gpu_memory_gb", None)
+        if callable(buffers) and buffers():
+            return mib, True
+        from core.inference.llama_cpp import LlamaCppBackend as _Llama
+
+        # No parsed buffers proves nothing (Vulkan, SYCL); only a CPU-only build is a CPU run.
+        return mib, (False if _Llama._backend_lacks_gpu_lib() else None)
     except Exception:  # noqa: BLE001 - optional decoration on a status read
-        return None
+        return None, None
 
 
 def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
@@ -49512,7 +49527,113 @@ async def generate_diffusion_image(
 ):
     if request.provider_id:
         return await _external_image_generation(request, http_request)
+    if request.xy is not None:
+        return await _generate_xy_grid(request)
     return await _generate_diffusion_image_core(request)
+
+
+# Running grids by account: a Stop between cells or before a queued cell finds no denoise to land on.
+_xy_grid_stops: list[tuple[Optional[str], Any]] = []
+
+
+def _stop_xy_grids() -> bool:
+    account = current_account_id()
+    tickets = [ticket for owner, ticket in _xy_grid_stops if owner == account]
+    for ticket in tickets:
+        ticket.stop()
+    return bool(tickets)
+
+
+def _loaded_diffusion_layer_count() -> int:
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_families import detect_family
+
+    try:
+        name = get_active_diffusion_engine().status().get("family")
+    except Exception:  # noqa: BLE001 -- nothing loaded: the cell run answers that
+        return 0
+    family = detect_family("", name) if name else None
+    return int(getattr(family, "layer_count", 0) or 0)
+
+
+async def _generate_xy_grid(request: DiffusionGenerateRequest) -> DiffusionGenerateResponse:
+    """Render every X/Y cell as its own gallery image, then save the labelled grid. A Stop or a failing cell ends the
+    grid with that cell's error; the cells before it stay in the gallery."""
+    from core.inference import diffusion_xy, image_gallery
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_segment import render_fence
+    from core.inference.generation_ticket import GenerationTicket, generation_ticket
+
+    try:
+        plan = diffusion_xy.expand(request)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    layers = _loaded_diffusion_layer_count()
+    if layers:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"xy needs one image per cell; the loaded model returns {layers} layers per image",
+        )
+    records: list[Optional[GalleryImage]] = [None] * len(plan.cells)
+    pictures: list[Any] = [None] * len(plan.cells)
+    global _diffusion_persist_active
+    # Progress stays active between cells and through the grid save, so a reload does not settle the run early.
+    ticket = GenerationTicket()
+    stop = (current_account_id(), ticket)
+    _diffusion_persist_active += 1
+    try:
+        _xy_grid_stops.append(stop)
+        with render_fence():
+            for index in plan.order:
+                if ticket.cancelled():
+                    raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+                captured: list[Any] = []
+                # The engine binds each cell's cancel to the ticket before it waits for the slot.
+                with generation_ticket(ticket):
+                    result = await _generate_diffusion_image_run(
+                        plan.cells[index].request, captured = captured
+                    )
+                records[index] = result.images[0]
+                pictures[index] = diffusion_xy.fit_cell(captured[0], plan)
+        # No await between these two: a Stop after the last cell ends the grid, one after this is not acknowledged.
+        _xy_grid_stops.remove(stop)
+        if ticket.cancelled():
+            raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG)
+        first = records[0]
+
+        def _save_grid() -> dict:
+            grid = diffusion_xy.compose_grid(pictures, plan)
+            meta = first.model_dump(
+                exclude = {"id", "url", "pinned", "archived", "order_at", "schema_version"}
+            )
+            meta.update(
+                width = grid.width,
+                height = grid.height,
+                batch_index = 0,
+                batch_size = 1,
+                xy_grid = {
+                    **plan.describe([request.xy.x, request.xy.y]),
+                    "cells": [r.id for r in records],
+                    "cell_width": first.width,
+                    "cell_height": first.height,
+                },
+                created_at = time.time(),
+            )
+            return image_gallery.save(grid, meta)
+
+        try:
+            grid_record = await asyncio.to_thread(_save_grid)
+        except Exception as exc:
+            logger.error("diffusion.xy_grid_failed: %s", exc, exc_info = True)
+            raise HTTPException(
+                status_code = 500,
+                detail = "The grid cells are in the gallery, but the grid image could not be saved.",
+            )
+    finally:
+        if stop in _xy_grid_stops:
+            _xy_grid_stops.remove(stop)
+        _diffusion_persist_active -= 1
+    return DiffusionGenerateResponse(images = records, grid = GalleryImage(**grid_record))
 
 
 async def _generate_diffusion_image_core(
@@ -49528,7 +49649,7 @@ async def _generate_diffusion_image_core(
 
 
 async def _generate_diffusion_image_run(
-    request: DiffusionGenerateRequest,
+    request: DiffusionGenerateRequest, captured: Optional[list] = None
 ) -> DiffusionGenerateResponse:
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -49713,6 +49834,9 @@ async def _generate_diffusion_image_run(
             raise
 
     generation_seconds = time.perf_counter() - generation_started
+    # After the Detailer, so an X/Y cell is the picture the gallery keeps.
+    if captured is not None:
+        captured.extend(result["images"])
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
@@ -50867,13 +50991,14 @@ async def cancel_diffusion_generation(
     saved image connection instead."""
     if target == "connection":
         return {"cancelled": _stop_external_image_runs()}
+    grids = _stop_xy_grids()
     if account_access.generation_is_foreign("diffusion"):
-        return {"cancelled": False}
+        return {"cancelled": grids}
     mine = account_access.generation_is_mine("diffusion")
     if not mine and (
         account_access.foreign_work_active() or account_access.resident_hidden("diffusion")
     ):
-        return {"cancelled": False}
+        return {"cancelled": grids}
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -50883,7 +51008,7 @@ async def cancel_diffusion_generation(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return {"cancelled": False}
+        return {"cancelled": grids}
 
     # A run still upsampling its prompt has not reached the engine yet.
     from core.inference.flux3_prompt_upsampler import cancel_active as cancel_upsampling
@@ -50899,7 +51024,7 @@ async def cancel_diffusion_generation(
     if expected is not None:
         cancel = functools.partial(cancel, expected_account = expected)
     cancelled = await asyncio.get_running_loop().run_in_executor(_CANCEL_EXECUTOR, cancel)
-    return {"cancelled": bool(cancelled or upsampling or detailing)}
+    return {"cancelled": bool(cancelled or upsampling or detailing or grids)}
 
 
 # ── FLUX.3 prompt upsampler (llama.cpp sidecar) ──────────────────────────────────────────────────────────

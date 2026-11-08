@@ -487,7 +487,14 @@ jobs:
             echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
             exit 1
           fi
-          pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"
+          # The wheel is a GitHub release asset; a 504 there is not retried by pip, so retry here.
+          for attempt in 1 2 3; do
+            if pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"; then
+              break
+            fi
+            [ "$attempt" -eq 3 ] && { echo "::error::ruff-unsloth install failed after 3 attempts"; exit 1; }
+            sleep $((5 * attempt))
+          done
 
       - name: Repo tests (CPU, auto-discovered)
         env:

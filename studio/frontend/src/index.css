@@ -6160,6 +6160,12 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
 }
 
+/* Floating window: cut in the node's own box (native-view.ts). */
+[data-native-hole][data-native-hole-local] {
+	background-attachment: scroll !important;
+	background-origin: border-box !important;
+}
+
 /* A backdrop-filter would paint over the hole. */
 [data-native-hole] {
 	-webkit-backdrop-filter: none !important;
