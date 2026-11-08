@@ -145,3 +145,43 @@ def test_compiled_dequant_matches_eager():
         eager = gguf_utils.dequantize_gguf_tensor(weight)
         got = compiled(weight)
         assert torch.equal(got.view(torch.int32), eager.view(torch.int32))
+
+
+class _ReadStop(Exception):
+    pass
+
+
+def _read_sites():
+    from core.inference import diffusion_gguf_pipeline as pipe_mod, video_ltx2, video_ltx25
+    return {
+        "whole_pipeline": lambda p: pipe_mod.load_whole_pipeline_gguf(
+            object, object, p, {}, dtype = torch.bfloat16
+        ),
+        "ltx23_assembly": lambda p: video_ltx2._assemble_ltx23_pipeline(
+            p, base_repo = "x", torch_dtype = torch.bfloat16, is_gguf = True
+        ),
+        "ltx25_transformer": lambda p: video_ltx25.load_ltx25_transformer(
+            p, base_repo = "x", torch_dtype = torch.bfloat16, is_gguf = True, hf_token = None
+        ),
+        "ltx25_read_tensors": lambda p: video_ltx25._read_tensors(p, lambda key: True),
+    }
+
+
+@pytest.mark.parametrize(
+    "site", ["whole_pipeline", "ltx23_assembly", "ltx25_transformer", "ltx25_read_tensors"]
+)
+def test_every_gguf_read_sees_the_low_bit_types_on_a_first_load(site, monkeypatch):
+    # diffusers' GGUF reader refuses unknown types, so the types must be in its table before the file is read
+    import diffusers.loaders.single_file_utils as sfu
+
+    seen = []
+
+    def read(path, *args, **kwargs):
+        seen.append(T.IQ2_XXS in gguf_utils.dequantize_functions)
+        raise _ReadStop
+
+    monkeypatch.setattr(sfu, "load_single_file_checkpoint", read)
+    assert T.IQ2_XXS not in gguf_utils.dequantize_functions
+    with pytest.raises(_ReadStop):
+        _read_sites()[site]("model.gguf")
+    assert seen == [True]

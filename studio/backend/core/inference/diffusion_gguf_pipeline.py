@@ -66,6 +66,9 @@ def load_whole_pipeline_gguf(
     import diffusers.loaders.single_file as single_file_mod
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
 
+    from .diffusion_gguf_lowbit import install_lowbit_iq
+
+    install_lowbit_iq()  # diffusers' reader refuses unknown types, so before the read
     checkpoint = load_single_file_checkpoint(
         path,
         local_files_only = pipe_kwargs.get("local_files_only"),
@@ -81,9 +84,6 @@ def load_whole_pipeline_gguf(
         for key in ("local_files_only", "cache_dir", "token")
         if pipe_kwargs.get(key) is not None
     }
-    from .diffusion_gguf_lowbit import install_lowbit_iq
-
-    install_lowbit_iq()
     denoiser = denoiser_cls.from_single_file(
         denoiser_sd,
         config = pipe_kwargs.get("config"),

@@ -361,6 +361,9 @@ def load_ltx25_transformer(
 
     from .video_ltx2 import _ltx23_pre_convert, ltx23_is_dit_key
 
+    if is_gguf:
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        install_lowbit_iq()  # before the read: diffusers' reader refuses unknown types
     state = load_single_file_checkpoint(str(checkpoint_path))
     dit_state = _ltx23_pre_convert({k: v for k, v in state.items() if ltx23_is_dit_key(k)})
     del state
@@ -382,8 +385,6 @@ def load_ltx25_transformer(
     # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
     kwargs.update(pinned_revision_kwargs(kwargs["config"]))
     if is_gguf:
-        from .diffusion_gguf_lowbit import install_lowbit_iq
-        install_lowbit_iq()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         kwargs["device"] = device
@@ -585,6 +586,10 @@ def _read_tensors(path: str, keep: Callable[[str], bool]) -> dict[str, Any]:
     """The tensors of ``path`` whose names pass ``keep``, read selectively (GGUF files are read whole)."""
     if not str(path).lower().endswith(".safetensors"):
         from diffusers.loaders.single_file_utils import load_single_file_checkpoint
+
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+
+        install_lowbit_iq()
         return {k: v for k, v in load_single_file_checkpoint(str(path)).items() if keep(k)}
     from safetensors import safe_open
 
