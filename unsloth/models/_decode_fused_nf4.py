@@ -330,7 +330,6 @@ def _site(
     if any(b is None for b in biases) != all(b is None for b in biases):
         return "bias on some projections only"
     if biases[0] is not None and len({b.dtype for b in biases}) != 1:
-        # The kernel picks each segment's bias pointer from one typed vector.
         return "bias dtypes differ"
     Ws = [part[0] for part in parts]
     states = [part[1] for part in parts]
@@ -504,7 +503,6 @@ def _build(model, X):
             if head_dim & (head_dim - 1) or head_dim < 32:
                 return "head dim"
             if plan.layers and head_dim != plan.layers[0].head_dim:
-                # One raw q|k|v workspace serves every layer.
                 return "head dim differs across layers"
             norms = (attn.q_norm, attn.k_norm)
             for name, module in zip(("q_norm", "k_norm"), norms):
@@ -599,7 +597,6 @@ def _build(model, X):
             torch.zeros(hidden_shape, dtype = torch.float32, device = device),
         )
         plan.act = torch.empty(act_shape, dtype = X.dtype, device = device)
-        # Qwen3: the raw q|k|v row its per-head q / k norm reads.
         plan.qkv_raw = (
             torch.empty(
                 plan.layers[0].sites["qkv"].N

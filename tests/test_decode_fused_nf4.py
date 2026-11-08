@@ -1180,7 +1180,6 @@ def test_signature_follows_saved_norm_weights():
     wrapper.enable_adapters(False)
     assert D._signature(plan()) != on
     assert D._adapter_key(wrapper) != before
-    # Qwen3: a saved q_norm / k_norm keys the plan the same way.
     wrapper.enable_adapters(True)
     k = torch.ones(8)
     q_on = D._signature(plan((wrapper.weight, k, 1e-6, 1e-6)))

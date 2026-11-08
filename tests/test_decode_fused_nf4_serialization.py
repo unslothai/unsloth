@@ -126,7 +126,6 @@ def _sites(model, monkeypatch):
         assert not isinstance(site, str), site
         assert len(site.segments) == len(projections)
         expected_bindings = [(projection, "weight") for projection in projections]
-        # Absent biases are bound too, so adding one later rebuilds the plan.
         expected_bindings += [(projection, "bias") for projection in projections]
         assert len(site.tensor_bindings) == len(expected_bindings)
         for (owner, name, tensor), (projection, expected_name) in zip(
