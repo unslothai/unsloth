@@ -4,6 +4,7 @@
 """Dataset format conversion between Alpaca, ShareGPT, and ChatML."""
 
 import contextvars
+import functools
 import os
 
 from .cells import cell_text
@@ -460,6 +461,33 @@ def _fetch_row_image(url):
     return Image.open(BytesIO(fetch(url))).convert("RGB")
 
 
+def _settle_in_order(rows, task, record, num_workers):
+    """Calls ``record(row, future)`` in row order; ``future`` runs ``task(row)`` on a pool (None if serial or ``task`` gives None)."""
+    if num_workers <= 1:
+        for row in rows:
+            record(row, None)
+        return
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Settling here keeps output, random caption picks and the first-failure log as serial; 2x workers bounds images held.
+    pending = deque()
+    with ThreadPoolExecutor(max_workers = num_workers) as executor:
+        try:
+            for row in rows:
+                fn = task(row)
+                # A fresh context copy per task: it sees the caller's account / HF cache settings.
+                future = None if fn is None else executor.submit(contextvars.copy_context().run, fn)
+                pending.append((row, future))
+                if len(pending) > 2 * num_workers:
+                    record(*pending.popleft())
+            while pending:
+                record(*pending.popleft())
+        except BaseException:
+            executor.shutdown(wait = False, cancel_futures = True)
+            raise
+
+
 def _non_null_rows(dataset, column):
     """Row positions whose ``column`` is not None, read from Arrow validity so cells are never built or decoded."""
     try:
@@ -792,36 +820,16 @@ def convert_to_vlm_format(
         num_workers = (
             min(safe_thread_num_proc(), _MAX_ROW_FETCH_WORKERS) if _image_lookup is not None else 1
         )
-        try:
-            if num_workers <= 1:
-                for sample in pbar:
-                    _record(sample)
-            else:
-                from collections import deque
-                from concurrent.futures import ThreadPoolExecutor
 
-                # Each repo file is one Hub request, so fetch them on a pool; rows still settle in order
-                # in this thread (same output, random caption pick and first-failure log as serial), and
-                # 2x workers bounds the images held in memory.
-                pending = deque()
-                with ThreadPoolExecutor(max_workers = num_workers) as executor:
-                    try:
-                        for sample in pbar:
-                            name = sample[image_column]
-                            future = None
-                            if isinstance(name, str) and name in _image_lookup:
-                                # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
-                                future = executor.submit(
-                                    contextvars.copy_context().run, _fetch_repo_image, name
-                                )
-                            pending.append((sample, future))
-                            if len(pending) > 2 * num_workers:
-                                _record(*pending.popleft())
-                        while pending:
-                            _record(*pending.popleft())
-                    except BaseException:
-                        executor.shutdown(wait = False, cancel_futures = True)
-                        raise
+        def _repo_fetch(sample):
+            # Each repo file is one Hub request, the slow part, so only that runs on the pool.
+            name = sample[image_column]
+            if isinstance(name, str) and name in _image_lookup:
+                return functools.partial(_fetch_repo_image, name)
+            return None
+
+        try:
+            _settle_in_order(pbar, _repo_fetch, _record, num_workers)
         finally:
             pbar.close()
 
@@ -1042,20 +1050,17 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    def _record(future_or_sample):
+    def _record(sample, future):
         nonlocal failed_count
         try:
-            if isinstance(future_or_sample, Future):
-                converted_list.append(future_or_sample.result())
-            else:
-                converted_list.append(_convert_single_sample(future_or_sample))
+            converted_list.append(
+                future.result() if future is not None else _convert_single_sample(sample)
+            )
         except Exception as e:
             failed_count += 1
             if failed_count == 1:
                 logger.info(f"⚠️ First conversion failure: {type(e).__name__}: {e}")
         pbar.set_postfix(ok = len(converted_list), failed = failed_count, refresh = False)
-
-    from concurrent.futures import Future
 
     num_workers = 1
     if _image_lookup is not None or (
@@ -1072,31 +1077,12 @@ def convert_sharegpt_with_images_to_vlm_format(
         **_quiet_bar_kwargs(),
     )
     try:
-        if num_workers <= 1:
-            for sample in pbar:
-                _record(sample)
-        else:
-            from collections import deque
-            from concurrent.futures import ThreadPoolExecutor
-
-            # Settled in row order (same output and first-failure log as serial); 2x workers bounds images held in memory.
-            pending = deque()
-            with ThreadPoolExecutor(max_workers = num_workers) as executor:
-                try:
-                    for sample in pbar:
-                        # A fresh context copy per task: the fetch sees the caller's account / HF cache settings.
-                        pending.append(
-                            executor.submit(
-                                contextvars.copy_context().run, _convert_single_sample, sample
-                            )
-                        )
-                        if len(pending) > 2 * num_workers:
-                            _record(pending.popleft())
-                    while pending:
-                        _record(pending.popleft())
-                except BaseException:
-                    executor.shutdown(wait = False, cancel_futures = True)
-                    raise
+        _settle_in_order(
+            pbar,
+            lambda sample: functools.partial(_convert_single_sample, sample),
+            _record,
+            num_workers,
+        )
     finally:
         pbar.close()
 
