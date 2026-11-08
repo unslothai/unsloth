@@ -141,15 +141,15 @@ def install(device: Any = "cuda", logger: Any = None) -> bool:
     if not wanted(device):
         uninstall()
         return False
-    import importlib
+    import sys
 
     with _LOCK:
         _FAILED[0] = False
         if _ATTR in _STOCK:
             return True
-        try:
-            mod = importlib.import_module(_MODULE)
-        except Exception:  # noqa: BLE001
+        # Only a module already loaded (its transformer is in use) is patched.
+        mod = sys.modules.get(_MODULE)
+        if mod is None:
             return False
         stock = getattr(mod, _ATTR, None)
         if stock is None or getattr(stock, "__name__", "") != "apply_rotary_emb":
