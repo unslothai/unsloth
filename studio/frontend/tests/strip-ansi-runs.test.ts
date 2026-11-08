@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// stripAnsi copies plain runs as slices and tailToolOutput finds its cut without splitting the
-// whole text; both must equal the per-character scanner and split-based tail they replaced.
+// Oracle: main's per-character stripAnsi and split-based tailToolOutput.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,7 +34,6 @@ function isScsFinal(code: number): boolean {
 }
 
 function isEscStringControlIntroducer(code: number): boolean {
-  // DCS (P), SOS (X), PM (^), APC (_)
   return code === 0x50 || code === 0x58 || code === 0x5e || code === 0x5f;
 }
 
@@ -65,12 +63,10 @@ function consumeStringControl(
       if (cursor + 1 < text.length && text.charCodeAt(cursor + 1) === 0x5c) {
         return cursor + 2;
       }
-      // Preserve a new escape introducer so the outer scanner can consume it.
       break;
     }
     cursor += 1;
   }
-  // Unterminated string controls are intentionally hidden while streaming.
   return cursor;
 }
 
@@ -82,7 +78,6 @@ function consumeCsi(text: string, afterIntro: number): number {
   ) {
     cursor += 1;
   }
-  // An aborted CSI leaves the cursor on the offending byte so the next sequence is not swallowed.
   if (cursor < text.length && isCsiFinal(text.charCodeAt(cursor))) {
     cursor += 1;
   }
