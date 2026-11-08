@@ -230,6 +230,9 @@ def gguf_variant_requirements(
     variant: str,
     hf_token: Optional[str] = None,
 ) -> Optional[_GgufVariantRequirement]:
+    # A scope is never in the repo's quant listing, so it would miss the cache and refetch model_info every call.
+    if _is_scope_key(variant):
+        return None
     key = _variant_hash_cache_key(repo_id, variant, hf_token)
     cached = _variant_requirement_cache_get(key)
     if cached is not None:

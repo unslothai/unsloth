@@ -104,6 +104,7 @@ from ..utils.attention_dispatch import (
     SDPA,
     select_attention_backend,
     resolve_prefix_seg_info,
+    applies_prefix_seg_info,
 )
 from torch.nn.functional import scaled_dot_product_attention as _torch_sdpa
 from transformers import __version__ as transformers_version
@@ -1095,6 +1096,7 @@ def fast_layernorm_compiled(layernorm, X):
 
 
 # Ported from transformers models/llama/modeling_llama.py#L320
+@applies_prefix_seg_info
 @context_parallel_attention(rl = True)
 def LlamaAttention_fast_forward(
     self,

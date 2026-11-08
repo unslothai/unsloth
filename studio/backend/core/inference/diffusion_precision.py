@@ -701,6 +701,7 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         # Keep nn.Embedding full precision: fp8 puts every prompt token on the coarse grid.
         skip_modules_classes = (torch.nn.Embedding,),
     )
+    _install_storage_restore(encoder)
 
     # Module.dtype would report fp8 storage, which randn_tensor cannot take; shadow it on the ORIGINAL class, since a __class__ swap breaks output recording.
     compute_dtype = getattr(target, "dtype", None)
@@ -712,6 +713,148 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         encoder._unsloth_te_cast_complete = True
     except Exception:  # noqa: BLE001 - real HF encoders are heap-type nn.Modules; only doubles fail
         pass
+
+
+TE_FP8_RESTORE_ENV = "UNSLOTH_TE_FP8_RESTORE_STORAGE"
+
+
+def te_fp8_restore_enabled() -> bool:
+    import os
+    return (os.environ.get(TE_FP8_RESTORE_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _floating_slots(module: Any) -> list:
+    out = []
+    for sub in module.modules():
+        for table in (sub._parameters, sub._buffers):
+            for name, value in table.items():
+                if value is not None and value.is_floating_point():
+                    out.append((table, name, value))
+    return out
+
+
+def _is_compiling() -> bool:
+    import torch
+
+    compiler = getattr(torch, "compiler", None)
+    fn = getattr(compiler, "is_compiling", None) or getattr(torch._dynamo, "is_compiling", None)
+    return bool(fn()) if callable(fn) else False
+
+
+def _slot_version(value: Any) -> Any:
+    try:
+        return value._version
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _restoring_hooks(hook: Any, stock_pre: Any, stock_post: Any) -> tuple:
+    """Put the kept fp8 tensors back after the forward instead of downcasting the compute copies (exact: every fp8
+    value is representable in bf16 / fp16 / fp32). A slot replaced or written in place during the forward takes the
+    stock downcast, and so does any traced forward: pointers and version counters are eager-only."""
+    import torch
+
+    kept: dict = {}
+
+    # Traced forwards run diffusers' stock body inline: calling ``stock_pre`` would add a frame, so a graph break.
+    def pre_forward(module: Any, *args: Any, **kwargs: Any) -> Any:
+        if _is_compiling():
+            module.to(dtype = hook.compute_dtype, non_blocking = hook.non_blocking)
+            return args, kwargs
+        if not te_fp8_restore_enabled() or module.training:
+            kept.pop(id(module), None)
+            return stock_pre(module, *args, **kwargs)
+        # ``module.to`` swaps a parameter's ``.data`` but replaces a buffer entry
+        stored = [
+            (table, name, value.data if isinstance(value, torch.nn.Parameter) else value)
+            for table, name, value in _floating_slots(module)
+            if value.dtype == hook.storage_dtype
+        ]
+        # Outside inference_mode so the compute copies keep a version counter for the in-place check.
+        with torch.inference_mode(False), torch.no_grad():
+            result = stock_pre(module, *args, **kwargs)
+        entries = []
+        for table, name, old in stored:
+            new = table.get(name)
+            if new is None:
+                continue
+            entries.append((table, name, old, new.data_ptr(), new.dtype, _slot_version(new)))
+        kept[id(module)] = entries
+        return result
+
+    def post_forward(module: Any, output: Any) -> Any:
+        if _is_compiling():
+            module.to(dtype = hook.storage_dtype, non_blocking = hook.non_blocking)
+            return output
+        entries = kept.pop(id(module), None)
+        if not entries or not te_fp8_restore_enabled():
+            return stock_post(module, output)
+        for table, name, old, ptr, dtype, version in entries:
+            current = table.get(name)
+            if (
+                current is None
+                or version is None
+                or current.data_ptr() != ptr
+                or current.dtype != dtype
+                or _slot_version(current) != version
+            ):
+                return stock_post(module, output)
+        for table, name, old, *_ in entries:
+            current = table[name]
+            if isinstance(current, torch.nn.Parameter):
+                current.data = old
+            else:
+                table[name] = old
+        if any(v.dtype == hook.compute_dtype for _t, _n, v in _floating_slots(module)):
+            return stock_post(module, output)
+        return output
+
+    return pre_forward, post_forward
+
+
+def _install_storage_restore(encoder: Any) -> int:
+    """Idempotent; returns the number of hooks changed."""
+    if not te_fp8_restore_enabled():
+        return 0
+    try:
+        from diffusers.hooks.layerwise_casting import LayerwiseCastingHook
+    except Exception:  # noqa: BLE001 - diffusers without layerwise casting: nothing to change
+        return 0
+    import torch
+
+    # The traced path inlines these bodies; any other diffusers hook body keeps the stock hooks.
+    if LayerwiseCastingHook.pre_forward.__code__.co_names != (
+        "to",
+        "compute_dtype",
+        "non_blocking",
+    ) or LayerwiseCastingHook.post_forward.__code__.co_names != (
+        "to",
+        "storage_dtype",
+        "non_blocking",
+    ):
+        return 0
+    changed = 0
+    for module in encoder.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        for ref in getattr(registry, "_fn_refs", None) or ():
+            hook = getattr(getattr(ref, "pre_forward", None), "__self__", None)
+            if (
+                type(hook) is not LayerwiseCastingHook
+                or getattr(ref, "_unsloth_fp8_restore", False)
+                or hook.storage_dtype not in (torch.float8_e4m3fn, torch.float8_e5m2)
+            ):
+                continue
+            ref.pre_forward, ref.post_forward = _restoring_hooks(
+                hook, ref.pre_forward, ref.post_forward
+            )
+            ref._unsloth_fp8_restore = True
+            changed += 1
+    return changed
 
 
 def _install_dtype_override(cls: type) -> None:

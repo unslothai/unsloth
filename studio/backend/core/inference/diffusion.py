@@ -56,6 +56,7 @@ from .diffusion_content import (
     whole_pipeline_gguf_family,
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from . import hub_reachability
 from .diffusion_families import (
     SMALL_DIT_BF16_WHEN_RESIDENT,
@@ -67,6 +68,7 @@ from .diffusion_families import (
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
     DiffusionModelReplacedError,  # re-exported: callers import it from either module
+    require_pinned_checkpoint,
     LoadIdentity,
     load_identity,
     local_pipeline_components_are_complete,
@@ -318,6 +320,7 @@ from .diffusion_offload_prefetch import cross_forward_render, cross_forward_step
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_upcast import pipeline_upcasts_keep_storage
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
+from .diffusion_gguf_lowbit import install_lowbit_iq
 from .diffusion_attention import (
     apply_attention_backend,
     attention_status_reason,
@@ -344,6 +347,7 @@ from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_postprocess import install as install_device_postprocess
+from .diffusion_reference_cache import install as install_reference_vae_cache
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -3803,10 +3807,15 @@ def _torchao_render_needs_no_grad(state: Any) -> bool:
     Stored fp8 codes too: moved under inference_mode they become unversionable, re-copied to host every offload."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
+    pipe = getattr(state, "pipe", None)
     return bool(
         getattr(state, "transformer_quant", None)
         or getattr(state, "text_encoder_quant", None)
-        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
+        or pipe_fp8_stored_layers(pipe)
+        or any(
+            comfy_torchao_quantized(getattr(pipe, attr, None))
+            for attr in ("transformer", "transformer_2")
+        )
     )
 
 
@@ -8293,6 +8302,7 @@ class DiffusionBackend:
             model_kind = model_kind,
         )
         _refuse_lora_without_loader(fam, loras)
+        install_single_file_fp32_buffers(logger)
         kind = resolve_model_kind(gguf_filename, model_kind)
         # Validate every mode string that can raise BEFORE this load evicts the previous pipeline.
         normalize_transformer_quant(transformer_quant)
@@ -9915,6 +9925,8 @@ class DiffusionBackend:
                             # Before the prefix shim, which cannot wrap an unregistered class.
                             _register_unregistered_single_file_classes(logger)
                             if kind == "gguf":
+                                # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
+                                install_lowbit_iq(logger)
                                 # Dequantise the GGUF transformer on-device at the compute dtype.
                                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                                     compute_dtype = dtype
@@ -9936,6 +9948,9 @@ class DiffusionBackend:
                             elif comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = self._comfy_offload_for(plan, single_file_path)
+                                _comfy_fp8_plan = (
+                                    self._comfy_fp8_stream_plan(plan) if _comfy_offload else None
+                                )
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -9952,6 +9967,7 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                        torchao_offload = _comfy_fp8_plan is not None,
                                     ),
                                     **comfy_block_backends(
                                         comfy_scan,
@@ -9973,6 +9989,8 @@ class DiffusionBackend:
                                     ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
+                                if _comfy_fp8_plan is not None and comfy_compile:
+                                    plan = _comfy_fp8_plan
                             else:
                                 if kind != "gguf" and (
                                     not hasattr(transformer_cls, "from_single_file")
@@ -10707,8 +10725,8 @@ class DiffusionBackend:
 
                     # Registered patches (diffusion_autoopt.patches), in their original order: the shared and per-arch
                     # compile-safe fusions on a speed tier (uninstalled on `off`, tracked by eager_patched), then the
-                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 fused RoPE, ROCm FLUX.1 / FLUX.2
-                    # one-kernel RoPE + AdaLN).
+                    # per-pipe installs that gate themselves (Q2.1 fast step, FLUX.2 / FLUX.3 fused RoPE, ROCm FLUX.1 /
+                    # FLUX.2 one-kernel RoPE + AdaLN).
                     autoopt.install_patches(
                         autoopt.STAGE_LOAD_EAGER,
                         pipe = pipe,
@@ -11547,6 +11565,24 @@ class DiffusionBackend:
         """Probe the ComfyUI backends as offloaded: the plan offloads, or it was priced with the offloaded backends."""
         priced = getattr(self, "_comfy_priced_offload", None) or {}
         return not plan_keeps_transformer_resident(plan) or bool(priced.get(str(single_file_path)))
+
+    @staticmethod
+    def _comfy_fp8_stream_plan(plan: Any) -> Any:
+        """The streaming placement torchao fp8 takes under an offloaded ``plan`` (``torchao_offload_plan``), else None."""
+        if plan_keeps_transformer_resident(plan):
+            return None
+        try:
+            placed = torchao_offload_plan(plan, "fp8")
+        except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's fp8 storage
+            return None
+        if placed is None or getattr(placed, "offload_policy", None) not in (
+            OFFLOAD_GROUP,
+            OFFLOAD_STREAMING,
+        ):
+            return None
+        if plan_keeps_transformer_resident(placed):
+            return None
+        return placed
 
     def _fp8_widen_for(self, single_file_path: Any, target: Any, loras: Any) -> bool:
         """The planner's ``fp8_widen_chosen`` pick for this file, re-checked against device / LoRA / env: only then
@@ -13350,8 +13386,7 @@ class DiffusionBackend:
             and transformer_resident is not None
             and not plan_keeps_transformer_resident(plan)
         ):
-            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
-            # price what that load builds, widened and fp8-stored, before choosing storage.
+            # Offloaded: price what the offload=True loader builds, widened and fp8-stored, before choosing storage.
             offloaded = single_file_resident_at(False, True)
             if offloaded is not None and offloaded != transformer_resident:
                 # Smaller (the int8 / fp8 twin only offload runs): the load keeps those backends even if the new plan
@@ -14243,6 +14278,7 @@ class DiffusionBackend:
                     loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
                     if expected_load is not None and expected_load != loaded_id:
                         raise DiffusionModelReplacedError(expected_load, loaded_id)
+                    require_pinned_checkpoint(loaded_id, getattr(state, "gguf_filename", None))
                     # Publish active step-0 state before slow setup, so a reload's mount probe does not read idle.
                     self._gen = _GenState(total_steps = steps)
                     begin_attention_run(state)
@@ -15191,6 +15227,7 @@ class DiffusionBackend:
                             chunk_kwargs = applied_embeddings.rewrite(chunk_kwargs)
                         # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
                         install_device_postprocess(pipe, logger)
+                        install_reference_vae_cache(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"

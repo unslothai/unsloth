@@ -25,7 +25,7 @@ import {
 } from "@/config/env";
 import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
-import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
+import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/resync-inference-status-lazy";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { receiveSharedRunConfigUrls } from "@/features/model-picker/sharing/receive-link";
 import {

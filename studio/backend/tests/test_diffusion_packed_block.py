@@ -97,7 +97,34 @@ def test_module_casts_and_moves_never_touch_the_packed_buffers(block_file):
     for name, buf in layer.named_buffers():
         if name != "bias":
             assert buf.dtype == before[name].dtype and torch.equal(buf, before[name]), name
-    assert _same(layer.weight, weight)  # the compute dtype is the load's, not the cast's
+    assert layer.compute_dtype == torch.float16  # the widen target follows the cast
+    model.to(torch.bfloat16)
+    assert _same(layer.weight, weight)  # and back: the load's exact weight again
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8"])
+@pytest.mark.parametrize("cast", ["to", "method"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_a_cast_packed_model_forwards_like_a_dense_load_in_that_dtype(block_file, fmt, cast, dtype):
+    path, _tensors, _expected = block_file(fmt)
+    packed = _load(path, dtype = torch.bfloat16, fp8_storage = True)
+    if cast == "to":
+        packed.to(dtype)
+    else:
+        packed.half() if dtype == torch.float16 else packed.float()
+    dense = _load(path, dtype = dtype)
+    state = dense.state_dict()
+    x = torch.randn(3, 5, DIM, generator = torch.Generator().manual_seed(2)).to(dtype)
+    for name in LINEARS:
+        layer = packed.get_submodule(name)
+        assert pb.is_packed_block_linear(layer), name
+        assert layer.weight_q.dtype == torch.uint8 and layer.weight_sf.dtype == torch.uint8
+        assert _same(layer.weight, state[name + ".weight"]), name
+        out = layer(x)
+        assert out.dtype == dtype, name
+        # the bias went through the cast (bf16 then the new dtype), as a dense model's would
+        want = torch.nn.functional.linear(x, state[name + ".weight"], layer.bias)
+        assert _same(out, want), name
 
 
 def _parts(
@@ -309,3 +336,70 @@ def test_the_triton_widen_on_the_gpu_matches_the_load_time_widen(dtype):
         got = got.cpu()
         assert torch.equal(torch.isnan(got.float()), nan)
         assert torch.equal(_bits(got)[~nan], _bits(want)[~nan])
+
+
+def _packed_projections(module, names = ("to_q", "to_k", "to_v")):
+    cls = pb.packed_block_linear_class()
+    for name, mod in list(module.named_modules()):
+        if isinstance(mod, torch.nn.Linear) and name.rsplit(".", 1)[-1] in names:
+            rows, cols = mod.weight.shape
+            layer = cls(
+                "mxfp8",
+                cols,
+                rows,
+                codes = torch.ones(rows, cols).to(torch.float8_e4m3fn),
+                scale = torch.full((rows, cols // 32), 127, dtype = torch.uint8),
+                bias = None if mod.bias is None else mod.bias.detach(),
+                compute_dtype = torch.bfloat16,
+            )
+            parent, _, leaf = name.rpartition(".")
+            setattr(module.get_submodule(parent) if parent else module, leaf, layer)
+    return module
+
+
+def test_qkv_fusion_skips_packed_projections():
+    import types
+
+    from core.inference import diffusion_speed
+
+    calls = []
+
+    class _Dit(torch.nn.Module):
+        def __init__(self, packed):
+            super().__init__()
+            self.to_q = torch.nn.Linear(64, 64).to(torch.bfloat16)
+            if packed:
+                _packed_projections(self)
+
+        def fuse_qkv_projections(self):
+            calls.append(self)
+
+    packed = types.SimpleNamespace(transformer = _Dit(packed = True))
+    assert diffusion_speed._fuse_qkv(packed, None) is False and not calls
+    dense = types.SimpleNamespace(transformer = _Dit(packed = False))
+    assert diffusion_speed._fuse_qkv(dense, None) is True and len(calls) == 1
+
+
+def test_qkv_fusion_of_a_packed_flux_builds_no_dense_to_qkv():
+    import types
+
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_speed
+
+    dit = diffusers.FluxTransformer2DModel(
+        in_channels = 8,
+        num_layers = 1,
+        num_single_layers = 0,
+        attention_head_dim = 16,
+        num_attention_heads = 2,
+        joint_attention_dim = 24,
+        pooled_projection_dim = 16,
+        axes_dims_rope = (4, 6, 6),
+    ).to(torch.bfloat16)
+    _packed_projections(dit)
+    before = sum(t.numel() * t.element_size() for t in (*dit.parameters(), *dit.buffers()))
+    pipe = types.SimpleNamespace(transformer = dit, unet = None, vae = None)
+    assert diffusion_speed._fuse_qkv(pipe, None) is False
+    after = sum(t.numel() * t.element_size() for t in (*dit.parameters(), *dit.buffers()))
+    assert after == before
+    assert not [n for n, _m in dit.named_modules() if n.endswith(("to_qkv", "to_added_qkv"))]

@@ -248,7 +248,7 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 
 test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
 	assert.match(css, /\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /data-page-model-header=""\n\s*className=\{cn\(\n\s*"pointer-events-none sticky top-0/);
@@ -397,7 +397,15 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
 	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
-	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
+	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\][^)]*\)\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
 	assert.match(block, /html\[data-glass-clear\] #root \* \{\n\s*-webkit-backdrop-filter: none !important;\n\s*backdrop-filter: none !important;/);
+});
+
+test("the model page's Back to Hub bar paints no strip over a background image until content scrolls under it", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const resting = String.raw`\.hub-detail-bar:not\(\[data-scrolled\]\)`;
+	assert.match(css, new RegExp(String.raw`\[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] :is\([^)]*\.hub-page \.hub-canvas[^{]*${resting}\) \{ background: transparent; \}`));
+	assert.match(css, new RegExp(String.raw`:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*-webkit-backdrop-filter: none;`));
+	assert.match(css, new RegExp(String.raw`html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*background-color: transparent;`));
 });

@@ -61,6 +61,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift, apply_scheduler_overrides
+from .diffusion_init_buffers import install_single_file_fp32_buffers
 from .diffusion_component_sizes import video_family_has_no_text_encoder
 from . import hub_reachability
 from .diffusion_comfy_quant import (
@@ -8966,6 +8967,7 @@ class VideoBackend:
             text_encoder_quant = text_encoder_quant,
             h3_task = h3_task,
         )
+        install_single_file_fp32_buffers(logger)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
         from .video_minimax_h3 import is_h3_native
 
@@ -9865,6 +9867,8 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_lowbit import install_lowbit_iq
+                install_lowbit_iq(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -12142,6 +12146,11 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        try:
+            from .video_minimax_h3_ref_encode import install_h3_chunked_reference_encode
+            install_h3_chunked_reference_encode(logger)
+        except Exception as exc:  # noqa: BLE001 -- memory only, never fail a load
+            logger.warning("video.h3_ref_encode: keeping the stock reference encode: %s", exc)
         # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
         # its fallback; the audio VAE is untouched.
         try:
