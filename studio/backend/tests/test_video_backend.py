@@ -9148,7 +9148,6 @@ def _capture_te_quant_lines(monkeypatch):
 def test_a_failed_te_prefetch_is_logged_by_the_retried_outcome(
     fake_runtime, monkeypatch, tmp_path, injects
 ):
-    # The prefetch failed, the load fetches the hosted encoder again: the log says what loaded.
     _allow_te_prequant(monkeypatch, injects = injects)
     lines = _capture_te_quant_lines(monkeypatch)
     (tmp_path / "model.gguf").write_bytes(b"weights")
