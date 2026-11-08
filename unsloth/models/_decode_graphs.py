@@ -1041,8 +1041,7 @@ def decode_step(
         _fill_keep(state, s, mask, bsz, kv_len, cap, device)
 
     autocast = _autocast_state()
-    # The fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4) records other launches: its own steps,
-    # keyed on whether it may run now (a disabled NF4 backend must not replay a fused graph).
+    # Fused NF4 decode records other launches: key on whether it may run now.
     fused_module = sys.modules.get(__package__ + "._decode_fused_nf4")
     fused = fused_module.graph_key() if fused_module is not None else "0"
     key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span, fused)

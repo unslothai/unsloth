@@ -871,7 +871,6 @@ def batch_fused_site(
 ):
     K, N = (site.K, site.N)
     if x.dim() != 2 or x.shape[1] != K or x.stride() != (K, 1):
-        # The kernels step x by K per row.
         x = x.reshape(-1, K).contiguous()
     block_p, block_k, num_warps, lut = config or site_config(
         site.kind, N, K, site.blocksize, capability
