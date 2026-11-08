@@ -379,6 +379,13 @@ def _release(me):
             _RESTORED.notify_all()
 
 
+def _folded_finite(entries, device):
+    """Every folded weight finite: one reduction per weight, one host sync (after the fold's stream)."""
+    _sync(device)
+    flags = [torch.isfinite(W).all() for _, _, W in entries]
+    return bool(torch.stack(flags).all()) if flags else True
+
+
 @contextlib.contextmanager
 def _scope(model, entries):
     api = _exact_api()
@@ -399,13 +406,17 @@ def _scope(model, entries):
                 )
             )
         info = api.exact_fold(targets, stream = stream)
+        # W + B @ A past the dtype's range (a finite low-rank product can still overflow when materialised, fp16
+        # above 65504): the folded layer would give inf where the unfolded one is finite.
+        finite = _folded_finite(entries, device)
         for module, adapter, _ in entries:
             # Merged = base layer only. Mutated in place so compiled guards see the same list.
             module.merged_adapters.append(adapter)
             flagged.append(module)
         _sync(device)
         t1 = time.perf_counter()
-        _record_fold(info, targets, t1 - t0)
+        if finite:
+            _record_fold(info, targets, t1 - t0)
     except Exception:
         # Nothing ran on folded weights yet: undo what was folded and take the normal LoRA path.
         _restore(model, api, targets, flagged, stream)
@@ -415,6 +426,12 @@ def _scope(model, entries):
     except BaseException:
         _restore(model, api, targets, flagged, stream)
         raise
+    if not finite:
+        _restore(model, api, targets, flagged, stream)
+        _sync(device)
+        _refuse("fold_nonfinite")
+        yield False
+        return
     t2 = None
     try:
         yield True

@@ -796,3 +796,31 @@ def test_position_free_store_is_counted_whole(monkeypatch):
     assert s["last"]["host_store_bytes"] == want > 0, (s["last"], sizes)
     # Not just the escapes (one per target here).
     assert want > 6 * s["last"]["targets"]
+
+
+def test_fold_that_overflows_is_undone_and_refused(_clean):
+    # A finite low-rank product can overflow when materialised: W + B @ A past fp16's 65504 would turn a finite
+    # LoRA output into inf. The fold is undone before any forward and generate takes the LoRA path.
+    model = _make(MODELS[0], dtype = torch.float16)
+    module = next(m for m in model.modules() if hasattr(m, "lora_A") and "default" in m.lora_A)
+    with torch.no_grad():
+        module.lora_A["default"].weight.zero_()
+        module.lora_B["default"].weight.zero_()
+        module.lora_A["default"].weight[0, 0] = 256
+        module.lora_B["default"].weight[0, 0] = 256
+    before, merged = _bits(model), _merged_state(model)
+    calls, handles = _count_lora_calls(model)
+    engaged, _ = _generate(model)
+    for h in handles:
+        h.remove()
+    assert engaged is False
+    assert fold.stats()["refused"] == {"fold_nonfinite": 1}, fold.stats()
+    assert calls[0] > 0, "the unfolded LoRA path did not run"
+    assert _same_bits(before, _bits(model)) and _merged_state(model) == merged
+    assert _clean.folds == 1 and _clean.unfolds == 1
+    # The same model without the overflowing element folds as before.
+    with torch.no_grad():
+        module.lora_B["default"].weight[0, 0] = 0.01
+    fold.reset_stats()
+    engaged, _ = _generate(model)
+    assert engaged is True and fold.stats()["refused"] == {}
