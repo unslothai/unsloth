@@ -1326,6 +1326,8 @@ def load_ltx23_transformer(
     # The load plan's commit for that hub-id config (absent for an unpinned load).
     kwargs.update(pinned_revision_kwargs(base_repo))
     if is_gguf:
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        install_lowbit_iq()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         # Else the meta load copies every tensor back to the host.

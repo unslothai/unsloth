@@ -382,6 +382,8 @@ def load_ltx25_transformer(
     # The load plan's commit for a hub-id config (none for the bundled config dir or an unpinned load).
     kwargs.update(pinned_revision_kwargs(kwargs["config"]))
     if is_gguf:
+        from .diffusion_gguf_lowbit import install_lowbit_iq
+        install_lowbit_iq()
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
         kwargs["device"] = device
