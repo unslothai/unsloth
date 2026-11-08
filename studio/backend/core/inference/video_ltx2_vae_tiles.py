@@ -229,11 +229,14 @@ def _host_band_output(vae: Any, z: Any, ratio: int, itemsize: int) -> bool:
     return avail is not None and need + _HOST_RESERVE_BYTES <= int(avail) * 2**20
 
 
-def _host_like(tile: Any, shape: tuple, torch: Any) -> Any:
+def _to_host(chunk: Any, torch: Any) -> Any:
+    """A contiguous copy in pinned RAM (one DMA, no host-side scatter); pageable if pinning is refused."""
     try:
-        return torch.empty(shape, dtype = tile.dtype, pin_memory = True)
-    except Exception:  # noqa: BLE001 - pinned allocation refused (e.g. Windows limits): pageable copies
-        return torch.empty(shape, dtype = tile.dtype)
+        host = torch.empty(chunk.shape, dtype = chunk.dtype, pin_memory = True)
+    except Exception:  # noqa: BLE001 - pinned allocation refused (e.g. Windows limits)
+        host = torch.empty(chunk.shape, dtype = chunk.dtype)
+    # Same stream: the copy finishes before the band's memory is reused.
+    return host.copy_(chunk, non_blocking = True)
 
 
 def _decode_bands(
@@ -248,21 +251,20 @@ def _decode_bands(
     wy: list,
     wx: list,
 ) -> Any:
-    """``_decode_tiles``'s sums, order and cast with one band on the card; finished pixels wait in host RAM."""
+    """``_decode_tiles``'s sums, order and cast with one band on the card; finished bands wait in host RAM."""
     import torch
 
     _, _, _, height, width = (int(x) for x in z.shape)
     ratio = int(vae.spatial_compression_ratio)
     rows = len(hs) > 1
     axis, side, starts = (-2, th, hs) if rows else (-1, tw, ws)
-    out = band = carry = None
+    done_bands, band, carry = [], None, None
     for b, s in enumerate(starts):
         for i, j in [(b, j) for j in range(len(ws))] if rows else [(0, b)]:
             y, x = hs[i], ws[j]
             tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
-            if out is None:
-                lead, device = tuple(tile.shape[:3]), tile.device
-                out = _host_like(tile, (*lead, height * ratio, width * ratio), torch)
+            if b == 0 and band is None:
+                lead, device, dtype = tuple(tile.shape[:3]), tile.device, tile.dtype
             if band is None:
                 # Made after the band's first tile decodes: only the carried overlap is live during that decode.
                 shape = (
@@ -280,14 +282,22 @@ def _decode_bands(
             del tile
         lo, hi = s * ratio, (s + side) * ratio
         done = (starts[b + 1] * ratio if b + 1 < len(starts) else hi) - lo
-        # Same stream: the copy out finishes before the band's memory is reused.
-        out.narrow(axis, lo, done).copy_(
-            band.narrow(axis, 0, done).to(out.dtype), non_blocking = True
+        done_bands.append(
+            (
+                lo,
+                _to_host(
+                    band.narrow(axis, 0, done).to(dtype, memory_format = torch.contiguous_format),
+                    torch,
+                ),
+            )
         )
         if b + 1 < len(starts):
             carry = band.narrow(axis, done, hi - lo - done).clone()
         band = None
-    return out.to(device, non_blocking = True)
+    dec = torch.empty((*lead, height * ratio, width * ratio), dtype = dtype, device = device)
+    for lo, host in done_bands:
+        dec.narrow(axis, lo, host.shape[axis]).copy_(host, non_blocking = True)
+    return dec
 
 
 def _decode_tiles(

@@ -338,8 +338,13 @@ def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, sha
         return zeros(*args, **kwargs)
 
     monkeypatch.setattr(torch, "zeros", spy)
+    to_host, moved = vt._to_host, []
+    monkeypatch.setattr(
+        vt, "_to_host", lambda c, t: moved.append(c.is_contiguous()) or to_host(c, t)
+    )
     with torch.no_grad():
         out = vt._decode_tiles(vae, z, None, False, *tile, True)
+    assert moved and all(moved)  # each band leaves in one DMA, no host-side scatter
     assert out.dtype == ref.dtype and out.shape == ref.shape
     assert torch.equal(out, ref)
     assert seen and len(set(seen)) == 1  # one band shape per band, never the clip
