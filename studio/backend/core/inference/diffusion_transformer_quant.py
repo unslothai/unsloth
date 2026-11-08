@@ -1240,7 +1240,7 @@ def rdna_auto_w8a8_reason(target: Any, family: Optional[str]) -> Optional[str]:
     # Linux only: Windows ROCm has no compile tier.
     if not _sys.platform.startswith("linux"):
         return None
-    if int8_act_disabled() or not rocm_rdna_w8a8_ready():
+    if int8_act_disabled() or not rocm_rdna_w8a8_ready(getattr(target, "ordinal", None)):
         return None
     if native_quant_scheme(target, TQ_INT8, family = family) != TQ_INT8:
         return None
