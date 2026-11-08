@@ -155,7 +155,6 @@ def test_strips_keep_one_float_strip_alive(monkeypatch):
         peaks[flag] = peak[0]
         assert torch.equal(out, _whole_batch(image))
         del out
-    # whole batch: two float32 planes live at once; strips: the uint8 result plus one float32 strip
     assert peaks["0"] >= 2 * plane
     assert peaks["1"] <= image.numel() + plane // 8 + 4096
 

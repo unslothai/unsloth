@@ -10,9 +10,7 @@ import os
 from typing import Any, Optional
 
 DEVICE_POSTPROCESS_ENV = "UNSLOTH_DIFFUSION_DEVICE_POSTPROCESS"
-# "0" converts the whole batch in one go again: two full-size float32 planes at once instead of one strip.
 STRIP_UINT8_ENV = "UNSLOTH_DIFFUSION_UINT8_STRIPS"
-# float32 bytes per conversion strip: the only float temporary the uint8 conversion keeps.
 _STRIP_BYTES = 32 << 20
 _MARK = "_unsloth_device_postprocess"
 NAN_IMAGE_MESSAGE = (
@@ -86,8 +84,7 @@ def _strips_disabled() -> bool:
 
 
 def uint8_hwc(image: Any) -> Any:
-    """Values must lie in [0, 1]: the uint8 cast of anything else is undefined. Row strips, each scaled in place in
-    its own float32 copy, write straight into the HWC result: the same float32 math as the whole-batch expression."""
+    """Values must lie in [0, 1]: the uint8 cast of anything else is undefined."""
     import torch
 
     if _strips_disabled() or image.ndim != 4:
@@ -99,7 +96,7 @@ def uint8_hwc(image: Any) -> Any:
         piece = image[:, :, start : start + rows].to(torch.float32, copy = True)
         piece.mul_(255).round_()
         out[:, start : start + rows].copy_(piece.permute(0, 2, 3, 1))
-        del piece  # before the next strip's copy exists
+        del piece
     return out
 
 
