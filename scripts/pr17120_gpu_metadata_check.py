@@ -250,12 +250,14 @@ def main() -> int:
             mode = "torch"
             if torch_devs is None and "No module named 'torch'" in tc.stderr:
                 # No torch in this Python (a bare WSL python3): judge the driver answer against CUDA's mask
-                # rules and nvidia-smi (name, bus id, memory within 1%). Studio then has no torch to
-                # reconcile with, so the driver answer is what it uses.
+                # rules and nvidia-smi (name, bus id, memory within 10%: ECC and driver reservations move
+                # the totals a few percent). Studio then has no torch to reconcile with, so the driver
+                # answer is what it uses. The rules fix how many cards are visible; which card each ordinal
+                # is follows the nvidia-smi order only under PCI_BUS_ID (CUDA's default is FASTEST_FIRST)
+                # or with one GPU.
                 mode = "cuda-rules"
-                exp = cuda_rule_rows(
-                    mask if order in (None, "PCI_BUS_ID") or len(gpus) == 1 else None, len(gpus)
-                )
+                exp = cuda_rule_rows(mask, len(gpus))
+                ordered = order == "PCI_BUS_ID" or len(gpus) == 1
                 got_rows = (
                     None
                     if info is None
@@ -264,14 +266,20 @@ def main() -> int:
                 studio = info
                 studio_ok = (
                     exp is not None
-                    and got_rows == exp
+                    and got_rows is not None
+                    and None not in got_rows
+                    and (
+                        got_rows == exp
+                        if ordered
+                        else len(got_rows) == len(exp) and len(set(got_rows)) == len(got_rows)
+                    )
                     and all(
                         d[3] == gpus[r][1]
-                        and abs(d[2] / 2**20 - float(gpus[r][3])) <= 0.01 * float(gpus[r][3])
-                        for d, r in zip(info, exp)
+                        and abs(d[2] / 2**20 - float(gpus[r][3])) <= 0.10 * float(gpus[r][3])
+                        for d, r in zip(info, got_rows)
                     )
                 )
-                want, want_rows = None, exp
+                want, want_rows = None, (exp if ordered else got_rows)
                 rows_used = (
                     rows is not None and exp is not None and len(rows) == len(exp) and len(exp) > 0
                 )
