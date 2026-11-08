@@ -31,15 +31,36 @@ def _e4m3(s):
 
 
 @triton.jit
+def _fp16_bits(value):
+    """float32 -> float16 bits, round to nearest even by integer ops (overflow to inf, subnormals kept), as torch
+    casts on every device; ROCm's own conversion differs."""
+    u = value.to(tl.uint32, bitcast = True)
+    sign = (u >> 16) & 0x8000
+    a = u & 0x7FFFFFFF
+    r = a - (112 << 23)
+    normal = (r + 0x0FFF + ((r >> 13) & 1)) >> 13
+    # below 2**-14: the subnormal count, |x| * 2**24 rounded to the nearest even integer (exact scaling, one add)
+    scaled = (a.to(tl.float32, bitcast = True) * 16777216.0 + 8388608.0) - 8388608.0
+    sub = scaled.to(tl.uint32)
+    bits = tl.where(a >= 0x38800000, normal, sub)
+    bits = tl.where(a >= 0x477FF000, 0x7C00, bits)
+    # NaN: quieted, top payload bits kept, as the hardware conversion torch uses
+    bits = tl.where(a > 0x7F800000, 0x7E00 | ((a >> 13) & 0x3FF), bits)
+    return (bits | sign).to(tl.uint16)
+
+
+@triton.jit
 def _store(dst, value, mask):
     """``value`` in the output dtype; bf16 rounds to nearest even by integer ops, as torch does on every device
-    (the interpreter and pre-sm_80 conversions are not guaranteed to)."""
+    (the interpreter, pre-sm_80 and ROCm conversions are not guaranteed to); fp16 the same way."""
     ty = dst.dtype.element_ty
     if ty == tl.bfloat16:
         u = value.to(tl.uint32, bitcast = True)
         rounded = (u + 0x7FFF + ((u >> 16) & 1)) >> 16
         rounded = tl.where(value != value, 0x7FC0, rounded)
         tl.store(dst, rounded.to(tl.uint16).to(tl.bfloat16, bitcast = True), mask = mask)
+    elif ty == tl.float16:
+        tl.store(dst, _fp16_bits(value).to(tl.float16, bitcast = True), mask = mask)
     else:
         tl.store(dst, value.to(ty), mask = mask)
 
