@@ -1099,9 +1099,8 @@ const highlightResize = (): void => {
 };
 
 // Bounded entries ignore wheel and touch scrolling; the rest still wait for the reader to stop.
-// Only where requestIdleCallback exists: without it (WebKit) each mid-scroll step is a timer that
-// lands inside the scroll, and there the tokens come from the worker, so reaching a block mid-scroll
-// swaps its markup without colouring it (84 to 91% of frames stayed plain while scroll cost rose 6x).
+// Only with requestIdleCallback: without it (WebKit) each step is a timer inside the scroll that
+// swaps markup without colour (scroll cost rose about 6x).
 const MID_SCROLL_WORK = typeof window !== "undefined"
   && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback === "function";
 const highlightQuietIn = (duringScroll: boolean): number =>
