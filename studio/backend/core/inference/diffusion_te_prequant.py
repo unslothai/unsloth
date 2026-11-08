@@ -805,6 +805,8 @@ def te_prequant_companion_names(repo_id: str, families: Iterable[Any]) -> set[st
                 pairs.add((str(row[2]), str(row[1])))
     pairs |= {(c, s) for c, _s in pairs for s in ("fp8", "int8")}
     names = {n.lower() for c, s in pairs for n in te_prequant_repo_filenames(repo_id, c, s)}
+    # The .pt twins older builds cached are still companions (never loaded), so cleanup can free them.
+    names |= {n[: -len(".safetensors")] + ".pt" for n in names if n.endswith(".safetensors")}
     key = str(repo_id or "").strip().lower()
     entries = [e for comps in TE_INT8_CONVROT_FILES.values() for e in comps.values()]
     entries += [

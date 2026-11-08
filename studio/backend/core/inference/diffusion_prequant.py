@@ -653,7 +653,7 @@ def prefer_cached_pickle_twins(
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
     """``names`` minus every pickle (a cached .pt / .pth is never promoted or used), with a cached container of an
-    artifact ahead of an uncached ComfyUI-format twin of the same artifact. PREFER_SAFETENSORS_ENV is a no-op."""
+    artifact ahead of an uncached second-format twin of the same artifact. PREFER_SAFETENSORS_ENV is a no-op."""
     out = without_pickles(names)
     if not repo_id or len(out) < 2:
         return out
@@ -885,6 +885,24 @@ def derived_prequant_filenames(
 ) -> tuple[str, ...]:
     """The derived ``<Model>[-<component>]-<SCHEME>.safetensors`` name; no pickle name is ever derived."""
     return (prequant_repo_filename(repo_id, scheme, ".safetensors", component = component),)
+
+
+def legacy_pickle_names(
+    names: Sequence[str],
+    scheme: Optional[str] = None,
+    *,
+    component: Optional[str] = None,
+) -> list:
+    """Cache classification only: the ``.pt`` spellings older builds downloaded for ``names`` (and the legacy
+    ``transformer_<scheme>.pt`` for the default denoiser), so cleanup still recognises them. Never resolved."""
+    out: list = []
+    for name in names:
+        if name and str(name).endswith(".safetensors") and not is_comfy_prequant_filename(name):
+            out.append(str(name)[: -len(".safetensors")] + ".pt")
+    part = (component or "").strip()
+    if scheme and (not part or part == DEFAULT_PREQUANT_COMPONENT):
+        out.append(prequant_filename(scheme))
+    return out
 
 
 def resolve_prequant_source(
