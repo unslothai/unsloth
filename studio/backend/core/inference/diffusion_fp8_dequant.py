@@ -50,7 +50,6 @@ def _build_kernel() -> Any:
 
 
 def _bf16_nan(device: Any) -> int:
-    """uint16 bits of a float32 NaN cast to bfloat16 by torch on ``device`` (once per device)."""
     import torch
 
     key = str(device)
@@ -133,7 +132,7 @@ def dequant_rows(
             return out
         except Exception as exc:  # noqa: BLE001 - no Triton / launch failure: chunked torch below
             _triton_failed(exc)
-        del out  # the fallback allocates its own output
+        del out
     rows = codes.shape[0]
     cols = codes.numel() // max(1, rows)
     step = chunk_rows(rows, cols, codes.device, 8 if codes.device.type == "mps" else 4)
