@@ -351,6 +351,8 @@ def download_bytes(engine: str) -> int | None:
     total = sum(
         size or 0 for name, size in sizes.items() if name not in provided and name not in omit
     )
+    if not wsl and (kernels := flashinfer_kernel_wheel(engine, wait = False)):
+        total += kernels.get("size") or 0
     summary = wsl_host.summary() if wsl else {}
     if wsl and not summary.get("distro"):
         total += wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
@@ -1332,6 +1334,103 @@ def _index_arguments(engine: str) -> list[str]:
     ]
 
 
+# FlashInfer's prebuilt kernels for each locked FlashInfer (flashinfer.ai/whl/cu130), so a first launch
+# loads them instead of JIT-compiling them with nvcc. UNSLOTH_ENGINE_FLASHINFER_KERNELS=0 skips them.
+_FLASHINFER_KERNELS = _REQUIREMENTS / "flashinfer-kernels.json"
+
+
+def _kernels_run_on(arches: list[str], capability: str) -> bool:
+    """SASS only, no PTX: `X.Ya` runs on exactly X.Y, `X.Y` and `X.Yf` on X.Y and later X minors."""
+    major, minor = (int(part) for part in capability.strip().split(".")[:2])
+    for arch in arches:
+        built = tuple(int(part) for part in arch.rstrip("af").split("."))
+        if (major, minor) == built or (
+            not arch.endswith("a") and major == built[0] and minor > built[1]
+        ):
+            return True
+    return False
+
+
+def flashinfer_kernel_wheel(engine: str, *, wait: bool = True) -> dict | None:
+    """The flashinfer-jit-cache wheel for the engine's locked FlashInfer, when it holds kernels for
+    every GPU here: a GPU it lacks would fail the kernel launch rather than JIT-compile."""
+    if os.environ.get("UNSLOTH_ENGINE_FLASHINFER_KERNELS", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return None
+    wanted = profile(engine)
+    if sys.platform != "linux" or wanted["platform"] != "cuda" or not wanted["cuda"]:
+        return None
+    version = _pins(engine).get("flashinfer-python", (None,))[0]
+    try:
+        entry = json.loads(_FLASHINFER_KERNELS.read_text(encoding = "utf-8")).get(
+            f"{version}+{wanted['cuda']}", {}
+        )
+        wheel = entry.get(platform.machine())
+        rows = _driver_rows(None, wait = wait)
+        if (
+            not wheel
+            or rows is _PENDING
+            or not rows
+            or not all(_kernels_run_on(entry["arches"], row[1]) for row in rows)
+        ):
+            return None
+    except (OSError, ValueError, AttributeError, KeyError, IndexError, TypeError):
+        return None
+    return wheel
+
+
+def _install_flashinfer_kernels(
+    engine: str, uv: str, python: str, destination: Path, cancel: threading.Event
+) -> bool:
+    """Best effort: a missing wheel, no route to it or a failed import keeps on-demand JIT compiles."""
+    wheel = flashinfer_kernel_wheel(engine)
+    if wheel is None:
+        return False
+    requirement = destination / "flashinfer-kernels.txt"
+    requirement.write_text(
+        f"flashinfer-jit-cache @ {wheel['url']} --hash=sha256:{wheel['sha256']}\n", encoding = "utf-8"
+    )
+    _update(engine, message = "Downloading FlashInfer's prebuilt kernels")
+    try:
+        _run(
+            engine,
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                python,
+                "--link-mode",
+                package_link_mode(destination),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "-r",
+                str(requirement),
+            ],
+            cancel,
+        )
+        # FlashInfer refuses to import beside a jit-cache of another version.
+        _run(engine, [python, "-I", "-c", "import flashinfer_jit_cache, flashinfer"], cancel)
+        return True
+    except RuntimeError:
+        if cancel.is_set():
+            raise
+        try:
+            _run(
+                engine, [uv, "pip", "uninstall", "--python", python, "flashinfer-jit-cache"], cancel
+            )
+        except RuntimeError:
+            if cancel.is_set():
+                raise
+        return False
+
+
 def _smoke_source(engine: str) -> str:
     """Imports the engine and the precision libraries its lock carries, on the locked torch build."""
     wanted = profile(engine)
@@ -1424,6 +1523,7 @@ def _install(
                 (site / _BASE_PTH).write_text(f"import {_BASE_MODULE}\n", encoding = "utf-8")
             if profile(engine)["platform"] == "cuda":
                 link_cuda_home(destination, plan["shared"])
+            kernels = _install_flashinfer_kernels(engine, uv, python, destination, cancel)
             _update(engine, phase = "checking", message = "Checking the installed engine")
             _run(
                 engine,
@@ -1463,6 +1563,7 @@ def _install(
                     "platform": profile(engine)["platform"],
                     "python": platform.python_version(),
                     "provided": plan["provided"],
+                    "flashinfer_kernels": kernels,
                     "studio_prefix": sys.prefix,
                     "previous_directory": prior["directory"] if prior else None,
                     "previous": {
