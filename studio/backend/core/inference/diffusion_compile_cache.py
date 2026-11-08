@@ -511,7 +511,6 @@ class CacheContext:
     # Recompiled artifacts often hash the same, so overwrite instead of the exists() shortcut.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
-    # Code objects of the transformer's module forwards: which earlier collections this bundle may need.
     forwards: frozenset = frozenset()
 
 
@@ -848,9 +847,7 @@ def _isolation_off() -> bool:
 
 
 def _module_forwards(transformer: Any) -> frozenset:
-    """``forward`` code objects of every module class in ``transformer``: Dynamo keeps compiled code per code object,
-    so a later model built from these classes can run an earlier model's graphs without compiling (or recording)
-    anything. Never raises."""
+    """``forward`` codes of ``transformer``'s module classes; Dynamo shares compiled code per code object."""
     codes = set()
     try:
         modules = transformer.modules() if callable(getattr(transformer, "modules", None)) else ()
@@ -858,15 +855,13 @@ def _module_forwards(transformer: Any) -> frozenset:
             code = getattr(getattr(type(module), "forward", None), "__code__", None)
             if code is not None:
                 codes.add(code)
-    except Exception:  # noqa: BLE001 - an empty set only means no earlier collection is reused
+    except Exception:  # noqa: BLE001
         pass
     return frozenset(codes)
 
 
 def _dynamo_entries() -> Optional[dict[int, tuple[Any, tuple]]]:
-    """``id(code) -> (code, the compiled code of each cache entry)`` for every code Dynamo holds compiled entries for;
-    None when this torch does not expose them (then the collector is never reset). Each compile makes a new compiled
-    code object, so a replaced entry (a reset, then a recompile) differs even at an unchanged entry count."""
+    """``id(code) -> (code, each cache entry's compiled code)``; None when torch does not expose them."""
     try:
         from torch._dynamo import convert_frame  # noqa: PLC0415
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
@@ -888,8 +883,7 @@ _RESUME_RE = re.compile(r"torch_dynamo_resume_in_(.+)_at_\d+")
 
 
 def _serves(code: Any, forwards: Any) -> bool:
-    """``code`` runs when a model with these forwards runs: one of them, or Dynamo's resume function after a graph
-    break inside one (named for and filed under the frame it resumes; a same-named frame in that file also counts)."""
+    """``code`` is one of ``forwards`` or a graph-break resume function of one (matched by name and file)."""
     if code in forwards:
         return True
     name = code.co_name
@@ -902,7 +896,7 @@ def _serves(code: Any, forwards: Any) -> bool:
 
 
 def _still_compiled(collection: "_Collection") -> bool:
-    """Dynamo still holds a cache entry compiled during ``collection`` (it holds them alive, so ids are stable)."""
+    """Dynamo still holds an entry compiled during ``collection``."""
     try:
         from torch._dynamo.eval_frame import _debug_get_cache_entry_list  # noqa: PLC0415
         ids = {id(c) for c in collection.compiled}
@@ -917,32 +911,27 @@ def _still_compiled(collection: "_Collection") -> bool:
 
 @dataclasses.dataclass
 class _Collection:
-    """What torch collected between two collector resets, kept while Dynamo can still run the code compiled then."""
+    """Artifacts torch collected between two resets, kept while Dynamo can still run what was compiled then."""
 
     data: bytes
-    # Codes that gained compiled entries in this collection, and those entries' compiled code.
     codes: frozenset
     compiled: tuple
-    # Some of them are not a module forward of the models it served (a resume function, a compiled helper), so any
-    # later model may run them.
+    # some compiled code is no forward of the models served, so any model may run it
     any_model: bool
 
 
-# Every earlier collection Dynamo may still serve from memory; a reset only ever moves torch's collection here.
 _collections_lock = threading.Lock()
 _collections: list[_Collection] = []
-# The collection torch is building now: Dynamo's entries at its start and the forwards of the models it serves.
+# the open collection: Dynamo's entries at its start, and the forwards it serves
 _collecting_since: Optional[dict[int, tuple[Any, tuple]]] = None
 _collecting_forwards: set = set()
-# Host RAM bound on kept collections; past it the collector simply keeps accumulating (torch's own behaviour).
+# past this the collector just keeps accumulating, as torch does
 _COLLECTIONS_MAX_BYTES = 2 << 30
 
 
 def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
-    """Start a new collection in torch's process-wide artifact collector so this model's bundle holds its own
-    artifacts (hits are recorded again). Graphs Dynamo reuses from memory record nothing, so the previous collection
-    is kept while its compiled code is alive and ``save`` adds it back for any model that may run that code.
-    Only with no other bundle live and no compile holding the lock; otherwise the current collection grows."""
+    """Reset torch's artifact collector so this model's bundle holds its own artifacts. A Dynamo in-memory hit
+    records nothing, so the previous collection is kept for ``save`` to add back; skipped while another bundle is live."""
     global _collecting_since
     with _collections_lock:
         _collecting_forwards.update(forwards)
@@ -956,7 +945,7 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
         from torch.compiler._cache import CacheArtifactManager  # noqa: PLC0415
         from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: F401, PLC0415
     except ImportError:
-        # torch 2.7 bundles are one flat list that cannot be merged back, so keep torch's collector
+        # torch 2.7 bundles are a flat list that cannot be merged
         return False
     lock = _compile_lock()
     acquire = getattr(lock, "acquire", None)
@@ -969,7 +958,7 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
             return False
         with _collections_lock:
             since = _collecting_since if _collecting_since is not None else {}
-            # identity, not count: ``since`` holds its compiled codes alive, so their ids cannot be reused
+            # by identity: a reset then recompile keeps the count; ``since`` keeps the ids alive
             new = {}
             for key, (code, compiled) in entries.items():
                 before = {id(c) for c in since.get(key, (None, ()))[1]}
@@ -979,7 +968,6 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
             grown = frozenset(new)
             _collections[:] = [c for c in _collections if _still_compiled(c)]
             if grown:
-                # what torch would add to the next bundle anyway: the whole collection since the last reset
                 result = torch.compiler.save_cache_artifacts()
                 data = result[0] if result else None
                 if data:
@@ -995,7 +983,7 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
                             ),
                         )
                     )
-            # no new entry: nothing compiled then can be run without compiling (and recording) again
+            # no new entry: nothing from this collection runs without recompiling, which records again
             CacheArtifactManager.clear()
             _collecting_since = entries
             _collecting_forwards.clear()
@@ -1012,8 +1000,7 @@ def _fresh_collector(logger: Any, forwards: frozenset = frozenset()) -> bool:
 def _with_reused_collections(
     ctx: CacheContext, data: Optional[bytes], logger: Any
 ) -> Optional[bytes]:
-    """``data`` (this collection) plus every kept earlier collection whose compiled code ``ctx``'s model may run,
-    merged to one group per type; None when there is nothing to save."""
+    """``data`` plus each kept collection ``ctx``'s model may run, merged; None when there is nothing."""
     with _collections_lock:
         reused = [
             c.data
@@ -1027,7 +1014,7 @@ def _with_reused_collections(
 
 
 def _merge_groups(bundles: list[bytes], logger: Any) -> Optional[bytes]:
-    """Concatenate serialized collections (oldest first) into one, one group per type."""
+    """Serialized collections, oldest first, as one bundle."""
     try:
         from torch.compiler._cache import (  # noqa: PLC0415
             CacheArtifactManager,
@@ -1043,7 +1030,7 @@ def _merge_groups(bundles: list[bytes], logger: Any) -> Optional[bytes]:
                 AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
             )
         return _one_group_per_type(out.to_bytes(), logger)
-    except Exception as exc:  # noqa: BLE001 - the newest collection alone is what torch would save
+    except Exception as exc:  # noqa: BLE001
         _warn(
             logger,
             f"compile-cache: could not merge earlier collections ({exc}); saving this one alone",

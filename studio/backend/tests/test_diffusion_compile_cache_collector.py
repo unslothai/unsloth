@@ -111,8 +111,7 @@ def test_a_running_compile_is_never_waited_for(collector, monkeypatch):
     assert not _cache.CacheArtifactManager.need_serialize()
 
 
-# Real torch.compile (CPU Inductor) from here on: Dynamo reuses compiled code per code object, so a later model of the
-# same classes runs an earlier model's graphs from memory and records nothing for its own collection.
+# Real CPU Inductor: a later model of the same classes runs earlier graphs from memory and records nothing.
 
 
 class _Net(torch.nn.Module):
@@ -236,9 +235,9 @@ def test_a_reload_that_compiles_a_new_shape_keeps_the_shape_it_reused(real_compi
 
 def test_a_graph_recompiled_at_an_unchanged_entry_count_is_still_kept(real_compile):
     first, _ = _compiled_lifecycle("model_a", _Net(1.0))
-    # a reset, then a recompile at another shape: the forward is back at one cache entry, holding a new graph
+    # reset + recompile at another shape: still one entry, but a new graph
     second, _ = _compiled_lifecycle("model_b", _Net(2.0), shapes = ((8, 16),), reset_dynamo = True)
     third, saved = _compiled_lifecycle("model_c", _Net(3.0), shapes = ((8, 16),))
     assert saved and _inductor_keys(second) - _inductor_keys(first)
-    # model_c runs model_b's graph from memory; model_a's graph is gone from Dynamo, so its artifacts are not carried
+    # model_a's graph left Dynamo, so its artifacts are not carried
     assert _inductor_keys(third) == _inductor_keys(second)
