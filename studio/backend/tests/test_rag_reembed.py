@@ -382,7 +382,7 @@ def test_a_swap_committed_mid_search_cannot_pass_an_old_space_score(models, tmp_
     assert hits == []
 
 
-def test_a_many_chunk_document_counts_its_chunks_in_one_batch(models, tmp_path, monkeypatch):
+def test_a_many_chunk_document_clips_its_chunks_in_batched_counts(models, tmp_path, monkeypatch):
     words = [f"w{i}" for i in range(1700)]
     document_id = _ingest(tmp_path, store.kb_scope("K9"), "long.txt", " ".join(words))
     _, chunks = _row(document_id)
@@ -414,4 +414,20 @@ def test_a_many_chunk_document_counts_its_chunks_in_one_batch(models, tmp_path, 
     sent = [t for m, t in models["encoded"] if m == NEW]
     assert sent == [[text for text, _ in expected]]
     assert status["clipped_chunks"] == sum(cut for _, cut in expected)
-    assert calls["many"] == [len(chunks)]
+    assert calls["single"] == 0
+    assert calls["many"][0] == len(chunks)
+    assert len(calls["many"]) <= 2 + max(len(text) for _, text in chunks).bit_length()
+
+
+def test_clip_many_matches_clip_to_limit_per_text():
+    import random
+
+    rng = random.Random(3407)
+    texts = [
+        " ".join(f"w{rng.randint(0, 99)}" for _ in range(rng.randint(0, 60))) for _ in range(40)
+    ]
+    word_count = lambda t: len(t.split())
+    word_count.many = lambda ts: [len(t.split()) for t in ts]
+    for limit in (None, 0, 1, 7, 30, 100):
+        expected = [embeddings.clip_to_limit(t, word_count, limit) for t in texts]
+        assert embeddings.clip_many_to_limit(texts, word_count, limit) == expected

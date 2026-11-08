@@ -38407,18 +38407,19 @@ async def _studio_embeddings(
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
         inputs = texts
-        token_counts = [count(text) for text in inputs]
+        count_all = getattr(count, "many", None) or (lambda ts: [count(t) for t in ts])
+        token_counts = list(count_all(inputs))
         if limit and max(token_counts) > limit:
             if not _embeddings_truncate(body):
                 raise HTTPException(
                     status_code = 400,
                     detail = f"'input' exceeds the {limit}-token limit of {label}.",
                 )
-            inputs = [rag_embeddings.clip_to_limit(text, count, limit)[0] for text in inputs]
+            inputs = [text for text, _ in rag_embeddings.clip_many_to_limit(inputs, count, limit)]
             logger.warning(
                 "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
-            token_counts = [count(text) for text in inputs]
+            token_counts = list(count_all(inputs))
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."

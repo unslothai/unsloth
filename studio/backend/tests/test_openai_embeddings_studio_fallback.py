@@ -245,6 +245,32 @@ def test_over_length_input_is_truncated_by_default(studio_embedder):
     assert payload["usage"]["prompt_tokens"] == 5
 
 
+def test_over_length_input_is_truncated_with_batched_counts(studio_embedder):
+    encoded, singles, batches = [], [], []
+
+    def _count(text):
+        singles.append(text)
+        return len(text)
+
+    def _many(texts):
+        batches.append(list(texts))
+        return [len(t) for t in texts]
+
+    _count.many = _many
+    studio_embedder.setattr(
+        rag_embeddings, "encode", lambda texts, **_: encoded.append(list(texts)) or _vectors(texts)
+    )
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "token_counter", lambda model_name = None: _count)
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    payload = _call({"input": ["ab", "abcd", "abcdefgh"]})
+    assert encoded == [["ab", "abc", "abc"]]
+    assert payload["usage"]["prompt_tokens"] == 8
+    assert singles == [] and batches[0] == ["ab", "abcd", "abcdefgh"]
+
+
 def test_over_length_input_is_rejected_when_truncate_is_false(studio_embedder):
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
