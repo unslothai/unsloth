@@ -1216,9 +1216,55 @@ def native_quant_scheme(
     return scheme
 
 
+# A checkpoint's int8 codes on a GPU none of Studio's int8 runtimes serve (NVIDIA before Ampere, which computes in
+# fp16, and Intel XPU) are kept as int8 and widened per layer, instead of the whole DiT expanding to 16-bit at load.
+# Unset: only for an offloaded plan, where the halved weights also halve every step's upload (resident, the widened
+# DiT is faster); 1: resident too; 0: always expand, as before.
+INT8_STORAGE_ENV = "UNSLOTH_DIFFUSION_INT8_STORAGE"
+
+
+def _int8_storage_setting() -> str:
+    return (_os.environ.get(INT8_STORAGE_ENV) or "").strip().lower()
+
+
+def int8_storage_host(target: Any) -> bool:
+    """Whether ``target`` keeps checkpoint int8 codes as weight-only storage: no int8 GEMM, same widening as the load."""
+    if _int8_storage_setting() in ("0", "off", "false", "no"):
+        return False
+    device = getattr(target, "device", None)
+    try:
+        import torch
+
+        dtype = getattr(target, "dtype", None)
+        if device == "xpu":
+            return dtype in (torch.bfloat16, torch.float16)
+        if device != "cuda" or torch_is_rocm() or is_stubbed("torchao"):
+            return False
+        return dtype is torch.float16
+    except Exception:
+        return False
+
+
+def int8_storage_scheme(
+    target: Any,
+    family: Optional[str] = None,
+    *,
+    offload: bool = False,
+) -> Optional[str]:
+    """``TQ_INT8`` when a ComfyUI int8 file keeps its codes as storage on ``target`` (``int8_storage_host``)."""
+    if not (offload or _int8_storage_setting() in ("1", "on", "true", "yes")):
+        return None
+    if not int8_storage_host(target) or _family_denied(family, TQ_INT8):
+        return None
+    return TQ_INT8
+
+
 def native_int8_act(target: Any) -> bool:
     # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
+        return False
+    # Storage only: these hosts reach the native layer through ``int8_storage_scheme``, never an int8 GEMM.
+    if int8_storage_host(target):
         return False
     if native_quant_host(target):
         return int8_act_requested()
