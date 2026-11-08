@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from ._sparse_file import extend_sparse
+
 from ._torchao_installed import needs_torchao
 
 from core.inference.diffusion import (
@@ -7015,7 +7017,7 @@ def _hub_blob(root, repo_id, name, mib):
     blob = root / f"models--{repo_id.replace('/', '--')}" / "blobs" / name
     blob.parent.mkdir(parents = True, exist_ok = True)
     with open(blob, "wb") as fh:
-        fh.truncate(mib * 1024 * 1024)
+        extend_sparse(fh, mib * 1024 * 1024)
     return blob
 
 
@@ -7043,7 +7045,7 @@ def _sparse_snapshot_file(root, repo_id, rev, rel, mib):
     path = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / rev / rel
     path.parent.mkdir(parents = True, exist_ok = True)
     with open(path, "wb") as fh:
-        fh.truncate(mib * 1024 * 1024)
+        extend_sparse(fh, mib * 1024 * 1024)
     return path
 
 
@@ -7078,7 +7080,7 @@ def _other_root_base_snapshot(
         path = snapshot / rel
         path.parent.mkdir(parents = True, exist_ok = True)
         with open(path, "wb") as fh:
-            fh.truncate(mib * 1024 * 1024)
+            extend_sparse(fh, mib * 1024 * 1024)
     return snapshot
 
 
@@ -10264,7 +10266,7 @@ def _seed_cache_file(
         target.write_bytes(b"x")
         if size is not None:
             with target.open("r+b") as handle:
-                handle.truncate(size)
+                extend_sparse(handle, size)
     return target
 
 
@@ -10836,7 +10838,7 @@ def _base_snapshot_with_sizes(tmp_path, monkeypatch, sizes):
         path = snapshot / rel
         path.parent.mkdir(parents = True, exist_ok = True)
         with open(path, "wb") as fh:
-            fh.truncate(mib * 1024 * 1024)
+            extend_sparse(fh, mib * 1024 * 1024)
     return snapshot
 
 
@@ -13092,7 +13094,7 @@ def _q21_precast_cache(tmp_path, monkeypatch, *, mib):
     snap.mkdir(parents = True)
     if mib:
         with open(snap / "Qwen-Image-2.1-text_encoder-FP8.safetensors", "wb") as fh:
-            fh.truncate(mib * 1024 * 1024)
+            extend_sparse(fh, mib * 1024 * 1024)
     return snap
 
 
@@ -13165,7 +13167,7 @@ def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monk
     snap = repo / "snapshots" / rev
     snap.mkdir(parents = True)
     with open(snap / te_candidate_filenames(source)[0], "wb") as fh:
-        fh.truncate(7700 * 1024 * 1024)
+        extend_sparse(fh, 7700 * 1024 * 1024)
     # text_encoder_3 is FLUX.1's T5-XXL, served from FLUX.1's hosted text_encoder_2 file; cache it too.
     t5 = te_prequant_sources(
         fam, te_quant_mode = "fp8", target = target, components = ("text_encoder_3",)
@@ -13175,7 +13177,7 @@ def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monk
     (t5_repo / "refs" / "main").write_text(rev)
     (t5_repo / "snapshots" / rev).mkdir(parents = True)
     with open(t5_repo / "snapshots" / rev / te_candidate_filenames(t5)[0], "wb") as fh:
-        fh.truncate(5000 * 1024 * 1024)
+        extend_sparse(fh, 5000 * 1024 * 1024)
     assert DiffusionBackend._precast_text_encoder_mib(
         fam, "HiDream-ai/HiDream-I1-Full", target, "fp8"
     ) == (12700, ("text_encoder_3", "text_encoder_4"), True)
