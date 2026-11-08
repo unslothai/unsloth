@@ -666,6 +666,7 @@ def _clear_caps_cache():
     with LlamaCppBackend._capability_cache_lock:
         LlamaCppBackend._capability_cache.clear()
         LlamaCppBackend._capability_retry_after.clear()
+        LlamaCppBackend._reasoning_budget_value_cache.clear()
 
 
 @_NEEDS_BASH

@@ -10226,8 +10226,7 @@ class LlamaCppBackend:
     _build_number_cache: dict[tuple[str, int, int], Optional[int]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
     _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
-    # (exec path, mtime_ns, size, budget) -> whether that binary accepts the positive budget. Kept
-    # here, since probe_server_capabilities returns a fresh copy on --fit-target builds.
+    # Not on the caps dict: probe_server_capabilities returns a fresh copy on --fit-target builds.
     _reasoning_budget_value_cache: dict[tuple[str, int, int, int], bool] = {}
     _capability_cache_lock = threading.Lock()
 
@@ -10865,11 +10864,7 @@ class LlamaCppBackend:
                 except OSError:
                     value_cache_key = None
                 with cls._capability_cache_lock:
-                    known = (
-                        cls._reasoning_budget_value_cache.get(value_cache_key)
-                        if value_cache_key is not None
-                        else None
-                    )
+                    known = cls._reasoning_budget_value_cache.get(value_cache_key)
                 if known is not None:
                     caps[value_key] = known
                 else:
