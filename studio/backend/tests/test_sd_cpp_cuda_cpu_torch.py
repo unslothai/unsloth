@@ -247,28 +247,28 @@ def test_selection_installs_the_cuda_build(monkeypatch):
 
 
 _PINNED_RELEASE_ASSETS = [
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-24.04-aarch64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-cpu-x64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-cuda12-x64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-cuda13-x64.zip",
-    "sd-master-982-0518b34-uaba3a1c-bin-win-vulkan-x64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-win-cpu-x64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-win-cuda12-x64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-win-cuda13-x64.zip",
+    "sd-master-982-0518b34-uba6ac30-bin-win-vulkan-x64.zip",
 ]
 
 
 @pytest.mark.parametrize(
     "system,machine,major,expected",
     [
-        ("Windows", "AMD64", "13", "sd-master-982-0518b34-uaba3a1c-bin-win-cuda13-x64.zip"),
-        ("Windows", "AMD64", "12", "sd-master-982-0518b34-uaba3a1c-bin-win-cuda12-x64.zip"),
+        ("Windows", "AMD64", "13", "sd-master-982-0518b34-uba6ac30-bin-win-cuda13-x64.zip"),
+        ("Windows", "AMD64", "12", "sd-master-982-0518b34-uba6ac30-bin-win-cuda12-x64.zip"),
         (
             "Linux",
             "x86_64",
             "13",
-            "sd-master-982-0518b34-uaba3a1c-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
+            "sd-master-982-0518b34-uba6ac30-bin-Linux-Ubuntu-22.04-x86_64-cuda13.zip",
         ),
         ("Linux", "aarch64", "13", None),
     ],
