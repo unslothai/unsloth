@@ -1855,7 +1855,7 @@ def hosted_prequant_refusal(
     try:
         names = [
             n
-            for n in candidate_filenames_of(source)
+            for n in without_pickles(candidate_filenames_of(source))
             if restricted_prequant_load_supported(scheme, n)
         ]
         if not names:
