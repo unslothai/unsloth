@@ -151,7 +151,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
         x_ptr,
         h_ptr,
@@ -302,7 +302,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         z = _h16_tile(x_ptr, v_ptr, gidx, live, h, h32, ROWS * CG, SWIGLU, TF32X3)
         _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_h16(
         x_ptr,
         v_ptr,
@@ -1008,6 +1008,7 @@ INT8_ROTQUANT_UNLISTED_ENV = "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED"
 _UNLISTED_DEVICE: dict = {}
 _UNLISTED_TIMING: dict = {}
 _UNLISTED_PROBE: dict = {}  # index -> _h16_probe result (mode independent)
+_UNLISTED_SWIGLU: dict = {}  # index -> _swiglu_probe result on an unlisted card
 _UNLISTED_LATENCY_SHAPES = ((2048, 4096), (1024, 12288))
 
 
@@ -1090,7 +1091,7 @@ def _unlisted_latency(
 def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
     """Once per (device, mode), outside any trace / capture: arch gate, ``_h16_probe`` (once per device), latency
     check (auto only). Keyed by mode so switching ``..._UNLISTED`` between loads takes effect without a restart."""
-    global _ROTQ_HANDLE
+    global _ROTQ_HANDLE, _SWIGLU_HANDLE
     mode = unlisted_mode()
     if mode == "off":  # read per load: the switches act without a restart
         return False
@@ -1124,6 +1125,19 @@ def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
     if ok:
         _H16_DEVICE[index] = h16
         _ROTQ_HANDLE = _rotq_op()
+        # SwiGLU prologue fused into rotq_h16; unlisted cards probe it once per device
+        sw = False
+        if rotquant_swiglu_enabled() and _swiglu_op() is not None:
+            if index not in _UNLISTED_SWIGLU:
+                try:
+                    _UNLISTED_SWIGLU[index] = bool(_swiglu_probe(index))
+                except Exception:  # noqa: BLE001 - no prologue
+                    _UNLISTED_SWIGLU[index] = False
+            sw = _UNLISTED_SWIGLU[index]
+        _SWIGLU_DEVICE[index] = sw
+        if sw:
+            _SWIGLU_HANDLE = _swiglu_op()
     elif h16:  # probed unlisted card the latency check now rejects: drop a verdict a forced load left behind
         _H16_DEVICE.pop(index, None)
+        _SWIGLU_DEVICE.pop(index, None)
     return ok

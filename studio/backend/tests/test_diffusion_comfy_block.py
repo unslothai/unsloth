@@ -235,7 +235,7 @@ def test_untiled_block_scales_are_refused(tmp_path):
         cq.refuse_comfy_quant(path)
 
 
-@pytest.mark.parametrize("fmt", ["convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"])
+@pytest.mark.parametrize("fmt", ["asym_w4a8_int8", "w6a8_int8", "brand_new"])
 def test_remaining_formats_keep_the_refusal(tmp_path, fmt):
     path = _save(
         tmp_path / "r.safetensors",
@@ -731,7 +731,11 @@ def _rss_anon_bytes():
         ctypes.CDLL("libc.so.6").malloc_trim(0)  # hand freed heap back, so RssAnon is what is live
     except OSError:
         pass
-    with open("/proc/self/status") as status:
+    try:
+        status = open("/proc/self/status")
+    except OSError:  # no procfs (Windows, macOS): callers skip on None
+        return None
+    with status:
         for line in status:
             if line.startswith("RssAnon:"):
                 return int(line.split()[1]) * 1024

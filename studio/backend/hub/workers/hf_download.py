@@ -42,6 +42,7 @@ from hub.utils.gguf_plan import (
     sibling_sha256,
 )
 from hub.utils.state_dir import RepoType
+from utils.download_speed_limit import DOWNLOAD_SPEED_LIMIT_ENV, speed_limit_bytes_per_second
 from hub.utils.resumable_partials import (
     LAST_STOCK_RESUMABLE_VERSION,
     _hub_version,
@@ -84,6 +85,70 @@ def _lift_http_ceiling_on_modelscope() -> None:
 
     if active_source() == MODELSCOPE:
         constants.MAX_HTTP_DOWNLOAD_SIZE = sys.maxsize
+
+
+class _Pacer:
+    def __init__(self, bytes_per_second: float):
+        self._rate = bytes_per_second
+        self._lock = threading.Lock()
+        self._ready_at = time.monotonic()
+
+    def wait(self, nbytes: int) -> None:
+        with self._lock:
+            now = time.monotonic()
+            # A quarter second of credit, so sleep overshoot (15ms on Windows) does not erode the rate.
+            self._ready_at = max(self._ready_at, now - 0.25) + nbytes / self._rate
+            delay = self._ready_at - now
+        if delay > 0:
+            time.sleep(delay)
+
+
+def _paced_stream(inner, pacer: _Pacer):
+    # iter_raw demands its own library's SyncByteStream: httpx on hub 1.x, httpx2 on 2.x.
+    base = sys.modules[type(inner).__module__.partition(".")[0]].SyncByteStream
+
+    class _PacedStream(base):
+        def __iter__(self):
+            for chunk in inner:
+                pacer.wait(len(chunk))
+                yield chunk
+
+        def close(self) -> None:
+            inner.close()
+
+    return _PacedStream()
+
+
+def _install_speed_limit() -> None:
+    bytes_per_second = speed_limit_bytes_per_second(os.environ.get(DOWNLOAD_SPEED_LIMIT_ENV))
+    if not bytes_per_second:
+        return
+    try:
+        from huggingface_hub import constants, set_client_factory
+        from huggingface_hub.utils._http import default_client_factory
+    except ImportError:
+        print(
+            "download speed limit needs huggingface_hub 1.x; downloading at full speed",
+            file = sys.stderr,
+        )
+        return
+
+    pacer = _Pacer(bytes_per_second)
+    # http_get writes (and progress reads) per DOWNLOAD_CHUNK_SIZE: 10 MB stalls the bar for minutes at a low limit.
+    constants.DOWNLOAD_CHUNK_SIZE = max(
+        64 * 1024, min(constants.DOWNLOAD_CHUNK_SIZE, int(bytes_per_second // 2))
+    )
+
+    def pace(response) -> None:
+        response.stream = _paced_stream(response.stream, pacer)
+
+    def paced_client():
+        client = default_client_factory()
+        hooks = client.event_hooks
+        client.event_hooks = {"request": hooks["request"], "response": [*hooks["response"], pace]}
+        return client
+
+    set_client_factory(paced_client)
 
 
 def _install_signal_handlers() -> None:
@@ -1424,6 +1489,7 @@ def main() -> None:
 
     hf_token = os.environ.get("HF_TOKEN") or None
     _lift_http_ceiling_on_modelscope()
+    _install_speed_limit()
 
     if args.transport == "xet" and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         _force_stall_for_tests(args.repo_id, "dataset" if args.dataset else "model")

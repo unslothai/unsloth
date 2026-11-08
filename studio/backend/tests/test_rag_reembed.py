@@ -10,6 +10,15 @@ import pytest
 from core.rag import chunking, config, embeddings, ingestion, reembed, retrieval, store
 from storage import rag_db
 
+import sqlite3
+
+# Every test here writes vectors. Same gate as the rag_conn fixture (the macos-15 runner's sqlite3
+# cannot load extensions, so RAG is unavailable there and the product reports it).
+pytestmark = pytest.mark.skipif(
+    not rag_db.RAG_AVAILABLE or not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "sqlite-vec cannot be loaded by this Python's sqlite3",
+)
+
 OLD, NEW, NEWER = "org/old-embedder", "org/new-embedder", "org/newer-embedder"
 WIDTHS = {OLD: 8, NEW: 12, NEWER: 12}  # same width: NEWER's rewrite must remove NEW's rows
 

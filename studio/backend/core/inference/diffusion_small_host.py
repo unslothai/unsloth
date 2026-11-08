@@ -603,8 +603,9 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
 
 
 INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
-# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
-INT8_ACT_FAMILIES = frozenset({"qwen-image"})
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread). qwen-image-edit shares the DiT: 2.03x per step, same
+# LPIPS distance to the bf16 reference as weight-only int8.
+INT8_ACT_FAMILIES = frozenset({"qwen-image", "qwen-image-edit"})
 # torch._int_mm: rows M > 16, K and N multiples of 8.
 _INT8_ACT_MIN_ROWS = 17
 _INT8_ACT_ALIGN = 8

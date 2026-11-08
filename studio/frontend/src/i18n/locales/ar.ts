@@ -198,12 +198,16 @@ export const ar = {
         history: "يقرأ سجل التصفح الخاص بك",
         move: "يحرّك الماوس",
         drag: "يسحب",
+        tabs: "ينظر إلى علامات التبويب",
+        readFile: "يقرأ الملف",
+        editFile: "يحرّر الملف",
       },
     },
     title: "المتصفح",
     tabs: "علامات تبويب المتصفح",
     newTab: "علامة تبويب جديدة",
     newTabFullView: "علامة تبويب جديدة في العرض الكامل",
+    newTabFloating: "علامة تبويب جديدة في نافذة عائمة",
     closeTab: "إغلاق علامة التبويب",
     close: "إغلاق المتصفح",
     show: "إظهار المتصفح",
@@ -327,18 +331,24 @@ export const ar = {
     downloadLocationReset: "إعادة تعيين",
     askBeforeDownloadingSetting: "السؤال قبل التنزيل",
     askBeforeDownloadingSettingDescription: "تأكيد الملفات القادمة من المواقع قبل حفظها.",
+    askBeforeProgramDownloadsSetting: "السؤال قبل تنزيل البرامج",
+    askBeforeProgramDownloadsSettingDescription: "تأكيد الملفات التي يمكنها تشغيل برامج، مثل .exe أو .dmg، حتى عندما لا تطلب التنزيلات الأخرى ذلك.",
     downloadSitesSetting: "أذونات التنزيل للمواقع",
     downloadSitesSettingDescription: "المواقع التي اخترت السماح دائمًا بتنزيلاتها أو حظرها.",
     downloadSitesNone: "حدّد «تذكّر للمرة القادمة» عند السؤال، وسيظهر الموقع هنا.",
     downloadSitesFor: "التنزيلات من {host}",
     downloadSitesRemove: "نسيان {host}",
     downloadSiteAllow: "السماح دائمًا",
+    downloadSiteAllowAll: "السماح بالبرامج أيضًا",
     downloadSiteBlock: "الحظر دائمًا",
     downloadPrompt: {
       title: "هل تريد تنزيل هذا الملف؟",
       description: "يريد {host} حفظ {name} على جهاز الكمبيوتر.",
       dangerous: "يمكن لملفات كهذه تشغيل برامج على جهازك. لا تنزّله إلا إذا كنت تثق في {host}.",
       remember: "تذكّر للمرة القادمة",
+      once: "السؤال في المرة القادمة",
+      site: "دائمًا لـ {host}",
+      all: "التنزيل دائمًا، من كل المواقع",
       cancel: "إلغاء",
       download: "تنزيل",
       blocked: "تم حظر تنزيل من {host}.",
@@ -380,6 +390,12 @@ export const ar = {
       openChat: "فتح في عرض كامل",
       moveLeft: "نقل إلى اللوحة اليسرى",
       moveRight: "نقل إلى اللوحة اليمنى",
+    },
+    floating: {
+      enter: "نافذة عائمة",
+      dock: "تثبيت على الجانب",
+      close: "إغلاق النافذة العائمة",
+      handle: "تحريك النافذة. تحركها مفاتيح الأسهم، ويغيّر Shift مع الأسهم حجمها.",
     },
     annotate: {
       countOne: "تعليق توضيحي واحد",
@@ -776,6 +792,8 @@ export const ar = {
   picker: {
     unifiedTightFit: "ملاءمة محدودة",
     unifiedTightFitHint: "قد يُحمَّل بسياق أقصر أو يعمل بشكل أبطأ على جهاز Mac هذا.",
+    residentToRun: "للتشغيل",
+    residentToRunHint: "ذاكرة GPU التي يتطلبها فحص التحميل أثناء التشغيل",
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",
@@ -1086,6 +1104,9 @@ export const ar = {
       modelAccessHint: "نموذج واحد في كل سطر، مثل unsloth/Qwen3-4B-GGUF، أو unsloth/* لمؤسسة كاملة. اتركه فارغًا للسماح بكل النماذج.",
       modelAccessSave: "حفظ",
       modelAccessLimited: "وصول محدود إلى النماذج",
+      rename: "إعادة التسمية",
+      renameTitle: "إعادة تسمية {username}",
+      renameDescription: "اختر الاسم الذي يسجّل به هذا الحساب الدخول. تبقى محادثاته وملفاته ومفاتيح API الخاصة به مع الحساب. سيتم تسجيل خروجه، ثم يسجّل الدخول مجددًا بالاسم الجديد وكلمة المرور الحالية.",
       empty: "لا توجد حسابات أخرى بعد",
       setupCode: "رمز الإعداد",
       setupFor: "رمز الإعداد لـ {username}",
@@ -2081,6 +2102,12 @@ export const ar = {
           "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
         autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
         xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
+        speedLimit: "حد سرعة التنزيل",
+        speedLimitDescription:
+          "لا حد ما لم يُحدَّد رقم. يستخدم التنزيل المحدود HTTPS.",
+        speedLimitNoLimit: "بلا حد",
+        speedLimitInvalid: "أدخل عددًا بوحدة Mbit/s أو اترك الحقل فارغًا.",
+        speedLimitUsesHttps: "تستخدم التنزيلات HTTPS ما دام حد السرعة مضبوطًا. لا تزال الملفات التي يتجاوز حجمها 50 غيغابايت تستخدم Xet من دون الحد.",
       },
       uploads: {
         sectionTitle: "عمليات الرفع",
@@ -2476,6 +2503,10 @@ export const ar = {
         contrast: {
           label: "التباين",
         },
+        elementOutline: {
+          label: "حدود العناصر",
+          description: "قوة الحدود حول الأزرار والحقول والبطاقات والقوائم.",
+        },
         reduceMotion: {
           label: "تقليل الحركة",
           description: "قلّل الرسوم المتحركة أو اتبع إعداد نظامك.",
@@ -2550,11 +2581,25 @@ export const ar = {
         gpuUnusableDetail: "تم اكتشافه، لكن PyTorch لا يستطيع استخدامه",
         detailedView: "عرض مفصل",
         detailedViewDescription:
-          "اعرض حمل المعالج وحمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
-        cpuLoad: "حمل المعالج",
+          "اعرض حمل كل وحدة GPU وحرارتها واستهلاكها للطاقة في النافذة العائمة.",
         gpuLoad: "حمل GPU",
         temperature: "الحرارة",
         power: "الطاقة",
+        memory: "الذاكرة",
+        gpuInUse: "مستخدمة بواسطة GPU",
+        availableForModels: "متاحة للنماذج",
+        refreshRate: "معدل التحديث",
+        refreshRateDescription: "عدد مرات قراءة الشاشة العائمة لاستخدام الذاكرة وGPU أثناء فتحها.",
+        refreshEvery: "كل {seconds} ث",
+        unsloth: "Unsloth",
+        otherApps: "تطبيقات أخرى",
+        otherInUse: "استخدام آخر",
+        freeLabel: "متاح",
+        unslothApp: "تطبيق Unsloth",
+        unslothShare: "إظهار حصة Unsloth",
+        unslothShareDescription: "تقسيم الذاكرة بين ما يستخدمه Unsloth وما تستخدمه التطبيقات الأخرى والمتاح.",
+        modelBreakdown: "التفصيل حسب النموذج",
+        modelBreakdownDescription: "تقسيم حصة Unsloth في شريط الذاكرة إلى كل نموذج محمّل وبقية التطبيق.",
       },
       gpu: {
         title: "أجهزة GPU",
@@ -2566,7 +2611,7 @@ export const ar = {
         unavailable: "غير متاح",
         detecting: "جارٍ البحث عن وحدات GPU...",
         unreadable: "تعذّرت قراءة عتاد هذا الخادم.",
-        noGpu: "لم يُكتشف أي GPU مرئي. تُعرض موارد CPU فقط أعلاه.",
+        noGpu: "لم يُكتشف معالج رسومات مخصص.",
         noUsableGpu: "لا يوجد على هذا الجهاز أي GPU يمكن لـ PyTorch استخدامه.",
         mismatchCpuBuild:
           "PyTorch إصدار للـ CPU فقط ({version})، لذا لا يمكن استخدام وحدات GPU أدناه. أصلح التثبيت لاستعادة دعم GPU.",
@@ -2642,7 +2687,7 @@ export const ar = {
           "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
       modelMemory: {
-        title: "ذاكرة النموذج",
+        title: "تحميل النموذج",
         keepResident: "إبقاء النموذج في ذاكرة كرت الرسوميات",
         keepResidentDescription: "يبقى في ذاكرة كرت الرسوميات بين الرسائل.",
         keepResidentHint: "لا تُعاد الأوزان إلى ذاكرة النظام ما دام النموذج محمَّلاً. يعطّل التفريغ التلقائي عند الخمول، وإذا كانت الأوزان موجودة فعلاً في ذاكرة المضيف (ذاكرة موحّدة أو تفريغ جزئي إلى المعالج الرسومي) فإنه يمرّر ‎--mlock‎ أيضاً حتى لا يُخرجها النظام من الذاكرة ويعيد رفعها عند رسالتك التالية.",
@@ -2825,7 +2870,7 @@ export const ar = {
       configurationDocs: "التوثيق",
       configurationFlagsSuffix: "لمعرفة الخيارات (flags).",
       modelNote:
-        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
+        "يتطلب Claude Code وCodex نموذج GGUF يقدّمه llama-server أو نموذج MLX. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
       subagent: {
         title: "استخدام نموذج محلي كوكيل فرعي",
         description:
@@ -2898,6 +2943,8 @@ export const ar = {
     },
     chat: {
       groups: {
+        replies: { title: "الردود" },
+        thinkingTools: { title: "التفكير والأدوات" },
         conversations: { title: "المحادثات" },
         files: { title: "الملفات واللصق" },
         display: { title: "العرض" },
@@ -2982,17 +3029,26 @@ export const ar = {
       showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
       showReplyTimesKeywords:
         "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
-      showGenerationDetails: "تفاصيل التوليد",
+      showGenerationDetails: "معلومات مفصّلة عن السرعة والتحميل",
       showGenerationDetailsDescription:
-        "عرض سرعتَي معالجة الطلب والرد مباشرةً مع عدد الرموز، ومكان تحميل طبقات النموذج.",
+        "يضيف سرعة قراءة الموجّه وعدد الرموز وقبول المسودات إلى القراءات المباشرة، ويعرض مكان تحميل طبقات النموذج.",
       showGenerationDetailsKeywords:
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "إحصاءات السرعة والسياق",
+      generationStatsUpdatesDescription:
+        "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",
+      generationStatsUpdatesHint:
+        "يحدّث الوضع الفوري مؤشر الرموز في الثانية أسفل الرد وشريط السياق أعلى المحادثة عدة مرات في الثانية أثناء كتابة الرد. أما عند الانتهاء فيحدّثهما مرة واحدة بعد انتهاء كل رد. قد يسبب الوضع الفوري بطئًا أو تراجعًا في الأداء، خاصةً على الأجهزة القديمة أو المشغولة.",
+      generationStatsUpdatesSettled: "عند الانتهاء",
+      generationStatsUpdatesRealtime: "فوري",
+      generationStatsUpdatesKeywords:
+        "فوري مباشر تحديث سرعة سياق إحصاءات realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الجولات",
       turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
-      composerAtBottom: "حقل الكتابة في الأسفل",
-      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
+      composerPosition: "موضع حقل الكتابة",
+      composerPositionDescription: "مكان حقل الكتابة عند بدء محادثة جديدة، من أعلى الصفحة إلى أسفلها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
@@ -3463,6 +3519,9 @@ export const ar = {
         docs: "التوثيق",
         docsLabel: "فتح توثيق واجهة القرارات البرمجية",
         description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
+        codeTitle: "استدعِه من الشيفرة",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "تتصل عملاء MCP الأخرى هنا باستخدام الرمز نفسه.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
         enableRemoteDescription: "يقدّم /v1/systemone.",
@@ -3616,7 +3675,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "اتصل التطبيق بخادم Unsloth يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
+          "متصل بخادم Unsloth على المنفذ {port} لم يشغّله هذا التطبيق، مثل `unsloth studio` في نافذة طرفية. أوقفه من المكان الذي شُغّل منه، ثم أغلق التطبيق وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -3929,8 +3988,6 @@ export const ar = {
             "يبدو أن مجموعة البيانات هذه تحتوي على صور، ولا يمكن بثها.",
           audioDataset:
             "يبدو أن مجموعة البيانات هذه تحتوي على صوت، ولا يمكن بثها.",
-          appleSilicon:
-            "البث غير مدعوم على Apple Silicon (MLX) حتى الآن.",
         },
         options: {
           trainOnCompletions: "إكمالات المساعد فقط",
@@ -5100,6 +5157,8 @@ export const ar = {
     removeLevel: "إزالة المستوى {n}",
     addLevel: "إضافة مستوى",
     jsonHelp: "نص الطلب. التشغيل يرسله كما هو.",
+    copyBody: "نسخ النص الأساسي",
+    copyCurl: "نسخ كـ cURL",
     examples: "أمثلة",
     presetToolApproval: "الموافقة على استدعاءات أدوات الوكيل",
     presetPromptInjection: "كشف حقن الأوامر",
@@ -5157,6 +5216,7 @@ export const ar = {
     monitor: {
       dragHandleLabel: "انقل شاشة المراقبة المباشرة. مفاتيح الأسهم تحركها قليلًا، والنقر المزدوج يعيدها إلى مكانها.",
       reconnecting: "جارٍ إعادة الاتصال...",
+      resizeHint: "اسحب جانبًا أو زاوية لتغيير العرض. انقر نقرًا مزدوجًا لإعادته.",
     },
   },
   projectsPage: {
@@ -5463,7 +5523,7 @@ export const ar = {
     skippedVersion: "تم تخطي {component} {version} مؤقتًا",
     skippedUpdate: "تم تخطي تحديث {component} مؤقتًا",
     skippedUpdates: "تم تخطي تحديثات {components} مؤقتًا",
-    vulkanFaster: "Vulkan أسرع من ROCM بأكثر من 10%. لا حاجة لإعادة التشغيل",
+    vulkanFaster: "أسرع بأكثر من 10%",
     noRestart: "لا حاجة لإعادة التشغيل",
     downloadSize: "تنزيل بحجم {size}",
     backendChange: "خلفية {change}",
@@ -5472,8 +5532,8 @@ export const ar = {
     installingPhase: "جارٍ تثبيت {component} ({current} من {total})...",
     installingCount: "جارٍ تثبيت {count} تحديثات...",
     bundleTitle: "{count} تحديثات لبيئة التشغيل",
-    newBackend: "خلفية جديدة لـ {component}",
-    newUpdate: "تحديث جديد لـ {component}",
+    newBackend: "خلفية جديدة لبيئة التشغيل",
+    newUpdate: "تحديث جديد لبيئة التشغيل",
     hideUpdate: "إخفاء تحديث {component} حتى إعادة فتح Unsloth",
     hideUpdates: "إخفاء تحديثات {components} حتى إعادة فتح Unsloth",
     whatsNew: "ما الجديد",
@@ -5485,6 +5545,7 @@ export const ar = {
   generationStats: {
     working: "جارٍ التنفيذ...",
     processingPrompt: "جارٍ معالجة الطلب {percent}%",
+    compactingContext: "جارٍ ضغط السياق...",
     timeLeft: "يتبقى {eta}",
     tokensOne: "التوكنات: {count}",
     tokens: "التوكنات: {count}",

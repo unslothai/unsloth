@@ -199,12 +199,16 @@ export const he = {
         history: "קורא את היסטוריית הגלישה שלך",
         move: "מזיז את העכבר",
         drag: "גורר",
+        tabs: "בודק את הכרטיסיות",
+        readFile: "קורא את הקובץ",
+        editFile: "עורך את הקובץ",
       },
     },
     title: "דפדפן",
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",
     newTabFullView: "כרטיסייה חדשה בתצוגה מלאה",
+    newTabFloating: "כרטיסייה חדשה בחלון צף",
     closeTab: "סגור כרטיסייה",
     close: "סגור דפדפן",
     show: "הצג דפדפן",
@@ -336,18 +340,24 @@ export const he = {
     downloadLocationReset: "איפוס",
     askBeforeDownloadingSetting: "לשאול לפני הורדה",
     askBeforeDownloadingSettingDescription: "אישור קבצים מאתרים לפני שהם נשמרים.",
+    askBeforeProgramDownloadsSetting: "לשאול לפני הורדת תוכנות",
+    askBeforeProgramDownloadsSettingDescription: "אישור קבצים שיכולים להריץ תוכנות, כמו .exe או .dmg, גם כשהורדות אחרות לא שואלות.",
     downloadSitesSetting: "הרשאות הורדה לאתרים",
     downloadSitesSettingDescription: "אתרים שבחרתם תמיד לאפשר או לחסום מהם הורדות.",
     downloadSitesNone: "סמנו \"לזכור לפעם הבאה\" כשתישאלו, והאתר יופיע כאן.",
     downloadSitesFor: "הורדות מ-{host}",
     downloadSitesRemove: "לשכוח את {host}",
     downloadSiteAllow: "תמיד לאפשר",
+    downloadSiteAllowAll: "לאפשר גם תוכנות",
     downloadSiteBlock: "תמיד לחסום",
     downloadPrompt: {
       title: "להוריד את הקובץ הזה?",
       description: "{host} רוצה לשמור את {name} במחשב שלכם.",
       dangerous: "קבצים כאלה יכולים להריץ תוכנות במחשב שלך. הורד אותו רק אם אתה סומך על {host}.",
       remember: "לזכור לפעם הבאה",
+      once: "לשאול בפעם הבאה",
+      site: "תמיד עבור {host}",
+      all: "תמיד להוריד, מכל אתר",
       cancel: "ביטול",
       download: "הורדה",
       blocked: "נחסמה הורדה מ-{host}.",
@@ -390,6 +400,12 @@ export const he = {
       openChat: "פתח בתצוגה מלאה",
       moveLeft: "העבר לחלונית השמאלית",
       moveRight: "העבר לחלונית הימנית",
+    },
+    floating: {
+      enter: "חלון צף",
+      dock: "עגינה לצד",
+      close: "סגירת החלון הצף",
+      handle: "הזזת החלון. מקשי החצים מזיזים אותו, ו־Shift עם החצים משנה את גודלו.",
     },
     annotate: {
       countOne: "הערה אחת",
@@ -814,6 +830,8 @@ export const he = {
   picker: {
     unifiedTightFit: "התאמה צפופה",
     unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
+    residentToRun: "להרצה",
+    residentToRunHint: "זיכרון GPU שבדיקת הטעינה דורשת בזמן הריצה",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -1125,6 +1143,9 @@ export const he = {
       modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
       modelAccessSave: "שמירה",
       modelAccessLimited: "גישה מוגבלת למודלים",
+      rename: "שינוי שם",
+      renameTitle: "שינוי השם של {username}",
+      renameDescription: "בחרו את השם שבו החשבון הזה מתחבר. השיחות, הקבצים ומפתחות ה-API נשארים בחשבון. המשתמש יתנתק ויתחבר מחדש עם השם החדש והסיסמה הנוכחית.",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
@@ -2156,6 +2177,12 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",
@@ -2531,6 +2558,10 @@ export const he = {
         contrast: {
           label: "ניגודיות",
         },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
+        },
         reduceMotion: {
           label: "הפחתת תנועה",
           description: "הפחת אנימציות או התאם להגדרות המערכת.",
@@ -2604,11 +2635,25 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
-        cpuLoad: "עומס מעבד",
+          "הצגת עומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",
+        memory: "זיכרון",
+        gpuInUse: "בשימוש ה-GPU",
+        availableForModels: "זמין למודלים",
+        refreshRate: "קצב רענון",
+        refreshRateDescription: "באיזו תדירות המוניטור הצף קורא את השימוש בזיכרון וב-GPU כשהוא פתוח.",
+        refreshEvery: "כל {seconds} שנ׳",
+        unsloth: "Unsloth",
+        otherApps: "אפליקציות אחרות",
+        otherInUse: "שימוש אחר",
+        freeLabel: "פנוי",
+        unslothApp: "אפליקציית Unsloth",
+        unslothShare: "הצגת החלק של Unsloth",
+        unslothShareDescription: "חלוקת הזיכרון בין Unsloth, אפליקציות אחרות וזיכרון פנוי.",
+        modelBreakdown: "פירוט לפי מודל",
+        modelBreakdownDescription: "חלוקת החלק של Unsloth בסרגל הזיכרון לכל מודל טעון ולשאר האפליקציה.",
       },
       gpu: {
         title: "התקני GPU",
@@ -2620,7 +2665,7 @@ export const he = {
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
-        noGpu: "לא זוהה GPU גלוי. משאבי CPU בלבד מוצגים למעלה.",
+        noGpu: "לא זוהה GPU ייעודי.",
         noUsableGpu: "אף GPU במחשב זה אינו שמיש על ידי PyTorch.",
         mismatchCpuBuild:
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",
@@ -2706,7 +2751,7 @@ export const he = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
-        title: "זיכרון מודל",
+        title: "טעינת מודל",
         keepResident: "שמור מודל בזיכרון ה-GPU",
         keepResidentDescription: "הישאר ב-VRAM בין פרומפטים.",
         keepResidentHint:
@@ -2895,7 +2940,7 @@ export const he = {
       configurationDocs: "תיעוד",
       configurationFlagsSuffix: "עבור דגלים.",
       modelNote:
-        "Codex דורש מודל GGUF המוגש על ידי llama-server. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
+        "Claude Code ו-Codex דורשים מודל GGUF המוגש על ידי llama-server, או מודל MLX. סוכנים אחרים יכולים להשתמש גם במודלים מבוססי Transformers; הסר את --model כדי להשתמש במודל שכבר טעון ב-Unsloth.",
       subagent: {
         title: "השתמש במודל מקומי כתת-סוכן",
         description:
@@ -2969,6 +3014,8 @@ export const he = {
     },
     chat: {
       groups: {
+        replies: { title: "תשובות" },
+        thinkingTools: { title: "חשיבה וכלים" },
         conversations: {
           title: "שיחות",
         },
@@ -3062,18 +3109,27 @@ export const he = {
       showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
       showReplyTimesKeywords:
         "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
-      showGenerationDetails: "פרטי יצירה",
+      showGenerationDetails: "מידע מפורט על מהירות וטעינה",
       showGenerationDetailsDescription:
-        "הצגת מהירויות הפרומפט והתשובה בזמן אמת עם מספר האסימונים, והיכן נטענו השכבות של המודל.",
+        "מוסיף למדדים החיים את מהירות קריאת ההנחיה, ספירת טוקנים וקבלת טיוטות, ומציג היכן נטענו שכבות המודל.",
       showGenerationDetailsKeywords:
         "פרטים מהירות אסימונים סטטיסטיקה שכבות verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "נתוני מהירות והקשר",
+      generationStatsUpdatesDescription:
+        "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
+      generationStatsUpdatesHint:
+        "זמן אמת מרענן את מד הטוקנים לשנייה מתחת לתשובה ואת סרגל ההקשר בראש הצ'אט כמה פעמים בשנייה בזמן שהתשובה נכתבת. בסיום מעדכן אותם פעם אחת, אחרי שכל תשובה מסתיימת. זמן אמת עלול לגרום להאטה או לביצועים נמוכים יותר, במיוחד במחשבים ישנים או עמוסים.",
+      generationStatsUpdatesSettled: "בסיום",
+      generationStatsUpdatesRealtime: "זמן אמת",
+      generationStatsUpdatesKeywords:
+        "זמן אמת חי עדכון מהירות הקשר נתונים realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
       turnNavigation: "ניווט בין סבבים",
       turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
-      composerAtBottom: "תיבת הכתיבה למטה",
-      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
+      composerPosition: "מיקום תיבת הכתיבה",
+      composerPositionDescription: "היכן תיבת הכתיבה מופיעה כשמתחילים צ'אט חדש, מראש הדף ועד תחתיתו.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",
@@ -3549,6 +3605,9 @@ export const he = {
         docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
+        codeTitle: "קריאה מקוד",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "לקוחות MCP אחרים מתחברים לכאן עם אותו אסימון.",
         enable: "הגש בקשות",
         enableDescription: "מגיש את /v1/systemone. הפעלה מורידה את המודל.",
         enableRemoteDescription: "מגיש את /v1/systemone.",
@@ -3701,7 +3760,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "האפליקציה התחברה לשרת Unsloth שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
+          "מחובר לשרת Unsloth בפורט {port} שהאפליקציה הזו לא הפעילה, כמו `unsloth studio` בטרמינל. עצור אותו במקום שבו הופעל, ואז צא מהאפליקציה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -4005,7 +4064,6 @@ export const he = {
           imageDataset:
             "מערך נתונים זה נראה כמכיל תמונות, שאינן ניתנות להזרמה.",
           audioDataset: "מערך נתונים זה נראה כמכיל אודיו, שאינו ניתן להזרמה.",
-          appleSilicon: "הזרמה אינה נתמכת עדיין ב-Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "השלמות עוזר בלבד",
@@ -5198,6 +5256,8 @@ export const he = {
     removeLevel: "הסר רמה {n}",
     addLevel: "הוסף רמה",
     jsonHelp: "גוף הבקשה. הרצה שולחת אותו כפי שהוא.",
+    copyBody: "העתקת גוף הבקשה",
+    copyCurl: "העתקה כ-cURL",
     examples: "דוגמאות",
     presetToolApproval: "אישור קריאות לכלים של סוכן",
     presetPromptInjection: "זיהוי הזרקת פרומפט",
@@ -5255,6 +5315,7 @@ export const he = {
     monitor: {
       dragHandleLabel: "הזז את מסך הניטור החי. מקשי החיצים מזיזים אותו מעט, ולחיצה כפולה מאפסת אותו.",
       reconnecting: "מתחבר מחדש...",
+      resizeHint: "גררו צד או פינה כדי לשנות את הרוחב. לחיצה כפולה מאפסת אותו.",
     },
   },
   projectsPage: {
@@ -5561,7 +5622,7 @@ export const he = {
     skippedVersion: "דילגת על {component} {version} בינתיים",
     skippedUpdate: "דילגת על העדכון של {component} בינתיים",
     skippedUpdates: "דילגת על העדכונים של {components} בינתיים",
-    vulkanFaster: "Vulkan מהיר ביותר מ-10% מ-ROCM. אין צורך בהפעלה מחדש",
+    vulkanFaster: "מהיר ביותר מ-10%",
     noRestart: "אין צורך בהפעלה מחדש",
     downloadSize: "הורדה של {size}",
     backendChange: "סביבת חישוב {change}",
@@ -5570,8 +5631,8 @@ export const he = {
     installingPhase: "מתקין את {component} ({current} מתוך {total})...",
     installingCount: "מתקין {count} עדכונים...",
     bundleTitle: "{count} עדכוני סביבת זמן ריצה",
-    newBackend: "סביבת חישוב חדשה עבור {component}",
-    newUpdate: "עדכון חדש עבור {component}",
+    newBackend: "סביבת חישוב חדשה לזמן הריצה",
+    newUpdate: "עדכון חדש לסביבת זמן הריצה",
     hideUpdate: "הסתר את העדכון של {component} עד לפתיחה מחדש של Unsloth",
     hideUpdates: "הסתר את העדכונים של {components} עד לפתיחה מחדש של Unsloth",
     whatsNew: "מה חדש",
@@ -5583,6 +5644,7 @@ export const he = {
   generationStats: {
     working: "מעבד...",
     processingPrompt: "עיבוד הפרומפט {percent}%",
+    compactingContext: "דוחס את ההקשר...",
     timeLeft: "נותרו {eta}",
     tokensOne: "{count} טוקן",
     tokens: "{count} טוקנים",

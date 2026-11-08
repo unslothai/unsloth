@@ -195,12 +195,16 @@ export const en = {
         history: "Reading your browsing history",
         move: "Moving the mouse",
         drag: "Dragging",
+        tabs: "Looking at the tabs",
+        readFile: "Reading the file",
+        editFile: "Editing the file",
       },
     },
     title: "Browser",
     tabs: "Browser tabs",
     newTab: "New tab",
     newTabFullView: "New tab in full view",
+    newTabFloating: "New tab in floating window",
     closeTab: "Close tab",
     close: "Close browser",
     show: "Show browser",
@@ -324,18 +328,24 @@ export const en = {
     downloadLocationReset: "Reset",
     askBeforeDownloadingSetting: "Ask before downloading",
     askBeforeDownloadingSettingDescription: "Confirm files from websites before they're saved.",
+    askBeforeProgramDownloadsSetting: "Ask before downloading programs",
+    askBeforeProgramDownloadsSettingDescription: "Confirm files that can run programs, such as .exe or .dmg, even when other downloads don't ask.",
     downloadSitesSetting: "Site download permissions",
     downloadSitesSettingDescription: "Sites you chose to always allow or block downloads from.",
-    downloadSitesNone: "Check Remember for next time when asked, and the site shows up here.",
+    downloadSitesNone: "Choose Always for a site when asked, and it shows up here.",
     downloadSitesFor: "Downloads from {host}",
     downloadSitesRemove: "Forget {host}",
     downloadSiteAllow: "Always allow",
+    downloadSiteAllowAll: "Allow programs too",
     downloadSiteBlock: "Always block",
     downloadPrompt: {
       title: "Download this file?",
       description: "{host} wants to save {name} to your computer.",
       dangerous: "Files like this can run programs on your computer. Only download it if you trust {host}.",
-      remember: "Remember for next time",
+      remember: "Remember this choice",
+      once: "Ask next time",
+      site: "Always for {host}",
+      all: "Always download, from every site",
       cancel: "Cancel",
       download: "Download",
       blocked: "Blocked a download from {host}.",
@@ -377,6 +387,12 @@ export const en = {
       openChat: "Open in full view",
       moveLeft: "Move to left pane",
       moveRight: "Move to right pane",
+    },
+    floating: {
+      enter: "Floating window",
+      dock: "Dock to side",
+      close: "Close floating window",
+      handle: "Move window. Arrow keys move it; Shift and arrow keys resize it.",
     },
     annotate: {
       countOne: "1 annotation",
@@ -782,6 +798,8 @@ export const en = {
   picker: {
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
+    residentToRun: "to run",
+    residentToRunHint: "GPU memory the load check needs while running",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -1095,6 +1113,9 @@ export const en = {
       modelAccessHint: "One model per line, for example unsloth/Qwen3-4B-GGUF, or unsloth/* for a whole organization. Leave empty to allow every model.",
       modelAccessSave: "Save",
       modelAccessLimited: "Limited model access",
+      rename: "Rename",
+      renameTitle: "Rename {username}",
+      renameDescription: "Choose the name this account signs in with. Their chats, files and API keys stay with the account. They are signed out and sign in again with the new name and their current password.",
       empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
@@ -1967,7 +1988,7 @@ export const en = {
         idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
@@ -2115,6 +2136,12 @@ export const en = {
           "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
         autoCurrently: "Auto is using {transport} on this machine.",
         xetMissing: "Xet is unavailable because hf_xet is not installed.",
+        speedLimit: "Download speed limit",
+        speedLimitDescription:
+          "No limit unless a figure is set. A limited download uses HTTPS.",
+        speedLimitNoLimit: "No limit",
+        speedLimitInvalid: "Enter a number of Mbit/s, or leave the field empty.",
+        speedLimitUsesHttps: "Downloads use HTTPS while a speed limit is set. Files over 50 GB still use Xet, without the limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2493,6 +2520,10 @@ export const en = {
         contrast: {
           label: "Contrast",
         },
+        elementOutline: {
+          label: "Element outline",
+          description: "Border strength for buttons, fields, cards and menus.",
+        },
         reduceMotion: {
           label: "Reduce motion",
           description: "Reduce animations or match your system.",
@@ -2551,7 +2582,7 @@ export const en = {
         apiDescription: "See what other apps send to this server's API as it arrives.",
         summary: "Live requests, errors, and token usage",
         status: "{active} active · {recent} recent · {model}",
-        noModelLoaded: "no model loaded",
+        noModelLoaded: "No model loaded",
         autoOpen: "Floating monitor opens automatically",
         autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
@@ -2567,11 +2598,25 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window.",
-        cpuLoad: "CPU load",
+          "Show each GPU's load, temperature and power in the floating window.",
         gpuLoad: "GPU load",
         temperature: "Temperature",
         power: "Power",
+        memory: "Memory",
+        gpuInUse: "GPU in use",
+        availableForModels: "Available for models",
+        refreshRate: "Refresh rate",
+        refreshRateDescription: "How often the floating monitor reads memory and GPU usage while it is open.",
+        refreshEvery: "Every {seconds} s",
+        unsloth: "Unsloth",
+        otherApps: "Other apps",
+        otherInUse: "Other in use",
+        freeLabel: "Free",
+        unslothApp: "Unsloth app",
+        unslothShare: "Show Unsloth's share",
+        unslothShareDescription: "Split memory into what Unsloth uses, what other apps use, and what is free.",
+        modelBreakdown: "Break down by model",
+        modelBreakdownDescription: "Split Unsloth's part of the memory bar into each loaded model and the rest of the app.",
       },
       gpu: {
         title: "GPU devices",
@@ -2583,7 +2628,7 @@ export const en = {
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
-        noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noGpu: "No dedicated GPU detected.",
         noUsableGpu: "No GPU on this machine is usable by PyTorch.",
         mismatchCpuBuild:
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",
@@ -2660,7 +2705,7 @@ export const en = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
       },
       modelMemory: {
-        title: "Model memory",
+        title: "Model loading",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
         keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
@@ -2845,7 +2890,7 @@ export const en = {
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+        "Claude Code and Codex need a GGUF model served by llama-server, or an MLX model. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:
@@ -2917,6 +2962,8 @@ export const en = {
     },
     chat: {
       groups: {
+        replies: { title: "Replies" },
+        thinkingTools: { title: "Thinking and tools" },
         conversations: { title: "Conversations" },
         files: { title: "Files & pasting" },
         display: { title: "Display" },
@@ -2998,18 +3045,27 @@ export const en = {
       showReplyTimesDescription: "Show when each reply finished, below the reply.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message",
-      showGenerationDetails: "Generation details",
+      showGenerationDetails: "Detailed speed and loading info",
       showGenerationDetailsDescription:
-        "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
+        "Adds prompt-reading speed, token counts and draft acceptance to the live readouts, and shows where a model's layers loaded.",
       showGenerationDetailsKeywords:
-        "verbose developer stats speed tok/s prefill decode layers offload vram experts",
+        "generation details verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Speed and context stats",
+      generationStatsUpdatesDescription:
+        "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesHint:
+        "Realtime refreshes the tokens per second readout under a reply and the context bar at the top of the chat a few times a second while the reply is written. When done updates them once, after each reply finishes. Realtime may cause lag or slower performance, especially on older or busy machines.",
+      generationStatsUpdatesSettled: "When done",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
       turnNavigation: "Turn navigation",
       turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
-      composerAtBottom: "Composer at the bottom",
-      composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
+      composerPosition: "Composer position",
+      composerPositionDescription: "Where the composer sits when a new chat starts, from the top of the page down to the bottom.",
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
         "Make new chat attachments available to every chat in the project.",
@@ -3480,6 +3536,9 @@ export const en = {
         docs: "Docs",
         docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        codeTitle: "Call it from code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Other MCP clients connect here with the same token.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -3499,7 +3558,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. Exported Laya fine-tunes use llama.cpp when it is chosen here. llama.cpp also reads images.",
         backendDescriptionMlx:
           "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
@@ -3631,7 +3690,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -3937,7 +3996,6 @@ export const en = {
             "Embedding models don't support streaming (training needs the full dataset).",
           imageDataset: "This dataset looks like images, which can't stream.",
           audioDataset: "This dataset looks like audio, which can't stream.",
-          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
         },
         options: {
           trainOnCompletions: "assistant completions only",
@@ -5134,6 +5192,8 @@ export const en = {
     removeLevel: "Remove level {n}",
     addLevel: "Add level",
     jsonHelp: "The request body. Run sends it as written.",
+    copyBody: "Copy body",
+    copyCurl: "Copy as cURL",
     examples: "Examples",
     presetToolApproval: "Approve agent tool calls",
     presetPromptInjection: "Catch prompt injection",
@@ -5195,6 +5255,7 @@ export const en = {
       dragHandleLabel:
         "Move the live monitor. Arrow keys nudge it, double-click resets it.",
       reconnecting: "Reconnecting...",
+      resizeHint: "Drag a side or corner to change the width. Double-click resets it.",
     },
   },
   projectsPage: {
@@ -5504,7 +5565,7 @@ export const en = {
     skippedVersion: "Skipped {component} {version} for now",
     skippedUpdate: "Skipped the {component} update for now",
     skippedUpdates: "Skipped the {components} updates for now",
-    vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
+    vulkanFaster: "Over 10% faster",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
     // {change}: "<from backend> → <to backend>".
@@ -5514,8 +5575,8 @@ export const en = {
     installingPhase: "Installing {component} ({current} of {total})...",
     installingCount: "Installing {count} updates...",
     bundleTitle: "{count} runtime updates",
-    newBackend: "New {component} backend",
-    newUpdate: "New {component} update",
+    newBackend: "New runtime backend",
+    newUpdate: "New runtime update",
     hideUpdate: "Hide the {component} update until Unsloth is reopened",
     hideUpdates: "Hide the {components} updates until Unsloth is reopened",
     whatsNew: "What's new",
@@ -5529,6 +5590,7 @@ export const en = {
   generationStats: {
     working: "Working...",
     processingPrompt: "Processing prompt {percent}%",
+    compactingContext: "Compacting context...",
     // {eta}: a short duration such as "12s" or "2m 10s".
     timeLeft: "{eta} left",
     tokensOne: "{count} token",

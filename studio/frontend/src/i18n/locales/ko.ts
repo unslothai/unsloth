@@ -198,12 +198,16 @@ export const ko = {
         history: "브라우징 기록 읽는 중",
         move: "마우스 이동 중",
         drag: "드래그 중",
+        tabs: "탭 확인 중",
+        readFile: "파일 읽는 중",
+        editFile: "파일 편집 중",
       },
     },
     title: "브라우저",
     tabs: "브라우저 탭",
     newTab: "새 탭",
     newTabFullView: "전체 보기로 새 탭",
+    newTabFloating: "플로팅 창에서 새 탭",
     closeTab: "탭 닫기",
     close: "브라우저 닫기",
     show: "브라우저 표시",
@@ -327,18 +331,24 @@ export const ko = {
     downloadLocationReset: "재설정",
     askBeforeDownloadingSetting: "다운로드 전에 묻기",
     askBeforeDownloadingSettingDescription: "웹사이트의 파일을 저장하기 전에 확인합니다.",
+    askBeforeProgramDownloadsSetting: "프로그램 다운로드 전에 묻기",
+    askBeforeProgramDownloadsSettingDescription: ".exe나 .dmg처럼 프로그램을 실행할 수 있는 파일은 다른 다운로드에서 묻지 않더라도 확인합니다.",
     downloadSitesSetting: "사이트별 다운로드 권한",
     downloadSitesSettingDescription: "다운로드를 항상 허용하거나 차단하기로 선택한 사이트입니다.",
     downloadSitesNone: "물어볼 때 '다음에도 기억'을 선택하면 해당 사이트가 여기에 표시됩니다.",
     downloadSitesFor: "{host}의 다운로드",
     downloadSitesRemove: "{host} 삭제",
     downloadSiteAllow: "항상 허용",
+    downloadSiteAllowAll: "프로그램도 허용",
     downloadSiteBlock: "항상 차단",
     downloadPrompt: {
       title: "이 파일을 다운로드할까요?",
       description: "{host}에서 {name}을(를) 컴퓨터에 저장하려고 합니다.",
       dangerous: "이런 파일은 컴퓨터에서 프로그램을 실행할 수 있습니다. {host}을(를) 신뢰하는 경우에만 다운로드하세요.",
       remember: "다음에도 기억",
+      once: "다음에 묻기",
+      site: "{host}에서 항상",
+      all: "모든 사이트에서 항상 다운로드",
       cancel: "취소",
       download: "다운로드",
       blocked: "{host}의 다운로드를 차단했습니다.",
@@ -380,6 +390,12 @@ export const ko = {
       openChat: "전체 보기로 열기",
       moveLeft: "왼쪽 창으로 이동",
       moveRight: "오른쪽 창으로 이동",
+    },
+    floating: {
+      enter: "플로팅 창",
+      dock: "옆에 고정",
+      close: "플로팅 창 닫기",
+      handle: "창 이동. 화살표 키로 이동하고 Shift와 화살표 키로 크기를 바꿉니다.",
     },
     annotate: {
       countOne: "주석 1개",
@@ -776,6 +792,8 @@ export const ko = {
   picker: {
     unifiedTightFit: "빠듯함",
     unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
+    residentToRun: "실행에 필요",
+    residentToRunHint: "실행 중 로드 검사가 요구하는 GPU 메모리",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",
@@ -1086,6 +1104,9 @@ export const ko = {
       modelAccessHint: "한 줄에 모델 하나씩 입력합니다. 예: unsloth/Qwen3-4B-GGUF, 조직 전체는 unsloth/*. 비워 두면 모든 모델을 허용합니다.",
       modelAccessSave: "저장",
       modelAccessLimited: "모델 접근 제한됨",
+      rename: "이름 변경",
+      renameTitle: "{username} 이름 변경",
+      renameDescription: "이 계정이 로그인할 때 사용할 이름을 선택하세요. 채팅, 파일, API 키는 계정에 그대로 남습니다. 사용자는 로그아웃되며 새 이름과 현재 비밀번호로 다시 로그인합니다.",
       empty: "아직 다른 계정이 없습니다",
       setupCode: "설정 코드",
       setupFor: "{username}의 설정 코드",
@@ -2078,6 +2099,12 @@ export const ko = {
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+        speedLimit: "다운로드 속도 제한",
+        speedLimitDescription:
+          "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
+        speedLimitNoLimit: "제한 없음",
+        speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",
@@ -2470,6 +2497,10 @@ export const ko = {
         contrast: {
           label: "대비",
         },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
+        },
         reduceMotion: {
           label: "동작 줄이기",
           description: "애니메이션을 줄이거나 시스템 설정을 따릅니다.",
@@ -2544,11 +2575,25 @@ export const ko = {
         gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
         detailedView: "자세히 보기",
         detailedViewDescription:
-          "플로팅 창에 CPU 부하와 각 GPU의 부하, 온도, 전력을 표시합니다.",
-        cpuLoad: "CPU 부하",
+          "플로팅 창에 각 GPU의 부하, 온도, 전력을 표시합니다.",
         gpuLoad: "GPU 부하",
         temperature: "온도",
         power: "전력",
+        memory: "메모리",
+        gpuInUse: "GPU 사용 중",
+        availableForModels: "모델에 사용 가능",
+        refreshRate: "새로 고침 빈도",
+        refreshRateDescription: "플로팅 모니터가 열려 있는 동안 메모리와 GPU 사용량을 읽는 빈도입니다.",
+        refreshEvery: "{seconds}초마다",
+        unsloth: "Unsloth",
+        otherApps: "다른 앱",
+        otherInUse: "기타 사용",
+        freeLabel: "여유",
+        unslothApp: "Unsloth 앱",
+        unslothShare: "Unsloth 사용량 표시",
+        unslothShareDescription: "메모리를 Unsloth, 다른 앱, 여유 공간으로 나눠 보여줍니다.",
+        modelBreakdown: "모델별로 나누기",
+        modelBreakdownDescription: "메모리 막대의 Unsloth 부분을 로드된 각 모델과 나머지 앱으로 나눠 보여줍니다.",
       },
       gpu: {
         title: "GPU 장치",
@@ -2560,7 +2605,7 @@ export const ko = {
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
-        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noGpu: "전용 GPU가 감지되지 않았습니다.",
         noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
         mismatchCpuBuild:
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
@@ -2636,7 +2681,7 @@ export const ko = {
           "llama.cpp backend gguf 추론 cuda rocm hip vulkan metal cpu gpu 가속기 prebuilt 전환 엔진",
       },
       modelMemory: {
-        title: "모델 메모리",
+        title: "모델 로딩",
         keepResident: "모델을 GPU 메모리에 유지",
         keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
         keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고, 가중치가 실제로 호스트 RAM에 있는 경우(통합 메모리 또는 부분 GPU 오프로드)에는 --mlock도 전달하여 운영체제가 가중치를 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
@@ -2819,7 +2864,7 @@ export const ko = {
       configurationDocs: "문서를",
       configurationFlagsSuffix: "참고하세요.",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
+        "Claude Code와 Codex에는 llama-server가 제공하는 GGUF 모델 또는 MLX 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:
@@ -2893,6 +2938,8 @@ export const ko = {
     },
     chat: {
       groups: {
+        replies: { title: "응답" },
+        thinkingTools: { title: "생각과 도구" },
         conversations: { title: "대화" },
         files: { title: "파일 및 붙여넣기" },
         display: { title: "표시" },
@@ -2975,17 +3022,26 @@ export const ko = {
       showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
       showReplyTimesKeywords:
         "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
-      showGenerationDetails: "생성 세부 정보",
+      showGenerationDetails: "자세한 속도 및 로딩 정보",
       showGenerationDetailsDescription:
-        "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
+        "실시간 표시에 프롬프트 읽기 속도, 토큰 수, 초안 채택률을 더하고 모델 레이어가 로드된 위치를 보여 줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "속도 및 컨텍스트 통계",
+      generationStatsUpdatesDescription:
+        "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",
+      generationStatsUpdatesHint:
+        "실시간은 응답이 작성되는 동안 응답 아래의 초당 토큰 표시와 채팅 상단의 컨텍스트 막대를 초당 몇 번씩 새로 고칩니다. 완료 시는 각 응답이 끝난 뒤 한 번만 업데이트합니다. 실시간은 특히 오래되었거나 바쁜 기기에서 지연이나 성능 저하를 일으킬 수 있습니다.",
+      generationStatsUpdatesSettled: "완료 시",
+      generationStatsUpdatesRealtime: "실시간",
+      generationStatsUpdatesKeywords:
+        "실시간 라이브 업데이트 속도 컨텍스트 통계 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
       turnNavigationDescription: "긴 채팅의 왼쪽 가장자리에 내 메시지를 레일로 표시합니다. 마우스를 올리면 미리보기, 클릭하면 해당 턴으로 이동하고, 북마크로 다시 찾을 수 있습니다.",
-      composerAtBottom: "입력창을 아래에",
-      composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
+      composerPosition: "입력창 위치",
+      composerPositionDescription: "새 채팅을 시작할 때 입력창이 놓일 위치를 페이지 위쪽부터 아래쪽까지 조절합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
@@ -3453,6 +3509,9 @@ export const ko = {
         docs: "문서",
         docsLabel: "판단 API 문서 열기",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        codeTitle: "코드에서 호출",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "다른 MCP 클라이언트는 같은 토큰으로 여기에 연결합니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
         enableRemoteDescription: "/v1/systemone을 제공합니다.",
@@ -3606,7 +3665,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "앱이 이미 실행 중인 Unsloth 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
+          "이 앱이 시작하지 않은 포트 {port}의 Unsloth 서버(예: 터미널의 `unsloth studio`)에 연결되어 있습니다. 서버를 시작한 곳에서 중지한 다음 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -3920,8 +3979,6 @@ export const ko = {
             "이 데이터셋에는 이미지가 포함된 것으로 보여 스트리밍할 수 없습니다.",
           audioDataset:
             "이 데이터셋에는 오디오가 포함된 것으로 보여 스트리밍할 수 없습니다.",
-          appleSilicon:
-            "Apple Silicon(MLX)에서는 아직 스트리밍을 지원하지 않습니다.",
         },
         options: {
           trainOnCompletions: "어시스턴트 응답만",
@@ -5091,6 +5148,8 @@ export const ko = {
     removeLevel: "수준 {n} 삭제",
     addLevel: "수준 추가",
     jsonHelp: "요청 본문입니다. 실행하면 그대로 전송됩니다.",
+    copyBody: "본문 복사",
+    copyCurl: "cURL로 복사",
     examples: "예시",
     presetToolApproval: "에이전트 도구 호출 승인",
     presetPromptInjection: "프롬프트 인젝션 탐지",
@@ -5148,6 +5207,7 @@ export const ko = {
     monitor: {
       dragHandleLabel: "실시간 모니터를 이동합니다. 방향키로 조금씩 움직이고, 더블클릭하면 위치가 초기화됩니다.",
       reconnecting: "다시 연결하는 중...",
+      resizeHint: "옆면이나 모서리를 끌어 너비를 조절하세요. 두 번 클릭하면 초기화됩니다.",
     },
   },
   projectsPage: {
@@ -5454,7 +5514,7 @@ export const ko = {
     skippedVersion: "{component} {version}을(를) 이번에는 건너뛰었습니다",
     skippedUpdate: "{component} 업데이트를 이번에는 건너뛰었습니다",
     skippedUpdates: "{components} 업데이트를 이번에는 건너뛰었습니다",
-    vulkanFaster: "Vulkan이 ROCM보다 10% 이상 빠릅니다. 다시 시작할 필요 없음",
+    vulkanFaster: "10% 이상 빠름",
     noRestart: "다시 시작할 필요 없음",
     downloadSize: "{size} 다운로드",
     backendChange: "{change} 백엔드",
@@ -5463,8 +5523,8 @@ export const ko = {
     installingPhase: "{component} 설치 중 ({current}/{total})...",
     installingCount: "업데이트 {count}개 설치 중...",
     bundleTitle: "런타임 업데이트 {count}개",
-    newBackend: "새 {component} 백엔드",
-    newUpdate: "새 {component} 업데이트",
+    newBackend: "새 런타임 백엔드",
+    newUpdate: "새 런타임 업데이트",
     hideUpdate: "Unsloth를 다시 열 때까지 {component} 업데이트 숨기기",
     hideUpdates: "Unsloth를 다시 열 때까지 {components} 업데이트 숨기기",
     whatsNew: "새로운 기능",
@@ -5476,6 +5536,7 @@ export const ko = {
   generationStats: {
     working: "처리 중...",
     processingPrompt: "프롬프트 처리 중 {percent}%",
+    compactingContext: "컨텍스트 압축 중...",
     timeLeft: "{eta} 남음",
     tokensOne: "토큰 {count}개",
     tokens: "토큰 {count}개",

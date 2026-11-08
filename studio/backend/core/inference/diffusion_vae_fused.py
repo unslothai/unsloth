@@ -55,6 +55,11 @@ _SHAPE_ARGS = {
     "_bias_residual": ("P", "T", "HW", "W"),
     "_dup_up_add": ("T_o", "H_o", "W_o", "t_off"),
     "_up_nearest2x": ("T_o", "H", "W"),
+    "_gn_partials": ("T", "HW", "W", "n_chunks"),
+    "_gn_combine": ("n_chunks",),
+    "_gn_apply": ("T", "HW", "W"),
+    "_softmax_rows": ("S",),
+    "_dcae_up_add": ("F", "H", "W", "Fo"),
 }
 
 
@@ -67,7 +72,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         return None
     globals().update(triton = triton, tl = tl)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_partials"])
     def _gn_partials(
         x_ptr, bias_ptr, pn_ptr, pmean_ptr, pm2_ptr,
         T, HW, W, n_chunks, sb, sc, st, sh, sw,
@@ -104,7 +109,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pm2_ptr + slot * G + g, m2)
         tl.store(pn_ptr + slot, n_pix * CPG)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_combine"])
     def _gn_combine(
         pn_ptr,
         pmean_ptr,
@@ -142,7 +147,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(mean_ptr + row, mean)
         tl.store(rstd_ptr + row, 1.0 / tl.sqrt(acc_m2 / acc_n + eps))
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_gn_apply"])
     def _gn_apply(
         x_ptr, out_ptr, mean_ptr, rstd_ptr, w_ptr, b_ptr, ib_ptr,
         C, T, HW, W, G, sb, sc, st, sh, sw,
@@ -288,7 +293,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             o = o * inv_scale
         tl.store(o_ptr + o_off, o.to(o_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_dcae_up_add"])
     def _dcae_up_add(
         h_ptr, hb_ptr, x_ptr, out_ptr,
         c, Cin, F, H, W, Fo, rep,
@@ -345,7 +350,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         o_off = (bf.to(tl.int64) * (4 * H * W) + p.to(tl.int64))[:, None] * c + ci[None, :]
         tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = _SHAPE_ARGS["_softmax_rows"])
     def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):  # block size
         row = tl.program_id(0).to(tl.int64)
         base = s_ptr + row * P_STRIDE

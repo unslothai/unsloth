@@ -1714,8 +1714,25 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
         "pin's fixed rem offset and padding into the pr-N units the row's gutters are in, and "
         "the two sides of every comparison below would be in different scales"
     )
+    # The open-menu / focused-action gutters key on the row's own later sibling,
+    # `[&:has(~.sidebar-row-action...)]:pr-N`, instead of a `group-has-*/<variant>` class (a style
+    # after a :has() restyles the whole thread). They carry no variant name, so read the variant
+    # from the branch that renders them, `variant === "project"`, and name it the way the
+    # group-scoped classes did, so every check below still knows which row it is reading.
+    sibling_gutter = re.compile(r"\[&:has\(~\.sidebar-row-action[^\s]*\)\]:(pr-\d+(?:\.\d+)?)")
+
+    def _named_variant(constraints: dict[str, bool], cls: str) -> str:
+        match = sibling_gutter.fullmatch(cls)
+        project = constraints.get('variant === "project"')
+        if not match or project is None:
+            return cls
+        return f"has-sibling/{'project-chat-item' if project else 'recent-item'}:{match.group(1)}"
+
     rendered = [
-        (constraints, [_as_spacing_units(cls, spacing) for cls in rendering])
+        (
+            constraints,
+            [_as_spacing_units(_named_variant(constraints, cls), spacing) for cls in rendering],
+        )
         for constraints, rendering in _rendered_with_conditions(_cn_arguments(row_classes))
     ]
     renderings = [classes for _, classes in rendered]

@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           disable-sudo: true
@@ -84,6 +84,7 @@ jobs:
             tests/studio/test_backend_ci_parallel_isolation.py \
             tests/studio/test_cache_budget_discipline.py \
             tests/studio/test_cached_paths_hold_no_credentials.py \
+            tests/studio/test_playwright_cache_keys_name_the_os.py \
             tests/studio/test_actions_are_pinned_to_commits.py \
             tests/studio/test_local_actions_are_in_path_filters.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
@@ -151,7 +152,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           disable-sudo: true

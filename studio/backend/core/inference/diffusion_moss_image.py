@@ -334,6 +334,7 @@ def _model_bases():
 
 
 _ModelMixin, _ConfigMixin = _model_bases()
+from diffusers.loaders import PeftAdapterMixin as _PeftAdapterMixin  # noqa: E402  (LoRA: load_lora_adapter)
 from diffusers.configuration_utils import register_to_config  # noqa: E402
 
 
@@ -346,7 +347,7 @@ def _float64_device(device):
     return torch.device("cpu")
 
 
-class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
+class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
     """MOSS-Image DiT: a text refiner, then 42 single-stream joint blocks over [image ; text] sharing one AdaLN.
 
     Each sample runs at its true text length, text refinement included, so padded tokens never reach attention."""
@@ -687,6 +688,47 @@ class MOSSImagePipeline(DiffusionPipeline):
     @property
     def interrupt(self) -> bool:
         return self._interrupt
+
+    # LoRA on the transformer only; diffusion_lora_files folds alpha and splits fused qkv first.
+    def load_lora_weights(
+        self,
+        state_dict,
+        adapter_name: Optional[str] = None,
+        **_kwargs,
+    ):
+        metadata = None
+        if not isinstance(state_dict, dict):
+            from diffusers.utils.state_dict_utils import _load_sft_state_dict_metadata
+            from safetensors.torch import load_file
+
+            # lora_alpha / rank of a diffusers-saved adapter live only in the file's metadata.
+            metadata = _load_sft_state_dict_metadata(str(state_dict))
+            state_dict = load_file(str(state_dict))
+        converted = {}
+        for key, value in state_dict.items():
+            for prefix in ("diffusion_model.", "model.diffusion_model.", "transformer."):
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
+                    break
+            converted["transformer." + key] = value
+        self.transformer.load_lora_adapter(
+            converted, adapter_name = adapter_name, prefix = "transformer", metadata = metadata
+        )
+
+    def set_adapters(
+        self,
+        adapter_names,
+        adapter_weights = None,
+    ):
+        self.transformer.set_adapters(adapter_names, weights = adapter_weights)
+
+    def get_list_adapters(self) -> dict:
+        config = getattr(self.transformer, "peft_config", None) or {}
+        return {"transformer": list(config)} if config else {}
+
+    def unload_lora_weights(self):
+        if getattr(self.transformer, "peft_config", None):
+            self.transformer.unload_lora()
 
     @torch.no_grad()
     def encode_prompt(
@@ -1090,6 +1132,7 @@ def load_moss_image_pipeline(
     check_cancelled: Optional[Callable[[], None]] = None,
     vae_dtype: Any = None,
     checkpoint: Optional[str] = None,
+    vae: Any = None,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
@@ -1125,9 +1168,12 @@ def load_moss_image_pipeline(
         )
         check_cancelled()
     transformer.eval()
-    vae = diffusers.AutoencoderKLFlux2.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
-    )
+    if vae is None:
+        vae = diffusers.AutoencoderKLFlux2.from_pretrained(
+            repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
+        )
+    else:
+        vae = vae.to(vae_dtype or torch.float32)
     check_cancelled()
     scheduler = MOSSImageScheduler.from_pretrained(repo_id, subfolder = "scheduler", **common)
     logger.info("diffusion.moss_image: assembled pipeline from %s per component", repo_id)

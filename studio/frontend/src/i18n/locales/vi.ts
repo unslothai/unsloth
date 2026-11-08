@@ -206,12 +206,16 @@ export const vi = {
         history: "Đang đọc lịch sử duyệt web của bạn",
         move: "Đang di chuyển chuột",
         drag: "Đang kéo",
+        tabs: "Đang xem các thẻ",
+        readFile: "Đang đọc tệp",
+        editFile: "Đang chỉnh sửa tệp",
       },
     },
     title: "Trình duyệt",
     tabs: "Thẻ trình duyệt",
     newTab: "Thẻ mới",
     newTabFullView: "Thẻ mới ở chế độ toàn màn hình",
+    newTabFloating: "Tab mới trong cửa sổ nổi",
     closeTab: "Đóng thẻ",
     close: "Đóng trình duyệt",
     show: "Hiển thị trình duyệt",
@@ -361,6 +365,8 @@ export const vi = {
     askBeforeDownloadingSetting: "Hỏi trước khi tải xuống",
     askBeforeDownloadingSettingDescription:
       "Xác nhận tệp từ trang web trước khi lưu.",
+    askBeforeProgramDownloadsSetting: "Hỏi trước khi tải xuống chương trình",
+    askBeforeProgramDownloadsSettingDescription: "Xác nhận các tệp có thể chạy chương trình, như .exe hoặc .dmg, ngay cả khi các lượt tải xuống khác không hỏi.",
     downloadSitesSetting: "Quyền tải xuống của trang web",
     downloadSitesSettingDescription:
       "Các trang web bạn đã chọn luôn cho phép hoặc luôn chặn tải xuống.",
@@ -369,6 +375,7 @@ export const vi = {
     downloadSitesFor: "Tải xuống từ {host}",
     downloadSitesRemove: "Quên {host}",
     downloadSiteAllow: "Luôn cho phép",
+    downloadSiteAllowAll: "Cho phép cả chương trình",
     downloadSiteBlock: "Luôn chặn",
     downloadPrompt: {
       title: "Tải xuống tệp này?",
@@ -376,6 +383,9 @@ export const vi = {
       dangerous:
         "Những tệp như thế này có thể chạy chương trình trên máy tính của bạn. Chỉ tải xuống nếu bạn tin tưởng {host}.",
       remember: "Ghi nhớ cho lần sau",
+      once: "Hỏi vào lần sau",
+      site: "Luôn cho {host}",
+      all: "Luôn tải xuống, từ mọi trang",
       cancel: "Hủy",
       download: "Tải xuống",
       blocked: "Đã chặn một lượt tải xuống từ {host}.",
@@ -424,6 +434,12 @@ export const vi = {
       openChat: "Mở ở chế độ toàn màn hình",
       moveLeft: "Chuyển sang ngăn trái",
       moveRight: "Chuyển sang ngăn phải",
+    },
+    floating: {
+      enter: "Cửa sổ nổi",
+      dock: "Ghim sang bên",
+      close: "Đóng cửa sổ nổi",
+      handle: "Di chuyển cửa sổ. Phím mũi tên di chuyển; Shift và phím mũi tên đổi kích thước.",
     },
     annotate: {
       countOne: "1 chú thích",
@@ -877,6 +893,8 @@ export const vi = {
     unifiedTightFit: "Sát giới hạn",
     unifiedTightFitHint:
       "Có thể được nạp với ngữ cảnh ngắn hơn hoặc chạy chậm hơn trên máy Mac này.",
+    residentToRun: "để chạy",
+    residentToRunHint: "Bộ nhớ GPU mà bước kiểm tra tải yêu cầu khi chạy",
     onDevice: "Trên thiết bị",
     huggingFace: "Hugging Face",
     retry: "Thử lại",
@@ -1197,6 +1215,9 @@ export const vi = {
         "Mỗi dòng một mô hình, ví dụ unsloth/Qwen3-4B-GGUF, hoặc unsloth/* cho cả một tổ chức. Để trống để cho phép mọi mô hình.",
       modelAccessSave: "Lưu",
       modelAccessLimited: "Quyền truy cập mô hình bị giới hạn",
+      rename: "Đổi tên",
+      renameTitle: "Đổi tên {username}",
+      renameDescription: "Chọn tên mà tài khoản này dùng để đăng nhập. Các cuộc trò chuyện, tệp và khóa API vẫn ở trong tài khoản. Người dùng sẽ bị đăng xuất và đăng nhập lại bằng tên mới cùng mật khẩu hiện tại.",
       empty: "Chưa có tài khoản nào khác",
       setupCode: "Mã thiết lập",
       setupFor: "Mã thiết lập cho {username}",
@@ -2288,6 +2309,12 @@ export const vi = {
           "Chọn theo từng máy và chuyển sang HTTPS nếu Xet bị đứng hoặc lỗi ở đây.",
         autoCurrently: "Tự động đang dùng {transport} trên máy này.",
         xetMissing: "Xet không khả dụng vì chưa cài đặt hf_xet.",
+        speedLimit: "Giới hạn tốc độ tải xuống",
+        speedLimitDescription:
+          "Không giới hạn trừ khi đặt một giá trị. Tải xuống bị giới hạn dùng HTTPS.",
+        speedLimitNoLimit: "Không giới hạn",
+        speedLimitInvalid: "Nhập một số Mbit/s hoặc để trống.",
+        speedLimitUsesHttps: "Khi đặt giới hạn tốc độ, các lượt tải xuống dùng HTTPS. Các tệp trên 50 GB vẫn dùng Xet, không bị giới hạn.",
       },
       uploads: {
         sectionTitle: "Tải lên",
@@ -2678,6 +2705,10 @@ export const vi = {
         contrast: {
           label: "Độ tương phản",
         },
+        elementOutline: {
+          label: "Viền phần tử",
+          description: "Độ đậm của viền nút, ô nhập, thẻ và menu.",
+        },
         reduceMotion: {
           label: "Giảm chuyển động",
           description: "Giảm hiệu ứng động hoặc theo hệ thống.",
@@ -2738,7 +2769,22 @@ export const vi = {
           "Xem những gì các ứng dụng khác gửi tới API của máy chủ này ngay khi đến.",
         summary: "Yêu cầu trực tiếp, lỗi và mức sử dụng token",
         status: "{active} đang hoạt động · {recent} gần đây · {model}",
-        noModelLoaded: "chưa nạp mô hình",
+        noModelLoaded: "Chưa nạp mô hình",
+        memory: "Bộ nhớ",
+        gpuInUse: "GPU đang dùng",
+        availableForModels: "Còn trống cho mô hình",
+        refreshRate: "Tần suất làm mới",
+        refreshRateDescription: "Tần suất màn hình nổi đọc mức dùng bộ nhớ và GPU khi đang mở.",
+        refreshEvery: "Mỗi {seconds} giây",
+        unsloth: "Unsloth",
+        otherApps: "Ứng dụng khác",
+        otherInUse: "Đang dùng khác",
+        freeLabel: "Trống",
+        unslothApp: "Ứng dụng Unsloth",
+        unslothShare: "Hiện phần của Unsloth",
+        unslothShareDescription: "Chia bộ nhớ thành phần Unsloth dùng, phần các ứng dụng khác dùng và phần còn trống.",
+        modelBreakdown: "Chia theo mô hình",
+        modelBreakdownDescription: "Chia phần của Unsloth trên thanh bộ nhớ thành từng mô hình đã tải và phần còn lại của ứng dụng.",
         autoOpen: "Tự động mở trình giám sát nổi",
         autoOpenDescription: "Mở một bảng nhỏ khi có lưu lượng API.",
         cpu: "CPU",
@@ -2754,8 +2800,7 @@ export const vi = {
         gpuUnusableDetail: "Đã phát hiện nhưng PyTorch không thể sử dụng",
         detailedView: "Chế độ xem chi tiết",
         detailedViewDescription:
-          "Hiển thị tải CPU cùng tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
-        cpuLoad: "Tải CPU",
+          "Hiển thị tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
         gpuLoad: "Tải GPU",
         temperature: "Nhiệt độ",
         power: "Công suất",
@@ -2772,7 +2817,7 @@ export const vi = {
         detecting: "Đang kiểm tra GPU...",
         unreadable: "Không thể đọc thông tin phần cứng của máy chủ này.",
         noGpu:
-          "Không phát hiện GPU nào. Tài nguyên chỉ dành cho CPU được hiển thị ở trên.",
+          "Không phát hiện GPU rời.",
         noUsableGpu: "Không có GPU nào trên máy này mà PyTorch có thể sử dụng.",
         mismatchCpuBuild:
           "PyTorch là bản dựng chỉ dành cho CPU ({version}), nên không thể dùng các GPU bên dưới. Hãy sửa chữa bản cài đặt để khôi phục hỗ trợ GPU.",
@@ -2859,7 +2904,7 @@ export const vi = {
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary suy luận tăng tốc chuyển đổi công cụ tùy chỉnh đường dẫn thư mục tệp thực thi",
       },
       modelMemory: {
-        title: "Bộ nhớ mô hình",
+        title: "Tải mô hình",
         keepResident: "Giữ mô hình trong bộ nhớ GPU",
         keepResidentDescription: "Giữ trong VRAM giữa các lời nhắc.",
         keepResidentHint:
@@ -3057,7 +3102,7 @@ export const vi = {
       configurationDocs: "tài liệu",
       configurationFlagsSuffix: "để biết các cờ.",
       modelNote:
-        "Codex yêu cầu mô hình GGUF do llama-server phục vụ. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
+        "Claude Code và Codex yêu cầu mô hình GGUF do llama-server phục vụ, hoặc mô hình MLX. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
       subagent: {
         title: "Dùng mô hình cục bộ làm tác tử phụ",
         description:
@@ -3131,6 +3176,8 @@ export const vi = {
     },
     chat: {
       groups: {
+        replies: { title: "Phản hồi" },
+        thinkingTools: { title: "Suy nghĩ và công cụ" },
         conversations: {
           title: "Cuộc trò chuyện",
         },
@@ -3230,19 +3277,27 @@ export const vi = {
         "Hiển thị thời điểm mỗi câu trả lời hoàn tất, bên dưới câu trả lời.",
       showReplyTimesKeywords:
         "timestamp time clock date hour when finished arrived reply response message dấu thời gian giờ ngày hoàn tất trả lời tin nhắn",
-      showGenerationDetails: "Chi tiết quá trình tạo",
+      showGenerationDetails: "Thông tin chi tiết về tốc độ và tải",
       showGenerationDetailsDescription:
-        "Hiển thị trực tiếp tốc độ xử lý lời nhắc và tốc độ trả lời kèm số token, cùng vị trí nạp các lớp của mô hình.",
+        "Thêm tốc độ đọc lời nhắc, số token và tỷ lệ chấp nhận bản nháp vào chỉ số trực tiếp, và cho biết các lớp của mô hình được tải ở đâu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+      generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
+      generationStatsUpdatesDescription:
+        "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",
+      generationStatsUpdatesHint:
+        "Thời gian thực làm mới chỉ số token mỗi giây dưới phản hồi và thanh ngữ cảnh ở đầu cuộc trò chuyện vài lần mỗi giây trong khi phản hồi đang được viết. Khi xong cập nhật chúng một lần, sau khi mỗi phản hồi kết thúc. Thời gian thực có thể gây giật hoặc giảm hiệu năng, nhất là trên máy cũ hoặc đang bận.",
+      generationStatsUpdatesSettled: "Khi xong",
+      generationStatsUpdatesRealtime: "Thời gian thực",
+      generationStatsUpdatesKeywords:
+        "thời gian thực trực tiếp cập nhật tốc độ ngữ cảnh thống kê realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
       turnNavigation: "Điều hướng lượt",
       turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",
@@ -3756,6 +3811,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -3918,7 +3976,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -4231,8 +4289,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",
@@ -5493,6 +5549,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",
@@ -5554,6 +5612,7 @@ export const vi = {
     monitor: {
       dragHandleLabel:
         "Di chuyển bảng giám sát trực tiếp. Phím mũi tên để dịch chuyển nhẹ, nhấp đúp để đặt lại.",
+      resizeHint: "Kéo một cạnh hoặc góc để đổi chiều rộng. Nhấp đúp để đặt lại.",
       reconnecting: "Đang kết nối lại...",
     },
   },
@@ -5872,7 +5931,7 @@ export const vi = {
     skippedVersion: "Tạm thời bỏ qua {component} {version}",
     skippedUpdate: "Tạm thời bỏ qua bản cập nhật {component}",
     skippedUpdates: "Tạm thời bỏ qua các bản cập nhật {components}",
-    vulkanFaster: "Vulkan nhanh hơn ROCM trên 10%. Không cần khởi động lại",
+    vulkanFaster: "Nhanh hơn trên 10%",
     noRestart: "Không cần khởi động lại",
     downloadSize: "Dung lượng tải xuống {size}",
     backendChange: "Backend {change}",
@@ -5881,8 +5940,8 @@ export const vi = {
     installingPhase: "Đang cài đặt {component} ({current} trên {total})...",
     installingCount: "Đang cài đặt {count} bản cập nhật...",
     bundleTitle: "{count} bản cập nhật runtime",
-    newBackend: "Backend {component} mới",
-    newUpdate: "Bản cập nhật {component} mới",
+    newBackend: "Backend runtime mới",
+    newUpdate: "Bản cập nhật runtime mới",
     hideUpdate: "Ẩn bản cập nhật {component} cho đến khi mở lại Unsloth",
     hideUpdates: "Ẩn các bản cập nhật {components} cho đến khi mở lại Unsloth",
     whatsNew: "Có gì mới",
@@ -5894,6 +5953,7 @@ export const vi = {
   generationStats: {
     working: "Đang xử lý...",
     processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
     timeLeft: "còn {eta}",
     tokensOne: "{count} token",
     tokens: "{count} token",

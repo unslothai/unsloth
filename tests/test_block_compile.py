@@ -1840,3 +1840,116 @@ def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
     for kwargs in seen:
         assert kwargs["isolate_recompiles"] is True
         assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48
+
+
+def test_shared_kv_writer_recompute_reuses_the_forward_graph(monkeypatch):
+    """Gemma-4 E2B: recompute saw `shared_kv_states` filled and compiled a second graph (CheckpointError)."""
+    from collections import UserDict
+    from torch._dynamo.testing import CompileCounter
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class Attn(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.store_full_length_kv, self.is_kv_shared_layer = store, shared
+            self.q = torch.nn.Linear(8, 8)
+            self.k = torch.nn.Linear(8, 8)
+
+        def forward(self, x, shared_kv_states):
+            if self.is_kv_shared_layer:
+                k = shared_kv_states["sliding"]
+            else:
+                k = self.k(x)
+            if self.store_full_length_kv:
+                shared_kv_states["sliding"] = k
+            return self.q(x) * k
+
+    class KvDecoderLayer(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.self_attn = Attn(store, shared)
+
+        def forward(
+            self,
+            hidden_states,
+            shared_kv_states = None,
+            **kwargs,
+        ):
+            return hidden_states + self.self_attn(hidden_states, shared_kv_states)
+
+    torch.manual_seed(0)
+    layers = [
+        KvDecoderLayer(False, False),
+        KvDecoderLayer(True, False),
+        KvDecoderLayer(False, True),
+    ]
+    stock = [KvDecoderLayer(False, False), KvDecoderLayer(True, False), KvDecoderLayer(False, True)]
+    for a, b in zip(stock, layers):
+        b.load_state_dict(a.state_dict())
+    M._wrap(KvDecoderLayer, {})
+    for layer in layers + stock:
+        layer.train()
+    for layer in stock:
+        layer.__dict__["_unsloth_block_mode"] = M._OFF
+
+    def step(stack, x):
+        shared = UserDict()
+        h = x
+        for layer in stack:
+            h = checkpoint(layer, h, shared_kv_states = shared, use_reentrant = False)
+        return h, shared
+
+    x = torch.randn(2, 5, 8)
+    ref, ref_shared = step(stock, x)
+    ref.sum().backward()
+    out, shared = step(layers, x)
+    forward_frames = counter.frame_count
+    out.sum().backward()
+    recompute_frames = counter.frame_count - forward_frames
+    torch._dynamo.reset()
+    assert recompute_frames == 0
+    assert list(shared.keys()) == ["sliding"]
+    torch.testing.assert_close(out, ref)
+    for a, b in zip(stock, layers):
+        for pa, pb in zip(a.parameters(), b.parameters()):
+            torch.testing.assert_close(pa.grad, pb.grad)
+
+
+def test_parametrized_class_is_reused_per_module(monkeypatch):
+    """PEFT's ParamWrapper registers a parametrization per forward: each module keeps one
+    Parametrized<Class> (a stable type id for Dynamo), and two modules never share one."""
+    from torch.nn.utils import parametrize
+
+    monkeypatch.setattr(parametrize, "_inject_new_class", parametrize._inject_new_class)
+    bc = _load()
+    bc._stable_parametrized_classes()
+    bc._stable_parametrized_classes()  # idempotent
+
+    class Double(torch.nn.Module):
+        def forward(self, w):
+            return 2 * w
+
+    a, b = torch.nn.Linear(3, 3), torch.nn.Linear(3, 3)
+    seen = []
+    for _ in range(3):
+        parametrize.register_parametrization(a, "weight", Double())
+        seen.append(type(a))
+        expected = 2 * a.parametrizations["weight"].original
+        assert torch.equal(a.weight, expected)
+        parametrize.remove_parametrizations(a, "weight", leave_parametrized = False)
+        assert type(a) is torch.nn.Linear and "weight" in a._parameters
+    assert seen[0] is seen[1] is seen[2] and seen[0] is not torch.nn.Linear
+    parametrize.register_parametrization(b, "weight", Double())
+    assert type(b) is not seen[0] and torch.equal(
+        b.weight, 2 * b.parametrizations["weight"].original
+    )

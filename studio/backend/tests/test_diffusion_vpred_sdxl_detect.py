@@ -672,10 +672,16 @@ def test_a_recorded_marker_read_is_per_snapshot_commit(hub_cache, monkeypatch):
     other.mkdir()
     # Another commit of the repo was never read: its shipped config stands offline.
     assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(other), NOOB, None, False) == {}
-    # An online read that finds no markers replaces the record, so an eps re-release stays eps offline.
-    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, [])
-    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == {}
-    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, False) == {}
+    # A commit is immutable: a later online load of the same snapshot answers from the record, no Hub call.
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS, seen)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(snap), NOOB, None, True) == VPRED
+    assert seen == []
+    # A re-release is a new commit: read online, recorded under its own key.
+    newer = _staged_snapshot(hub_cache, commit = "e" * 40)
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(newer), NOOB, None, True) == {}
+    assert seen == ["list", "header"]
+    assert pipeline_prediction_overrides(NOOB_SCHEDULER, str(newer), NOOB, None, False) == {}
 
 
 def test_an_unrecorded_cache_only_load_keeps_the_shipped_config(hub_cache, monkeypatch):
@@ -886,3 +892,139 @@ def test_concurrent_marker_records_keep_every_entry(hub_cache, monkeypatch):
     b.join(5)
     record = json.loads(sampler._marks_record_path().read_text(encoding = "utf-8"))
     assert {sampler._marks_key(NOOB, "a" * 40), sampler._marks_key(NOOB, "b" * 40)} <= set(record)
+
+
+def test_the_root_headers_are_read_side_by_side_in_name_order(hub_cache, monkeypatch):
+    import threading
+    import time
+
+    import huggingface_hub
+
+    snap = _staged_snapshot(hub_cache)
+    names = ["a.safetensors", "b.safetensors", "c.safetensors"]
+    active, peak = [0], [0]
+    lock = threading.Lock()
+
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
+        return ["model_index.json", *names]
+
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        with lock:
+            active[0] -= 1
+        keys = ["v_pred", "ztsnr"] if filename == "c.safetensors" else []
+        return types.SimpleNamespace(tensors = {k: None for k in keys}, metadata = {})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "list_repo_files", files)
+    monkeypatch.setattr(huggingface_hub.HfApi, "parse_safetensors_file_metadata", parse)
+    from core.inference import diffusion_sampler as smp
+
+    marks = smp._root_single_marks(str(snap), NOOB, None, True)
+    assert peak[0] > 1
+    # Results stay in name order: only the last file carries the markers.
+    assert [bool(m) for m in marks] == [False, False, True]
+
+
+def test_the_overlapped_marker_read_matches_the_inline_one(hub_cache, monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_sampler as smp
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    future = smp.start_root_single_marks(str(snap), NOOB, None, True)
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert smp.apply_pipeline_prediction_type(
+        pipe, str(snap), repo_id = NOOB, allow_network = True, marks_future = future
+    )
+    assert seen == ["list", "header"]
+    assert pipe.scheduler.config.prediction_type == "v_prediction"
+
+
+def test_a_failed_overlapped_read_is_read_again_inline(hub_cache, monkeypatch):
+    from concurrent.futures import Future
+
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_sampler as smp
+
+    snap = _staged_snapshot(hub_cache)
+    seen = []
+    _stub_noob_hub(monkeypatch, SDXL_UNET_KEYS + ["v_pred", "ztsnr"], seen)
+    failed: Future = Future()
+    failed.set_exception(RuntimeError("thread died"))
+    pipe = types.SimpleNamespace(
+        scheduler = diffusers.EulerDiscreteScheduler.from_config(NOOB_SCHEDULER)
+    )
+    assert smp.apply_pipeline_prediction_type(
+        pipe, str(snap), repo_id = NOOB, allow_network = True, marks_future = failed
+    )
+    assert seen == ["list", "header"]
+
+
+def test_the_load_starts_the_marker_read_before_the_weights():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    starts = [
+        c.lineno
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "start_root_single_marks"
+    ]
+    loads = [
+        c.lineno
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call)
+        and isinstance(c.func, ast.Attribute)
+        and c.func.attr == "from_pretrained"
+        and getattr(c.func.value, "id", None) == "pipeline_cls"
+    ]
+    applies = [
+        c
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
+    ]
+    assert len(starts) == 1 and any(starts[0] < line < starts[0] + 20 for line in loads)
+    assert "marks_future" in {k.arg for k in applies[0].keywords}
+
+
+def test_the_marker_read_overlaps_only_a_staged_snapshot():
+    # A Hub id resolves its revision inside from_pretrained: an early read could take refs/main's older commit while
+    # the load downloads a newer one, so the overlap is gated on the staged, commit-pinned snapshot dir.
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.IfExp)
+        and isinstance(node.body, ast.Call)
+        and getattr(node.body.func, "id", None) == "start_root_single_marks"
+    ]
+    assert len(calls) == 1
+    gate = ast.unparse(calls[0].test)
+    assert "_base_local_dir" in gate
+    first = calls[0].body.args[0]
+    assert ast.unparse(first) == "_base_local_dir"
