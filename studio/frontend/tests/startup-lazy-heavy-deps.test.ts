@@ -40,3 +40,7 @@ test("mermaid is only imported dynamically", () => {
 test("the training barrel does not re-export the YAML helpers", () => {
   assert.doesNotMatch(readSrc("features/training/index.ts"), /from\s+["']\.\/lib\/yaml-config["']/);
 });
+
+test("the chat model runtime is only imported dynamically outside the chat feature", () => {
+  assert.deepEqual(staticValueImporters("@/features/chat/hooks/use-chat-model-runtime"), []);
+});

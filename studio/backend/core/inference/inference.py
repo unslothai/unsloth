@@ -40,6 +40,7 @@ from core.inference.runtime_context import (
 )
 from core.inference.message_content import content_to_text, named_turn
 from core.inference.model_ids import is_deepseek_ocr
+from core.inference.lfm3_conv_fallback import disable_lfm3_triton_conv_where_unsupported
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
@@ -1377,6 +1378,9 @@ class InferenceBackend:
                     )
 
                 raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+                disable_lfm3_triton_conv_where_unsupported(
+                    self.models[model_name]["model"], torch, logger
+                )
                 self.models[model_name]["context_length"] = runtime_context_length(
                     self.models[model_name].get("model"),
                     max_seq_length,
@@ -1566,6 +1570,9 @@ class InferenceBackend:
                 )
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
+            disable_lfm3_triton_conv_where_unsupported(
+                self.models[model_name]["model"], torch, logger
+            )
             self.models[model_name]["context_length"] = runtime_context_length(
                 self.models[model_name].get("model"),
                 max_seq_length,

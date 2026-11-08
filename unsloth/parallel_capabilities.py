@@ -655,6 +655,7 @@ _PARITY = _GLOO + "test_cp_x_tp_from_unsloth_parallel_matches_one_process"
 _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
+_HYBRID_FSDP2_CP = _GLOO + "test_hybrid_qwen3_5_cp_with_native_fsdp2_matches_one_process"
 _MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
 # Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
@@ -694,6 +695,26 @@ CELLS = (
         compile = "eager: no compiled region",
         note = _UNSLOTH_GC
         + "test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process",
+    ),
+    Cell(
+        "hybrid (Gated DeltaNet + attention) cp x native FSDP2 (dp_shard x cp), eager",
+        {
+            **_CP_DP,
+            "family": ("qwen3_5",),
+            "hybrid": (True,),
+            "attention": ("sdpa",),
+            "memory": ("none",),
+            "fsdp2": (True,),
+            "compile": ("eager",),
+            "dp": (2,),
+            "cp": (2,),
+        },
+        parity = _HYBRID_FSDP2_CP,
+        engagement = _HYBRID_FSDP2_CP
+        + " (FSDP2 mesh covers the cp group, seq / cp tokens, Gated DeltaNet and attention Ulysses exchanges, "
+        "UNSLOTH_PARALLEL_STRICT=1)",
+        compile = "eager: no compiled region",
+        note = "cp alone: " + _GLOO + "test_hybrid_qwen3_5_under_cp_matches_one_process",
     ),
     Cell(
         "cp x tp (DDP dp), eager",
@@ -793,6 +814,8 @@ MOE_FAMILIES = (
     "gpt_oss",
     "deepseek_v3",
     "kimi_linear",
+    "minimax",
+    "minimax_m2",
     "olmoe",
     "mixtral",
     "qwen2_moe",
@@ -850,6 +873,17 @@ _MOE_COMPILE = _GLOO + "test_moe_block_compile_under_cp_is_compile_clean"
 _MOE_CP_GC = "test_moe_under_cp_with_unsloth_checkpointing_matches_one_process"
 _MOE_CP_GC_COMPILE = "test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean"
 _MOE_PP = "tests/test_pp_moe_aux_gloo.py::test_pp2_moe_aux_matches_gradient_accumulation"
+# Kimi-Linear (remote code): KDA + MLA layers and the hub MoE block / gate under Unsloth's shim, right padded rows,
+# fp64 against one process, the idle-expert hook and one AdamW step. HF checkpointing only (no Unsloth checkpoint run).
+_KIMI_MOE = "tests/test_ulysses_kimi.py::test_kimi_moe_under_ulysses_matches_one_process"
+_KIMI_EAGER = "eager: remote code, no compiled region"
+# MiniMax (transformers' MiniMaxForCausalLM / MiniMaxM2ForCausalLM, fused experts): M1 Lightning + full attention
+# layers, M2 full attention through the generic route, the MoE block with routed / unrouted experts, right padded
+# rows, fp64 against one process, every gradient and one AdamW step. HF checkpointing only.
+_MINIMAX = "tests/test_ulysses_minimax_parity.py::test_minimax_model_matches_upstream"
+_MINIMAX_EAGER = "eager: block compile not measured for this family"
+# Families whose cp rows also ran Unsloth's checkpoint (path A and B); the others match HF checkpointing only.
+_MOE_UNSLOTH_GC_FAMILIES = ("qwen3_moe",)
 # (family, precision, aux, mode) -> (parity, engagement, compile) for the rows a test proves.
 _MOE_EVIDENCE = {
     ("qwen3_moe", "lora+experts", False, "ddp"): (_MOE_TEST + "[lora-ddp]",) * 2
@@ -880,6 +914,44 @@ _MOE_EVIDENCE = {
     + ("eager: no compiled region",),
     ("qwen3_moe", "lora+experts", False, "pp"): (_MOE_PP + "[lora_aux_off_1f1b_mask]",) * 2
     + ("eager: no compiled region",),
+    ("kimi_linear", "full", False, "cp"): (_KIMI_MOE + "[full-sdpa-cp2|full-eager-gc-dp2xcp2]",) * 2
+    + (_KIMI_EAGER,),
+    ("kimi_linear", "lora", False, "cp"): (_KIMI_MOE + "[lora-eager-gc-cp2]",) * 2 + (_KIMI_EAGER,),
+    ("kimi_linear", "lora+experts", False, "cp"): (
+        _KIMI_MOE + "[lora_experts-sdpa-gc-cp2|lora_experts-eager-cp2]",
+    )
+    * 2
+    + (_KIMI_EAGER,),
+    ("minimax", "full", False, "cp"): (
+        _MINIMAX + "[m1_cp2|m1_cp4|m1_dp2_cp2|m1_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora|m1_cp2_lora_checkpoint|m1_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m1_cp2_lora_experts|m1_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "full", False, "cp"): (
+        _MINIMAX + "[m2_cp2|m2_cp4_gqa|m2_dp2_cp2|m2_cp2_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora|m2_cp2_lora_reentrant|m2_cp2_lora_eager]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
+    ("minimax_m2", "lora+experts", False, "cp"): (
+        _MINIMAX + "[m2_cp2_lora_experts|m2_dp2_cp2_lora_experts_eager_checkpoint]",
+    )
+    * 2
+    + (_MINIMAX_EAGER,),
 }
 
 
@@ -939,7 +1011,7 @@ def _moe_cells():
                     name = f"MoE {family} x {precision} x aux {'on' if aux else 'off'} x {mode}"
                     if evidence:
                         note = compiled_note = ""
-                        if mode in ("cp", "fsdp2_cp"):
+                        if mode in ("cp", "fsdp2_cp") and family in _MOE_UNSLOTH_GC_FAMILIES:
                             match = {**match, "memory": _WITH_UNSLOTH_GC}
                             case = f"{precision.split('+')[0]}-{mode}2"  # lora-cp2, lora-fsdp2_cp2, full-cp2
                             note = (
@@ -950,6 +1022,18 @@ def _moe_cells():
                             # No evidence run swapped layers; block swap x tp / pp is its own cell.
                             match = {**match, "block_swap": (False,)}
                         cells.append(Cell(name, match, *evidence, note = note))
+                        if mode in ("cp", "fsdp2_cp") and family not in _MOE_UNSLOTH_GC_FAMILIES:
+                            cells.append(
+                                Cell(
+                                    name + ", Unsloth checkpoint",
+                                    {**match, "memory": ("unsloth_offload",)},
+                                    None,
+                                    None,
+                                    None,
+                                    note = "only HF gradient checkpointing ran under cp for this family; "
+                                    "use_gradient_checkpointing = True (not 'unsloth') runs the measured cell",
+                                )
+                            )
                         if not evidence[2].startswith("eager:"):
                             cells.append(
                                 Cell(
@@ -1245,8 +1329,10 @@ def _low_precision(model) -> Optional[str]:
         for m in model.modules():
             if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
                 return "fp8"
-            cls = type(m)
-            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+            if any(
+                c.__name__ == "Float8Linear" and c.__module__.startswith("torchao.")
+                for c in type(m).__mro__
+            ):
                 return "fp8"
     except Exception:
         pass

@@ -1004,9 +1004,8 @@ def fused_qkv_added_bytes(pipe: Any) -> int:
         return 0
     try:
         import torch
-        from .diffusion_native_quant import is_native_quantised
 
-        if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+        if _quantised_projections(pipe):
             return 0
         if unfused_projections_will_drop(unet):
             return 0  # the fused weights replace the projections they were built from
@@ -2050,15 +2049,29 @@ def _enable_fp16_accumulation(
         return False
 
 
-def _fuse_qkv(pipe: Any, logger: Any) -> bool:
-    from .diffusion_native_quant import is_native_quantised
+def _quantised_projections(pipe: Any) -> bool:
+    """Whether a denoiser keeps native int8 / fp8 or packed nvfp4 / mxfp8 Linears, whose ``.weight`` is a dense
+    widen: diffusers' fuse would concatenate those into a persistent dense ``to_qkv`` beside the compact buffers."""
+    from .diffusion_native_quant import is_native_linear
+    from .diffusion_packed_block import is_packed_block_linear
 
-    # Fusing reads each projection's .weight, which a native layer dequantises: a dense to_qkv beside the int8 buffers.
-    if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+    # the pipe-level fuse reaches any U-Net, not only the whole-compile ones
+    for model in (*_denoiser_dits(pipe), getattr(pipe, "unet", None)):
+        if model is None or not callable(getattr(model, "modules", None)):
+            continue
+        try:
+            if any(is_native_linear(m) or is_packed_block_linear(m) for m in model.modules()):
+                return True
+        except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
+            continue
+    return False
+
+
+def _fuse_qkv(pipe: Any, logger: Any) -> bool:
+    # Fusing reads each projection's .weight, which a quantised layer dequantises: a dense to_qkv beside its buffers.
+    if _quantised_projections(pipe):
         if logger is not None:
-            logger.info(
-                "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
-            )
+            logger.info("diffusion.speed: fuse_qkv skipped (quantised projections stay unfused)")
         return False
     from . import diffusion_lora_quant_merge as lora_quant_merge
 

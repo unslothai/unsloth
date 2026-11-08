@@ -298,6 +298,107 @@ def test_h3_shim_caches_text_only_calls(monkeypatch):
     assert module.get_qwen3vl_prompt_embeds is shim
 
 
+def _h3_stub(monkeypatch):
+    calls = {"n": 0}
+
+    def get_qwen3vl_prompt_embeds(
+        text_encoder,
+        processor,
+        token_ids,
+        vision_inputs = None,
+        text_encoder_layer = 50,
+        device = None,
+        dtype = None,
+    ):
+        calls["n"] += 1
+        seen = sum(float(v.float().sum()) for v in (vision_inputs or {}).values())
+        return torch.full((1, len(token_ids), 3), float(sum(token_ids)) + seen)
+
+    module = types.ModuleType("diffusers.modular_pipelines.minimax_h3.encoders")
+    module.get_qwen3vl_prompt_embeds = get_qwen3vl_prompt_embeds
+    monkeypatch.setitem(sys.modules, "diffusers.modular_pipelines.minimax_h3.encoders", module)
+
+    class _Modular:
+        blocks = ()
+
+        def __init__(self):
+            self.text_encoder = torch.nn.Linear(2, 2)
+
+    pipe = _Modular()
+    assert prompt_cache.install(pipe)
+    return pipe, module.get_qwen3vl_prompt_embeds, calls
+
+
+def _vision(pixels = None, grid = (1, 4, 4)):
+    return {
+        "pixel_values": torch.arange(16 * 6, dtype = torch.float32).reshape(16, 6)
+        if pixels is None
+        else pixels,
+        "image_grid_thw": torch.tensor([list(grid)]),
+    }
+
+
+def test_h3_shim_caches_vision_conditioned_calls_by_content(monkeypatch):
+    pipe, shim, calls = _h3_stub(monkeypatch)
+    te = pipe.text_encoder
+    a = shim(te, None, [1, 2, 3], _vision(), 50, "cpu", torch.float32)
+    # same content in fresh tensors (a new render re-runs the processor)
+    b = shim(te, None, [1, 2, 3], _vision(), 50, "cpu", torch.float32)
+    assert calls["n"] == 1 and torch.equal(a, b) and a.data_ptr() != b.data_ptr()
+    cache = prompt_cache.cache_for(pipe)
+    assert cache.stats["hits"] == 1 and cache.stats["bypassed"] == 0
+
+    changed = _vision()
+    changed["pixel_values"][3, 2] += 1.0
+    c = shim(te, None, [1, 2, 3], changed, 50, "cpu", torch.float32)
+    assert calls["n"] == 2 and not torch.equal(a, c)
+    shim(te, None, [1, 2, 3], _vision(grid = (1, 2, 8)), 50, "cpu", torch.float32)
+    assert calls["n"] == 3
+    half = _vision(pixels = torch.arange(16 * 6, dtype = torch.float32).reshape(16, 6).half())
+    shim(te, None, [1, 2, 3], half, 50, "cpu", torch.float32)
+    assert calls["n"] == 4
+    # pixels only, grid dropped: another key
+    shim(te, None, [1, 2, 3], {"pixel_values": _vision()["pixel_values"]}, 50, "cpu", torch.float32)
+    assert calls["n"] == 5
+    shim(te, None, [1, 2, 3], _vision(), 50, "cpu", torch.float32)
+    assert calls["n"] == 5
+
+
+def test_h3_vision_cache_bypasses_device_tensors_and_the_kill_switch(monkeypatch):
+    pipe, shim, calls = _h3_stub(monkeypatch)
+    te = pipe.text_encoder
+    cache = prompt_cache.cache_for(pipe)
+    on_meta = {"pixel_values": torch.zeros(4, 6, device = "meta")}
+    with pytest.raises(TypeError):
+        prompt_cache._vision_fingerprint(on_meta)
+    with pytest.raises(TypeError):
+        prompt_cache._vision_fingerprint({"pixel_values": [1, 2]})
+
+    monkeypatch.setenv("UNSLOTH_H3_VISION_PROMPT_CACHE", "0")
+    shim(te, None, [1, 2, 3], _vision(), 50, "cpu", torch.float32)
+    shim(te, None, [1, 2, 3], _vision(), 50, "cpu", torch.float32)
+    assert calls["n"] == 2 and cache.stats["bypassed"] == 2
+    # text-only presentations keep caching under the switch
+    shim(te, None, [1, 2, 3], {}, 50, "cpu", torch.float32)
+    shim(te, None, [1, 2, 3], {}, 50, "cpu", torch.float32)
+    assert calls["n"] == 3
+
+
+def test_h3_vision_fingerprint_covers_bfloat16_bytes():
+    x = torch.randn(8, 6).to(torch.bfloat16)
+    y = x.clone()
+    y.view(torch.int16)[0, 0] ^= 1
+    assert prompt_cache._vision_fingerprint({"p": x}) == prompt_cache._vision_fingerprint(
+        {"p": x.clone()}
+    )
+    assert prompt_cache._vision_fingerprint({"p": x}) != prompt_cache._vision_fingerprint({"p": y})
+    # non-contiguous views hash their logical content
+    t = torch.arange(24.0).reshape(4, 6)
+    assert prompt_cache._vision_fingerprint({"p": t.t()}) == prompt_cache._vision_fingerprint(
+        {"p": t.t().contiguous()}
+    )
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_cuda_hit_lands_on_the_source_device():
     class _CudaPipe(_EncodePipe):
