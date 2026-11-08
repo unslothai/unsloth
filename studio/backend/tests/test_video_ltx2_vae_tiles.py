@@ -308,3 +308,86 @@ def test_axis_weights_share_the_image_tile_blend(monkeypatch):
     monkeypatch.setattr(vt, "_axis_weights", lambda *args: calls.append(args) or "weights")
     assert vt.axis_weights([0, 22], 16, 38, 4, torch, "mps") == "weights"
     assert calls == [([0, 22], 16, 38, 4, torch, "mps", vt.MARGIN_LATENTS, vt.RAMP_LATENTS)]
+
+
+def _old_tiles(vae, z, th, tw, monkeypatch):
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: False)
+    with torch.no_grad():
+        return vt._decode_tiles(vae, z, None, False, th, tw, True)
+
+
+@pytest.mark.parametrize(
+    "shape, tile",
+    [
+        ((1, 8, 2, 22, 38), (22, 16)),  # one row of tiles: column bands
+        ((1, 8, 1, 30, 38), (16, 16)),  # 3 x 4 tiles, rows 14-15 shared by three tiles
+        ((1, 8, 1, 30, 22), (16, 22)),  # one column of tiles: row bands
+        ((2, 8, 1, 22, 38), (16, 22)),  # batch 2, 2 x 2 tiles
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, shape, tile, dtype):
+    vae = _ltx_vae().to(dtype)
+    z = torch.randn(*shape, generator = torch.Generator().manual_seed(3)).to(dtype)
+    ref = _old_tiles(vae, z, *tile, monkeypatch)
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: True)
+    zeros, seen = torch.zeros, []
+
+    def spy(*args, **kwargs):
+        seen.append(tuple(args[0]) if args and isinstance(args[0], tuple) else args)
+        return zeros(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "zeros", spy)
+    with torch.no_grad():
+        out = vt._decode_tiles(vae, z, None, False, *tile, True)
+    assert out.dtype == ref.dtype and out.shape == ref.shape
+    assert torch.equal(out, ref)
+    # the only accumulator is one band: a row of tiles high or a column of tiles wide, never the clip
+    (band,) = seen
+    h, w = ref.shape[-2:]
+    assert band[:3] == tuple(ref.shape[:3])
+    assert (band[-2] < h and band[-1] == w) or (band[-2] == h and band[-1] < w)
+
+
+def test_banded_output_needs_a_discrete_card_host_room_and_the_switch(monkeypatch):
+    import core.inference.diffusion_memory as dm
+    import core.inference.host_pinning as hp
+
+    vae = _ltx_vae()
+    cpu_z = torch.zeros(1, 8, 16, 22, 40)
+
+    class _Z:
+        shape, device = cpu_z.shape, torch.device("cuda", 0)
+
+    monkeypatch.delenv(vt.BANDED_OUTPUT_ENV, raising = False)
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: False)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
+    assert vt._host_band_output(vae, _Z(), 32, 2)
+    assert not vt._host_band_output(
+        vae, cpu_z, 32, 2
+    )  # CPU decode: the accumulator is host RAM already
+    monkeypatch.setenv(vt.BANDED_OUTPUT_ENV, "0")
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.delenv(vt.BANDED_OUTPUT_ENV)
+    # 1280x704x121 bf16 = 0.61 GiB: below the 4 GiB host reserve plus the clip, the card keeps the accumulator
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 4 * 1024 + 600)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: None)
+    assert not vt._host_band_output(vae, _Z(), 32, 2)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 64 * 1024)
+    monkeypatch.setattr(hp, "device_is_integrated", lambda device = None: True)
+    assert not vt._host_band_output(
+        vae, _Z(), 32, 2
+    )  # unified memory: a host copy is the same pool
+
+
+def test_unbudgeted_decode_never_bands(monkeypatch):
+    vae = _ltx_vae().to(torch.bfloat16)
+    z = torch.randn(1, 8, 1, 22, 38).to(torch.bfloat16)
+    monkeypatch.setattr(vt, "_host_band_output", lambda *a: True)
+    monkeypatch.setattr(
+        vt, "_decode_bands", lambda *a: pytest.fail("banded without an fp32 accumulator")
+    )
+    with torch.no_grad():
+        out = vt._decode_tiles(vae, z, None, False, 16, 16, False)
+    assert out.dtype == torch.bfloat16
