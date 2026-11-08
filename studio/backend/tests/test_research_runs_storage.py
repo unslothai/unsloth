@@ -4745,3 +4745,28 @@ def test_terminal_fallback_keeps_a_clean_attachment_inventory_clean():
     assert rebuilt_dirty == 0
     assert rebuilt_rows == rows
     assert any(m["id"] == message_id for m in studio_db.list_chat_messages("thread-inv"))
+
+
+def test_insert_server_chat_message_indexes_entries_like_a_rebuild():
+    studio_db.upsert_chat_thread(
+        {"id": "thread-img", "title": "T", "modelType": "base", "modelId": "m", "createdAt": 1}
+    )
+    assert _inventory_snapshot()[0] == 0
+    content = [{"type": "image", "image": "data:image/png;base64,iVBORw0KGgo="}]
+    conn = studio_db.get_connection()
+    try:
+        studio_db.insert_server_chat_message(
+            conn, "server-img", "thread-img", None, json.dumps(content), "{}", 2
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    dirty, rows = _inventory_snapshot()
+    assert dirty == 0 and len(rows) == 1
+    conn = studio_db.get_connection()
+    try:
+        studio_db._rebuild_chat_attachment_inventory(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    assert _inventory_snapshot() == (0, rows)
