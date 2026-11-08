@@ -278,6 +278,26 @@ _OLLAMA_LEASE_EXECUTOR = ThreadPoolExecutor(
 # Own workers so a cancel is not queued behind generations blocking the default executor; kept off the loop since native cancel kills a process tree.
 _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-cancel")
 
+# Image generations wait for the engine's one-render slot inside their worker thread: on the default executor a few
+# queued renders hold every worker, stalling status, gallery and chat streaming until a render ends. "0" restores
+# asyncio.to_thread.
+_IMAGE_GENERATE_EXECUTOR_ENV = "UNSLOTH_DIFFUSION_GENERATE_EXECUTOR"
+_IMAGE_GENERATE_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "image-generate")
+
+
+async def _image_generate_in_thread(func, /, *args, **kwargs):
+    """``asyncio.to_thread`` (same context copy: account scope, progress) on the image-generation pool."""
+    if (os.environ.get(_IMAGE_GENERATE_EXECUTOR_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return await asyncio.to_thread(func, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, func, *args, **kwargs)
+    return await loop.run_in_executor(_IMAGE_GENERATE_EXECUTOR, call)
+
 
 def _loaded_chat_template() -> Optional[str]:
     """Chat template llama-server renders for the loaded GGUF: the override when one is set."""
@@ -49736,7 +49756,7 @@ async def _generate_diffusion_image_run(
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
-                result = await asyncio.to_thread(
+                result = await _image_generate_in_thread(
                     backend.generate,
                     expected_load = expected_load,
                     prompt = enhancement.encoded(request.prompt),
@@ -51672,7 +51692,7 @@ async def _batched_openai_images(
     async def run_batch(prompts: list[str], seeds: list[int]) -> dict:
         with generation_ticket(ticket):
             try:
-                return await asyncio.to_thread(
+                return await _image_generate_in_thread(
                     backend.generate,
                     prompt = prompts[0],
                     negative_prompt = body.negative_prompt,
@@ -51791,7 +51811,7 @@ async def _generate_openai_images(
                     backend, status, body, width, height, steps, guidance, expected_load
                 )
                 if result is None:
-                    result = await asyncio.to_thread(
+                    result = await _image_generate_in_thread(
                         backend.generate,
                         prompt = body.prompt,
                         negative_prompt = body.negative_prompt,
