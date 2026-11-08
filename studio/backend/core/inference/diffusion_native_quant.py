@@ -308,8 +308,7 @@ _UNSEEN = object()
 
 
 def _device_key(device: Any = None) -> Any:
-    """``device`` as an indexed ``torch.device``; None (or an unindexed cuda) = the current CUDA / HIP card, or the
-    CPU without one."""
+    """Indexed ``torch.device``; None or an unindexed cuda = the current card (the CPU without one)."""
     import torch
 
     if isinstance(device, int):
@@ -332,8 +331,7 @@ _ROCM_FUSED_W8A8_ARCH = re.compile(r"^gfx1[12][0-9a-f]{2}$")
 
 
 def _rocm_fused_w8a8_refusal(torch: Any, ordinal: Optional[int] = None) -> Optional[str]:
-    """None when the compiled linear may run on ROCm card ``ordinal`` (current when None), else why not (other ROCm
-    archs: unmeasured)."""
+    """None when the compiled linear may run on ROCm card ``ordinal`` (current when None), else why not."""
     from .rocm_bf16 import _device_gfx_arch
 
     arch = _device_gfx_arch(torch, ordinal)
@@ -343,8 +341,7 @@ def _rocm_fused_w8a8_refusal(torch: Any, ordinal: Optional[int] = None) -> Optio
 
 
 def rocm_rdna_w8a8_ready(ordinal: Optional[int] = None) -> bool:
-    """ROCm RDNA card ``ordinal`` (current when None) where the compiled W8A8 linear can run (UNSLOTH_NATIVE_INT8_FUSED
-    not off, and it has not failed on that card)."""
+    """ROCm RDNA card ``ordinal`` (current when None) where the compiled W8A8 linear can run and has not failed."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return False
     try:
@@ -374,7 +371,7 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
     devices = _FUSED_STATE.get("devices")
     if devices is None:
         devices = _FUSED_STATE.setdefault("devices", {})
-    # An input's device is already indexed: used as the key as is (this runs per linear call).
+    # Per linear call: an input's device is already indexed.
     key = device if getattr(device, "index", None) is not None else _device_key(device)
     seen = devices.get(key, _UNSEEN)
     fn = _FUSED_STATE["fn"]
@@ -402,7 +399,6 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
         log.info("diffusion.native_quant: int8 W8A8 linear stays eager (no inductor runtime)")
         return None
     if is_rocm_torch(torch):
-        # Per card: a process can hold an RDNA card and another ROCm card, and the input's card decides.
         refusal = _rocm_fused_w8a8_refusal(torch, key.index if key.type == "cuda" else None)
         if refusal is not None:
             devices[key] = refusal
