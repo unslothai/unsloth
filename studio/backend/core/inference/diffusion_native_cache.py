@@ -501,6 +501,11 @@ def load(
                     scale = scale,
                 ),
             )
+        from .prequant_safetensors import _unviewed
+
+        # Base-less aliases (no copy): a safetensors view's base outlives group offload's ``.data =`` re-point at
+        # its pinned copy, which would keep the whole file mapped beside the pinned weights for the model's life.
+        state = {key: _unviewed(value) for key, value in state.items()}
         model.load_state_dict(state, strict = True, assign = True)
         del state
         if any(t.device.type == "meta" for t in (*model.parameters(), *model.buffers())):
