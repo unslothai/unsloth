@@ -17,7 +17,6 @@ from .rocm_bf16 import is_rocm_torch
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
 # rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
 WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
-# 0: Triton specializes the sequence length L again (a new binary when L % 16 flips across resolutions / lengths).
 WAN_FUSED_ANY_LENGTH_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ANY_LENGTH"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
@@ -64,7 +63,7 @@ def _kernels() -> Optional[dict]:
     except Exception:  # noqa: BLE001
         return None
 
-    # L (tokens per sample) only splits the row id into (sample, token): no load width or alignment depends on it.
+    # L only splits the row id into (sample, token): no alignment depends on it.
     any_length = (os.environ.get(WAN_FUSED_ANY_LENGTH_ENV) or "").strip().lower() not in (
         "0",
         "off",
