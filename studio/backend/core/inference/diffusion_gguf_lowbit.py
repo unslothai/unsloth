@@ -13,7 +13,7 @@ from typing import Any
 
 LOWBIT_IQ_ENV = "UNSLOTH_DIFFUSION_GGUF_LOWBIT_IQ"
 _QK_K = 256
-# (table, device) -> the grid / sign table gguf-py builds, moved to that device once
+# (table, device) -> gguf-py's grid / sign table on that device
 _CONSTS: dict = {}
 
 
@@ -42,7 +42,7 @@ def _const(name: str, device: Any) -> Any:
     if value is None:
         import torch
 
-        # once per (table, device); never traced into a compiled dequant
+        # once per (table, device), outside any compiled graph
         value = torch.compiler.disable(_build)(name, device)
     return value
 
