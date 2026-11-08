@@ -255,37 +255,38 @@ def _decode_bands(
     ratio = int(vae.spatial_compression_ratio)
     rows = len(hs) > 1
     axis, side, starts = (-2, th, hs) if rows else (-1, tw, ws)
-    out = band = None
+    out = band = carry = None
     for b, s in enumerate(starts):
         for i, j in [(b, j) for j in range(len(ws))] if rows else [(0, b)]:
             y, x = hs[i], ws[j]
             tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
             if out is None:
-                lead = tuple(tile.shape[:3])
+                lead, device = tuple(tile.shape[:3]), tile.device
                 out = _host_like(tile, (*lead, height * ratio, width * ratio), torch)
+            if band is None:
+                # Made after the band's first tile decodes: only the carried overlap is live during that decode.
                 shape = (
                     (*lead, side * ratio, width * ratio)
                     if rows
                     else (*lead, height * ratio, side * ratio)
                 )
-                band = torch.zeros(shape, dtype = torch.float32, device = tile.device)
+                band = torch.zeros(shape, dtype = torch.float32, device = device)
+                if carry is not None:
+                    band.narrow(axis, 0, carry.shape[axis]).copy_(carry)
+                    carry = None
             w = wy[i].view(-1, 1) * wx[j].view(1, -1)
             y0, x0 = (0, x * ratio) if rows else (y * ratio, 0)
             band[..., y0 : y0 + th * ratio, x0 : x0 + tw * ratio].addcmul_(tile.float(), w)
             del tile
         lo, hi = s * ratio, (s + side) * ratio
         done = (starts[b + 1] * ratio if b + 1 < len(starts) else hi) - lo
-        # Same stream: the copy out finishes before the band is rewritten.
+        # Same stream: the copy out finishes before the band's memory is reused.
         out.narrow(axis, lo, done).copy_(
             band.narrow(axis, 0, done).to(out.dtype), non_blocking = True
         )
         if b + 1 < len(starts):
             carry = band.narrow(axis, done, hi - lo - done).clone()
-            band.zero_()
-            band.narrow(axis, 0, carry.shape[axis]).copy_(carry)
-            del carry
-    device = band.device
-    del band
+        band = None
     return out.to(device, non_blocking = True)
 
 

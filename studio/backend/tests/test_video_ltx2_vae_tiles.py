@@ -342,7 +342,8 @@ def test_banded_output_is_bit_identical_to_the_full_accumulator(monkeypatch, sha
         out = vt._decode_tiles(vae, z, None, False, *tile, True)
     assert out.dtype == ref.dtype and out.shape == ref.shape
     assert torch.equal(out, ref)
-    (band,) = seen
+    assert seen and len(set(seen)) == 1  # one band shape per band, never the clip
+    band = seen[0]
     h, w = ref.shape[-2:]
     assert band[:3] == tuple(ref.shape[:3])
     assert (band[-2] < h and band[-1] == w) or (band[-2] == h and band[-1] < w)
