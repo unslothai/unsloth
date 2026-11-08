@@ -1016,7 +1016,6 @@ def _imported_diffusers(monkeypatch, version, *classes):
     return module
 
 
-# diffusers 0.39.0 and 0.40.0 both export Cosmos3OmniPipeline, so the class being there is not enough.
 @pytest.mark.parametrize(
     "installed, available",
     [
@@ -1060,7 +1059,6 @@ def test_the_load_gate_accepts_cosmos3_at_or_above_the_floor(monkeypatch, instal
 def test_the_floor_leaves_main_builds_judged_by_presence(monkeypatch):
     from core.inference import diffusion_families as df
 
-    # A main build reporting an older release still carries a probe-file class, and an unreleased floor is served by one.
     _imported_diffusers(monkeypatch, "0.41.0.dev0", "Flux3ModularPipeline", "Cosmos3OmniPipeline")
     df.assert_pipeline_class_available("Flux3ModularPipeline", "flux3")
     monkeypatch.setattr(df, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.43.0"}))
