@@ -139,7 +139,9 @@ def _pack(q: np.ndarray, bits: int) -> np.ndarray:
     # 8 elements = `bits` bytes: the low bytes of a little-endian uint64.
     for start in range(0, rows, _ROW_CHUNK):
         lanes = q[start : start + _ROW_CHUNK].reshape(-1, cols // 8, 8)
-        acc = lanes[..., 0].astype("<u8")
+        acc = lanes[..., 0].astype(
+            "<u8", order = "C"
+        )  # C order: the byte view below needs a contiguous last axis
         for k in range(1, 8):
             acc |= lanes[..., k].astype("<u8") << np.uint64(bits * k)
         stream[start : start + _ROW_CHUNK] = (
