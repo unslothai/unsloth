@@ -800,10 +800,23 @@ class _Onload:
     """Moves the tensors of some modules to a device and back. Parameters keep their identity (``.data`` swaps, so a
     tied weight moves once); the host tensors are kept and restored, so returning costs no copy."""
 
-    def __init__(self, device: Any) -> None:
+    def __init__(
+        self,
+        device: Any,
+        ready: Optional[dict] = None,
+    ) -> None:
         self.device = device
         self.saved: list = []
         self.moved: dict = {}
+        # ``_Lookahead``'s uploads, ``id(tensor) -> (host data_ptr, device copy)``; a tensor whose host storage moved
+        # since is copied here as before.
+        self.ready = ready or {}
+
+    def _copy(self, key: int, tensor: Any) -> Any:
+        hit = self.ready.get(key)
+        if hit is not None and hit[0] == tensor.data_ptr():
+            return hit[1]
+        return _to_device(tensor, self.device)
 
     def add(
         self,
@@ -821,11 +834,11 @@ class _Onload:
                             if id(tensor) not in self.moved:
                                 self.moved[id(tensor)] = tensor
                                 self.saved.append((tensor, None, None, tensor.data))
-                                tensor.data = _to_device(tensor.data, self.device)
+                                tensor.data = self._copy(id(tensor), tensor.data)
                             continue
                         moved = self.moved.get(id(tensor))
                         if moved is None:
-                            moved = _to_device(tensor, self.device)
+                            moved = self._copy(id(tensor), tensor)
                             self.moved[id(tensor)] = moved
                         self.saved.append((None, table, key, tensor))
                         table[key] = moved
@@ -840,7 +853,136 @@ class _Onload:
         self.moved.clear()
 
 
-def _streamed(parts: tuple[list, list, list], device: str) -> Any:
+# "0" uploads each streamed layer on the compute stream when it starts, as before the one-layer lookahead.
+PREFETCH_ENV = "UNSLOTH_LTX25_TE_PREFETCH"
+
+
+def _host_sources(module: Any) -> Optional[list]:
+    """``(id(tensor), host data)`` for every tensor ``_Onload.add([module])`` moves, or None unless all are pinned:
+    only a pinned source copies asynchronously, so a pageable layer keeps the plain upload."""
+    import torch
+
+    seen: set = set()
+    sources: list = []
+    for sub in module.modules():
+        for table in _tensor_tables(sub):
+            for tensor in table.values():
+                if tensor is None or id(tensor) in seen:
+                    continue
+                seen.add(id(tensor))
+                data = tensor.data if isinstance(tensor, torch.nn.Parameter) else tensor
+                if data.device.type != "cpu" or not data.is_pinned():
+                    return None
+                sources.append((id(tensor), data))
+    return sources or None
+
+
+class _CudaUploads:
+    """The stream calls ``_Lookahead`` makes: uploads on a copy stream of their own, events between it and compute."""
+
+    def __init__(self, device: Any) -> None:
+        import torch
+
+        self.torch = torch
+        self.device = torch.device(device)
+        self.stream = torch.cuda.Stream(device = self.device)
+
+    def _compute(self) -> Any:
+        return self.torch.cuda.current_stream(self.device)
+
+    def fence(self, events: list) -> None:
+        """Later uploads wait for these computes, so buffers dropped after this never feed an upload early."""
+        for event in events:
+            self.stream.wait_event(event)
+
+    def upload(self, sources: list) -> tuple[dict, Any]:
+        torch = self.torch
+        with torch.cuda.stream(self.stream):
+            copies = {
+                key: (data.data_ptr(), data.to(self.device, non_blocking = True))
+                for key, data in sources
+            }
+            ready = torch.cuda.Event()
+            ready.record(self.stream)
+        return copies, ready
+
+    def wait_ready(self, ready: Any) -> None:
+        self._compute().wait_event(ready)
+
+    def done(self) -> Any:
+        event = self.torch.cuda.Event()
+        event.record(self._compute())
+        return event
+
+    def drain(self) -> None:
+        self.stream.wait_stream(self._compute())
+        self.stream.synchronize()
+
+
+def _lookahead_ops(device: str) -> Any:
+    """``_CudaUploads`` for a CUDA card, else None: ROCm, XPU, MPS and the CPU keep the synchronous upload."""
+    if (os.environ.get(PREFETCH_ENV) or "").strip() == "0":
+        return None
+    if str(device).split(":", 1)[0] != "cuda":
+        return None
+    try:
+        import torch
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return None
+        return _CudaUploads(device)
+    except Exception:  # noqa: BLE001 -- the synchronous upload still works
+        return None
+
+
+class _Lookahead:
+    """One-layer lookahead for a streamed encode: layer i+1 uploads while layer i computes. Layer i waits on its
+    upload's event before reading it, and its buffers are dropped only once the copy stream waits on layer i's compute,
+    so the allocator cannot hand them to a later upload early. At most two layers are on the card, which
+    ``_stream_need_mib`` already prices."""
+
+    def __init__(self, layers: list, ops: Any) -> None:
+        self.ops = ops
+        self.order = {id(layer): i for i, layer in enumerate(layers)}
+        # Read before any layer runs, while every layer still points at its host copy.
+        self.sources = [_host_sources(layer) for layer in layers]
+        self.pending: dict = {}
+        self.retired: list = []
+        self.layers = 0
+
+    def issue(self, index: int) -> None:
+        if index >= len(self.sources) or self.pending or self.sources[index] is None:
+            return
+        self.ops.fence([done for done, _copies in self.retired])
+        self.retired.clear()
+        self.pending[index] = self.ops.upload(self.sources[index])
+        self.layers += 1
+
+    def take(self, module: Any) -> Optional[dict]:
+        """This layer's uploaded copies, compute ordered after them; the next layer's upload is issued."""
+        index = self.order.get(id(module))
+        entry = self.pending.pop(index, None) if index is not None else None
+        # An upload for a layer that did not run next is dropped, never read.
+        self.pending.clear()
+        if entry is not None:
+            self.ops.wait_ready(entry[1])
+        if index is not None:
+            self.issue(index + 1)
+        return entry[0] if entry is not None else None
+
+    def retire(self, copies: dict) -> None:
+        self.retired.append((self.ops.done(), copies))
+
+    def close(self) -> None:
+        self.ops.drain()
+        self.pending.clear()
+        self.retired.clear()
+
+
+def _streamed(
+    parts: tuple[list, list, list],
+    device: str,
+    stats: Optional[dict] = None,
+) -> Any:
     """Context: the resident modules on ``device`` for the encode, each decoder layer only while it runs."""
     import contextlib
 
@@ -851,12 +993,21 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
         base = _Onload(device)
         handles: list = []
         live: dict = {}
+        ahead: Optional[_Lookahead] = None
         try:
             base.add(resident)
             base.add(containers, recurse = False)
+            ops = _lookahead_ops(device) if stats is None or not stats.get("no_prefetch") else None
+            if ops is not None:
+                ahead = _Lookahead(layers, ops)
+                if all(s is None for s in ahead.sources):
+                    ahead = None
+                else:
+                    ahead.issue(0)
 
             def before(module: Any, _args: Any) -> None:
-                onload = _Onload(device)
+                copies = ahead.take(module) if ahead is not None else None
+                onload = _Onload(device, copies)
                 live[id(module)] = onload
                 onload.add([module])
 
@@ -864,6 +1015,8 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
                 onload = live.pop(id(module), None)
                 if onload is not None:
                     onload.restore()
+                    if ahead is not None and onload.ready:
+                        ahead.retire(onload.ready)
 
             for layer in layers:
                 handles.append(layer.register_forward_pre_hook(before))
@@ -874,7 +1027,13 @@ def _streamed(parts: tuple[list, list, list], device: str) -> Any:
                 handle.remove()
             for onload in live.values():
                 onload.restore()
-            base.restore()
+            try:
+                if ahead is not None:
+                    ahead.close()
+                    if stats is not None:
+                        stats["prefetched_layers"] = ahead.layers
+            finally:
+                base.restore()
 
     return _ctx()
 
@@ -982,6 +1141,7 @@ def _encode_on(
         return_tensors = "pt",
     )
     config["_streamed"] = stream is not None
+    config["_stream_stats"] = {}
     oom: Optional[str] = None
     try:
         embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
@@ -989,6 +1149,22 @@ def _encode_on(
         if resident or device == "cpu" or not _is_out_of_memory(exc):
             raise
         oom = str(exc)
+    if oom is not None and config["_stream_stats"].get("prefetched_layers"):
+        # The lookahead holds a second layer: try the one-layer upload on the card before the CPU.
+        _empty_accelerator_cache(device)
+        print(
+            f"video.ltx25_te: out of memory with the layer lookahead on {device} ({oom}); retrying without it",
+            file = sys.stderr,
+            flush = True,
+        )
+        config["_stream_stats"] = {"no_prefetch": True}
+        oom = None
+        try:
+            embeds_host, mask_host = _run_encode(model, config, inputs, device, stream)
+        except Exception as exc:
+            if not _is_out_of_memory(exc):
+                raise
+            oom = str(exc)
     if oom is not None:
         # Outside the handler, so the failed attempt's card tensors are gone before the CPU encode; then hand the
         # card back, since the server plans the denoise against it.
@@ -1045,7 +1221,9 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
         if whole is not None:
             whole.add([model])
         with (
-            _streamed(stream, device) if stream is not None else _no_context(),
+            _streamed(stream, device, config.setdefault("_stream_stats", {}))
+            if stream is not None
+            else _no_context(),
             torch.inference_mode(),
         ):
             ids = inputs.input_ids.to(device)
@@ -1131,6 +1309,9 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     "mask": mask,
                     "device": device,
                     "streamed": bool(config.get("_streamed")),
+                    "prefetched_layers": int(
+                        (config.get("_stream_stats") or {}).get("prefetched_layers") or 0
+                    ),
                     "pinned_mib": int(config.get("_pinned_bytes") or 0) >> 20,
                     **_memory_stats(config.get("device") or ""),
                 }
