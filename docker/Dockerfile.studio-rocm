@@ -142,10 +142,13 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
 # The uv cache is a BuildKit cache mount, so a rebuild after a new commit (which always misses this layer: the ref is
-# pinned) reuses the ~15 GB of wheels instead of downloading them again. It never lands in a layer, so the image is
+# pinned) reuses the ~15 GB of wheels instead of downloading them again. It never lands in a layer, so the venvs are
 # unchanged; UV_LINK_MODE=copy because the mount is another filesystem than the venvs. The cache path is only handed to
 # install.sh; the marker it records is reset to the image's UV_CACHE_DIR below, as without the mount.
+# npm's cache (~/.npm, from the frontend's npm ci) gets its own mount: it is reused the same way, and it no longer
+# ends up in the image (the cleanup below removes /root/.cache but not /root/.npm, about 217 MB).
 RUN --mount=type=cache,id=unsloth-studio-rocm-uv,target=/var/cache/unsloth-studio-uv,sharing=locked \
+    --mount=type=cache,id=unsloth-studio-rocm-npm,target=/root/.npm,sharing=locked \
     set -eux \
  && . /etc/unsloth-rocm-build \
  && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
