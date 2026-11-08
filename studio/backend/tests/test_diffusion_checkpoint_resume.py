@@ -10,6 +10,7 @@ import time
 import os
 import json
 from pathlib import Path
+from collections import OrderedDict
 
 import pytest
 import torch
@@ -2721,3 +2722,70 @@ def test_the_ema_decay_is_part_of_the_identity(run_dir):
     with pytest.raises(dc.ResumeError, match = "EMA decay"):
         dc.preflight_resume(path, identity = off, target_steps = 500)
     assert dc.preflight_resume(path, identity = slow.identity, target_steps = 500)[1] == 4
+
+
+def test_the_run_listing_reads_an_unchanged_bundle_once(run_dir, monkeypatch):
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
+    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1)
+    reads = []
+    original = dc._assert_loadable
+
+    def _counting(path, manifest):
+        reads.append(path.name)
+        return original(path, manifest)
+
+    monkeypatch.setattr(dc, "_assert_loadable", _counting)
+    run = _Run(run_dir)
+    run.save(5)
+    first = dc.describe_resume_state(str(run_dir), status = "stopped")
+    for _ in range(3):
+        assert dc.describe_resume_state(str(run_dir), status = "stopped") == first
+    assert first["can_resume"] is True and first["checkpoint_step"] == 5
+    assert reads == ["checkpoint-5"]
+
+    run.step_once(0.5)
+    run.save(5)
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True
+    assert reads == ["checkpoint-5", "checkpoint-5"]
+
+    manifest = dc.read_checkpoint(run_dir / "checkpoint-5")
+    rng = run_dir / "checkpoint-5" / manifest["files"]["rng"]
+    torch.save({"not": "rng"}, rng)
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is False
+
+
+def test_a_bundle_written_inside_the_settle_window_is_read_every_time(run_dir, monkeypatch):
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
+    reads = []
+    original = dc._assert_loadable
+    monkeypatch.setattr(
+        dc,
+        "_assert_loadable",
+        lambda path, manifest: (reads.append(1), original(path, manifest))[1],
+    )
+    _Run(run_dir).save(5)
+    for _ in range(2):
+        assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True
+    assert len(reads) == 2
+
+
+def test_a_passing_failure_to_load_is_not_remembered(run_dir, monkeypatch):
+    monkeypatch.setattr(dc, "_LOADABLE_PASSES", OrderedDict())
+    monkeypatch.setattr(dc, "_LOADABLE_SETTLE_NS", -1)
+    _Run(run_dir).save(5)
+    real = dc.LoadedCheckpoint.tensors
+    fail = {"on": True}
+
+    def _flaky(
+        self,
+        role,
+        device = "cpu",
+    ):
+        if fail["on"]:
+            raise MemoryError("transient")
+        return real(self, role, device)
+
+    monkeypatch.setattr(dc.LoadedCheckpoint, "tensors", _flaky)
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is False
+    fail["on"] = False
+    assert dc.describe_resume_state(str(run_dir), status = "stopped")["can_resume"] is True
