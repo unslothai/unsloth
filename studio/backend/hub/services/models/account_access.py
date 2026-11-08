@@ -1011,14 +1011,18 @@ def require_model_access(
 
 
 def _grant_with_token(reference, repo_type: str, hf_token) -> bool:
-    if not isinstance(reference, str) or not account_hf_token(hf_token):
+    token = account_hf_token(hf_token)
+    if not isinstance(reference, str) or not token:
         return False
     repo_id = _reference_repo_id(reference.strip())
-    if repo_id is None:
+    if repo_id is None or not _source_speaks_for_the_cache():
         return False
-    try:
-        authorize_download(repo_id, repo_type, hf_token)
-    except HTTPException:
+    if repo_type == "model" and not model_allowed(repo_id):
+        return False
+    from hub.utils.hf_tokens import _explicit_token_reaches_repo
+
+    # HfApi.auth_check has no timeout; this probe is bounded.
+    if _explicit_token_reaches_repo(repo_id, token, repo_type) is not True:
         return False
     record_model_grant(repo_id, repo_type)
     return model_visible(reference, repo_type = repo_type)

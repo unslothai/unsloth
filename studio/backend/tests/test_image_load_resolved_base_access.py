@@ -16,6 +16,7 @@ if _TESTS_DIR not in sys.path:
 
 import core.inference.diffusion as diffusion_module  # noqa: E402
 from hub.services.models import account_access  # noqa: E402
+from hub.utils import hf_tokens  # noqa: E402
 from test_diffusion_routes import client  # noqa: E402,F401 -- the shared fake-backend client fixture
 
 KREA_GGUF = {
@@ -111,10 +112,15 @@ def hub(monkeypatch, managed):
             return types.SimpleNamespace(gated = "auto")
 
         def auth_check(self, repo_id, *, repo_type, token):
-            if repo_id.lower() not in readers.get(token, set()):
-                raise RuntimeError("gated")
+            raise AssertionError("auth_check has no timeout")
 
     monkeypatch.setattr(account_access, "HfApi", _Hub)
+    monkeypatch.setattr(
+        hf_tokens,
+        "_probe_repo_access",
+        lambda repo_id, token, repo_type, **_: repo_id.lower() in readers.get(token, set()),
+    )
+    hf_tokens.reset_repo_access_cache()
     monkeypatch.setattr(
         account_access,
         "record_model_grant",
