@@ -560,6 +560,19 @@ test("a timestamped OpenAI conversation is not mistaken for an Open WebUI chat",
   );
 });
 
+test("a timestamped legacy function-call conversation is not mistaken for an Open WebUI chat", () => {
+  assert.equal(
+    isOpenWebUIRecord({
+      messages: [
+        { role: "user", content: "weather?", timestamp: 1 },
+        { role: "assistant", content: "", function_call: { name: "w", arguments: "{}" }, timestamp: 2 },
+        { role: "function", name: "w", content: "21C", timestamp: 3 },
+      ],
+    }),
+    false,
+  );
+});
+
 test("a generated image comes over as an image, not as a dropped output item", () => {
   const record = recordOf(
     [

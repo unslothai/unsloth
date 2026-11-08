@@ -58,7 +58,13 @@ function looksLikeOpenWebUIMessage(value: unknown): boolean {
 
 function looksLikeOpenAIToolMessage(value: unknown): boolean {
   if (!isDict(value)) return false;
-  return value.role === "tool" || "tool_calls" in value || "tool_call_id" in value;
+  return (
+    value.role === "tool" ||
+    value.role === "function" ||
+    "tool_calls" in value ||
+    "tool_call_id" in value ||
+    "function_call" in value
+  );
 }
 
 export function isOpenWebUIRecord(value: unknown): boolean {
