@@ -996,7 +996,6 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
-    # v2 weights are _plain_int8_weight (_v2_parts): the probed one-pass kernel where it matched torchao on this card
     from .diffusion_int8_fused import _mlp_act_quant
     return _mlp_act_quant(x2d, weight)
 

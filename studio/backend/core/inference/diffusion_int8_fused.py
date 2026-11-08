@@ -16,7 +16,6 @@ from typing import Any, Optional
 from .rocm_bf16 import is_rocm_torch
 
 INT8_FUSED_ENV = "UNSLOTH_DIFFUSION_INT8_FUSED"
-# 0: the fused MLPs and torchao v2 Linears quantize their input with torchao's own quant, as before.
 MLP_FAST_ACT_QUANT_ENV = "UNSLOTH_DIFFUSION_INT8_MLP_FAST_ACT_QUANT"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs more than 16 rows; torchao's own safe_int_mm handles the rest, so small M keeps the stock path.
@@ -38,7 +37,7 @@ _RQ_HANDLE: Any = None
 _RQ_DEVICES: frozenset = frozenset()
 # UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
 _LINEAR_OFF = False
-# MLP_FAST_ACT_QUANT_ENV at the last install, read by the traced forwards (a global, not os.environ, under dynamo)
+# MLP_FAST_ACT_QUANT_ENV at the last install: a global, so traced forwards never read os.environ
 _MLP_FAST_ACTQ = True
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
@@ -830,8 +829,7 @@ def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
 
 
 def _mlp_act_quant(x2d: Any, weight: Any) -> tuple:
-    """The fused MLPs' input quant: ``_fast_act_quant`` (their weights are ``_plain_int8_weight``, like
-    ``int8_linear_core``'s), or torchao's under the kill switch."""
+    """``_fast_act_quant`` for ``_plain_int8_weight`` weights, torchao's quant under the kill switch."""
     if _MLP_FAST_ACTQ:
         return _fast_act_quant(x2d, weight)
     return _act_quant(x2d, weight)
