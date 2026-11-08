@@ -4322,6 +4322,8 @@ export const de = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Konstant + Warmup",
+        constant: "Konstant",
       },
       batchSize: "Batch-Größe",
       batchSizeTooltip:

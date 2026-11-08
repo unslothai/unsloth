@@ -4627,6 +4627,8 @@ export const pl = {
       lrSchedulerOptions: {
         linear: "Liniowy",
         cosine: "Cosinusowy",
+        constantWithWarmup: "Stały + rozgrzewka",
+        constant: "Stały",
       },
       batchSize: "Rozmiar partii",
       batchSizeTooltip:

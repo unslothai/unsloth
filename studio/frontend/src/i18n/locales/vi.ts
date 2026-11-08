@@ -4575,6 +4575,8 @@ export const vi = {
       lrSchedulerOptions: {
         linear: "Tuyến tính",
         cosine: "Cosine",
+        constantWithWarmup: "Hằng số + khởi động",
+        constant: "Hằng số",
       },
       batchSize: "Kích thước lô",
       batchSizeTooltip:

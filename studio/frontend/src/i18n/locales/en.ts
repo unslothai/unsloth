@@ -4272,6 +4272,8 @@ export const en = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constant + warmup",
+        constant: "Constant",
       },
       batchSize: "Batch Size",
       batchSizeTooltip: "Samples processed per step. Higher uses more VRAM.",

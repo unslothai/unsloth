@@ -128,6 +128,8 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "linear", label: "Linear" },
   { value: "cosine", label: "Cosine" },
+  { value: "constant_with_warmup", label: "Constant + warmup" },
+  { value: "constant", label: "Constant" },
 ];
 
 /** Method-aware LR defaults; mirrored in studio/backend/assets/configs/. */
