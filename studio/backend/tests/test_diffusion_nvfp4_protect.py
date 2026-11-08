@@ -632,7 +632,6 @@ def test_the_layer_registry_is_weak_so_an_unloaded_model_stops_counting():
 
 
 def _cpu_protected_layer():
-    """A real packed NVFP4 layer on the protected (dequantise + dense) branch; runs on CPU."""
     torch = pytest.importorskip("torch")
     from core.inference.diffusion_nvfp4_protect import NVFP4StepController
 
