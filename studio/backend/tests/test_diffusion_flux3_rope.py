@@ -177,14 +177,14 @@ def test_teardown_and_load_wiring():
         for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
-    # The teardown restores the registry's fused-DiT group, which carries the FLUX.3 RoPE spec ...
+    # unload restores the fused-DiT group, which carries this spec
     assert "uninstall_group(GROUP_FUSED_DIT)" in ast.unparse(teardown)
     from core.inference.diffusion_autoopt import patches as ap
 
     spec = next(s for s in ap.specs(group = ap.GROUP_FUSED_DIT) if s.name == "flux3_rope")
     assert spec.stage == ap.STAGE_LOAD and spec.backends == ("image",) and not spec.speed_only
     assert spec.env == fr.FLUX3_FUSED_ROPE_ENV
-    # ... and the load runs that stage for the pipe with its device / logger, on every tier (speed off included).
+    # the load runs it on every tier, speed off included
     import types as _types
 
     seen = []
@@ -263,7 +263,7 @@ def test_bit_identical_to_stock(shape, x_dtype, freq_dtype):
     assert fr.install("cuda")
     n = fr.call_count()
     out = fmod.apply_rotary_emb(x, freqs, sequence_dim = 1)
-    assert fr.call_count() == n + 1  # the fused kernel ran
+    assert fr.call_count() == n + 1
     assert out.dtype == ref.dtype and out.stride() == ref.stride()
     assert torch.equal(out, ref)
 

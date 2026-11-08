@@ -25,7 +25,6 @@ _STOCK: dict = {}
 _ORIGINAL: list = [None]
 # Set by the first failed launch (JIT / driver / PTX): the rest of the load runs stock, not one failing JIT per call.
 _FAILED = [False]
-# Fused launches (eager only).
 _CALLS = [0]
 
 
@@ -171,7 +170,6 @@ def install_for_pipe(
     device: Any = "cuda",
     logger: Any = None,
 ) -> bool:
-    """Install for a FLUX.3 denoiser, otherwise restore stock."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or type(transformer).__module__ != _MODULE:
         uninstall()
