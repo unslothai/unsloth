@@ -273,7 +273,10 @@ def test_a_legacy_int8_pickle_loads_as_int8tensor_with_the_same_weights(monkeypa
         Exception, match = "LinearActivationQuantizedTensor|was not an allowed global"
     ):
         torch.load(str(path), weights_only = True)
-    ckpt = pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+    # The converter's reader (the load path refuses any pickle before opening it).
+    with pytest.raises(ValueError, match = "safetensors only"):
+        pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+    ckpt = pq._torch_load_prequant(str(path), map_location = "cpu")
     w = ckpt["state_dict"]["blk.proj.weight"]
     assert type(w).__name__ == "Int8Tensor"
     assert torch.equal(w.qdata, qdata)
@@ -296,7 +299,7 @@ def test_the_rebuild_does_not_open_the_door_to_other_globals(monkeypatch, tmp_pa
     path = tmp_path / "Model-INT8.pt"
     _write_legacy_checkpoint(monkeypatch, path, extra = {"zz": os.getcwd})
     with pytest.raises(Exception, match = "getcwd|posix|was not an allowed global"):
-        pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+        pq._torch_load_prequant(str(path), map_location = "cpu")
     del torch
 
 
@@ -307,7 +310,7 @@ def test_an_asymmetric_legacy_weight_is_refused(monkeypatch, tmp_path):
     path = tmp_path / "Model-INT8.pt"
     _write_legacy_checkpoint(monkeypatch, path, zero_point = torch.ones(8, dtype = torch.int8))
     with pytest.raises(ValueError, match = "zero point"):
-        pq._load_prequant_checkpoint(str(path), map_location = "cpu")
+        pq._torch_load_prequant(str(path), map_location = "cpu")
 
 
 @_needs_rebuild
