@@ -127,7 +127,6 @@ def test_each_rocm_card_is_judged_by_its_own_arch(monkeypatch, order):
     assert got[0] is not None and got[1] is None
     assert sorted(queried) == [0, 1]
     assert nq.fused_w8a8_state()["devices"] == {"cuda:0": None, "cuda:1": "ROCm gfx1030"}
-    # answered from the per-card cache from here on
     assert nq._fused_w8a8(torch.device("cuda", 0)) is got[0]
     assert nq._fused_w8a8(torch.device("cuda", 1)) is None
     assert sorted(queried) == [0, 1]
@@ -149,7 +148,7 @@ def test_switching_the_current_card_rechecks_its_arch(monkeypatch, order):
 def test_rdna_ready_is_per_card(monkeypatch):
     _two_cards(monkeypatch, {0: "gfx942", 1: "gfx1151"})
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    assert nq._fused_w8a8(torch.device("cuda", 0)) is None  # CDNA card first
+    assert nq._fused_w8a8(torch.device("cuda", 0)) is None
     assert nq.rocm_rdna_w8a8_ready(1) is True
     assert nq.rocm_rdna_w8a8_ready(0) is False
 
@@ -205,7 +204,7 @@ def test_a_failing_compile_falls_back_once_and_stays_eager(monkeypatch):
     assert layer._forward_fused(x) is None
     state = nq.fused_w8a8_state()
     assert "inductor exploded" in state["failed"]
-    assert nq._fused_w8a8(x.device) is None  # that input's device stays eager
+    assert nq._fused_w8a8(x.device) is None
 
 
 def test_an_oom_propagates_and_keeps_the_compiled_linear(monkeypatch):

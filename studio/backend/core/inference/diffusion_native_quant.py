@@ -371,7 +371,6 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
     devices = _FUSED_STATE.get("devices")
     if devices is None:
         devices = _FUSED_STATE.setdefault("devices", {})
-    # Per linear call: an input's device is already indexed.
     key = device if getattr(device, "index", None) is not None else _device_key(device)
     seen = devices.get(key, _UNSEEN)
     fn = _FUSED_STATE["fn"]
