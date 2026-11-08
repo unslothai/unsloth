@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured, other sm80+ behind a
-bit-exact probe and a latency check (UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock
-(ROCm and CPU never reach it); Linear output bit-identical, compiled block not end to end;
-sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
+"""int8 GEMM with torchao dequant epilogue in Triton, bf16 out; sm80/sm89/sm120 measured (every sm8x stock on
+Triton >= 3.8, whose int8 dot spills there), other sm80+ behind a bit-exact probe and a latency check
+(UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED=0 keeps them stock), sm100 / sm103 stock (ROCm and CPU never reach it);
+Linear output bit-identical, compiled block not end to end; sm120 loads its operands through TMA descriptors (UNSLOTH_DIFFUSION_INT8_GEMM_TMA=0 keeps pointer loads);
 UNSLOTH_DIFFUSION_INT8_GEMM=0 disables."""
 
 from __future__ import annotations
@@ -137,6 +137,23 @@ def _triton_version_ok(version: Optional[str] = None) -> bool:
     return bool(match) and (int(match.group(1)), int(match.group(2))) >= _MIN_TRITON
 
 
+@lru_cache(maxsize = None)
+def _triton_at_least(major: int, minor: int) -> bool:
+    try:
+        import triton
+    except Exception:  # noqa: BLE001
+        return False
+    import re
+
+    match = re.match(r"(\d+)\.(\d+)", str(triton.__version__))
+    return bool(match) and (int(match.group(1)), int(match.group(2))) >= (major, minor)
+
+
+def _triton38_sm8x(cap: tuple) -> bool:
+    """Triton >= 3.8 spills sm8x int8 tiles (triton-lang/triton#12486); even spill-free ones trail cuBLAS."""
+    return cap[0] == 8 and _triton_at_least(3, 8)
+
+
 def unlisted_mode() -> str:
     """'off', 'force' (no latency check) or 'auto' for the sm80+ archs without an ``_ARCH_CONFIG`` tile."""
     gemm = int8_gemm_mode()
@@ -161,7 +178,10 @@ def unlisted_wanted(capability: Optional[tuple], mode: Optional[str] = None) -> 
     mode = unlisted_mode() if mode is None else mode
     if mode == "off" or not unlisted_arch(capability):
         return False
-    return mode == "force" or (int(capability[0]), int(capability[1])) not in _UNLISTED_SKIP
+    if mode == "force":
+        return True
+    cap = (int(capability[0]), int(capability[1]))
+    return cap not in _UNLISTED_SKIP and not _triton38_sm8x(cap)
 
 
 def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Optional[tuple]:
@@ -171,6 +191,8 @@ def arch_config(capability: Optional[tuple], mode: Optional[str] = None) -> Opti
         return None
     cap = (int(capability[0]), int(capability[1]))
     cfg = _ARCH_CONFIG.get(cap)
+    if mode == "auto" and _triton38_sm8x(cap):
+        return None
     if cfg is None and mode == "force" and cap >= (8, 0):
         return _FALLBACK_CONFIG
     return cfg
@@ -780,7 +802,9 @@ def _race_cache_load(key: Optional[str]) -> Optional[tuple]:
     try:
         import json
         tile = (
-            json.loads(path.read_text()).get(key) if path is not None and path.is_file() else None
+            json.loads(path.read_text(encoding = "utf-8")).get(key)
+            if path is not None and path.is_file()
+            else None
         )
     except Exception:  # noqa: BLE001 - unreadable or corrupt: a miss
         return None
@@ -796,7 +820,7 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
         import json
 
         try:
-            table = json.loads(path.read_text()) if path.is_file() else {}
+            table = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
         except Exception:  # noqa: BLE001
             table = {}
         table = {k: v for k, v in table.items() if k != key and isinstance(v, list)}
@@ -804,7 +828,7 @@ def _race_cache_store(key: Optional[str], tile: tuple) -> None:
         table[key] = list(tile)
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(table))
+        tmp.write_text(json.dumps(table), encoding = "utf-8")
         os.replace(tmp, path)
     except Exception:  # noqa: BLE001 - persistence is best-effort
         pass

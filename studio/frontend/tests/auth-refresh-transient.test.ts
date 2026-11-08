@@ -87,7 +87,9 @@ function fixture(t: TestContext, refreshes: Refresh[]) {
       status: auth === "Bearer new-access" ? 200 : 401,
     });
   };
-  t.after(() => {
+  t.after(async () => {
+    // Drain deferred work first: a rejected authFetch redirects through window.location after it returns.
+    for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
     globalThis.window = previousWindow;
     globalThis.fetch = previousFetch;
     globalThis.setTimeout = previousSetTimeout;
@@ -463,4 +465,7 @@ test("without Web Locks a session with no mark does not take a later sign-in for
   assert.deepEqual(f.apiTokens, ["Bearer old-access"]);
   assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
   assert.equal(f.clears(), 0);
+  // The 401 path reads window.location after authFetch returns; settle before teardown removes the window.
+  await f.settle();
+  assert.equal(f.location.href, "/login");
 });
