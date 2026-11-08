@@ -91,9 +91,8 @@ class TestGetDevice:
 
     @needs_torch
     def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
-        # a failed device-0 probe can mean a broken CUDA setup that crashes later, so log its cause at
-        # error rather than debug. NVIDIA reads the name from the driver query, ROCm from
-        # get_device_properties: both fail, so either branch the installed torch takes is checked.
+        # a failed device-0 probe can mean a broken CUDA setup that crashes later, so log it at error;
+        # both probes fail, so the NVIDIA (driver query) and ROCm (get_device_properties) branches are covered
         monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
         monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
         monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")

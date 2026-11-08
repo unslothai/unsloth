@@ -12489,9 +12489,6 @@ class LlamaCppBackend:
 
     @staticmethod
     def _cuda_device_info():
-        """The driver API in a child (nvidia.get_cuda_device_info, cached there per mask), not
-        torch.cuda.get_device_properties, which initialises CUDA in this process; torch only fills an
-        ordinal the driver did not answer."""
         from utils.hardware import nvidia
         return nvidia.cuda_device_info_or_torch()
 
@@ -12513,7 +12510,6 @@ class LlamaCppBackend:
                 return set()
             info = LlamaCppBackend._cuda_device_info()
             if info is None:
-                # Unknown: returned but not cached, so the next call asks again.
                 return set()
             # Same ordinal-to-physical map as the ROCm twin, so masked CUDA_VISIBLE_DEVICES=2 hosts stay correct.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -12524,7 +12520,6 @@ class LlamaCppBackend:
                 for ordinal, device in enumerate(info)
                 if device is not None and device[1]
             }
-            # Cached for the preflight only if every device answered; an ordinal that did not says nothing.
             if all(device is not None for device in info):
                 LlamaCppBackend._INTEGRATED_CUDA_IDS[
                     LlamaCppBackend._integrated_cuda_mask_key()
@@ -12552,7 +12547,6 @@ class LlamaCppBackend:
                 return {}
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             totals: dict[int, int] = {}
-            # Any ordinal that did not answer may be an integrated device the set above could not see yet.
             complete = all(device is not None for device in info)
             for ordinal, device in enumerate(info):
                 idx = (
@@ -12726,8 +12720,6 @@ class LlamaCppBackend:
                 return False  # ROCm reuses torch.cuda.*; not a CUDA part
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            # Names from the driver API in a child (_cuda_device_info), never get_device_properties, which
-            # initialises CUDA in this process.
             info = LlamaCppBackend._cuda_device_info() or []
 
             # Mirror _get_gpu_free_memory; unset or unparsable CUDA_VISIBLE_DEVICES keeps physical id == ordinal.

@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU metadata (integrated or discrete, pool size, name) comes from the CUDA driver API in a child process,
-never torch.cuda.get_device_properties: that initialises CUDA in the calling process, after which torch's
-device calls open a context of hundreds of MiB on each card they touch. CPU-only tests that dropped the GPU
-mask and reached load_model left pytest workers holding contexts on six GPUs this way."""
-
 from __future__ import annotations
 
 import os
@@ -24,8 +19,6 @@ _REAL_GET_CUDA_DEVICE_INFO = getattr(nvidia, "get_cuda_device_info", None)
 
 
 class _CountingTorch(types.ModuleType):
-    """torch with CUDA visible, counting every call that would initialise it."""
-
     def __init__(self, count):
         super().__init__("torch")
         self.calls = []
@@ -53,7 +46,6 @@ class _CountingTorch(types.ModuleType):
 
 @pytest.fixture
 def host(monkeypatch):
-    """Six discrete cards and one integrated SoC behind an unset mask, as the driver child reports them."""
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     for cache in ("_INTEGRATED_CUDA_IDS", "_INTEGRATED_CUDA_POOL_MIB"):
         monkeypatch.setattr(LlamaCppBackend, cache, {}, raising = False)
@@ -67,7 +59,6 @@ def host(monkeypatch):
         queries.append(1)
         return list(devices)
 
-    # The real query and its per-mask cache, on a faked driver child.
     monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO, raising = False)
     monkeypatch.setattr(nvidia, "_query_cuda_device_info", _child, raising = False)
     return types.SimpleNamespace(torch = torch, queries = queries)
@@ -83,7 +74,6 @@ def test_metadata_lookups_never_initialise_torch_cuda(host):
     )
     assert host.torch.calls == []
     assert answers == ({6}, {6: 120 * 1024}, False, True, True)
-    # One child per visibility mask: every lookup above reads the same answer.
     assert len(host.queries) == 1
 
 
@@ -130,8 +120,6 @@ def _torch_with_an_integrated_card(host):
     "driver_answer", [None, [], [("0000:01:00.0", False, 180 * GIB, "NVIDIA B200"), None]]
 )
 def test_a_failed_driver_probe_never_hides_a_card_torch_sees(host, monkeypatch, driver_answer):
-    """Unknown, empty while torch counts cards, or partial: the missing ordinals come from
-    get_device_properties, as before this change, so detection only ever widens."""
     monkeypatch.setattr(nvidia, "get_cuda_device_info", lambda: driver_answer)
     _torch_with_an_integrated_card(host)
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {1}
@@ -170,11 +158,10 @@ def _child(
             "0000:3b:00.0 0 85899345920 NVIDIA H100\nERR\n",
             [("0000:3b:00.0", False, 85899345920, "NVIDIA H100"), None],
         ),
-        # a driver that cannot report the PCI bus id still answers the rest
         (0, "- 1 128000000000 NVIDIA GB10\n", [("", True, 128000000000, "NVIDIA GB10")]),
-        (0, "", []),  # cuInit: CUDA_ERROR_NO_DEVICE
-        (2, "", []),  # no NVIDIA driver
-        (3, "", None),  # cuInit failed otherwise: unknown
+        (0, "", []),
+        (2, "", []),
+        (3, "", None),
         (0, "garbage\n", None),
     ],
 )
@@ -196,8 +183,6 @@ def test_a_child_that_times_out_is_unknown(monkeypatch):
 
 
 def test_an_unknown_answer_is_not_asked_again_for_a_while(monkeypatch):
-    """A slow or failing cuInit must not start a child on every lookup: unknown and partial answers are
-    reused for the retry window, per mask; a complete one for the process."""
     monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     clock = [1000.0]
@@ -219,27 +204,24 @@ def test_an_unknown_answer_is_not_asked_again_for_a_while(monkeypatch):
     monkeypatch.setattr(nvidia.subprocess, "run", _run)
     assert nvidia.get_cuda_device_info() is None
     assert nvidia.get_cuda_device_info() is None and len(runs) == 1
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")  # another mask is its own question
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
     assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4"), None]
     assert len(runs) == 2
     clock[0] += nvidia._CUDA_DEVICE_INFO_RETRY_S + 1
     assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4")]
     assert len(runs) == 3
-    clock[0] += 10 * nvidia._CUDA_DEVICE_INFO_RETRY_S  # a complete answer is kept for the process
+    clock[0] += 10 * nvidia._CUDA_DEVICE_INFO_RETRY_S
     assert nvidia.get_cuda_device_info() == [("0000:01:00.0", False, 8589934592, "NVIDIA T4")]
     assert len(runs) == 3
 
 
 def test_the_real_query_answers_no_device_under_an_empty_mask(monkeypatch):
-    """End to end on this host, whatever it is (Linux, Windows, macOS, x86_64 or ARM64, a driver or none):
-    with every GPU hidden the query is a definite empty answer and never raises."""
     monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     assert nvidia.get_cuda_device_info() == []
 
 
 def test_the_driver_child_runs_and_finds_no_device_under_an_empty_mask():
-    """The real script under CUDA_VISIBLE_DEVICES="": cuInit sees no device (or there is no driver at all)."""
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "")
     r = subprocess.run(
         [sys.executable, "-c", nvidia._CUDA_DEVICE_INFO_SCRIPT],
@@ -253,7 +235,6 @@ def test_the_driver_child_runs_and_finds_no_device_under_an_empty_mask():
 
 
 def test_an_ordinal_that_did_not_answer_leaves_the_pool_unsettled(host, monkeypatch):
-    """Device 1 did not answer: it may be integrated, so neither its id set nor the pool totals are cached."""
     monkeypatch.setattr(
         nvidia,
         "get_cuda_device_info",

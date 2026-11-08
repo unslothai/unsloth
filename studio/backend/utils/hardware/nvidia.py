@@ -728,9 +728,7 @@ def get_cuda_ordinal_smi_rows() -> Optional[list[int]]:
     return rows
 
 
-# Driver API only, in a child: cuInit enumerates devices under the inherited CUDA_VISIBLE_DEVICES /
-# CUDA_DEVICE_ORDER without creating a context, so the Studio process never initialises CUDA. Exit 2: no
-# NVIDIA driver; no output after cuInit's CUDA_ERROR_NO_DEVICE (100): no device. Both are definite answers.
+# Exit 2 (no NVIDIA driver) and no output (no device) are definite answers.
 _CUDA_DEVICE_INFO_SCRIPT = r"""
 import ctypes, sys
 try:
@@ -767,22 +765,13 @@ for ordinal in range(count.value):
 """
 
 
-# Per (mask, device order): a complete answer for the life of the process (the driver's device list does not
-# change under a fixed mask); an unknown or partial one for _CUDA_DEVICE_INFO_RETRY_S, so a host whose cuInit
-# is slow or failing does not start a child on every lookup.
 _CUDA_DEVICE_INFO_RETRY_S = 60.0
 _CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
 
 
 def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
-    """(PCI bus id, integrated, total bytes, name) per CUDA ordinal of this process's environment, None for
-    an ordinal that did not answer; the bus id is "" when the driver cannot report it.
-
-    The CUDA driver API in a short child (_CUDA_DEVICE_INFO_SCRIPT): torch.cuda.get_device_properties would
-    instead initialise CUDA in the calling process, after which torch's device calls open a context
-    (hundreds of MiB) on each card they touch. [] when there is no NVIDIA driver or no device; None when
-    the answer is unknown (the child failed or timed out).
-    """
+    """(bus id or "", integrated, total bytes, name) per CUDA ordinal (None: no answer); [] no device, None unknown.
+    A driver-API child, never get_device_properties: that initialises CUDA here, then device calls pin contexts."""
     key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
     hit = _CUDA_DEVICE_INFO_CACHE.get(key)
     if hit is not None and (
@@ -798,9 +787,7 @@ def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]
 def cuda_device_info_or_torch(
     torch_mod: Any = None,
 ) -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
-    """get_cuda_device_info() for the cards torch sees, each ordinal the driver query did not answer filled
-    from torch.cuda.get_device_properties (bus id ""), so a failed probe never hides a card the torch path
-    would have found. Only that fallback initialises CUDA here. None when neither knows."""
+    """get_cuda_device_info() with unanswered ordinals filled from get_device_properties: detection only widens."""
     import sys
 
     info = get_cuda_device_info()

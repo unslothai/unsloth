@@ -105,11 +105,7 @@ def _no_vae_structural_verdict_cache(monkeypatch):
 
 
 def _cuda_device_info_from_the_test_torch():
-    """utils.hardware.nvidia.get_cuda_device_info under test: the machine the test's torch describes.
-
-    The real query runs a child on this host's CUDA driver, whose devices are not the test's. A test that
-    fakes torch (a stand-in module, or a faked torch.cuda.get_device_properties) gets the devices that fake
-    describes; with the real torch it gets none."""
+    """The devices the test's fake torch describes; none for the real torch (never this host's driver)."""
     torch = sys.modules.get("torch")
     cuda = getattr(torch, "cuda", None)
     props = getattr(cuda, "get_device_properties", None)
@@ -148,12 +144,8 @@ def _c_cuda_mask():
     return None if raw is None else raw.decode(errors = "replace").strip()
 
 
-# A run started with every GPU hidden (CUDA_VISIBLE_DEVICES="" or -1: a CPU-only session) must never open a
-# context. A test that drops or rewrites the mask and then reaches a real torch CUDA init would: cuInit reads
-# the C environment, so every card the mask now names becomes usable, and the next device call opens a
-# context on it (xdist workers once held 600-900 MiB on six GPUs this way). Such an init is refused like on
-# a GPU-less host, and the test fails naming the call, unless it is marked gpu. Runs that expose GPUs, and
-# GPU-less hosts, are unaffected.
+# A run that hid every GPU must never open a context: a CPU test that rewrites the mask and reaches a real CUDA
+# init would open one on each card it names (xdist workers held 600-900 MiB on six GPUs), so that init fails it.
 _SESSION_HID_GPUS = os.name != "nt" and _c_cuda_mask() in ("", "-1")
 _cuda_init_state = {"cpu_test": False, "attempts": []}
 

@@ -1530,8 +1530,6 @@ def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
 
 
 def _cuda_device_names() -> list:
-    """NVIDIA device name per CUDA ordinal from the driver API in a child process (no CUDA context);
-    None for an ordinal that did not answer. Raises when the answer is unknown."""
     from utils.hardware import nvidia
 
     info = nvidia.cuda_device_info_or_torch()
@@ -1561,7 +1559,6 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
             order = os.environ.get("CUDA_DEVICE_ORDER", "default")
             header = f"CUDA devices ({count}, CUDA_DEVICE_ORDER={order}):"
         lines = [header]
-        # NVIDIA: the driver API in a child (no context); ROCm reuses torch.cuda for HIP.
         names = None
         if not is_rocm:
             try:
@@ -1781,8 +1778,7 @@ def _detect_hardware_locked() -> DeviceType:
             _hip_ver = getattr(torch.version, "hip", None)
             _is_rocm = _hip_ver is not None or "rocm" in torch.__version__.lower()
             try:
-                # NVIDIA names come from the driver API in a child; get_device_properties would initialise
-                # CUDA in the server, whose later device calls then open contexts it holds until it exits.
+                # Not get_device_properties for NVIDIA: it initialises CUDA in the server.
                 device_name = (
                     torch.cuda.get_device_properties(0).name if _is_rocm else _cuda_device0_name()
                 )
@@ -3149,7 +3145,7 @@ def _cuda_props_are_integrated(props: Any, backend: Optional[str] = "cuda") -> b
 
 
 def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any]]:
-    """Per-GPU name and total VRAM only, without creating a driver context: NVIDIA is answered by the CUDA driver API in a child (nvidia.get_cuda_device_info, so CUDA is never initialised here), ROCm / XPU by get_device_properties, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
+    """Per-GPU name and total VRAM only, without creating a driver context: NVIDIA from the driver API (nvidia.cuda_device_info_or_torch), ROCm / XPU from get_device_properties, while mem_get_info attaches a primary context worth ~612 MiB the process never gives back, and a telemetry poll must not be what pins that, so callers wanting live occupancy go to _torch_get_per_device_info instead. props.total_memory equals mem_get_info's total everywhere except a ROCm APU (see _rocm_props_total_is_carve_out), and used_gb is always None ("telemetry unavailable")."""
     mod, backend = _torch_get_device_module()
     if mod is None:
         return []
@@ -3161,8 +3157,6 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
         and not IS_ROCM
         and not getattr(getattr(torch_mod, "version", None), "hip", None)
     ):
-        # NVIDIA: the driver API in a child. get_device_properties initialises CUDA in this process, and
-        # after that a later mem_get_info anywhere in the server pins a context on each card.
         from utils.hardware import nvidia
 
         info = nvidia.cuda_device_info_or_torch(torch_mod)
