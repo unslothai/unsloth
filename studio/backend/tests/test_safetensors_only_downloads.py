@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import struct
 import sys
 import types
@@ -34,7 +35,10 @@ def _write_safetensors(path: Path) -> None:
 def _pipeline(tmp_path: Path, components: dict) -> Path:
     root = tmp_path / "pipe"
     root.mkdir()
-    index = {"_class_name": "FluxPipeline", "scheduler": ["diffusers", "X"]}
+    index = {
+        "_class_name": "FluxPipeline",
+        "scheduler": ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+    }
     for name, files in components.items():
         index[name] = ["diffusers", "Y"]
         (root / name).mkdir()
@@ -212,6 +216,23 @@ def test_a_bin_only_component_keeps_the_library_default(tmp_path):
     }
 
 
+def test_a_partly_cached_snapshot_is_unknown_not_complete(tmp_path):
+    """A weight-bearing component that is missing, or present with its config only (a partly cached snapshot),
+    could still be .bin-only on the Hub: never force safetensors on it."""
+    root = _pipeline(tmp_path, {"transformer": ["diffusion_pytorch_model.safetensors"]})
+    index = json.loads((root / "model_index.json").read_text())
+    index["text_encoder"] = ["transformers", "CLIPTextModel"]
+    index["tokenizer"] = ["transformers", "CLIPTokenizer"]
+    (root / "model_index.json").write_text(json.dumps(index))
+    # tokenizer and scheduler hold no weights, so their absence or config-only folder is no evidence either way
+    assert ds.pipeline_safetensors_kwargs(str(root)) == {}
+    (root / "text_encoder").mkdir()
+    (root / "text_encoder" / "config.json").write_text("{}")
+    assert ds.pipeline_safetensors_kwargs(str(root)) == {}
+    _write_safetensors(root / "text_encoder" / "model.safetensors")
+    assert ds.pipeline_safetensors_kwargs(str(root)) == {"use_safetensors": True}
+
+
 def test_a_variant_only_safetensors_does_not_count(tmp_path):
     root = _pipeline(
         tmp_path,
@@ -341,7 +362,10 @@ def test_a_safetensors_single_file_passes(tmp_path):
 def test_the_single_file_check_no_longer_depends_on_repo_trust():
     image = (_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     video = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
-    assert 'if kind == "single_file":\n                    # Trusted repo or not' in image
+    # The single-file check sits directly under the kind test, not behind a trust test.
+    assert re.search(
+        r'if kind == "single_file":\s*(?:#[^\n]*\n\s*)*assert_pickle_free_single_file\(', image
+    )
     assert "assert_pickle_free_single_file(\n                        single_file_path" in image
     assert (
         "if checked_single_file:\n                assert_pickle_free_single_file(checkpoint_path"

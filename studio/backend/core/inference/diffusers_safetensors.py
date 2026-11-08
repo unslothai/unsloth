@@ -69,15 +69,29 @@ def _manifest_components(root: Path) -> Optional[list]:
                 continue
             # classic manifests: [library, class]; modular ones: [library, class, {spec}] or nested specs
             if isinstance(value, (list, tuple)) and value and value[0] is not None:
-                out.append(key)
+                out.append((key, value[1] if len(value) > 1 else None))
         return out
     return None
 
 
+# Manifest classes that never hold weights (a scheduler / tokenizer folder is config only).
+_WEIGHTLESS_CLASS_SUFFIXES = (
+    "Scheduler",
+    "Tokenizer",
+    "TokenizerFast",
+    "Processor",
+    "FeatureExtractor",
+)
+
+
+def _weightless(class_name: Any) -> bool:
+    return isinstance(class_name, str) and class_name.endswith(_WEIGHTLESS_CLASS_SUFFIXES)
+
+
 def local_pipeline_safetensors_complete(root: Any, passed: Iterable[str] = ()) -> bool:
     """True when ``root`` is a local diffusers pipeline folder whose every manifest component that holds weights
-    (and is not supplied pre-built in ``passed``) has a ``.safetensors`` weight. False when unknown or any component
-    is pickle-only."""
+    (and is not supplied pre-built in ``passed``) has a ``.safetensors`` weight. False when unknown (a weight-bearing
+    component missing or without weights, e.g. a partly cached snapshot) or any component is pickle-only."""
     try:
         base = Path(str(root)).expanduser()
         if not base.is_dir():
@@ -89,17 +103,18 @@ def local_pipeline_safetensors_complete(root: Any, passed: Iterable[str] = ()) -
         return False
     skip = set(passed or ())
     seen = False
-    for name in components:
+    for name, class_name in components:
         if name in skip:
             continue
         folder = base / name
-        if not folder.is_dir():
-            continue
-        state = component_weight_state(folder)
+        state = component_weight_state(folder) if folder.is_dir() else None
         if state is False:
             return False
-        if state is True:
-            seen = True
+        if state is None:
+            if _weightless(class_name):
+                continue
+            return False
+        seen = True
     return seen
 
 
