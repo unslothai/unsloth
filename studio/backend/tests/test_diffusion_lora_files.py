@@ -594,3 +594,16 @@ def test_only_the_transformers_metadata_is_read(tmp_path):
     assert write(None) is None
     assert lf.REWRITE_METADATA_ENV == REWRITE_METADATA_ENV
     assert lf.read_lora_metadata(str(tmp_path / "missing.safetensors")) is None
+
+
+def test_a_caret_pattern_is_anchored_at_both_ends_as_in_peft():
+    peft_other = pytest.importorskip("peft.utils.other")
+    meta = {"r": 4, "lora_alpha": 4, "alpha_pattern": {r"^layers\.0\.proj\.q": 8}}
+    for stem in ("layers.0.proj.q", "layers.0.proj.qkv"):
+        want = (
+            8
+            if peft_other.get_pattern_key(meta["alpha_pattern"], stem) in meta["alpha_pattern"]
+            else 4
+        )
+        assert lf._metadata_scale(meta, stem, 4) == want / 4
+    assert lf._metadata_scale(meta, "layers.0.proj.qkv", 4) == 1.0

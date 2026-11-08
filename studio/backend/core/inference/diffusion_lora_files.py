@@ -64,13 +64,9 @@ def read_lora_metadata(path: str) -> Optional[dict]:
 
 
 def _pattern_value(patterns: Any, stem: str, default: Any) -> Any:
-    """PEFT's rank_pattern / alpha_pattern lookup: the first key naming ``stem`` or a suffix of it."""
+    """PEFT's ``get_pattern_key`` rule: the first key that matches the end of ``stem`` on a dot boundary."""
     for key, value in (patterns or {}).items():
-        key = str(key)
-        if key.startswith("^"):
-            if re.match(key, stem):
-                return value
-        elif re.match(rf"(.*\.)?({key})$", stem):
+        if re.match(rf"(.*\.)?({key})$", stem):
             return value
     return default
 
