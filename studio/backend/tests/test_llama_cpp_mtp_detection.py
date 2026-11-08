@@ -3768,8 +3768,7 @@ def test_positive_budget_probe_uses_resolved_launch_path(monkeypatch):
 
 
 def test_positive_budget_probe_runs_once_per_binary_and_budget(tmp_path, monkeypatch):
-    """probe_server_capabilities hands back a fresh dict on --fit-target builds, so the answer has
-    to be kept per binary: one --help spawn per (binary, budget), again after the binary changes."""
+    """Caps are a fresh copy on --fit-target builds: one spawn per (binary, budget, build)."""
     import core.inference.llama_cpp as llama_cpp_module
 
     binary = tmp_path / "llama-server"
