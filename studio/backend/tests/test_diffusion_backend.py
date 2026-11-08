@@ -13403,7 +13403,6 @@ def test_auto_on_rdna_honours_an_explicit_speed_tier(fake_runtime, tmp_path, mon
 def test_auto_on_rdna_stays_bf16_when_the_int8_plan_still_offloads(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # 16 GiB RDNA card, automatic memory: even the int8 transformer does not fit resident, so AUTO keeps bf16.
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import DeviceMemory
 
