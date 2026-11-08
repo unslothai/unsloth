@@ -672,7 +672,6 @@ def test_pickled_submodule_does_not_serialize_its_owner(monkeypatch):
 
 
 def test_vllm_shared_weights_are_refused():
-    # vLLM owns its inference path and captured state.
     D = _driver()
     model = types.SimpleNamespace(
         config = types.SimpleNamespace(model_type = "llama"), vllm_engine = object()

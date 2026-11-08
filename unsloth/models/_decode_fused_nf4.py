@@ -82,7 +82,6 @@ class _ApplyReleasing:
         return type(self), (root if root is module else None, module)
 
     def __deepcopy__(self, memo):
-        # Saving a submodule must not clone the rest of the model through its owner hook.
         return type(self)(memo.get(id(self.root_ref())), memo.get(id(self.module_ref())))
 
 
@@ -197,7 +196,6 @@ def _same_tables(a, b):
                 if ta.shape != tb.shape or ta.device != tb.device:
                     return False
                 differs.append((ta != tb).any())
-    # One host sync for the whole model.
     return not differs or not bool(torch.stack(differs).any())
 
 
@@ -213,7 +211,6 @@ def _reusable(plan, built):
 
 
 def _signature(plan):
-    # An equal signature permits reusing the buffers captured by the previous step.
     return (
         (
             plan.device,
