@@ -62,6 +62,12 @@ log("start", argv=args, env={k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICE
 if mode == "exit":
     print("stub: failed to load model", flush=True)
     sys.exit(3)
+if mode == "unknown_arch":
+    print("error loading model architecture: unknown model architecture: 'laya'", flush=True)
+    sys.exit(1)
+if mode == "unknown_vocab":
+    print("error loading model vocabulary: unknown tokenizer: 'mmbert'", flush=True)
+    sys.exit(1)
 key = opt("--api-key") or open(opt("--api-key-file"), encoding="utf-8").read().strip()
 port, alias, ub, mmproj = int(opt("--port")), opt("--alias"), int(opt("-ub")), "--mmproj" in args
 
@@ -215,6 +221,7 @@ def home(tmp_path, monkeypatch):
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())
+    monkeypatch.setattr(laya_runtime, "_unloadable", set(), raising = False)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     monkeypatch.setattr(systemone_settings, "gpu_available", lambda: False)
@@ -798,6 +805,28 @@ def test_auto_retries_an_over_long_state_on_pytorch_only_when_it_is_longer(
         assert home.torch_agents == []
 
 
+def test_auto_refuses_an_over_long_state_when_pytorch_is_not_downloaded(
+    home, client, stub, monkeypatch
+):
+    downloads = []
+
+    def not_downloaded(checkpoint, local_only):
+        if not local_only:
+            downloads.append(checkpoint.name)
+        raise FileNotFoundError(checkpoint.name)
+
+    monkeypatch.setattr(laya_runtime, "_clef_dir", not_downloaded)
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash", native_ctx = 1024)
+    response = _post(client, state = "word " * 1100)
+    if laya_runtime._loader is not None:
+        laya_runtime._loader.join(5)
+    assert response.status_code == 422 and "at most 1024" in response.json()["detail"]["message"]
+    assert downloads == [] and home.torch_agents == []
+    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert len(stub.records("start")) == 1
+
+
 def test_other_native_failures_are_surfaced_not_retried(home, client, stub):
     _cache_gguf(home.cache)
     _put(client, enabled = True, model = "clef-flash")
@@ -942,164 +971,6 @@ def test_laya_serving_is_unchanged(home, client, stub, monkeypatch):
         response.status_code == 200 and response.headers["x-unsloth-decision-backend"] == "pytorch"
     )
     assert stub.records("start") == []
-
-
-def _laya_folder(root: Path, name = "laya_run") -> Path:
-    folder = root / name
-    for sub in ("encoder", "tokenizer"):
-        (folder / sub).mkdir(parents = True)
-    (folder / "rl_agent_config.json").write_text("{}", encoding = "utf-8")
-    (folder / "model.safetensors").write_bytes(b"weights")
-    return folder
-
-
-@pytest.fixture
-def torch_laya(monkeypatch):
-    """PyTorch Laya stubbed out; llama.cpp loads stay real."""
-    monkeypatch.setattr(
-        laya_runtime,
-        "_load_checkpoint",
-        lambda c: _REAL_LOAD(c) if laya_runtime._is_native(c) else (SimpleNamespace(), "cpu"),
-    )
-    monkeypatch.setattr(
-        laya_runtime,
-        "_predict",
-        lambda agent, state, questions: (
-            {
-                "answers": {n: {"type": "noul", "noul": 0.5, "confidence": 0.5} for n in questions},
-                "usage": {"input_tokens": 1, "output_tokens": 0},
-            },
-            False,
-        ),
-    )
-
-
-def test_a_laya_fine_tune_serves_its_current_export_and_ignores_a_stale_one(
-    home, client, stub, torch_laya
-):
-    folder = _laya_folder(home.outputs, "laya_exported")
-    name = catalog.FINE_TUNE_PREFIX + folder.name
-    _put(client, enabled = True, model = name)
-    settings = client.get("/api/settings/systemone").json()
-    assert settings["effective_backend"] == "pytorch"
-    assert settings["fallback_reason"] == "This Laya folder has no current GGUF export."
-    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
-
-    _export(folder, mmproj = False, layout = "laya")
-    laya_runtime.unload()
-    settings = client.get("/api/settings/systemone").json()
-    assert (settings["effective_backend"], settings["input_modalities"]) == ("llama.cpp", ["text"])
-    response = _post(client)
-    assert response.status_code == 200, response.text
-    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
-    argv = stub.records("start")[0]["argv"]
-    assert argv[argv.index("-m") + 1] == str(folder / "gguf" / "model-Q8_0.gguf")
-    assert argv[argv.index("--alias") + 1] == name and "--mmproj" not in argv
-    # llama.cpp's own Laya answer passes through, as for the stock Laya GGUF.
-    assert response.json()["answers"]["angry"] == {"type": "noul", "noul": 0.7}
-    assert home.torch_agents == []
-
-    # Retrained weights make the export stale: PyTorch again.
-    laya_runtime.unload()
-    time.sleep(0.01)
-    (folder / "model.safetensors").write_bytes(b"retrained")
-    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
-    assert len(stub.records("start")) == 1
-
-
-def test_a_laya_fine_tune_follows_the_runtime_setting(home, client, stub, torch_laya):
-    folder = _laya_folder(home.outputs, "laya_forced")
-    name = catalog.FINE_TUNE_PREFIX + folder.name
-    _put(client, enabled = True, model = name, backend = "llama.cpp")
-    refused = _post(client)
-    assert refused.status_code == 400
-    assert refused.json()["detail"]["message"].startswith(
-        "This Laya folder has no current GGUF export."
-    )
-
-    _export(folder, mmproj = False, layout = "laya")
-    _put(client, backend = "pytorch")
-    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
-    assert stub.records("start") == []
-    _put(client, backend = "llama.cpp")
-    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
-    refused = _post(client, images = [PNG])
-    assert refused.status_code == 400 and "Laya reads text only" in refused.text
-
-
-def test_a_laya_fine_tune_never_goes_to_mlx(home, stub, monkeypatch):
-    folder = _laya_folder(home.outputs, "laya_mlx")
-    _export(folder, mmproj = False, layout = "laya")
-    checkpoint = catalog.fine_tune(catalog.FINE_TUNE_PREFIX + folder.name)
-    monkeypatch.setattr(laya_runtime, "_engine_available", lambda: True)
-    native = laya_runtime._native_target(checkpoint)
-    assert native.backend == "llama.cpp"
-    assert laya_runtime._mlx_target(checkpoint) is None and laya_runtime._mlx_target(native) is None
-    assert laya_runtime.select(checkpoint, preference = "mlx") == (checkpoint, None)
-    assert laya_runtime.select(checkpoint, preference = "auto") == (native, None)
-    assert not laya_runtime.mlx_ready(checkpoint)
-
-
-def test_auto_keeps_a_laya_fine_tune_on_pytorch_while_training_holds_the_gpu(
-    home, stub, monkeypatch
-):
-    folder = _laya_folder(home.outputs, "laya_training")
-    _export(folder, mmproj = False, layout = "laya")
-    checkpoint = catalog.fine_tune(catalog.FINE_TUNE_PREFIX + folder.name)
-    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
-    home.training = True
-    assert laya_runtime.select(checkpoint, preference = "auto") == (
-        checkpoint,
-        "A training run is using the GPU.",
-    )
-
-
-def test_a_laya_fine_tune_returns_to_its_gguf_when_training_ends(
-    home, client, stub, torch_laya, monkeypatch
-):
-    folder = _laya_folder(home.outputs, "laya_after_training")
-    _export(folder, mmproj = False, layout = "laya")
-    _put(client, enabled = True, model = catalog.FINE_TUNE_PREFIX + folder.name)
-    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
-    assert _post(client).headers["x-unsloth-decision-backend"] == "llama.cpp"
-
-    home.training = True
-    laya_runtime.unload()
-    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
-    assert _post(client).headers["x-unsloth-decision-backend"] == "pytorch"
-
-    # The resident PyTorch Laya gives way to the GGUF once the run ends.
-    home.training = False
-    response = _post(client)
-    assert response.status_code == 200, response.text
-    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
-    assert laya_runtime.status()["loaded_backend"] == "llama.cpp"
-    assert len(stub.records("start")) == 2
-
-
-def test_a_laya_fine_tune_gguf_joins_a_resident_chat_model_when_it_fits(
-    home, client, stub, torch_laya, monkeypatch
-):
-    folder = _laya_folder(home.outputs, "laya_beside")
-    _export(folder, mmproj = False, layout = "laya")
-    name = catalog.FINE_TUNE_PREFIX + folder.name
-    _put(client, enabled = True, model = name, backend = "llama.cpp")
-    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
-    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
-    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
-    joined = _post(client)
-    assert joined.status_code == 200 and joined.headers["x-unsloth-decision-backend"] == "llama.cpp"
-    assert laya_runtime._device_name != "cpu"
-    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
-    laya_runtime.unload()
-    # No room beside it: the GGUF serves on the CPU and says why.
-    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
-    on_cpu = _post(client)
-    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
-    argv = stub.records("start")[-1]["argv"]
-    assert argv[argv.index("-ngl") + 1] == "0"
-    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
-    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
 
 
 def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stub, monkeypatch):
@@ -1325,7 +1196,7 @@ def _cache_blob(
 
 
 def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
-    gguf = {n for n, c in catalog.CHECKPOINTS.items() if c.layout == "gguf"}
+    gguf = {n for n, c in catalog.CHECKPOINTS.items() if c.layout == "gguf" and c.backend != "mlx"}
     assert gguf == {
         "kev-0.8b",
         "kev-4b",
@@ -1335,6 +1206,10 @@ def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
         "openjev",
         "laya-gguf",
         "julia-1",
+        "d1-omni-600m",
+        "d1-2b",
+        "d1-omni-2b",
+        "d1-3b",
     }
     for name in gguf:
         checkpoint, companion = catalog.CHECKPOINTS[name], catalog.GGUF_COMPANIONS[name]
@@ -1496,6 +1371,258 @@ def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub)
     refused = _post(client, images = [_image_url("png", big.getvalue())])
     assert refused.status_code == 422 and "4096 x 4096" in refused.text
     assert stub.records("start") == []
+
+
+def _laya_fine_tune(
+    root: Path,
+    name = "laya_run",
+    exported = True,
+) -> Path:
+    # Every Studio install ships tokenizers; the export path reads the tokenizer with it.
+    tokenizers = pytest.importorskip("tokenizers")
+    folder = root / name
+    (folder / "encoder").mkdir(parents = True)
+    (folder / "tokenizer").mkdir()
+    tokenizer = tokenizers.Tokenizer(tokenizers.models.WordLevel({"[UNK]": 0}, unk_token = "[UNK]"))
+    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+    tokenizer.save(str(folder / "tokenizer" / "tokenizer.json"))
+    (folder / "tokenizer" / "tokenizer_config.json").write_text(
+        '{"mask_token": "[MASK]"}', encoding = "utf-8"
+    )
+    (folder / "rl_agent_config.json").write_text(
+        '{"max_len": 1024, "head_max_len": 256}', encoding = "utf-8"
+    )
+    (folder / "model.safetensors").write_bytes(b"weights")
+    if exported:
+        _export(folder, mmproj = False, layout = "laya")
+    return folder
+
+
+def _torch_laya(monkeypatch) -> list:
+    loaded = []
+
+    def load(checkpoint):
+        if laya_runtime._is_native(checkpoint):
+            return _REAL_LOAD(checkpoint)
+        loaded.append(checkpoint)
+        return SimpleNamespace(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
+    monkeypatch.setattr(
+        laya_runtime,
+        "_predict",
+        lambda agent, state, questions: (
+            {
+                "answers": {n: {"type": "noul", "noul": 0.5, "confidence": 0.5} for n in questions},
+                "usage": {"input_tokens": 1, "output_tokens": 0},
+            },
+            False,
+        ),
+    )
+    return loaded
+
+
+NOUL = {"q": {"type": "noul", "instructions": "x"}}
+
+
+def test_an_exported_laya_fine_tune_answers_through_llama_cpp(home, client, stub):
+    folder = _laya_fine_tune(home.outputs)
+    settings = _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert settings["effective_backend"] == "llama.cpp" and settings["has_gguf_form"] is True
+    assert settings["input_modalities"] == ["text"]
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert response.json()["answers"]["q"]["noul"] == 0.7
+    argv = stub.records("start")[0]["argv"]
+    assert argv[argv.index("-m") + 1] == str(folder / "gguf" / "model-Q8_0.gguf")
+
+
+def test_a_laya_export_reads_no_more_than_pytorch_serves(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert _post(client, questions = NOUL).status_code == 200
+    argv = stub.records("start")[0]["argv"]
+    assert argv[argv.index("-c") + 1] == argv[argv.index("-ub") + 1] == "1024"
+    refused = _post(client, state = "word " * 1100, questions = NOUL)
+    assert refused.status_code == 422 and "at most 1024" in refused.json()["detail"]["message"]
+    assert laya_runtime._loaded.backend == "llama.cpp"
+
+
+def test_auto_keeps_an_exported_laya_fine_tune_on_pytorch(home, client, stub, monkeypatch):
+    loaded = _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs)
+    settings = _put(client, enabled = True, model = "laya-ft:laya_run")
+    assert settings["effective_backend"] == "pytorch" and settings["has_gguf_form"] is True
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "pytorch"
+    assert len(loaded) == 1 and loaded[0].backend == "pytorch"
+    assert stub.records("start") == []
+
+
+def test_a_laya_fine_tune_stays_on_pytorch_without_a_usable_export(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    assert laya_runtime.select(laya, preference = "pytorch") == (laya, None)
+    assert laya_runtime.select(laya, preference = "mlx") == (laya, None)
+    plain = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs, 'plain', False).name}")
+    assert laya_runtime.select(plain, preference = "llama.cpp") == (plain, None)
+    assert not laya_runtime.native_ready(plain)
+    (Path(laya.source) / "model.safetensors").write_bytes(b"retrained")
+    assert laya_runtime.select(laya) == (laya, None)
+    stock = catalog.CHECKPOINTS["laya-multilingual"]
+    assert laya_runtime.select(stock, preference = "llama.cpp") == (stock, None)
+
+
+def test_a_local_laya_export_is_read_from_its_subfolder(home, client, stub):
+    root = _laya_fine_tune(home.outputs, "local_root")
+    inner = _laya_fine_tune(root, "inner")
+    laya = catalog.Checkpoint(catalog.LOCAL_NAME, str(root), "inner", "Local Laya checkpoint.")
+    native = laya_runtime.select(laya, preference = "llama.cpp")[0]
+    assert native.backend == "llama.cpp"
+    assert (
+        laya_runtime._native_files(native, local_only = True)[0] == inner / "gguf" / "model-Q8_0.gguf"
+    )
+    (inner / "gguf" / contract.EXPORT_FILE).unlink()
+    assert laya_runtime.select(laya, preference = "llama.cpp") == (laya, None)
+
+
+def test_a_laya_export_refuses_what_llama_cpp_cannot_take(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    gap = {"q": {"type": "score", "instructions": "x", "criteria": ["only"]}}
+    with pytest.raises(laya_runtime.Unavailable):
+        laya_runtime.select(laya, questions = gap, preference = "llama.cpp")
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: None)
+    with pytest.raises(laya_runtime.Unavailable, match = "not installed"):
+        laya_runtime.select(laya, preference = "llama.cpp")
+
+
+def test_a_laya_export_gives_way_to_a_training_run(home, client, stub, monkeypatch):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    forced = laya_runtime.select(laya, preference = "llama.cpp")[0]
+    assert forced.backend == "llama.cpp"
+    home.training = True
+    with pytest.raises(laya_runtime.Unavailable, match = "training run"):
+        laya_runtime._ensure_loading(forced)
+
+
+def test_a_laya_export_joins_a_resident_chat_model_when_it_fits(home, client, stub, monkeypatch):
+    _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs, "laya_beside")
+    _put(client, enabled = True, model = "laya-ft:laya_beside", backend = "llama.cpp")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
+    joined = _post(client, questions = NOUL)
+    assert joined.status_code == 200 and joined.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    assert laya_runtime._device_name != "cpu"
+    assert set(gpu_arbiter.residents()) == {gpu_arbiter.CHAT, gpu_arbiter.DECISIONS}
+    laya_runtime.unload()
+    # No room beside it: the GGUF serves on the CPU and says why.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 0)
+    on_cpu = _post(client, questions = NOUL)
+    assert on_cpu.status_code == 200 and laya_runtime._device_name == "cpu"
+    argv = stub.records("start")[-1]["argv"]
+    assert argv[argv.index("-ngl") + 1] == "0"
+    assert "on the CPU" in laya_runtime.status()["fallback_reason"]
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
+
+
+def test_a_beside_load_rechecks_its_room_when_the_arbiter_admits_it(
+    home, client, stub, monkeypatch
+):
+    _torch_laya(monkeypatch)
+    _laya_fine_tune(home.outputs, "laya_beside_race")
+    _put(client, enabled = True, model = "laya-ft:laya_beside_race", backend = "llama.cpp")
+    monkeypatch.setattr(laya_runtime, "_native_gpu", lambda: True)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    # Priced with room, but the room is gone by the time the arbiter admits it.
+    monkeypatch.setattr(laya_runtime, "_free_mib", lambda: 1 << 20)
+    monkeypatch.setattr(laya_runtime, "_fits_beside", lambda checkpoint: False)
+    refused = _post(client, questions = NOUL)
+    assert refused.status_code != 200
+    assert gpu_arbiter.residents() == {gpu_arbiter.CHAT: None}
+    assert stub.records("start") == []
+
+
+@pytest.mark.parametrize("mode", ["unknown_arch", "unknown_vocab"])
+def test_a_laya_export_llama_cpp_cannot_load_is_refused_and_remembered(home, client, stub, mode):
+    laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
+    _put(client, enabled = True, model = laya.name, backend = "llama.cpp")
+    stub.set_mode(mode)
+    assert _post(client, questions = NOUL).status_code == 503
+    assert len(stub.records("start")) >= 1
+    with pytest.raises(laya_runtime.Unavailable, match = "cannot load"):
+        laya_runtime.select(laya, preference = "llama.cpp")
+    assert laya_runtime.select(laya, preference = "auto") == (laya, None)
+
+
+def test_a_laya_export_that_failed_for_memory_loads_again(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    stub.set_mode("exit")
+    assert _post(client, questions = NOUL).status_code == 503
+    stub.set_mode("ok")
+    laya_runtime.unload()
+    assert _post(client, questions = NOUL).status_code == 200
+
+
+LONG_OPTION = " ".join(f"word{i}" for i in range(60))
+
+
+@pytest.mark.parametrize(
+    "question, refusal",
+    [
+        (
+            {"type": "score", "instructions": "x", "criteria": ["a " * 40] * 8},
+            "option budget",
+        ),
+        ({"type": "noul", "instructions": "word " * 300}, "instructions would be cut short"),
+    ],
+)
+def test_a_laya_export_refuses_what_llama_cpp_would_cut(home, client, stub, question, refusal):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    assert _post(client, questions = NOUL).status_code == 200
+    sent = len(stub.records("request"))
+    response = _post(client, questions = {"q": question})
+    assert response.status_code == 422 and refusal in response.json()["detail"]["message"]
+    assert len(stub.records("request")) == sent
+
+
+def test_a_laya_export_answers_a_long_option_as_pytorch_does(home, client, stub):
+    _laya_fine_tune(home.outputs)
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    question = {"type": "choice", "instructions": "x", "criteria": {"a": LONG_OPTION, "b": "short"}}
+    response = _post(client, questions = {"q": question})
+    assert response.status_code == 200
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+
+
+def test_a_laya_export_without_a_readable_tokenizer_is_refused(home, client, stub):
+    folder = _laya_fine_tune(home.outputs)
+    (folder / "tokenizer" / "tokenizer.json").unlink()
+    _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"].startswith("Could not read the tokenizer")
+    assert stub.records("start") == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        {"type": "choice", "instructions": "x", "criteria": {"a": None, "b": "", "c": {"k": 1}}},
+        {"type": "score", "instructions": "x", "criteria": ["low", {"k": [1, 2]}]},
+        {"type": "noul", "instructions": "x"},
+        {"type": "noul", "instructions": "x", "criteria": {"true": "yes", "false": ""}},
+    ],
+)
+def test_export_options_read_like_the_vendored_laya(question):
+    common = laya_runtime._laya().common
+    internal = laya_runtime._laya().agent.Agent._to_internal(question)
+    assert laya_runtime._export_options(question) == common.render_options(internal)
 
 
 def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch):

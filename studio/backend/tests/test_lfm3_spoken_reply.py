@@ -50,11 +50,12 @@ _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 
 import core.inference.inference as inf  # noqa: E402
 
+# Drop the stubs once inf is bound: leftover stubs make _shared_policy return None.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_audio_chat_load import _config, backend  # noqa: E402, F401 - fixture
+from test_audio_chat_load import _config, backend, multimodal_auto_class  # noqa: E402, F401 - fixtures
 
 
 class _Codec(torch.nn.Module):
@@ -67,7 +68,6 @@ class _Codec(torch.nn.Module):
 
     def decode(self, codes):
         self.decoded = codes
-        # 1920 samples per frame, as LiquidCodec
         samples = codes.shape[-1] * 1920
         return types.SimpleNamespace(audio_values = torch.full((1, 1, samples), 0.25))
 
@@ -187,17 +187,12 @@ def test_speech_codec_needs_the_bundled_codec_and_speech_frames():
 
 
 @pytest.mark.parametrize("codec, speaks", [(True, True), (False, False)])
-def test_load_reports_speaks(backend, monkeypatch, codec, speaks):  # noqa: F811
-    import unsloth
-
+def test_load_reports_speaks(backend, codec, speaks):  # noqa: F811
     b, _ = backend
     model, processor = _Model(), _Processor(_Codec() if codec else None)
-    monkeypatch.setattr(
-        unsloth,
-        "FastModel",
-        types.SimpleNamespace(
-            from_pretrained = lambda **_k: (model, processor), for_inference = lambda *_a: None
-        ),
+    # The backend fixture put a per-test unsloth module in sys.modules; load_model imports from it.
+    sys.modules["unsloth"].FastModel = types.SimpleNamespace(
+        from_pretrained = lambda **_k: (model, processor), for_inference = lambda *_a: None
     )
     assert inf.InferenceBackend.load_model(b, _config(), trust_remote_code = True) is True
     assert b.models["LiquidAI/LFM3-Audio-2B"]["speaks"] is speaks
@@ -298,14 +293,22 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
         is_loaded = False
         _is_audio = False
 
-    def backend_for(speaks):
+    seen = []
+
+    def backend_for(speaks, is_mlx = False):
         class _Orchestrator:
             active_model_name = "LiquidAI/LFM3-Audio-2B"
             models = {
-                active_model_name: {"is_audio": False, "audio_type": "audio_vlm", "speaks": speaks}
+                active_model_name: {
+                    "is_audio": False,
+                    "audio_type": "audio_vlm",
+                    "speaks": speaks,
+                    "is_mlx": is_mlx,
+                }
             }
 
-            def generate_audio_response(self, **_kwargs):
+            def generate_audio_response(self, **kwargs):
+                seen.append(kwargs)
                 return b"RIFFwav", 24000
 
         return _Orchestrator()
@@ -320,11 +323,29 @@ def test_tts_route_serves_a_speaking_chat_model_and_refuses_a_silent_one(monkeyp
     monkeypatch.setattr(route, "get_inference_backend", lambda: backend_for(True))
     wav, rate, _, audio_type = asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
     assert (wav, rate, audio_type) == (b"RIFFwav", 24000, "audio_vlm")
+    asyncio.run(route._generate_tts_wav("hello", payload, None, "t", voice = "male"))
+    assert seen[-1]["audio_options"] == {"voice": "male"}
 
-    monkeypatch.setattr(route, "get_inference_backend", lambda: backend_for(False))
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
-    assert exc.value.detail == "Active model is not an audio model."
+    for silent in (backend_for(False), backend_for(True, is_mlx = True)):
+        monkeypatch.setattr(route, "get_inference_backend", lambda silent = silent: silent)
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(route._generate_tts_wav("hello", payload, None, "t"))
+        assert exc.value.detail == "Active model is not an audio model."
+
+
+@pytest.mark.parametrize("window, expected", [(20, 13), (100_000, 2048), (None, 2048)])
+def test_unset_spoken_budget_fits_the_served_window(monkeypatch, window, expected):
+    import core.inference.runtime_context as rc
+
+    monkeypatch.setattr(rc, "runtime_context_length", lambda _m, *_a: window)
+    model = _Model()
+    b = _backend(model, _Processor(_Codec()))
+    list(
+        inf.InferenceBackend._speak_audio_reply(
+            b, [{"role": "user", "content": "Hi"}], "", np.zeros(1600, np.float32), None, None, None
+        )
+    )
+    assert model.kwargs["max_new_tokens"] == expected
 
 
 class LiquidCodecStreamingCache:

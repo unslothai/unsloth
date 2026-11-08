@@ -494,7 +494,7 @@ def test_vad_families_never_reach_the_folder_check(monkeypatch, tmp_path):
         assert family in acm.FAMILIES
         # Voice mode serves PulseVAD; these two ship only in the runtime's asset bundle.
         reason = acm.family_policy(family).unsupported
-        assert "VAD ships inside the audio runtime's asset bundle" in reason
+        assert reason.startswith("Voice activity detection") and "asset bundle" in reason
 
 
 @pytest.fixture

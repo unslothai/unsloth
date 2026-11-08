@@ -29,6 +29,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // False when the resident model belongs to another account; the response then carries nothing else.
+  yours?: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;
@@ -53,6 +55,7 @@ export interface DiffusionStatus {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   speed_optims?: string[];
   attention_backend?: string | null;
@@ -264,6 +267,17 @@ export interface DiffusionGenerateRequest {
   hires?: HiresRequest;
   // Upscale workflow: a model upscaler id from status.upscale_models; omitted = Lanczos.
   upscale_model?: string | null;
+  // Server-side X/Y grid (API callers; the page's Compare grid builds its cells client-side).
+  xy?: { x: XYAxisSpec; y?: XYAxisSpec };
+}
+
+export interface XYAxisSpec {
+  field:
+    | "seed" | "steps" | "guidance" | "sampler" | "schedule_type" | "shift" | "base_shift" | "max_shift"
+    | "strength" | "clip_skip" | "cfg_rescale" | "variation_seed" | "variation_strength" | "lora_weight"
+    | "prompt_sr";
+  values: Array<number | string>;
+  index?: number;
 }
 
 export interface LoraSpecInput {
@@ -313,6 +327,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
@@ -324,6 +340,7 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   attention_backend?: string | null;
   transformer_cache?: string | null;
@@ -370,6 +387,13 @@ export interface GalleryImage {
   hires_base_width?: number | null;
   hires_base_height?: number | null;
   created_at: number;
+  xy_grid?: {
+    x: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    y?: { field: string; index: number | null; values: Array<number | string>; labels: string[] };
+    cells: string[];
+    cell_width?: number;
+    cell_height?: number;
+  } | null;
   pinned?: boolean;
   archived?: boolean;
   order_at?: number | null;
@@ -377,6 +401,7 @@ export interface GalleryImage {
 
 export interface DiffusionGenerateResponse {
   images: GalleryImage[];
+  grid?: GalleryImage | null;
 }
 
 export async function parseJson<T>(response: Response): Promise<T> {
@@ -446,6 +471,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;

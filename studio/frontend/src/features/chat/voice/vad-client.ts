@@ -35,11 +35,21 @@ async function detail(response: Response): Promise<string> {
   return response.statusText || `HTTP ${response.status}`;
 }
 
+// Every load in flight. A first load downloads before it starts the server, so an unload sent
+// meanwhile would land first and leave the detector running with voice off.
+const pendingLoads = new Set<Promise<unknown>>();
+
 /** Download if needed and start the detector; resolves to the loaded model id. */
-export async function loadVadModel(
-  model: string,
-  signal?: AbortSignal,
-): Promise<string> {
+export function loadVadModel(model: string, signal?: AbortSignal): Promise<string> {
+  const run = startVadModel(model, signal);
+  const tracked: Promise<unknown> = run
+    .catch(() => {})
+    .finally(() => pendingLoads.delete(tracked));
+  pendingLoads.add(tracked);
+  return run;
+}
+
+async function startVadModel(model: string, signal?: AbortSignal): Promise<string> {
   const response = await authFetch("/api/inference/audio/vad/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -56,7 +66,9 @@ export async function loadVadModel(
   return data.loaded_model ?? model;
 }
 
+/** Stop the detector, after any load in flight has settled so that load cannot outlive it. */
 export async function unloadVadModel(): Promise<void> {
+  await Promise.all([...pendingLoads]);
   await authFetch("/api/inference/audio/vad/unload", { method: "POST" }).catch(
     () => {},
   );

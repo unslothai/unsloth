@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   holdForServing,
+  releaseBeforeBorrow,
   settleVoiceLoad,
   voiceToUnload,
 } from "../src/features/chat/voice/voice-ownership.ts";
@@ -30,4 +31,12 @@ test("a load that settles after voice mode turned off is unloaded, not kept", ()
   const { hold, unload } = settleVoiceLoad("unsloth/voice-a", 3, 4);
   assert.equal(hold, null);
   assert.equal(unload, "unsloth/voice-a");
+});
+
+test("switching to a voice already serving releases the one this page loaded", () => {
+  const owned = { id: "unsloth/voice-a", owned: true };
+  assert.equal(releaseBeforeBorrow(owned, "unsloth/voice-b"), "unsloth/voice-a");
+  assert.equal(releaseBeforeBorrow(owned, "unsloth/voice-a"), null);
+  assert.equal(releaseBeforeBorrow({ id: "unsloth/voice-a", owned: false }, "unsloth/voice-b"), null);
+  assert.equal(releaseBeforeBorrow(null, "unsloth/voice-b"), null);
 });

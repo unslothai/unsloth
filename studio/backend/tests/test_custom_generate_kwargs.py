@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LFM3-Omni's custom generate raises on logits_processor and stopping_criteria (#16054)."""
-
 import ast
 import inspect
 import types
 from pathlib import Path
+
+import pytest
+import torch
 
 # Loaded from source: importing core.inference.inference needs unsloth, which the backend matrix lacks.
 _SRC = Path(__file__).resolve().parents[1] / "core" / "inference" / "inference.py"
@@ -14,8 +15,13 @@ _WANTED = {
     "_CUSTOM_GENERATE_REJECTED_KWARGS",
     "_supported_generate_kwargs",
     "_processor_takes_text_first",
+    "_GenerationHalted",
+    "_HaltingStreamer",
+    "_generate_supported",
+    "_refuse_without_generate",
+    "_think_tag_ids",
 }
-_NS = {"inspect": inspect}
+_NS = {"inspect": inspect, "torch": torch}
 exec(
     compile(
         ast.Module(
@@ -34,6 +40,8 @@ exec(
 )
 _supported_generate_kwargs = _NS["_supported_generate_kwargs"]
 _processor_takes_text_first = _NS["_processor_takes_text_first"]
+_generate_supported = _NS.get("_generate_supported")
+_refuse_without_generate = _NS.get("_refuse_without_generate")
 
 _KWARGS = {"input_ids": 1, "logits_processor": [], "stopping_criteria": [], "streamer": object()}
 
@@ -47,6 +55,17 @@ def test_custom_generate_drops_rejected_kwargs():
 
 def test_regular_model_keeps_all_kwargs():
     assert _supported_generate_kwargs(types.SimpleNamespace(), _KWARGS) is _KWARGS
+
+
+@pytest.mark.parametrize("model_type", ["lfm3_omni", "lfm3_audio"])
+def test_audio_chat_requests_text_instead_of_unstreamed_speech(model_type):
+    model = types.SimpleNamespace(
+        config = types.SimpleNamespace(model_type = model_type),
+        _generation_fields_unsupported = {},
+    )
+    assert _supported_generate_kwargs(model, _KWARGS)["generation_mode"] == "text"
+    model.config.model_type = "other_custom_model"
+    assert "generation_mode" not in _supported_generate_kwargs(model, _KWARGS)
 
 
 class _TextFirst:
@@ -95,8 +114,6 @@ class _Recorder:
 
 
 class _CustomGenerate:
-    """LFM3-style: rejects stopping_criteria, streams each token, ends its streamers on any exit."""
-
     _generation_fields_unsupported = {"cache_implementation": None}
 
     def __init__(self, on_step = None):
@@ -117,13 +134,11 @@ class _CustomGenerate:
 
 
 def _criteria(*events):
-    from core.inference.inference import InferenceBackend
-    return InferenceBackend._cancel_stopping_criteria(None, *events)
+    return [types.SimpleNamespace(ev = event) for event in events]
 
 
 def test_cancel_ends_a_custom_generate_without_stopping_criteria():
     import threading
-    from core.inference.inference import _generate_supported
 
     cancel = threading.Event()
     model = _CustomGenerate(on_step = lambda step: step == 3 and cancel.set())
@@ -137,7 +152,6 @@ def test_cancel_ends_a_custom_generate_without_stopping_criteria():
 
 def test_a_matched_stop_sequence_ends_it_too():
     import threading
-    from core.inference.inference import _generate_supported
 
     matched = threading.Event()
     model = _CustomGenerate(on_step = lambda step: step == 5 and matched.set())
@@ -154,7 +168,6 @@ def test_a_matched_stop_sequence_ends_it_too():
 
 def test_an_uncancelled_custom_generate_returns_its_sequences():
     import threading
-    from core.inference.inference import _generate_supported
 
     model = _CustomGenerate()
     streamer = _Recorder()
@@ -169,10 +182,62 @@ def test_an_uncancelled_custom_generate_returns_its_sequences():
     assert out == "sequences" and streamer.tokens == [0, 1, 2, 3] and streamer.ended
 
 
-def test_a_text_load_without_generate_is_refused_by_name():
-    import pytest
-    from core.inference.inference import _refuse_without_generate
+@pytest.mark.parametrize("matched_stop", [False, True])
+def test_halted_custom_generation_keeps_usage_only_for_a_matched_stop(matched_stop):
+    import threading
+    import torch
 
+    _NS["torch"] = torch
+    cancel = threading.Event()
+
+    class StopRecorder(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self.matched = threading.Event()
+            self.token_ids = []
+
+        def put(self, value):
+            super().put(value)
+            if value.ndim == 1:
+                self.token_ids.extend(value.tolist())
+                if len(self.token_ids) == 3:
+                    (self.matched if matched_stop else cancel).set()
+
+    class CustomGenerate:
+        _generation_fields_unsupported = {}
+
+        def generate(self, *, input_ids, streamer, **kwargs):
+            assert "stopping_criteria" not in kwargs
+            try:
+                streamer.put(input_ids)
+                for token in (21, 22, 23, 24):
+                    streamer.put(input_ids.new_tensor([token]))
+            finally:
+                streamer.end()
+            raise AssertionError("Generation should halt before the fourth token")
+
+    prompt = torch.tensor([[101, 102]], dtype = torch.long)
+    streamer = StopRecorder()
+    out = _generate_supported(
+        CustomGenerate(),
+        {
+            "input_ids": prompt,
+            "streamer": streamer,
+            "stopping_criteria": _criteria(cancel, streamer.matched),
+        },
+    )
+    assert streamer.ended and streamer.token_ids == [21, 22, 23]
+    assert torch.equal(prompt, torch.tensor([[101, 102]]))
+    if matched_stop:
+        assert isinstance(out, torch.Tensor)
+        assert out.tolist() == [[101, 102, 21, 22, 23]]
+        assert out.shape[-1] - prompt.shape[-1] == 3
+        assert out.dtype == prompt.dtype and out.device == prompt.device
+    else:
+        assert out is None
+
+
+def test_a_text_load_without_generate_is_refused_by_name():
     class Lfm3AudioModel:
         pass
 
@@ -181,7 +246,7 @@ def test_a_text_load_without_generate_is_refused_by_name():
     _refuse_without_generate(types.SimpleNamespace(generate = lambda **kw: None), "any/causal-lm")
 
 
-_OPEN, _CLOSE, _EOS = 901, 902, 900
+_OPEN, _CLOSE, _EOS = 124901, 124902, 124900
 _THINK_TOKENIZER = types.SimpleNamespace(
     unk_token_id = 0,
     convert_tokens_to_ids = lambda t: {"<think>": _OPEN, "</think>": _CLOSE}.get(t, 0),
@@ -189,15 +254,17 @@ _THINK_TOKENIZER = types.SimpleNamespace(
 
 
 class _ScriptedGenerate:
-    """Streams a fixed reply as LFM3's generate does: the prompt, then one (1, 1) tensor per token."""
-
     _generation_fields_unsupported = {"cache_implementation": None}
 
-    def __init__(self, reply):
+    def __init__(
+        self,
+        reply,
+        model_type = "lfm3_audio",
+    ):
         self.reply, self.steps = reply, 0
+        self.config = types.SimpleNamespace(model_type = model_type)
 
     def generate(self, *, input_ids, streamer, **kwargs):
-        import torch
         try:
             streamer.put(input_ids)
             for token in self.reply:
@@ -208,40 +275,62 @@ class _ScriptedGenerate:
         return torch.cat((input_ids, torch.tensor([self.reply])), 1)
 
 
-def _scripted(reply, **extra):
-    import torch
-    from core.inference.inference import _generate_supported
-
-    model, streamer = _ScriptedGenerate(reply), _Recorder()
+def _scripted(
+    reply,
+    model_type = "lfm3_audio",
+    **extra,
+):
+    model, streamer = _ScriptedGenerate(reply, model_type), _Recorder()
     kwargs = {
         "input_ids": torch.tensor([[1, 2]]),
         "streamer": streamer,
         "eos_token_id": [_EOS],
         **extra,
     }
-    out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    if "tokenizer" in inspect.signature(_generate_supported).parameters:
+        out = _generate_supported(model, kwargs, _THINK_TOKENIZER)
+    else:
+        out = _generate_supported(model, kwargs)
     return model, [int(t) for t in streamer.tokens[1:]], out
 
 
-def test_a_second_think_close_ends_the_reply_before_its_restatement():
-    # LFM3-Audio-2B: "<think>R</think>\nFour\n</think>\nFour<|im_end|>" showed "Four" twice.
-    model, streamed, out = _scripted([_OPEN, 10, _CLOSE, 11, _CLOSE, 11, _EOS])
-    assert streamed == [_OPEN, 10, _CLOSE, 11]
-    assert model.steps == 5
-    assert out.tolist() == [[1, 2, _OPEN, 10, _CLOSE, 11, _EOS]]
+@pytest.mark.parametrize("model_type", ["lfm3_audio", "lfm3_omni", "other_custom_model"])
+def test_literal_think_close_in_an_answer_is_not_a_stop(model_type):
+    import threading
+
+    # LiquidAI/LFM3-Audio-2B: "<think>I should explain the tag.</think>The literal closing tag </think> ends a thinking block."
+    reply = [
+        _OPEN,
+        49,
+        1252,
+        6986,
+        278,
+        10194,
+        22,
+        _CLOSE,
+        597,
+        30020,
+        23189,
+        10194,
+        229,
+        _CLOSE,
+        11676,
+        267,
+        6416,
+        3908,
+        22,
+        _EOS,
+    ]
+    model, streamed, out = _scripted(
+        reply,
+        model_type = model_type,
+        stopping_criteria = _criteria(threading.Event()),
+    )
+    assert streamed == reply and out.tolist() == [[1, 2, *reply]]
+    assert model.steps == len(reply)
 
 
-def test_one_think_block_and_a_prefilled_close_stream_untouched():
-    for reply in (
-        [_OPEN, 10, _CLOSE, 11, _EOS],
-        [10, _CLOSE, 11, _EOS],
-        [_OPEN, 10, _CLOSE, _OPEN, 12, _CLOSE, 11, _EOS],
-    ):
-        model, streamed, out = _scripted(reply)
-        assert streamed == reply and out.tolist() == [[1, 2, *reply]]
-
-
-def test_cancel_still_returns_no_sequences_beside_the_think_guard():
+def test_cancel_still_returns_no_sequences_with_a_tensor_stream():
     import threading
 
     cancel = threading.Event()

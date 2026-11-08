@@ -13,7 +13,8 @@ async function check(): Promise<boolean> {
   if (enabled !== null) return enabled;
   // A probe that fails (the backend still starting after a relaunch) is not an
   // answer: leave it unknown so the next event asks again.
-  probe ??= authFetch("/api/inference/voice/models/status")
+  // Not /voice/models/status: that one loads every decision model to report on it.
+  probe ??= authFetch("/api/inference/voice/trace")
     .then(async (r) => {
       if (!r.ok) return null;
       return Boolean(((await r.json()) as { trace?: boolean }).trace);

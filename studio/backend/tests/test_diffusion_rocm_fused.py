@@ -69,10 +69,29 @@ def _nvidia(monkeypatch, platform = "linux"):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_auto_engages_rope_only_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
+def test_auto_engages_rope_and_adaln_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
     _nvidia(monkeypatch)
-    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 0}
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 3}
     assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is rf._adaln_zero_forward
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_the_exact_tier_keeps_stock_adaln_on_nvidia(fake_kernels, monkeypatch, dtype):
+    _nvidia(monkeypatch)
+    rf.install_for_pipe(_PipeLike(), dtype, "cuda")
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda", adaln = False) == {
+        "rope": True,
+        "adaln": 0,
+    }
+    assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
+
+
+def test_the_adaln_kill_switch_on_nvidia(fake_kernels, monkeypatch):
+    _nvidia(monkeypatch)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "0")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": True, "adaln": 0}
     assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
 
 
@@ -97,6 +116,7 @@ def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
 def test_kill_switch_on_nvidia(fake_kernels, monkeypatch, value):
     _nvidia(monkeypatch)
     monkeypatch.setenv(rf.FUSED_ROPE_ENV, value)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, value)
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
     assert fmod.apply_rotary_emb is stock_rope
 
@@ -110,7 +130,7 @@ def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
     pipe = _PipeLike("diffusers.models.transformers.transformer_flux2")
     try:
         assert fr.install_for_pipe(pipe, torch.float16, "cuda")
-        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 0}
+        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 3}
         assert f2mod.apply_rotary_emb is fr._fused_apply_rotary_emb
     finally:
         fr.uninstall()
@@ -230,7 +250,7 @@ def test_load_and_teardown_wiring():
         diffusion_rocm_fused.uninstall,
     )
     try:
-        diffusion_rocm_fused.install_for_pipe = lambda *a: seen.append(("install", a)) or {
+        diffusion_rocm_fused.install_for_pipe = lambda *a, **k: seen.append(("install", a, k)) or {
             "rope": False,
             "adaln": 0,
         }
@@ -241,10 +261,41 @@ def test_load_and_teardown_wiring():
             ap.PatchContext(pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = "off"),
         )
         diffusion._uninstall_fused_dit_patches()
+        for mode in (None, "eager", "default"):
+            ap.install_stage(
+                ap.STAGE_LOAD,
+                ap.PatchContext(
+                    pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = mode
+                ),
+            )
+            diffusion._uninstall_fused_dit_patches()
+        # An unset dense request resolves to "off" but is not an explicit off.
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(
+                pipe = pipe,
+                dtype = "bf16",
+                device = "cuda",
+                logger = "log",
+                speed_mode = "off",
+                explicit_off = False,
+            ),
+        )
+        diffusion._uninstall_fused_dit_patches()
     finally:
         diffusion_rocm_fused.install_for_pipe = orig_install
         diffusion_rocm_fused.uninstall = orig_uninstall
-    assert ("install", (pipe, "bf16", "cuda", "log")) in seen and ("uninstall",) in seen
+    assert ("install", (pipe, "bf16", "cuda", "log"), {"adaln": False}) in seen
+    assert seen.count(("install", (pipe, "bf16", "cuda", "log"), {"adaln": True})) == 4
+    stage_load = next(
+        c
+        for c in ast.walk(load)
+        if isinstance(c, ast.Call)
+        and any(isinstance(a, ast.Attribute) and a.attr == "STAGE_LOAD" for a in c.args)
+    )
+    explicit = next(k.value for k in stage_load.keywords if k.arg == "explicit_off")
+    assert "speed_mode is not None" in ast.unparse(explicit)
+    assert ("uninstall",) in seen
 
 
 def test_stock_lines_still_present_in_diffusers():

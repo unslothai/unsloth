@@ -369,3 +369,18 @@ def test_a_managed_voice_load_checks_access_before_any_hub_lookup(monkeypatch):
     )
     assert response.status_code == 403
     assert events == [("access", "secretorg/private-llm-GGUF")]
+
+
+def test_the_trace_probe_loads_no_decision_model(monkeypatch, tmp_path):
+    from core.inference import voice_models
+    from routes import inference
+
+    def fail():
+        raise AssertionError("the trace probe must not touch the voice models")
+
+    monkeypatch.setattr(voice_models, "get_voice_models", fail)
+    client = _voice_client([inference.studio_router])
+    monkeypatch.delenv("UNSLOTH_VAD_DEBUG_DIR", raising = False)
+    assert client.get("/api/inference/voice/trace").json() == {"trace": False}
+    monkeypatch.setenv("UNSLOTH_VAD_DEBUG_DIR", str(tmp_path))
+    assert client.get("/api/inference/voice/trace").json() == {"trace": True}

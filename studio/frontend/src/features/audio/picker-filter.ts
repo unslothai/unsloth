@@ -23,9 +23,12 @@ export function audioRowMatchesWorkflow(
   row: AudioPickerRow,
   workflow: AudioPickerWorkflow,
 ): boolean {
-  if (row.task === VAD_HUB_TASK || audioCppModelFor(row.id)?.task === "vad") {
-    return workflow === "detect";
+  const vad = row.task === VAD_HUB_TASK || audioCppModelFor(row.id)?.task === "vad";
+  if (vad || workflow === "detect") {
+    if (row.audioWorkflows && row.audioWorkflows.length > 0) {
+      return row.audioWorkflows.includes(workflow);
+    }
+    return vad && workflow === "detect";
   }
-  if (workflow === "detect") return false;
   return rowOnPage(workflow, { ...row, id: row.id ?? "" }, { isMac: false });
 }

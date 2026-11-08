@@ -3492,25 +3492,28 @@ def _has_cpu_tensors(optimizer, grads = False):
 
 def _local_grads_if_mixed(optimizer):
     """Swap DTensor grads for their local shards when DTensor and plain grads mix: one foreach unscale
-    takes one tensor kind ("got mixed torch.Tensor and DTensor"). Elementwise, so the shard result is the same."""
+    takes one tensor kind ("got mixed torch.Tensor and DTensor"), or when a DTensor grad is on the CPU
+    (CPUOffloadPolicy): DTensor's found_inf reduce would need a CPU collective a NCCL-only group lacks.
+    Elementwise, so the shard result is the same; ShardedGradScaler.unscale_ agrees found_inf over ranks."""
     try:
         from torch.distributed.tensor import DTensor
     except ImportError:
         return optimizer
-    groups, dtensor, plain = [], False, False
+    groups, dtensor, plain, cpu_dtensor = [], False, False, False
     for group in optimizer.param_groups:
         params = []
         for p in group["params"]:
             grad = p.grad
             if isinstance(grad, DTensor):
                 dtensor = True
+                cpu_dtensor = cpu_dtensor or grad.device.type == "cpu"
                 p = types.SimpleNamespace(grad = grad._local_tensor)
             elif grad is not None:
                 plain = True
             # Plain grads keep their parameter: upstream reassigns a coalesced float16 sparse grad to it.
             params.append(p)
         groups.append({"params": params})
-    if not (dtensor and plain):
+    if not ((dtensor and plain) or cpu_dtensor):
         return optimizer
     return types.SimpleNamespace(param_groups = groups)
 
@@ -3922,7 +3925,14 @@ def _refuse_bnb_optimizer_instance(optimizer):
     """A prebuilt optimizer passed as Trainer(optimizers = (opt, ...)) or to accelerator.prepare:
     _swap_bnb_optimizer only edits args.optim, so a bitsandbytes instance would be kept and step
     DTensor shards it cannot handle. Torch optimizers pass."""
-    if optimizer is None or _localize_bnb_optimizer(optimizer):
+    if optimizer is None:
+        return
+    from ..parallel_capabilities import refuse_shard_unaware_optimizer
+
+    refuse_shard_unaware_optimizer(
+        _inner_optimizer(optimizer), "fsdp2"
+    )  # Muon would orthogonalize shards
+    if _localize_bnb_optimizer(optimizer):
         return
     inner = _inner_optimizer(optimizer)
     if "galore" in type(inner).__name__.lower():
@@ -4185,7 +4195,7 @@ def _refuse_save_on_each_node(training_args):
 
 
 def _env_tensor_parallel_dp_mesh(model):
-    if not os.environ.get("UNSLOTH_TP_SIZE"):
+    if not os.environ.get("UNSLOTH_TP_SIZE") and not os.environ.get("UNSLOTH_PP_SIZE"):
         return None
     from .tp_env import fsdp2_dp_mesh
     return fsdp2_dp_mesh(model)

@@ -70,6 +70,7 @@ from .models.loader_utils import (
     _tokenizer_wants_local_only,
 )
 from .models._utils import (
+    _is_unsloth_pipeline_parallel,
     _is_unsloth_tensor_parallel,
     _refuse_model_parallel_export,
     _convert_torchao_model,
@@ -985,6 +986,155 @@ def _preserve_tokenizer_eos_token(
         )
 
 
+@contextmanager
+def _without_runtime_truncation(
+    tokenizer,
+    save_directory = None,
+    filename_prefix = None,
+):
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    backend = getattr(source_tokenizer, "_tokenizer", None)
+    truncation = getattr(backend, "truncation", None)
+    padding = getattr(backend, "padding", None)
+    init_kwargs = getattr(source_tokenizer, "init_kwargs", {})
+    loaded_limit = getattr(source_tokenizer, "_unsloth_loaded_runtime_max_length", None)
+    max_length = init_kwargs.get("max_length")
+    remove_max_length = loaded_limit is not None and max_length == loaded_limit
+    if truncation is None and padding is None and not remove_max_length:
+        yield
+        return
+    if remove_max_length:
+        init_kwargs.pop("max_length")
+    try:
+        try:
+            backend.no_truncation()
+            backend.no_padding()
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not clear tokenizer truncation before saving: {error}"
+            )
+        yield
+    finally:
+        if remove_max_length:
+            init_kwargs["max_length"] = max_length
+        try:
+            if truncation is not None:
+                backend.enable_truncation(**truncation)
+            if padding is not None:
+                backend.enable_padding(**padding)
+        except Exception as error:
+            logger.warning_once(
+                f"Unsloth: Could not restore tokenizer truncation after saving: {error}"
+            )
+
+
+def _capture_source_tokenizer_class(
+    tokenizer,
+    *,
+    source = None,
+    cache_dir = None,
+    revision = None,
+    subfolder = "",
+):
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    if source_tokenizer is None or hasattr(source_tokenizer, "_unsloth_source_tokenizer_class"):
+        return
+    init_kwargs = getattr(source_tokenizer, "init_kwargs", {})
+    if not isinstance(init_kwargs, dict):
+        return
+    config_paths = []
+    for name in ("tokenizer_file", "vocab_file", "merges_file"):
+        path = init_kwargs.get(name) or getattr(source_tokenizer, name, None)
+        if isinstance(path, (str, os.PathLike)) and os.path.isfile(path):
+            config_paths.append(
+                os.path.join(os.path.dirname(os.path.abspath(path)), "tokenizer_config.json")
+            )
+    if source and hasattr(source_tokenizer, "init_kwargs"):
+        filename = "/".join(part for part in (subfolder, "tokenizer_config.json") if part)
+        if os.path.isdir(source):
+            config_paths.append(os.path.join(source, filename))
+        else:
+            from huggingface_hub import try_to_load_from_cache
+            try:
+                path = try_to_load_from_cache(
+                    source, filename, cache_dir = cache_dir, revision = revision
+                )
+            except (OSError, ValueError, TypeError):
+                path = None
+            if isinstance(path, str):
+                config_paths.append(path)
+    for config_path in config_paths:
+        if not config_path:
+            continue
+        try:
+            with open(config_path, "r", encoding = "utf-8") as file:
+                source_class = json.load(file).get("tokenizer_class")
+        except (OSError, ValueError, TypeError):
+            continue
+        source_tokenizer._unsloth_source_tokenizer_class = source_class
+        return
+    if source is not None:
+        source_tokenizer._unsloth_source_tokenizer_class = None
+
+
+def _source_tokenizer_class(tokenizer, token = None):
+    """Return the class retained during loading, never re-resolve a mutable source."""
+    source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    source_class = getattr(source_tokenizer, "_unsloth_source_tokenizer_class", None)
+    if not isinstance(source_class, str) or source_class in ("", "TokenizersBackend"):
+        return None
+    return source_class
+
+
+def _restore_source_tokenizer_class(
+    tokenizer,
+    save_directory,
+    filename_prefix = None,
+    token = None,
+    source_class = None,
+):
+    if tokenizer is None or save_directory is None:
+        return
+    tokenizer_config_name = (
+        f"{filename_prefix}-tokenizer_config.json" if filename_prefix else "tokenizer_config.json"
+    )
+    tokenizer_config = os.path.join(str(save_directory), tokenizer_config_name)
+    if not os.path.isfile(tokenizer_config):
+        return
+    try:
+        with open(tokenizer_config, "r", encoding = "utf-8") as file:
+            config = json.load(file)
+        if config.get("tokenizer_class") != "TokenizersBackend":
+            return
+        if source_class is None:
+            source_class = _source_tokenizer_class(tokenizer, token = token)
+        if source_class is None:
+            source_class = "PreTrainedTokenizerFast"
+        if source_class in ("LlamaTokenizer", "LlamaTokenizerFast"):
+            source_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+            backend = getattr(source_tokenizer, "_tokenizer", None)
+            pre_tokenizer = getattr(backend, "pre_tokenizer", None)
+            if pre_tokenizer is not None:
+                pending = [json.loads(pre_tokenizer.__getstate__())]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, dict):
+                        if item.get("type") == "ByteLevel":
+                            source_class = "PreTrainedTokenizerFast"
+                            break
+                        pending.extend(item.values())
+                    elif isinstance(item, list):
+                        pending.extend(item)
+        config["tokenizer_class"] = source_class
+        with open(tokenizer_config, "w", encoding = "utf-8") as file:
+            json.dump(config, file, indent = 2, ensure_ascii = False)
+            file.write("\n")
+    except Exception as error:
+        logger.warning_once(
+            f"Unsloth: Could not restore tokenizer_class in {tokenizer_config}: {error}"
+        )
+
+
 def _preserve_repaired_tokenizer_class(
     tokenizer,
     save_directory,
@@ -1364,6 +1514,13 @@ def _model_parallel_refuses_save(method):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             model = args[0] if args else kwargs.get("model", kwargs.get("self"))
+            if model is not None and _is_unsloth_pipeline_parallel(model):
+                # UNSLOTH_PP_SIZE: the whole model back on every rank, rank 0 exports (refused otherwise).
+                _refuse_model_parallel_export(model, method)
+                from .models.pp_env import pp_collective
+
+                _refuse_tp_in_place_merge(fn, method, args, kwargs)
+                return pp_collective(model, method, lambda: fn(*args, **kwargs))
             if model is not None and _is_unsloth_tensor_parallel(model):
                 from .models.tp_replica import collective_applies, tp_collective
                 if collective_applies(model):
@@ -1644,7 +1801,12 @@ def unsloth_save_model(
             old_padding_side = _tokenizer.padding_side
             _tokenizer.padding_side = "left"
 
-            tokenizer.save_pretrained(**tokenizer_save_settings)
+            with _without_runtime_truncation(
+                tokenizer,
+                tokenizer_save_settings["save_directory"],
+                tokenizer_save_settings.get("filename_prefix"),
+            ):
+                tokenizer.save_pretrained(**tokenizer_save_settings)
 
             _tokenizer.padding_side = old_padding_side
 
@@ -1755,6 +1917,8 @@ def unsloth_save_model(
 
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
+
+    source_tokenizer_class = _source_tokenizer_class(tokenizer, token = token)
 
     # Kaggle and Colab allow only 20GB of disk, so free up 4GB of space.
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
@@ -1913,11 +2077,23 @@ def unsloth_save_model(
         old_padding_side = _tokenizer.padding_side
         _tokenizer.padding_side = "left"
 
-        tokenizer.save_pretrained(**tokenizer_save_settings)
+        with _without_runtime_truncation(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            tokenizer_save_settings.get("filename_prefix"),
+        ):
+            tokenizer.save_pretrained(**tokenizer_save_settings)
         _preserve_tokenizer_eos_token(
             tokenizer,
             tokenizer_save_settings["save_directory"],
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+        )
+        _restore_source_tokenizer_class(
+            tokenizer,
+            tokenizer_save_settings["save_directory"],
+            filename_prefix = tokenizer_save_settings.get("filename_prefix"),
+            token = tokenizer_save_settings.get("token"),
+            source_class = source_tokenizer_class,
         )
         _preserve_repaired_tokenizer_class(
             tokenizer,
@@ -3830,6 +4006,105 @@ def _requests_float32(dtype):
     return dtype is torch.float32
 
 
+def _base_config_dicts(model):
+    """config.json of each base the model names (PEFT base, then _name_or_path), at the loaded commit, cache first."""
+    config = getattr(model, "config", None)
+    loaded = getattr(config, "_name_or_path", None)
+    names = [
+        getattr(peft_config, "base_model_name_or_path", None)
+        for peft_config in (getattr(model, "peft_config", None) or {}).values()
+    ]
+    names.append(loaded)
+    for name in dict.fromkeys(n for n in names if isinstance(n, str) and n):
+        # The loaded config's _commit_hash pins the snapshot it came from; another repo has no pin.
+        revision = getattr(config, "_commit_hash", None) if name == loaded else None
+        try:
+            if os.path.isdir(name):
+                path = os.path.join(name, "config.json")
+            else:
+                from huggingface_hub import hf_hub_download
+                try:
+                    path = hf_hub_download(
+                        name, "config.json", revision = revision, local_files_only = True
+                    )
+                except Exception:
+                    path = hf_hub_download(name, "config.json", revision = revision)
+            with open(path, encoding = "utf-8") as f:
+                yield json.load(f)
+        except Exception:
+            continue
+
+
+def _restore_lfm3_audio_release_config(model, save_directory):
+    """Swap LFM3-Audio's saved text_config layout for the base's release (lfm / encoder) one, the only one llama.cpp reads."""
+    path = os.path.join(save_directory, "config.json")
+    try:
+        with open(path, encoding = "utf-8") as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if saved.get("model_type") != "lfm3_audio" or "lfm" in saved:
+        return False
+    vocab = (saved.get("text_config") or {}).get("vocab_size")
+    for release in _base_config_dicts(model):
+        if release.get("model_type") != "lfm3_audio" or not isinstance(release.get("lfm"), dict):
+            continue
+        if vocab is not None and release["lfm"].get("vocab_size") != vocab:
+            continue  # resized embeddings: the release config no longer describes these weights
+        # The dtype the weights were written in and the code modules the save copied, not the release's.
+        # `lfm` takes text_config's schema: the effective text settings (e.g. a user rope_scaling) win over the release's.
+        text = {k: v for k, v in (saved.get("text_config") or {}).items() if k != "_name_or_path"}
+        release = {
+            **release,
+            "lfm": {**release["lfm"], **text},
+            **{k: saved[k] for k in ("dtype", "torch_dtype", "auto_map") if k in saved},
+        }
+        with open(path, "w", encoding = "utf-8") as f:
+            json.dump(release, f, indent = 2)
+        return True
+    print(
+        "Unsloth: LFM3-Audio config.json is not in its release layout and the base's could not be read; "
+        "llama.cpp's converter will not recognize it."
+    )
+    return False
+
+
+def _release_layout_for_merged_save(model, save_directory, save_method):
+    # A merged folder has no PEFT base to read the release config from later. 4-bit keeps its quantization_config.
+    if "16bit" not in str(save_method) or not os.path.isdir(str(save_directory)):
+        return False
+    return _restore_lfm3_audio_release_config(model, save_directory)
+
+
+def _push_lfm3_audio_release_config(
+    model,
+    save_directory,
+    token = None,
+):
+    # The PEFT merged push uploads straight from the merge, so the release config follows it.
+    if getattr(getattr(model, "config", None), "model_type", None) != "lfm3_audio":
+        return False
+    # Only now: for other models this whoami could raise after a finished upload.
+    repo_id = _determine_username(save_directory, None, token)[0]
+    import tempfile
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    with tempfile.TemporaryDirectory(prefix = "unsloth-lfm3-config-") as directory:
+        hf_hub_download(
+            repo_id, "config.json", token = token, local_dir = directory, force_download = True
+        )
+        if not _restore_lfm3_audio_release_config(model, directory):
+            return False
+        HfApi(token = token).upload_file(
+            path_or_fileobj = os.path.join(directory, "config.json"),
+            path_in_repo = "config.json",
+            repo_id = repo_id,
+            commit_message = "Unsloth: LFM3-Audio config in its release layout",
+        )
+    return True
+
+
 def _stamp_saved_config_float32(save_directory):
     # save_pretrained writes the resident model's 16-bit dtype, and dtype = "auto" would then
     # cast the float32 tensors back down on load.
@@ -5051,6 +5326,12 @@ def unsloth_save_pretrained_gguf(
         fix_sentencepiece_gguf(save_directory)
     except Exception as e:
         logger.warning(f"Unsloth: fix_sentencepiece_gguf skipped ({type(e).__name__}): {e}")
+    except BaseException:
+        _drop_staged_checkpoint(staged_directory)
+        raise
+
+    try:
+        _restore_lfm3_audio_release_config(self, save_directory)
     except BaseException:
         _drop_staged_checkpoint(staged_directory)
         raise
@@ -6692,6 +6973,7 @@ def unsloth_generic_save(
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
         with _internal_mtp_save():
             model.save_pretrained(save_directory, **_save_kwargs)
+        _release_layout_for_merged_save(model, save_directory, save_method)
         if "16bit" in save_method and _requests_float32(dtype):
             _stamp_saved_config_float32(save_directory)
         if (
@@ -6785,6 +7067,9 @@ def unsloth_generic_save(
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             _stitch_mtp_head(model, save_directory)
+            _release_layout_for_merged_save(model, save_directory, save_method)
+        elif "16bit" in save_method and is_main_process:
+            _push_lfm3_audio_release_config(model, save_directory, token = token)
 
     if push_to_hub and datasets:
         try:
@@ -6914,7 +7199,18 @@ def _tp_collective_save(method):
     def decorate(fn):
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
-            if isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
+            if isinstance(self, torch.nn.Module) and _is_unsloth_pipeline_parallel(self):
+                from .models import tp_replica
+                arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+                if not tp_replica._ACTIVE and arguments.get("state_dict") is None:
+                    from .models.pp_env import pp_collective, pp_save_adapter
+
+                    if method == "save_pretrained" and isinstance(self, PeftModel):
+                        # The LoRA weights of every stage, the 1-GPU adapter written by rank 0.
+                        return pp_save_adapter(self, args, kwargs)
+                    _refuse_model_parallel_export(self, method)
+                    return pp_collective(self, method, lambda: fn(self, *args, **kwargs))
+            elif isinstance(self, torch.nn.Module) and _is_unsloth_tensor_parallel(self):
                 from .models.tp_replica import collective_applies, tp_collective
                 arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
                 if arguments.get("state_dict") is None and collective_applies(self):
@@ -7830,6 +8126,7 @@ def _unsloth_save_compressed_tensors(
     # Only the main process installs deps, merges, quantizes and uploads, mirroring the non-PEFT save path; other ranks return at once rather than race on dirs or run pip installs.
     if not is_main_process:
         return None
+    source_tokenizer_class = _source_tokenizer_class(tokenizer, token = token)
     if _attached_mtp_head(model) is not None:
         # The quantizer reloads through transformers, which drops native MTP tensors.
         print(
@@ -8022,6 +8319,12 @@ def _unsloth_save_compressed_tensors(
                 f"{e.returncode}). See the output above for details."
             )
 
+        if tokenizer is not None:
+            _restore_source_tokenizer_class(
+                tokenizer, out_dir, token = token, source_class = source_tokenizer_class
+            )
+            _preserve_repaired_tokenizer_class(tokenizer, out_dir)
+
         cfg_path = os.path.join(out_dir, "config.json")
         cfg = {}
         if os.path.exists(cfg_path):
@@ -8095,6 +8398,7 @@ def _unsloth_save_torchao(
             "GGUF to keep it."
         )
 
+    source_tokenizer_class = _source_tokenizer_class(tokenizer, token = token)
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
@@ -8208,6 +8512,11 @@ def _unsloth_save_torchao(
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)
         staged_tokenizer.save_pretrained(out_dir)
+        if tokenizer is not None:
+            _restore_source_tokenizer_class(
+                tokenizer, out_dir, token = token, source_class = source_tokenizer_class
+            )
+            _preserve_repaired_tokenizer_class(tokenizer, out_dir)
         del quantized_model
         _collect_garbage(after = clean_gpu_cache)
 
@@ -8538,6 +8847,7 @@ def _unsloth_save_openvino(
         return None
 
     # Everything that can reject the request runs before the merge, which writes a full 16bit checkpoint. optimum-cli takes one --trust-remote-code for the model and tokenizer loads together, so it follows the model's approved load decision, as the GGUF-LoRA converter does: a custom tokenizer alone must not let the reload run a built-in-loaded model's unvetted auto_map code.
+    source_tokenizer_class = _source_tokenizer_class(tokenizer, token = token)
     export_kwargs = dict(export_kwargs)
     if _loaded_via_remote_code(model):
         export_kwargs.setdefault("trust_remote_code", True)
@@ -8621,6 +8931,11 @@ def _unsloth_save_openvino(
                 f"Unsloth: OpenVINO export failed (optimum-cli exit {e.returncode}). "
                 "See the output above for details."
             )
+        if tokenizer is not None:
+            _restore_source_tokenizer_class(
+                tokenizer, final_dir, token = token, source_class = source_tokenizer_class
+            )
+            _preserve_repaired_tokenizer_class(tokenizer, final_dir)
         exported = os.listdir(final_dir) if os.path.isdir(final_dir) else []
         if not any(f.startswith("openvino_") and f.endswith("model.xml") for f in exported):
             raise RuntimeError(f"Unsloth: OpenVINO export wrote no model to '{final_dir}'.")
@@ -8807,11 +9122,13 @@ def _unsloth_tokenizer_save_pretrained(
         save_kwargs["legacy_format"] = legacy_format
     if filename_prefix is not None:
         save_kwargs["filename_prefix"] = filename_prefix
-    result = self.original_save_pretrained(
-        save_directory,
-        push_to_hub = False,
-        **save_kwargs,
-    )
+    source_tokenizer_class = _source_tokenizer_class(self, token = kwargs.get("token", None))
+    with _without_runtime_truncation(self, save_directory, filename_prefix):
+        result = self.original_save_pretrained(
+            save_directory,
+            push_to_hub = False,
+            **save_kwargs,
+        )
     _preserve_sentencepiece_tokenizer_assets(
         self,
         save_directory,
@@ -8821,6 +9138,13 @@ def _unsloth_tokenizer_save_pretrained(
         self,
         save_directory,
         filename_prefix = filename_prefix,
+    )
+    _restore_source_tokenizer_class(
+        self,
+        save_directory,
+        filename_prefix = filename_prefix,
+        token = kwargs.get("token", None),
+        source_class = source_tokenizer_class,
     )
     _preserve_repaired_tokenizer_class(
         self,

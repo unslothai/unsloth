@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LFM3-Audio-2B (audio in, no image processor) loads through AutoModelForMultimodalLM, not the text load."""
 
 import importlib
 import sys
@@ -14,13 +13,12 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
     if name in sys.modules:
         return
     try:
         importlib.import_module(name)
         return
-    except Exception:  # noqa: BLE001 - any import failure means "not usable here", so stub it
+    except Exception:
         pass
     _STUBBED.append(name)
     mod = types.ModuleType(name)
@@ -33,18 +31,17 @@ def _stub_if_missing(name, attrs):
         setattr(sys.modules[parent], child, mod)
 
 
-_stub_if_missing(
-    "unsloth", ("FastLanguageModel", "FastVisionModel", "FastModel", "is_bfloat16_supported")
-)
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 
 import core.inference.inference as inf  # noqa: E402
 
+# Leaving these installed changes _shared_policy in later tests.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 
-class _Lfm3AudioModel:  # what the text load builds: no generate()
+class _Lfm3AudioModel:
     device = "cpu"
 
 
@@ -76,13 +73,19 @@ def _config(**overrides):
 
 
 @pytest.fixture
-def backend(monkeypatch):
+def multimodal_auto_class(monkeypatch):
+    import transformers
+
+    auto_class = type("AutoModelForMultimodalLM", (), {})
+    monkeypatch.setattr(transformers, "AutoModelForMultimodalLM", auto_class, raising = False)
+    return auto_class
+
+
+@pytest.fixture
+def backend(monkeypatch, multimodal_auto_class):
     import utils.models.diffusion_lm as diffusion_lm
 
-    try:
-        import unsloth
-    except Exception:  # noqa: BLE001 - the CPU test job has no usable unsloth
-        unsloth = types.ModuleType("unsloth")
+    unsloth = types.ModuleType("unsloth")
     monkeypatch.setitem(sys.modules, "unsloth", unsloth)
 
     calls = {}
@@ -96,12 +99,7 @@ def backend(monkeypatch):
         return _Lfm3AudioModel(), object()
 
     noop = lambda *a, **k: None
-    monkeypatch.setattr(
-        unsloth,
-        "FastModel",
-        types.SimpleNamespace(from_pretrained = fast_model, for_inference = noop),
-        raising = False,
-    )
+    unsloth.FastModel = types.SimpleNamespace(from_pretrained = fast_model, for_inference = noop)
     monkeypatch.setattr(
         inf,
         "FastLanguageModel",
@@ -124,12 +122,10 @@ def backend(monkeypatch):
     return b, calls
 
 
-def test_audio_input_chat_loads_through_the_multimodal_class(backend):
-    import transformers
-
+def test_audio_input_chat_loads_through_the_multimodal_class(backend, multimodal_auto_class):
     b, calls = backend
     assert inf.InferenceBackend.load_model(b, _config(), trust_remote_code = True) is True
-    assert calls["fast_model"]["auto_model"] is transformers.AutoModelForMultimodalLM
+    assert calls["fast_model"]["auto_model"] is multimodal_auto_class
     assert "fast_language_model" not in calls
     loaded = b.models["LiquidAI/LFM3-Audio-2B"]
     assert isinstance(loaded["processor"], _Processor)
@@ -139,16 +135,19 @@ def test_audio_input_chat_loads_through_the_multimodal_class(backend):
 def test_a_plain_text_model_still_takes_the_text_load(backend):
     b, calls = backend
     config = _config(audio_type = None, has_audio_input = False)
-    # The bare backbone the text load builds still meets the refusal.
     with pytest.raises(Exception, match = "cannot generate text"):
         inf.InferenceBackend.load_model(b, config)
     assert "fast_model" not in calls and "fast_language_model" in calls
 
 
-def test_audio_chat_auto_model_needs_audio_vlm_without_vision():
-    import transformers
-
-    assert inf._audio_chat_auto_model(_config()) is transformers.AutoModelForMultimodalLM
-    assert inf._audio_chat_auto_model(_config(is_vision = True)) is None  # Omni, Gemma 3n
+def test_audio_chat_auto_model_needs_audio_vlm_without_vision(multimodal_auto_class):
+    assert inf._audio_chat_auto_model(_config()) is multimodal_auto_class
+    assert inf._audio_chat_auto_model(_config(is_vision = True)) is None
     assert inf._audio_chat_auto_model(_config(audio_type = "whisper")) is None
     assert inf._audio_chat_auto_model(_config(has_audio_input = False, audio_type = None)) is None
+
+
+def test_an_unavailable_multimodal_api_keeps_the_fallback(monkeypatch):
+    import transformers
+    monkeypatch.setattr(transformers, "AutoModelForMultimodalLM", None, raising = False)
+    assert inf._audio_chat_auto_model(_config()) is None

@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -88,7 +92,15 @@ _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 def may_hold_audio_tokens(raw: str) -> bool:
     """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
     the parse that would have happened anyway; a false False misclassifies."""
-    return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+    # '"audio_token"' too: a JSON-escaped placeholder hides the markers from this raw scan.
+    return '"audio_token"' in raw or any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+
+
+def declares_audio_token(tok_config: dict) -> bool:
+    """Whether a transformers 5 tokenizer_config names an audio placeholder in its top-level
+    audio_token (Gemma 4) instead of added_tokens_decoder."""
+    token = tok_config.get("audio_token")
+    return isinstance(token, str) and bool(token)
 
 
 def classify_audio_tokens(tok_config: dict) -> Optional[str]:
@@ -171,14 +183,47 @@ def detect_local_tts_audio_type(directory) -> Optional[str]:
     for tok_path in AUDIO_TOKENIZER_CONFIG_PATHS:
         tok_file = root / tok_path
         try:
-            if not tok_file.is_file() or tok_file.stat().st_size > _MAX_TOKENIZER_CONFIG_BYTES:
+            st = tok_file.stat()
+            if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_TOKENIZER_CONFIG_BYTES:
                 continue
-            raw = tok_file.read_text(encoding = "utf-8-sig")
-            if not may_hold_audio_tokens(raw):
-                continue
-            audio_type = classify_audio_tokens(json.loads(raw))
         except Exception:
             continue
+        audio_type = _tokenizer_config_audio_type(tok_file, st)
         if is_tts_audio_type(audio_type):
             return audio_type
     return None
+
+
+# Kept per file version: a rewrite moves mtime/ctime/size/inode and misses.
+_TOKENIZER_AUDIO_TYPE_CACHE: "OrderedDict[tuple, Optional[str]]" = OrderedDict()
+_TOKENIZER_AUDIO_TYPE_CACHE_MAX = 4096
+_TOKENIZER_AUDIO_TYPE_LOCK = threading.Lock()
+
+
+def _tokenizer_config_audio_type(tok_file: Path, st: os.stat_result) -> Optional[str]:
+    key = (
+        os.fspath(tok_file),
+        st.st_dev,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+    )
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        if key in _TOKENIZER_AUDIO_TYPE_CACHE:
+            _TOKENIZER_AUDIO_TYPE_CACHE.move_to_end(key)
+            return _TOKENIZER_AUDIO_TYPE_CACHE[key]
+    try:
+        raw = tok_file.read_text(encoding = "utf-8-sig")
+        audio_type = classify_audio_tokens(json.loads(raw)) if may_hold_audio_tokens(raw) else None
+    except OSError:
+        # Not cached: a failed read (EMFILE, EIO, a Windows sharing lock) can clear with no change to the file's stat.
+        return None
+    except Exception:
+        # Cached too: a writer that finishes the file moves its mtime or size, so this key misses.
+        audio_type = None
+    with _TOKENIZER_AUDIO_TYPE_LOCK:
+        _TOKENIZER_AUDIO_TYPE_CACHE[key] = audio_type
+        while len(_TOKENIZER_AUDIO_TYPE_CACHE) > _TOKENIZER_AUDIO_TYPE_CACHE_MAX:
+            _TOKENIZER_AUDIO_TYPE_CACHE.popitem(last = False)
+    return audio_type

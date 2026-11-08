@@ -20,7 +20,15 @@
     "data-tool-call-id", "data-checkpoint-id",
   ]);
 
-  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot"]);
+  // Any other data-*-id names an instance too: the turn navigator's data-turn-id (#16300) carries
+  // message ids and differed on every action of a null control. Presence is still compared.
+  const ID_ATTR_RE = /^data-[a-z0-9-]+-id$/;
+  const isVolatile = (name) => VOLATILE_ATTRS.has(name) || ID_ATTR_RE.test(name);
+
+  // data-reply-paint and data-row-distant are containment hints toggled by IntersectionObservers on
+  // messages far from the viewport: they carry no content and their presence depends on scroll
+  // position, so they are not thread structure.
+  const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot", "data-reply-paint", "data-row-distant"]);
 
   // Dropped only from the visible-region digest; see parityVisible.capture().
   const VIRTUALIZATION_ATTRS = new Set(["aria-posinset", "aria-setsize"]);
@@ -132,7 +140,7 @@
       }
       names.sort();
       for (const name of names) {
-        if (VOLATILE_ATTRS.has(name)) {
+        if (isVolatile(name)) {
           parts.push(" " + name + "=*");
         } else {
           parts.push(" " + name + "=" + attrValue(el, name));

@@ -21,6 +21,7 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useT } from "@/i18n";
+import { StopIcon } from "@/lib/media-control-icons";
 import { cn } from "@/lib/utils";
 
 // The ring that fills while the button is held, drawn just inside the button's edge.

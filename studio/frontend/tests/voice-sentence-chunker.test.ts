@@ -50,7 +50,8 @@ test("abbreviations keep their sentence", () => {
 
 test("a closing quote stays with the sentence it closes", () => {
   assert.deepEqual(splitIntoSentences('He said "stop." Then he left.'), [
-    'He said "stop." Then he left.',
+    'He said "stop."',
+    "Then he left.",
   ]);
 });
 

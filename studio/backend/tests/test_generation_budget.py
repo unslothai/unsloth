@@ -357,7 +357,6 @@ def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
 
 
 def test_the_audio_input_path_stops_when_cancelled(monkeypatch):
-    """A custom generate (LFM3-Omni) gets no other cancel signal, and runs to max_new_tokens holding the lock."""
     import threading
 
     backend, model = _audio_backend(monkeypatch)

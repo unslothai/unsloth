@@ -36,7 +36,12 @@ from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
 from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
-from .float8_training import convert_model_to_float8_training, resolve_float8_training
+from .float8_training import (
+    convert_model_to_float8_training,
+    mark_fp8_lora,
+    resolve_float8_training,
+    resolve_fp8_lora,
+)
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -70,6 +75,8 @@ from .loader_utils import (
     prepare_device_map,
     requested_device_map,
     _offline_aware_load,
+    _load_probe_memo_scope,
+    _memo_config_probe,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -100,8 +107,7 @@ from ..device_type import (
 
 from unsloth_zoo.utils import Version, _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
-from unsloth_zoo.tiled_mlp import patch_tiled_mlp
-from ._tiled_mlp_ddp import patch_tiled_mlp_for_ddp
+from ..tiling import check_tiling_available, loader_tile_mlp
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -186,6 +192,7 @@ from ._utils import (
     _mark_forced_float32,
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
+    block_swap_shaped,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -1259,6 +1266,7 @@ class FastLanguageModel(FastLlamaModel):
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
+    @_load_probe_memo_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -1310,6 +1318,8 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
+        # Fail before any weights load.
+        check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
         token = hf_login(token)
@@ -1336,10 +1346,16 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        fp8_lora = None
+        fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
         if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
             raise ValueError(
@@ -1387,7 +1403,7 @@ class FastLanguageModel(FastLlamaModel):
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
 
-        if isinstance(dtype, str) and dtype in ["float16", "bfloat16"]:
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
             dtype = getattr(torch, dtype)
         assert (
             dtype is None
@@ -1590,7 +1606,8 @@ class FastLanguageModel(FastLlamaModel):
         local_files_only = kwargs.get("local_files_only", False)
 
         try:
-            model_config = AutoConfig.from_pretrained(
+            model_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = base_revision,
@@ -1617,7 +1634,8 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
-            peft_config = PeftConfig.from_pretrained(
+            peft_config = _memo_config_probe(
+                PeftConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = adapter_revision,
@@ -1687,7 +1705,8 @@ class FastLanguageModel(FastLlamaModel):
 
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
-            _model_type_config = AutoConfig.from_pretrained(
+            _model_type_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 peft_config.base_model_name_or_path,
                 token = token,
                 trust_remote_code = trust_remote_code,
@@ -1790,7 +1809,8 @@ class FastLanguageModel(FastLlamaModel):
                     or model_name
                 )
 
-            model_config = AutoConfig.from_pretrained(
+            model_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
@@ -1917,6 +1937,7 @@ class FastLanguageModel(FastLlamaModel):
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 *args,
+                **({"float8_training": fp8_request} if fp8_lora is not None else {}),
                 **kwargs,
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
@@ -2104,7 +2125,16 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )
-            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+            load_config = peft_load_kwargs.get("config", peft_config)
+            with (
+                fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                block_swap_shaped(
+                    model,
+                    getattr(load_config, "init_lora_weights", True),
+                    lora_config = load_config,
+                    loading_adapter = True,
+                ),
+            ):
                 model = PeftModel.from_pretrained(
                     model,
                     old_model_name,
@@ -2140,14 +2170,7 @@ class FastLanguageModel(FastLlamaModel):
             except Exception:
                 pass  # optional speedup; never block model loading
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -2157,6 +2180,7 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
@@ -2225,6 +2249,7 @@ class FastModel(FastBaseModel):
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request
+    @_load_probe_memo_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -2269,12 +2294,17 @@ class FastModel(FastBaseModel):
     ):
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
-        float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
-        if float8_training is not None and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+        fp8_lora = None
+        if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
         if float8_training is not None and qat_scheme is not None:
             raise ValueError(
                 "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
@@ -2295,8 +2325,12 @@ class FastModel(FastBaseModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
+        # Fail before any weights load.
+        check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
+        if isinstance(dtype, str) and dtype in ["float16", "bfloat16", "float32"]:
+            dtype = getattr(torch, dtype)
         token = hf_login(token)
         if whisper_language is not None:
             assert type(whisper_language) is str
@@ -2542,6 +2576,12 @@ class FastModel(FastBaseModel):
 
         # Text-diffusion slow-path dispatch, factored so the normal route and the legacy-config fallback share one call site.
         def _dispatch_diffusion():
+            if fp8_lora is not None:
+                raise NotImplementedError(
+                    f"Unsloth: float8_training = {fp8_lora!r} (fp8 LoRA) is not supported for text-diffusion "
+                    "models yet. Instead: drop float8_training for LoRA, or float8_training with "
+                    "full_finetuning = True."
+                )
             model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -2572,7 +2612,8 @@ class FastModel(FastBaseModel):
         try:
             model_config = user_config
             if model_config is None:
-                model_config = AutoConfig.from_pretrained(
+                model_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     model_name,
                     token = token,
                     revision = base_revision,
@@ -2602,7 +2643,8 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
-            peft_config = PeftConfig.from_pretrained(
+            peft_config = _memo_config_probe(
+                PeftConfig.from_pretrained,
                 model_name,
                 token = token,
                 revision = adapter_revision,
@@ -2670,7 +2712,8 @@ class FastModel(FastBaseModel):
 
         _model_type_config = peft_config if peft_config is not None else model_config
         if peft_config is not None and isinstance(token, str) and token:
-            _model_type_config = AutoConfig.from_pretrained(
+            _model_type_config = _memo_config_probe(
+                AutoConfig.from_pretrained,
                 peft_config.base_model_name_or_path,
                 token = token,
                 trust_remote_code = trust_remote_code,
@@ -2710,7 +2753,8 @@ class FastModel(FastBaseModel):
         diffusion_config = model_config
         if diffusion_config is None and peft_config is not None:
             try:
-                diffusion_config = AutoConfig.from_pretrained(
+                diffusion_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     peft_config.base_model_name_or_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
@@ -3004,7 +3048,8 @@ class FastModel(FastBaseModel):
             if user_config is not None:
                 model_config = user_config
             else:
-                model_config = AutoConfig.from_pretrained(
+                model_config = _memo_config_probe(
+                    AutoConfig.from_pretrained,
                     model_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
@@ -3586,7 +3631,16 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
             )
             try:
-                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                load_config = peft_load_kwargs.get("config", peft_config)
+                with (
+                    fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                    block_swap_shaped(
+                        model,
+                        getattr(load_config, "init_lora_weights", True),
+                        lora_config = load_config,
+                        loading_adapter = True,
+                    ),
+                ):
                     model = PeftModel.from_pretrained(
                         model,
                         old_model_name,
@@ -3633,14 +3687,7 @@ class FastModel(FastBaseModel):
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
 
-        # Patch Tiled MLP; enable by setting UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}".
-        patch_tiled_mlp_choice = os.environ.get(
-            "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
-        )
-        if patch_tiled_mlp_choice != "0" or unsloth_tiled_mlp:
-            patch_tiled_mlp(model, patch_options_str = patch_tiled_mlp_choice)
-            if is_distributed():
-                patch_tiled_mlp_for_ddp()
+        loader_tile_mlp(model, unsloth_tiled_mlp)
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -3652,6 +3699,7 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

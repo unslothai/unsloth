@@ -22,7 +22,7 @@ import {
   servedVoiceTtsModel,
   speakerCarriesOver,
 } from "../src/features/chat/voice/voice-models.ts";
-import { holdForServing, voiceReplacedByServing } from "../src/features/chat/voice/voice-ownership.ts";
+import { holdForServing, releaseBeforeBorrow } from "../src/features/chat/voice/voice-ownership.ts";
 
 function wavInfo(base64: string) {
   const bytes = Buffer.from(base64, "base64");
@@ -131,12 +131,11 @@ test("bubbles coalesced into one run send all their speech on the newest", () =>
 
 test("switching an owned audio.cpp voice to the chat model's voice unloads it", () => {
   const owned = { id: "audiocpp-kokoro", owned: true };
-  assert.equal(voiceReplacedByServing(owned, VOICE_CHAT_MODEL_VOICE), "audiocpp-kokoro");
-  assert.equal(voiceReplacedByServing({ id: "audiocpp-kokoro", owned: false }, VOICE_CHAT_MODEL_VOICE), null);
-  assert.equal(voiceReplacedByServing(null, VOICE_CHAT_MODEL_VOICE), null);
-  // An audio.cpp voice that is already served keeps the existing path untouched.
-  assert.equal(voiceReplacedByServing(owned, "audiocpp-kokoro"), null);
-  assert.equal(voiceReplacedByServing(owned, "audiocpp-other"), null);
+  // The chat model's voice is borrowed like any other serving voice, so the owned one is released.
+  assert.equal(releaseBeforeBorrow(owned, VOICE_CHAT_MODEL_VOICE), "audiocpp-kokoro");
+  assert.equal(releaseBeforeBorrow({ id: "audiocpp-kokoro", owned: false }, VOICE_CHAT_MODEL_VOICE), null);
+  assert.equal(releaseBeforeBorrow(null, VOICE_CHAT_MODEL_VOICE), null);
+  assert.equal(releaseBeforeBorrow(owned, "audiocpp-kokoro"), null);
   assert.deepEqual(holdForServing(owned, VOICE_CHAT_MODEL_VOICE), { id: VOICE_CHAT_MODEL_VOICE, owned: false });
 });
 

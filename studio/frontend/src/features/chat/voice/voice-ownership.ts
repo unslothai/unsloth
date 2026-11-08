@@ -10,13 +10,13 @@ export function voiceToUnload(hold: VoiceHold | null): string | null {
 }
 
 /** A voice found already serving stays owned only if this page loaded that same voice. */
-/** The chat model's own voice takes no slot, so the audio.cpp voice this page loaded goes. */
-export function voiceReplacedByServing(hold: VoiceHold | null, id: string): string | null {
-  return id === "chat-model-voice" && hold?.id !== id ? voiceToUnload(hold) : null;
-}
-
 export function holdForServing(hold: VoiceHold | null, id: string): VoiceHold {
   return { id, owned: hold?.id === id && hold.owned };
+}
+
+/** Borrowing another voice that is already serving still releases the one this page loaded. */
+export function releaseBeforeBorrow(hold: VoiceHold | null, id: string): string | null {
+  return hold?.owned && hold.id !== id ? hold.id : null;
 }
 
 /** A load that settles after voice mode let go (epoch moved) is unloaded instead of kept. */

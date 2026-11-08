@@ -544,13 +544,12 @@ export function KeyboardShortcutsTab() {
         );
       })}
 
-      {/* Click-through strip; -bottom-6 undoes the scroller padding sticky would inset by. */}
-      <div className="pointer-events-none sticky -bottom-6 z-10 -mb-6 mt-auto flex justify-end py-4">
+      {/* Same footer as Appearance: Reset sits after the list, not floating over it. */}
+      <div className="mt-auto flex justify-end border-t border-border/60 pt-4">
         <Button
           type="button"
-          variant="dark"
-          // Opaque disabled fill so rows never show through; dark: outranks the variant's own dark fill.
-          className="pointer-events-auto text-ui-13 disabled:bg-[color-mix(in_oklab,var(--foreground)_34%,var(--background))] disabled:text-background disabled:opacity-100 dark:disabled:bg-[color-mix(in_oklab,var(--foreground)_42%,var(--background))] dark:disabled:text-background"
+          variant="outline"
+          size="sm"
           disabled={Object.keys(overrides).length === 0}
           onClick={() => {
             stopRecording();

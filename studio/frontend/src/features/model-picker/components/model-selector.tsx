@@ -147,6 +147,8 @@ interface ModelSelectorProps {
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  /** Audio's "Load model into: CPU RAM": audio.cpp variants skip their GPU estimate. */
+  cpuLoad?: boolean;
   /** A second Recommended group under its own label, e.g. "More models". */
   moreModels?: {
     label: string;
@@ -389,6 +391,7 @@ function ModelSelectorContent({
   communityModelPolicy,
   opaqueKind,
   rowFilter,
+  cpuLoad,
   moreModels,
   embedded = false,
 }: {
@@ -426,6 +429,7 @@ function ModelSelectorContent({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  cpuLoad?: boolean;
   moreModels?: {
     label: string;
     models: (ModelOption & { sizeBytes?: number | null })[];
@@ -624,10 +628,6 @@ function ModelSelectorContent({
 
   const panel = (
     <>
-      {/* Local provider so popover tooltips open instantly, including when the
-          cursor moves between icons. disableHoverableContent drops the grace
-          area between a trigger and its tooltip, so moving from one icon to the
-          next switches the tooltip at once instead of keeping the old one up. */}
       <TooltipProvider
         delayDuration={0}
         skipDelayDuration={0}
@@ -683,6 +683,7 @@ function ModelSelectorContent({
         ) : (
           <>
             <HubModelPicker
+              open={open}
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
               loadedModelIdOverride={loadedModelIdOverride}
@@ -706,6 +707,7 @@ function ModelSelectorContent({
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
               rowFilter={rowFilter}
+              cpuLoad={cpuLoad}
               moreModels={moreModels}
               npu={npu}
               onDeviceInventoryChange={setHasDeviceModels}
@@ -831,6 +833,7 @@ export function ModelSelector({
   communityModelPolicy = "none",
   opaqueKind,
   rowFilter,
+  cpuLoad,
   moreModels,
   hubCapability,
   hubTask,
@@ -1023,7 +1026,6 @@ export function ModelSelector({
       onEject={onEject ? handleEject : undefined}
       onEjectAll={onEjectAll ? handleEjectAll : undefined}
       onFoldersChange={onFoldersChange}
-      // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
       onBrowseHub={
         task && communityModelPolicy === "none" && !hubCapability
           ? undefined
@@ -1039,6 +1041,7 @@ export function ModelSelector({
       communityModelPolicy={communityModelPolicy}
       opaqueKind={opaqueKind}
       rowFilter={rowFilter}
+      cpuLoad={cpuLoad}
       moreModels={moreModels}
     />
   );

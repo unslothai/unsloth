@@ -2,13 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert02Icon,
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
   ImageCropIcon,
@@ -23,10 +33,10 @@ import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MediaViewer } from "@/components/media-viewer";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
-import { useStripReorder } from "@/hooks/use-strip-reorder";
+import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaApiButton } from "@/components/media-api-button";
 import { LibraryPageLink, SiblingMediaPageLink } from "@/components/media-page-link";
@@ -215,6 +225,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToast } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -273,6 +284,28 @@ function useVideoModels(
     () => catalogToModelOptions(VIDEO_CATALOG, host, denseQuantSchemes),
     [host, denseQuantSchemes],
   );
+}
+
+const FAILURE_WITH_REASON_TOAST_MS = 10_000;
+
+/** False for the user's own Cancel, which is not an error. */
+function showVideoFailureToast(error: string | null | undefined): boolean {
+  const failure = videoFailureToast(error);
+  if (!failure) return false;
+  const { title, errorType, detail } = failure;
+  const hasReason = Boolean(errorType || detail);
+  toast.error(title, {
+    description: hasReason ? (
+      <span className="[overflow-wrap:anywhere]">
+        {errorType && <code className="font-mono">{errorType}</code>}
+        {errorType && detail ? ": " : null}
+        {detail}
+      </span>
+    ) : undefined,
+    duration: hasReason ? FAILURE_WITH_REASON_TOAST_MS : undefined,
+    action: generationFailureLogsAction(title),
+  });
+  return true;
 }
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
@@ -780,6 +813,136 @@ function ReferenceVideoTrimStatus({
     </p>
   );
 }
+
+/** Page callbacks a card reads at event time, so new page closures never re-render it. */
+interface VideoStripTileActions {
+  tileProps: ReturnType<typeof useStripReorder>["tileProps"];
+  select: (id: string) => void;
+  posterError: (id: string) => void;
+  togglePin: (id: string, pinned: boolean) => void;
+  archive: (id: string) => void;
+  remove: (id: string) => void;
+  download: (video: GalleryVideo) => void;
+  addToProject: (id: string, projectId: string) => Promise<{ already: boolean }>;
+  toggleFavorite: (key: string) => void;
+}
+
+class VideoStripTileActionsBox {
+  private actions: VideoStripTileActions | null = null;
+  set(actions: VideoStripTileActions) {
+    this.actions = actions;
+  }
+  get(): VideoStripTileActions {
+    return this.actions as VideoStripTileActions;
+  }
+}
+
+const VideoStripTile = memo(function VideoStripTile({
+  video,
+  thumbnail,
+  thumbnailFailed,
+  selected,
+  active,
+  favorite,
+  dragging,
+  cueEdge,
+  actions,
+}: {
+  video: GalleryVideo;
+  thumbnail: string | undefined;
+  thumbnailFailed: boolean;
+  selected: boolean;
+  active: boolean;
+  favorite: boolean;
+  dragging: boolean;
+  cueEdge: StripDropCue["edge"] | null;
+  actions: VideoStripTileActionsBox;
+}) {
+  const id = video.id;
+  return (
+    <div
+      data-clip-id={id}
+      data-reorder-id={id}
+      draggable={true}
+      onDragStart={(event: DragEvent<HTMLElement>) => actions.get().tileProps(id).onDragStart(event)}
+      onDragEnd={() => actions.get().tileProps(id).onDragEnd()}
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => actions.get().tileProps(id).onKeyDown(event)}
+      className={cn("group relative h-16 w-24 shrink-0", dragging && "opacity-40")}
+    >
+      {cueEdge && <StripDropLine edge={cueEdge} />}
+      <Tooltip>
+      <TooltipTrigger asChild={true}>
+      <button
+        type="button"
+        onClick={() => actions.get().select(id)}
+        className="relative flex size-full flex-col justify-end overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {thumbnail ? (
+          <img
+            src={thumbnail}
+            alt=""
+            draggable={false}
+            onError={() => actions.get().posterError(id)}
+            className="absolute inset-0 size-full object-cover"
+          />
+        ) : thumbnailFailed ? (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <HugeiconsIcon
+              icon={FlimSlateIcon}
+              className="size-4 text-muted-foreground"
+            />
+          </span>
+        ) : (
+          <span className="absolute inset-0 flex items-center justify-center">
+            <Spinner className="size-4 text-muted-foreground" />
+          </span>
+        )}
+        {/* A terse caption strip so cards read at a glance. Left/bottom padding clears the rounded
+            corner and the selection border. */}
+        <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
+          {clipMeta(video)}
+        </span>
+        {selected && (
+          <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
+        )}
+      </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs">
+        {video.prompt}
+        <span className="mt-0.5 block opacity-70">
+          seed {video.seed} - {clipMeta(video)}
+          {CONDITIONING_LABELS[video.conditioning ?? ""]
+            ? ` - ${CONDITIONING_LABELS[video.conditioning ?? ""]}`
+            : ""}
+        </span>
+      </TooltipContent>
+      </Tooltip>
+      {video.pinned && (
+        <GalleryPinBadge
+          noun="video"
+          className="left-0.5 top-0.5 z-30"
+          onUnpin={() => actions.get().togglePin(id, false)}
+        />
+      )}
+      <div className="absolute right-0.5 top-0.5 z-30">
+        <GalleryItemMenu
+          variant="overlay"
+          noun="video"
+          active={active}
+          pinned={Boolean(video.pinned)}
+          archived={Boolean(video.archived)}
+          favorite={favorite}
+          onToggleFavorite={() => actions.get().toggleFavorite(`video:${id}`)}
+          onTogglePin={() => actions.get().togglePin(id, !video.pinned)}
+          onToggleArchive={() => actions.get().archive(id)}
+          onDelete={() => actions.get().remove(id)}
+          onDownload={() => actions.get().download(video)}
+          onAddToProject={(projectId) => actions.get().addToProject(id, projectId)}
+        />
+      </div>
+    </div>
+  );
+});
 
 function RecipePopover({
   video,
@@ -2167,6 +2330,22 @@ function VideoGenerator({
     [dropFromStrip],
   );
 
+  // Refreshed after every commit, read only from card event handlers, so new page closures never re-render a card.
+  const [stripTileActions] = useState(() => new VideoStripTileActionsBox());
+  useLayoutEffect(() => {
+    stripTileActions.set({
+      tileProps: stripReorder.tileProps,
+      select: setSelectedId,
+      posterError: handlePosterError,
+      togglePin: (id, pinned) => void handleTogglePin(id, pinned),
+      archive: (id) => void handleArchive(id),
+      remove: (id) => void handleDelete(id),
+      download: (video) => void handleQuickDownload(video),
+      addToProject: addGalleryVideoToProject,
+      toggleFavorite,
+    });
+  });
+
   const handleClearAll = useCallback(async () => {
     setClearingGallery(true);
     try {
@@ -2480,10 +2659,8 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            showVideoFailureToast(p.error);
           }
           return;
         }
@@ -2542,9 +2719,7 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          showVideoFailureToast(g.error);
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.
@@ -3519,8 +3694,9 @@ function VideoGenerator({
       });
     } catch (err) {
       if (!isMounted.current) return;
-      const refusal = err instanceof Error ? err.message : "Video generation failed";
-      toast.error(refusal, { action: generationFailureLogsAction(refusal) });
+      const refusal = err instanceof Error ? err.message : null;
+      // A refusal is never the user's own Cancel, so one that mentions "cancelled" still shows.
+      if (!showVideoFailureToast(refusal) && refusal) toast.error(refusal);
       setBusy(null);
       setGenStep(null);
       // The refusal can be "No video model is loaded"; re-read status.
@@ -4743,89 +4919,18 @@ function VideoGenerator({
                   since a button inside a button is invalid. data-clip-id rides the wrapper so the observer
                   still sees it. */}
               {videos.map((video) => (
-                <div
+                <VideoStripTile
                   key={video.id}
-                  data-clip-id={video.id}
-                  {...stripReorder.tileProps(video.id)}
-                  className={cn(
-                    "group relative h-16 w-24 shrink-0",
-                    stripReorder.draggingId === video.id && "opacity-40",
-                  )}
-                >
-                  {stripReorder.cue?.id === video.id && (
-                    <StripDropLine edge={stripReorder.cue.edge} />
-                  )}
-                <Tooltip>
-                <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(video.id)}
-                  className="relative flex size-full flex-col justify-end overflow-hidden rounded-lg bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {thumbnailById[video.id] ? (
-                    <img
-                      src={thumbnailById[video.id]}
-                      alt=""
-                      draggable={false}
-                      onError={() => handlePosterError(video.id)}
-                      className="absolute inset-0 size-full object-cover"
-                    />
-                  ) : thumbnailFailedIds.has(video.id) ? (
-                    <span className="absolute inset-0 flex items-center justify-center">
-                      <HugeiconsIcon
-                        icon={FlimSlateIcon}
-                        className="size-4 text-muted-foreground"
-                      />
-                    </span>
-                  ) : (
-                    <span className="absolute inset-0 flex items-center justify-center">
-                      <Spinner className="size-4 text-muted-foreground" />
-                    </span>
-                  )}
-                  {/* A terse caption strip so cards read at a glance. Left/bottom padding clears the rounded
-                      corner and the selection border. */}
-                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
-                    {clipMeta(video)}
-                  </span>
-                  {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-lg border border-border bg-white/35 dark:border-[rgb(255_255_255_/_calc(0.25*var(--contrast-edge-gain,1)))] dark:bg-white/20" />
-                  )}
-                </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  {video.prompt}
-                  <span className="mt-0.5 block opacity-70">
-                    seed {video.seed} - {clipMeta(video)}
-                    {CONDITIONING_LABELS[video.conditioning ?? ""]
-                      ? ` - ${CONDITIONING_LABELS[video.conditioning ?? ""]}`
-                      : ""}
-                  </span>
-                </TooltipContent>
-                </Tooltip>
-                {video.pinned && (
-                  <GalleryPinBadge
-                    noun="video"
-                    className="left-0.5 top-0.5 z-30"
-                    onUnpin={() => void handleTogglePin(video.id, false)}
-                  />
-                )}
-                <div className="absolute right-0.5 top-0.5 z-30">
-                  <GalleryItemMenu
-                    variant="overlay"
-                    noun="video"
-                    active={active}
-                    pinned={Boolean(video.pinned)}
-                    archived={Boolean(video.archived)}
-                    favorite={isFavorite(`video:${video.id}`)}
-                    onToggleFavorite={() => toggleFavorite(`video:${video.id}`)}
-                    onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
-                    onToggleArchive={() => void handleArchive(video.id)}
-                    onDelete={() => void handleDelete(video.id)}
-                    onDownload={() => void handleQuickDownload(video)}
-                    onAddToProject={(projectId) => addGalleryVideoToProject(video.id, projectId)}
-                  />
-                </div>
-                </div>
+                  video={video}
+                  thumbnail={thumbnailById[video.id]}
+                  thumbnailFailed={thumbnailFailedIds.has(video.id)}
+                  selected={video.id === selected?.id}
+                  active={active}
+                  favorite={isFavorite(`video:${video.id}`)}
+                  dragging={stripReorder.draggingId === video.id}
+                  cueEdge={stripReorder.cue?.id === video.id ? stripReorder.cue.edge : null}
+                  actions={stripTileActions}
+                />
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (
@@ -4842,7 +4947,7 @@ function VideoGenerator({
                       onClick={() => setClearConfirmOpen(true)}
                       className="btn-fill flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      <HugeiconsIcon icon={TrashIcon} className="size-4" />
                       <span className="text-ui-9 font-medium">Clear all</span>
                     </button>
                   </TooltipTrigger>

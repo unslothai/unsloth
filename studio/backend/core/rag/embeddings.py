@@ -143,6 +143,37 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
     """The picker activated a model whose explicit transfer is still pending."""
 
 
+# Shared by the raise sites and is_download_required_error: a document job keeps only the error text.
+DOWNLOAD_REQUIRED_HINT = "Finish its Settings download before indexing documents."
+
+
+def download_required_message(name: str) -> str:
+    return f"Embedding model {name!r} is not downloaded yet. {DOWNLOAD_REQUIRED_HINT}"
+
+
+def is_download_required_error(error: str | None) -> bool:
+    """A stored error text from EmbeddingModelDownloadRequiredError: a wait, not a bad file."""
+    return bool(error) and DOWNLOAD_REQUIRED_HINT in error
+
+
+def download_required(model_name: str | None = None) -> bool:
+    """True while ``model_name``'s Settings transfer is pending and the cache-only loader still cannot load it."""
+    name = model_name or config.effective_embedding_model()
+    try:
+        from utils.embedding_model_settings import get_stored_download_pending
+        if not get_stored_download_pending(name):
+            return False
+    except Exception:  # noqa: BLE001 - old/unavailable settings store
+        return False
+    try:
+        warm(name)
+    except EmbeddingModelDownloadRequiredError:
+        return True
+    except Exception:  # noqa: BLE001 - any other load failure stays the per-document error it was
+        logger.debug("embedding model %s failed to warm", name, exc_info = True)
+    return False
+
+
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
@@ -604,19 +635,13 @@ def _get(model_name: str | None = None):
                 if download_pending and st_source is None:
                     # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
                     # still a pending model.
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             # Scan only after load_target is settled, so the scanned commit is the loaded one.
@@ -730,35 +755,76 @@ def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
     counts: dict[str, int] = {}
     counted_by: list = [None]
 
-    def _count(t: str) -> int:
-        with _compute_lock:
-            tok = _get(model_name).tokenizer
-            owner = counted_by[0]
-            if owner is None or owner() is not tok:
-                counts.clear()
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        out = [0] * len(texts)
+        # The lock is released between batches so a query encode never waits out a whole document.
+        for start in range(0, len(texts), _ST_COUNT_BATCH):
+            with _compute_lock:
+                tok = _get(model_name).tokenizer
+                owner = counted_by[0]
+                if owner is None or owner() is not tok:
+                    counts.clear()
+                    try:
+                        counted_by[0] = weakref.ref(tok)
+                    except TypeError:
+                        counted_by[0] = None
+                memoize = counted_by[0] is not None
+                misses: dict[str, list[int]] = {}
+                loose: list[int] = []
+                for i in range(start, min(start + _ST_COUNT_BATCH, len(texts))):
+                    t = texts[i]
+                    memo = memoize and type(t) is str
+                    known = counts.get(t) if memo else None
+                    if known is not None:
+                        out[i] = known
+                    elif memo:
+                        misses.setdefault(t, []).append(i)
+                    else:
+                        loose.append(i)
+                if not misses and not loose:
+                    # Leave the environment a tokenize would.
+                    if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    continue
+                keys = list(misses)
+                os.environ["TOKENIZERS_PARALLELISM"] = "true"
                 try:
-                    counted_by[0] = weakref.ref(tok)
-                except TypeError:
-                    counted_by[0] = None
-            memo = counted_by[0] is not None and type(t) is str
-            known = counts.get(t) if memo else None
-            if known is not None:
-                # Leave the environment a tokenize would.
-                if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                    lengths = _encoded_lengths(tok, keys + [texts[i] for i in loose])
+                finally:
                     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-                return known
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            try:
-                n = len(tok.encode(t, add_special_tokens = False))
-            finally:
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
-            if memo:
-                if len(counts) >= _ST_COUNT_CACHE_SIZE:
-                    counts.pop(next(iter(counts)))
-                counts[t] = n
-            return n
+                for key, n in zip(keys, lengths):
+                    for i in misses[key]:
+                        out[i] = n
+                    if len(counts) >= _ST_COUNT_CACHE_SIZE:
+                        counts.pop(next(iter(counts)))
+                    counts[key] = n
+                for i, n in zip(loose, lengths[len(keys) :]):
+                    out[i] = n
+        return out
 
+    def _count(t: str) -> int:
+        return _count_many((t,))[0]
+
+    _count.many = _count_many
     return _count
+
+
+_ST_COUNT_BATCH = 256
+
+
+def _encoded_lengths(tok, texts: list) -> list[int]:
+    """``len(tok.encode(t, add_special_tokens=False))`` per text; a fast tokenizer's batch call is the path encode wraps."""
+    if len(texts) > 1 and getattr(tok, "is_fast", False) is True:
+        ids = tok(
+            texts,
+            add_special_tokens = False,
+            return_attention_mask = False,
+            return_token_type_ids = False,
+        )["input_ids"]
+        if len(ids) == len(texts):
+            return [len(row) for row in ids]
+    return [len(tok.encode(t, add_special_tokens = False)) for t in texts]
 
 
 def _release_st_model() -> bool:
@@ -1295,6 +1361,17 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
         return False
 
 
+def batches_across_documents(model_name: str | None = None) -> bool:
+    """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
+    CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
+    if active_backend_is_llama(model_name):
+        return True
+    model = _model
+    # A loaded model's device counts: a GPU choice can still have fallen back to CPU at load.
+    device = getattr(model, "device", None) if model is not None else None
+    return (str(device) if device is not None else _device()).split(":")[0] != "cpu"
+
+
 def _llama_pooling(name: str, served = None) -> str | None:
     try:
         from .embed_llama_server import LlamaServerBackend, _gguf_pooling
@@ -1459,11 +1536,11 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()
 
-    def _count(text: str) -> int:
+    def _served(use):
         nonlocal state
         served_backend, served_count = state
         try:
-            return served_count(text)
+            return use(served_count)
         except RuntimeError:
             if not (
                 _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
@@ -1480,6 +1557,21 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     replacement.token_counter(model_name = model_name),
                 )
             retry = state[1]
-        return retry(text)
+        return use(retry)
 
+    def _count(text: str) -> int:
+        return _served(lambda count: count(text))
+
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        return _served(lambda count: _many(count, texts))
+
+    # Only a batching backend (sentence-transformers, llama-server) changes how chunking asks for counts.
+    if getattr(state[1], "many", None) is not None:
+        _count.many = _count_many
     return _count
+
+
+def _many(count, texts: list) -> list[int]:
+    many = getattr(count, "many", None)
+    return list(many(texts)) if many is not None else [count(t) for t in texts]
