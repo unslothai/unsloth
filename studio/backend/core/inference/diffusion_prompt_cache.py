@@ -27,7 +27,7 @@ _PER_TEXT_METHODS = {
     "ZImage": "_encode_prompt",
 }
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
-# "0": MiniMax-H3 presentations with reference / keyframe vision inputs always rerun the conditioner.
+# "0": H3 calls with vision inputs bypass the cache.
 _ENV_H3_VISION = "UNSLOTH_H3_VISION_PROMPT_CACHE"
 
 
@@ -400,8 +400,7 @@ def _modular_text_encoder(pipe: Any) -> Any:
 
 
 def _vision_fingerprint(vision: Any) -> list:
-    """Content key of H3's reference / keyframe vision tensors, hashed on the host before they move to the device.
-    TypeError (= bypass, the encoder runs) for a device tensor, an unknown value, or the kill switch."""
+    """Host-side content key of H3 vision tensors; TypeError (= bypass) for device tensors or unknown values."""
     if (os.environ.get(_ENV_H3_VISION) or "").strip().lower() in _FALSE_TOKENS:
         raise TypeError("vision inputs")
     if not isinstance(vision, dict):
