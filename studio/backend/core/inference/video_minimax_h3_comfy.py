@@ -188,7 +188,7 @@ def load_h3_comfy_transformer(
     fp8_backend: Optional[str],
     target: Any = None,
     logger: Any = None,
-    # H3's pin / stream / residency path is built on torchao weights: dequantize what torchao does not take
+    # fp8 layers no fp8 runtime takes stay 1-byte codes widened per layer (``h3_comfy_backends``); False dequantizes
     fp8_storage: Optional[bool] = False,
 ) -> Any:
     """The H3 denoiser of a ComfyUI-quantized file, int8 / fp8 codes kept, curve adaLN installed."""
@@ -198,7 +198,10 @@ def load_h3_comfy_transformer(
     metadata = h3_comfy_curve_metadata(path)
     # Header only, before any tensor is read: a PDD trunk without its head bank is refused here.
     heads = h3_pdd_heads_in_file(path)
-    return load_comfy_quant_transformer(
+    prepare, fp32_buffers = _keep_fp32_init_buffers(
+        transformer_cls, _h3_prepare_model(metadata, heads, logger = logger)
+    )
+    model = load_comfy_quant_transformer(
         transformer_cls,
         path,
         scan,
@@ -217,6 +220,44 @@ def load_h3_comfy_transformer(
         target = target,
         logger = logger,
         key_map = h3_comfy_key_map,
-        prepare_model = _h3_prepare_model(metadata, heads, logger = logger),
+        prepare_model = prepare,
         keep_dtype = functools.partial(h3_comfy_keep_dtype, pruned = metadata is not None),
     )
+    _restore_fp32_init_buffers(model, fp32_buffers)
+    return model
+
+
+def _keep_fp32_init_buffers(transformer_cls: Any, prepare: Any) -> tuple:
+    """``prepare_model`` that also snapshots the float32 ``__init__`` buffers of ``_keep_in_fp32_modules``: the loader
+    casts unloaded buffers to the compute dtype, and a bf16 rope ``inv_freq`` drifts the clip off the hosted one's."""
+    keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
+    if isinstance(keep, str):
+        keep = [keep]
+    saved: dict = {}
+
+    def hook(model: Any) -> None:
+        import torch
+
+        if prepare is not None:
+            prepare(model)
+        saved.clear()
+        for name, module in model.named_modules():
+            if not name or not any(k in name.split(".") for k in keep):
+                continue
+            for buffer_name, buffer in module._buffers.items():
+                if (
+                    buffer is not None
+                    and buffer.dtype == torch.float32
+                    and buffer.device.type != "meta"
+                ):
+                    saved[(name, buffer_name)] = buffer.detach().clone()
+
+    return hook, saved
+
+
+def _restore_fp32_init_buffers(model: Any, saved: dict) -> None:
+    for (name, buffer_name), value in saved.items():
+        module = model.get_submodule(name)
+        current = module._buffers.get(buffer_name)
+        if current is not None and current.dtype != value.dtype and current.shape == value.shape:
+            module._buffers[buffer_name] = value.to(current.device)

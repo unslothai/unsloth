@@ -319,6 +319,8 @@ jobs:
         run: |
           python3 -m pip install 'playwright>=1.45,<2' pytest
           echo "version=$(python3 -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+          # Browser builds differ per OS release; one restored onto another release exits at launch.
+          echo "os=$(. /etc/os-release && echo "${ID}-${VERSION_ID}")" >> "$GITHUB_OUTPUT"
 
       # Key identical to the chromium-only shards in studio-ui-smoke.yml, so both share one entry.
       - name: Restore the Playwright browser cache
@@ -327,7 +329,7 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-c-v2
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.os }}-${{ steps.pw.outputs.version }}-c-v2
 
       - name: Restore the apt archive cache (chromium's .deb set)
         id: apt-cache
@@ -335,7 +337,7 @@ jobs:
         continue-on-error: true
         with:
           path: ${{ github.workspace }}/.apt-archives
-          key: apt-archives-${{ runner.os }}-${{ env.ImageOS }}-${{ env.ImageVersion }}-c-v1
+          key: apt-archives-${{ runner.os }}-${{ steps.pw.outputs.os }}-c-v1
 
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}

@@ -62,6 +62,11 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
       DropdownGlowContext: { Provider: "Provider" },
       dialogDropdownGlow: () => null,
     },
+    "@/lib/surface-registry": {
+      MODAL_SURFACE: "modal",
+      useMergedRefs: () => undefined,
+      useSurfaceRef: () => undefined,
+    },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
     "@/lib/folder-icons": { Cancel01Icon: {} },
@@ -108,6 +113,11 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     },
     "@/components/ui/dialog": {
       DialogPortalContainerContext: { Provider: "Provider" },
+    },
+    "@/lib/surface-registry": {
+      MODAL_SURFACE: "modal",
+      useMergedRefs: () => undefined,
+      useSurfaceRef: () => undefined,
     },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },

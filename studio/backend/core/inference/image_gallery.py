@@ -49,6 +49,10 @@ def _params_text(meta: dict[str, Any]) -> str:
     """Automatic1111-style ``parameters`` string for cross-tool interop."""
     from core.inference.diffusion_hires import infotext_fields as hires_infotext, infotext_meta
 
+    grid = meta.get("xy_grid") or {}
+    if grid.get("cell_width") and grid.get("cell_height"):
+        # An X/Y grid's recipe is its first cell's: A1111 writes the cell size, not the grid's pixels.
+        meta = {**meta, "width": grid["cell_width"], "height": grid["cell_height"]}
     # A Hires fix image is written the way A1111 writes one: Size is the base pass, Hires upscale the factor.
     meta = infotext_meta(meta)
     # The caption the model encoded (FLUX.3 prompt upsampler): other tools reproduce the image from this line. The

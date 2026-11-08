@@ -123,6 +123,23 @@ const PAGE_GUARD_SCRIPT: &str = r#"(() => {
 
 const PAGE_RESTORE_SCRIPT: &str = "window.__unslothPageGuard?.();";
 
+/// Studio's scrollbar in pages; first in the document, so a page's own scrollbar styles win.
+const PAGE_SCROLLBAR_SCRIPT: &str = r#"(() => {
+  const css = "::-webkit-scrollbar{width:8px;height:8px;background:transparent}"
+    + "::-webkit-scrollbar-track,::-webkit-scrollbar-track-piece,::-webkit-scrollbar-corner{background:transparent;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-thumb{background:rgb(99 99 99 / 0.54);border-radius:9999px;border:none;box-shadow:none}"
+    + "::-webkit-scrollbar-button{display:none;width:0;height:0}";
+  const add = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    const style = document.createElement("style");
+    style.textContent = css;
+    root.prepend(style);
+    return true;
+  };
+  if (!add()) new MutationObserver((_, seen) => add() && seen.disconnect()).observe(document, { childList: true });
+})();"#;
+
 /// Registered before the opener, dialog and notification plugins (`PAGE_GUARD_SCRIPT`).
 pub fn page_guard_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("unsloth-page-guard")
@@ -1469,6 +1486,7 @@ async fn create_view<R: Runtime>(
             _ => false,
         })
         .initialization_script(PAGE_RESTORE_SCRIPT)
+        .initialization_script(PAGE_SCROLLBAR_SCRIPT)
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
@@ -2773,6 +2791,17 @@ mod tests {
             guard > restore,
             "PAGE_RESTORE_SCRIPT would remove the listener"
         );
+    }
+
+    #[test]
+    fn pages_get_the_studio_scrollbar_first_in_the_document() {
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        assert!(code.contains(".initialization_script(PAGE_SCROLLBAR_SCRIPT)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("root.prepend(style)"));
+        assert!(PAGE_SCROLLBAR_SCRIPT.contains("border-radius:9999px"));
+        let studio = include_str!("../../frontend/src/index.css");
+        assert!(studio.contains("::-webkit-scrollbar {\n\twidth: 8px;"));
     }
 
     #[test]
