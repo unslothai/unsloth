@@ -772,7 +772,12 @@ _CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
 def get_cuda_device_info() -> Optional[list[Optional[tuple[str, bool, int, str]]]]:
     """(bus id or "", integrated, total bytes, name) per CUDA ordinal (None: no answer); [] no device, None unknown.
     A driver-API child, never get_device_properties: that initialises CUDA here, then device calls pin contexts."""
-    key = (os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER"))
+    # Per mask and inventory generation: hardware re-detection (gpu_query.invalidate_static) asks again.
+    key = (
+        os.environ.get("CUDA_VISIBLE_DEVICES"),
+        os.environ.get("CUDA_DEVICE_ORDER"),
+        gpu_query.static_generation(),
+    )
     hit = _CUDA_DEVICE_INFO_CACHE.get(key)
     if hit is not None and (
         hit[0] is None or time.monotonic() - hit[0] < _CUDA_DEVICE_INFO_RETRY_S

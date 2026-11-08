@@ -275,3 +275,25 @@ def test_the_device_list_keeps_the_names_that_answered(host, monkeypatch, capsys
     assert "[0] <unavailable>" in out and "[1] NVIDIA B200" in out
     with pytest.raises(RuntimeError, match = "device 0"):
         hw._cuda_device0_name()
+
+
+def test_hardware_redetection_asks_the_driver_again(monkeypatch):
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(nvidia, "get_cuda_device_info", _REAL_GET_CUDA_DEVICE_INFO)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    answers = iter(
+        ["0000:01:00.0 0 8589934592 NVIDIA T4\n", "0000:02:00.0 0 25769803776 NVIDIA L4\n"]
+    )
+    runs = []
+
+    def _run(cmd, **kw):
+        runs.append(1)
+        return subprocess.CompletedProcess(cmd, 0, next(answers), "")
+
+    monkeypatch.setattr(nvidia.subprocess, "run", _run)
+    assert nvidia.get_cuda_device_info()[0][3] == "NVIDIA T4"
+    assert nvidia.get_cuda_device_info()[0][3] == "NVIDIA T4" and len(runs) == 1
+    gpu_query.invalidate_static("test: card replaced")
+    assert nvidia.get_cuda_device_info() == [("0000:02:00.0", False, 25769803776, "NVIDIA L4")]
+    assert len(runs) == 2
