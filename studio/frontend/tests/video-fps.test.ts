@@ -11,6 +11,7 @@ import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
   keptNumFrames,
   pickedFpsFor,
+  presetFamilyKnown,
   presetVideoFps,
   resolveVideoFps,
   restoredClipDuration,
@@ -179,4 +180,16 @@ test("a preset's stored rate is restored only when the loaded family offers it",
   // Nano's 7.875 s target: 77 frames at 10 fps, not the 237 a stale 30 fps pick would render.
   const at10 = videoDurationOptions([7.875], 10, 4, 1, 5, 397);
   assert.deepEqual(at10.map((o) => o.frames), [77]);
+});
+
+test("a preset applied while Nano loads over Edge keeps its rate for Nano", () => {
+  const edge = defaults({ fps_range: [12, 30] });
+  const nano = defaults({ fps_choices: [10, 16, 24, 30] });
+  // Mid-load, status still describes Edge: the stored 30 fps stays pending instead of binding to Edge.
+  assert.equal(presetFamilyKnown(edge, true), false);
+  assert.equal(presetFamilyKnown(nano, false), true);
+  const rate = presetVideoFps(videoFpsOptions(nano), 30);
+  assert.equal(rate, 30);
+  assert.equal(resolveVideoFps(nano, pickedFpsFor({ family: "cosmos3-nano", fps: rate! }, "cosmos3-nano")), 30);
+  assert.equal(presetFamilyKnown(null, false), false);
 });
