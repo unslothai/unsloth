@@ -180,7 +180,6 @@ _CPU_ALLOC_REFUSALS = ("not enough memory", "can't allocate memory")
 
 
 def _is_oom(exc: BaseException) -> bool:
-    """A device OOM, or the CPU allocator refusing an allocation, anywhere in the cause chain."""
     from .diffusion_batched import is_oom_error
 
     if is_oom_error(exc):
