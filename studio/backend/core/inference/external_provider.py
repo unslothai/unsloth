@@ -1745,7 +1745,7 @@ class ExternalProviderClient:
             if self.provider_type == "claude_agent":
                 from core.inference.claude_agent import stream_claude_agent
                 async for line in stream_claude_agent(
-                    messages, model, max_tokens, reasoning_effort, enable_thinking
+                    messages, model, max_tokens, reasoning_effort, enable_thinking, thread_id
                 ):
                     yield line
                 return

@@ -29363,6 +29363,12 @@ async def _proxy_to_external_provider(
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+    # Deep Research hops share one id per run; only a Studio UI chat keeps a Claude session.
+    _claude_thread = (
+        payload.thread_id
+        if provider_type == "claude_agent" and not _request_has_api_key(request)
+        else None
+    )
 
     async def _watch_disconnect() -> None:
         # tool execution may emit no SSE lines for minutes, so poll for disconnects.
@@ -29399,7 +29405,7 @@ async def _proxy_to_external_provider(
             compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
-            thread_id = payload.thread_id,
+            thread_id = _claude_thread if provider_type == "claude_agent" else payload.thread_id,
         )
         # A managed runtime that drops a reply still closes with [DONE]; it is cut short, not done.
         managed_finish = _TurnFinish()
@@ -29429,6 +29435,7 @@ async def _proxy_to_external_provider(
                     reasoning_effort = payload.reasoning_effort,
                     enable_thinking = payload.enable_thinking,
                     message_fitter = _external_context_fitter,
+                    thread_id = _claude_thread,
                 )
             else:
                 _loop_transport = OAICompatTransport(

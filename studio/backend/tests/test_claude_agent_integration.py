@@ -557,6 +557,56 @@ def test_deep_research_on_claude_agent_cannot_start_from_an_api_key(
             assert error.status_code != 403, error.detail
 
 
+@pytest.mark.parametrize("via_api_key, sent", [(False, "t1"), (True, None)])
+def test_only_a_studio_ui_chat_keeps_a_claude_session(
+    monkeypatch, claude_agent_row, via_api_key, sent
+):
+    from core.inference.external_provider import ExternalProviderClient
+    from models.inference import ChatCompletionRequest
+
+    inference = claude_agent_row
+    monkeypatch.setenv(ENV, "1")
+    monkeypatch.setattr(inference, "_request_has_api_key", lambda request: via_api_key)
+    monkeypatch.setattr(inference, "_request_is_saved_credential_workflow", lambda request: True)
+    seen = {}
+
+    async def fake(self, **kwargs):
+        seen.update(kwargs)
+        yield "data: [DONE]"
+
+    monkeypatch.setattr(ExternalProviderClient, "stream_chat_completion", fake)
+
+    class Request:
+        headers = {}
+        state = SimpleNamespace(skip_api_monitor = True)
+        url = SimpleNamespace(path = "/v1/chat/completions")
+        scope = {}
+
+        async def is_disconnected(self):
+            return False
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hi"}],
+        provider_id = "c" * 16,
+        external_model = "opus",
+        stream = True,
+        thread_id = "t1",
+    )
+    token = bind_account(OWNER)
+    try:
+
+        async def run():
+            response = await inference._proxy_to_external_provider(
+                payload, Request(), current_subject = "t"
+            )
+            return [chunk async for chunk in response.body_iterator]
+
+        asyncio.run(run())
+    finally:
+        reset_account(token)
+    assert seen["thread_id"] == sent
+
+
 def test_a_scheduled_run_with_claude_agent_off_fails_with_the_reason(monkeypatch):
     from core.scheduled_tasks import scheduler
     from routes import inference

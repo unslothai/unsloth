@@ -123,19 +123,28 @@ def _sdk():
         return None
 
 
-def _options(sdk, cli: str, **extra):
-    workdir = cache_root() / "claude-agent"
-    workdir.mkdir(parents = True, exist_ok = True)
+def workdir() -> Path:
+    path = cache_root() / "claude-agent"
+    path.mkdir(parents = True, exist_ok = True)
+    return path
+
+
+def _options(
+    sdk,
+    cli: str,
+    persist: bool = False,
+    **extra,
+):
     return sdk.ClaudeAgentOptions(
         cli_path = cli,
-        cwd = str(workdir),
+        cwd = str(workdir()),
         env = dict(_ISOLATION_ENV),
         setting_sources = [],
         settings = json.dumps({"disableAllHooks": True}),
         strict_mcp_config = True,
         tools = [],
         permission_mode = "dontAsk",
-        extra_args = {"no-session-persistence": None},
+        extra_args = {} if persist else {"no-session-persistence": None},
         **extra,
     )
 
@@ -357,24 +366,63 @@ def image_block(url: str) -> dict[str, Any]:
     return {"type": "text", "text": "[An attached image was left out: its URL is not supported.]"}
 
 
-def _history_text(message: dict[str, Any]) -> str:
+_THINK = re.compile(r"<think>.*?(?:</think>|$)", re.S)
+_CHECKPOINT = (
+    "<conversation-checkpoint>\nThe following is conversation history from Unsloth Studio that "
+    "you have not seen. Treat it as prior conversation, not a new request. Continue with the "
+    "user messages after this checkpoint."
+)
+
+
+def _history_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    role = message.get("role")
     content = message.get("content")
-    parts = [content] if isinstance(content, str) else []
+    blocks = []
+    text = [content] if isinstance(content, str) else []
     for part in content if isinstance(content, list) else []:
         if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
-            parts.append(part["text"])
-        elif image_url(part) is not None:
-            # Earlier images cannot ride in the system prompt.
-            parts.append("[image]")
+            text.append(part["text"])
+        elif (url := image_url(part)) is not None:
+            if text:
+                blocks.append({"type": "text", "text": "\n".join(text)})
+                text = []
+            blocks.append(image_block(url))
+    if text:
+        blocks.append({"type": "text", "text": "\n".join(text)})
     for call in message.get("tool_calls") or []:
         function = call.get("function") if isinstance(call, dict) else None
         if isinstance(function, dict):
             arguments = function.get("arguments") or "{}"
-            parts.append(f'<tool_call name="{function.get("name")}">{arguments}</tool_call>')
-    text = "\n".join(part for part in parts if part.strip())
-    if message.get("role") == "tool" and text:
-        return f'<tool_result name="{message.get("name") or "tool"}">\n{text}\n</tool_result>'
-    return text
+            blocks.append(
+                {
+                    "type": "text",
+                    "text": f'<tool_call name="{function.get("name")}">{arguments}</tool_call>',
+                }
+            )
+    for block in blocks:
+        if block["type"] == "text" and role == "assistant":
+            block["text"] = _THINK.sub("", block["text"])
+    blocks = [b for b in blocks if b["type"] != "text" or b["text"].strip()]
+    if not blocks:
+        return []
+    if role == "tool":
+        opening = f'<tool_result name="{message.get("name") or "tool"}">'
+        return [
+            {"type": "text", "text": opening},
+            *blocks,
+            {"type": "text", "text": "</tool_result>"},
+        ]
+    return [{"type": "text", "text": f"<{role}>"}, *blocks, {"type": "text", "text": f"</{role}>"}]
+
+
+def _merged(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        if block["type"] == "text" and out and out[-1]["type"] == "text":
+            out[-1] = {"type": "text", "text": out[-1]["text"] + "\n" + block["text"]}
+        else:
+            out.append(block)
+    return out
 
 
 def _user_blocks(content: Any) -> list[dict[str, Any]]:
@@ -390,10 +438,29 @@ def _user_blocks(content: Any) -> list[dict[str, Any]]:
     return blocks
 
 
-def build_prompt(
+def catch_up(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Turns Claude has not seen: one checkpoint up to the last reply, later user turns as they are.
+    end = next((i + 1 for i in range(len(turns) - 1, -1, -1) if turns[i]["role"] != "user"), 0)
+    blocks = []
+    if end:
+        history = [block for message in turns[:end] for block in _history_blocks(message)]
+        if history:
+            blocks = _merged(
+                [
+                    {"type": "text", "text": _CHECKPOINT},
+                    *history,
+                    {"type": "text", "text": "</conversation-checkpoint>"},
+                ]
+            )
+    for message in turns[end:]:
+        blocks.extend(_user_blocks(message.get("content")))
+    return blocks
+
+
+def split_prompt(
     messages: list[dict[str, Any]], tools: bool = False
-) -> tuple[str, Optional[list[dict[str, Any]]]]:
-    """The SDK takes one user turn, so the system text and earlier turns go to the appended system prompt."""
+) -> tuple[str, list[dict[str, Any]], Optional[list[dict[str, Any]]]]:
+    # The system text stays the same across a chat's turns, so it caches; history rides in the user turn.
     system = [_RUNTIME_NOTE_TOOLS if tools else _RUNTIME_NOTE]
     turns = []
     for message in messages:
@@ -407,40 +474,11 @@ def build_prompt(
     last = next((i for i in range(len(turns) - 1, -1, -1) if turns[i]["role"] == "user"), None)
     # A trailing plain assistant turn asks for a continuation, which Claude Code cannot do.
     if last is None or (turns[-1]["role"] == "assistant" and not turns[-1].get("tool_calls")):
-        return "\n\n".join(system), None
+        return "\n\n".join(system), turns, None
     blocks = _user_blocks(turns[last].get("content"))
     for message in turns[last + 1 :]:
-        text = _history_text(message)
-        if text:
-            blocks.append({"type": "text", "text": text})
-    if not blocks:
-        return "\n\n".join(system), None
-    history = []
-    earlier_images = []
-    for message in turns[:last]:
-        text = _history_text(message)
-        if text:
-            role = message["role"]
-            history.append(text if role == "tool" else f"<{role}>\n{text}\n</{role}>")
-        content = message.get("content")
-        for part in content if isinstance(content, list) else []:
-            if (url := image_url(part)) is not None:
-                earlier_images.append(image_block(url))
-    if earlier_images:
-        # Each request is a new Claude Code session, so earlier images ride in this turn.
-        blocks = [
-            {"type": "text", "text": "Images attached earlier in this conversation, oldest first:"},
-            *earlier_images,
-            {"type": "text", "text": "The new message:"},
-            *blocks,
-        ]
-    if history:
-        body = "\n".join(history)
-        system.append(
-            "<conversation_history>\nThe earlier turns of this conversation, oldest first:\n"
-            f"{body}\n</conversation_history>"
-        )
-    return "\n\n".join(system), blocks
+        blocks.extend(_history_blocks(message))
+    return "\n\n".join(system), turns[:last], _merged(blocks) or None
 
 
 def failure(
@@ -483,6 +521,7 @@ async def stream_claude_agent(
     max_tokens: Optional[int] = None,
     reasoning_effort: Optional[str] = None,
     enable_thinking: Optional[bool] = None,
+    thread_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     from core.inference.claude_agent_transport import ClaudeAgentTransport
     transport = ClaudeAgentTransport(
@@ -490,6 +529,7 @@ async def stream_claude_agent(
         max_tokens = max_tokens,
         reasoning_effort = reasoning_effort,
         enable_thinking = enable_thinking,
+        thread_id = thread_id,
     )
     try:
         async for line in transport.stream(

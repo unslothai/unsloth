@@ -2,10 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import contextlib
 import json
 import sys
 import threading
 import types
+import uuid
+from pathlib import Path
 
 import pytest
 
@@ -99,6 +102,38 @@ def _fake_sdk(turns, server_info, connect_error, windows):
 
     sdk.tool = tool
     sdk.create_sdk_mcp_server = lambda name, tools: {"type": "sdk", "name": name, "tools": tools}
+    # Claude Code's own session store: session id -> transcript entries.
+    sdk.sessions = {}
+    sdk.deleted = []
+
+    def get_session_info(session_id, directory = None):
+        return object() if session_id in sdk.sessions else None
+
+    def get_session_messages(session_id, directory = None):
+        return list(sdk.sessions[session_id])
+
+    def fork_session(
+        session_id,
+        directory = None,
+        up_to_message_id = None,
+    ):
+        source = sdk.sessions[session_id]
+        end = [m.uuid for m in source].index(up_to_message_id)
+        forked = str(uuid.uuid4())
+        sdk.sessions[forked] = [
+            types.SimpleNamespace(type = m.type, uuid = str(uuid.uuid4()), message = m.message)
+            for m in source[: end + 1]
+        ]
+        return types.SimpleNamespace(session_id = forked)
+
+    def delete_session(session_id, directory = None):
+        sdk.deleted.append(session_id)
+        sdk.sessions.pop(session_id, None)
+
+    sdk.get_session_info = get_session_info
+    sdk.get_session_messages = get_session_messages
+    sdk.fork_session = fork_session
+    sdk.delete_session = delete_session
 
     class ClaudeSDKClient:
         def __init__(self, options):
@@ -130,6 +165,16 @@ def _fake_sdk(turns, server_info, connect_error, windows):
         async def query(self, prompt):
             async for message in prompt:
                 self.sent.append(message)
+            options = self.options
+            self.session = None
+            if "no-session-persistence" not in options.extra_args:
+                self.session = getattr(options, "resume", None) or options.session_id
+                transcript = sdk.sessions.setdefault(self.session, [])
+                transcript.append(
+                    types.SimpleNamespace(
+                        type = "user", uuid = str(uuid.uuid4()), message = self.sent[-1]["message"]
+                    )
+                )
             self.player = asyncio.ensure_future(self._play(turns.pop(0) if turns else []))
 
         async def _play(self, turn):
@@ -138,7 +183,15 @@ def _fake_sdk(turns, server_info, connect_error, windows):
                 if step[0] == "wait":
                     await asyncio.Event().wait()
                 if step[0] != "call":
-                    self.queue.put_nowait(getattr(sdk, step[0])(**step[1]))
+                    message = getattr(sdk, step[0])(**step[1])
+                    if step[0] == "AssistantMessage" and self.session is not None:
+                        message.uuid = str(uuid.uuid4())
+                        sdk.sessions[self.session].append(
+                            types.SimpleNamespace(
+                                type = "assistant", uuid = message.uuid, message = step[1]
+                            )
+                        )
+                    self.queue.put_nowait(message)
                     continue
                 _, call_id, name, arguments = step
                 for matcher in (self.options.hooks or {}).get("PreToolUse", []):
@@ -173,6 +226,10 @@ def _fake_sdk(turns, server_info, connect_error, windows):
 
         async def interrupt(self):
             self.interrupted = True
+            # Claude Code ends an interrupted turn with an error result.
+            if self.player is not None and not self.player.done():
+                stopped = _result(subtype = "error_during_execution", is_error = True)
+                self.queue.put_nowait(sdk.ResultMessage(**stopped[1]))
 
         async def disconnect(self):
             self.disconnected = True
@@ -439,24 +496,34 @@ def test_context_fitter_never_adds_an_output_cap(monkeypatch, tmp_path, requeste
     assert sdk.clients[-1].options.env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == expected
 
 
-def test_user_turn_is_only_the_newest_message(monkeypatch, tmp_path):
+def test_earlier_turns_ride_in_a_checkpoint_and_the_system_prompt_holds_no_history(
+    monkeypatch, tmp_path
+):
     sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
     _stream(
         [
             {"role": "system", "content": "You are terse."},
             {"role": "user", "content": "My name is Ada."},
-            {"role": "assistant", "content": "Hi Ada."},
+            {"role": "assistant", "content": "<think>Greet.</think>Hi Ada."},
             {"role": "user", "content": [{"type": "text", "text": "What is my name?"}]},
         ]
     )
     client = sdk.clients[-1]
-    assert client.sent[0]["message"]["content"] == [{"type": "text", "text": "What is my name?"}]
-    append = client.options.system_prompt["append"]
-    assert "You are terse." in append
-    assert append.index("<user>\nMy name is Ada.\n</user>") < append.index(
+    checkpoint, newest = client.sent[0]["message"]["content"]
+    assert newest == {"type": "text", "text": "What is my name?"}
+    assert checkpoint["text"].startswith("<conversation-checkpoint>")
+    assert checkpoint["text"].endswith("</conversation-checkpoint>")
+    assert checkpoint["text"].index("<user>\nMy name is Ada.\n</user>") < checkpoint["text"].index(
         "<assistant>\nHi Ada.\n</assistant>"
     )
-    assert "What is my name?" not in append
+    assert "Greet." not in checkpoint["text"]
+    append = client.options.system_prompt["append"]
+    assert "You are terse." in append
+    assert "Ada" not in append
+    # Without a chat thread nothing is saved.
+    assert client.options.extra_args == {"no-session-persistence": None}
+    assert getattr(client.options, "session_id", None) is None
+    assert not (tmp_path / "studio" / "cache" / "claude-agent" / "sessions").exists()
 
 
 def test_newest_turn_sends_images_as_content_blocks(monkeypatch, tmp_path):
@@ -497,7 +564,7 @@ def test_an_image_only_turn_is_sent_and_answered(monkeypatch, tmp_path):
     assert sdk.clients[-1].sent[0]["message"]["content"][0]["type"] == "image"
 
 
-def test_earlier_images_become_markers_and_ride_in_the_new_turn(monkeypatch, tmp_path):
+def test_earlier_images_ride_inline_in_the_checkpoint(monkeypatch, tmp_path):
     sdk = _install(monkeypatch, tmp_path, turns = [[_result()]])
     _stream(
         [
@@ -512,15 +579,14 @@ def test_earlier_images_become_markers_and_ride_in_the_new_turn(monkeypatch, tmp
             {"role": "user", "content": "What did I send?"},
         ]
     )
-    append = sdk.clients[-1].options.system_prompt["append"]
-    assert "<user>\nKeep this.\n[image]\n</user>" in append
-    assert "iVBORw0KGgo" not in append
-    # A follow-up starts a new session, so the image must still reach Claude.
+    assert "iVBORw0KGgo" not in sdk.clients[-1].options.system_prompt["append"]
     content = sdk.clients[-1].sent[0]["message"]["content"]
+    assert content[0]["text"].endswith("<user>\nKeep this.")
     assert content[1] == {
         "type": "image",
         "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="},
     }
+    assert content[2]["text"].startswith("</user>\n<assistant>\nKept.")
     assert content[-1] == {"type": "text", "text": "What did I send?"}
 
 
@@ -1167,3 +1233,323 @@ def test_studio_loop_budget_ends_with_an_error_result(monkeypatch, tmp_path, exe
     client = sdk.clients[0]
     assert client.results["toolu_2"]["is_error"] is True
     assert client.disconnected is True
+
+
+def _reply(text, thinking = None):
+    steps = []
+    if thinking:
+        steps.append(
+            _event(
+                {
+                    "type": "content_block_delta",
+                    "delta": {"type": "thinking_delta", "thinking": thinking},
+                }
+            )
+        )
+    return steps + [_text(text), _assistant(), _result()]
+
+
+def _sent(client):
+    return client.sent[0]["message"]["content"]
+
+
+def _record(thread = "t1"):
+    from core.inference import claude_agent_sessions
+    return claude_agent_sessions.load(thread)
+
+
+U1 = {"role": "user", "content": "My name is Ada."}
+U2 = {"role": "user", "content": "What is my name?"}
+U3 = {"role": "user", "content": "Spell it."}
+
+
+def test_a_follow_up_resumes_the_chat_session_and_sends_only_the_new_turn(monkeypatch, tmp_path):
+    sdk = _install(
+        monkeypatch,
+        tmp_path,
+        turns = [_reply("Hi Ada.", thinking = "Greet."), _reply("Ada."), _reply("A-D-A.")],
+    )
+    first = _content(_stream([{"role": "system", "content": "Be terse."}, U1], thread_id = "t1"))
+    assert first == "<think>Greet.</think>Hi Ada."
+    # Studio sends the reply back without its thinking, and spaced its own way.
+    a1 = {"role": "assistant", "content": "Hi  Ada.\n"}
+    _stream([{"role": "system", "content": "Be terse."}, U1, a1, U2], thread_id = "t1")
+    _stream(
+        [
+            {"role": "system", "content": "Be terse."},
+            U1,
+            a1,
+            U2,
+            {"role": "assistant", "content": "Ada."},
+            U3,
+        ],
+        thread_id = "t1",
+    )
+
+    one, two, three = sdk.clients
+    assert one.options.extra_args == {}
+    assert getattr(one.options, "resume", None) is None
+    session = one.options.session_id
+    assert two.options.resume == session and three.options.resume == session
+    assert _sent(two) == [{"type": "text", "text": "What is my name?"}]
+    assert _sent(three) == [{"type": "text", "text": "Spell it."}]
+    # Byte-identical system text on every turn, so it stays cached.
+    assert (
+        one.options.system_prompt["append"]
+        == two.options.system_prompt["append"]
+        == three.options.system_prompt["append"]
+    )
+    record = _record()
+    assert record["claude_session_id"] == session
+    (saved,) = (tmp_path / "studio" / "cache" / "claude-agent" / "sessions").iterdir()
+    assert saved.stat().st_mode & 0o777 == 0o600
+    assert len(record["checkpoints"]) == 6 and record["interrupted"] is False
+    assert record["checkpoints"][-1]["uuid"] == sdk.sessions[session][-1].uuid
+
+
+def test_regenerate_forks_the_session_after_the_last_shared_reply(monkeypatch, tmp_path):
+    sdk = _install(
+        monkeypatch,
+        tmp_path,
+        turns = [_reply("Hi Ada."), _reply("Ada."), _reply("Your name is Ada.")],
+    )
+    a1 = {"role": "assistant", "content": "Hi Ada."}
+    _stream([U1], thread_id = "t1")
+    _stream([U1, a1, U2], thread_id = "t1")
+    original = sdk.clients[0].options.session_id
+    edited = {"role": "user", "content": "Who am I?"}
+    _stream([U1, a1, edited], thread_id = "t1")
+
+    third = sdk.clients[2]
+    assert third.options.resume not in (None, original)
+    assert [m.type for m in sdk.sessions[third.options.resume]][:2] == ["user", "assistant"]
+    assert _sent(third) == [{"type": "text", "text": "Who am I?"}]
+    assert original in sdk.deleted
+    record = _record()
+    assert record["claude_session_id"] == third.options.resume
+    assert len(record["checkpoints"]) == 4
+
+
+def test_editing_the_first_message_starts_a_fresh_session(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada."), _reply("Hi Bo.")])
+    _stream([U1], thread_id = "t1")
+    _stream([{"role": "user", "content": "My name is Bo."}], thread_id = "t1")
+
+    one, two = sdk.clients
+    assert getattr(two.options, "resume", None) is None
+    assert two.options.session_id != one.options.session_id
+    assert _sent(two) == [{"type": "text", "text": "My name is Bo."}]
+    assert one.options.session_id in sdk.deleted
+
+
+def test_turns_another_model_answered_are_caught_up_in_one_checkpoint(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada."), _reply("A-D-A.")])
+    a1 = {"role": "assistant", "content": "Hi Ada."}
+    _stream([U1], thread_id = "t1")
+    other = {"role": "assistant", "content": "<think>Easy.</think>You are Ada."}
+    _stream([U1, a1, U2, other, U3], thread_id = "t1")
+
+    two = sdk.clients[1]
+    assert two.options.resume == sdk.clients[0].options.session_id
+    checkpoint, newest = _sent(two)
+    assert checkpoint["text"].startswith("<conversation-checkpoint>")
+    assert (
+        "<user>\nWhat is my name?\n</user>\n<assistant>\nYou are Ada.\n</assistant>"
+        in (checkpoint["text"])
+    )
+    assert "Easy." not in checkpoint["text"] and "My name is Ada." not in checkpoint["text"]
+    assert newest == {"type": "text", "text": "Spell it."}
+    assert len(_record()["checkpoints"]) == 6
+
+
+def test_a_chat_without_a_record_starts_fresh_with_the_whole_history(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Ada.")])
+    _stream([U1, {"role": "assistant", "content": "Hi Ada."}, U2], thread_id = "t1")
+
+    (client,) = sdk.clients
+    assert client.options.extra_args == {} and client.options.session_id
+    checkpoint, newest = _sent(client)
+    assert "My name is Ada." in checkpoint["text"] and newest["text"] == "What is my name?"
+    assert len(_record()["checkpoints"]) == 4
+
+
+def test_a_resume_that_fails_falls_back_to_a_fresh_session_silently(monkeypatch, tmp_path):
+    failed = [
+        _assistant(error = "invalid_request"),
+        _result(
+            is_error = True, result = "No conversation found with session ID", api_error_status = 400
+        ),
+    ]
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada."), failed, _reply("Ada.")])
+    a1 = {"role": "assistant", "content": "Hi Ada."}
+    _stream([U1], thread_id = "t1")
+    lines = _stream([U1, a1, U2], thread_id = "t1")
+
+    assert not any("error" in p for p in _payloads(lines))
+    assert _content(lines) == "Ada."
+    one, two, three = sdk.clients
+    assert two.options.resume == one.options.session_id
+    assert getattr(three.options, "resume", None) is None
+    checkpoint, newest = _sent(three)
+    assert "My name is Ada." in checkpoint["text"] and newest["text"] == "What is my name?"
+    record = _record()
+    assert record["claude_session_id"] == three.options.session_id
+    assert len(record["checkpoints"]) == 4
+
+
+def test_a_missing_session_file_starts_fresh_without_trying_to_resume(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada."), _reply("Ada.")])
+    _stream([U1], thread_id = "t1")
+    sdk.sessions.clear()
+    lines = _stream([U1, {"role": "assistant", "content": "Hi Ada."}, U2], thread_id = "t1")
+
+    assert _content(lines) == "Ada."
+    two = sdk.clients[1]
+    assert getattr(two.options, "resume", None) is None
+    assert "My name is Ada." in _sent(two)[0]["text"]
+
+
+def test_a_stopped_reply_continues_the_same_session(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [[_text("Hi A"), ("wait",)], _reply("Ada.")])
+
+    async def stop_mid_reply():
+        cancel = threading.Event()
+        transport = ClaudeAgentTransport(model = "haiku", thread_id = "t1")
+        async for _ in transport.stream(
+            messages = [U1], tools = None, tool_choice = None, cancel_event = cancel
+        ):
+            cancel.set()
+        await transport.aclose()
+
+    asyncio.run(stop_mid_reply())
+    assert _record()["interrupted"] is True
+    # Studio kept its own copy of the partial reply; Claude keeps the one it wrote.
+    _stream([U1, {"role": "assistant", "content": "Hi A"}, U2], thread_id = "t1")
+
+    one, two = sdk.clients
+    assert one.interrupted is True
+    assert two.options.resume == one.options.session_id
+    assert _sent(two) == [{"type": "text", "text": "What is my name?"}]
+    assert _record()["interrupted"] is False
+
+
+def test_deleting_a_chat_forgets_its_claude_session(monkeypatch, tmp_path):
+    from core.inference import claude_agent_sessions
+
+    sdk = _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada.")])
+    _stream([U1], thread_id = "t1")
+    session = _record()["claude_session_id"]
+
+    claude_agent_sessions.forget("t1")
+
+    assert _record() is None
+    assert session in sdk.deleted
+    routes = (Path(__file__).resolve().parents[1] / "routes" / "chat_history.py").read_text()
+    assert routes.count("_forget_claude_agent_sessions,") == 2
+
+
+def test_a_client_that_leaves_while_closing_still_saves_the_session(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path, turns = [_reply("Hi Ada.")])
+
+    async def leave_during_close():
+        transport = ClaudeAgentTransport(model = "haiku", thread_id = "t1")
+        async for _ in transport.stream(
+            messages = [U1], tools = None, tool_choice = None, cancel_event = None
+        ):
+            pass
+        closing = asyncio.ensure_future(transport.aclose())
+        await asyncio.sleep(0)
+        closing.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await closing
+        await transport.aclose()
+
+    asyncio.run(leave_during_close())
+    record = _record()
+    assert record is not None and len(record["checkpoints"]) == 2
+
+
+def test_tool_rounds_are_recorded_and_the_next_turn_resumes(monkeypatch, tmp_path):
+    sdk = _install(
+        monkeypatch,
+        tmp_path,
+        turns = [
+            _tool_turn([("toolu_1", "get_time", {"city": "Paris"})], text = "Checking.")
+            + [_text("It is noon."), _assistant(), _result()],
+            _reply("Paris."),
+        ],
+    )
+    messages = [{"role": "user", "content": "Time in Paris?"}]
+
+    async def run():
+        transport = ClaudeAgentTransport(model = "haiku", thread_id = "t1")
+        first = await _round(transport, messages)
+        await _round(transport, _replay(messages, first, "12:00"))
+        await transport.aclose()
+
+    asyncio.run(run())
+    # How Studio sends the reply back: its own call id, the result as it saved it.
+    replayed = messages + [
+        {
+            "role": "assistant",
+            "content": "Checking.",
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "get_time", "arguments": '{"city":"Paris"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_0", "content": '{"result": "12:00"}'},
+        {"role": "assistant", "content": "It is noon."},
+        {"role": "user", "content": "Which city?"},
+    ]
+    _stream(replayed, thread_id = "t1")
+
+    one, two = sdk.clients
+    assert two.options.resume == one.options.session_id
+    assert _sent(two) == [{"type": "text", "text": "Which city?"}]
+
+
+def test_a_trimmed_history_still_resumes(monkeypatch, tmp_path):
+    sdk = _install(
+        monkeypatch, tmp_path, turns = [_reply("Hi Ada."), _reply("Ada."), _reply("A-D-A.")]
+    )
+    a1 = {"role": "assistant", "content": "Hi Ada."}
+    a2 = {"role": "assistant", "content": "Ada."}
+    _stream([U1], thread_id = "t1")
+    _stream([U1, a1, U2], thread_id = "t1")
+    # Studio's context fitter dropped the oldest exchange.
+    _stream([U2, a2, U3], thread_id = "t1")
+
+    three = sdk.clients[2]
+    assert three.options.resume == sdk.clients[0].options.session_id
+    assert _sent(three) == [{"type": "text", "text": "Spell it."}]
+    assert len(_record()["checkpoints"]) == 6
+
+
+def test_a_second_request_on_a_busy_thread_runs_without_touching_its_session(monkeypatch, tmp_path):
+    sdk = _install(monkeypatch, tmp_path, turns = [[_text("Hi A"), ("wait",)], _reply("Other.")])
+
+    async def run():
+        busy = ClaudeAgentTransport(model = "haiku", thread_id = "t1")
+        stream = busy.stream(messages = [U1], tools = None, tool_choice = None, cancel_event = None)
+        await stream.__anext__()
+        lines = [
+            line
+            async for line in ClaudeAgentTransport(model = "haiku", thread_id = "t1").stream(
+                messages = [U2], tools = None, tool_choice = None, cancel_event = None
+            )
+        ]
+        await stream.aclose()
+        await busy.aclose()
+        return lines
+
+    lines = asyncio.run(run())
+    assert _content(lines) == "Other."
+    one, two = sdk.clients
+    assert two.options.extra_args == {"no-session-persistence": None}
+    record = _record()
+    assert record["claude_session_id"] == one.options.session_id
+    assert len(record["checkpoints"]) == 1

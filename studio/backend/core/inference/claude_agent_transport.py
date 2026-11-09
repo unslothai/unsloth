@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from functools import partial
 from typing import Any, Callable, Optional
 
+from core.inference import claude_agent_sessions as sessions
 from core.inference.claude_agent import (
     CLI_MISSING,
     EFFORTS,
@@ -28,7 +29,7 @@ from core.inference.claude_agent import (
     _sdk,
     _text,
     _user_blocks,
-    build_prompt,
+    catch_up,
     clamp_effort,
     cli_version,
     ensure_catalog,
@@ -37,9 +38,14 @@ from core.inference.claude_agent import (
     image_url,
     outdated_message,
     remember_models,
+    split_prompt,
     thinking_config,
+    workdir,
 )
 from core.inference.external_provider import _build_usage_chunk, _error_sse_line
+from loggers import get_logger
+
+logger = get_logger(__name__)
 
 _CANCEL_POLL_S = 0.05
 _NAME_LIMIT = 64 - len(TOOL_PREFIX)
@@ -62,6 +68,39 @@ _DONE = "data: [DONE]"
 class _Ended:
     def __init__(self, error: Optional[BaseException]) -> None:
         self.error = error
+
+
+class _Retry(Exception):
+    pass
+
+
+def _fork(sdk, record: dict[str, Any], keep: int) -> Optional[tuple[str, list[dict[str, Any]]]]:
+    # The SDK gives the copy fresh uuids; check the copied prefix before mapping checkpoints onto it.
+    source_id, kept = record["claude_session_id"], record["checkpoints"][:keep]
+    directory = str(workdir())
+    try:
+        source = sdk.get_session_messages(source_id, directory = directory)
+        end = [m.uuid for m in source].index(kept[-1]["uuid"])
+        forked = sdk.fork_session(
+            source_id, directory = directory, up_to_message_id = kept[-1]["uuid"]
+        ).session_id
+    except Exception:
+        return None
+    try:
+        copied = sdk.get_session_messages(forked, directory = directory)
+        if len(copied) != end + 1 or any(
+            a.type != b.type or a.message != b.message for a, b in zip(source, copied)
+        ):
+            raise ValueError("the fork changed the copied conversation")
+    except Exception:
+        with contextlib.suppress(Exception):
+            sdk.delete_session(forked, directory = directory)
+        return None
+    uuids = {a.uuid: b.uuid for a, b in zip(source, copied)}
+    return forked, [
+        {"hash": c["hash"], **({"uuid": uuids[c["uuid"]]} if c.get("uuid") in uuids else {})}
+        for c in kept
+    ]
 
 
 def tool_name(name: str) -> str:
@@ -123,6 +162,7 @@ class ClaudeAgentTransport:
         reasoning_effort: Optional[str] = None,
         enable_thinking: Optional[bool] = None,
         message_fitter: Optional[Callable[..., Any]] = None,
+        thread_id: Optional[str] = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
@@ -145,6 +185,27 @@ class ClaudeAgentTransport:
         self._ok = False
         self._completion_id = f"chatcmpl-{uuid.uuid4().hex}"
         self._created = int(time.time())
+        # Only a chat thread keeps a Claude session; a request without one runs in a throwaway process.
+        self._thread = str(thread_id) if thread_id else None
+        self._claimed = False
+        self._launch: dict[str, Any] = {}
+        self._output_cap: Optional[str] = None
+        self._tool_defs: list[dict[str, Any]] | None = None
+        self._cli: Optional[str] = None
+        self._cli_version: Optional[str] = None
+        self._previous: Optional[str] = None
+        self._session: Optional[str] = None
+        self._forks: set[str] = set()
+        self._base: list[dict[str, Any]] = []
+        self._user: Optional[str] = None
+        self._fallback: Optional[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = None
+        self._closing: Optional[asyncio.Future] = None
+        self._reply: list[str] = []
+        self._reply_tools: list[str] = []
+        self._reply_uuid: Optional[str] = None
+        self._sent = False
+        self._completed = False
+        self._emitted = False
 
     def stream(
         self,
@@ -204,8 +265,17 @@ class ClaudeAgentTransport:
                     yield _DONE
                     return
                 await self._send(blocks)
-            async for line in self._read(cancel_event):
-                yield line
+            while True:
+                try:
+                    async for line in self._read(cancel_event):
+                        yield line
+                    break
+                except _Retry:
+                    # A saved session that no longer resumes starts over with the whole history.
+                    error = await self._restart()
+                    if error:
+                        yield _error_sse_line(502, error, PROVIDER_TYPE)
+                        return
         finally:
             if not self._ok:
                 await self.aclose()
@@ -231,7 +301,8 @@ class ClaudeAgentTransport:
         if cli is None:
             yield _error_sse_line(503, CLI_MISSING, PROVIDER_TYPE)
             return
-        outdated = outdated_message(await cli_version(cli))
+        version = await cli_version(cli)
+        outdated = outdated_message(version)
         if outdated:
             yield _error_sse_line(503, outdated, PROVIDER_TYPE)
             return
@@ -242,7 +313,7 @@ class ClaudeAgentTransport:
                 max_tokens = min(max_tokens, fitted)
             if truncation_line:
                 yield truncation_line
-        system, blocks = build_prompt(messages, tools = bool(tools))
+        system, prior, blocks = split_prompt(messages, tools = bool(tools))
         if blocks is None:
             yield _error_sse_line(
                 400, "Claude Agent needs a user message to reply to.", PROVIDER_TYPE
@@ -250,25 +321,79 @@ class ClaudeAgentTransport:
             return
         if self._effort in EFFORTS or self._enable_thinking is False:
             await ensure_catalog(sdk, cli)
-        extra: dict[str, Any] = {}
+        self._sdk, self._cli, self._cli_version = sdk, cli, version
+        self._tool_defs = tools
+        self._launch = {
+            "model": self._model,
+            "system_prompt": {"type": "preset", "preset": "claude_code", "append": system},
+            "include_partial_messages": True,
+            "verbatim_prompts": True,
+            "thinking": thinking_config(self._model, self._enable_thinking),
+            "effort": clamp_effort(self._model, self._effort),
+        }
+        self._output_cap = str(max_tokens) if max_tokens else None
+        full = catch_up(prior) + blocks
+        resume, send = None, full
+        newest = messages[-1] if messages else {}
+        if self._thread and newest.get("role") == "user" and sessions.claim(self._thread):
+            self._claimed = True
+            self._user = sessions.user_hash(newest)
+            fresh_base = [{"hash": group[2]} for group in sessions.groups(prior)]
+            resume, self._base, first = await self._plan(sdk, prior, fresh_base)
+            if resume is not None:
+                send = catch_up(prior[first:]) + blocks
+                self._fallback = (full, fresh_base)
+        error = await self._open(send, resume)
+        if error and self._fallback is not None:
+            error = await self._restart()
+        if error:
+            yield _error_sse_line(502, error, PROVIDER_TYPE)
+
+    async def _plan(
+        self, sdk, prior: list[dict[str, Any]], fresh_base: list[dict[str, Any]]
+    ) -> tuple[Optional[str], list[dict[str, Any]], int]:
+        record = await asyncio.to_thread(sessions.load, self._thread)
+        self._previous = record["claude_session_id"] if record else None
+        found = sessions.groups(prior)
+        mode, keep, aligned = sessions.decide(record, [group[2] for group in found])
+        unseen = fresh_base[aligned:]
+        start = aligned
+        # After a stop, Claude keeps the partial reply it wrote, whatever Studio saved.
+        if record and record.get("interrupted") and mode == "resume":
+            if start < len(found) and found[start][0] == "assistant":
+                start += 1
+        first = found[start][1] if start < len(found) else len(prior)
+        directory = str(workdir())
+        if mode == "resume":
+            try:
+                exists = await asyncio.to_thread(
+                    sdk.get_session_info, self._previous, directory = directory
+                )
+            except Exception:
+                exists = True
+            if exists is not None:
+                return self._previous, record["checkpoints"][:keep] + unseen, first
+        elif mode == "fork":
+            forked = await asyncio.to_thread(_fork, sdk, record, keep)
+            if forked is not None:
+                self._forks.add(forked[0])
+                return forked[0], forked[1] + unseen, first
+        return None, fresh_base, 0
+
+    async def _open(self, blocks: list[dict[str, Any]], resume: Optional[str]) -> Optional[str]:
+        sdk = self._sdk
+        launch = dict(self._launch)
+        tools = self._tool_defs
         if tools:
-            extra["mcp_servers"] = {TOOL_SERVER: self._server(sdk, tools)}
-            extra["allowed_tools"] = [f"{TOOL_PREFIX}*"]
-            extra["hooks"] = {"PreToolUse": [sdk.HookMatcher(hooks = [self._before])]}
-        options = _options(
-            sdk,
-            cli,
-            model = self._model,
-            system_prompt = {"type": "preset", "preset": "claude_code", "append": system},
-            include_partial_messages = True,
-            verbatim_prompts = True,
-            thinking = thinking_config(self._model, self._enable_thinking),
-            effort = clamp_effort(self._model, self._effort),
-            **extra,
-        )
-        if max_tokens:
-            options.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(max_tokens)
-        self._sdk = sdk
+            launch["mcp_servers"] = {TOOL_SERVER: self._server(sdk, tools)}
+            launch["allowed_tools"] = [f"{TOOL_PREFIX}*"]
+            launch["hooks"] = {"PreToolUse": [sdk.HookMatcher(hooks = [self._before])]}
+        if self._claimed:
+            self._session = resume or str(uuid.uuid4())
+            launch["resume" if resume else "session_id"] = self._session
+        options = _options(sdk, self._cli, persist = self._claimed, **launch)
+        if self._output_cap:
+            options.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = self._output_cap
         self._client = sdk.ClaudeSDKClient(options)
         try:
             await self._client.connect()
@@ -276,10 +401,30 @@ class ClaudeAgentTransport:
             if isinstance(info, dict):
                 remember_models(info)
         except sdk.ClaudeSDKError as exc:
-            yield _error_sse_line(502, f"Claude Code did not start: {exc}", PROVIDER_TYPE)
-            return
+            await self._drop_client()
+            return f"Claude Code did not start: {exc}"
         self._pump = asyncio.ensure_future(self._read_all(self._client))
         await self._send(blocks)
+        return None
+
+    async def _drop_client(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+        if self._pump is not None:
+            self._pump.cancel()
+            self._pump = None
+        self._queue = asyncio.Queue()
+        self._turn_open = False
+
+    async def _restart(self) -> Optional[str]:
+        blocks, self._base = self._fallback
+        self._fallback = None
+        await self._drop_client()
+        self._announced, self._calls, self._waiting = [], {}, []
+        self._reply, self._reply_tools, self._reply_uuid = [], [], None
+        return await self._open(blocks, None)
 
     def _server(self, sdk, tools: list[dict[str, Any]]):
         definitions = []
@@ -388,6 +533,7 @@ class ClaudeAgentTransport:
             }
 
         self._turn_open = True
+        self._sent = True
         await self._client.query(turn())
 
     async def _read_all(self, client) -> None:
@@ -426,6 +572,8 @@ class ClaudeAgentTransport:
                 if message is None:
                     return
                 if isinstance(message, _Ended):
+                    if self._fallback and not self._emitted:
+                        raise _Retry()
                     if thinking:
                         yield self._chunk({"content": "</think>"})
                     detail = f"Claude Code stopped: {message.error}" if message.error else None
@@ -452,11 +600,14 @@ class ClaudeAgentTransport:
                             if not thinking:
                                 text = f"<think>{text}"
                                 thinking = True
+                            self._emitted = True
                             yield self._chunk({"content": text})
                         elif delta.get("type") == "text_delta" and delta.get("text"):
                             if thinking:
                                 yield self._chunk({"content": "</think>"})
                                 thinking = False
+                            self._emitted = True
+                            self._reply.append(delta["text"])
                             yield self._chunk({"content": delta["text"]})
                     elif kind == "message_stop" and calls:
                         runnable = []
@@ -476,8 +627,10 @@ class ClaudeAgentTransport:
                         if thinking:
                             yield self._chunk({"content": "</think>"})
                             thinking = False
+                        self._emitted = True
                         for index, (call_id, name, arguments) in enumerate(runnable):
                             self._future(call_id)
+                            self._reply_tools.append(self._names[name])
                             yield self._chunk(
                                 {
                                     "tool_calls": [
@@ -504,6 +657,8 @@ class ClaudeAgentTransport:
                 elif isinstance(message, sdk.AssistantMessage):
                     if message.parent_tool_use_id is not None:
                         continue
+                    if getattr(message, "uuid", None):
+                        self._reply_uuid = message.uuid
                     if message.error:
                         error = message.error
                     for block in message.content or []:
@@ -530,9 +685,17 @@ class ClaudeAgentTransport:
                     )
                     if failed and not truncated:
                         status, text = failure(message, error, rate_limit)
+                        if (
+                            self._fallback
+                            and not self._emitted
+                            and status not in (401, 402, 429)
+                            and status < 500
+                        ):
+                            raise _Retry()
                         yield _error_sse_line(status, text, PROVIDER_TYPE)
                         return
                     self._ok = True
+                    self._completed = True
                     yield self._chunk(
                         {}, "length" if truncated or message.stop_reason == "max_tokens" else "stop"
                     )
@@ -545,28 +708,77 @@ class ClaudeAgentTransport:
             if watcher is not None:
                 watcher.cancel()
 
+    async def _drained(self) -> None:
+        while not isinstance(await self._queue.get(), (_Ended, self._sdk.ResultMessage)):
+            pass
+
     async def aclose(self) -> None:
+        # A client that leaves mid-close cancels the caller; the session record must still be saved.
+        if self._closing is None:
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self) -> None:
         if self._closed:
             return
         self._closed = True
         self._ok = True
         client, self._client = self._client, None
-        if client is None:
-            return
         try:
-            if self._turn_open:
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(client.interrupt(), timeout = 3)
-            for future in list(self._calls.values()):
-                if not future.done():
-                    future.set_result(
-                        {"content": [{"type": "text", "text": _CANCELLED}], "is_error": True}
-                    )
+            if client is not None:
+                try:
+                    stopped = self._turn_open
+                    if stopped:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(client.interrupt(), timeout = 3)
+                    for future in list(self._calls.values()):
+                        if not future.done():
+                            future.set_result(
+                                {
+                                    "content": [{"type": "text", "text": _CANCELLED}],
+                                    "is_error": True,
+                                }
+                            )
+                    if stopped and self._claimed:
+                        # Let Claude Code write the stopped turn before it exits.
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(self._drained(), timeout = 3)
+                finally:
+                    with contextlib.suppress(Exception):
+                        await client.disconnect()
+                    if self._pump is not None:
+                        self._pump.cancel()
+            if self._claimed:
+                await self._save()
         finally:
-            with contextlib.suppress(Exception):
-                await client.disconnect()
-            if self._pump is not None:
-                self._pump.cancel()
+            if self._claimed:
+                sessions.release(self._thread)
+
+    async def _save(self) -> None:
+        directory = str(workdir())
+        kept = self._session if self._sent else self._previous
+        try:
+            if self._sent and self._session is not None:
+                checkpoints = self._base + [{"hash": self._user}]
+                text = "".join(self._reply)
+                if self._completed and (sessions.visible(text) or self._reply_tools):
+                    reply = {"hash": sessions.reply_hash(text, self._reply_tools)}
+                    if self._reply_uuid:
+                        reply["uuid"] = self._reply_uuid
+                    checkpoints.append(reply)
+                record = {
+                    "claude_session_id": self._session,
+                    "cli_version": self._cli_version,
+                    "model": self._model,
+                    "checkpoints": checkpoints,
+                    "interrupted": not self._completed,
+                }
+                await asyncio.to_thread(sessions.save, self._thread, record)
+            for stale in {self._previous, *self._forks} - {kept, None}:
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self._sdk.delete_session, stale, directory = directory)
+        except Exception as exc:
+            logger.warning("Could not save the Claude Agent session for this chat: %s", exc)
 
 
 async def close_after(
