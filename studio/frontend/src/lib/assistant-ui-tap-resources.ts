@@ -61,6 +61,10 @@ const isElement = (value: unknown): value is Element =>
 export function propsEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  // A wrapper resource's props are themselves an element (tapClientLookup's ClientResourceWithKey).
+  if (isElement(a) || isElement(b)) {
+    return isElement(a) && isElement(b) && a.type === b.type && a.key === b.key && propsEqual(a.props, b.props);
+  }
   if (Array.isArray(a) || Array.isArray(b)) return false;
   const ka = Object.keys(a);
   const kb = Object.keys(b);
