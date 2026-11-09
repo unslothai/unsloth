@@ -734,7 +734,7 @@ def segment_protect_fallback_enabled() -> bool:
 
 
 def _protect_live(controller: Any) -> bool:
-    """Whether the step in flight runs the W4A16 branch: the layers read exactly ``armed and protected``."""
+    """The layers run W4A16 exactly when ``armed and protected``."""
     return bool(getattr(controller, "armed", False) and getattr(controller, "protected", False))
 
 
@@ -829,7 +829,6 @@ class SegmentGraph:
             "segment_breaks": 0,
             "segment_refusals": 0,
             "segment_fallbacks": 0,
-            # forwards left to the per-block path because the step in flight is NVFP4-protected
             "segment_protected_steps": 0,
         }
         for i, g in enumerate(self.graphs):
@@ -916,16 +915,14 @@ class SegmentGraph:
         if controller is not None and any(
             _protect_live(g.protect) for g in self.graphs if g.protect
         ):
-            # A protected step runs W4A16, which a W4A4 recording skips: its blocks take their own per-branch
-            # graphs for this forward only. That branch dequantises into fresh tensors and writes no state a
-            # recording reads, so this segment's graphs stay valid for the next W4A4 step.
+            # W4A16 step: per block for this forward only; it writes no state a W4A4 recording reads.
             self.stats["segment_protected_steps"] += 1
             return _NOT_HANDLED
         placement = self._placement()
         if placement is None:
             return _NOT_HANDLED
         if controller is not None:
-            # Keyed by branch like a block graph, so a recording can only replay at the branch it recorded.
+            # Keyed by branch so a recording only replays at the branch it recorded.
             from .diffusion_cuda_graph import protect_graph_key
             placement = (placement, protect_graph_key(controller))
         full = (key, placement) if extra is None else (key, placement, extra)

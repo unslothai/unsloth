@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A segment graph under an armed NVFP4 step schedule, CPU only: protected (W4A16) steps leave the segment for that
-forward, every other step keeps replaying the one recording. The capture is a CPU stand-in that, like a real CUDA
-graph, replays the branch it recorded whatever the controller says at replay time, so a replay on a protected step
-would show up as a wrong output."""
+"""CPU: protected NVFP4 steps leave the segment; the fake capture replays its recorded branch, like a CUDA graph."""
 
 from __future__ import annotations
 
@@ -16,7 +13,7 @@ from core.inference import diffusion_block_graph as bg
 from core.inference.diffusion_nvfp4_protect import NVFP4StepController
 
 STEPS = 6
-SPEC = "0,-1"  # steps 0 and 5 of 6 run W4A16
+SPEC = "0,-1"
 PROTECTED = (0, STEPS - 1)
 
 
@@ -33,9 +30,7 @@ class _Block(nn.Module):
     def forward(self, x, temb):
         out = self.lin(x)
         if bg._protect_live(self.ctl):
-            out = (
-                out * 0.5 - 1.0
-            )  # the W4A16 branch: another value, as a real dequantised GEMM gives
+            out = out * 0.5 - 1.0
         return out + temb
 
 
@@ -49,7 +44,6 @@ def _cpu_segment(monkeypatch):
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(bg, "_lazy_chain", lambda root: True)
     monkeypatch.setattr(bg._WeightView, "placement", lambda self, index: ("w", index))
-    # The per-block path never records here: its own per-branch graphs are covered by test_diffusion_block_graph.
     monkeypatch.setattr(bg.BlockGraph, "_record", lambda self, full, live: None)
     monkeypatch.setattr(bg.SegmentGraph, "_capture", _fake_capture)
     yield
@@ -68,7 +62,7 @@ class _FakeGraph:
     def replay(self) -> None:
         ctls = [g.block.ctl for g in self.seg.graphs if g.block.ctl is not None]
         saved = [(c, c.armed, c.protected) for c in ctls]
-        for c in ctls:  # a recording runs the branch it captured, not the one in flight
+        for c in ctls:
             c.armed, c.protected = self.baked
         try:
             fresh = self.seg._chain(self.rec, self.static_in)
@@ -113,7 +107,6 @@ def _run(
     ctl,
     generations: int = 1,
 ):
-    """Drive the denoise loop; returns (per-step outputs, per-step eager references)."""
     x = torch.randn(2, 4, generator = torch.Generator().manual_seed(7))
     temb = torch.randn(2, 4, generator = torch.Generator().manual_seed(8))
     got, want = [], []
@@ -147,15 +140,13 @@ def test_protected_steps_fall_back_and_the_rest_replay_one_recording():
     assert s["segment_records"] == 1 and s["segment_captures"] == 1
     assert s["segment_replays"] == (unprotected - 1) + unprotected
     assert s["segment_protected_steps"] == 2 * len(PROTECTED)
-    assert (
-        len(seg.cache) == 1
-    )  # the protected steps kept the recording, and recorded nothing of their own
+    assert len(seg.cache) == 1
     ((key, placement),) = seg.cache.keys()
     assert placement[1] == (("nvfp4_protect", False),)
 
 
 def test_a_protected_step_mid_run_keeps_the_recording_for_the_next_step():
-    ctl = NVFP4StepController("3")  # step 3 of 6: graphs exist before it and must replay after it
+    ctl = NVFP4StepController("3")
     blocks, graphs, seg = _build(ctl)
     got, want = _run(graphs, blocks, ctl)
     assert all(torch.equal(a, b) for a, b in zip(got, want))
@@ -187,14 +178,14 @@ def test_an_unarmed_schedule_keys_and_replays_as_before():
     assert s["segment_captures"] == 1 and s.get("segment_protected_steps", 0) == 0
     assert s["segment_replays"] == 2 * STEPS - 1  # only step 0 of the first generation runs eager
     ((key, placement),) = seg.cache.keys()
-    assert placement == (("w", 0),) * 3  # no protect suffix: the key is the one it always was
+    assert placement == (("w", 0),) * 3
 
 
 def test_a_suspended_schedule_is_not_a_protected_step():
     ctl = NVFP4StepController(SPEC)
     ctl.begin(STEPS)
     assert bg._protect_live(ctl)
-    ctl.armed = False  # suspend_protect during the prewarm: the layers run W4A4
+    ctl.armed = False
     assert not bg._protect_live(ctl)
     assert not bg._protect_live(False) and not bg._protect_live(None)
 
