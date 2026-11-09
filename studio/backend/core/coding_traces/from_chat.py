@@ -121,7 +121,7 @@ def _branch(
     by_id = {message["id"]: message for message in ordered}
     parents = _resolve_parents(ordered)
     if head_id is None:
-        current = ordered[-1]["id"]
+        current = _newest_leaf(ordered[-1]["id"], ordered, parents)
     elif head_id in by_id:
         current = _newest_leaf(head_id, ordered, parents)
     else:
@@ -362,7 +362,7 @@ def _fill_variables(prompt: str, raw: object) -> str:
     used the send-time clock, which is not stored, so they stay as written."""
     try:
         # parseSystemVariablesMap uses JSON.parse, so String() prints integral floats as ints,
-        # and a NaN fails the parse and fills nothing.
+        # and a NaN fills nothing. Numbers below 1e-4 or above 2**53 can still print unlike JS.
         values = (
             json.loads(raw, parse_float = _js_float, parse_constant = _reject_constant)
             if isinstance(raw, str) and raw.strip()
@@ -427,8 +427,8 @@ def chat_to_trace(
 ) -> ChatTrace:
     """Turn a saved Studio thread and its message rows into one coding trace branch.
 
-    head_id picks the branch like a saved UI branch head (its newest leaf); None follows the newest
-    row. Unlike the UI, an id that is not saved raises ChatTraceError instead of falling back.
+    head_id picks the branch like a saved UI branch head (its newest leaf); None uses the newest
+    row's leaf. Unlike the UI, an unsaved id raises ChatTraceError instead of falling back.
     Consecutive assistant rows merge into one message, because importers save one reply as several
     rows; the UI sends them as separate messages. Tool text is the restored replay text; MCP image
     envelopes are left out.

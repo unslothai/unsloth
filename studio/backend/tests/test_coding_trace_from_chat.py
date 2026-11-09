@@ -153,10 +153,10 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
     )
 
     newest = load_chat_trace("t1")
-    assert [m.text for m in newest.messages] == ["Be brief.", "Write a parser", "First try"]
+    assert [m.text for m in newest.messages][1:] == ["Write a parser", "First try", "Thanks"]
     assert newest.model_id == "unsloth/model"
     assert [w.code for w in newest.warnings] == ["other_branches_dropped"]
-    assert "Left out 2 saved message(s)" in newest.warnings[0].message
+    assert "Left out 1 saved message(s)" in newest.warnings[0].message
 
     # A saved head resolves to its newest leaf, the same way the chat UI opens it; the inner node
     # a1 sorts last but never wins.
