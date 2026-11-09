@@ -2165,3 +2165,28 @@ def test_a_krackan_point_2_with_no_arch_attrs_or_flag_is_unified_by_name(win_roc
 
     assert hw._rocm_props_unified_status(_P()) is True
     assert hw._rocm_props_are_positively_unified(_P()) is True
+
+
+def test_display_polls_share_one_counter_read_per_ttl(win_rocm, monkeypatch):
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(hw, "_rocm_win_counter_cache", {}, raising = False)
+    monkeypatch.setenv("UNSLOTH_GPU_QUERY_CACHE", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(DEVICES, free_equals_total = True))
+    fake = _subprocess_run(adapter_output = _adapter_output(REPORTER_ADAPTERS))
+    spawns = []
+    monkeypatch.setattr(hw.subprocess, "run", lambda cmd, *a, **k: spawns.append(cmd) or fake(cmd))
+
+    fresh = (hw.get_visible_gpu_utilization(), hw.get_gpu_utilization())
+    per_poll = len(spawns)
+    assert per_poll >= 2
+    with gpu_query.display_reads(max_stale = 0):
+        for _ in range(5):
+            assert (hw.get_visible_gpu_utilization(), hw.get_gpu_utilization()) == fresh
+    # Ten display polls: one read per distinct counter, against 2 * per_poll for every two polls before.
+    assert len(spawns) - per_poll <= 2
+    # Fit and placement (no display scope) still read fresh every time.
+    before = len(spawns)
+    hw.get_visible_gpu_utilization()
+    hw.get_gpu_utilization()
+    assert len(spawns) - before == per_poll

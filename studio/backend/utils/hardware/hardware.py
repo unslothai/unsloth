@@ -3620,6 +3620,53 @@ def _engine_instance_luid(instance_name: str) -> Optional[int]:
     return _parse_adapter_luid(instance_name[head:])
 
 
+_rocm_win_counter_lock = threading.Lock()
+_rocm_win_counter_cache: dict[tuple[str, str], tuple[float, int, str]] = {}
+
+
+def _rocm_windows_counter_stdout(key: tuple[str, str], ps: str) -> Optional[str]:
+    """stdout of one ``Get-Counter`` PowerShell call (~1.3 s each), or None on failure. Display reads reuse a reading under gpu_query's display TTL, the same gate as amd-smi; placement and fit read fresh. Failures are never cached."""
+    try:
+        from utils import gpu_memory_events
+        from utils.hardware import gpu_query
+
+        use_cache = gpu_query.display_cache_allowed()
+        ttl = gpu_query.ttl_for(gpu_query.DISPLAY)
+    except Exception:
+        use_cache = False
+    if not use_cache:
+        return _rocm_windows_counter_stdout_uncached(ps)
+    with _rocm_win_counter_lock:
+        cached = _rocm_win_counter_cache.get(key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < ttl
+            and cached[1] == gpu_memory_events.generation()
+        ):
+            return cached[2]
+        generation = gpu_memory_events.generation()
+        stdout = _rocm_windows_counter_stdout_uncached(ps)
+        if stdout is None:
+            _rocm_win_counter_cache.pop(key, None)
+        else:
+            _rocm_win_counter_cache[key] = (time.monotonic(), generation, stdout)
+        return stdout
+
+
+def _rocm_windows_counter_stdout_uncached(ps: str) -> Optional[str]:
+    r = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 5,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout
+
+
 def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optional[float]:
     """AMD GPU compute utilization via Windows Performance Counters (3D engine nodes). ``luid`` narrows the sum to one adapter's engines, matched here rather than in the counter path so tests can reach it."""
     if platform.system() != "Windows":
@@ -3631,19 +3678,12 @@ def _rocm_windows_perf_counter_gpu_util_pct(luid: Optional[int] = None) -> Optio
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("util", "3D"), ps)
+        if stdout is None:
             return None
         total = 0.0
         matched = False
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
@@ -3808,18 +3848,11 @@ def _rocm_windows_perf_counter_vram_by_adapter(
             "if($s){$s|ForEach-Object{'{0}|{1}' -f $_.InstanceName,[int64]$_.CookedValue}}"
             "else{'__NONE__'}"
         )
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        stdout = _rocm_windows_counter_stdout(("vram", counter), ps)
+        if stdout is None:
             return None
         adapters: list[tuple[str, float]] = []
-        for line in r.stdout.splitlines():
+        for line in stdout.splitlines():
             line = line.strip()
             if not line or line == "__NONE__" or "|" not in line:
                 continue
