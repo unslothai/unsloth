@@ -1960,3 +1960,33 @@ def test_a_cancelled_raw_write_leaves_no_file(monkeypatch, tmp_path):
     asyncio.run(cancel_mid_write())
     time.sleep(0.4)
     assert _block_files(seed_route) == []
+
+
+def test_a_cancelled_extracted_text_write_leaves_no_file(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    started = threading.Event()
+    real_write = Path.write_text
+
+    def slow_write(self, *args, **kwargs):
+        started.set()
+        time.sleep(0.3)
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", slow_write)
+
+    async def cancel_mid_write():
+        task = asyncio.ensure_future(
+            seed_route.upload_unstructured_file(_FakeUpload("notes.txt", b"text to keep"), "block")
+        )
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_mid_write())
+    time.sleep(0.4)
+    assert _block_files(seed_route) == []

@@ -1211,9 +1211,9 @@ async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
 _BLOCK_UPLOAD_LOCKS: dict[str, _AnyioLock] = {}
 
 
-async def _write_bytes_to_completion(path: Path, content: bytes) -> None:
+async def _write_to_completion(write_fn, *args) -> None:
     """A threaded write that, if cancelled, still waits for the thread so cleanup cannot race it."""
-    write = asyncio.ensure_future(to_thread.run_sync(path.write_bytes, content))
+    write = asyncio.ensure_future(to_thread.run_sync(write_fn, *args))
     try:
         await asyncio.shield(write)
     except BaseException:
@@ -1338,7 +1338,7 @@ async def _store_unstructured_raw(file, block_dir: Path, native_path_lease):
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
     try:
-        await _write_bytes_to_completion(raw_path, content)
+        await _write_to_completion(raw_path.write_bytes, content)
     except BaseException:
         raw_path.unlink(missing_ok = True)
         raise
@@ -1374,7 +1374,7 @@ async def upload_unstructured_file(
                 status = "error",
                 error = "No extractable text found in file",
             )
-        await to_thread.run_sync(
+        await _write_to_completion(
             functools.partial(extracted_path.write_text, extracted_text, encoding = "utf-8")
         )
     except ImportError as e:
