@@ -50088,7 +50088,8 @@ async def _generate_diffusion_image_run(
         _diffusion_persist_active += 1
         try:
             with account_access.media_generation("diffusion"):
-                await asyncio.to_thread(
+                # Its crop inpaints wait on the render slot like the render itself: same pool.
+                await _image_generate_in_thread(
                     _run_detailer, backend, request, result, enhancement, detailer
                 )
         except BaseException:
