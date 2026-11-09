@@ -1218,7 +1218,11 @@ def _get_block_total_size(block_dir: Path) -> int:
         # remove_unstructured_file keys on the name up to the first dot.
         if is_appledouble_metadata(f):
             continue
-        total += f.stat().st_size
+        # Runs in a worker thread now, so a delete on the loop can remove a file mid-scan.
+        try:
+            total += f.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
 
 
