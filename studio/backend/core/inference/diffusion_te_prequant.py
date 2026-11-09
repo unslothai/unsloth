@@ -284,13 +284,9 @@ TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
-# Per family where the default under-states: an encoder whose bf16 embedding table is a large share of it keeps more
-# bytes dense. Lumina-2's Gemma-2-2B file is 3,207,382,688 bytes against the 5.23 GB bf16 equivalent of its fp32 Hub
-# copy (0.613), Krea-2's Qwen3-VL-4B 5,247,054,376 against 8.88 GB dense (0.591); both rounded up.
-# FLUX.3's Qwen3-VL-4B file is 5,247,076,320 bytes against 8,875,719,344 dense (0.591), rounded up the same way.
-# Wan's UMT5 keeps its 256k-row embedding dense: its int8 file is 6,735,404,944 bytes against 11,361,851,208 dense,
-# 0.593, rounded up the same way.
-# HunyuanImage-2.1 loads Qwen-Image's 8,974,915,168-byte file against a 15.5 GB table price (0.579), rounded up.
+# Per-family int8 ConvRot budget scales where the default understates (an encoder whose bf16
+# embedding table is a large share keeps more bytes dense): measured ratios, rounded up: Lumina-2
+# 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579 (its Qwen-Image file).
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,

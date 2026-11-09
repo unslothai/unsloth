@@ -1845,6 +1845,13 @@ export const pl = {
         audioUploadCancel: "Anuluj transkrypcję",
         audioUploadTranscribing: "Transkrybowanie dźwięku…",
         sectionTitle: "Dyktowanie",
+        micTargetLabel: "Przycisk mikrofonu",
+        micTargetAsr: "Transkrybuj za pomocą ASR",
+        micTargetModel: "Wyślij dźwięk do modelu",
+        micTargetAsrDescription: "Przycisk mikrofonu wpisuje to, co mówisz, w polu wiadomości.",
+        micTargetModelDescription: "Gdy załadowany jest model z wejściem audio, mikrofon nagrywa klip i dołącza go do wiadomości. Pozostałe modele nadal korzystają z dyktowania.",
+        micTargetModelUnavailable: "Załaduj model obsługujący wejście audio (na przykład LFM3-Omni), aby wysłać mu swój głos.",
+        micRecordForModel: "Nagraj dźwięk dla modelu",
         engineLabel: "Silnik dyktowania",
         engineBrowser: "Przeglądarka",
         engineBrowserDescription:

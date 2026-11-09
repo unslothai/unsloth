@@ -1851,6 +1851,13 @@ export const nl = {
         audioUploadCancel: "Transcriptie annuleren",
         audioUploadTranscribing: "Audio transcriberen…",
         sectionTitle: "Dicteren",
+        micTargetLabel: "Microfoonknop",
+        micTargetAsr: "Transcriberen met ASR",
+        micTargetModel: "Audio naar het model sturen",
+        micTargetAsrDescription: "De microfoonknop typt wat je zegt in het berichtvak.",
+        micTargetModelDescription: "Met een model met audio-invoer geladen neemt de microfoon een clip op en voegt die toe aan je bericht. Andere modellen krijgen nog steeds dicteren.",
+        micTargetModelUnavailable: "Laad een model dat audio-invoer accepteert (bijvoorbeeld LFM3-Omni) om het je stem te sturen.",
+        micRecordForModel: "Audio opnemen voor het model",
         engineLabel: "Dicteerengine",
         engineBrowser: "Browser",
         engineBrowserDescription:

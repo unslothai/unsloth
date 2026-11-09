@@ -1766,6 +1766,13 @@ export const sv = {
         audioUploadCancel: "Avbryt transkribering",
         audioUploadTranscribing: "Transkriberar ljud…",
         sectionTitle: "Diktering",
+        micTargetLabel: "Mikrofonknapp",
+        micTargetAsr: "Transkribera med ASR",
+        micTargetModel: "Skicka ljud till modellen",
+        micTargetAsrDescription: "Mikrofonknappen skriver det du säger i meddelanderutan.",
+        micTargetModelDescription: "När en modell med ljudinmatning är inläst spelar mikrofonen in ett klipp och bifogar det till ditt meddelande. Andra modeller får fortfarande diktering.",
+        micTargetModelUnavailable: "Läs in en modell som tar emot ljudinmatning (till exempel LFM3-Omni) för att skicka din röst till den.",
+        micRecordForModel: "Spela in ljud för modellen",
         engineLabel: "Dikteringsmotor",
         engineBrowser: "Webbläsare",
         engineBrowserDescription:

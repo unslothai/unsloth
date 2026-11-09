@@ -336,8 +336,7 @@ def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):
 
 
 def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypatch):
-    # Some network filesystems refuse to lock; unlock must tolerate that too.
-    # fcntl is absent on Windows, so use the platform's primitive.
+    # Some filesystems refuse to lock, so unlock must tolerate it; fcntl is absent on Windows.
     if os.name == "nt":
         import msvcrt as locking
         primitive = "locking"

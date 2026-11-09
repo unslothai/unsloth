@@ -155,11 +155,8 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
     ids = [a[0] for a in ACCELERATORS],
 )
 def test_full_offload_keeps_mtp_everywhere(tmp_path, plat_id, plat, acc_id, memory, vulkan, device):
-    """The planner proved every layer fits: MTP is the whole point, keep it.
-
-    This is the regression direction that matters most -- the PR must not cost
-    MTP to the users it already works for.
-    """
+    """Full offload keeps MTP: the planner proved every layer fits, and the PR must not cost MTP to
+    users it already works for."""
     backend, gguf = _hybrid_mtp_backend(tmp_path, partial_offload = False, memory = memory)
     backend._is_vulkan_backend = lambda _binary = None: vulkan
     extra = ["--device", device] if device else None

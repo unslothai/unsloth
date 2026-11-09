@@ -1663,6 +1663,13 @@ export const ja = {
         audioUploadCancel: "文字起こしをキャンセル",
         audioUploadTranscribing: "音声を文字起こし中…",
         sectionTitle: "音声入力",
+        micTargetLabel: "マイクボタン",
+        micTargetAsr: "ASR で文字起こし",
+        micTargetModel: "音声をモデルに送信",
+        micTargetAsrDescription: "マイクボタンで話した内容をメッセージ欄に入力します。",
+        micTargetModelDescription: "音声入力対応のモデルを読み込んでいると、マイクでクリップを録音してメッセージに添付します。その他のモデルでは従来どおり音声入力になります。",
+        micTargetModelUnavailable: "音声を送るには、音声入力に対応したモデル（例: LFM3-Omni）を読み込んでください。",
+        micRecordForModel: "モデル用に音声を録音",
         engineLabel: "音声入力エンジン",
         engineBrowser: "ブラウザー",
         engineBrowserDescription:
