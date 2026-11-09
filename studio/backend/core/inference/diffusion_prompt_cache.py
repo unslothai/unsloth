@@ -226,7 +226,7 @@ _DENOISER_ATTRS = (
 # Reading these off a denoiser runs none of its layers.
 _INERT_MODULE_ATTRS = frozenset({"dtype", "device", "config"})
 _MAX_FOLLOWED_METHODS = 64
-# Set on an instance-level wrapper that only forwards to the same-named class method (plus non-denoiser work)
+# Marks an instance wrapper that only forwards to the same-named class method and runs no denoiser
 TRANSPARENT_WRAPPER_ATTR = "_unsloth_prompt_cache_transparent"
 
 
@@ -341,8 +341,7 @@ def _bound_code(value: Any) -> bool:
 
 
 def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool:
-    """``value`` only wraps ``instance``'s own ``cls.<attr>`` and vouches it runs no denoiser
-    (``TRANSPARENT_WRAPPER_ATTR``, e.g. Qwen-Image-2.1's no-K/V prompt helper): follow the class method."""
+    """``value`` is a ``TRANSPARENT_WRAPPER_ATTR`` wrapper of ``instance``'s own ``cls.<attr>``."""
     if not callable(value):
         return False
     for _ in range(8):
@@ -352,7 +351,7 @@ def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool
     else:
         return False
     if value is getattr(instance, "__dict__", {}).get(attr):
-        return False  # not marked: an ordinary instance override
+        return False
     target = inspect.getattr_static(cls, attr, None)
     return (
         getattr(value, "__self__", None) is instance
@@ -362,8 +361,7 @@ def _transparent_wrapper(cls: Any, attr: str, value: Any, instance: Any) -> bool
 
 
 def _opaque_callable(value: Any, denoisers: list) -> bool:
-    """A callable instance attribute whose ``__call__`` the walk cannot read. Pipeline encoders and
-    tokenizers / processors are exempt; a module containing a denoiser is not."""
+    """Callable the walk cannot read; tokenizers/processors and denoiser-free modules are exempt."""
     import types
 
     if (
