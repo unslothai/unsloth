@@ -394,8 +394,7 @@ class OutDirLock:
         path: Path,
         budget_s: float = 0.5,
     ) -> "Optional[tuple[str, int]]":
-        """The holder locks before it writes, so wait out the empty marker; a single read would name
-        no one."""
+        """Holder locks before writing, so wait out an empty marker; one read names no one."""
         deadline = time.monotonic() + budget_s
         while True:
             got = cls._read_marker(path)
@@ -434,8 +433,7 @@ class OutDirLock:
 
 
 class Recorder:
-    """Append-only JSONL. Every line is flushed and fsynced, so a renderer crash at rung 4 still
-    ships rungs 1 to 3 plus the crash record."""
+    """Append-only JSONL, each line fsynced, so a crash at rung 4 keeps rungs 1 to 3."""
 
     def __init__(
         self,
@@ -488,8 +486,7 @@ class Recorder:
         detail: Optional[dict] = None,
         cell_id: Optional[str] = None,
     ) -> None:
-        """Pass cell_id whenever the verdict is about a cell; without it the failure is attributed
-        to run."""
+        """Pass cell_id for a cell's verdict; without it the failure is attributed to the run."""
         row = {"row_type": "gate", "name": name, "passed": bool(passed), "detail": detail or {}}
         if cell_id is not None:
             row["cell_id"] = cell_id

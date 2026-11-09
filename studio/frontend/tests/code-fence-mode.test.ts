@@ -12,12 +12,9 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 /**
- * The fence mode decision table, RUN rather than described.
- *
- * The other tests around this change are regexes over source, because what they protect is a React
- * hook over IntersectionObserver and would need a DOM. This is a pure function of two values, and
- * the point of the default moving from "off" to "defer" is that every existing override keeps
- * working in BOTH directions. A truth table nobody executes is not evidence of that.
+ * Runs the fence mode decision table rather than describing it: the default moved from off to defer
+ * and every existing override must keep working in both directions; other tests are source regexes
+ * because the hook needs a DOM.
  */
 
 test("the default defers highlighting without moving line windows during scroll", () => {

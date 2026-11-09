@@ -136,9 +136,8 @@ export interface VideoLoadRequest {
   display_repo_id?: string;
   // Required for gguf / single_file; omitted for a from_pretrained pipeline.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
-  // (safetensors transformer) or "pipeline". A single_file .safetensors loads from any repo;
-  // pipeline loads are restricted to unsloth/* or family bases.
+  // Omit to auto-detect from gguf_filename: gguf, single_file (safetensors transformer, any repo)
+  // or pipeline (restricted to unsloth/ repos or family bases).
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -187,10 +186,9 @@ export interface VideoGenerateRequest {
   // Omitted = the server default (on).
   live_preview?: boolean;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
-  // must match that family's rules -- a size near its presets, and num_frames on the
-  // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
-  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
+  // Width, height, num_frames and fps default per family; when sent they must match its rules:
+  // num_frames on the k times frame_step plus 1 lattice, and width and height a preset or on
+  // resolution_multiple within the custom_size bounds, else 422.
   width?: number;
   height?: number;
   num_frames?: number;
