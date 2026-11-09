@@ -2666,19 +2666,38 @@ def fp8_rowwise_capture_refusal(modules: Any, device: Any = None) -> Optional[st
         cap = tuple(torch.cuda.get_device_capability(device))
     except Exception:  # noqa: BLE001
         return None
-    if cap not in FP8_ROWWISE_STREAMK_CAPS:
-        return None
+    caps: dict = {}
+
+    def _weight_cap(w: Any) -> Any:
+        # Layer split: an sm_89 secondary card hangs too.
+        if cap in FP8_ROWWISE_STREAMK_CAPS:
+            return cap
+        d = getattr(w, "device", None)
+        if getattr(d, "type", None) != "cuda":
+            return cap
+        key = str(d)
+        if key not in caps:
+            try:
+                caps[key] = tuple(torch.cuda.get_device_capability(d))
+            except Exception:  # noqa: BLE001
+                caps[key] = None
+        return caps[key]
+
     for module in modules or ():
         try:
             weights = list(module.parameters())
         except Exception:  # noqa: BLE001
             continue
-        if any(_fp8_rowwise_weight(w) for w in weights):
-            return (
-                f"the row-wise fp8 GEMM on this sm_{cap[0]}{cap[1]} card cannot replay in a CUDA graph under torch "
-                f"{major}.{minor} (it hangs; fixed in torch {FP8_ROWWISE_STREAMK_FIXED[0]}."
-                f"{FP8_ROWWISE_STREAMK_FIXED[1]}, pytorch/pytorch#177573)"
-            )
+        for w in weights:
+            if not _fp8_rowwise_weight(w):
+                continue
+            hit = _weight_cap(w)
+            if hit in FP8_ROWWISE_STREAMK_CAPS:
+                return (
+                    f"the row-wise fp8 GEMM on this sm_{hit[0]}{hit[1]} card cannot replay in a CUDA graph under "
+                    f"torch {major}.{minor} (it hangs; fixed in torch {FP8_ROWWISE_STREAMK_FIXED[0]}."
+                    f"{FP8_ROWWISE_STREAMK_FIXED[1]}, pytorch/pytorch#177573)"
+                )
     return None
 
 
