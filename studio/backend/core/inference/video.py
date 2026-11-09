@@ -4125,6 +4125,7 @@ def _read_native_quant_from_hosted(
                 family = getattr(fam, "name", None),
                 component = component,
                 config_kwargs = config_kwargs,
+                base = base or getattr(fam, "base_repo", None),
                 logger = logger,
             )
             if module is None:
@@ -4631,16 +4632,22 @@ def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) ->
     """``int8`` when an offloaded load of ``scheme`` builds the W8A8 ConvRot native DiT that the family's hosted int8
     checkpoint already holds (``diffusion_native_hosted``), else None. The load re-checks the file; never raises."""
     try:
-        from .diffusion_native_hosted import native_hosted_family
+        from .diffusion_native_hosted import native_hosted_family, native_hosted_pickle
         from .diffusion_native_quant import int8_rotation_group
 
         if scheme != TQ_INT8 or not native_hosted_family(fam):
             return None
         if getattr(target, "device", None) != "cuda":
             return None
+        # A pickle unpickles through torchao: not on ROCm or a stubbed torchao (native_offload_host's set).
+        if native_hosted_pickle(fam) and not native_offload_host(target):
+            return None
         if native_quant_scheme(target, TQ_INT8, family = fam.name, offload = True) != TQ_INT8:
             return None
-        if not native_int8_act(target) or int(int8_rotation_group() or 0) <= 0:
+        if not native_int8_act(target):
+            return None
+        # A ConvRot file only matches a rotated runtime build; a pickle is read unrotated, so ConvRot off keeps it.
+        if not native_hosted_pickle(fam) and int(int8_rotation_group() or 0) <= 0:
             return None
         return TQ_INT8
     except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
