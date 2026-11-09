@@ -39,6 +39,7 @@ import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { markAppSessionStart } from "./lib/app-session-start";
 import { watchClosingDialogFocus } from "./lib/closing-dialog-focus";
+import { watchDesktopFullscreen } from "./lib/desktop-fullscreen";
 import { setHubSessionRefresh } from "./lib/hf-endpoint";
 import { watchInputModality } from "./lib/input-modality";
 import { watchMacStrayKeyText } from "./lib/mac-stray-key-text";
@@ -72,6 +73,7 @@ const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
+  watchDesktopFullscreen(window);
 }
 
 const uaLower = navigator.userAgent.toLowerCase();
