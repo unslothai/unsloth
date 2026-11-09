@@ -59,6 +59,9 @@ def skip_text_encoder_kv_cache(pipe: Any, logger: Any = None) -> bool:
             handle.remove()
 
     setattr(_get_qwen_prompt_embeds, _MARK, True)
+    from .diffusion_prompt_cache import TRANSPARENT_WRAPPER_ATTR
+
+    setattr(_get_qwen_prompt_embeds, TRANSPARENT_WRAPPER_ATTR, True)
     pipe._get_qwen_prompt_embeds = _get_qwen_prompt_embeds
     if logger is not None:
         logger.info(
