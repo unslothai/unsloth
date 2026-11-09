@@ -132,7 +132,6 @@ def test_declines_modules_without_a_decoder_stack():
 
 
 def test_compiled_caller_traces_one_graph_with_the_capture_installed():
-    """Hook registration inside forward cannot be traced: a compiled caller takes the stock forward instead."""
     model = _tiny()
     kw = _inputs(False)
     with torch.no_grad():

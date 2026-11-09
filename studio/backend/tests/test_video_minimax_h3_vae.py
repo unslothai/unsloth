@@ -1468,7 +1468,6 @@ def test_the_fused_int8_path_matches_the_unfused_int8_path_on_cuda(monkeypatch):
 
 
 def test_cold_tile_decode_compiles_fullgraph_in_one_graph(monkeypatch):
-    """The stitch source check runs at install, so a first-ever decode under torch.compile has no graph break."""
     monkeypatch.setenv(H.H3_VAE_TILE_BATCH_ENV, "2")
     monkeypatch.setattr(H, "_STITCH_KNOWN", {})
     vae = _tiny_vae()

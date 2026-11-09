@@ -1183,7 +1183,7 @@ def _install_tile_batch(vae: Any) -> bool:
     ):
         return False
     vae._decode_clip = types.MethodType(_batched_decode_clip, vae)
-    _stream_stitch(vae)  # resolve the source verdict eagerly, never inside a compiled decode
+    _stream_stitch(vae)
     return True
 
 
