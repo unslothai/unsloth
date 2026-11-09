@@ -465,3 +465,63 @@ def test_settings_ready_marker_is_set_from_inside_the_panel_suspense():
         "data-settings-panel=" not in src
     ), "a pane-level marker would read ready before the panel resolves"
     assert "data-settings-panel-ready=" in am.TABS and "data-settings-panel-failed" in am.TABS
+
+
+@pytest.mark.parametrize(
+    "short, long_, fails",
+    [
+        (15, 104, True),  # Round 11's Settings paint behind the overlay at 1 vs 150 turns
+        (100, 240, False),  # under 2.5x
+        (10, 55, False),  # over 2.5x, but under 50 ms more
+        (40, 140, True),
+    ],
+)
+def test_paint_length_check(short, long_, fails):
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": short}}
+        ),
+        (am.LONG, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": long_}}
+        ),
+    }
+    rows = [v for v in am.judge(_result(pages), known = "") if v["metric"] == "paint_ms"]
+    assert [v["fail"] for v in rows] == [fails]
+    if fails:
+        assert not [v for v in am.judge(_result(pages), known = "paint:a=8") if v["fail"]]
+        assert not [v for v in am.judge(_result(pages), known = "paint@default:a=8") if v["fail"]]
+
+
+def test_paint_length_check_keeps_the_cheapest_reading():
+    # A recheck that reads lower clears a noisy first reading (the minimum of the sweeps is judged).
+    long_cell = {
+        "elements": 10,
+        "layout_objects": 0,
+        "cpu_ms": 10,
+        "paint_ms": 300,
+        "again": [{"status": "OK", "paint_ms": 30, "cpu_ms": 10}],
+    }
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": 20}}
+        ),
+        (am.LONG, "default"): _page({"a": long_cell}),
+    }
+    assert not [v for v in am.judge(_result(pages), known = "") if v["fail"]]
+
+
+def test_cpu_length_check():
+    pages = {
+        (am.SHORT, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 80, "main_ms": 80}}
+        ),
+        (am.LONG, "default"): _page(
+            {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 400, "main_ms": 400}}
+        ),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["metric"] == "main_ms" and v["kind"] == "length"
+    ]
+    assert [v["fail"] for v in rows] == [True]

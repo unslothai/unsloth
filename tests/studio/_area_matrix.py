@@ -57,6 +57,12 @@ GLASS = "liquid-3d"
 LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_LENGTH_RATIO", "2.0"))
 # Counts below this many elements / layout objects at LONG turns never fail the length check.
 COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
+# Paint and main-thread CPU, long over short chat (the cheapest of the first reading and its rechecks):
+# fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more. A short reading below
+# TIME_BASE_FLOOR_MS counts as that, so a near-free area cannot make a large ratio.
+TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", "2.5"))
+TIME_LENGTH_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_FLOOR_MS", "50"))
+TIME_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_BASE_FLOOR_MS", "20"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
 # CPU ms a mode must add on top of the ratio before it fails.
 CPU_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_CPU_FLOOR_MS", "150"))
@@ -1131,6 +1137,10 @@ def split_trace(events: list) -> dict[str, dict]:
                 row["layout_objects"] += int((args.get("beginData") or {}).get("dirtyObjects") or 0)
             elif name in ("Paint", "PrePaint", "Layerize", "PaintImage"):
                 row["paint_ms"] += dur
+    for row in out.values():
+        # The renderer's main thread alone: raster and compositor threads (busy on every frame under
+        # software compositing) are noise for a "does this area do more work in a longer chat" check.
+        row["main_ms"] = row["threads"].get("CrRendererMain", 0.0)
     return out
 
 
@@ -1509,6 +1519,28 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
             lc, sc = settled(page["cells"].get(area, {})), settled(short.get(area, {}))
             if lc.get("status") != "OK" or sc.get("status") != "OK":
                 continue
+            # Time grows where counts may not (paint behind an overlay grows with the thread while style
+            # and layout stay flat): paint and main-thread CPU, the cheapest reading of each length.
+            for metric, key in (("paint_ms", "paint"), ("main_ms", "cpu")):
+                lv, sv = cheapest(lc, metric), cheapest(sc, metric)
+                ratio = lv / max(sv, TIME_BASE_FLOOR_MS)
+                tlimit = limits.get(
+                    (f"{key}@{mode}", area), limits.get((key, area), TIME_LENGTH_RATIO)
+                )
+                out.append(
+                    {
+                        "kind": "length",
+                        "metric": metric,
+                        "turns": turns,
+                        "mode": mode,
+                        "area": area,
+                        "value": lv,
+                        "base_value": sv,
+                        "ratio": ratio,
+                        "limit": tlimit,
+                        "fail": ratio > tlimit and lv - sv > TIME_LENGTH_FLOOR_MS,
+                    }
+                )
             limit = limits.get(("length", area), LENGTH_RATIO)
             cap = limits.get(("count", area))
             for metric in ("elements", "layout_objects"):
@@ -1636,6 +1668,16 @@ def run(
     )
     # Pages with the fewest failing cells first (a lone outlier is the usual noise); a mode that
     # fails many cells is one page anyway.
+    # A paint / CPU length failure is measured again at both lengths (the cheapest of each is kept).
+    again = sorted(
+        set(again)
+        | {
+            (t, v["mode"], v["area"])
+            for v in verdicts
+            if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
+            for t in (SHORT, LONG)
+        }
+    )
     per_page: dict = {}
     for t, m, _ in again:
         per_page[(t, m)] = per_page.get((t, m), 0) + 1
@@ -1661,6 +1703,16 @@ def run(
             continue
         if v["kind"] == "broken":
             failures.append(f"area {v['area']} ({v['mode']}, {v['turns']} turns): {v['why']}")
+        elif v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms"):
+            what = "paint" if v["metric"] == "paint_ms" else "main-thread CPU"
+            key = "paint" if v["metric"] == "paint_ms" else "cpu"
+            failures.append(
+                f"area {v['area']} ({v['mode']}) costs more as the chat grows: {what} {v['base_value']:,.0f} ms at "
+                f"{SHORT} turns -> {v['value']:,.0f} ms at {LONG} turns = {v['ratio']:.1f}x (limit {v['limit']:.1f}x over "
+                f"{TIME_LENGTH_FLOOR_MS:.0f} ms; LONG_THREAD_AREAS_KNOWN {key}:{v['area']}=... or {key}@{v['mode']}:{v['area']}=...). "
+                "Element and layout counts can stay flat while this grows: the thread behind the surface is repainted, "
+                "or script walks every message"
+            )
         elif v["kind"] == "length":
             bound = (
                 f"known ceiling {v['cap']:,.0f} elements, LONG_THREAD_AREAS_KNOWN count:{v['area']}=..."
@@ -1740,4 +1792,17 @@ def table(result: dict, verdicts: list[dict]) -> list[str]:
             + ("!" if lv and lv["fail"] else "")
         )
         lines.append(row)
+    timed = sorted(
+        (v for v in verdicts if v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")),
+        key = lambda v: -(v["ratio"] / v["limit"]),
+    )
+    if timed:
+        lines.append(
+            f"  paint / CPU growth {SHORT} -> {LONG} turns, highest against limit (! = over): "
+            + ", ".join(
+                f"{v['mode']}/{v['area']} {v['metric'][:-3]} {v['base_value']:.0f}->{v['value']:.0f} ms "
+                f"{v['ratio']:.1f}x/{v['limit']:.1f}{'!' if v['fail'] else ''}"
+                for v in timed[:6]
+            )
+        )
     return lines

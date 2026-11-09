@@ -217,9 +217,9 @@ jobs:
           APT_ACQUIRE_RETRIES: '0'
         run: |
           python3 -m pip install 'playwright>=1.45,<2'
-          python3 -m playwright install chromium
-          if [ "$RUNNER_OS" = Linux ] && ! python3 -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"; then
-            bash .github/scripts/retry-with-apt-lock.sh python3 -m playwright install-deps chromium
+          python3 -m playwright install chromium webkit
+          if [ "$RUNNER_OS" = Linux ] && ! python3 -c "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.webkit.launch().close(); p.stop()"; then
+            bash .github/scripts/retry-with-apt-lock.sh python3 -m playwright install-deps chromium webkit
           fi
 
       # Also runs the area matrix (Linux only, tests/studio/_area_matrix.py): the real chat page from
@@ -229,10 +229,17 @@ jobs:
       # or a mode makes an area cost over 4x the default, and when a popup trigger is not measured.
       # First, a static lint of the built CSS fails on a new non-subject :has() rule (`X:has(...) Y`),
       # which restyles the whole thread whenever an ancestor of it changes (tests/studio/_has_lint.py).
+      # LONG_THREAD_WEBKIT: also the WebKit leg (tests/studio/_webkit_leg.py), which times opening and
+      # closing the browser pane, Settings, shortcuts, palette, composer menu, sidebar and a thread
+      # scroll at 1 and 150 turns in Playwright WebKit with a macOS and a Linux user agent (Safari, the
+      # macOS app, the Linux desktop app): fails when the long chat is over 2.5x the short one and over
+      # 200 ms, or has a frame over 250 ms, beyond the known costs pinned in that file.
       - name: Browser gate for long-chat typing cost
         working-directory: ${{ github.workspace }}
         shell: bash
-        timeout-minutes: 15
+        timeout-minutes: 20
+        env:
+          LONG_THREAD_WEBKIT: '1'
         run: python3 tests/studio/playwright_long_thread_gate.py
 
       # Fetch the base commit with an explicit refspec so origin/<base> exists.
