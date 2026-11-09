@@ -17566,6 +17566,7 @@ def _check_signal_escape_patterns(code: str):
                         "subprocess",
                         "sys",
                         "asyncio",
+                        "asyncio.subprocess",
                         "pty",
                     ):
                         names = _STAR_EXPORTS
@@ -17699,6 +17700,12 @@ def _check_signal_escape_patterns(code: str):
                         name = _folded_str_literal(value.args[0])
                 elif isinstance(value, ast.Subscript) and self._is_registry(value.value):
                     name = _folded_str_literal(value.slice)
+                elif (
+                    isinstance(value, ast.Attribute)
+                    and value.attr == "subprocess"
+                    and "asyncio" in self._modules_of(value.value)
+                ):
+                    name = "asyncio"
                 # __import__("os.path") returns the top-level os package.
                 top = (name or "").split(".")[0]
                 if top in ("os", "subprocess", "asyncio", "pty"):
