@@ -256,3 +256,19 @@ def test_no_room_for_the_slots_uploads_each_layer_on_its_own(monkeypatch):
     assert streamer.fallbacks == len(model.layers)
     assert not streamer.active and streamer.swapped == {}
     assert all(t.data_ptr() == hosts[id(t)] for e, _g, _s in plans for t, *_ in e)
+
+
+def test_uploads_wait_for_the_stream_that_allocated_the_slots(monkeypatch):
+    model = _conditioner()
+    streamer, _plans = _streamer(model, _groups(model))
+    calls = []
+    compute = object()
+
+    class _Stream:
+        def wait_stream(self, other):
+            calls.append((other, len(streamer.slots)))
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda device = None: compute)
+    streamer.copy_stream = _Stream()
+    streamer._start()
+    assert calls == [(compute, 2)]  # after both slots exist, before any upload

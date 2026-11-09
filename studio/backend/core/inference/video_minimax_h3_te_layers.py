@@ -161,6 +161,9 @@ class H3TELayerStream:
         self.slots = [
             torch.empty(self.slot_bytes, dtype = torch.uint8, device = self.device) for _ in range(2)
         ]
+        if self.copy_stream is not None:
+            # The slots may reuse blocks the compute stream still has queued work on: the uploads wait for it.
+            self.copy_stream.wait_stream(torch.cuda.current_stream(self.device))
         self.active = True
         self.sessions += 1
 
