@@ -1103,6 +1103,26 @@ def test_terminal_high_risk_classifier(command, high_risk):
 
 
 @pytest.mark.parametrize(
+    ("command", "high_risk"),
+    [
+        ("python3 - <<'PY'\nimport shutil; shutil.rmtree('build')\nPY", True),
+        ("python3 - <<'PY'\nimport os; os.system('rm -rf build')\nPY", True),
+        ("python <<EOF\nimport os\nos.remove('data.db')\nEOF", True),
+        ("python3 -u - <<-PY\n\timport shutil; shutil.rmtree('build')\n\tPY", True),
+        ("node <<'EOF'\nrequire('fs').rmSync('build', {recursive: true})\nEOF", True),
+        ("ruby <<'EOF'\nrequire 'fileutils'; FileUtils.rm_rf('build')\nEOF", True),
+        ("python3 - <<'PY'\nprint(1 + 1)\nPY", False),
+        ("python3 - <<'PY'\nprint('done')\nPY\necho ok", False),
+        ("python3 - <<-PY\n\tprint(1 + 1)\n\tPY", False),
+        ("python3 script.py <<'EOF'\nshutil.rmtree\nEOF", False),
+        ("cat <<'EOF' > notes.txt\nimport shutil; shutil.rmtree('build')\nEOF", False),
+    ],
+)
+def test_code_fed_to_an_interpreter_through_a_heredoc_is_screened(command, high_risk):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is high_risk
+
+
+@pytest.mark.parametrize(
     ("code", "high_risk"),
     [
         ("import subprocess; subprocess.run(['sudo', 'ls'])", True),
