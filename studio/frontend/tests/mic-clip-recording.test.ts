@@ -252,6 +252,38 @@ test("a cancel during the saved-mic request skips the default-mic fallback", asy
   }
 });
 
+test("a cancelled session's late mic error leaves the next session's outcome alone", async () => {
+  const nav = globalThis.navigator as unknown as {
+    mediaDevices: { getUserMedia: () => Promise<unknown> };
+  };
+  const original = nav.mediaDevices.getUserMedia;
+  let rejectFirst: (error: Error) => void = () => {};
+  let requests = 0;
+  nav.mediaDevices.getUserMedia = () => {
+    requests += 1;
+    return requests === 1
+      ? new Promise((_resolve, reject) => {
+          rejectFirst = reject;
+        })
+      : Promise.resolve(stream);
+  };
+  toasts.length = 0;
+  try {
+    const first = listenForAudioClip(() => {});
+    first.cancel();
+    const second = listenForAudioClip(() => {});
+    await flush();
+    assert.equal(second.status.type, "running");
+    rejectFirst(Object.assign(new Error("busy"), { name: "NotReadableError" }));
+    await flush();
+    assert.equal(dictationOutcome.dictationFailed(), false);
+    assert.deepEqual(toasts, []);
+    second.cancel();
+  } finally {
+    nav.mediaDevices.getUserMedia = original;
+  }
+});
+
 function fakeCheckpointStore(checkpoint: string) {
   let state: {
     params: { checkpoint: string };

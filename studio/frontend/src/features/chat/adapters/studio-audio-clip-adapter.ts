@@ -173,6 +173,8 @@ export function listenForAudioClip(
       session.status = { type: "running" };
       for (const callback of speechStartCallbacks) callback();
     } catch (error) {
+      // Cancelled already: the outcome flags now belong to the next session.
+      if (ended) return;
       console.error("Microphone error:", error);
       toast.error(
         isMissingDeviceError(error)
