@@ -205,6 +205,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
         "moss_fused",
     }
     # the former hand-kept teardown list is now a registry group
@@ -215,6 +216,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
         "moss_fused",
     }
     # every spec answers its module's existing kill switch name
@@ -228,6 +230,7 @@ def test_builtin_specs_cover_every_former_install_site():
         "qwenimage_real_rope",
         "zimage_fused",
         "qwenimage21_fused",
+        "qwenimage21_dense_fused",
         "moss_fused",
     ]
 
