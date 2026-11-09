@@ -3,16 +3,8 @@
 
 """A transformers StaticCache whose full-attention layers grow by power-of-two buckets.
 
-A StaticCache allocates prompt + max_new_tokens slots for every full-attention layer at prefill and attention reads
-all of them every step, however early the reply stops. Here each full layer allocates the smallest bucket that holds
-what is written (at least UNSLOTH_GROWABLE_KV_MIN slots, never more than the limit generate sized for) and doubles
-when a step would pass it. Within a bucket every tensor keeps its shape and address, so a step is as compile- and
-CUDA-graph-friendly as a StaticCache step; growth happens eagerly between buckets and moves the tensors (one graph
-capture / compile per bucket). Sliding and chunked layers stay transformers' own: they are capped at their window.
-
-Writes are transformers' own StaticLayer.update (an index_copy_ at device positions). The number of written tokens is
-also kept on the host (`cumulative_length_int`, advanced in Python, never read back from the device), which is what
-the growth check reads."""
+Within a bucket tensors keep shape and address (graph/compile friendly); growth is eager between buckets. The growth
+check reads only the host counter `cumulative_length_int`, never the device."""
 
 import inspect
 import os
@@ -85,9 +77,8 @@ if _StaticLayer is not None:
             self.group = group if group is not None else _Group()
 
         def _plan(self, q_len):
-            """Capacity this layer needs to take q_len more tokens; grows the group if it is short. Never inside a
-            graph capture: the host counter there is already past the step (the warm-up ran it), and a capture
-            would record the copy into the new buffers without running it. generate reserves beforehand."""
+            """Capacity for q_len more tokens; grows the group if short. Never during a capture: the host counter is
+            already past the step and the copy would be recorded, not run."""
             needed = self.cumulative_length_int + int(q_len)
             if (self.capacity is None or needed > self.capacity) and not _frozen():
                 _grow_group(self.group, bucket(needed, max(int(self.max_cache_len), needed)))
@@ -105,7 +96,6 @@ if _StaticLayer is not None:
 
         def update(self, key_states, value_states, *args, **kwargs):
             if torch.compiler.is_compiling():
-                # Fixed-shape path only: no host branch and no Python counter inside a compiled graph.
                 return super().update(key_states, value_states, *args, **kwargs)
             q_len = key_states.shape[-2]
             self._plan(q_len)
@@ -117,11 +107,8 @@ if _StaticLayer is not None:
             query = args[0] if args else kwargs.get("query_length", kwargs.get("cache_position"))
             q_len = query.shape[0] if isinstance(query, torch.Tensor) else int(query)
             if not torch.compiler.is_compiling():
-                # Grow before the forward that writes, so the mask and every layer's keys share one length.
                 return self._plan(q_len), 0
-            # A compiled mask builder (Unsloth compiles transformers' masks) must not mutate the cache: generate
-            # grows it eagerly beforehand (reserve()); before the first write the prefill bucket is what update()
-            # will allocate. Only the capacity is read, so a compiled mask recompiles once per bucket.
+            # Compiled mask code must not mutate the cache: generate reserves beforehand, so only read capacity.
             if self.capacity is None:
                 return bucket(q_len, self.max_cache_len), 0
             return self.capacity, 0
@@ -187,8 +174,7 @@ _SUPPORTS = {}
 
 
 def _sizes_by_max_cache_shape(module):
-    # Old-style transformers models build their 4D mask (or ALiBi) at get_max_cache_shape(): the generation limit,
-    # not the bucket update() returns, so the shapes would disagree.
+    # Old-style models size the mask / ALiBi by get_max_cache_shape(), which would disagree with the bucket.
     if module is None:
         return False
     if hasattr(module, "_prepare_4d_causal_attention_mask_with_cache_position"):
@@ -266,11 +252,8 @@ def reserve(
     total,
     written = None,
 ):
-    """Grows a growable cache, eagerly, so it holds `total` tokens (host ints only). generate calls it before a
-    step's mask is built, so a mask built inside compiled code reads the grown capacity. `written` (the tokens
-    the cache holds before this step, from generate's own lengths) re-syncs the host counters: a step that ran
-    update() under torch.compile or as a graph replay without the replay path advancing them leaves them behind,
-    and they must never drive a growth decision stale."""
+    """Grows a growable cache, eagerly, to hold `total` tokens. `written` re-syncs the host counters, which a
+    compiled update or a replay may leave stale."""
     members = list(_members(cache))
     if not members:
         return
@@ -300,9 +283,8 @@ def capacity(cache):
 
 
 def short_layers(cache, max_cache_len):
-    """Whether a kept growable cache has a non-growable layer (sliding / chunked) too short for a call that may reach
-    `max_cache_len`. transformers allocates such a layer at min(window, the creating call's limit): one whose length
-    reaches that limit may have been cut by it, so a longer call would roll it before the window is full."""
+    """Whether a sliding / chunked layer was cut at the creating call's limit (min(window, limit)), so a longer
+    call up to `max_cache_len` would roll it early."""
     limit = max((int(layer.max_cache_len) for layer in _members(cache)), default = None)
     if limit is None:
         return False

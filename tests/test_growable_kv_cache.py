@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Growable KV cache (unsloth/models/_kv_cache.py, UNSLOTH_GROWABLE_KV=1): full-attention layers allocate a
-power-of-two bucket and double when a step would pass it, so a call that stops early never allocates its worst
-case. Checked on the host through the stand-in CUDA graph backend of test_generic_decode_graphs: rows and tokens
-equal a StaticCache of the full length, growth is eager and re-captures once per bucket, a kept cache grows for a
-longer call, sliding layers stay transformers' own, left padding, and a compiled update is one graph per bucket."""
+"""Growable KV cache (UNSLOTH_GROWABLE_KV=1), checked on the host via test_generic_decode_graphs' stand-in graphs."""
 
 import contextlib
 import functools
@@ -31,7 +27,6 @@ from test_generic_decode_graphs import GEMMA3, LLAMA, _FakeGraph  # noqa: E402
 from test_generic_decode_graphs_default import _DefaultHost  # noqa: E402
 
 ENV = "UNSLOTH_DECODE_CUDA_GRAPHS"
-# transformers 4.x passes the step's cache positions to get_mask_sizes, 5.x the query length.
 _MASK_TAKES_POSITIONS = (
     "cache_position" in cache_utils.StaticLayer.get_mask_sizes.__code__.co_varnames[:2]
 )
@@ -184,7 +179,6 @@ def test_layer_rows_match_a_static_cache_across_growth(monkeypatch):
         caps.append(grown.layers[0].capacity)
     assert sorted(set(caps)) == [16, 32, 64, 70], caps
     assert all(layer.cumulative_length_int == written for layer in _full_layers(grown))
-    # 4.57 and 5.x both report the limit as the cache's length, so generate reuses it.
     assert grown.layers[0].max_cache_len == limit and grown.layers[0].get_max_cache_shape() == limit
 
 
@@ -194,10 +188,8 @@ def test_generate_matches_static_and_recaptures_once_per_bucket(host, llama, mon
     s = _stats(llama)
     cache = GG.kept_cache(llama)
     assert KV.is_growable(cache)
-    # prompt 6 + 39 written slots: buckets 16 -> 32 -> 45 (the limit). generate grows the cache before the step's
-    # mask, so the growth step itself is captured on the new bucket: one capture per bucket, no eager step.
+    # prompt 6 + 39: buckets 16 -> 32 -> 45 (the limit), one capture per bucket.
     assert KV.capacity(cache) == 45, KV.capacity(cache)
-    # Each growth moves the tensors, so the previous bucket's graph is dropped: one live graph.
     assert s["captures"] == 3 and s["graphs"] == 1 and not s["refusals"], s
 
 
@@ -208,14 +200,12 @@ def test_early_stop_allocates_only_its_bucket(host, llama, monkeypatch):
     GG.release(llama)
     llama.__dict__.pop(GG._ATTR, None)
     llama.__dict__.pop("_cache", None)
-    # The same greedy tokens with a stop token four steps in and a far larger budget.
     out = _gen(llama, new = 500, min_new_tokens = 0, eos_token_id = stop)
     assert out.shape[1] <= 6 + 5, out.shape
     cache = GG.kept_cache(llama)
     assert KV.is_growable(cache)
     assert KV.capacity(cache) == 16
     assert all(layer.keys.shape[-2] == 16 for layer in _full_layers(cache))
-    # A StaticCache of this call holds 505 slots per layer.
     assert _full_layers(cache)[0].max_cache_len >= 505
 
 
@@ -291,7 +281,6 @@ def test_compiled_update_is_one_graph_per_bucket(monkeypatch):
 
 
 def test_a_short_call_after_a_long_one_replays_the_kept_bucket(host, llama, monkeypatch):
-    # As test_generic_decode_graphs_default's static version, but the long call captures once per bucket.
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
     _gen(llama, new = 40)
     kept = GG.kept_cache(llama)
@@ -313,9 +302,7 @@ def _no_growth_in_graphs(host):
 
 
 def test_no_growth_inside_a_capture(host, llama, monkeypatch):
-    # A 15-token prompt fills its 16-slot bucket on the first captured step: the capture runs after the warm-up
-    # advanced the host counter, so a growth decision there would see one token too many and grow inside the
-    # capture (on CUDA: the copy into the new buffers recorded, never run; the device counter one step ahead).
+    # A 15-token prompt fills its 16-slot bucket on the first captured step: growing inside the capture is a bug.
     static, grown = _both(llama, monkeypatch, new = 30, length = 15)
     assert torch.equal(static, grown)
     _no_growth_in_graphs(host)
@@ -340,9 +327,7 @@ def test_kept_cache_grows_from_a_clamped_bucket(host, llama, monkeypatch):
 
 
 def test_stale_host_counter_and_a_wrapped_prepare(host, llama, monkeypatch):
-    # A decode update that runs no Python counter code (torch.compile'd decode, a replay path that does not advance
-    # it) leaves the host counter behind, and another wrapper may own prepare_inputs_for_generation already: growth
-    # must still follow generate's own lengths, never the stale counter.
+    # A stale host counter and a foreign prepare_inputs wrapper: growth must follow generate's own lengths.
     real_update = KV.GrowableLayer.update
 
     def compiled_like(self, key_states, value_states, *args, **kwargs):
@@ -358,7 +343,6 @@ def test_stale_host_counter_and_a_wrapped_prepare(host, llama, monkeypatch):
     assert torch.equal(static, grown)
     cache = GG.kept_cache(llama)
     assert KV.capacity(cache) == 45, KV.capacity(cache)
-    # The other wrapper is back in place after each call.
     assert llama.__dict__.get("prepare_inputs_for_generation") is wrapper
 
 
@@ -377,8 +361,7 @@ def _gen_embeds(model, new, length):
 
 
 def test_inputs_embeds_prompt_that_fills_its_bucket(host, llama, monkeypatch):
-    # generate() from inputs_embeds alone keeps input_ids of the generated tokens only: the prompt (16 = the first
-    # bucket) must still count, or the first decode step writes past the bucket.
+    # inputs_embeds-only prompt (16 = first bucket) must still count, or decode writes past the bucket.
     monkeypatch.delenv("UNSLOTH_GROWABLE_KV", raising = False)
     static = _gen_embeds(llama, 10, 16)
     GG.release(llama)
@@ -390,8 +373,7 @@ def test_inputs_embeds_prompt_that_fills_its_bucket(host, llama, monkeypatch):
 
 
 def test_kept_cache_with_short_sliding_layers_is_not_reused(host, monkeypatch):
-    # A short first call sizes the sliding layers at min(window, its limit) = 15 < window 32: a longer call must not
-    # reuse them (they would roll at 15), whatever the growable full-attention layers can hold.
+    # Sliding layers sized min(window 32, limit 15) = 15 must not be reused by a longer call.
     model = _load(GEMMA3, sliding_window = 32, layer_types = ["sliding_attention", "full_attention"])
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV", "1")
     _gen(model, new = 10)
@@ -415,9 +397,7 @@ def _growable_cache(model, limit = 64):
 
 @pytest.mark.parametrize("version", ["5.x", "4.x"])
 def test_reserve_counts_tokens_held_only_by_the_cache(llama, monkeypatch, version):
-    # The tokens a step adds come from next_sequence_length (5.x) or cache_position (4.x); the sequence so far from
-    # input_ids, the 2D mask and what the call's first step found in the cache: a prompt given as inputs_embeds, or
-    # a returned cache continued with only the new tokens. The host counter must match the device write position.
+    # The host counter must match the device write position across 4.x / 5.x step inputs.
     monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "16")
 
     def step(
@@ -438,12 +418,10 @@ def test_reserve_counts_tokens_held_only_by_the_cache(llama, monkeypatch, versio
         GG._reserve_step(cache, torch.zeros(1, ids_len, dtype = torch.long), bound, call)
         return KV.written(cache), KV.capacity(cache)
 
-    # Embeds-only prompt of 16, no mask: input_ids then holds only the generated tokens.
     cache, call = _growable_cache(llama), {}
     assert step(cache, call, 0, 16, embeds = 16) == (0, 16)
     assert step(cache, call, 1, 1) == (16, 32)
     assert step(cache, call, 5, 1) == (20, 32)
-    # A cache holding 19 tokens continued with only 3 new ones, mask or not.
     for mask in (True, False):
         cache = _growable_cache(llama)
         KV.reserve(cache, 19, written = 19)
@@ -451,7 +429,6 @@ def test_reserve_counts_tokens_held_only_by_the_cache(llama, monkeypatch, versio
         assert step(cache, call, 3, 3, 22 if mask else None) == (19, 32)
         assert step(cache, call, 4, 1, 23 if mask else None) == (22, 32)
         assert step(cache, call, 14, 1, 33 if mask else None) == (32, 64)
-    # The usual continuation (whole sequence in input_ids) counts no prefix.
     cache = _growable_cache(llama)
     KV.reserve(cache, 19, written = 19)
     call = {}
@@ -459,8 +436,7 @@ def test_reserve_counts_tokens_held_only_by_the_cache(llama, monkeypatch, versio
 
 
 def test_models_sizing_masks_by_the_max_cache_shape_keep_static_cache(monkeypatch):
-    # BLOOM-style models pad their mask / build ALiBi at get_max_cache_shape() (the limit): they never get growable
-    # layers, the masking_utils models do.
+    # BLOOM-style (mask / ALiBi at get_max_cache_shape()) never get growable layers.
     class Old(torch.nn.Module):
         def _prepare_4d_causal_attention_mask_with_cache_position(self):
             pass

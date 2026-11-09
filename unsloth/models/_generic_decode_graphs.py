@@ -460,7 +460,6 @@ def plan(model, args, kwargs, input_ids):
         if type(previous) is int:
             need = max(need, previous)
         if KV.is_growable(state.kept):
-            # It grows to what this call needs: only one far larger than the need is dropped.
             length = KV.capacity(state.kept)
             kept = length is not None and length <= _KEEP_MAX_RATIO * max(need, 1)
         else:
@@ -863,11 +862,8 @@ def _reserve_step(
     bound,
     call = None,
 ):
-    """Grows a growable cache to hold this generate step, from its input lengths: the whole sequence so far
-    (prompt incl. padding plus generated tokens) and the step's new tokens (5.x `next_sequence_length`, 4.x
-    `cache_position`; the whole input on the first step of an empty cache). `call` is this generate call's state:
-    the tokens that sit in the cache but not in input_ids (a prompt given only as inputs_embeds, or the prefix of a
-    cache passed back with only the new tokens), counted from its first step."""
+    """Grows a growable cache to hold this generate step. `call` tracks tokens in the cache but not in input_ids
+    (inputs_embeds prompt, or a returned cache continued with only new tokens)."""
     call = {} if call is None else call
     total = (
         input_ids.shape[-1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
@@ -887,7 +883,6 @@ def _reserve_step(
     if "prefix" not in call:
         prefix = 0
         if isinstance(embeds, torch.Tensor) and embeds.dim() >= 3 and total == 0:
-            # generate() from inputs_embeds alone: input_ids then holds only the generated tokens.
             total = q = prefix = embeds.shape[1]
         elif written > 0 and q is not None and q == total:
             # A cache passed back with only the new tokens: its prefix stays in the cache, not in input_ids.
@@ -898,10 +893,8 @@ def _reserve_step(
         total += call["prefix"]
     mask = bound.get("attention_mask")
     if isinstance(mask, torch.Tensor) and mask.dim() == 2 and total > 0:
-        # generate keeps a 2D mask over the whole sequence (padding, prefix and generated tokens).
         total = max(total, mask.shape[-1])
     if total <= 0 or q is None or q > total:
-        # Unknown step shape: grow for one more token past the host counter (the eager fallback).
         KV.reserve(cache, max(total, written + 1))
         return
     KV.reserve(cache, total, written = total - q)
@@ -923,9 +916,7 @@ class reuse_kept_cache:
         self.reserve_call = {}
 
     def _prepare_inputs(self, input_ids, *args, **kwargs):
-        # A growable cache grows here, eagerly, before transformers builds the step's mask (in
-        # prepare_inputs_for_generation or the forward, often inside Unsloth's compiled mask code), and its host
-        # counters are re-synced from generate's own lengths (never from a counter a replay could leave behind).
+        # Grow eagerly before the (possibly compiled) mask is built; re-sync host counters from generate's lengths.
         try:
             bound = self.prepare_signature.bind_partial(input_ids, *args, **kwargs).arguments
         except (TypeError, ValueError, AttributeError):
@@ -983,8 +974,7 @@ class reuse_kept_cache:
         return cache
 
     def _get_cache(self, cache_implementation, batch_size, max_cache_len, *args, **kwargs):
-        # transformers 4.x: generate reuses model._cache unless it is too short, so a kept growable cache gets this
-        # call's limit first (it grows to it); a new one is made growable.
+        # transformers 4.x reuses model._cache unless too short, so a kept growable cache gets this call's limit first.
         model = self.model
         kept = model.__dict__.get("_cache")
         if (
@@ -992,8 +982,7 @@ class reuse_kept_cache:
             and type(max_cache_len) is int
             and not KV.short_layers(kept, max_cache_len)
         ):
-            # A kept cache whose sliding layers are too short keeps its old limit: transformers then sees it as
-            # too short and builds a new cache.
+            # Sliding layers too short: keep the old limit so transformers builds a new cache.
             KV.raise_limit(kept, max_cache_len)
         cache = self.get_cache(cache_implementation, batch_size, max_cache_len, *args, **kwargs)
         if (
@@ -1012,7 +1001,6 @@ class reuse_kept_cache:
         self.prepare_inputs_saved = None
         prepare = getattr(model, "prepare_inputs_for_generation", None)
         if KV.enabled() and prepare is not None:
-            # Wraps whatever is current (another wrapper may own the instance attribute): put back on exit.
             self.prepare_inputs = prepare
             self.prepare_inputs_saved = (
                 "prepare_inputs_for_generation" in model.__dict__,
@@ -1781,8 +1769,7 @@ def decode_step(
     if reason is None:
         reason = _window_reason(cache, 1)
     if reason is None and KV.needs_growth(cache, 1):
-        # generate() grows a growable cache before the step (reuse_kept_cache._prepare_inputs); a forward that
-        # did not would move its tensors to the next bucket inside this step: eager, the next step captures.
+        # A growth inside this step would move tensors: run eager, the next step captures.
         reason = "kv cache grows"
     if reason is not None:
         return _refusal(state, reason)
@@ -1838,7 +1825,6 @@ def decode_step(
     layout = tuple(
         (
             type(layer).__name__,
-            # A growable layer's limit is not part of its step (it may rise between calls); its bucket is.
             layer.capacity if type(layer) is KV.GrowableLayer else layer.max_cache_len,
             tuple(layer.keys.shape),
             layer.keys.dtype,
@@ -1859,7 +1845,6 @@ def decode_step(
     if refused is not None:
         return _refusal(state, refused)
     # Graphs address this cache's tensors: a new cache re-captures; one reordered in place stays eager.
-    # A growable cache's growth epoch: tensors that moved because it grew re-capture, others refuse.
     cache_sig = (id(cache), KV.epoch(cache)) + tuple(
         (layer.keys.data_ptr(), layer.values.data_ptr()) for layer in cache.layers
     )
@@ -1886,8 +1871,7 @@ def decode_step(
                 # A filling-key graph already captured replays this step correctly; a new one would not.
                 return _refusal(state, "sliding window fills in this step")
             if KV.fills_bucket(cache, 1):
-                # A graph first captured on the step that fills a growable cache's bucket could never replay (the
-                # next step grows the cache, or the call ends at its limit). One captured earlier replays it.
+                # A graph first captured on the bucket-filling step could never replay (the next step grows).
                 return _refusal(state, "kv cache fills its bucket")
             return _capture(state, key, forward, kwargs, leaves, cache)
         for buffer, leaf in zip(entry.leaves, leaves):
