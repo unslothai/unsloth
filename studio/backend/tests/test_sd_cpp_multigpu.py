@@ -80,7 +80,6 @@ def test_one_card_whenever_one_card_holds_everything_or_nothing_fits():
     assert _plan(secondary_limits_mib = {1: None})[0] is None
     assert _plan(primary_limit_mib = None)[0] is None
     assert _plan(text_encoder_mib = 0)[0] is None
-    # a VAE with no file of its own is never moved
     split, _ = _plan(vae_mib = 0)
     assert split is not None and split.vae_on_secondary is False
 
@@ -326,7 +325,6 @@ def test_a_diffusion_model_no_card_holds_is_cut_across_both(monkeypatch):
     # a model that fits the primary keeps the companion split; without a capable build there is no block split
     assert _plan(diffusion_mib = 9_000, layer_ok = True)[0].layer is False
     assert _plan(layer_ok = False)[0].layer is False
-    # both cards together too small: the companion split remains
     assert _plan(diffusion_mib = 22_000, layer_ok = True)[0].layer is False
     # the secondary's room is what is left beside the encoders and the VAE: no blocks fit there, no block split
     crowded, _ = _plan(
@@ -375,7 +373,6 @@ def test_the_block_split_pin_lists_both_cards_and_their_budgets(monkeypatch):
     assert without_device_backend_flags(
         ["--max-vram", "-1", "--backend", "diffusion=CUDA0,te=CUDA0,vae=CUDA0"]
     ) == ["--max-vram", "-1"]
-    # a build without the flags falls back to the companion split
     monkeypatch.setattr(
         bk, "_sd_cpp_probe_output", lambda _b, *args: "CUDA0\tTesla T4\nCUDA1\tTesla T4\n"
     )

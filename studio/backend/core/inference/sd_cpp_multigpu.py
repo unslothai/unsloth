@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two-card sd-cli split via per-module ``--backend``. Cards are sized from nvidia-smi so Studio never opens a CUDA
-context on a card the child owns."""
+"""Two-card sd-cli split via per-module ``--backend``; sized from nvidia-smi so Studio opens no CUDA context."""
 
 from __future__ import annotations
 
@@ -15,8 +14,7 @@ from typing import Any, Callable, Optional, Sequence
 DENOISE_HEADROOM_MIB = 2048
 ENCODER_HEADROOM_MIB = 1024
 VAE_DECODE_HEADROOM_MIB = 1536
-# Held back from nvidia-smi's free MiB: the child's own CUDA context (about 550 MiB on a T4) plus the 512 MiB sd.cpp's
-# auto-fit keeps back, so a model priced as fitting one card is also kept resident there by sd.cpp.
+# Held back from free MiB: the child's CUDA context (~550 MiB on a T4) plus sd.cpp auto-fit's 512 MiB.
 CARD_RESERVE_MIB = 1536
 
 
@@ -55,9 +53,7 @@ def plan_sd_cpp_split(
     secondary_limits_mib: dict[int, Optional[int]],
     layer_ok: bool = False,
 ) -> tuple[Optional[SdCppCardSplit], str]:
-    """``(split, reason)`` or ``(None, reason)``. Splits only when one card cannot hold every module; encoders (and
-    VAE if room) move to the roomiest other card, and with ``layer_ok`` a diffusion model no card holds is cut across
-    both."""
+    """``(split, reason)``. Splits only when one card cannot hold every module; with ``layer_ok`` blocks are cut across both."""
     if primary_limit_mib is None:
         return None, f"free memory of cuda:{primary} is unknown"
     if text_encoder_mib <= 0:
@@ -109,7 +105,6 @@ def plan_sd_cpp_split(
         )
     with_vae = text_encoder_mib + vae_mib + max(ENCODER_HEADROOM_MIB, VAE_DECODE_HEADROOM_MIB)
     encoders = text_encoder_mib + ENCODER_HEADROOM_MIB
-    # an unmeasured VAE (none in its own file) stays with the diffusion model
     options = ((with_vae, True), (encoders, False)) if vae_mib > 0 else ((encoders, False),)
     for need, vae_moves in options:
         if need > limits[best]:
