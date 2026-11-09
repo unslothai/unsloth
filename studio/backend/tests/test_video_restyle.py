@@ -1162,3 +1162,14 @@ def test_progress_reports_a_pending_start_to_its_account(weights):
     runner.reserve("alice")
     assert runner.progress("alice")["pending"] is True
     assert runner.progress("bob")["pending"] is False
+
+
+def test_frames_from_video_applies_the_display_rotation(monkeypatch):
+    import core.training.diffusion_h3_clips as clips
+
+    sizes = []
+    real = vr.fit_frame
+    monkeypatch.setattr(clips, "display_rotation_degrees", lambda frame, stream: 90)
+    monkeypatch.setattr(vr, "fit_frame", lambda image: sizes.append(image.size) or real(image))
+    vr.frames_from_video(_clip(30, 3))
+    assert sizes and all(size == (48, 64) for size in sizes)  # coded 64x48, displayed portrait

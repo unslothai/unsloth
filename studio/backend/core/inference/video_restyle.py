@@ -108,6 +108,9 @@ def frames_from_video(
 ) -> list[Any]:
     """Frames at ``fps`` by presentation time (held when the source is slower), up to ``limit``."""
     import av
+    from PIL import Image
+
+    from core.training.diffusion_h3_clips import apply_display_rotation, display_rotation_degrees
 
     out: list[Any] = []
     try:
@@ -126,7 +129,9 @@ def frames_from_video(
                 # 121 full-size 4K frames would hold about 3 GB.
                 nonlocal fitted
                 if fitted is None:
-                    fitted = fit_frame(prev.to_image())
+                    # PyAV decodes the coded orientation; phone clips need their display rotation.
+                    theta = display_rotation_degrees(prev, stream)
+                    fitted = fit_frame(apply_display_rotation(prev.to_image(), theta, Image))
                 return fitted
 
             for index, frame in enumerate(container.decode(stream)):
