@@ -705,8 +705,13 @@ def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch)
     w = lin.weight.detach().clone()
     lin.weight = torch.nn.Parameter(two.TwoTensor(w, w.clone()), requires_grad = False)
     torch._dynamo.reset()
+    compiled = torch.compile(lin, backend = "eager")
+    x = torch.randn(2, 8)
     with torch.no_grad():
-        torch.compile(lin, backend = "eager")(torch.randn(2, 8))
+        compiled(x)
+    # Whether the compile's own weakref survives is a torch-version detail (gone by 2.12), so hold one
+    # explicitly: swap_tensors refuses any weakref'd tensor, which is the state a render hits.
+    held = weakref.ref(lin.weight)
     assert weakref.getweakrefs(lin.weight)
     host = two.TwoTensor(w + 1, w + 2)
     monkeypatch.setattr(type(host), "is_pinned", lambda self: True, raising = False)
@@ -725,4 +730,8 @@ def test_streamed_onload_of_a_compiled_wrapper_weight_does_not_swap(monkeypatch)
     pf._issue(group)
     assert lin.weight is param
     assert torch.equal(param.a, w + 1) and torch.equal(param.b, w + 2)
+    assert held() is param
+    with torch.no_grad():
+        got = compiled(x)
+    assert torch.equal(got, torch.nn.functional.linear(x, two.TwoTensor(w + 1, w + 2), lin.bias))
     torch._dynamo.reset()
