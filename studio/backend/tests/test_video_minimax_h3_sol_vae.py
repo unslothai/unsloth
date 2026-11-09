@@ -124,24 +124,42 @@ def test_the_streamed_decode_holds_at_most_two_block_slots():
     held: list = []
     orig = model._slot
 
+    peak = {"n": 0}
+
     def slot(blk, x, b, s, st):
         held.append(b)
+        live = __import__("inspect").currentframe().f_back.f_locals["slots"]
+        peak["n"] = max(peak["n"], len(live) + 1)
         return orig(blk, x, b, s, st)
 
     model._slot = slot
-    peak = {"n": 0}
-    orig_window = model._window_attn
-
-    def window_attn(*args, **kwargs):
-        frame = __import__("inspect").currentframe().f_back
-        peak["n"] = max(peak["n"], len(frame.f_locals["slots"]))
-        return orig_window(*args, **kwargs)
-
-    model._window_attn = window_attn
     model.decode_raw(torch.randn(1, 24, 17, 3, 3))
     assert peak["n"] == 2
     # every block is projected once per layer
     assert len(held) == LAYERS * 4
+
+
+def test_window_attention_compiles_fullgraph_on_full_and_padded_windows():
+    model = _tiny()
+    seen: list = []
+    orig = model._window_attn
+
+    def window_attn(*args):
+        seen.append(args)
+        return orig(*args)
+
+    model._window_attn = window_attn
+    model.decode_raw(torch.randn(1, 24, 2 * model.block, model.window, model.window))
+    model.decode_raw(torch.randn(1, 24, 7, 6, 9))
+    model._window_attn = orig
+    full = next(a for a in seen if a[-2] == 0 and a[0].shape[0] == model.block and a[-1] == 0)
+    padded = next(a for a in seen if a[-1] != 0)
+    for args in (full, padded):
+        torch._dynamo.reset()
+        explain = torch._dynamo.explain(orig)(*args)
+        assert explain.graph_break_count == 0
+        assert torch.equal(torch.compile(orig, fullgraph = True, backend = "eager")(*args), orig(*args))
+    torch._dynamo.reset()
 
 
 def test_a_still_decodes_as_a_block_of_copies_keeping_the_first_frame():

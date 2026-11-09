@@ -752,6 +752,8 @@ export const es419 = {
       "Cerrar esto no detiene la configuración. El resultado aparece en Configuración > Seguridad.",
   },
   composerSettings: {
+    shareDraft: "Compartir borradores entre chats",
+    shareDraftDescription: "Usa un borrador para los chats y las comparaciones. Desactivado por defecto; cada chat conserva su propio borrador.",
     title: "Redactor",
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
@@ -1845,6 +1847,13 @@ export const es419 = {
         audioUploadCancel: "Cancelar transcripción",
         audioUploadTranscribing: "Transcribiendo audio…",
         sectionTitle: "Dictado",
+        micTargetLabel: "Botón del micrófono",
+        micTargetAsr: "Transcribir con ASR",
+        micTargetModel: "Enviar audio al modelo",
+        micTargetAsrDescription: "El botón del micrófono escribe lo que dices en el cuadro de mensaje.",
+        micTargetModelDescription: "Con un modelo con entrada de audio cargado, el micrófono graba un clip y lo adjunta a tu mensaje. Los demás modelos siguen usando dictado.",
+        micTargetModelUnavailable: "Carga un modelo que acepte entrada de audio (por ejemplo, LFM3-Omni) para enviarle tu voz.",
+        micRecordForModel: "Grabar audio para el modelo",
         engineLabel: "Motor de dictado",
         engineBrowser: "Navegador",
         engineBrowserDescription:
@@ -1870,6 +1879,13 @@ export const es419 = {
         sttQuantDescription:
           "Elige o busca un modelo STT para ejecutarlo de forma local y luego su cuantización.",
         sttDeviceLabel: "Cargar en",
+        sttContextLabel: "Contexto de voz",
+        sttContextAuto: "Automático (recomendado)",
+        sttContextAutoDescription:
+          "Se ajusta a cada grabación y usa más memoria para audios más largos. Los entornos de ejecución más antiguos pueden necesitar un tamaño fijo para reducir la memoria. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextFixedDescription:
+          "Los límites más pequeños usan menos memoria. Las grabaciones que no caben necesitan un límite mayor o Automático. Se aplica a Qwen3-ASR en Voz y Transcribir.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU cuando esté disponible",
         sttDeviceCpu: "RAM de la CPU",
         sttDeviceAutoDescription:
@@ -3487,12 +3503,10 @@ export const es419 = {
       exportingAction: "Exportando...",
       exportConversations: "Exportar Recientes y Proyectos",
       exportConversationsDescription:
-        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL o Markdown, combinados o por chat. Message JSONL está disponible por chat.",
+        "Descarga Recientes, o Recientes más los chats de proyectos, como Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML o PDF, combinados o por chat. Message JSONL está disponible por chat.",
       exportConversationsAction: "Exportar",
       exportScopeRecents: "Recientes",
       exportScopeAll: "Recientes + Proyectos",
-      exportCombinedSuffix: "(combinado)",
-      exportPerChatSuffix: "(por chat)",
       importChats: "Importar chats",
       importChatsDescription:
         "Importa archivos JSON, JSONL, NDJSON, CSV o Markdown a Recientes.",

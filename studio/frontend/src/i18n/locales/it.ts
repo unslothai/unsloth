@@ -662,6 +662,8 @@ export const it = {
     keepsRunning: "Chiudere non interrompe la configurazione. Il risultato compare in Impostazioni > Sicurezza.",
   },
   composerSettings: {
+    shareDraft: "Condividi le bozze tra chat",
+    shareDraftDescription: "Usa una sola bozza per chat e confronti. Disattivato per impostazione predefinita; ogni chat mantiene la propria bozza.",
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
@@ -1563,6 +1565,13 @@ export const it = {
         audioUploadCancel: "Annulla trascrizione",
         audioUploadTranscribing: "Trascrizione audio in corso…",
         sectionTitle: "Dettatura",
+        micTargetLabel: "Pulsante del microfono",
+        micTargetAsr: "Trascrivi con ASR",
+        micTargetModel: "Invia l'audio al modello",
+        micTargetAsrDescription: "Il pulsante del microfono scrive ciò che dici nella casella del messaggio.",
+        micTargetModelDescription: "Con un modello con input audio caricato, il microfono registra una clip e la allega al messaggio. Gli altri modelli continuano a usare la dettatura.",
+        micTargetModelUnavailable: "Carica un modello che accetta input audio (ad esempio LFM3-Omni) per inviargli la tua voce.",
+        micRecordForModel: "Registra audio per il modello",
         engineLabel: "Motore di dettatura",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1588,6 +1597,13 @@ export const it = {
         sttQuantDescription:
           "Scegli o cerca un modello STT da eseguire in locale, poi la sua quantizzazione.",
         sttDeviceLabel: "Carica in",
+        sttContextLabel: "Contesto vocale",
+        sttContextAuto: "Auto (consigliato)",
+        sttContextAutoDescription:
+          "Si adatta a ogni registrazione, usando più memoria per gli audio più lunghi. Gli ambienti di esecuzione meno recenti potrebbero richiedere una dimensione fissa per ridurre l’uso della memoria. Si applica a Qwen3-ASR in Voce e Trascrivi.",
+        sttContextFixedDescription:
+          "Limiti più piccoli usano meno memoria. Le registrazioni che superano il limite richiedono un limite più alto o la modalità Auto. Si applica a Qwen3-ASR in Voce e Trascrivi.",
+        sttContextTokens: "{count} token",
         sttDeviceAuto: "GPU quando disponibile",
         sttDeviceCpu: "RAM della CPU",
         sttDeviceAutoDescription:
@@ -3109,12 +3125,10 @@ export const it = {
       exportingAction: "Esportazione...",
       exportConversations: "Esporta Recenti e Progetti",
       exportConversationsDescription:
-        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV, JSONL ShareGPT o Markdown, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
+        "Scarica i Recenti, oppure i Recenti più le chat dei progetti, in Training JSONL, CSV, JSONL ShareGPT, Markdown, HTML o PDF, in un unico file o uno per chat. Message JSONL è disponibile solo per singola chat.",
       exportConversationsAction: "Esporta",
       exportScopeRecents: "Recenti",
       exportScopeAll: "Recenti + Progetti",
-      exportCombinedSuffix: "(file unico)",
-      exportPerChatSuffix: "(uno per chat)",
       importChats: "Importa chat",
       importChatsDescription:
         "Importa file JSON, JSONL, NDJSON, CSV o Markdown in Recenti.",

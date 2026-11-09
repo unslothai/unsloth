@@ -665,6 +665,8 @@ export const ru = {
     keepsRunning: "Закрытие не останавливает настройку. Результат появится в разделе Настройки > Безопасность.",
   },
   composerSettings: {
+    shareDraft: "Общий черновик для чатов",
+    shareDraftDescription: "Использовать один черновик в чатах и сравнении. По умолчанию выключено; у каждого чата свой черновик.",
     title: "Ввод сообщений",
     plainText: "Обычный текст",
     plainTextDescription: "Показывать код, Markdown и ссылки как обычный текст. Отключите для предпросмотра форматирования.",
@@ -1663,6 +1665,13 @@ export const ru = {
         audioUploadCancel: "Отменить расшифровку",
         audioUploadTranscribing: "Расшифровка аудио…",
         sectionTitle: "Диктовка",
+        micTargetLabel: "Кнопка микрофона",
+        micTargetAsr: "Распознавать через ASR",
+        micTargetModel: "Отправлять аудио модели",
+        micTargetAsrDescription: "Кнопка микрофона вводит сказанное в поле сообщения.",
+        micTargetModelDescription: "Если загружена модель со звуковым вводом, микрофон записывает клип и прикрепляет его к сообщению. Для остальных моделей по-прежнему работает диктовка.",
+        micTargetModelUnavailable: "Загрузите модель со звуковым вводом (например, LFM3-Omni), чтобы отправлять ей свой голос.",
+        micRecordForModel: "Записать аудио для модели",
         engineLabel: "Движок диктовки",
         engineBrowser: "Браузер",
         engineBrowserDescription:
@@ -1688,6 +1697,13 @@ export const ru = {
         sttQuantDescription:
           "Выберите или найдите модель STT для локального запуска, затем её квантизацию.",
         sttDeviceLabel: "Загружать в",
+        sttContextLabel: "Голосовой контекст",
+        sttContextAuto: "Авто (рекомендуется)",
+        sttContextAutoDescription:
+          "Подбирает размер для каждой записи: чем длиннее аудио, тем больше памяти требуется. В старых версиях среды выполнения для снижения расхода памяти может потребоваться фиксированный размер. Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextFixedDescription:
+          "Чем меньше лимит, тем меньше расход памяти. Для записей, которые не укладываются в лимит, увеличьте его или выберите «Авто». Применяется к Qwen3-ASR в разделах «Голос» и «Транскрибировать».",
+        sttContextTokens: "Токенов: {count}",
         sttDeviceAuto: "GPU, если доступен",
         sttDeviceCpu: "ОЗУ процессора",
         sttDeviceAutoDescription:
@@ -3187,12 +3203,10 @@ export const ru = {
       exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
-        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL или Markdown, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
+        "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML или PDF, объединённо или по чатам. Message JSONL доступен только по отдельным чатам.",
       exportConversationsAction: "Экспорт",
       exportScopeRecents: "Недавние",
       exportScopeAll: "Недавние + проекты",
-      exportCombinedSuffix: "(объединённо)",
-      exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
         "Импортируйте файлы JSON, JSONL, NDJSON, CSV или Markdown в Недавние.",

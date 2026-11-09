@@ -29,12 +29,17 @@ def _clean():
     # re-applies; start every test from torch's defaults so results do not depend on test order.
     from core.inference import diffusion_compile_config as cc
 
+    from core.inference import diffusion_gguf_exact as ex
+
     cc._reset_for_tests()
     gc.uninstall_all()
+    # diffusers' fp16 functions: the path UNSLOTH_DIFFUSION_GGUF_EXACT=0 keeps
+    ex.uninstall_exact_dequant()
     torch._dynamo.reset()
     with torch._inductor.config.patch(emulate_precision_casts = False):
         yield
     gc.uninstall_all()
+    ex.uninstall_exact_dequant()
     cc._reset_for_tests()
 
 

@@ -619,9 +619,7 @@ class GroupPrefetcher:
         )
 
     def _carry(self, ahead: int) -> None:
-        """While the last block runs, at most ``TAIL_CARRY_GROUPS``: its activations are live and the allocator's peak
-        follows host order, so a second group beside them lifts the peak (FLUX at 32k tokens); after it frees, the
-        rest of the depth follows."""
+        """While the last block runs, carry at most TAIL_CARRY_GROUPS: a second group lifts the peak."""
         carried = self.__dict__.setdefault("carried", set())
         running = any(gid not in carried for gid in self.ready)
         limit = min(self.depth, TAIL_CARRY_GROUPS) if running else self.depth
@@ -1161,6 +1159,10 @@ def capture_refusal(module: Any) -> Optional[str]:
         for group in _offload_groups(module):
             if getattr(group, "offload_to_disk_path", None):
                 return "a group streams from disk"
+            if getattr(group, "_unsloth_pinned_top", False) and getattr(
+                group, "_unsloth_top_gguf", False
+            ):
+                return "a GGUF top-level group onloads from its pinned copy (streamed graphs unmeasured there)"
             if getattr(group, "_unsloth_resident", False) or getattr(
                 group, "_unsloth_pinned_top", False
             ):

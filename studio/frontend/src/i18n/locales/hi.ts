@@ -665,6 +665,8 @@ export const hi = {
     keepsRunning: "इसे बंद करने से सेटअप नहीं रुकता। इसका परिणाम सेटिंग्स > सुरक्षा में दिखता है।",
   },
   composerSettings: {
+    shareDraft: "चैट के बीच ड्राफ़्ट साझा करें",
+    shareDraftDescription: "चैट और तुलना में एक ही ड्राफ़्ट का उपयोग करें। डिफ़ॉल्ट रूप से बंद; हर चैट अपना ड्राफ़्ट रखती है।",
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
     plainTextDescription: "कोड, Markdown और लिंक को मूल टेक्स्ट के रूप में रखें। फ़ॉर्मैट किया हुआ पूर्वावलोकन दिखाने के लिए इसे बंद करें।",
@@ -1665,6 +1667,13 @@ export const hi = {
         audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
         audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
+        micTargetLabel: "माइक बटन",
+        micTargetAsr: "ASR से ट्रांसक्राइब करें",
+        micTargetModel: "मॉडल को ऑडियो भेजें",
+        micTargetAsrDescription: "माइक बटन आप जो बोलते हैं उसे संदेश बॉक्स में टाइप करता है।",
+        micTargetModelDescription: "ऑडियो इनपुट वाला मॉडल लोड होने पर माइक एक क्लिप रिकॉर्ड करके आपके संदेश में जोड़ता है। अन्य मॉडलों के लिए डिक्टेशन ही चलता है।",
+        micTargetModelUnavailable: "अपनी आवाज़ भेजने के लिए ऑडियो इनपुट स्वीकार करने वाला मॉडल लोड करें (जैसे LFM3-Omni)।",
+        micRecordForModel: "मॉडल के लिए ऑडियो रिकॉर्ड करें",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",
         engineBrowserDescription:
@@ -1689,6 +1698,13 @@ export const hi = {
         sttQuantDescription:
           "लोकली चलाने के लिए STT मॉडल चुनें या खोजें, फिर उसका क्वांटाइज़ेशन चुनें।",
         sttDeviceLabel: "इसमें लोड करें",
+        sttContextLabel: "आवज क कनक",
+        sttContextAuto: "सचलत (अनशसत)",
+        sttContextAutoDescription:
+          "हर रकरग क अनसर आकर समयजत करत ह। लब ऑडय क लए अधक ममर इसमल हत ह। परन रनटइम म ममर उपयग घटन क लए आकर तय करन पड सकत ह। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextFixedDescription:
+          "छट सम कम ममर इसमल करत ह। सम म न समन वल रकरग क लए सम बढए य “सचलत” चन। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextTokens: "{count} टकन",
         sttDeviceAuto: "उपलब्ध होने पर GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:
@@ -3183,12 +3199,10 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV, ShareGPT JSONL या Markdown के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML या PDF के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
-      exportCombinedSuffix: "(संयुक्त)",
-      exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV या Markdown फ़ाइलों को Recents में इंपोर्ट करें।",

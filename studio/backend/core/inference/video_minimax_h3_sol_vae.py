@@ -350,12 +350,12 @@ def _build_module_classes():
                 lo = max(0, j * tb - st)
                 hi = min(T - 1, (j + 1) * tb - st - 1)
                 b0, b1 = lo // tb, hi // tb
+                for b in [b for b in slots if b < b0]:
+                    del slots[b]  # release expired blocks before allocating the next Q/K/V slot
                 for b in range(b0, b1 + 1):
                     if b not in slots:
                         slots[b] = self._slot(blk, x, b, s, st)
                         og[b] = self._global_attn(qg[b], kg[b], vg[b], slots[b][1], slots[b][2])
-                for b in [b for b in slots if b < b0]:
-                    del slots[b]  # the ring: at most the two blocks a window can overlap stay live
                 parts = []
                 for b in range(b0, b1 + 1):
                     a0, a1 = max(lo, b * tb) - b * tb, min(hi + 1, (b + 1) * tb) - b * tb

@@ -392,7 +392,11 @@ class _Flux3KleinPipelineMixin:
                 raise RuntimeError(
                     "this diffusers build's FLUX.3 text step names no default layers"
                 )
-        with torch.no_grad():
+        from .diffusion_te_select import run_selected
+
+        layers = tuple(hidden_states_layers)
+
+        def call() -> Any:
             return helper(
                 text_encoder = self.text_encoder,
                 tokenizer = self.tokenizer,
@@ -400,8 +404,11 @@ class _Flux3KleinPipelineMixin:
                 device = device,
                 max_sequence_length = int(max_sequence_length),
                 pad_multiple = int(pad_multiple),
-                hidden_states_layers = tuple(hidden_states_layers),
+                hidden_states_layers = layers,
             )
+
+        with torch.no_grad():
+            return run_selected(self.text_encoder, layers, call)
 
     def _set_guidance(self, mp, guidance_scale: Optional[float]) -> None:
         guider = getattr(mp, "guider", None)

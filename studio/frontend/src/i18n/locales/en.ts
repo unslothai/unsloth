@@ -662,6 +662,8 @@ export const en = {
     keepsRunning: "Closing this does not stop the setup. Its result shows in Settings > Security.",
   },
   composerSettings: {
+    shareDraft: "Share drafts across chats",
+    shareDraftDescription: "Use one draft across chats and Compare. Off by default; each chat keeps its own draft.",
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
@@ -1670,6 +1672,16 @@ export const en = {
         audioUploadCancel: "Cancel transcription",
         audioUploadTranscribing: "Transcribing audio…",
         sectionTitle: "Dictation",
+        micTargetLabel: "Mic button",
+        micTargetAsr: "Transcribe with ASR",
+        micTargetModel: "Send audio to the model",
+        micTargetAsrDescription:
+          "The mic button types what you say into the message box.",
+        micTargetModelDescription:
+          "With an audio-input model loaded, the mic records a clip and attaches it to your message. Other models still get dictation.",
+        micTargetModelUnavailable:
+          "Load a model that accepts audio input (for example LFM3-Omni) to send it your voice.",
+        micRecordForModel: "Record audio for the model",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1693,6 +1705,13 @@ export const en = {
         sttQuantDescription:
           "Choose or search a STT model to run locally, then its quantization.",
         sttDeviceLabel: "Load into",
+        sttContextLabel: "Voice context",
+        sttContextAuto: "Auto (recommended)",
+        sttContextAutoDescription:
+          "Fits each recording, with more memory for longer audio. Older runtimes may need a fixed size to reduce memory. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextFixedDescription:
+          "Smaller limits use less memory. Recordings that do not fit need a higher limit or Auto. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU when available",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:
@@ -3194,12 +3213,10 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, or Markdown, combined or per chat. Message JSONL is available per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML, or PDF, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
-      exportCombinedSuffix: "(combined)",
-      exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
         "Import JSON, JSONL, NDJSON, CSV, or Markdown files into Recents.",

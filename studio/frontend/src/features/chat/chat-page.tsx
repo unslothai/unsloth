@@ -26,6 +26,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { rowReachPx } from "@/components/assistant-ui/distant-rows";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
@@ -78,6 +79,7 @@ import {
   type NativeIntent,
   NativeAttachmentTargetContext,
   NativeAttachmentDragContext,
+  NativeAttachmentOwnerScopeContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -120,6 +122,12 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArchiveIcon,
@@ -328,12 +336,15 @@ import {
 } from "@/features/rag/components/project-source-dropzone";
 import {
   exportConversationCsv,
+  exportConversationHtml,
   exportConversationMarkdown,
   exportConversationMessagesJsonl,
+  exportConversationPdf,
   exportConversationRawJsonl,
   exportConversationShareGPT,
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 
 const BrowserPanel = lazy(() =>
   import("@/features/browser/browser-panel").then((module) => ({
@@ -639,6 +650,20 @@ function browserPanelDefaultSize(split: HTMLElement | null | undefined): string 
   return `${Math.min(50, Math.max(30, (BROWSER_PANEL_DEFAULT_PX / width) * 100))}%`;
 }
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
+const ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE = "data-artifact-layout-instant";
+
+/** A sliding width re-wraps every row in reach each frame, so a taller chat resizes in one step. */
+function markInstantLayout(surface: HTMLElement | null): void {
+  const split = surface?.closest<HTMLElement>(".chat-artifact-split");
+  if (!split) return;
+  const viewport = split.querySelector<HTMLElement>("#chat-thread .aui-thread-viewport");
+  split.toggleAttribute(
+    ARTIFACT_LAYOUT_INSTANT_ATTRIBUTE,
+    viewport !== null &&
+      viewport.clientHeight > 0 &&
+      viewport.scrollHeight > viewport.clientHeight + 2 * rowReachPx(window.innerHeight),
+  );
+}
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
@@ -776,6 +801,7 @@ const SingleContent = memo(function SingleContent({
     setIsArtifactLayoutAnimating(true);
     let resizeFrameId = 0;
     const prepFrameId = window.requestAnimationFrame(() => {
+      markInstantLayout(contextSurfaceRef.current);
       resizeFrameId = window.requestAnimationFrame(() => {
         panel.resize(
           showContextPanel
@@ -829,8 +855,12 @@ const SingleContent = memo(function SingleContent({
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
     if (!surface || !root || !browserDocked) return;
     let width = "";
+    // Children, not `:scope >`, which matches against the whole thread on every resize frame.
     const insets = () =>
-      root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
+      [...root.children].filter(
+        (element): element is HTMLElement =>
+          element instanceof HTMLElement && element.hasAttribute("data-side-panel-inset"),
+      );
     const apply = () => {
       for (const element of insets()) {
         element.style.setProperty(
@@ -1378,6 +1408,8 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const [loraThreadId, setLoraThreadId] = useState<string>();
   const [pairLoraModelId, setPairLoraModelId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
+  const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
   const active = useChatActive();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1393,6 +1425,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (listedPairRef.current !== pairId) setPairSaved(undefined);
     if (anyRunning && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
@@ -1405,6 +1438,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
         const loraThread = threads.find((t) => t.modelType === "lora");
         setBaseThreadId(baseThread?.id);
         setLoraThreadId(loraThread?.id);
+        setPairSaved(Boolean(baseThread || loraThread));
         setPairLoraModelId(
           loraThread?.modelId?.trim() || baseThread?.modelId?.trim() || undefined,
         );
@@ -1449,6 +1483,10 @@ const LoraCompareContent = memo(function LoraCompareContent({
       composer={
         active ? (
           <SharedComposer
+            draftId={pairId}
+            pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             onExitCompare={onExitCompare}
             model1ThreadId={baseThreadId}
@@ -1634,6 +1672,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
   const [model2ThreadId, setModel2ThreadId] = useState<string>();
   const [threadsSettled, setThreadsSettled] = useState(false);
+  const [pairSaved, setPairSaved] = useState<boolean>();
+  const [submittedPairId, setSubmittedPairId] = useState<string | null>(null);
   const markInitialHistoryReady = useCompareReloadReadiness(pairId);
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1718,6 +1758,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (listedPairRef.current !== pairId) setPairSaved(undefined);
     if ((anyRunning || comparing) && listedPairRef.current === pairId) return;
     listedPairRef.current = pairId;
     let isActive = true;
@@ -1728,6 +1769,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         const pair = resolveComparePaneThreadIds(threads);
         setModel1ThreadId(pair.first);
         setModel2ThreadId(pair.second);
+        setPairSaved(Boolean(pair.first || pair.second));
       })
       .catch((error) => {
         if (!isExpectedBackgroundChatStorageError(error)) {
@@ -1765,6 +1807,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
       composer={
         active ? (
           <SharedComposer
+            draftId={pairId}
+            pairSaved={pairSaved}
+            pairSubmitted={submittedPairId === pairId}
+            onPairSubmitted={() => setSubmittedPairId(pairId)}
             handlesRef={handlesRef}
             model1={model1}
             model2={model2}
@@ -1877,7 +1923,9 @@ type ProjectChatExportFormat =
   | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
-  | typeof CONVERSATION_MARKDOWN_FORMAT;
+  | typeof CONVERSATION_MARKDOWN_FORMAT
+  | typeof CONVERSATION_HTML_FORMAT
+  | typeof CONVERSATION_PDF_FORMAT;
 const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
@@ -1890,6 +1938,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
     label: CONVERSATION_MARKDOWN_LABEL,
     format: CONVERSATION_MARKDOWN_FORMAT,
   },
+  { label: CONVERSATION_HTML_LABEL, format: CONVERSATION_HTML_FORMAT },
+  { label: CONVERSATION_PDF_LABEL, format: CONVERSATION_PDF_FORMAT },
 ];
 
 async function exportProjectConversation(
@@ -1903,6 +1953,8 @@ async function exportProjectConversation(
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exportConversationMarkdown(threadId);
   if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
+  if (format === CONVERSATION_HTML_FORMAT) return exportConversationHtml(threadId);
+  if (format === CONVERSATION_PDF_FORMAT) return exportConversationPdf(threadId);
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
 }
@@ -2562,18 +2614,15 @@ function ProjectLanding({
                             <span>Export</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
-                            {PROJECT_CHAT_EXPORT_OPTIONS.map(
-                              ({ label, format }) => (
-                                <DropdownMenuItem
-                                  key={format}
-                                  onSelect={() =>
-                                    void handleExport(item, format)
-                                  }
-                                >
-                                  {label}
-                                </DropdownMenuItem>
-                              ),
-                            )}
+                            <ExportFormatItems
+                              options={PROJECT_CHAT_EXPORT_OPTIONS.map(
+                                ({ label, format }) => ({ key: format, label }),
+                              )}
+                              onSelect={(format) =>
+                                void handleExport(item, format)
+                              }
+                              subContentClassName="unsloth-plus-menu w-48"
+                            />
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuItem
@@ -3492,6 +3541,7 @@ export function ChatPage({
   useEffect(() => {
     setProjectBrowserBaseline(projectViewId ? useBrowserStore.getState().openSequence : null);
   }, [projectViewId]);
+  const nativeAttachmentScopesByThread = useRef(new Map<string, string>());
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -3499,10 +3549,18 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
+  // Per draft: a project reuses its route for successive drafts. A saved project chat keeps it on its thread route.
+  const nativeAttachmentTargetKey =
+    view.mode === "project"
+      ? `project:${view.projectId}:${projectNewThreadNonce}`
+      : view.mode === "single" && view.threadId
+        ? nativeAttachmentScopesByThread.current.get(view.threadId) ?? artifactViewKey
+        : artifactViewKey;
+
   const attachmentScope =
     view.mode === "single" && !search.thread && !search.new && !search.project
       ? "single:implicit"
-      : artifactViewKey;
+      : nativeAttachmentTargetKey;
 
   // Kept mounted behind compare: unmounting detaches the runtime and the backend cancels the run.
   const keptBaseViewRef = useRef<{
@@ -3510,11 +3568,14 @@ export function ChatPage({
     attachmentTargetKey: string;
   } | null>(null);
   if (view.mode !== "compare") {
-    keptBaseViewRef.current = { view, attachmentTargetKey: artifactViewKey };
+    keptBaseViewRef.current = {
+      view,
+      attachmentTargetKey: nativeAttachmentTargetKey,
+    };
   }
   const baseView = keptBaseViewRef.current?.view ?? null;
   const baseAttachmentTargetKey =
-    keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
+    keptBaseViewRef.current?.attachmentTargetKey ?? nativeAttachmentTargetKey;
   const baseBackgrounded = view.mode === "compare";
 
   // Keyed by project, not a boolean: the hoisted provider is not remounted on project change.
@@ -3565,6 +3626,19 @@ export function ChatPage({
     projectChat.nonce === projectNewThreadNonce
       ? projectChat.threadId
       : null;
+  // Remembered per saved chat, so a revisit after another project cannot adopt that project's files.
+  if (projectChatShownId) {
+    nativeAttachmentScopesByThread.current.set(
+      projectChatShownId,
+      nativeAttachmentTargetKey,
+    );
+  }
+  const baseAttachmentOwnerScope =
+    baseView?.mode === "project"
+      ? baseAttachmentTargetKey
+      : nativeAttachmentScopesByThread.current.get(
+          baseView?.mode === "single" ? baseView.threadId ?? "" : "",
+        ) ?? null;
   const shownChatKey =
     view.mode === "single"
       ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
@@ -3822,39 +3896,45 @@ export function ChatPage({
   );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addImageAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
-        .addOpenDocumentAttachments(artifactViewKey, intents);
+        .addOpenDocumentAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeAudioDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addAudioAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeVideoDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addVideoAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const nativeModelDropState = useNativeModelDrop({
     // Stay enabled in compare and refuse drops out loud; disabling made them vanish silently.
     enabled: active,
     dropsUnsupportedReason:
-      view.mode === "single"
-        ? undefined
-        : "Dropped files need a single chat. Open one, then drop it there.",
+      view.mode === "compare"
+        ? "Dropped files need a single chat. Open one, then drop it there."
+        : undefined,
     attachmentScope,
-    attachmentTargetKey: artifactViewKey,
+    attachmentTargetKey: nativeAttachmentTargetKey,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
@@ -5006,29 +5086,35 @@ export function ChatPage({
                 }
                 onCompactionCountChange={handleCompactionCountChange}
               >
-                {baseView.mode === "project" ? (
-                  <ProjectLanding
-                    key={baseView.projectId}
-                    projectId={baseView.projectId}
-                    projectName={currentProject?.name ?? "Project"}
-                    items={currentProjectItems}
-                    newThreadNonce={projectNewThreadNonce}
-                    rotateNewThreadNonce={rotateProjectNewThreadNonce}
-                    dataLoaded={currentProjectItemsLoaded && !projectsLoading}
-                    runtimeReady={projectRuntimeReady}
-                  />
-                ) : (
-                  <NativeAttachmentDragContext.Provider
-                    value={nativeModelDropState.status === "attach"}
+                <NativeAttachmentDragContext.Provider
+                  value={nativeModelDropState.status === "attach"}
+                >
+                  <NativeAttachmentTargetContext.Provider
+                    value={baseAttachmentTargetKey}
                   >
-                    <NativeAttachmentTargetContext.Provider
-                      value={baseAttachmentTargetKey}
+                    <NativeAttachmentOwnerScopeContext.Provider
+                      value={baseAttachmentOwnerScope}
                     >
-                      <TemporaryChatSaveBridge />
-                      <SingleContent threadId={baseView.threadId} />
-                    </NativeAttachmentTargetContext.Provider>
-                  </NativeAttachmentDragContext.Provider>
-                )}
+                      {baseView.mode === "project" ? (
+                        <ProjectLanding
+                          key={baseView.projectId}
+                          projectId={baseView.projectId}
+                          projectName={currentProject?.name ?? "Project"}
+                          items={currentProjectItems}
+                          newThreadNonce={projectNewThreadNonce}
+                          rotateNewThreadNonce={rotateProjectNewThreadNonce}
+                          dataLoaded={currentProjectItemsLoaded && !projectsLoading}
+                          runtimeReady={projectRuntimeReady}
+                        />
+                      ) : (
+                        <>
+                          <TemporaryChatSaveBridge />
+                          <SingleContent threadId={baseView.threadId} />
+                        </>
+                      )}
+                    </NativeAttachmentOwnerScopeContext.Provider>
+                  </NativeAttachmentTargetContext.Provider>
+                </NativeAttachmentDragContext.Provider>
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
             </BrowserOverlaidContext.Provider>
