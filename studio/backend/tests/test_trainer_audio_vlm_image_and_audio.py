@@ -502,3 +502,19 @@ def test_a_pixel_array_column_does_not_break_column_resolution(audio_vlm_trainer
     ds = Rows()
 
     audio_vlm_trainer._resolve_audio_vlm_image_column(ds, None, "audio")
+
+
+def _transcripts(texts):
+    rows = {"audio": [{"array": [0.0] * 160, "sampling_rate": 16000}] * len(texts), "text": texts}
+    return _NoAudioCast(datasets.Dataset.from_dict(rows))
+
+
+def test_blank_transcripts_are_skipped_not_trained(audio_vlm_trainer):
+    formatted = audio_vlm_trainer._format_audio_vlm_dataset(_transcripts(["hi", None, " "]))
+
+    assert [row["messages"][-1]["content"][0]["text"] for row in formatted] == ["hi"]
+    assert audio_vlm_trainer.training_progress.warnings == [
+        "Skipped 2 of 3 audio rows with a blank transcript."
+    ]
+    with pytest.raises(ValueError, match = "blank"):
+        audio_vlm_trainer._format_audio_vlm_dataset(_transcripts([None, ""]))

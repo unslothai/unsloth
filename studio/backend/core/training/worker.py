@@ -2582,6 +2582,7 @@ def _mlx_audio_rows(
         resolve_audio_columns,
         resolve_audio_vlm_image_column,
     )
+    from utils.datasets.cells import cell_text
 
     if not ensure_audio_decoding():
         raise RuntimeError(
@@ -2604,19 +2605,24 @@ def _mlx_audio_rows(
     if image_col:
         dataset = prepare_audio_vlm_image_column(dataset, image_col)
     rows = []
+    blank = 0
     for row in dataset:
+        text = cell_text(row[text_col])
+        if not text.strip():
+            blank += 1
+            continue
         images = row[image_col] if image_col else None
         if not isinstance(images, list):
             images = [] if images is None else [images]
         images = [image for image in images if image is not None]
-        item = {
-            "messages": audio_transcription_messages(
-                row[audio_col], str(row[text_col]), len(images)
-            )
-        }
+        item = {"messages": audio_transcription_messages(row[audio_col], text, len(images))}
         if images:
             item["images"] = images
         rows.append(item)
+    if not rows:
+        raise ValueError(f"Every transcript in the '{text_col}' column is blank.")
+    if blank:
+        logger.warning("Skipped %d audio rows with a blank transcript", blank)
     return rows, image_col
 
 

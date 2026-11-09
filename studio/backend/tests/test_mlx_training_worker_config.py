@@ -1028,6 +1028,26 @@ def test_mlx_audio_rows_carry_each_rows_images(monkeypatch):
     assert eval_image_col is None and "images" not in eval_rows[0]
 
 
+def test_mlx_audio_rows_skip_blank_transcripts(monkeypatch):
+    from utils.datasets import audio_decode
+
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: True)
+    monkeypatch.setattr(_worker, "logger", types.SimpleNamespace(warning = lambda *a: None))
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    clip = {"array": [0.1], "sampling_rate": 16000}
+
+    def dataset(texts):
+        return _AudioRowsDataset([{"audio": clip, "text": text} for text in texts])
+
+    rows, _ = _worker._mlx_audio_rows(dataset(["hi", None, " "]), "processor")
+
+    assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["hi"]
+    with pytest.raises(ValueError, match = "blank"):
+        _worker._mlx_audio_rows(dataset([None, ""]), "processor")
+
+
 @pytest.mark.parametrize("is_dataset_audio", [True, False])
 def test_mlx_audio_dataset_loads_and_trains_as_a_vlm(is_dataset_audio):
     names = {"is_dataset_image": False, "is_dataset_audio": is_dataset_audio}
