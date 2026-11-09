@@ -73,8 +73,7 @@ def plan_sd_cpp_split(
     if not limits:
         return None, "no second card with readable free memory"
     best = max(limits, key = lambda o: (limits[o], -o))
-    # each card's room for diffusion blocks: the secondary after the encoders, the VAE and their working memory
-    # (sd.cpp's proportional cut sizes each card's block range from that remaining capacity)
+    # each card's room for diffusion blocks; the secondary's is counted after the encoders, the VAE and their working memory
     primary_room = primary_limit_mib - DENOISE_HEADROOM_MIB
     secondary_room = (
         limits[best]

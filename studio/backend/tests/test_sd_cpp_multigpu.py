@@ -201,7 +201,6 @@ def _server_load(
     gpu_ordinal = 0,
 ):
     _names(monkeypatch)
-    # Two idle T4s as nvidia-smi reports them (free, total MiB); the split is sized from these rows.
     cards = limits or {0: (14_900, 15_360), 1: (14_900, 15_360)}
     monkeypatch.setattr(
         "core.inference.diffusion_device.smi_free_total_mib",
@@ -281,7 +280,6 @@ def test_every_one_card_case_keeps_main_argv(monkeypatch, tmp_path, case):
     assert _backend_arg(servers[-1].started.get("offload")) == "diffusion=CUDA0,te=CUDA0,vae=CUDA0"
     assert "multi_gpu" not in b.status()
     if case != "explicit_offload":
-        # the one-card argv is exactly what a load without any selection gets
         ref, ref_servers = _server_load(monkeypatch, tmp_path, gpu_ordinals = None)
         assert servers[-1].started.get("offload") == ref_servers[-1].started.get("offload")
         assert b._state.offload_flags == ref._state.offload_flags
@@ -321,7 +319,6 @@ def test_helpers_keep_to_the_split_diffusion_card_and_status_follows_a_cpu_resta
 
 
 def test_a_diffusion_model_no_card_holds_is_cut_across_both(monkeypatch):
-    # Qwen-Image Q4_K_M on 2x T4: the 12.0 GiB model plus sd.cpp's working memory exceeds one card
     split, _ = _plan(layer_ok = True)
     assert split.layer is True and split.vae_on_secondary is True
     assert split.budgets_mib == (T4_LIMIT, T4_LIMIT)
