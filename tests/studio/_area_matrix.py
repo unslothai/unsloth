@@ -883,6 +883,20 @@ class Page:
             if seeded != "ok":
                 raise RuntimeError(f"wallpaper not seeded: {seeded}")
             load()
+            if mode["set"]["wallpaper"].get("blur"):
+                # A blurred wallpaper is baked into a bitmap once (artwork.tsx); the live filter it replaces
+                # re-ran on every scroll frame. Measure the settled page, and fail if the bake never lands.
+                try:
+                    page.wait_for_function(
+                        "() => { const a = [...document.querySelectorAll('.chat-wallpaper-artwork')]"
+                        ".filter((e) => !e.classList.contains('glass-backdrop'));"
+                        " return a.length > 0 && a.every((e) => e.hasAttribute('data-baked') && !e.style.filter); }",
+                        timeout = 15_000,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"mode {mode['name']}: the blurred wallpaper never baked (live filter still on the artwork)"
+                    ) from exc
         if mode.get("expect"):
             # A setting that did not reach the page would measure the default look and pass silently.
             want = list(mode["expect"])
