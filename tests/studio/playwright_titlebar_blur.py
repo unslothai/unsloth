@@ -130,6 +130,46 @@ def run():
             page.get_by_role("button", name = f"Open {kind}", exact = True).click()
             blurred(kind != "scoped")
             if kind == "dialog":
+                # Solid action fills need opaque labels even in body-portalled glass dialogs.
+                root_state = page.evaluate("""() => Array.from(
+                    document.documentElement.attributes, a => [a.name, a.value])""")
+                # Sample settled colours, not the theme transition between them.
+                steady_buttons = page.add_style_tag(
+                    content = '[data-slot="button"] { transition: none !important; }'
+                )
+                try:
+                    for dark in (False, True):
+                        for strength in (0, 15, 50, 100):
+                            page.evaluate(
+                                """({dark, strength}) => {
+                                const root = document.documentElement;
+                                root.classList.add('tauri', 'client-windows');
+                                root.classList.toggle('dark', dark);
+                                root.setAttribute('data-glass-clear', '');
+                                root.setAttribute('data-glass-menus', '');
+                                root.style.setProperty('--glass-fill-alpha', strength + '%');
+                            }""",
+                                {"dark": dark, "strength": strength},
+                            )
+                            reference = page.get_by_role(
+                                "button", name = "Open dialog", exact = True, include_hidden = True
+                            )
+                            action = page.get_by_role("button", name = "Open nested", exact = True)
+                            assert action.evaluate(
+                                "e => !document.querySelector('#root').contains(e)"
+                            )
+                            expected_color = reference.evaluate("e => getComputedStyle(e).color")
+                            expect(action).to_have_css("color", expected_color)
+                finally:
+                    steady_buttons.evaluate("e => e.remove()")
+                    page.evaluate(
+                        """attrs => {
+                        const root = document.documentElement;
+                        for (const a of Array.from(root.attributes)) root.removeAttribute(a.name);
+                        for (const [name, value] of attrs) root.setAttribute(name, value);
+                    }""",
+                        root_state,
+                    )
                 page.get_by_role("button", name = "Open nested", exact = True).click()
                 blurred(True)
                 page.get_by_role("button", name = "Cancel", exact = True).click()

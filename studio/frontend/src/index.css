@@ -7449,7 +7449,7 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root])[data-
 	background-attachment: fixed;
 }
 
-/* Transparent glass: the plain theme, every surface in its own colour at the glass strength's
+/* Transparent glass: the plain theme on page surfaces, using their own colour at the glass strength's
    opacity, with no shadow or blur. Re-resolve the palette at each surface root, including
    Windows desktop portals when glass menus are enabled. Toasts use the opaque palette. */
 html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]),
@@ -7475,6 +7475,7 @@ html[data-glass-clear] #root [data-sonner-toaster] {
   --clear-alpha: 100%;
 }
 /* text-background labels sit on solid action fills, so they keep the opaque colour. */
+html.tauri.client-windows[data-glass-clear][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) [class*="text-background"],
 html[data-glass-clear] #root [class*="text-background"] {
   --background: var(--glass-page-bg);
   --color-background: var(--glass-page-bg);
