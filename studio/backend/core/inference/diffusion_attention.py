@@ -651,9 +651,7 @@ BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
 _NATIVE_DISPATCH_CACHE: dict[tuple[str, str, int], bool] = {}
-# Pre-Blackwell cards where torch's native SDPA dispatch (FLASH) measured faster than the cuDNN pin at every DiT /
-# U-Net shape, both bf16 and fp16 (torch 2.14.1+cu130, cuDNN fused SDPA vs native at B 1-2, 1k-4.6k tokens, head_dim
-# 40-128). Off this table (sm86, sm90, unmeasured) the pin stays.
+# Native flash measured faster than the cuDNN pin at every DiT/U-Net shape, bf16+fp16 (torch 2.14.1+cu130); others keep the pin.
 FLASH_FASTER_CAPABILITIES: dict[tuple[int, int], str] = {
     (
         8,
@@ -3422,9 +3420,7 @@ def _native_dispatches_cudnn(pipe: Any, target: Any) -> bool:
 
 
 def _native_flash_measured_faster(pipe: Any, target: Any) -> bool:
-    """True on a ``FLASH_FASTER_CAPABILITIES`` NVIDIA card when torch's own SDPA dispatch picks FLASH for every DiT
-    head dim at the run dtype, so ``auto`` runs the kernel measured faster than its cuDNN pin there. Unknown head
-    dims, dtype or capability keep the pin."""
+    """True on a ``FLASH_FASTER_CAPABILITIES`` card whose native SDPA picks FLASH for every DiT head dim; else keep the pin."""
     if (os.environ.get(NATIVE_FLASH_ATTN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     if not _is_cuda_nvidia(target):
