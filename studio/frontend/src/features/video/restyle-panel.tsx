@@ -80,6 +80,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [inputClip, setInputClip] = useState<Blob | null>(null);
   const [controlClip, setControlClip] = useState<Blob | null>(null);
   const [outputClip, setOutputClip] = useState<Blob | null>(null);
+  const [clipsFailed, setClipsFailed] = useState(false);
   const urls = {
     input: useObjectUrl(inputClip),
     control: useObjectUrl(controlClip),
@@ -112,10 +113,12 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
           );
         } catch (err) {
-          // Let the next refresh retry the downloads.
+          // Keep polling so the downloads are retried.
           if (loadedFor.current === next.id) loadedFor.current = null;
+          setClipsFailed(true);
           throw err;
         }
+        setClipsFailed(false);
         const [input, control, output] = clips;
         if (ticket !== clipsFor.current) return;
         setInputClip(input);
@@ -168,12 +171,13 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       return;
     }
     const kick = window.setTimeout(() => void refresh(), 0);
-    const timer = running ? window.setInterval(() => void refresh(), POLL_MS) : undefined;
+    const timer =
+      running || clipsFailed ? window.setInterval(() => void refresh(), POLL_MS) : undefined;
     return () => {
       window.clearTimeout(kick);
       window.clearInterval(timer);
     };
-  }, [active, running, refresh]);
+  }, [active, running, clipsFailed, refresh]);
 
   const submit = async () => {
     if (submitting) return;
