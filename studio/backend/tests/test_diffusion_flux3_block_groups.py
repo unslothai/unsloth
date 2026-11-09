@@ -86,7 +86,7 @@ def test_flux3_mode_blocks_get_their_own_diffusers_groups(monkeypatch):
 
     import torch
 
-    from diffusers.hooks import apply_group_offloading
+    apply_group_offloading = pytest.importorskip("diffusers.hooks").apply_group_offloading
 
     # an older diffusers without block_modules keeps the stock grouping
     supported = "block_modules" in inspect.signature(apply_group_offloading).parameters
