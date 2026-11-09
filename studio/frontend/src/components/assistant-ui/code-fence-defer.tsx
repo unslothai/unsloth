@@ -51,6 +51,8 @@ import {
   needsHighlightBatches,
   retainHighlightProgress,
 } from "./fence-highlight-progress";
+import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
+import { installTokenClasses, tokenClassesFor } from "./fence-token-classes";
 import {
   EMPTY_LINE_WINDOW,
   HYSTERESIS_VIEWPORTS,
@@ -776,6 +778,20 @@ const parseDeclarations = (text: string): Record<string, string> => {
   return style;
 };
 
+installTokenClasses([unslothLightTheme, unslothDarkTheme]);
+
+/** A token span's colours as shared classes (see fence-token-classes.ts), else inline. */
+const styledSpan = (
+  base: string,
+  style: Record<string, string>,
+): { className: string; style?: CSSProperties } => {
+  if (Object.keys(style).length === 0) return { className: base };
+  const classes = tokenClassesFor(style);
+  return classes === null
+    ? { className: base, style: style as CSSProperties }
+    : { className: base + classes };
+};
+
 const tokenStyle = (
   token: FenceToken,
 ): { style: Record<string, string>; hasBackground: boolean } => {
@@ -821,23 +837,17 @@ export const FenceLine = memo(function FenceLine({
   const foreground = fenceLineForeground(line);
   return (
     <span
-      className={foreground ? `${lineClass} ${TOKEN_CLASS}` : lineClass}
-      style={
-        foreground
-          ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
-          : undefined
-      }
+      {...(foreground
+        ? styledSpan(`${lineClass} ${TOKEN_CLASS}`, { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark })
+        : { className: lineClass })}
     >
       {(highlighted >= line.length ? line : line.slice(0, highlighted)).map((token, index) => {
         if (foreground?.inherited[index]) return token.content;
         const { style, hasBackground } = tokenStyle(token);
         return (
           <span
-            className={
-              hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS
-            }
+            {...styledSpan(hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS, style)}
             key={index}
-            style={style}
             {...token.htmlAttrs}
           >
             {token.content}
@@ -863,9 +873,8 @@ const FenceTokenChunk = memo(function FenceTokenChunk({
     if (foreground?.inherited[start + index]) return token.content;
     const { style, hasBackground } = tokenStyle(token);
     return <span
-      className={hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS}
+      {...styledSpan(hasBackground ? `${TOKEN_CLASS} ${TOKEN_BG_CLASS}` : TOKEN_CLASS, style)}
       key={index}
-      style={style}
       {...token.htmlAttrs}
     >{token.content}</span>;
   })}{highlighted < tokens.length ? tokens.slice(highlighted).map((token) => token.content).join("") : null}</>;
@@ -881,10 +890,9 @@ const DenseFenceLine = memo(function DenseFenceLine({
   const chunks = useMemo(() => updateFenceChunks(null, line), [line]);
   const foreground = useMemo(() => fenceLineForeground(line), [line]);
   return <span
-    className={foreground ? `${LINE_CLASS} ${TOKEN_CLASS}` : LINE_CLASS}
-    style={foreground
-      ? { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark } as CSSProperties
-      : undefined}
+    {...(foreground
+      ? styledSpan(`${LINE_CLASS} ${TOKEN_CLASS}`, { "--sdm-c": foreground.light, "--shiki-dark": foreground.dark })
+      : { className: LINE_CLASS })}
   >{chunks.map((tokens, index) => <FenceTokenChunk
     key={index}
     tokens={tokens}

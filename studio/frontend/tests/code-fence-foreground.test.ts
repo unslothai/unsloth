@@ -41,6 +41,7 @@ const wanted = new Set([
   "TOKEN_CLASS",
   "TOKEN_BG_CLASS",
   "tokenStyle",
+  "styledSpan",
   "FenceLine",
 ]);
 const declarations = parsed.statements
@@ -70,6 +71,8 @@ const scope = {
   isBlankLine,
   plainLineText,
   fenceLineForeground,
+  // No document here: the shared token classes are not installed, so colours stay inline.
+  tokenClassesFor: (() => null) as (style: Record<string, string>) => string | null,
 };
 runInNewContext(outputText, scope);
 const render = (line: Token[], windowed = true) =>
