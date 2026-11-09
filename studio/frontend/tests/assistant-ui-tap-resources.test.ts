@@ -100,6 +100,33 @@ test("a removed key unmounts and an added key mounts, in order", () => {
   assert.ok(!h.probe.unmounted.includes("a"));
 });
 
+test("a child unmounted with its parent re-renders on the next render, so its mount effects run again, as upstream", () => {
+  for (const impl of [upstreamTapResources as typeof tapResources, tapResources]) {
+    const live = new Set<string>();
+    const setters = new Map<string, (v: number) => void>();
+    const Child = resource(({ id }: { id: string }) => {
+      const [count, setCount] = tapState(0);
+      setters.set(id, setCount);
+      tapEffect(() => {
+        live.add(id);
+        return () => void live.delete(id);
+      }, []);
+      return `${id}:${count}`;
+    });
+    const Parent = resource(({ ids }: { ids: string[] }) => impl(() => ids.map((id) => withKey(id, Child({ id })) as never), [ids]));
+    const root = createResourceRoot();
+    type Sub = { getValue: () => string[] };
+    root.render(Parent({ ids: ["a", "b"] }) as never);
+    // After its own update, a's last committed render no longer carries its mount effect.
+    flushResourcesSync(() => setters.get("a")!(1));
+    root.unmount();
+    assert.equal(live.size, 0);
+    const sub = flushResourcesSync(() => root.render(Parent({ ids: ["a", "b"] }) as never)) as Sub;
+    assert.deepEqual(sub.getValue(), ["a:1", "b:0"]);
+    assert.deepEqual([...live].sort(), ["a", "b"], "every child's mount effect is live again");
+  }
+});
+
 test("props compare key by key and nested resource elements by type, key and props", () => {
   const T = () => null;
   const el = (props: object, key = "k") => ({ type: T, props, key });

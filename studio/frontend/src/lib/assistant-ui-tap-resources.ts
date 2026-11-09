@@ -149,7 +149,14 @@ export function tapResources(getElements: () => Element[], getElementsDeps?: rea
         const result = renderResourceFiber(fiber, element.props);
         slot.next = [fiber, result];
         results.push(result.output);
-      } else if (contextSame && !slot.dirty && slot.committed !== null && propsEqual(slot.committed.props, element.props)) {
+      } else if (
+        // An unmounted child re-renders, as its effects were cleaned up and only a render re-registers them.
+        slot.fiber.isMounted &&
+        contextSame &&
+        !slot.dirty &&
+        slot.committed !== null &&
+        propsEqual(slot.committed.props, element.props)
+      ) {
         slot.next = null;
         results.push(slot.committed.output);
       } else {
