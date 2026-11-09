@@ -149,9 +149,7 @@ def test_window_attention_compiles_fullgraph_on_full_and_padded_windows():
         return orig(*args)
 
     model._window_attn = window_attn
-    model.decode_raw(
-        torch.randn(1, 24, 2 * model.block, model.window, model.window)
-    )  # unshifted: no padding
+    model.decode_raw(torch.randn(1, 24, 2 * model.block, model.window, model.window))
     model.decode_raw(torch.randn(1, 24, 7, 6, 9))
     model._window_attn = orig
     full = next(a for a in seen if a[-2] == 0 and a[0].shape[0] == model.block and a[-1] == 0)
