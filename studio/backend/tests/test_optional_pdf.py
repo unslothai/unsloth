@@ -274,7 +274,10 @@ def test_incompatible_interpreters_and_requirements_do_not_share_a_cache(
     before = pdf._target()
     if component == "requirements":
         path = tmp_path / "pdf.txt"
-        path.write_text(pdf._REQUIREMENTS.read_text() + "\n# changed pins\n")
+        path.write_text(
+            pdf._REQUIREMENTS.read_text(encoding = "utf-8") + "\n# changed pins\n",
+            encoding = "utf-8",
+        )
         monkeypatch.setattr(pdf, "_REQUIREMENTS", path)
     elif component in {"prefix", "executable"}:
         monkeypatch.setattr(pdf.sys, component, str(tmp_path / component))
