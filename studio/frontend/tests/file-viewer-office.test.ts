@@ -8,6 +8,9 @@ import { DOMParser } from "@xmldom/xmldom";
 import { strToU8, zipSync } from "fflate";
 
 import { formatNumber, readDelimited, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
 
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
@@ -246,6 +249,39 @@ test("xlsx: out-of-range date values do not prevent reading the workbook", () =>
     },
   ));
   assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
+});
+
+test("xlsx: a chat attachment keeps the rows, columns and sheets the viewer hides", async () => {
+  const { extractOfficeAttachmentText } = await import("../src/features/chat/attachment-content.ts");
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/><sheet name="Notes" sheetId="2" state="hidden" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": strToU8(`<worksheet xmlns="${MAIN}"><cols><col min="3" max="3" hidden="1"/></cols><sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><t>Region</t></is></c><c r="B1" t="inlineStr"><is><t>Q3</t></is></c><c r="C1" t="inlineStr"><is><t>Owner</t></is></c></row>
+<row r="2"><c r="A2" t="inlineStr"><is><t>North</t></is></c><c r="B2"><v>100</v></c><c r="C2" t="inlineStr"><is><t>Ann</t></is></c></row>
+<row r="3" hidden="1"><c r="A3" t="inlineStr"><is><t>West</t></is></c><c r="B3"><v>300</v></c><c r="C3" t="inlineStr"><is><t>Bo</t></is></c></row>
+</sheetData></worksheet>`),
+    "xl/worksheets/sheet2.xml": strToU8(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>adjust</t></is></c></row></sheetData></worksheet>`,
+    ),
+  });
+
+  const viewer = readXlsx(zip);
+  assert.deepEqual(viewer.map((sheet) => sheet.name), ["Sales"]);
+  assert.deepEqual(viewer[0]!.rows.filter(Boolean).map((row) => row.map((cell) => cell?.text)), [
+    ["Region", "Q3"],
+    ["North", "100"],
+  ]);
+
+  const file = new File([zip], "q3.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  assert.equal(
+    await extractOfficeAttachmentText(file, "XLSX"),
+    "Sheet: Sales\nRegion\tQ3\tOwner\nNorth\t100\tAnn\nWest\t300\tBo\n\nSheet: Notes\nadjust",
+  );
 });
 
 test("pptx: maxSlides stops reading after that many slides", () => {
