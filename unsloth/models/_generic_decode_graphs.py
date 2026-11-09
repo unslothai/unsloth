@@ -857,10 +857,18 @@ def _kept_compatible(state, batch_size, max_cache_len, offloading):
     )
 
 
-def _reserve_step(cache, input_ids, bound):
+def _reserve_step(
+    cache,
+    input_ids,
+    bound,
+    call = None,
+):
     """Grows a growable cache to hold this generate step, from its input lengths: the whole sequence so far
     (prompt incl. padding plus generated tokens) and the step's new tokens (5.x `next_sequence_length`, 4.x
-    `cache_position`; the whole input on the first step of an empty cache)."""
+    `cache_position`; the whole input on the first step of an empty cache). `call` is this generate call's state:
+    the tokens that sit in the cache but not in input_ids (a prompt given only as inputs_embeds, or the prefix of a
+    cache passed back with only the new tokens), counted from its first step."""
+    call = {} if call is None else call
     total = (
         input_ids.shape[-1] if isinstance(input_ids, torch.Tensor) and input_ids.dim() >= 2 else 0
     )
@@ -876,15 +884,22 @@ def _reserve_step(cache, input_ids, bound):
     written = KV.written(cache)
     if q is None and written == 0:
         q = total
-    if written == 0:
-        # generate() started from inputs_embeds alone keeps an input_ids holding only the generated tokens: the
-        # prompt length is remembered from the prefill and added on every later step of this call.
-        offset = 0
+    if "prefix" not in call:
+        prefix = 0
         if isinstance(embeds, torch.Tensor) and embeds.dim() >= 3 and total == 0:
-            total = q = offset = embeds.shape[1]
-        cache.__dict__["_unsloth_prompt_offset"] = offset
-    else:
-        total += cache.__dict__.get("_unsloth_prompt_offset", 0)
+            # generate() from inputs_embeds alone: input_ids then holds only the generated tokens.
+            total = q = prefix = embeds.shape[1]
+        elif written > 0 and q is not None and q == total:
+            # A cache passed back with only the new tokens: its prefix stays in the cache, not in input_ids.
+            prefix = written
+            total += prefix
+        call["prefix"] = prefix
+    elif total > 0:
+        total += call["prefix"]
+    mask = bound.get("attention_mask")
+    if isinstance(mask, torch.Tensor) and mask.dim() == 2 and total > 0:
+        # generate keeps a 2D mask over the whole sequence (padding, prefix and generated tokens).
+        total = max(total, mask.shape[-1])
     if total <= 0 or q is None or q > total:
         # Unknown step shape: grow for one more token past the host counter (the eager fallback).
         KV.reserve(cache, max(total, written + 1))
@@ -905,6 +920,7 @@ class reuse_kept_cache:
         self.prepare_inputs = None
         self.prepare_inputs_saved = None
         self.prepare_signature = None
+        self.reserve_call = {}
 
     def _prepare_inputs(self, input_ids, *args, **kwargs):
         # A growable cache grows here, eagerly, before transformers builds the step's mask (in
@@ -919,7 +935,7 @@ class reuse_kept_cache:
             bound = {**extra, **bound}
         cache = bound.get("past_key_values")
         if KV.is_growable(cache):
-            _reserve_step(cache, input_ids, bound)
+            _reserve_step(cache, input_ids, bound, self.reserve_call)
         return self.prepare_inputs(input_ids, *args, **kwargs)
 
     def _prepare(self, *args, **kwargs):
@@ -953,7 +969,11 @@ class reuse_kept_cache:
                 # A new cache: the kept graphs address the old one.
                 state.clear()
             cache = self.prepare(*args, **kwargs)
-            if KV.enabled() and not getattr(model.config, "is_encoder_decoder", False):
+            if (
+                KV.enabled()
+                and not getattr(model.config, "is_encoder_decoder", False)
+                and KV.supports(model)
+            ):
                 KV.make_growable(cache)
         model.__dict__["_unsloth_generic_call_cache"] = cache
         if type(effective) is int:
@@ -976,12 +996,17 @@ class reuse_kept_cache:
             # too short and builds a new cache.
             KV.raise_limit(kept, max_cache_len)
         cache = self.get_cache(cache_implementation, batch_size, max_cache_len, *args, **kwargs)
-        if cache is not kept and not getattr(model.config, "is_encoder_decoder", False):
+        if (
+            cache is not kept
+            and not getattr(model.config, "is_encoder_decoder", False)
+            and KV.supports(model)
+        ):
             KV.make_growable(cache)
         return cache
 
     def __enter__(self):
         model = self.model
+        self.reserve_call = {}
         self.get_cache = None
         self.prepare_inputs = None
         self.prepare_inputs_saved = None

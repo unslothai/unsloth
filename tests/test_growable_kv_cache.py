@@ -404,3 +404,66 @@ def test_kept_cache_with_short_sliding_layers_is_not_reused(host, monkeypatch):
     GG.release(model)
     model.__dict__.pop(GG._ATTR, None)
     assert torch.equal(grown, _gen(model, new = 40))
+
+
+def _growable_cache(model, limit = 64):
+    cache = StaticCache(config = model.config, max_cache_len = limit)
+    KV.make_growable(cache)
+    assert KV.is_growable(cache)
+    return cache
+
+
+@pytest.mark.parametrize("version", ["5.x", "4.x"])
+def test_reserve_counts_tokens_held_only_by_the_cache(llama, monkeypatch, version):
+    # The tokens a step adds come from next_sequence_length (5.x) or cache_position (4.x); the sequence so far from
+    # input_ids, the 2D mask and what the call's first step found in the cache: a prompt given as inputs_embeds, or
+    # a returned cache continued with only the new tokens. The host counter must match the device write position.
+    monkeypatch.setenv("UNSLOTH_GROWABLE_KV_MIN", "16")
+
+    def step(
+        cache,
+        call,
+        ids_len,
+        q,
+        mask_len = None,
+        embeds = None,
+    ):
+        bound = (
+            {"next_sequence_length": q} if version == "5.x" else {"cache_position": torch.arange(q)}
+        )
+        if mask_len is not None:
+            bound["attention_mask"] = torch.ones(1, mask_len, dtype = torch.long)
+        if embeds is not None:
+            bound["inputs_embeds"] = torch.zeros(1, embeds, 4)
+        GG._reserve_step(cache, torch.zeros(1, ids_len, dtype = torch.long), bound, call)
+        return KV.written(cache), KV.capacity(cache)
+
+    # Embeds-only prompt of 16, no mask: input_ids then holds only the generated tokens.
+    cache, call = _growable_cache(llama), {}
+    assert step(cache, call, 0, 16, embeds = 16) == (0, 16)
+    assert step(cache, call, 1, 1) == (16, 32)
+    assert step(cache, call, 5, 1) == (20, 32)
+    # A cache holding 19 tokens continued with only 3 new ones, mask or not.
+    for mask in (True, False):
+        cache = _growable_cache(llama)
+        KV.reserve(cache, 19, written = 19)
+        call = {}
+        assert step(cache, call, 3, 3, 22 if mask else None) == (19, 32)
+        assert step(cache, call, 4, 1, 23 if mask else None) == (22, 32)
+        assert step(cache, call, 14, 1, 33 if mask else None) == (32, 64)
+    # The usual continuation (whole sequence in input_ids) counts no prefix.
+    cache = _growable_cache(llama)
+    KV.reserve(cache, 19, written = 19)
+    call = {}
+    assert step(cache, call, 22, 3, 22) == (19, 32) and call["prefix"] == 0
+
+
+def test_models_sizing_masks_by_the_max_cache_shape_keep_static_cache(monkeypatch):
+    # BLOOM-style models pad their mask / build ALiBi at get_max_cache_shape() (the limit): they never get growable
+    # layers, the masking_utils models do.
+    class Old(torch.nn.Module):
+        def _prepare_4d_causal_attention_mask_with_cache_position(self):
+            pass
+
+    assert not KV.supports(Old())
+    assert KV.supports(_load(LLAMA))

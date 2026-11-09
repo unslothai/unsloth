@@ -14,7 +14,9 @@ Writes are transformers' own StaticLayer.update (an index_copy_ at device positi
 also kept on the host (`cumulative_length_int`, advanced in Python, never read back from the device), which is what
 the growth check reads."""
 
+import inspect
 import os
+import sys
 
 import torch
 
@@ -27,6 +29,7 @@ __all__ = [
     "GrowableLayer",
     "enabled",
     "make_growable",
+    "supports",
     "is_growable",
     "needs_growth",
     "fills_bucket",
@@ -178,6 +181,37 @@ def _grow_group(group, size):
     for layer in group.members:
         layer._grow(size)
     group.epoch += 1
+
+
+_SUPPORTS = {}
+
+
+def _sizes_by_max_cache_shape(module):
+    # Old-style transformers models build their 4D mask (or ALiBi) at get_max_cache_shape(): the generation limit,
+    # not the bucket update() returns, so the shapes would disagree.
+    if module is None:
+        return False
+    if hasattr(module, "_prepare_4d_causal_attention_mask_with_cache_position"):
+        return True
+    source = sys.modules.get(type(module).__module__)
+    try:
+        return "get_max_cache_shape(" in inspect.getsource(source) if source is not None else False
+    except (OSError, TypeError):
+        return True
+
+
+def supports(model):
+    """Whether this model's mask code reads the cache's allocated length (transformers' masking_utils), so its
+    full-attention layers may grow. Models that size masks or ALiBi by get_max_cache_shape() keep StaticCache."""
+    key = type(model)
+    if key not in _SUPPORTS:
+        base = getattr(model, getattr(model, "base_model_prefix", ""), None) or model
+        decoder = base.get_decoder() if hasattr(base, "get_decoder") else None
+        _SUPPORTS[key] = not any(
+            _sizes_by_max_cache_shape(m)
+            for m in {id(x): x for x in (model, base, decoder) if x is not None}.values()
+        )
+    return _SUPPORTS[key]
 
 
 def make_growable(cache):
