@@ -74,7 +74,13 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
   ) as ts.JsxAttribute;
   const expression = (prop.initializer as ts.JsxExpression).expression!;
 
-  for (const scenario of ["failed", "empty", "saved"] as const) {
+  for (const scenario of [
+    "failed",
+    "empty",
+    "saved",
+    "failed-known-empty",
+    "failed-known-saved",
+  ] as const) {
     test(`${name}: ${scenario} history selects the correct draft scope`, async () => {
       let resolve!: (threads: Thread[]) => void;
       let reject!: (reason: Error) => void;
@@ -84,7 +90,12 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
       });
       const state: Record<string, unknown> = {
         threadsSettled: false,
-        pairSaved: undefined,
+        pairSaved:
+          scenario === "failed-known-empty"
+            ? false
+            : scenario === "failed-known-saved"
+              ? true
+              : undefined,
         baseThreadId: undefined,
         loraThreadId: undefined,
         model1ThreadId: undefined,
@@ -96,7 +107,9 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
           pairId: "saved-pair",
           anyRunning: false,
           comparing: false,
-          listedPairRef: { current: null },
+          listedPairRef: {
+            current: scenario.startsWith("failed-known") ? "saved-pair" : null,
+          },
           listStoredChatThreads: () => read,
           isExpectedBackgroundChatStorageError: () => true,
           resolveComparePaneThreadIds: (threads: Thread[]) => ({
@@ -124,7 +137,8 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
           setPairLoraModelId: () => {},
         },
       );
-      if (scenario === "failed") reject(new Error("history unavailable"));
+      if (scenario.startsWith("failed"))
+        reject(new Error("history unavailable"));
       else
         resolve(
           scenario === "empty"
@@ -145,7 +159,9 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
       );
       assert.equal(
         pairSaved,
-        scenario === "failed" ? undefined : scenario === "saved",
+        scenario === "failed"
+          ? undefined
+          : scenario === "saved" || scenario === "failed-known-saved",
       );
       const key = evaluate(
         `const unsentPair = ${unsentPair.initializer!.getText(composer)}; return ${draftKey.initializer!.getText(composer)};`,
@@ -161,7 +177,9 @@ for (const name of ["LoraCompareContent", "GeneralCompareContent"]) {
       assert.equal(
         key,
         composerDraftKey(
-          scenario === "empty" ? NEW_COMPARE_DRAFT_ID : "saved-pair",
+          scenario === "empty" || scenario === "failed-known-empty"
+            ? NEW_COMPARE_DRAFT_ID
+            : "saved-pair",
         ),
       );
       assert.equal(
