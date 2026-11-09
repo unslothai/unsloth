@@ -88,6 +88,9 @@ from .diffusion_families import (
     excluded_model_reason,
     prefer_ungated_mirror,
     mirror_hosts_artifacts,
+    NVFP4_PACKED_PICK_ENV,
+    nvfp4_packed_file_matches,
+    nvfp4_packed_pick,
     prequant_only_repo_ids,
     prequant_repo_role,
     resolve_base_repo,
@@ -884,6 +887,22 @@ def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
         # A token was sent and still bounced, so the account itself lacks access.
         return f"{subject} is gated and this Hugging Face account is not on its access list. Request access at {where}, then load again."
     return f"{subject} is gated. Request access at {where}, then add a Hugging Face token in Settings and load again."
+
+
+def _nvfp4_packed_pick_for(repo_id: Optional[str], **request: Any) -> Optional[dict]:
+    """``nvfp4_packed_pick`` for a load request, logged once when it rewrites the request."""
+    pick = nvfp4_packed_pick(repo_id, **request)
+    if pick is not None:
+        logger.info(
+            "transformer_quant='nvfp4' for %s: loading %s/%s with its nvfp4 layers kept packed and widened per call "
+            "(weights only; activations stay %s). Auto never picks it. %s=0 restores the refusal.",
+            repo_id,
+            pick["repo_id"],
+            pick["gguf_filename"],
+            "in the compute dtype",
+            NVFP4_PACKED_PICK_ENV,
+        )
+    return pick
 
 
 def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] = None) -> str:
@@ -5503,6 +5522,20 @@ class DiffusionBackend:
         with self._load_cancel_lock:
             entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
+        packed_pick = _nvfp4_packed_pick_for(
+            repo_id,
+            transformer_quant = transformer_quant,
+            model_kind = model_kind,
+            gguf_filename = gguf_filename,
+            family_override = family_override,
+            base_repo = base_repo,
+            transformer_prequant_path = transformer_prequant_path,
+        )
+        if packed_pick is not None:
+            repo_id, display_repo_id = packed_pick["repo_id"], None
+            gguf_filename, model_kind = packed_pick["gguf_filename"], packed_pick["model_kind"]
+            base_repo, family_override = packed_pick["base_repo"], packed_pick["family_override"]
+            transformer_quant = packed_pick["transformer_quant"]
         # The probes this load adds read the Hub directly; they keep a managed account's False (anonymous) sentinel.
         hub_token = normalize_token(hf_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -8297,6 +8330,21 @@ class DiffusionBackend:
             if _load_token is None:
                 _load_token = self._load_token
             self._raise_if_load_cancelled(_load_token)
+        # begin_load already rewrote its own request (this then returns None); a direct call gets the same load.
+        packed_pick = _nvfp4_packed_pick_for(
+            repo_id,
+            transformer_quant = transformer_quant,
+            model_kind = model_kind,
+            gguf_filename = gguf_filename,
+            family_override = family_override,
+            base_repo = base_repo,
+            transformer_prequant_path = transformer_prequant_path,
+        )
+        if packed_pick is not None:
+            repo_id, display_repo_id = packed_pick["repo_id"], None
+            gguf_filename, model_kind = packed_pick["gguf_filename"], packed_pick["model_kind"]
+            base_repo, family_override = packed_pick["base_repo"], packed_pick["family_override"]
+            transformer_quant = packed_pick["transformer_quant"]
         hub_token = _hub_token if _hub_token is not None else normalize_token(hf_token)
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
@@ -13454,7 +13502,12 @@ class DiffusionBackend:
                 widened_mib = transformer_resident,
                 host_available_mib = _available_system_memory_mib(),
             )
-            store = fp8_storage_wanted(target, **fp8_rule)
+            store = fp8_storage_wanted(target, **fp8_rule) or (
+                # an NVFP4 pick (nvfp4_packed_pick) keeps its 4-bit layers even where the widened copy would fit
+                nvfp4_diffusion_enabled()
+                and nvfp4_packed_file_matches(fam, single_file_path)
+                and comfy_fp8_storage(target, lora = lora)
+            )
             picks = self.__dict__.setdefault("_fp8_storage_picks", {})
             picks[str(single_file_path)] = store
             self.__dict__.setdefault("_fp8_widen_picks", {})[str(single_file_path)] = (

@@ -5028,6 +5028,29 @@ class DiffusionLoadRequest(BaseModel):
             self.base_repo = retired_full_copy_base(self.base_repo)
         return self
 
+    @model_validator(mode = "after")
+    def _redirect_packed_nvfp4_pick(self) -> "DiffusionLoadRequest":
+        # An explicit nvfp4 pick of a base whose family names an NVFP4 file and still denies the NVFP4 runtime loads that
+        # file as a single-file pick with its nvfp4 layers kept packed (diffusion_families.nvfp4_packed_pick), so the
+        # route's preflight, download plan and the backend all see the same load. Runs after the retired-copy redirect.
+        from core.inference.diffusion_families import nvfp4_packed_pick
+
+        pick = nvfp4_packed_pick(
+            self.model_path,
+            transformer_quant = self.transformer_quant,
+            model_kind = self.model_kind,
+            gguf_filename = self.gguf_filename,
+            family_override = self.family_override,
+            base_repo = self.base_repo,
+            transformer_prequant_path = self.transformer_prequant_path,
+        )
+        if pick is not None:
+            self.model_path, self.display_repo_id = pick["repo_id"], None
+            self.gguf_filename, self.model_kind = pick["gguf_filename"], pick["model_kind"]
+            self.base_repo, self.family_override = pick["base_repo"], pick["family_override"]
+            self.transformer_quant = pick["transformer_quant"]
+        return self
+
 
 class HiresSpec(BaseModel):
     """Hires fix: render, upscale, then refine with img2img at ``denoise`` (txt2img only).

@@ -209,6 +209,10 @@ class DiffusionFamily:
     # Preferred filename rows; the derived name stays as fallback so older builds keep their
     # artifact.
     prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
+    # ``(repo_id, filename)`` of a ComfyUI-format NVFP4 denoiser an EXPLICIT ``nvfp4`` pick of the base loads while the
+    # family's NVFP4 deny stands (``nvfp4_packed_pick``): weights only, its layers kept packed and widened per call to
+    # the compute dtype (``diffusion_packed_block``), activations never quantized. Auto never picks it.
+    nvfp4_packed_file: Optional[tuple[str, str]] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is
     # deterministic, so the artifact is bit-identical while skipping the dense TE download. An optional fourth element
     # names the component the hosted file was built as, when this family loads another family's bytes into a
@@ -688,6 +692,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         prequant_repos = (
             ("int8", "unsloth/flux-3-image-klein-FP8"),
             ("fp8", "unsloth/flux-3-image-klein-FP8"),
+        ),
+        # BFL's own NVFP4 denoiser (198 nvfp4 linears, the rest bf16). The nvfp4 deny above stays (no gate record), so
+        # auto never takes it and the W4A4 runtime stays off; an explicit nvfp4 pick runs it weights-only.
+        nvfp4_packed_file = (
+            "black-forest-labs/flux-3-image-klein-comfy",
+            "diffusion_models/flux3-image-klein-nvfp4.safetensors",
         ),
         uses_negative_prompt = False,
         uses_guidance = False,
@@ -1950,6 +1960,77 @@ def pinned_revision_kwargs(repo: Any) -> dict[str, str]:
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
     """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+NVFP4_PACKED_PICK_ENV = "UNSLOTH_DIFFUSION_NVFP4_PACKED_PICK"
+
+
+def nvfp4_packed_pick_enabled() -> bool:
+    """Kill switch for :func:`nvfp4_packed_pick` (on unless set to 0 / off / false / no)."""
+    return (os.environ.get(NVFP4_PACKED_PICK_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def nvfp4_packed_file_matches(fam: Any, path: Optional[str]) -> bool:
+    """Whether ``path`` (a local file or a repo filename) is ``fam``'s ``nvfp4_packed_file``; matched on the repo
+    relative name, so a cached snapshot path and a request filename agree."""
+    entry = getattr(fam, "nvfp4_packed_file", None)
+    if not entry or not path or not nvfp4_packed_pick_enabled():
+        return False
+    name = str(path).replace("\\", "/").lower()
+    want = str(entry[1]).replace("\\", "/").lower()
+    return name == want or name.endswith("/" + want)
+
+
+def nvfp4_packed_pick(
+    repo_id: Optional[str],
+    *,
+    transformer_quant: Optional[str],
+    model_kind: Optional[str] = None,
+    gguf_filename: Optional[str] = None,
+    family_override: Optional[str] = None,
+    base_repo: Optional[str] = None,
+    transformer_prequant_path: Optional[str] = None,
+) -> Optional[dict]:
+    """The load an explicit ``nvfp4`` pick of a family base becomes when that family names an ``nvfp4_packed_file`` and
+    its NVFP4 deny stands (no gate record lifts it): that file as a single-file pick, run as it is stored
+    (``transformer_quant="none"``), which keeps its nvfp4 layers packed. None leaves the request unchanged: NVFP4
+    switched off (the request is refused as before), the kill switch, a GGUF / single-file / local pick, a
+    request-supplied prequant path, or a base whose deny a gate record lifts (the regular nvfp4 path)."""
+    from .diffusion_nvfp4_flag import is_nvfp4, nvfp4_diffusion_enabled
+
+    if not is_nvfp4(transformer_quant) or not nvfp4_diffusion_enabled():
+        return None
+    if not nvfp4_packed_pick_enabled() or (transformer_prequant_path or "").strip():
+        return None
+    if (gguf_filename or "").strip() or (model_kind or "").strip().lower() not in ("", "pipeline"):
+        return None
+    fam = detect_family(str(repo_id or ""), family_override)
+    entry = getattr(fam, "nvfp4_packed_file", None)
+    if fam is None or not entry:
+        return None
+    base = str(fam.base_repo).strip().lower()
+    names = {base, (mirror_repo(fam.base_repo) or "").strip().lower()} - {""}
+    if str(repo_id or "").strip().lower() not in names:
+        return None
+    if (base_repo or "").strip() and str(base_repo).strip().lower() not in names:
+        return None
+    from .diffusion_transformer_quant import TQ_NVFP4, family_denies_scheme
+
+    if not family_denies_scheme(fam.name, TQ_NVFP4, fam.base_repo):
+        return None
+    return {
+        "repo_id": str(entry[0]),
+        "gguf_filename": str(entry[1]),
+        "base_repo": str(fam.base_repo),
+        "family_override": fam.name,
+        "model_kind": "single_file",
+        "transformer_quant": "none",
+    }
 
 
 def mirror_hosts_artifacts(repo_id: Optional[str]) -> bool:
