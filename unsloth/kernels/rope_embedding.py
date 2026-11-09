@@ -230,41 +230,41 @@ def _rope_embedding_QK(
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride: tl.constexpr,  # 4096 n_heads * head_dim (6144 fused QKV, 128 contiguous)
+    q_seq_stride: tl.constexpr,
     q_head_stride,
-    q_dim_stride: tl.constexpr,  # 1
+    q_dim_stride: tl.constexpr,
     qo_batch_stride,
-    qo_seq_stride: tl.constexpr,  # 4096 or 128
+    qo_seq_stride: tl.constexpr,
     qo_head_stride,
-    qo_dim_stride: tl.constexpr,  # 1
+    qo_dim_stride: tl.constexpr,
     k_batch_stride,
-    k_seq_stride: tl.constexpr,  # 1024 n_kv_heads * head_dim
+    k_seq_stride: tl.constexpr,
     k_head_stride,
-    k_dim_stride: tl.constexpr,  # 1
+    k_dim_stride: tl.constexpr,
     ko_batch_stride,
-    ko_seq_stride: tl.constexpr,  # 1024 or 128
+    ko_seq_stride: tl.constexpr,
     ko_head_stride,
-    ko_dim_stride: tl.constexpr,  # 1
+    ko_dim_stride: tl.constexpr,
     cos,
-    cos_row_stride,  # runtime: a SymInt in compiled graphs
+    cos_row_stride,
     sin,
     sin_row_stride,
     rope_embedding_indices,
-    seqlen,  # runtime, not specialized: varies per call
-    n_heads_Q: tl.constexpr,  # 32
-    n_heads_K: tl.constexpr,  # 8 (0 without K)
-    n_groups_Q: tl.constexpr,  # 1
-    half_head_dim: tl.constexpr,  # hd // 2
-    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
-    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
-    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
-    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
-    HEADS_Q: tl.constexpr,  # query heads per program
-    HEADS_K: tl.constexpr,  # key heads per program
-    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
-    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
+    seqlen,
+    n_heads_Q: tl.constexpr,
+    n_heads_K: tl.constexpr,
+    n_groups_Q: tl.constexpr,
+    half_head_dim: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    CAST_TO_SIN: tl.constexpr,
+    HEADS_Q: tl.constexpr,
+    HEADS_K: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
 ):
-    """Layout strides as constexprs: the fixed per-model values of the projection layouts."""
+    """Layout strides as constexprs (fixed per model)."""
     _rope_qk_program(
         Q,
         Q_out,
@@ -313,43 +313,41 @@ def _rope_embedding_QK_strided(
     K,
     K_out,
     q_batch_stride,
-    q_seq_stride,  # runtime
+    q_seq_stride,
     q_head_stride,
-    q_dim_stride,  # runtime
+    q_dim_stride,
     qo_batch_stride,
-    qo_seq_stride,  # runtime
+    qo_seq_stride,
     qo_head_stride,
-    qo_dim_stride,  # runtime
+    qo_dim_stride,
     k_batch_stride,
-    k_seq_stride,  # runtime
+    k_seq_stride,
     k_head_stride,
-    k_dim_stride,  # runtime
+    k_dim_stride,
     ko_batch_stride,
-    ko_seq_stride,  # runtime
+    ko_seq_stride,
     ko_head_stride,
-    ko_dim_stride,  # runtime
+    ko_dim_stride,
     cos,
-    cos_row_stride,  # runtime: a SymInt in compiled graphs
+    cos_row_stride,
     sin,
     sin_row_stride,
     rope_embedding_indices,
-    seqlen,  # runtime, not specialized: varies per call
-    n_heads_Q: tl.constexpr,  # 32
-    n_heads_K: tl.constexpr,  # 8 (0 without K)
-    n_groups_Q: tl.constexpr,  # 1
-    half_head_dim: tl.constexpr,  # hd // 2
-    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
-    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
-    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
-    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
-    HEADS_Q: tl.constexpr,  # query heads per program
-    HEADS_K: tl.constexpr,  # key heads per program
-    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
-    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
+    seqlen,
+    n_heads_Q: tl.constexpr,
+    n_heads_K: tl.constexpr,
+    n_groups_Q: tl.constexpr,
+    half_head_dim: tl.constexpr,
+    BACKWARD_PASS: tl.constexpr,
+    HAS_ROPE_INDICES: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+    CAST_TO_SIN: tl.constexpr,
+    HEADS_Q: tl.constexpr,
+    HEADS_K: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    EVICT_INDICES: tl.constexpr,
 ):
-    """The same rotation with runtime layout strides, for a layout whose seq or dim stride
-    depends on the sequence length (a compiled backward can hand dK over as [b, h, d, s]):
-    as constexprs those would specialize, so every new length recompiled the graph."""
+    """Runtime layout strides, for strides that depend on seq_len (dK as [b, h, d, s])."""
     _rope_qk_program(
         Q,
         Q_out,
@@ -441,12 +439,9 @@ def _heads_per_program(n_heads, block_size):
 
 
 def _fixed_layout(X):
-    # The constexpr kernel bakes in the seq and dim strides. Traced, a stride that is a symbolic
-    # expression (dK of a compiled backward can arrive as [b, h, d, s], dim stride = seq_len) would
-    # be specialized into a guard, so every new sequence length recompiled the whole graph; eager, a
-    # seq-major dim stride would build a new Triton binary per length.
+    # Seq-dependent strides as constexprs recompile per length (a guard traced, a binary eager).
     _, _, seq_stride, dim_stride = X.stride()
-    # Plain ints (always, in eager) skip the symbolic check: this runs per layer on every decode step.
+    # Plain ints (eager) skip the symbolic check: hot on every decode step.
     if type(seq_stride) is not int or type(dim_stride) is not int:
         if not (_is_concrete_int(seq_stride) and _is_concrete_int(dim_stride)):
             return False

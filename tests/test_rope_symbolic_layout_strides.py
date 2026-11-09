@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A traced RoPE launch never passes a sequence-length-dependent stride as a tl.constexpr.
+"""A traced RoPE launch never passes a seq_len-dependent stride (dK as [b, h, d, s]) as a constexpr.
 
-fp16 LoRA under UNSLOTH_BLOCK_COMPILE=1 hands the RoPE backward dK as [b, h, d, s] (dim stride =
-seq_len). As a constexpr that symbolic stride was specialized into Eq(seq_len, N), so every new
-sequence length recompiled the decoder layer. CPU only: fake CUDA tensors with a symbolic seq dim,
-and a recording launcher instead of Triton."""
+CPU only: fake tensors with a symbolic seq dim and a recording launcher."""
 
 import pytest
 import torch
@@ -55,7 +52,6 @@ def _fake_seq_dynamic(mode, t, seq_dim):
 
 def _launch(layout_of_k, backward):
     mode = FakeTensorMode(shape_env = ShapeEnv())
-    # Real tensors in, symbolic fakes out (a tensor made under the mode is already a static fake).
     Q = _fake_seq_dynamic(mode, torch.empty(B, S, H, D), 1).transpose(1, 2)
     if layout_of_k == "bhds":
         # [b, h, d, s] storage seen as [b, h, s, d]: dim stride = seq_len.
@@ -112,12 +108,9 @@ def test_strided_kernel_has_runtime_layout_strides():
 
 
 def test_eager_seq_major_layout_takes_the_strided_kernel():
-    # Eager, a seq-major dim stride is a real int but changes with every length: one Triton binary
-    # per length as a constexpr.
     X = torch.empty(B, H, D, S).transpose(2, 3)
     assert not RE._fixed_layout(X)
     assert RE._fixed_layout(torch.empty(B, S, H, D).transpose(1, 2))
     assert RE._fixed_layout(torch.empty(B, H, S, D))
     assert RE._fixed_layout(torch.empty(1, 1, 1, 1))
-    # Expanded (stride-0) grads keep the constexpr kernel.
     assert RE._fixed_layout(torch.empty(1, 1, 1, D).expand(B, H, S, D))

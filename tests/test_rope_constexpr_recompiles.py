@@ -64,8 +64,7 @@ def test_compiled_rope_keeps_one_graph_across_batch_and_seq(with_indices):
 
 @pytest.mark.gpu
 def test_compiled_rope_seq_major_grad_keeps_one_graph():
-    # dK arriving as [b, h, d, s] (dim stride = seq_len, as fp16 LoRA's compiled block hands it over)
-    # must not specialize the length: once a constexpr, it recompiled at every new length.
+    # dK as [b, h, d, s] (fp16 LoRA compiled block) must not specialize seq_len.
     if not RE._TRACEABLE:
         pytest.skip(reason = "RoPE ops are not traceable on this torch / Triton")
     from torch._dynamo.utils import counters
