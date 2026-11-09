@@ -252,7 +252,6 @@ def test_new_class_batch_splits_and_matches_one_card(name, monkeypatch):
     ref, _m, _r, _b = _render(CASES[name], routed = False)
     out, model, router, built = _render(CASES[name], routed = True)
     assert type(model).__name__ == name
-    # step 1 learns the call pattern; later steps split
     assert router.stats["batch_splits"] == STEPS - 1, router.stats
     assert len(built) == 1
     torch.testing.assert_close(out, ref, rtol = 1e-4, atol = 1e-5)

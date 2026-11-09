@@ -56,7 +56,7 @@ MULTIGPU_ALL_ENV = "UNSLOTH_DIFFUSION_MULTIGPU_ALL"
 
 
 def multigpu_all_enabled() -> bool:
-    """The multi-GPU paths added for the remaining families and formats; ``0`` keeps the earlier one-card choices."""
+    """Multi-GPU paths for the remaining families and formats; ``0`` keeps the one-card choices."""
     if multigpu_mode() == "off":
         return False
     return (os.environ.get(MULTIGPU_ALL_ENV) or "").strip().lower() not in (
@@ -3733,7 +3733,7 @@ def _join_outputs(
     b: Any,
     depth: int = 0,
 ) -> Any:
-    """Two halves' outputs joined along dim 0: every tensor of a tuple / list / output dict, not only the first."""
+    """Join two halves' outputs on dim 0: every tensor of a tuple / list / output dict."""
     torch = _torch()
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
         return torch.cat([a, b.to(a.device)], dim = 0)
