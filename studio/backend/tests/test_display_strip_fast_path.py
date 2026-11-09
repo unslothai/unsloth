@@ -31,7 +31,6 @@ def test_plain_prose_skips_the_strip_chain(monkeypatch):
         )
         assert out is _PROSE
     assert calls == []
-    # Text the chain may edit still goes through it.
     _strip_tool_xml_for_display(
         _PROSE + "call:python{}", auto_heal_tool_calls = True, enabled_tool_names = _NAMES
     )
