@@ -26,6 +26,7 @@ mod diagnostics;
 mod gpu_rendering;
 mod install;
 mod install_watchdog;
+mod keep_awake;
 #[cfg(target_os = "linux")]
 mod linux_gpu_supervisor;
 #[cfg(target_os = "linux")]
@@ -1215,6 +1216,7 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     if let Ok(mut running) = state.lock() {
         *running = active;
     }
+    keep_awake::set(active);
 }
 
 fn training_is_active(app: &tauri::AppHandle) -> bool {
@@ -1473,6 +1475,8 @@ fn cleanup_child_processes(app: &tauri::AppHandle) {
         return;
     }
     {
+        // Release before the reap below, which can take up to 18s.
+        keep_awake::set(false);
         let diagnostics_state = app
             .try_state::<diagnostics::DiagnosticsState>()
             .map(|state| state.inner().clone());
