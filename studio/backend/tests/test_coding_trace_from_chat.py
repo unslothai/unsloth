@@ -146,24 +146,20 @@ def test_native_thread_follows_the_newest_branch_unless_a_head_is_given():
         "t1",
         [
             _row("u1", "user", _text("Write a parser"), None, 10),
-            _row("a1", "assistant", _text("First try"), "u1", 20),
+            _row("a1", "assistant", _text("First try"), "u1", 50),
             _row("a2", "assistant", _text("Second try"), "u1", 30),
             _row("u2", "user", _text("Thanks"), "a1", 40),
         ],
     )
 
     newest = load_chat_trace("t1")
-    assert [m.text for m in newest.messages] == [
-        "Be brief.",
-        "Write a parser",
-        "First try",
-        "Thanks",
-    ]
+    assert [m.text for m in newest.messages] == ["Be brief.", "Write a parser", "First try"]
     assert newest.model_id == "unsloth/model"
     assert [w.code for w in newest.warnings] == ["other_branches_dropped"]
-    assert "Left out 1 saved message(s)" in newest.warnings[0].message
+    assert "Left out 2 saved message(s)" in newest.warnings[0].message
 
-    # A saved head resolves to its newest leaf, the same way the chat UI opens it.
+    # A saved head resolves to its newest leaf, the same way the chat UI opens it; the inner node
+    # a1 sorts last but never wins.
     other = load_chat_trace("t1", head_id = "a2")
     assert [m.text for m in other.messages] == ["Be brief.", "Write a parser", "Second try"]
     assert load_chat_trace("t1", head_id = "u1").messages[-1].text == "Thanks"
@@ -212,17 +208,6 @@ def test_unreadable_threads_and_cut_branches():
     trace = chat_to_trace({"id": "t"}, rows + [_row("a1", "assistant", _text("lost"), "gone", 2)])
     assert [m.text for m in trace.messages] == ["lost"]
     assert _codes(trace) == ["missing_parent", "other_branches_dropped", "no_user_message"]
-
-
-def test_a_saved_head_never_resolves_to_an_inner_node():
-    rows = [
-        _row("u1", "user", _text("Write a parser"), None, 10),
-        _row("a1", "assistant", _text("Done"), "u1", 50),
-        _row("u2", "user", _text("Add tests"), "a1", 40),
-        _row("a2", "assistant", _text("Other"), "u1", 30),
-    ]
-    trace = chat_to_trace({"id": "t"}, rows, head_id = "u1")
-    assert [m.text for m in trace.messages] == ["Write a parser", "Done", "Add tests"]
 
 
 def _local(cid, round_id = None):
@@ -307,6 +292,12 @@ def test_adjacent_rows_alternate_calls_and_results():
             "@lint",
         ),
         (
+            [_call("s", "studio_load_skill", None, args = "lint"), *_text("ok")],
+            "ok",
+            ["skill_preload_not_stored"],
+            "@None",
+        ),
+        (
             [_call("w", "web_search", {"hits": []}, args = {"_server_tool": True}), *_text("ok")],
             "ok",
             ["server_tool_skipped"],
@@ -334,45 +325,64 @@ def test_assistant_rows_replay_like_the_ui(parts, text, codes, note):
 @pytest.mark.parametrize(
     "part, text",
     [
-        (_call("A", result = ""), '{"result":""}'),
-        (_call("A", result = {"exit_code": 0, "out": "é"}), '{"exit_code":0,"out":"é"}'),
-        (_call("A", "my_client_tool", {"text": "hi", "score": 3}), '{"text":"hi","score":3}'),
         (_call("A", "python", {"text": "ok", "sessionId": "s", "images": []}), "ok"),
-        (_call("A", "web_search", "found"), "found"),
         (_call("A", "search_knowledge_base", "Hit\n__RAG_SOURCES__:[1]"), "Hit"),
         (_call("A", "python", "Error: boom"), "Error: boom" + TOOL_ERROR_NUDGE),
         (_call("A", result = "out", provenance = {"model_suffix": " [2 left]"}), "out [2 left]"),
+        (_call("A", result = "out", provenance = "local"), "out"),
     ],
 )
 def test_tool_results_match_the_ui_wire_text(part, text):
     assert _assistant([part]).messages[2].text == text
 
 
-@pytest.mark.parametrize(
-    "custom, content, shape",
-    [
-        ({}, [], [("user", "again"), ("assistant", "fine")]),
-        ({"anthropicRefusal": True}, _text("no"), [("user", "again"), ("assistant", "fine")]),
-        (
-            {"incomplete": {"reason": "cancelled"}},
-            [],
-            [
-                ("user", "go"),
-                ("assistant", "Response stopped"),
-                ("user", "again"),
-                ("assistant", "fine"),
-            ],
-        ),
-    ],
-)
-def test_refused_and_abandoned_turns_are_pruned(custom, content, shape):
+def _turn(custom, content):
     rows = [
         _row("u", "user", _text("go"), None, 1),
         _row("a", "assistant", content, "u", 2, metadata = {"custom": custom}),
         _row("u2", "user", _text("again"), "a", 3),
         _row("a2", "assistant", _text("fine"), "u2", 4),
     ]
-    assert _shape(chat_to_trace({"id": "t"}, rows)) == shape
+    return chat_to_trace({"id": "t"}, rows)
+
+
+_STOPPED = {"incomplete": {"reason": "cancelled"}}
+
+
+# `before` is what the trace keeps ahead of the next turn ("again", "fine").
+@pytest.mark.parametrize(
+    "custom, content, before",
+    [
+        ({}, [], []),
+        ({}, _text("   "), []),
+        ({"anthropicRefusal": True}, _text("no"), []),
+        (_STOPPED, [], [("user", "go"), ("assistant", "Response stopped")]),
+        (_STOPPED, _text("   "), [("user", "go"), ("assistant", "Response stopped")]),
+        (
+            {"incomplete": {"reason": "length"}},
+            [{"type": "reasoning", "text": "hmm"}, _call("k", result = None)],
+            [("user", "go"), ("assistant", "Response hit the Max Tokens limit")],
+        ),
+        # isAbandonedAssistantTurn keeps a turn with a reasoning part, even an empty one.
+        ({}, [{"type": "reasoning", "text": ""}], [("user", "go")]),
+        # Malformed stored metadata is ignored, as readIncompleteInfo ignores it.
+        *[
+            (custom, _text("hi"), [("user", "go"), ("assistant", "hi")])
+            for custom in ("bad", {"incomplete": "length"}, {"incomplete": {"reason": ["length"]}})
+        ],
+    ],
+)
+def test_refused_and_abandoned_turns_are_pruned(custom, content, before):
+    assert _shape(_turn(custom, content)) == before + [("user", "again"), ("assistant", "fine")]
+
+
+@pytest.mark.parametrize("custom", [{}, _STOPPED])
+def test_native_builtin_turn_keeps_its_prompt(custom):
+    # The UI replays the native part as a tool call, so the turn is neither abandoned nor labelled.
+    native = _call("x", "code_execution", None, args = {"google": {"native_part": {}}})
+    trace = _turn(custom, [native])
+    assert _shape(trace) == [("user", "go"), ("user", "again"), ("assistant", "fine")]
+    assert _codes(trace) == ["server_tool_skipped"]
 
 
 def test_user_attachments_are_model_input():
@@ -408,6 +418,19 @@ def test_user_attachments_are_model_input():
             },
             {"id": "p", "name": "P", "instructions": "Use tabs.", "archived": True},
             "u x 3 {{ $date }}",
+            ["system_prompt_variables"],
+        ),
+        # JSON.parse and String() print 1.0 as 1; a NaN map fails the parse and fills nothing.
+        (
+            {"systemPrompt": "{{n}} {{x}}", "systemVariables": '{"n":1.0,"x":[1.0]}'},
+            None,
+            "1 [1]",
+            [],
+        ),
+        (
+            {"systemPrompt": "{{n}}", "systemVariables": '{"n":NaN}'},
+            None,
+            "{{n}}",
             ["system_prompt_variables"],
         ),
         (

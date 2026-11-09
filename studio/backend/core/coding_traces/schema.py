@@ -12,7 +12,7 @@ Role = Literal["system", "user", "assistant", "tool"]
 
 
 class ChatTraceError(ValueError):
-    pass
+    """Raised when a chat cannot become a coding trace."""
 
 
 @dataclass

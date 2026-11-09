@@ -50,6 +50,10 @@ _STOP_LABELS = {
 _PROMPT_VARIABLE = re.compile(r"{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}")
 
 
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def _sort_key(message: dict) -> tuple:
     return (
         message.get("createdAt") or 0,
@@ -128,13 +132,8 @@ def _branch(
     while current is not None and current not in seen:
         message = by_id.get(current)
         if message is None:
-            warnings.append(
-                TraceWarning(
-                    "missing_parent",
-                    f"Parent {current!r} is not saved; the trace starts after it",
-                    chain[-1]["id"],
-                )
-            )
+            note = f"Parent {current!r} is not saved; the trace starts after it"
+            warnings.append(TraceWarning("missing_parent", note, chain[-1]["id"]))
             break
         seen.add(current)
         chain.append(message)
@@ -143,12 +142,8 @@ def _branch(
 
     dropped = len(messages) - len(chain)
     if dropped:
-        warnings.append(
-            TraceWarning(
-                "other_branches_dropped",
-                f"Left out {dropped} saved message(s) that are not on the selected branch",
-            )
-        )
+        note = f"Left out {dropped} saved message(s) not on the selected branch"
+        warnings.append(TraceWarning("other_branches_dropped", note))
     return chain
 
 
@@ -209,13 +204,8 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                     while f"{call_id}#{suffix}" in call_ids:
                         suffix += 1
                     renamed = f"{call_id}#{suffix}"
-                    warnings.append(
-                        TraceWarning(
-                            "duplicate_tool_call_id",
-                            f"Tool call id {call_id!r} repeats; renamed to {renamed!r}",
-                            message_id,
-                        )
-                    )
+                    note = f"Tool call id {call_id!r} repeats; renamed to {renamed!r}"
+                    warnings.append(TraceWarning("duplicate_tool_call_id", note, message_id))
                     call_id = renamed
                 call_ids.add(call_id)
                 args = part.get("args")
@@ -229,7 +219,7 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
                 )
                 wire = {"role": "tool", "name": name}
                 wire["content"] = _tool_result_content(part["result"], name)
-                suffix = (part.get("provenance") or {}).get("model_suffix")
+                suffix = _as_dict(part.get("provenance")).get("model_suffix")
                 if isinstance(suffix, str) and suffix:
                     wire["extra_content"] = {TOOL_MODEL_SUFFIX_KEY: suffix}
                 pending.append(
@@ -253,7 +243,15 @@ def _convert(chain: list[dict], warnings: list[TraceWarning]) -> list[TraceMessa
     for m in out:
         if m.role == "assistant":
             m.text = _sanitised_assistant_text(m.text)
-    return [m for m in out if m.text or m.reasoning or m.tool_calls or m.role == "tool"]
+    # hasReplayContent trims assistant text; a user's text is sent as it is.
+    return [
+        m
+        for m in out
+        if (m.text.strip() if m.role == "assistant" else m.text)
+        or m.reasoning
+        or m.tool_calls
+        or m.role == "tool"
+    ]
 
 
 def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceWarning]:
@@ -261,7 +259,7 @@ def _skipped_call(part: dict, message_id: str, position: int) -> Optional[TraceW
     name = part.get("toolName")
     if name == "studio_load_skill":
         # A request-local system-prompt preload (skill_mentions.py); chat-adapter.ts drops the card.
-        skill = (part.get("args") or {}).get("name")
+        skill = _as_dict(part.get("args")).get("name")
         return TraceWarning(
             "skill_preload_not_stored",
             f"Skill @{skill} was added to that request's system prompt; its text is not saved",
@@ -292,27 +290,36 @@ def _prune(chain: list[dict]) -> list[dict]:
     empty stopped turn its label, as fillStoppedAssistantReplay does."""
 
     def custom(message):
-        metadata = message.get("metadata")
-        return (metadata.get("custom") or {}) if isinstance(metadata, dict) else {}
+        return _as_dict(_as_dict(message.get("metadata")).get("custom"))
 
-    def empty(message):
-        return not _convert([message], [])
+    def replayed(message, reasoning):
+        # The UI sends a native Gemini builtin as a tool call (serializeAssistantToolCallPart),
+        # though the trace drops it.
+        if any(
+            isinstance(p, dict) and p.get("type") == "tool-call" and _server_builtin(p)[1]
+            for p in _model_parts(message)
+        ):
+            return True
+        converted = _convert([message], [])
+        return any(m.text.strip() or m.tool_calls or (reasoning and m.reasoning) for m in converted)
 
     def abandoned(message):
-        # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser.
+        # assistantTurnCarriesPayload reads the raw parts, before the replay sanitiser, and
+        # isAbandonedAssistantTurn keeps any turn with a reasoning part, even an empty one.
         payload = any(
             isinstance(p, dict)
             and (
-                p.get("type") == "image"
+                p.get("type") in ("image", "reasoning")
                 or (p.get("type") == "text" and str(p.get("text") or "").strip())
             )
             for p in _model_parts(message)
         )
-        return not payload and empty(message)
+        return not payload and not replayed(message, reasoning = True)
 
     assistant = [m.get("role") == "assistant" for m in chain]
     refused = [a and custom(m).get("anthropicRefusal") is True for m, a in zip(chain, assistant)]
-    stopped = [(custom(m).get("incomplete") or {}).get("reason") in _STOP_LABELS for m in chain]
+    reasons = [_as_dict(custom(m).get("incomplete")).get("reason") for m in chain]
+    stopped = [isinstance(r, str) and r in _STOP_LABELS for r in reasons]
     dropped = [
         r or (a and not s and abandoned(m))
         for m, a, r, s in zip(chain, assistant, refused, stopped)
@@ -324,18 +331,34 @@ def _prune(chain: list[dict]) -> list[dict]:
             if (refused[index] or index < last) and kept and kept[-1].get("role") == "user":
                 kept.pop()
             continue
-        if assistant[index] and stopped[index] and empty(message):
-            label = _STOP_LABELS[custom(message)["incomplete"]["reason"]]
+        # The UI never replays the reasoning of a stopped turn with no text and no calls.
+        if assistant[index] and stopped[index] and not replayed(message, reasoning = False):
+            label = _STOP_LABELS[reasons[index]]
             message = {**message, "content": [{"type": "text", "text": label}], "attachments": []}
         kept.append(message)
     return kept
+
+
+def _js_float(text: str) -> float | int:
+    value = float(text)
+    return int(value) if value.is_integer() and abs(value) < 2**53 else value
+
+
+def _reject_constant(text: str) -> None:
+    raise ValueError(f"{text} is not JSON")
 
 
 def _fill_variables(prompt: str, raw: object) -> str:
     """Fill custom systemVariables as resolveSystemPromptVariables does; $date, $time and $now
     used the send-time clock, which is not stored, so they stay as written."""
     try:
-        values = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
+        # parseSystemVariablesMap uses JSON.parse, so String() prints integral floats as ints,
+        # and a NaN fails the parse and fills nothing.
+        values = (
+            json.loads(raw, parse_float = _js_float, parse_constant = _reject_constant)
+            if isinstance(raw, str) and raw.strip()
+            else {}
+        )
     except ValueError:
         values = {}
 
@@ -365,41 +388,22 @@ def _system_message(
     prompt = settings.get("systemPrompt")
     if not isinstance(prompt, str):
         # No thread snapshot means the chat ran on the browser's global prompt, which is not saved.
-        warnings.append(
-            TraceWarning(
-                "system_prompt_not_stored",
-                "The thread stores no system prompt; the trace may lack the one the model saw",
-            )
-        )
+        note = "The thread stores no system prompt; the trace may lack the one the model saw"
+        warnings.append(TraceWarning("system_prompt_not_stored", note))
         prompt = ""
     prompt = _fill_variables(prompt, settings.get("systemVariables"))
     if _PROMPT_VARIABLE.search(prompt):
-        warnings.append(
-            TraceWarning(
-                "system_prompt_variables",
-                "Send-time or unknown system prompt variables are left as stored",
-            )
-        )
+        note = "Send-time or unknown system prompt variables are left as stored"
+        warnings.append(TraceWarning("system_prompt_variables", note))
     instructions = ""
     if project and not project.get("archived"):
         instructions = str(project.get("instructions") or "").strip()
     if agents_md_enabled():
-        warnings.append(
-            TraceWarning(
-                "agents_md_not_stored",
-                "AGENTS.md is read at send time and not stored; the model may have seen it before this system text",
-            )
-        )
-    text = "\n\n".join(
-        part
-        for part in (
-            f"<project_instructions>\n{instructions}\n</project_instructions>"
-            if instructions
-            else "",
-            prompt.strip(),
-        )
-        if part
-    )
+        note = "AGENTS.md is read at send time and not stored; it may have come before this text"
+        warnings.append(TraceWarning("agents_md_not_stored", note))
+    if instructions:
+        instructions = f"<project_instructions>\n{instructions}\n</project_instructions>"
+    text = "\n\n".join(part for part in (instructions, prompt.strip()) if part)
     if not text:
         return None
     return TraceMessage(id = f"{thread['id']}:system", role = "system", text = text)
