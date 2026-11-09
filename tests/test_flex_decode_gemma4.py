@@ -88,6 +88,8 @@ def flex(monkeypatch):
     FD._SUPPORT_CACHE.clear()
     assert FD.register()
     monkeypatch.setattr(FD, "wanted", lambda device: True)
+    # No CUDA graphs on CPU: force flex decode for eager calls too.
+    monkeypatch.setenv(FD.ENV, "1")
     monkeypatch.setattr(vision, "_model_device", lambda model: torch.device("cpu"))
     return FD
 

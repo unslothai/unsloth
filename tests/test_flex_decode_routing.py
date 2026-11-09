@@ -75,7 +75,10 @@ def _steps(
 
 @pytest.fixture
 def flex_on(monkeypatch):
+    import unsloth.models._decode_graphs as G
+
     monkeypatch.setattr(FD, "wanted", lambda device: True)
+    monkeypatch.setattr(G, "call_plan", lambda: "graph")
     monkeypatch.setattr(
         FD, "routable", lambda model, config: FD._model_type(config) in FD.MODEL_TYPES
     )
@@ -89,6 +92,22 @@ def test_static_decode_steps_use_flex_decode_and_prefill_keeps_sdpa(flex_on):
         _steps(model, _Static())
     assert model.seen == ["sdpa", FD.ATTN_KEY, FD.ATTN_KEY]
     assert model.config._attn_implementation == "sdpa"
+
+
+def test_auto_routes_only_graph_planned_calls(flex_on, monkeypatch):
+    # Eager flex decode is slower than SDPA: auto switches only calls that decode through CUDA graphs, =1 forces.
+    import unsloth.models._decode_graphs as G
+
+    monkeypatch.setattr(G, "call_plan", lambda: "eager")
+    model = _model("gemma4_text", "sdpa")
+    with _NonFlexGenerate(model):
+        _steps(model, _Static())
+    assert model.seen == ["sdpa", "sdpa", "sdpa"]
+    monkeypatch.setenv(FD.ENV, "1")
+    model = _model("gemma4_text", "sdpa")
+    with _NonFlexGenerate(model):
+        _steps(model, _Static())
+    assert model.seen == ["sdpa", FD.ATTN_KEY, FD.ATTN_KEY]
 
 
 def test_dynamic_cache_keeps_the_model_attention(flex_on):

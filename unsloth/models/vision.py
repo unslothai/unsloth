@@ -1757,8 +1757,11 @@ class _NonFlexGenerate:
             decode = True
         for c, prefill, decode_impl in state.get("_unsloth_non_flex_generate_configs", ()):
             value = decode_impl if decode else prefill
-            # Flex decode needs fixed mask / KV shapes: a dynamic cache decodes on the non-flex path instead.
-            if value == _flex_decode.ATTN_KEY and not static:
+            # Flex decode needs fixed mask / KV shapes (a dynamic cache decodes on the non-flex path instead), and
+            # pays off only when the step is replayed from a CUDA graph (eager flex decode is slower than SDPA).
+            if value == _flex_decode.ATTN_KEY and not (
+                static and (_flex_decode.forced() or _decode_graphs.call_plan() == "graph")
+            ):
                 value = _NON_FLEX_DECODE if prefill == "flex_attention" else prefill
             if _config_get(c, "_attn_implementation", None) != value:
                 _config_set(c, "_attn_implementation", value)

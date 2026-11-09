@@ -11,8 +11,10 @@ SDPA mask otherwise. The attention side runs zoo's flex decode on a BlockMask an
 mask, so a model can mix both (Gemma 4's head_dim 512 full layers below sm80 stay on SDPA while its sliding
 layers decode on flex). Prefill, dynamic caches and custom mask functions are untouched.
 
-UNSLOTH_FLEX_DECODE: auto (default: compute capability 8.0 and newer, model types in MODEL_TYPES), 1 (any GPU,
-any text model with a StaticCache), 0 (off). Needs unsloth_zoo.flex_attention.decode and the transformers 5.x
+UNSLOTH_FLEX_DECODE: auto (default: compute capability 8.0 and newer, model types in MODEL_TYPES, and only in a
+generate() call that decodes through CUDA graphs: measured on an L4, graphed flex decode is 1-10% faster than
+graphed SDPA while eager flex decode is 6-9% slower than eager SDPA), 1 (any GPU, any text model with a StaticCache,
+graphs or not), 0 (off). Needs unsloth_zoo.flex_attention.decode and the transformers 5.x
 mask interface (q_length / q_offset); without them nothing changes."""
 
 import inspect
@@ -161,6 +163,11 @@ def register():
 
 def _mode():
     return os.environ.get(ENV, "auto").strip().lower()
+
+
+def forced():
+    """UNSLOTH_FLEX_DECODE=1: flex decode whether or not the call decodes through CUDA graphs."""
+    return _mode() in ("1", "true", "on", "yes", "force")
 
 
 def wanted(device):
