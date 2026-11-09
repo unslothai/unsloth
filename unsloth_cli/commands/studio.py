@@ -3176,8 +3176,16 @@ PID_FILE_GLOB = "studio-*.pid"
 
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with ``pid`` exists. os.kill(pid, 0) raises WinError 87 for
-    every pid on Windows, so use tasklist there."""
+    every pid on Windows, so use psutil there (no process spawn) and fall back to tasklist."""
     if sys.platform == "win32":
+        try:
+            import psutil
+
+            # OpenProcess-based; access denied already counts as alive.
+            return bool(psutil.pid_exists(int(pid)))
+        except Exception:
+            # psutil is optional for the CLI install; tasklist decides.
+            pass
         try:
             out = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH", "/FO", "CSV"],
