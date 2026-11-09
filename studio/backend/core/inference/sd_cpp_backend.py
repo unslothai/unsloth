@@ -630,6 +630,14 @@ def sd_cpp_graph_cut_options(binary: Optional[str]) -> frozenset[str]:
     return frozenset(flag for flag in ("--max-vram", "--stream-layers") if flag in text)
 
 
+def _layer_split_supported(binary: Optional[str]) -> bool:
+    """Whether ``binary`` takes a per-device ``--max-vram`` and ``--auto-fit off`` (a two-card block split)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--max-vram" in text and "--auto-fit" in text
+
+
 def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
     """fails closed because sd-cli rejects unknown flags (u13b9d92 predates --sage-attn)."""
     if not binary:
@@ -2956,15 +2964,21 @@ def _offload_with_device_pin_impl(
     if split is not None and device_name is not None and int(split.primary) == int(ordinal):
         second = sd_cpp_device_name_for_ordinal(binary, int(split.secondary))
         if second is not None and second != device_name:
-            return [
-                *flags,
-                *device_backend_flags(
-                    device_name,
-                    flags,
-                    te_device = second,
-                    vae_device = second if split.vae_on_secondary else None,
-                ),
-            ]
+            layer = bool(split.layer) and _layer_split_supported(binary)
+            pinned = device_backend_flags(
+                f"{device_name}&{second}" if layer else device_name,
+                flags,
+                te_device = second,
+                vae_device = second if split.vae_on_secondary else None,
+            )
+            if layer:
+                # auto-fit would demand the whole model on each listed card; the budgets size sd.cpp's block cut
+                budgets = ",".join(
+                    f"{name}={int(mib) / 1024:.2f}"
+                    for name, mib in zip((device_name, second), split.budgets_mib)
+                )
+                pinned += ["--auto-fit", "off", "--max-vram", budgets]
+            return [*flags, *pinned]
         logger.info(
             "sd_cpp.multigpu: one card (cuda:%s %s)",
             split.secondary,
@@ -3869,10 +3883,16 @@ class SdCppDiffusionBackend:
             split_memo: dict[tuple, Any] = {}
 
             def _split() -> Any:
-                key = (device, _ordinal(), tuple(offload))
+                key = (device, _ordinal(), tuple(offload), _running()[1])
                 if key not in split_memo:
                     split_memo[key] = (
-                        split_for_load(files, primary = _ordinal(), offload = offload, logger = logger)
+                        split_for_load(
+                            files,
+                            primary = _ordinal(),
+                            offload = offload,
+                            layer_ok = _layer_split_supported(_running()[1]),
+                            logger = logger,
+                        )
                         if device == "cuda" and off_torch is None
                         else None
                     )

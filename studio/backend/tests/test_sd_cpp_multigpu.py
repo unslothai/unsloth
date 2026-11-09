@@ -318,3 +318,75 @@ def test_helpers_keep_to_the_split_diffusion_card_and_status_follows_a_cpu_resta
     assert "multi_gpu" in b.status()
     b._cpu_backend_forced = True
     assert "multi_gpu" not in b.status()
+
+
+def test_a_diffusion_model_no_card_holds_is_cut_across_both(monkeypatch):
+    # Qwen-Image Q4_K_M on 2x T4: the 12.0 GiB model plus sd.cpp's working memory exceeds one card
+    split, _ = _plan(layer_ok = True)
+    assert split.layer is True and split.vae_on_secondary is True
+    assert split.budgets_mib == (T4_LIMIT, T4_LIMIT)
+    assert split.describe()["placement"]["diffusion_model"] == "cuda:0+cuda:1"
+    # a model that fits the primary keeps the companion split; without a capable build there is no block split
+    assert _plan(diffusion_mib = 9_000, layer_ok = True)[0].layer is False
+    assert _plan(layer_ok = False)[0].layer is False
+    # both cards together too small: the companion split remains
+    assert _plan(diffusion_mib = 22_000, layer_ok = True)[0].layer is False
+
+
+def test_the_block_split_pin_lists_both_cards_and_their_budgets(monkeypatch):
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda _b, *args: (
+            "  --max-vram  budget\n  --auto-fit  on|off\n"
+            if args and args[0] == "--help"
+            else "CUDA0\tTesla T4\nCUDA1\tTesla T4\n"
+        ),
+    )
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
+    split = _m().SdCppCardSplit(
+        primary = 0,
+        secondary = 1,
+        vae_on_secondary = True,
+        reason = "r",
+        layer = True,
+        budgets_mib = (13_876, 13_876),
+    )
+    flags = bk._offload_with_device_pin_impl([], "/sd/sd-server", 0, split)
+    assert flags == [
+        "--backend",
+        "diffusion=CUDA0&CUDA1,te=CUDA1,vae=CUDA1",
+        "--auto-fit",
+        "off",
+        "--max-vram",
+        "CUDA0=13.55,CUDA1=13.55",
+    ]
+    from core.inference.sd_cpp_args import without_device_backend_flags
+
+    # the CPU restart and status drop the whole pin; a one-card pin keeps any other --max-vram
+    assert without_device_backend_flags(["--diffusion-fa", *flags]) == ["--diffusion-fa"]
+    assert without_device_backend_flags(
+        ["--max-vram", "-1", "--backend", "diffusion=CUDA0,te=CUDA0,vae=CUDA0"]
+    ) == ["--max-vram", "-1"]
+    # a build without the flags falls back to the companion split
+    monkeypatch.setattr(
+        bk, "_sd_cpp_probe_output", lambda _b, *args: "CUDA0\tTesla T4\nCUDA1\tTesla T4\n"
+    )
+    assert bk._offload_with_device_pin_impl([], "/sd/sd-server", 0, split) == [
+        "--backend",
+        "diffusion=CUDA0,te=CUDA1,vae=CUDA1",
+    ]
+
+
+def test_a_two_card_load_cuts_the_model_across_both_cards_on_a_capable_build(monkeypatch, tmp_path):
+    monkeypatch.setattr(bk, "_layer_split_supported", lambda binary: True)
+    monkeypatch.setattr("utils.hardware.get_parent_visible_gpu_ids", lambda: [0, 1])
+    b, servers = _server_load(monkeypatch, tmp_path, gpu_ordinals = [0, 1])
+    started = list(servers[-1].started.get("offload"))
+    assert _backend_arg(started) == "diffusion=CUDA0&CUDA1,te=CUDA1,vae=CUDA1"
+    assert started[started.index("--auto-fit") + 1] == "off"
+    assert "--max-vram" in started
+    status = b.status()
+    assert status["multi_gpu"]["chosen"] == "layer_split"
+    assert status["offload_policy"] == "none" and status["cpu_offload"] is False
+    assert b._state.physical_gpu_id is None and b._state.placed_ordinal == 0

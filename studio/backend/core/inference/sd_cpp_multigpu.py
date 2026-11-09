@@ -23,14 +23,18 @@ class SdCppCardSplit:
     secondary: int
     vae_on_secondary: bool
     reason: str
+    # the diffusion model's blocks across both cards (sd.cpp's own layer split), each card held to its budget
+    layer: bool = False
+    budgets_mib: tuple[int, int] = (0, 0)
 
     def describe(self) -> dict[str, Any]:
+        diffusion = f"cuda:{self.primary}" + (f"+cuda:{self.secondary}" if self.layer else "")
         return {
-            "chosen": "companion_split",
+            "chosen": "layer_split" if self.layer else "companion_split",
             "primary": f"cuda:{self.primary}",
             "secondary": f"cuda:{self.secondary}",
             "placement": {
-                "diffusion_model": f"cuda:{self.primary}",
+                "diffusion_model": diffusion,
                 "text_encoders": f"cuda:{self.secondary}",
                 "vae": f"cuda:{self.secondary if self.vae_on_secondary else self.primary}",
             },
@@ -46,9 +50,11 @@ def plan_sd_cpp_split(
     primary: int,
     primary_limit_mib: Optional[int],
     secondary_limits_mib: dict[int, Optional[int]],
+    layer_ok: bool = False,
 ) -> tuple[Optional[SdCppCardSplit], str]:
     """``(split, reason)`` or ``(None, reason)``. Splits only when one card cannot hold every module; encoders (and
-    VAE if room) move to the roomiest other card."""
+    VAE if room) move to the roomiest other card, and with ``layer_ok`` a diffusion model no card holds is cut across
+    both."""
     if primary_limit_mib is None:
         return None, f"free memory of cuda:{primary} is unknown"
     if text_encoder_mib <= 0:
@@ -67,6 +73,30 @@ def plan_sd_cpp_split(
     if not limits:
         return None, "no second card with readable free memory"
     best = max(limits, key = lambda o: (limits[o], -o))
+    both = primary_limit_mib + limits[best]
+    pair_need = (
+        diffusion_mib
+        + text_encoder_mib
+        + vae_mib
+        + 2 * DENOISE_HEADROOM_MIB
+        + VAE_DECODE_HEADROOM_MIB
+    )
+    if layer_ok and diffusion_mib + DENOISE_HEADROOM_MIB > primary_limit_mib and pair_need <= both:
+        # no card holds the diffusion model resident: sd.cpp cuts its blocks in proportion to each card's budget
+        return (
+            SdCppCardSplit(
+                primary = int(primary),
+                secondary = best,
+                vae_on_secondary = vae_mib > 0,
+                layer = True,
+                budgets_mib = (int(primary_limit_mib), int(limits[best])),
+                reason = (
+                    f"multi-GPU: diffusion model ({diffusion_mib} MiB) split across cuda:{primary} and cuda:{best} "
+                    f"({pair_need} of {both} MiB with the text encoders on cuda:{best}); one card needs {whole} MiB"
+                ),
+            ),
+            "",
+        )
     with_vae = text_encoder_mib + vae_mib + max(ENCODER_HEADROOM_MIB, VAE_DECODE_HEADROOM_MIB)
     encoders = text_encoder_mib + ENCODER_HEADROOM_MIB
     # an unmeasured VAE (none in its own file) stays with the diffusion model
@@ -126,6 +156,7 @@ def split_for_load(
     *,
     primary: Optional[int],
     offload: Sequence[str],
+    layer_ok: bool = False,
     limit_of: Optional[Callable[[int], Optional[int]]] = None,
     logger: Any = None,
 ) -> Optional[SdCppCardSplit]:
@@ -156,6 +187,7 @@ def split_for_load(
         primary = int(primary),
         primary_limit_mib = limits.get(int(primary)),
         secondary_limits_mib = {int(o): limits.get(int(o)) for o in selection.secondaries},
+        layer_ok = layer_ok,
     )
     if logger is not None:
         logger.info(
