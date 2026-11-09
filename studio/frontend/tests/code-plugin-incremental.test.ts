@@ -694,7 +694,6 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     language,
     themes: THEMES,
   });
-  // Past LIVE_TAIL_CHARS: a long growth still answers with the plain tail and refreshes later.
   const grown = `${initial}\n${Array.from({ length: 40 }, (_, index) => `next_value_${index} = ${index}  # streamed`).join("\n")}`;
   const throttled = await highlightOnce(plugin, {
     code: grown,

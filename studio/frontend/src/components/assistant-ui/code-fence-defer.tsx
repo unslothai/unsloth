@@ -263,7 +263,6 @@ const gateInView = (gate: FenceGate): boolean =>
   inBand(gate.node, gate.near, 0)
   && (gate.near === gate.outer || inBand(gate.near as HTMLElement, gate.outer, 0));
 
-// Main-thread tokenizing a latch may spend on fences already on screen; the rest wait for the worker.
 const LATCH_INLINE_MS = 8;
 
 /*
@@ -454,8 +453,6 @@ const rankGates = (gates: readonly FenceGate[]): number[] => {
 const SPECULATION_IN_FLIGHT = 3;
 const SPECULATION_VIEWPORTS = 3;
 
-// Speculation tokenizes in the worker and only posts and seeds here, so a wheel or touch scroll
-// does not hold it: the fences ahead of the reader are ready by the time they are reached.
 const fenceSpeculator = createFenceSpeculator<FenceGate>({
   idle: (callback, timeout) => scheduleIdleTask(callback, timeout),
   wait: (callback, ms) => {
@@ -473,8 +470,6 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   budgetChars: MAX_CACHED_CHARACTERS / 2,
   budgetFences: MAX_FENCES / 2,
   maxInFlight: SPECULATION_IN_FLIGHT,
-  // Only fences a quick scroll can reach: on a long chat the rest would cost the main thread
-  // ranking and seeding for fences the reader may never open.
   maxDistance: () => SPECULATION_VIEWPORTS * window.innerHeight,
 });
 
@@ -562,7 +557,6 @@ const outermostScrollerOf = (node: HTMLElement): HTMLElement | null => {
   return found;
 };
 
-/** Is `node` inside `scroller`'s box grown by `margin` of its own heights (the observer's margin)? */
 const inBand = (node: HTMLElement, scroller: HTMLElement | null, margin = 1): boolean => {
   const bounds = scroller?.getBoundingClientRect();
   const top = bounds ? bounds.top : 0;
@@ -780,7 +774,6 @@ const parseDeclarations = (text: string): Record<string, string> => {
 
 installTokenClasses([unslothLightTheme, unslothDarkTheme]);
 
-/** A token span's colours as shared classes (see fence-token-classes.ts), else inline. */
 const styledSpan = (
   base: string,
   style: Record<string, string>,
@@ -1123,18 +1116,14 @@ const highlightResize = (): void => {
 };
 
 // Bounded entries ignore wheel and touch scrolling; the rest still wait for the reader to stop.
-// Every engine runs them mid-scroll: the worker colours a block before its markup swaps, and each run
-// stays inside HIGHLIGHT_RUN_MS, so the WebKit timer fallback no longer swaps in plain markup.
 const highlightQuietIn = (duringScroll: boolean): number =>
   Math.max(
     duringScroll ? nonScrollInputQuietIn() : inputQuietIn(),
     300 - (performance.now() - highlightResizedAt),
   );
 
-// Without requestIdleCallback the idle fallback is a 100 ms timer, so mid-scroll work runs right after the frame.
 const NO_IDLE_CALLBACK = typeof window !== "undefined"
   && typeof (window as { requestIdleCallback?: unknown }).requestIdleCallback !== "function";
-// One run may finish several queued fences while it stays inside this slice of a frame.
 const HIGHLIGHT_RUN_MS = 6;
 
 const highlightQueue = createFenceHighlightQueue({

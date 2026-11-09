@@ -18,7 +18,6 @@ export type FenceSpeculatorOptions<G extends SpeculationGate> = {
   budgetFences: number;
   maxInFlight?: number;
   rankEvery?: number;
-  /** Fences ranked farther than this wait until a rerank brings them closer (no limit: all). */
   maxDistance?: () => number;
 };
 
@@ -50,7 +49,6 @@ export function createFenceSpeculator<G extends SpeculationGate>(
   const inFlight = new Map<G, { cancel: (() => void) | null }>();
   let inFlightChars = 0;
   let pending: (() => void) | null = null;
-  // Picking stopped at the horizon; the next rerank (a scroll) looks again, at most this often.
   let parked = false;
   const PARKED_RECHECK_MS = 200;
 
@@ -82,7 +80,6 @@ export function createFenceSpeculator<G extends SpeculationGate>(
     const horizon = options.maxDistance?.() ?? Number.POSITIVE_INFINITY;
     for (const gate of order()) {
       if (!candidates.has(gate)) continue;
-      // Ranked nearest first, so everything after this one is farther still.
       if ((distance.get(gate) ?? Number.POSITIVE_INFINITY) > horizon) {
         parked = true;
         break;
@@ -175,7 +172,6 @@ export function createFenceSpeculator<G extends SpeculationGate>(
     },
     rerank: () => {
       ranked = null;
-      // A scroll can bring a fence that was beyond the horizon into it.
       if (!parked || pending || inFlight.size >= maxInFlight) return;
       parked = false;
       pending = options.wait(run, PARKED_RECHECK_MS);

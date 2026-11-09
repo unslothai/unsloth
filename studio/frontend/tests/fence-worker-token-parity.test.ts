@@ -52,7 +52,6 @@ test("a fence coloured by the worker renders exactly the tokens the main thread 
       { client: 1, revision: 1, source: code, language, lines: [], full: true },
       await exact(worker, options),
     );
-    // What postMessage does to the reply on its way to the main thread.
     const received = structuredClone(reply).result as HighlightResult;
     assert.deepEqual(received.tokens, local.tokens, `${language}: same tokens`);
     for (const key of ["bg", "fg", "themeName", "rootStyle"] as const) {

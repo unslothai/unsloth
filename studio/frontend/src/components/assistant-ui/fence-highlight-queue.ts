@@ -23,7 +23,6 @@ export type FenceHighlightQueueOptions = {
   schedule: (callback: () => void, duringScroll: boolean) => () => void;
   blocked: (duringScroll: boolean) => boolean;
   commit: (callback: () => void) => void;
-  /** A run keeps taking unblocked entries, each once, until this many ms have passed (0: one entry). */
   budgetMs?: number;
   now?: () => number;
 };
@@ -69,7 +68,6 @@ export function createFenceHighlightQueue(options: FenceHighlightQueueOptions): 
     let entry: HighlightEntry | undefined;
     const started = budgetMs > 0 ? now() : 0;
     const taken = new Set<HighlightEntry>();
-    // Asked once per kind per run: nothing a run commits can start a scroll, a hold or a selection.
     const verdicts = new Map<boolean, boolean>();
     const blocked = (duringScroll: boolean): boolean => {
       let verdict = verdicts.get(duringScroll);

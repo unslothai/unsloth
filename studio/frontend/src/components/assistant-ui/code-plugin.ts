@@ -104,8 +104,6 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
 };
 
 export const MIN_INCREMENTAL_CHARS = 2000;
-// A growth this short is tokenized at once (from the cached grammar state), so a streamed line
-// colours as it lands; only a longer one, a live line that keeps growing, waits for the refresh.
 export const LIVE_TAIL_CHARS = 1024;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;

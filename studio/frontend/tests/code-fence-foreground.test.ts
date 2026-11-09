@@ -71,7 +71,6 @@ const scope = {
   isBlankLine,
   plainLineText,
   fenceLineForeground,
-  // No document here: the shared token classes are not installed, so colours stay inline.
   tokenClassesFor: (() => null) as (style: Record<string, string>) => string | null,
 };
 runInNewContext(outputText, scope);

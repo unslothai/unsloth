@@ -3,14 +3,8 @@
 
 import type { ThemeRegistrationAny } from "shiki";
 
-/*
- * WebKit shares no computed style between elements that carry an inline style, so a code block whose
- * token spans each hold their colours inline costs about 3x the style work of the same spans with
- * classes (194 vs 60 ms for a 1250-node block): mid-scroll, that is a 100 to 300 ms frame per block.
- * Every declaration a token can carry comes from the two bundled themes, so each is a class written
- * once, before any chat renders; a sheet edited later would restyle the whole document on WebKit.
- * The classes set the same custom properties the inline style did, so colours resolve as before.
- */
+// WebKit shares no computed style across inline-styled elements (3x style work), so token colours are classes written once.
+// Must be installed before any chat renders: a sheet edited later restyles the whole document on WebKit.
 
 const COLOR = /^#(?:[\da-f]{3,4}|[\da-f]{6}|[\da-f]{8})$/i;
 const COLOR_PROPERTIES = ["--sdm-c", "--shiki-dark"] as const;
@@ -31,7 +25,6 @@ const themeColors = (theme: ThemeRegistrationAny): string[] => {
   return [...found];
 };
 
-/** `property:value` -> class, for every declaration the bundled themes can produce. */
 export function buildTokenClasses(
   themes: readonly ThemeRegistrationAny[],
 ): { names: Map<string, string>; css: string } {
@@ -59,7 +52,6 @@ export function buildTokenClasses(
 
 let installed: Map<string, string> | null = null;
 
-/** Writes the token classes once; later calls are no-ops. Without a document, nothing is installed. */
 export function installTokenClasses(themes: readonly ThemeRegistrationAny[]): void {
   if (installed !== null || typeof document === "undefined" || !document.head) return;
   const { names, css } = buildTokenClasses(themes);
@@ -70,7 +62,6 @@ export function installTokenClasses(themes: readonly ThemeRegistrationAny[]): vo
   installed = names;
 }
 
-/** The classes carrying every declaration in `style`, or null when one has none (inline then). */
 export function tokenClassesFor(style: Readonly<Record<string, string>>): string | null {
   if (installed === null) return null;
   let classes = "";
