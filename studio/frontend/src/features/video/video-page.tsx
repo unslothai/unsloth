@@ -3954,7 +3954,6 @@ function VideoGenerator({
                 }}
               />
             ) : pageMode === "restyle" ? (
-              // Restyle runs one fixed model on sd-server; the Create picker would only mislead here.
               <span className="ml-1.5 flex h-[var(--studio-chat-control-height,34px)] items-center truncate px-2.5 text-sm font-medium text-foreground">
                 Cosmos3-Nano-Sim-Transfer
               </span>

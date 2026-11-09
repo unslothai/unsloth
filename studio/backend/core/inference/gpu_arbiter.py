@@ -286,7 +286,6 @@ def _refuse_beside_a_running_restyle() -> None:
 
 
 def _release_idle_restyle_server() -> None:
-    # The restyle sd-server (~30 GB) belongs to no owner, so no eviction would ever free it.
     module = sys.modules.get("core.inference.video_restyle")
     if module is None:
         return

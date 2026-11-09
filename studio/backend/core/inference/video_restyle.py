@@ -129,7 +129,6 @@ def frames_from_video(
                 # 121 full-size 4K frames would hold about 3 GB.
                 nonlocal fitted
                 if fitted is None:
-                    # PyAV decodes the coded orientation; phone clips need their display rotation.
                     theta = display_rotation_degrees(prev, stream)
                     fitted = fit_frame(apply_display_rotation(prev.to_image(), theta, Image))
                 return fitted
@@ -367,7 +366,6 @@ def build_restyle_request(
         "fps": int(fps),
         "seed": int(seed),
         "control_frames": list(control_frames[:frames]),
-        # MJPG AVI needs no WebM build.
         "output_format": "avi",
         "output_compression": 90,
     }
@@ -431,10 +429,8 @@ class RestyleRunner:
 
     def progress(self, owner: Optional[str] = None) -> dict[str, Any]:
         """Another account sees only whether the runner is busy, never the prompt's outputs."""
-        # Under the lock ``start`` swaps owner and state in, so a new owner never sees the old job.
         with self._lock:
             state = self._state
-            # A start still handing over the GPU: its own account keeps polling through it.
             pending = self._reservation is not None and (
                 owner is None or self._reservation_owner == owner
             )
@@ -534,7 +530,6 @@ class RestyleRunner:
             self._cancel.set()
             loading = self._loading
         if loading is not None:
-            # SdCppServer.start() blocks until the weights load; stop() makes it bail.
             loading.stop()
         return True
 
@@ -560,8 +555,6 @@ class RestyleRunner:
         self._release_video_claim()
 
     def _release_video_claim(self) -> None:
-        # The handoff registered VIDEO; once the server is gone nothing holds it unless a Create
-        # model (or a newer restyle) has taken it since.
         if self._server_factory is not None:
             return
         try:
@@ -575,7 +568,6 @@ class RestyleRunner:
                     self.holds_gpu() or video.loading_repo_ids() or video.status().get("loaded")
                 )
 
-            # Checked under the arbiter lock, so a Create load registering meanwhile keeps its claim.
             gpu_arbiter.release_if(gpu_arbiter.VIDEO, idle)
         except Exception as exc:  # noqa: BLE001 -- the job's outcome is already recorded
             logger.warning("restyle: could not release the VIDEO claim: %s", exc)
@@ -622,7 +614,6 @@ class RestyleRunner:
                 raise RestyleBusy("Another account's restyle model is loaded.")
             server = self._detach_locked()
         self._stop(server)
-        # Report a free GPU only once every detached server, a concurrent caller's too, has exited.
         with self._lock:
             self._stopped.wait_for(lambda: self._stopping == 0, timeout = 120)
         return True
@@ -636,7 +627,6 @@ class RestyleRunner:
         )
 
     def _tree_lease(self) -> Any:
-        # No install may replace the binaries while a job starts or runs the server.
         if self._server_factory is not None:
             return contextlib.nullcontext()
         from core.inference.sd_cpp_backend import _tree_reader
@@ -709,7 +699,6 @@ class RestyleRunner:
             lease.enter_context(self._tree_lease())
             server = self._ensure_server(job["files"])
             self._update(phase = "generate")
-            # Rate from the first latent frame on: before it, the control video is still being encoded.
             first: list[float] = []
 
             def on_line(line: str) -> None:
@@ -731,7 +720,6 @@ class RestyleRunner:
             raw.write_bytes(avi)
             mp4 = transcode_video_to_mp4(raw, fps = FPS)
             raw.unlink(missing_ok = True)
-            # A cancel accepted during export still wins; from here on cancel() refuses instead.
             with self._lock:
                 if self._cancel.is_set():
                     raise SdCppCancelled("cancelled")

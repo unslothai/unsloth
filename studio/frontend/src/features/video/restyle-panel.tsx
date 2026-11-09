@@ -75,7 +75,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  // The last job's "Cancelled." belongs to the previous clip, like its result.
   const [outcomeStale, setOutcomeStale] = useState(false);
   const [inputClip, setInputClip] = useState<Blob | null>(null);
   const [controlClip, setControlClip] = useState<Blob | null>(null);
@@ -134,7 +133,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       }
       setRetrying(false);
     } catch (err) {
-      // Keep polling: a job may be running, or a result waiting to download.
       setRetrying(true);
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -155,7 +153,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
     setFrames(next.frames);
     setPreview(null);
     setError(null);
-    // The last result belongs to the previous clip; don't show it beside a new one.
     setOutcomeStale(true);
     clipsFor.current += 1;
     loadedFor.current = lastJob.current;
@@ -289,7 +286,6 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                   disabled={busy}
                   {...({ webkitdirectory: "", directory: "" } as object)}
                   onChange={(e) => {
-                    // File-name order, like the backend; it reads at most MAX_FRAMES.
                     const picked = Array.from(e.target.files ?? [])
                       .filter((f) => IMAGE_RE.test(f.name))
                       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))

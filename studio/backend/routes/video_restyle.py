@@ -49,7 +49,6 @@ async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str
         for name, value in form.multi_items()
         if name in ("video", "frames") and isinstance(value, UploadFile)
     ]
-    # Starlette spools each part to disk and records its size, so the cap is checked before any is read.
     if sum(value.size or 0 for _, value in uploads) > VIDEO_RESTYLE_UPLOAD_MAX_BYTES:
         raise HTTPException(status_code = 413, detail = "The upload is too large.")
     files = [(name + ":" + (value.filename or ""), await value.read()) for name, value in uploads]
@@ -187,7 +186,6 @@ async def _start_reserved(request: Request, reservation: str, lease: dict):
         if owner is not None and active_generations.fenced(owner):
             raise HTTPException(status_code = 403, detail = "This account is being removed.")
         await asyncio.to_thread(video_restyle.validate_request, prompt, frames)
-        # As a Create load: an evicted chat model gets its KV saved first (keep-KV setting).
         mode = await asyncio.to_thread(get_multi_model_mode)
         swap = await save_chat_kv_before_swap(gpu_arbiter.VIDEO, "video", policy = mode)
         lease["route"] = False
@@ -217,7 +215,6 @@ async def restyle_progress(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/restyle/cancel")
 async def cancel_restyle(current_subject: str = Depends(get_current_subject)):
-    # cancel() stops a loading sd-server, which can block for seconds.
     return {"cancelled": await asyncio.to_thread(video_restyle.runner.cancel, current_account_id())}
 
 
