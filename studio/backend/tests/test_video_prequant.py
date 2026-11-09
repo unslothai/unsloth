@@ -128,32 +128,51 @@ def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
     assert all("/" not in n and "\\" not in n for n in src.candidate_filenames)
 
 
-def test_the_h3_primary_name_is_what_memory_planning_credits():
+def _h3_with_only_the_pt_cached(monkeypatch):
+    """The H3 int8 source with only its declared ConvRot .pt in the HF cache."""
+    import os
+
+    import huggingface_hub
+
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
-    seen = {}
+    seen = []
 
     def _fake_try_to_load_from_cache(
         repo_id,
         filename,
         cache_dir = None,
     ):
-        seen["filename"] = filename
+        seen.append(filename)
         return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.pt" else None
 
-    import huggingface_hub
-    import os
-
-    real_hub = huggingface_hub.try_to_load_from_cache
     real_isfile = os.path.isfile
-    huggingface_hub.try_to_load_from_cache = _fake_try_to_load_from_cache
-    os.path.isfile = lambda p: p == "/cache/blobs/h3" or real_isfile(p)
-    try:
-        assert cached_checkpoint_path(src) == "/cache/blobs/h3"
-    finally:
-        huggingface_hub.try_to_load_from_cache = real_hub
-        os.path.isfile = real_isfile
-    assert seen["filename"] == "MiniMax-H3-INT8-ConvRot.pt"
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _fake_try_to_load_from_cache)
+    monkeypatch.setattr(os.path, "isfile", lambda p: p == "/cache/blobs/h3" or real_isfile(p))
+    return src, seen
+
+
+def test_the_h3_primary_name_is_what_memory_planning_credits(monkeypatch):
+    # Offline the load can only use what is on disk, so the cached .pt is what it resolves to.
+    # Pinned offline: online, the answer depends on whether the Hub has the .safetensors twin.
+    src, seen = _h3_with_only_the_pt_cached(monkeypatch)
+    assert cached_checkpoint_path(src, online = False) == "/cache/blobs/h3"
+    assert "MiniMax-H3-INT8-ConvRot.pt" in seen
+
+
+@pytest.mark.parametrize("twin_absent", [True, False])
+def test_online_the_cached_h3_pt_counts_only_once_its_safetensors_twin_is_known_absent(
+    monkeypatch, twin_absent
+):
+    # Online, an uncached .safetensors ahead of the .pt is what the load downloads unless the Hub
+    # is known not to have it, so the cached .pt is credited only then.
+    from core.inference import diffusion_prequant as pq
+
+    src, _ = _h3_with_only_the_pt_cached(monkeypatch)
+    monkeypatch.setattr(pq, "hub_name_known_absent", lambda repo, name, cache_dir = None: twin_absent)
+    monkeypatch.setattr(pq, "_first_mirrored", lambda *a, **k: None)
+    got = cached_checkpoint_path(src, online = True)
+    assert got == ("/cache/blobs/h3" if twin_absent else None)
 
 
 def test_the_names_are_built_from_the_repo_and_the_scheme():
