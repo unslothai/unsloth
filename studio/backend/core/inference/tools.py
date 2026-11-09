@@ -17487,7 +17487,9 @@ def _check_signal_escape_patterns(code: str):
         return []
 
     # Kwarg names that carry command content (not control flags like check=True, text=True, capture_output=True).
-    _CMD_KWARGS = frozenset({"args", "command", "executable", "path", "file"})
+    _CMD_KWARGS = frozenset(
+        {"args", "command", "executable", "path", "file", "cmd", "program", "argv"}
+    )
 
     def _check_args_for_blocked(args_nodes):
         """Check if any call arguments contain blocked commands."""
@@ -17557,7 +17559,15 @@ def _check_signal_escape_patterns(code: str):
                 for alias in node.names:
                     if alias.name != "*":
                         names = (alias.name,)
-                    elif node.module in ("os", "posix", "nt", "subprocess", "sys"):
+                    elif node.module in (
+                        "os",
+                        "posix",
+                        "nt",
+                        "subprocess",
+                        "sys",
+                        "asyncio",
+                        "pty",
+                    ):
                         names = _STAR_EXPORTS
                     else:
                         continue
