@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every rotated native int8 Linear owns its ConvRot Hadamard buffer. At a float32 compute dtype (FLUX.3 on a T4)
-``cached.to(float32)`` is the cached tensor itself, so one buffer was shared by every layer and group offload moved
-it with whichever group held it: the next streamed layer found ``rot_h`` on the host and the first render failed with
-"mat2 is on cpu"."""
+"""Each rotated int8 Linear owns its ``rot_h``; a shared float32 alias broke group offload ("mat2 is on cpu")."""
 
 from __future__ import annotations
 
@@ -40,7 +37,6 @@ def test_each_layer_owns_its_rotation(dtype, from_codes):
 
 
 def test_repointing_one_layers_buffer_leaves_the_others_alone():
-    """What group offload does on offload / onload: ``buffer.data = <other device copy>`` per group."""
     cls = nq.native_linear_class()
     a = cls(torch.nn.Linear(512, 64), "int8", act_int8 = True, rot_group = 256)
     b = cls(torch.nn.Linear(512, 64), "int8", act_int8 = True, rot_group = 256)
@@ -56,6 +52,6 @@ def test_repointing_one_layers_buffer_leaves_the_others_alone():
 
 def test_the_cached_hadamard_is_never_handed_out_at_float32():
     cached = build_convrot_hadamard(256, device = "cpu", dtype = torch.float32)
-    assert cached.to(torch.float32) is cached  # the aliasing the per-layer copy avoids
+    assert cached.to(torch.float32) is cached
     own = nq._own_rotation(cached, torch.float32)
     assert own is not cached and own.data_ptr() != cached.data_ptr() and torch.equal(own, cached)

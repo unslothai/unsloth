@@ -271,10 +271,7 @@ def int8_fused_disabled() -> bool:
 
 
 def _own_rotation(h: Any, dtype: Any) -> Any:
-    """This layer's own copy of the cached ConvRot Hadamard, at ``dtype``. A float32 compute dtype (fp16-only GPUs,
-    FLUX.3) made ``h.to(dtype)`` return the cached tensor itself, one buffer shared by every layer: group offload then
-    moved it with whichever group held it last, and the next streamed layer found it on the host (device mismatch on
-    the first render). 256 KiB per layer at float32 (group 256)."""
+    """Per-layer copy: at float32 ``h.to(dtype)`` aliases the cached tensor, so group offload moved one shared buffer."""
     return h.to(dtype, copy = True)
 
 
