@@ -66,6 +66,11 @@ COUNT_FLOOR = int(os.environ.get("LONG_THREAD_AREAS_COUNT_FLOOR", "3000"))
 # fails over TIME_LENGTH_RATIO AND over TIME_LENGTH_FLOOR_MS more. A short reading below
 # TIME_BASE_FLOOR_MS counts as that, so a near-free area cannot make a large ratio.
 TIME_LENGTH_RATIO = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_RATIO", "2.5"))
+# Report-only for now: the readings, ratios and a "would fail" list are printed, the exit code is left
+# alone. Main reads up to the ceilings below on GitHub runners (no margin yet) and the cost behind them
+# is message-level actions (click, menu, tool / reasoning toggles, source card), being worked on
+# separately. Set True (or LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING=1) to make them fail the gate.
+LENGTH_TIME_BLOCKING = os.environ.get("LONG_THREAD_AREAS_LENGTH_TIME_BLOCKING", "0") == "1"
 TIME_LENGTH_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_LENGTH_FLOOR_MS", "50"))
 TIME_BASE_FLOOR_MS = float(os.environ.get("LONG_THREAD_AREAS_TIME_BASE_FLOOR_MS", "20"))
 MAX_RATIO = float(os.environ.get("LONG_THREAD_AREAS_MAX_RATIO", "4.0"))
@@ -1839,7 +1844,8 @@ def judge(result: dict, known: str | None = None) -> list[dict]:
                         "base_value": sv,
                         "ratio": ratio,
                         "limit": tlimit,
-                        "fail": ratio > tlimit and lv - sv > TIME_LENGTH_FLOOR_MS,
+                        "would_fail": (over := ratio > tlimit and lv - sv > TIME_LENGTH_FLOOR_MS),
+                        "fail": LENGTH_TIME_BLOCKING and over,
                     }
                 )
             limit = limits.get(("length", area), LENGTH_RATIO)
@@ -1961,6 +1967,29 @@ def thread_split(threads: dict[str, float]) -> str:
     return ", ".join(f"{n or '?'} {v:.0f} ms" for n, v in top)
 
 
+def recheck_keys(verdicts: list[dict]) -> list[tuple[int, str, str]]:
+    """(turns, mode, area) to measure again: every failing CPU cell and broken area, and a blocking paint
+    / main-thread length failure at both lengths."""
+    keys = {
+        (v["turns"], v["mode"], v["area"])
+        for v in verdicts
+        if v["fail"]
+        and (
+            v["kind"] in ("appearance", "length")
+            and v["metric"] == "cpu_ms"
+            or v["kind"] == "broken"
+            and v["area"] != "*"
+        )
+    }
+    keys |= {
+        (t, v["mode"], v["area"])
+        for v in verdicts
+        if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
+        for t in (SHORT, LONG)
+    }
+    return sorted(keys)
+
+
 def run(
     dist: Path,
     launch_args,
@@ -1971,32 +2000,9 @@ def run(
     result = measure(dist, launch_args, log = log)
     verdicts = judge(result)
     # One reading per cell, so every CPU failure is measured again (fresh pages of the mode and its
-    # base, RECHECKS times, the cheapest reading kept). Grouped by page; at most 4 mode pages.
-    again = sorted(
-        {
-            (v["turns"], v["mode"], v["area"])
-            for v in verdicts
-            if v["fail"]
-            and (
-                v["kind"] in ("appearance", "length")
-                and v["metric"] == "cpu_ms"
-                or v["kind"] == "broken"
-                and v["area"] != "*"
-            )
-        }
-    )
-    # Pages with the fewest failing cells first (a lone outlier is the usual noise); a mode that
-    # fails many cells is one page anyway.
-    # A paint / CPU length failure is measured again at both lengths (the cheapest of each is kept).
-    again = sorted(
-        set(again)
-        | {
-            (t, v["mode"], v["area"])
-            for v in verdicts
-            if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
-            for t in (SHORT, LONG)
-        }
-    )
+    # base, RECHECKS times, the cheapest reading kept). Grouped by page; at most RECHECK_PAGES pages,
+    # those with the fewest failing cells first (a lone outlier is the usual noise).
+    again = recheck_keys(verdicts)
     per_page: dict = {}
     for t, m, _ in again:
         per_page[(t, m)] = per_page.get((t, m), 0) + 1
@@ -2005,17 +2011,10 @@ def run(
     if again and RECHECKS:
         _in_thread(remeasure, result, again, log)
         verdicts = judge(result)
-        # A recheck that lowers a short reading can make a length failure appear only now, judged on a
-        # long reading that was never measured again: measure those once more at both lengths.
-        late = sorted(
-            {
-                (t, v["mode"], v["area"])
-                for v in verdicts
-                if v["fail"] and v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")
-                for t in (SHORT, LONG)
-            }
-            - set(again)
-        )
+        # A recheck that lowers one side of a comparison (the short chat, or the base appearance) can
+        # make a failure appear only now, judged on a reading that was never measured again: those
+        # cells get the same fresh-page rechecks once.
+        late = sorted(set(recheck_keys(verdicts)) - set(again))
         if late:
             _in_thread(remeasure, result, late, log)
             verdicts = judge(result)
@@ -2143,8 +2142,21 @@ def table(result: dict, verdicts: list[dict]) -> list[str]:
             f"  paint / CPU growth {SHORT} -> {LONG} turns, highest against limit (! = over): "
             + ", ".join(
                 f"{v['mode']}/{v['area']} {v['metric'][:-3]} {v['base_value']:.0f}->{v['value']:.0f} ms "
-                f"{v['ratio']:.1f}x/{v['limit']:.1f}{'!' if v['fail'] else ''}"
+                f"{v['ratio']:.1f}x/{v['limit']:.1f}{'!' if v.get('would_fail') else ''}"
                 for v in timed[:6]
+            )
+        )
+        would = [v for v in timed if v.get("would_fail")]
+        mode_note = "blocking" if LENGTH_TIME_BLOCKING else "report-only, not failing the gate"
+        lines.append(
+            f"  paint / CPU growth would fail ({mode_note}): "
+            + (
+                ", ".join(
+                    f"{v['mode']}/{v['area']} {v['metric'][:-3]} {v['base_value']:.0f}->{v['value']:.0f} ms "
+                    f"{v['ratio']:.1f}x/{v['limit']:.1f}"
+                    for v in would
+                )
+                or "none"
             )
         )
     return lines

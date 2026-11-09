@@ -83,6 +83,12 @@ def test_coverage_matcher():
     assert am.uncovered(triggers) == ["dropdown-menu-trigger:Brand new menu"]
 
 
+@pytest.fixture
+def length_blocking(monkeypatch):
+    """The paint / main-thread length rule as it judges once LENGTH_TIME_BLOCKING is switched on."""
+    monkeypatch.setattr(am, "LENGTH_TIME_BLOCKING", True)
+
+
 def _page(cells):
     return {"cells": {a: {"status": "OK", **c} for a, c in cells.items()}}
 
@@ -336,7 +342,9 @@ def test_missing_default_page_fails_coverage(monkeypatch):
     assert sum("measuring the page failed" in f for f in failures) == len(out)
 
 
-def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(monkeypatch):
+def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(
+    monkeypatch, length_blocking
+):
     # CI (message_menu, Liquid 3D): a 506 ms first short reading failed the appearance check, so only
     # the short page was measured again (99, 90 ms). That made the length check fail for the first
     # time, on a long reading (354 ms) nobody had measured again.
@@ -380,6 +388,52 @@ def test_a_length_failure_that_appears_after_a_recheck_is_measured_again(monkeyp
     assert calls[0] == [(am.SHORT, "frosted", "type")]
     assert calls[1] == [(am.LONG, "frosted", "type")]
     assert not [f for f in failures if "costs more as the chat grows" in f]
+
+
+def test_an_appearance_failure_that_appears_after_a_recheck_is_measured_again(monkeypatch):
+    # CI, main, Liquid 3D typing at 200 turns: one sweep of the 200-turn pages caught a background-
+    # thread burst in every look (default 1,266 ms CPU, Liquid 3D 1,005). Another mode's failure got
+    # the default page measured again (154 ms); Liquid 3D was then judged 1,005 / 154 = 6.5x against
+    # 6x on its never-rechecked first reading. Its own recheck reads 1.6x.
+    cell = lambda cpu: {
+        "elements": 70,
+        "layout_objects": 200,
+        "cpu_ms": cpu,
+        "main_ms": cpu / 2,
+        "paint_ms": 15,
+    }
+    pages = {
+        (am.SHORT, "default"): _page({"type": cell(150)}),
+        (am.SHORT, "frosted"): _page({"type": cell(160)}),
+        (am.SHORT, am.GLASS): _page({"type": cell(230)}),
+        (am.LONG, "default"): _page({"type": cell(1266)}),
+        (am.LONG, "frosted"): _page({"type": cell(9000)}),
+        (am.LONG, am.GLASS): _page({"type": cell(1005)}),
+    }
+    fake = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["type"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    calm = {"default": 154, "frosted": 300, am.GLASS: 250}
+    calls = []
+
+    def remeasure(result, items, log):
+        calls.append(sorted(items))
+        for turns, mode, area in items:
+            for name in ("default", mode):
+                reading = {"status": "OK", **cell(calm[name])}
+                result["pages"][(turns, name)]["cells"][area].setdefault("again", []).extend(
+                    [reading] * am.RECHECKS
+                )
+
+    monkeypatch.setattr(am, "remeasure", remeasure)
+    _, failures, _, _ = am.run(Path("unused"), [], log = lambda *a, **k: None)
+    assert calls[0] == [(am.LONG, "frosted", "type")]
+    assert calls[1] == [(am.LONG, am.GLASS, "type")]
+    assert not [f for f in failures if "makes area type cost" in f]
 
 
 def test_every_area_opened_by_a_shortcut_or_toggle_proves_it_happened():
@@ -522,7 +576,7 @@ def test_settings_ready_marker_is_set_from_inside_the_panel_suspense():
         (40, 140, True),
     ],
 )
-def test_paint_length_check(short, long_, fails):
+def test_paint_length_check(short, long_, fails, length_blocking):
     pages = {
         (am.SHORT, "default"): _page(
             {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 10, "paint_ms": short}}
@@ -557,7 +611,7 @@ def test_paint_length_check_keeps_the_cheapest_reading():
 
 
 @pytest.mark.parametrize("metric", ["paint_ms", "main_ms"])
-def test_length_ratio_divides_by_the_median_short_reading(metric):
+def test_length_ratio_divides_by_the_median_short_reading(metric, length_blocking):
     # CI, reasoning_toggle (Liquid 3D): short readings 23 / 34 / 49 ms, long 76 ms. The cheapest short
     # reading (23) made it 3.3x; over the median (34) it is 2.2x and passes.
     short_cell = {
@@ -598,7 +652,46 @@ def test_length_ratio_divides_by_the_median_short_reading(metric):
     assert [(v["value"], v["base_value"], v["fail"]) for v in rows] == [(160, 34, True)]
 
 
-def test_cpu_length_check():
+def test_length_time_checks_report_but_do_not_fail_by_default():
+    # Report-only until message-level actions stop growing with the chat (LENGTH_TIME_BLOCKING).
+    assert am.LENGTH_TIME_BLOCKING is False
+    pages = {
+        (am.SHORT, "default"): _page(
+            {
+                "a": {
+                    "elements": 10,
+                    "layout_objects": 0,
+                    "cpu_ms": 80,
+                    "main_ms": 80,
+                    "paint_ms": 15,
+                }
+            }
+        ),
+        (am.LONG, "default"): _page(
+            {
+                "a": {
+                    "elements": 10,
+                    "layout_objects": 0,
+                    "cpu_ms": 90,
+                    "main_ms": 400,
+                    "paint_ms": 104,
+                }
+            }
+        ),
+    }
+    result = _result(pages)
+    verdicts = am.judge(result, known = "")
+    rows = [v for v in verdicts if v["kind"] == "length" and v["metric"] in ("paint_ms", "main_ms")]
+    assert [(v["metric"], v["would_fail"], v["fail"]) for v in rows] == [
+        ("paint_ms", True, False),
+        ("main_ms", True, False),
+    ]
+    assert not am.recheck_keys(verdicts), "a report-only reading costs no recheck time"
+    text = "\n".join(am.table(result, verdicts))
+    assert "would fail (report-only, not failing the gate): default/a paint 15->104 ms" in text
+
+
+def test_cpu_length_check(length_blocking):
     pages = {
         (am.SHORT, "default"): _page(
             {"a": {"elements": 10, "layout_objects": 0, "cpu_ms": 80, "main_ms": 80}}
