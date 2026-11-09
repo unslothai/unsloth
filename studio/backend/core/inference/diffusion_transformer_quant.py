@@ -1283,7 +1283,6 @@ def int8_storage_host(target: Any) -> bool:
 
         dtype = getattr(target, "dtype", None)
         if device == "cpu":
-            # the reused float32 widen buffer (native_linear_class) is what keeps the step time
             return dtype is torch.float32
         if device == "xpu":
             return dtype in (torch.bfloat16, torch.float16)
