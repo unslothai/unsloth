@@ -425,8 +425,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
 
             # demux both streams together so the muxer sees them interleaved rather than buffering every video packet
             for packet in src.demux(*([in_v] + ([in_a] if out_a is not None else []))):
-                if packet.dts is None:
-                    continue
                 if packet.stream is in_v:
                     for frame in packet.decode():
                         for out_packet in out_v.encode(frame.reformat(format = "yuv420p")):
