@@ -640,7 +640,9 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Same-stem cached .pt/.pth moves ahead of its uncached safetensors twin; the twin stays behind it as 404 fallback; PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
+    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
+    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -658,6 +660,18 @@ def prefer_cached_pickle_twins(
                 return readable is None or bool(readable(name))
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
+
+        def _verified(name: str) -> bool:
+            from .cached_weight_sha import cached_copy_matches_hub
+
+            if _LOCAL_FILES_ONLY.get():
+                return False  # a load that may not reach the Hub cannot ask it for the hash
+            token = _LOAD_HF_TOKEN.get()
+            for root in roots:
+                hit = _hub_name_cached(repo_id, name, root)
+                if hit is not None and cached_copy_matches_hub(repo_id, name, hit, token = token):
+                    return True
+            return False
 
         # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
         for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
@@ -711,7 +725,8 @@ def prefer_cached_pickle_twins(
                 ),
                 None,
             )
-            if twin is None or _cached(st):
+            # Only a cached pickle the Hub's sha256 vouches for is reused; unverified, safetensors stays first.
+            if twin is None or _cached(st) or not _verified(twin):
                 continue
             out.remove(twin)
             out.insert(out.index(st), twin)
@@ -723,8 +738,8 @@ def prefer_cached_pickle_twins(
                     import logging
                     sink = logging.getLogger(__name__)
                 sink.info(
-                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
-                    "downloaded (set %s=1 to fetch it instead)",
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s (sha256 matches the Hub); the "
+                    "%s twin is not downloaded (set %s=1 to fetch it instead)",
                     repo_id,
                     twin,
                     st,
