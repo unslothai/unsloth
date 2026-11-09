@@ -29,8 +29,7 @@ def _scale(blocks: Any, word: int) -> Any:
 
 
 def _half_math(blocks: Any, dtype: Any) -> Any:
-    """Eager with an fp16 ``dtype``: the block's fp16 ``d``, else None. For a scale that is ``d`` itself, fp16 math
-    (fp32 opmath, one rounding of the exact product) gives the same bits on the stock vectorised kernel."""
+    """Eager fp16 ``dtype``: the fp16 ``d``. fp16 math rounds the exact ``d * q`` once, on the vectorised kernel."""
     import torch
 
     if dtype != torch.float16 or torch.compiler.is_compiling():
@@ -310,7 +309,7 @@ for _fn in EXACT_FUNCTIONS:
     setattr(_fn, _TAG, True)
 del _fn
 _replaced: dict = {}
-# "forward" (diffusers' own forward_native) is kept after uninstall: a later patch may hold _exact_forward as its fallback
+# "forward" (diffusers' forward_native) outlives uninstall: a later patch may fall back to _exact_forward
 _STATE: dict = {}
 
 
@@ -363,8 +362,7 @@ def dequantize_cast(
 
 
 def _stock_forward(linear_cls: Any) -> Any:
-    """diffusers' own ``GGUFLinear.forward_native`` under any wrappers (``__wrapped__``, unsloth_zoo's stash), told
-    apart by its code's file: ``functools.wraps`` copies ``__module__`` onto a wrapper."""
+    """diffusers' own ``forward_native`` under any wrappers, by code file (``functools.wraps`` copies ``__module__``)."""
     import sys
 
     home = getattr(sys.modules.get(linear_cls.__module__), "__file__", None)
@@ -383,14 +381,12 @@ def _stock_forward(linear_cls: Any) -> Any:
 
 
 def set_compiled_dequant(on: bool) -> None:
-    """diffusion_gguf_compile: whether ``dequantize_gguf_tensor`` is compiled (then the stock forward runs it)."""
     _STATE["compiled_dequant"] = bool(on)
 
 
 def _exact_forward(self: Any, inputs: Any) -> Any:
-    """GGUFLinear.forward_native dequantising straight to the compute dtype. Other types, and every type while the
-    compiled ``dequantize_gguf_tensor`` is installed without its fused forward (torch < 2.7, switched off), take
-    diffusers' forward: fp32 out, one ``.to``."""
+    """Dequantise straight to the compute dtype; other types, or a compiled ``dequantize_gguf_tensor`` without
+    its fused forward, take diffusers' forward (fp32 out, one ``.to``)."""
     weight = self.weight
     dtype = self.compute_dtype
     quant_type = getattr(weight, "quant_type", None)
@@ -440,7 +436,6 @@ def install_exact_dequant(logger: Any = None) -> list:
     stock = _stock_forward(linear_cls) if linear_cls is not None else None
     if stock is not None:
         _STATE.setdefault("forward", stock)
-        # only over diffusers' own forward: a diffusion_gguf_compile wrapper already handles these types
         if linear_cls.__dict__.get("forward_native") is stock:
             linear_cls.forward_native = _exact_forward
     if replaced and logger is not None:

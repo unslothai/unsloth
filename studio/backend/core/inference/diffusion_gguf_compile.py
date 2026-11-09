@@ -221,7 +221,6 @@ def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
                 if not (q8_0 if quant_type == _Q8_0 else fused_cast) or not gguf_exact.row_aligned(
                     weight, quant_type
                 ):
-                    # diffusers' forward: the compiled dequant (fp32 out) and one cast
                     return (gguf_exact.stock_forward() or stock_forward)(self, inputs)
                 dense = gguf_exact.dequantize_cast(
                     weight.as_tensor(), quant_type, dtype, exact_fns[exact_fn]
