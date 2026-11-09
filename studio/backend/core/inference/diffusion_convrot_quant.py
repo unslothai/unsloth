@@ -1419,6 +1419,9 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
             and _kernels() is not None
             and _rotq_op() is not None
         ):
+            hit = _verdict_load(index)
+            if hit is not None:
+                return _adopt_verdict(index, hit)
             cap = torch.cuda.get_device_capability(index)
             want = rotquant_config(cap)
             for cand in (want, _ROTQ_FALLBACK) if want is not None else ():
@@ -1455,6 +1458,134 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
         _ROTQ_HANDLE = _rotq_op()
         if sw:
             _SWIGLU_HANDLE = _swiglu_op()
+        _verdict_store(
+            index,
+            {
+                "cfg": list(cfg),
+                "rules": [[lo, hi, list(t)] for lo, hi, t in rules],
+                "h16": h16,
+                "swiglu": bool(sw),
+            },
+        )
+    return cfg
+
+
+# Probe verdicts persisted per card and toolchain: the probes cost ~50 s per process on an L4 even with a warm Triton
+# cache. Keyed by diffusion_probe_cache's fingerprint (torch / CUDA / driver / Triton / torchao / card UUID / the
+# UNSLOTH_DIFFUSION_* switches) plus this file and diffusion_convrot.py; any mismatch is a miss and probes again.
+# UNSLOTH_DIFFUSION_PROBE_CACHE=0 turns it off. Only a passing device is stored (a failed probe may be transient).
+_VERDICT_FILE = "diffusion_convrot_probe.json"
+_VERDICT_SOURCES = ("diffusion_convrot_quant.py", "diffusion_convrot.py")
+_VERDICT_MAX = 32
+
+
+@lru_cache(maxsize = 1)
+def _verdict_sources() -> str:
+    import hashlib
+    from pathlib import Path
+
+    h = hashlib.sha256()
+    here = Path(__file__).resolve().parent
+    for name in _VERDICT_SOURCES:
+        try:
+            h.update(name.encode())
+            h.update((here / name).read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _verdict_slot(index: int) -> Optional[tuple]:
+    """(cache file, key, fingerprint) for card ``index``, or None (cache off / unidentifiable card)."""
+    try:
+        import hashlib
+        import json
+
+        from . import diffusion_probe_cache as pc
+
+        if not pc.enabled():
+            return None
+        path = pc._cache_file()
+        fp = pc.fingerprint(f"cuda:{index}")
+        if path is None or fp is None:
+            return None
+        fp = dict(fp, convrot_source = _verdict_sources())
+        key = hashlib.sha256(json.dumps(fp, sort_keys = True).encode()).hexdigest()[:32]
+        return path.with_name(_VERDICT_FILE), key, fp
+    except Exception:  # noqa: BLE001 - no cache: probe
+        return None
+
+
+def _verdict_read(path: Any) -> dict:
+    import json
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except Exception:  # noqa: BLE001 - absent / torn reads as empty
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _verdict_load(index: int) -> Optional[dict]:
+    slot = _verdict_slot(index)
+    if slot is None:
+        return None
+    path, key, fp = slot
+    entry = _verdict_read(path).get(key)
+    if not isinstance(entry, dict) or entry.get("fingerprint") != fp:
+        return None
+    v = entry.get("verdicts")
+    if not isinstance(v, dict) or not isinstance(v.get("cfg"), list) or len(v["cfg"]) != 4:
+        return None
+    return v
+
+
+def _verdict_store(index: int, update: dict) -> None:
+    """Merge ``update`` into card ``index``'s entry (best effort, atomic replace)."""
+    slot = _verdict_slot(index)
+    if slot is None:
+        return
+    path, key, fp = slot
+    import json
+    import time
+
+    try:
+        data = _verdict_read(path)
+        entry = data.get(key) if isinstance(data.get(key), dict) else {}
+        verdicts = dict(entry.get("verdicts") or {}) if entry.get("fingerprint") == fp else {}
+        verdicts.update(update)
+        data[key] = {"fingerprint": fp, "verdicts": verdicts, "t": time.time()}
+        if len(data) > _VERDICT_MAX:
+            for k in sorted(data, key = lambda k: (data[k] or {}).get("t", 0))[
+                : len(data) - _VERDICT_MAX
+            ]:
+                data.pop(k, None)
+        path.parent.mkdir(parents = True, exist_ok = True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, sort_keys = True), encoding = "utf-8")
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - a cache write never fails a load
+        pass
+
+
+def _adopt_verdict(index: int, v: dict) -> Optional[tuple]:
+    """Install a persisted verdict as ``rotquant_device_config`` would after probing (the switches are part of the
+    key, so the stored verdict already reflects them)."""
+    global _ROTQ_HANDLE, _SWIGLU_HANDLE
+    cfg = tuple(int(x) for x in v["cfg"])
+    rules = tuple(
+        (int(lo), int(hi), tuple(int(x) for x in t)) for lo, hi, t in v.get("rules") or ()
+    )
+    h16 = v.get("h16") if v.get("h16") in ("ieee", "tf32x3") else False
+    sw = bool(v.get("swiglu")) and bool(h16) and _swiglu_op() is not None
+    _ROTQ_DEVICE_K[index] = rules
+    _ROTQ_DEVICE[index] = cfg
+    _H16_DEVICE[index] = h16
+    _SWIGLU_DEVICE[index] = sw
+    if isinstance(v.get("producer"), bool) and h16:
+        _PRODUCER_DEVICE[index] = v["producer"]
+    _ROTQ_HANDLE = _rotq_op()
+    if sw:
+        _SWIGLU_HANDLE = _swiglu_op()
     return cfg
 
 
@@ -1658,6 +1789,8 @@ def _arm_producer(index: int) -> bool:
         except Exception:  # noqa: BLE001 - the stock producer stays
             ok = False
         _PRODUCER_DEVICE[index] = ok
+        if ok and _ROTQ_DEVICE.get(index) is not None:
+            _verdict_store(index, {"producer": True})
     if _PRODUCER_DEVICE[index]:
         _PRODUCER_HANDLE = _producer_op()
     return bool(_PRODUCER_DEVICE[index])

@@ -432,3 +432,54 @@ def test_swapped_record_is_seen_inside_a_compiled_block():
     del unmarked.proj.__dict__[g8._FWD]
     torch._dynamo.reset()
     assert torch.compile(unmarked, backend = "eager", fullgraph = True)(x).item() == -1
+
+
+def test_probe_verdicts_round_trip_through_the_cache(monkeypatch, tmp_path):
+    """A passing device's probe verdicts persist per card + toolchain fingerprint; a later process adopts them without
+    probing, and a changed fingerprint (driver, torch, switches, these sources) is a miss."""
+    pytest.importorskip("torch")
+    from core.inference import diffusion_convrot_quant as cq
+
+    path = tmp_path / cq._VERDICT_FILE
+    fp = {"torch": "x", "gpu_uuid": "GPU-1"}
+    monkeypatch.setattr(cq, "_verdict_slot", lambda index: (path, f"k{index}", dict(fp)))
+    for name in (
+        "_ROTQ_DEVICE",
+        "_ROTQ_DEVICE_K",
+        "_H16_DEVICE",
+        "_SWIGLU_DEVICE",
+        "_PRODUCER_DEVICE",
+    ):
+        monkeypatch.setattr(cq, name, {})
+    monkeypatch.setattr(cq, "_rotq_op", lambda: "rotq-op")
+    monkeypatch.setattr(cq, "_swiglu_op", lambda: "swiglu-op")
+    assert cq._verdict_load(7) is None
+    cq._verdict_store(
+        7,
+        {
+            "cfg": [128, 32, 8, 3],
+            "rules": [[256, 8192, [64, 32, 4, 3]]],
+            "h16": "ieee",
+            "swiglu": True,
+        },
+    )
+    cq._verdict_store(7, {"producer": True})
+    v = cq._verdict_load(7)
+    assert v == {
+        "cfg": [128, 32, 8, 3],
+        "rules": [[256, 8192, [64, 32, 4, 3]]],
+        "h16": "ieee",
+        "swiglu": True,
+        "producer": True,
+    }
+    assert cq._adopt_verdict(7, v) == (128, 32, 8, 3)
+    assert cq._ROTQ_DEVICE_K[7] == ((256, 8192, (64, 32, 4, 3)),)
+    assert (
+        cq._H16_DEVICE[7] == "ieee"
+        and cq._SWIGLU_DEVICE[7] is True
+        and cq._PRODUCER_DEVICE[7] is True
+    )
+    fp["torch"] = "y"  # another toolchain: a miss, never a stale verdict
+    assert cq._verdict_load(7) is None
+    path.write_text("{torn")
+    assert cq._verdict_load(7) is None
