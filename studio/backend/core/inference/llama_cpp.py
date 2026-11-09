@@ -26225,6 +26225,56 @@ class LlamaCppBackend:
                                         _n_ubatch = _effective_ubatch,
                                     )
                                 _both_fit_somewhere = True
+                        # An embedded NextN head doubles decode on a dense / hybrid target (Qwen3.8-27B
+                        # Q4_K_M, L4: 30 vs 15 tok/s), so Auto keeps it at a smaller context, down to
+                        # _FIT_MIN_CTX, rather than drop it to keep the largest one. The slot count
+                        # giving the head the most context wins; named slots and contexts keep the
+                        # rule above.
+                        if (
+                            _target_fits_somewhere
+                            and not _both_fit_somewhere
+                            and _slots_reducible
+                            and not explicit_ctx
+                            and _spec_canon == "auto"
+                            and _engaged_is_mtp
+                            and self._nextn_predict_layers
+                            and not mtp_draft_path
+                            and not self._key_length_mla
+                        ):
+                            _head_best = None  # (context with the head, slots, target-only context)
+                            for _s in range(n_parallel, 0, -1):
+                                for _n, _ctx_c, _budget_c, _ckpts_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s, _ckpts_c)
+                                    if _c <= 0:
+                                        continue
+                                    if _head_best is None or _c > _head_best[0]:
+                                        _head_best = (_c, _s, _ctx_c)
+                                    break
+                            if _head_best is not None and _head_best[0] >= min(
+                                _head_best[2], _FIT_MIN_CTX
+                            ):
+                                _head_ctx, _head_slots, _head_target_ctx = _head_best
+                                logger.info(
+                                    "Auto: keeping the embedded MTP head at context %d on %d "
+                                    "serving slot(s) (without it: %d). Set the context to keep "
+                                    "it without the head.",
+                                    _head_ctx,
+                                    _head_slots,
+                                    _head_target_ctx,
+                                )
+                                if _head_slots != n_parallel:
+                                    _mtp_slots_asked = n_parallel
+                                    _mtp_slots_target_ctx = _head_target_ctx
+                                    n_parallel = _head_slots  # allow-slot-clamp: the head keeps more context at fewer slots
+                                    _effective_ubatch = _ubatch_for_slots(n_parallel)
+                                    _compute_buffer_pipeline = _layer_compute_buffer(n_parallel)
+                                    if mtp_overhead_fn is not None:
+                                        mtp_overhead_fn = functools.partial(
+                                            mtp_overhead_fn,
+                                            _np = n_parallel,
+                                            _n_ubatch = _effective_ubatch,
+                                        )
+                                _both_fit_somewhere = True
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
                             _mtp_will_engage = False

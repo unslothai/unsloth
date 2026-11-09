@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto keeps every layer of a Hybrid Mamba target on the GPU before --fit on, dropping its MTP head first.
+"""Auto keeps every layer, then the embedded MTP head, on the GPU before giving either up.
 
-A Qwen3.8-27B-shaped load whose embedded MTP head is all that keeps it off the GPU used to go to --fit on, where
-the head stands down anyway (mtp_partial_offload) and llama.cpp moves layers to the CPU (IQ3_XXS, A100: 11-15
-tok/s). Auto now re-prices the slot reduction without the head and keeps every layer on the GPU.
+1. A Hybrid Mamba target whose MTP head is all that keeps it off the GPU used to go to --fit on, where the head
+   stands down anyway (mtp_partial_offload) and llama.cpp moves layers to the CPU (Qwen3.8-27B IQ3_XXS, A100:
+   11-15 tok/s). Auto now re-prices the slot reduction without the head and keeps every layer on the GPU.
+2. An embedded NextN head that did not fit beside the largest Auto context was dropped for that context.
+   With the slots left at the default, Auto now keeps it at a smaller context, down to _FIT_MIN_CTX.
 
-Loads that already fit, named slots, a forced head and speculation off keep their argv; the table pins it.
+Loads that already fit, named slots, explicit contexts, a forced head and speculation off keep their argv;
+the table pins it.
 """
 
 from __future__ import annotations
@@ -157,6 +160,41 @@ class TestHybridDropsTheHeadBeforeAnyLayer:
         """Only the Hybrid Mamba head stands down under --fit on, so only it is traded for layers."""
         got = _flags(_argv(tmp_path, weights_mib = 10_800, metadata = DENSE_NEXTN))
         assert got[0] == "on" and got[3] == "draft-mtp"
+
+
+class TestTheHeadIsKeptAtASmallerAutoContext:
+    """Real compute estimator on a 24 GB card: the extra slots cost little, so before this change the
+    default four slots kept the context and dropped the head (ngram-mod, 12-22k)."""
+
+    @pytest.mark.parametrize("weights_mib", [21_376, 21_676, 21_976])
+    def test_default_slots_keep_the_head_on_one_slot(self, tmp_path, weights_mib):
+        got = _flags(_real(tmp_path, weights_mib))
+        assert got[:2] == ("off", 1) and got[3] == "draft-mtp"
+        assert got[2] >= llama_cpp._FIT_MIN_CTX
+
+    def test_below_the_auto_floor_the_head_still_gives_way(self, tmp_path):
+        """With the head the dense target would launch under _FIT_MIN_CTX: the context wins, as before."""
+        got = _flags(_real(tmp_path, 9_288, vram_mib = CARD_MIB, metadata = DENSE_NEXTN))
+        assert got == ("off", 4, 8_448, "ngram-mod")
+
+    def test_named_slots_keep_the_old_trade(self, tmp_path):
+        got = _flags(_real(tmp_path, 21_676, from_default = False))
+        assert got[:2] == ("off", 4) and got[3] == "ngram-mod"
+
+    def test_an_explicit_context_keeps_the_old_trade(self, tmp_path):
+        got = _flags(_real(tmp_path, 21_676, n_ctx = 16_384))
+        assert got[2] == 16_384 and got[3] != "draft-mtp"
+
+
+def _real(
+    tmp_path,
+    weights_mib,
+    vram_mib = 24 * 1024,
+    **kwargs,
+):
+    return _argv(
+        tmp_path, weights_mib = weights_mib, vram_mib = vram_mib, slot_scaled_compute = False, **kwargs
+    )
 
 
 # Loads that fit today (nothing dropped, nothing offloaded), explicit contexts / slots and speculation
