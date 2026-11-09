@@ -1088,8 +1088,7 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
 
 
 def compact_valid_rows(embeds: Any, mask: Any) -> Any:
-    """``[B, L, D]`` packed hidden states -> ``[valid rows, D]``, row-major over ``(B, L)`` (what
-    ``masked_scatter_`` refills). Left padding is a pad mask like any other: only the mask decides."""
+    """``[B, L, D]`` -> ``[valid rows, D]``, row-major over ``(B, L)`` as ``masked_scatter_`` refills it."""
     return embeds[mask.to(device = embeds.device).bool()]
 
 
@@ -1238,8 +1237,7 @@ def _run_encode(model: Any, config: dict, inputs: Any, device: str, stream: Any)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
             if config.get("_compact"):
-                # Only the valid (unpadded) rows cross to the host: the connectors zero every padded row before any
-                # op that mixes tokens, so the server rebuilds identical connector inputs from these and the mask.
+                # Valid rows only: the connectors zero padded rows before mixing tokens.
                 embeds = compact_valid_rows(embeds, mask)
             embeds_host = embeds.to("cpu")
             mask_host = mask.to("cpu")

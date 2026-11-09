@@ -808,12 +808,10 @@ def ensure_text_encoder_sidecar() -> str:
     return _VENV_T5_510_DIR
 
 
-# ``0`` restores the full-width transport (every padded row of all 49 hidden states to the host and back) and runs the
-# connectors again in the two-stage recipe's second call.
+# ``0``: the old path (full-width transport, connectors rerun in stage two).
 COMPACT_CONDITIONING_ENV = "UNSLOTH_LTX25_COMPACT_CONDITIONING"
 
-# Engagement counters (tests and the A/B harness read them): worker replies in the compact form, host bytes those
-# replies held, bytes uploaded for prompt embeds, connector runs and connector results reused.
+# Engagement counters, read by tests.
 CONDITIONING_STATS: dict[str, int] = {
     "compact_encodes": 0,
     "full_encodes": 0,
@@ -836,9 +834,8 @@ def _tensor_bytes(t: Any) -> int:
 
 
 def expand_valid_rows(rows: Any, mask: Any, *, device: Any, dtype: Any) -> Any:
-    """``[valid rows, D]`` (``compact_valid_rows``) -> ``[B, L, D]`` on ``device``: valid rows back in place, padded
-    rows zero. Only the valid rows are uploaded; ``masked_scatter_`` needs no host sync. The connectors zero padded
-    rows before mixing tokens, so their outputs equal those of the full-width hidden states."""
+    """Inverse of ``compact_valid_rows`` on ``device``, padded rows zero. The connectors zero padded rows before
+    mixing tokens, so their outputs equal the full-width ones."""
     import torch
 
     mask = mask.to(device = device)
@@ -1362,9 +1359,7 @@ class Ltx25TextEncoderClient:
         compact: Optional[bool] = None,
     ) -> tuple[Any, Any]:
         """``copy=False`` returns the cached host tensors themselves, for a caller that only reads them: a 385 MB host
-        clone per call is ~40 ms on a B200 host. With compact conditioning (the default; ``compact=False`` asks for
-        the full width) the embeds are only the valid rows, ``[valid rows, D]`` (``expand_valid_rows`` rebuilds
-        ``[B, L, D]``)."""
+        clone per call is ~40 ms on a B200 host. Compact (the default) embeds are ``[valid rows, D]``."""
         compact = compact_conditioning_enabled() if compact is None else bool(compact)
         key = (tuple(prompts), int(max_sequence_length), compact)
         with self._lock:
@@ -1411,7 +1406,7 @@ class Ltx25TextEncoderClient:
             self.last_encode = {
                 k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
             }
-            # An older worker ignores the flag and replies full width; ``_one`` reads the shape, not the request.
+            # An older worker replies full width: ``_one`` reads the shape, not the request.
             CONDITIONING_STATS[
                 "compact_encodes" if getattr(embeds, "ndim", 3) == 2 else "full_encodes"
             ] += 1
@@ -1450,7 +1445,6 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         device = device or pipe._execution_device
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
-        # Set once the batch is known; empty keeps the client's default transport.
         transport: dict[str, bool] = {}
 
         def _lend(*texts: list[str]) -> Optional[Callable[..., None]]:
@@ -1484,7 +1478,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             CONDITIONING_STATS["upload_bytes"] += _tensor_bytes(cached) + _tensor_bytes(mask)
             batch = mask.shape[0]
             if cached.ndim == 2:
-                # Compact rows: a fresh device tensor, never an alias of the cache.
+                # A fresh tensor, never an alias of the cache.
                 embeds = expand_valid_rows(cached, mask, device = device, dtype = dtype)
             else:
                 embeds = cached.to(device = device, dtype = dtype)
@@ -1505,8 +1499,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt) if prompt is not None else prompt_embeds.shape[0]
         if num_videos_per_prompt != 1 and batch_size > 1 and compact_conditioning_enabled():
-            # diffusers repeats these embeds per prompt but the mask per batch, so with unequal prompt lengths some
-            # padded rows reach the connectors as valid: only the full-width rows reproduce that exactly.
+            # diffusers repeats embeds per prompt but the mask per batch, so padded rows can count as valid there.
             transport["compact"] = False
         if (
             prompt_embeds is None
@@ -1838,11 +1831,8 @@ def render(
 
 @contextlib.contextmanager
 def reuse_connector_outputs(runner: Any):
-    """Inside ``encode_once``: a connector call whose prompt embeds and mask are exactly the tensors an earlier
-    ``encode_prompt`` of this span returned for the same arguments (``encode_once`` hands every repeat its copy of the
-    first result) gets the first such call's connector outputs instead of normalising, projecting and running both
-    connectors again. Any other input (a CFG concatenation, caller tensors) runs the connectors as before. Matching is
-    by identity, held through weak references, so no raw hidden states are kept alive. Restores what it replaced."""
+    """Inside ``encode_once``: connectors called on exactly the tensors an ``encode_prompt`` of this span returned
+    (identity, via weak references) reuse the first such call's outputs; any other input (CFG concatenation) runs."""
     connectors = getattr(runner, "connectors", None)
     encode = getattr(runner, "encode_prompt", None)
     if (
@@ -1860,12 +1850,10 @@ def reuse_connector_outputs(runner: Any):
     returned: list[tuple[str, Any, Any]] = []
     results: dict[tuple[str, str], tuple] = {}
     had_encode = "encode_prompt" in getattr(runner, "__dict__", {})
-    # What ``forward`` wraps: the instance attribute it replaced (an offload hook's wrapper) or the class method.
     wrapped: dict[str, Any] = {}
 
     def arm() -> None:
-        # At entry, and again before each call's connectors: an offload reset between the calls re-arms the module's
-        # hooks (a new ``forward``), which is then wrapped in turn.
+        # Again before each call: an offload reset between the calls installs a new hooked ``forward``.
         if connectors.__dict__.get("forward") is forward:
             return
         wrapped["own"] = "forward" in connectors.__dict__
@@ -1889,7 +1877,6 @@ def reuse_connector_outputs(runner: Any):
         return out
 
     def forward(*args: Any, **kwargs: Any) -> Any:
-        # diffusers' pipelines pass (prompt_embeds, attention_mask, padding_side=...); other forms just run.
         source = None
         if len(args) >= 2:
             source = next((k for k, e, m in returned if e() is args[0] and m() is args[1]), None)
@@ -1900,7 +1887,7 @@ def reuse_connector_outputs(runner: Any):
         out = wrapped["inner"](*args, **kwargs)
         CONDITIONING_STATS["connector_runs"] += 1
         if key is not None and isinstance(out, tuple):
-            # A copy: the first call's denoise owns its tensors.
+            # A copy: stage one's denoise owns its tensors.
             results[key] = tuple(t.clone() if isinstance(t, torch.Tensor) else t for t in out)
         return out
 
