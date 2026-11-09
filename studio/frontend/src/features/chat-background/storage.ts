@@ -134,7 +134,10 @@ async function persist(
 	const ticket = ++revision;
 	if (optimistic) useBackgroundStore.setState({ value, error: null });
 	const write = writes.then(async () => {
-		if (fromServer && ticket !== revision) return;
+		// A superseded write is skipped: the newer one queued behind it stores the newer value. Slider
+		// drags patch every frame, and each write would otherwise put the whole image again. Only
+		// patches are skipped locally, since they keep the image and its sha256 as they are.
+		if (ticket !== revision && (fromServer || (optimistic && db === database))) return;
 		const sameImage = Boolean(value && committed && value.blob === committed.blob);
 		const sha256 = fromServer ? (fromServer.sha256 ?? null) : sameImage ? committedSha : null;
 		if (value) await db.table("backgrounds").put({ id: "current", value, sha256 });

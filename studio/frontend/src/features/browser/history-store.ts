@@ -117,23 +117,24 @@ interface BrowserHistoryState {
 
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       history: [],
       downloads: [],
       icons: {},
-      recordIcon: (host, icon, temporary = false) =>
+      // No-op calls skip set(): persist would rewrite the whole history JSON for an unchanged state.
+      recordIcon: (host, icon, temporary = false) => {
+        const { icons } = get();
+        if (!host || icon.length > MAX_URL_CHARS || icons[host] === icon) return;
+        // Icons name the hosts visited, so they follow the history setting.
+        if (!savesHistory(temporary)) return;
+        const { [host]: _replaced, ...rest } = icons;
+        const hosts = Object.keys(rest);
+        for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
+        set({ icons: { ...rest, [host]: icon } });
+      },
+      recordVisit: (url, fullTitle, temporary = false) => {
+        if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return;
         set((state) => {
-          if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
-          // Icons name the hosts visited, so they follow the history setting.
-          if (!savesHistory(temporary)) return state;
-          const { [host]: _replaced, ...rest } = state.icons;
-          const hosts = Object.keys(rest);
-          for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
-          return { icons: { ...rest, [host]: icon } };
-        }),
-      recordVisit: (url, fullTitle, temporary = false) =>
-        set((state) => {
-          if (url.length > MAX_URL_CHARS || !savesHistory(temporary)) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
@@ -146,7 +147,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           // Pruned against the new visit too: its icon was recorded just before it.
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
-        }),
+        });
+      },
       recordDownload: (item, temporary) => {
         // Callers that took the state when the download began pass it; the rest go by the chat shown now.
         if (!useBrowserPrefsStore.getState().saveDownloadHistory || (temporary ?? useChatRuntimeStore.getState().incognito)) {
@@ -200,13 +202,13 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         });
         historyStorage.flush();
       },
-      pruneHistory: () =>
-        set((state) => {
-          const cutoff = retentionCutoff();
-          if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
-          const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
-          return { history, icons: iconsFor(history, state.icons) };
-        }),
+      pruneHistory: () => {
+        const state = get();
+        const cutoff = retentionCutoff();
+        if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return;
+        const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
+        set({ history, icons: iconsFor(history, state.icons) });
+      },
     }),
     {
       // Per account: a write still deferred at a switch lands under the account that made it.
