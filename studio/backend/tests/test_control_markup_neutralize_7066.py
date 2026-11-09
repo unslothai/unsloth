@@ -4469,7 +4469,7 @@ def test_safetensors_healing_is_gated_on_the_sanitized_catalog():
     gate = "heal_gate(payload.auto_heal_tool_calls, _sf_healing_tools, payload.tool_choice"
     assert packed.count(gate + ",") + packed.count(gate + ")") == 1
     for call in (
-        "StreamToolCallHealer(_sf_heal, _sf_healing_tools)",
+        "StreamToolCallHealer(_sf_heal, _sf_healing_tools,",
         "heal_openai_message(_msg, _sf_heal, _sf_healing_tools,",
         "nudge_should_retry(_data, _sf_heal, _sf_healing_tools)",
         "heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools,",

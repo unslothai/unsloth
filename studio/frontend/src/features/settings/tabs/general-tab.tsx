@@ -228,8 +228,14 @@ async function resetAllPrefs() {
       // ignore
     }
   }
-  // The account keeps its own scale: mark the reset default as an unsent edit so it wins after the reload.
-  writePending({ ...readPending(), scale: true });
+  // Unsent, so the defaults beat the account's saved copy after the reload.
+  writePending({
+    ...readPending(),
+    scale: true,
+    chat: true,
+    timeFormat: true,
+    spellcheck: true,
+  });
   window.location.reload();
 }
 

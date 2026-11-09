@@ -6,9 +6,13 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
+import importlib
 import importlib.util
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -20,6 +24,11 @@ SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 # Passed as None to from_pretrained: Studio renders video only.
 NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
+GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+_GUARDRAIL_STEPS = (
+    f"accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, add that account's Hugging Face token in "
+    f"Settings, and load again. Or set {SAFETY_CHECKER_ENV}=0 to run without it at your own responsibility."
+)
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
     "nvidia/cosmos3-nano": True,
@@ -105,12 +114,63 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
         return None
     if not checkpoint_enables_safety_checker(repo_id, index):
         return None
-    return (
-        f"'{repo_id}' runs NVIDIA's Cosmos guardrail (its model_index.json does not turn enable_safety_checker off, and "
-        f"the pipeline's default is on), which needs the cosmos_guardrail package: pip install cosmos-guardrail into "
-        f"Studio's Python environment, restart Studio, and retry. To run without it, set {SAFETY_CHECKER_ENV}=0; the "
-        f"model card's terms and safe use stay your responsibility."
-    )
+    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: pip install cosmos-guardrail, restart, {_GUARDRAIL_STEPS}"
+
+
+def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
+    """The load error for a gated-repo refusal of the guardrail's own weights, else None."""
+    from .diffusion import _HUB_REPO_RE, _gated_in_chain
+
+    gated = _gated_in_chain(exc)
+    found = _HUB_REPO_RE.search(str(gated)) if gated is not None else None
+    if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
+        return None
+    return f"'{repo_id}' needs NVIDIA's gated Cosmos guardrail: {_GUARDRAIL_STEPS}"
+
+
+_UNSET = object()
+_load_hub_token: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "cosmos3_guardrail_token", default = _UNSET
+)
+_wrap_lock = threading.Lock()
+
+
+def _token_bound(download: Any) -> Any:
+    @functools.wraps(download)
+    def snapshot_download(*args: Any, **kwargs: Any) -> Any:
+        token = _load_hub_token.get()
+        if token is not _UNSET:
+            kwargs.setdefault("token", token)
+        return download(*args, **kwargs)
+
+    snapshot_download._unsloth_load_token = True
+    return snapshot_download
+
+
+@contextlib.contextmanager
+def guardrail_hub_token(token: Any):
+    """cosmos_guardrail downloads without a token argument; a permanent wrapper sends this load's token from a
+    context variable, so overlapping loads never share one. None keeps the ambient login."""
+    if isinstance(token, str):
+        token = token.strip() or None
+    module = None
+    if token is not None:
+        try:
+            # Written out (GUARDRAIL_PACKAGE twice) so the risky-loader lint sees a fixed module.
+            module = importlib.import_module("cosmos_guardrail.cosmos_guardrail")
+            with _wrap_lock:
+                if not getattr(module.snapshot_download, "_unsloth_load_token", False):
+                    module.snapshot_download = _token_bound(module.snapshot_download)
+        except (ImportError, AttributeError):
+            module = None
+    if module is None:
+        yield
+        return
+    reset = _load_hub_token.set(token)
+    try:
+        yield
+    finally:
+        _load_hub_token.reset(reset)
 
 
 def pipeline_kwargs(repo_id: str, index: Optional[dict] = None) -> dict[str, Any]:

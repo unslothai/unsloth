@@ -16,6 +16,8 @@ import { getExternalProviderApiKey } from "../external-providers";
 import { stripSearchImageTokens } from "../search-images/search-images";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { markdownToSpeechText } from "../utils/speech-text";
+import { splitIntoSentences } from "../voice/speech-text";
+import { planTtsChunk } from "../voice/tts-chunk-plan";
 
 /** "default" resolves to the platform's default voice; undefined lets the browser pick. */
 export function findTtsVoice(
@@ -405,6 +407,20 @@ export function releaseTtsAudioUrl(url: string): void {
   if (url.startsWith("blob:")) URL.revokeObjectURL(url);
 }
 
+/** Read-aloud chunks: one sentence first for a fast start, then sentences merged to a budget. */
+export function readAloudChunks(text: string): string[] {
+  const pending = splitIntoSentences(text);
+  const chunks: string[] = [];
+  while (pending.length > 0) {
+    const take = Math.max(
+      1,
+      planTtsChunk({ pending, first: chunks.length === 0, final: true, playing: false, waitedMs: 0 }),
+    );
+    chunks.push(pending.splice(0, take).join(" "));
+  }
+  return chunks;
+}
+
 function speakWithBackendAudio(
   generate: (text: string, signal?: AbortSignal) => Promise<string>,
   text: string,
@@ -416,8 +432,10 @@ function speakWithBackendAudio(
 ): { cancel: () => void } {
   const { ttsRate, ttsVolume } = useVoiceSettingsStore.getState();
   const controller = new AbortController();
+  const chunks = readAloudChunks(text);
   let audio: HTMLAudioElement | null = null;
   let audioUrl: string | null = null;
+  let next: Promise<string> | null = null;
   let cancelled = false;
 
   const cleanup = () => {
@@ -432,13 +450,15 @@ function speakWithBackendAudio(
     }
   };
 
-  void (async () => {
-    try {
-      const url = await generate(text, controller.signal);
-      if (cancelled) {
-        releaseTtsAudioUrl(url);
-        return;
-      }
+  const synth = (index: number): Promise<string> => {
+    const pending = generate(chunks[index] ?? "", controller.signal);
+    // Awaited later; a chunk dropped by cancel must not reject unhandled.
+    pending.catch(() => {});
+    return pending;
+  };
+
+  const play = (url: string) =>
+    new Promise<void>((resolve, reject) => {
       audioUrl = url;
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
@@ -449,18 +469,45 @@ function speakWithBackendAudio(
       });
       audio.addEventListener("ended", () => {
         cleanup();
-        handleEnd("finished");
+        resolve();
       });
       audio.addEventListener("error", () => {
-        if (cancelled) return;
         cleanup();
-        handleEnd("error", new Error("Audio playback failed."));
+        reject(new Error("Audio playback failed."));
       });
-      markRunning();
-      await audio.play();
+      audio.play().catch(reject);
+    });
+
+  void (async () => {
+    try {
+      let pendingChunk = synth(0);
+      next = pendingChunk;
+      for (let i = 0; i < chunks.length; i++) {
+        const url = await pendingChunk;
+        next = null;
+        if (cancelled) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
+        if (i + 1 < chunks.length) {
+          pendingChunk = synth(i + 1);
+          next = pendingChunk;
+        }
+        if (i === 0) markRunning();
+        // A subscriber may cancel on the running notification.
+        if (cancelled) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
+        await play(url);
+        if (cancelled) return;
+      }
+      handleEnd("finished");
     } catch (error) {
       if (cancelled || controller.signal.aborted) return;
       cleanup();
+      controller.abort();
+      next?.then(releaseTtsAudioUrl, () => {});
       handleEnd("error", error);
     }
   })();
@@ -469,6 +516,7 @@ function speakWithBackendAudio(
     cancel: () => {
       cancelled = true;
       controller.abort();
+      next?.then(releaseTtsAudioUrl, () => {});
       cleanup();
       handleEnd("cancelled");
     },

@@ -193,9 +193,8 @@ def _run_loop(monkeypatch, messages, replies, result_chars, **kwargs):
         tools = [WEB],
         max_tokens = 200,
         nudge_tool_calls = True,
-        thread_id = "thread-1",
         context_overflow = "truncate_oldest",
-        **kwargs,
+        **{"thread_id": "thread-1", **kwargs},
     )
     truncated = [event for event in events if event.get("type") == "context_truncated"]
     return truncated, prompts, branches
@@ -289,3 +288,31 @@ def test_the_only_tool_result_is_not_evicted_to_make_room_for_what_the_loop_says
     # Dropping the result would fit but leave nothing to answer from.
     assert truncation["fits"] is fits and truncation["dropped_messages"] == dropped
     assert [m["role"] for m in prompts[-1]].count("tool") == 1
+
+
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(
+    monkeypatch, archive_calls, fresh_cut_memory
+):
+    rounds = 16
+    _, prompts, _ = _run_loop(
+        monkeypatch,
+        [QUESTION],
+        [CALL % i for i in range(rounds)] + ["done"],
+        400,
+        max_tool_iterations = rounds,
+        context_policy = "rolling",
+        thread_id = None,
+    )
+
+    heads = [str(prompt[:3]) for prompt in prompts]
+    moves = sum(before != after for before, after in zip(heads, heads[1:]))
+    assert moves < len(prompts) // 2, moves

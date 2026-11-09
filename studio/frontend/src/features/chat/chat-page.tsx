@@ -102,6 +102,7 @@ import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { MODAL_SURFACE, useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
@@ -119,6 +120,12 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_FORMAT,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_FORMAT,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArchiveIcon,
@@ -327,12 +334,15 @@ import {
 } from "@/features/rag/components/project-source-dropzone";
 import {
   exportConversationCsv,
+  exportConversationHtml,
   exportConversationMarkdown,
   exportConversationMessagesJsonl,
+  exportConversationPdf,
   exportConversationRawJsonl,
   exportConversationShareGPT,
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 
 const BrowserPanel = lazy(() =>
   import("@/features/browser/browser-panel").then((module) => ({
@@ -435,6 +445,7 @@ const BrowserOverlaidContext = createContext(false);
 function BrowserOverlay(): ReactElement {
   const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const modalRef = useSurfaceRef(MODAL_SURFACE, dialogRef);
   useDocumentFlag("data-browser-overlay-open", true);
   useEffect(() => {
     const previous = document.activeElement;
@@ -482,7 +493,7 @@ function BrowserOverlay(): ReactElement {
       }}
     >
       <div
-        ref={dialogRef}
+        ref={modalRef}
         role="dialog"
         aria-modal={true}
         aria-label={t("browser.title")}
@@ -1875,7 +1886,9 @@ type ProjectChatExportFormat =
   | "messages-jsonl"
   | "csv"
   | "sharegpt-jsonl"
-  | typeof CONVERSATION_MARKDOWN_FORMAT;
+  | typeof CONVERSATION_MARKDOWN_FORMAT
+  | typeof CONVERSATION_HTML_FORMAT
+  | typeof CONVERSATION_PDF_FORMAT;
 const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
@@ -1888,6 +1901,8 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
     label: CONVERSATION_MARKDOWN_LABEL,
     format: CONVERSATION_MARKDOWN_FORMAT,
   },
+  { label: CONVERSATION_HTML_LABEL, format: CONVERSATION_HTML_FORMAT },
+  { label: CONVERSATION_PDF_LABEL, format: CONVERSATION_PDF_FORMAT },
 ];
 
 async function exportProjectConversation(
@@ -1901,6 +1916,8 @@ async function exportProjectConversation(
   if (format === CONVERSATION_MARKDOWN_FORMAT)
     return exportConversationMarkdown(threadId);
   if (format === "sharegpt-jsonl") return exportConversationShareGPT(threadId);
+  if (format === CONVERSATION_HTML_FORMAT) return exportConversationHtml(threadId);
+  if (format === CONVERSATION_PDF_FORMAT) return exportConversationPdf(threadId);
   const unhandled: never = format;
   throw new Error(`Unhandled export format: ${String(unhandled)}`);
 }
@@ -2560,18 +2577,15 @@ function ProjectLanding({
                             <span>Export</span>
                           </DropdownMenuSubTrigger>
                           <DropdownMenuSubContent className="unsloth-plus-menu w-52">
-                            {PROJECT_CHAT_EXPORT_OPTIONS.map(
-                              ({ label, format }) => (
-                                <DropdownMenuItem
-                                  key={format}
-                                  onSelect={() =>
-                                    void handleExport(item, format)
-                                  }
-                                >
-                                  {label}
-                                </DropdownMenuItem>
-                              ),
-                            )}
+                            <ExportFormatItems
+                              options={PROJECT_CHAT_EXPORT_OPTIONS.map(
+                                ({ label, format }) => ({ key: format, label }),
+                              )}
+                              onSelect={(format) =>
+                                void handleExport(item, format)
+                              }
+                              subContentClassName="unsloth-plus-menu w-48"
+                            />
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
                         <DropdownMenuItem

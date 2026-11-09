@@ -86,9 +86,8 @@ env:
 jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
-    # A fork PR's token is read-only whatever this workflow declares, so it cannot list
-    # review drafts. Skip rather than fail: a
-    # property of the trigger, not a broken release.
+    # Fork PR tokens are read-only whatever the workflow declares, so they cannot list review
+    # drafts; skip rather than fail, since that is a property of the trigger, not a broken release.
     if: (github.event.pull_request.head.repo.fork != true) && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

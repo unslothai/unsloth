@@ -260,6 +260,79 @@ class TestApprovedHostLiftsOnlyTheAllowlist:
             reset_account(token)
 
 
+class TestMetadataBlockedAtRuntime:
+    @pytest.fixture
+    def server(self):
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"plain-ok")
+
+            def log_message(self, *args):
+                pass
+
+        httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target = httpd.serve_forever, daemon = True).start()
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
+        httpd.shutdown()
+
+    def _run(self, tmp_path, monkeypatch, code):
+        from core.inference import tools
+        monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(tmp_path))
+        return tools._python_exec(code, None, 60, "metadata-runtime", host_access_approved = True)
+
+    def test_a_redirect_to_a_metadata_host_is_refused(self, tmp_path, monkeypatch, server):
+        code = f'import urllib.request\nurllib.request.urlopen("{server}/redirect", timeout = 3)'
+        assert "Blocked: cloud-metadata host" in self._run(tmp_path, monkeypatch, code)
+
+    def test_an_ordinary_host_still_connects(self, tmp_path, monkeypatch, server):
+        code = (
+            "import urllib.request\n"
+            f'print(urllib.request.urlopen("{server}/", timeout = 3).read().decode())'
+        )
+        out = self._run(tmp_path, monkeypatch, code)
+        assert "plain-ok" in out and "Blocked" not in out, out
+
+    def test_a_dns_alias_of_a_metadata_host_is_refused(self, tmp_path):
+        import subprocess
+        import sys
+
+        from core.inference import tools
+
+        code = (
+            "import socket, urllib.request\n"
+            "real = socket.getaddrinfo\n"
+            "socket.getaddrinfo = lambda h, *a, **k: real('169.254.169.254', *a, **k)\n"
+            "try:\n"
+            "    urllib.request.urlopen('http://alias.invalid/', timeout = 3)\n"
+            "except Exception as exc:\n"
+            "    print(exc)\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code],
+            env = tools._build_safe_env(str(tmp_path)),
+            cwd = str(tmp_path),
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        assert "Blocked: cloud-metadata host" in out.stdout + out.stderr, out
+
+    def test_full_access_mode_is_left_alone(self, tmp_path):
+        from core.inference import tools
+        assert "_UNSLOTH_SANDBOX_BLOCK_METADATA" not in tools._build_bypass_env(str(tmp_path))
+        assert tools._build_safe_env(str(tmp_path))["_UNSLOTH_SANDBOX_BLOCK_METADATA"] == "1"
+
+
 class TestLocalDatabaseFileIsNotAHost:
     @pytest.mark.parametrize(
         "code",
@@ -2701,6 +2774,7 @@ class TestSandboxEnvIsolation:
             "PYTHONIOENCODING",
             "MPLBACKEND",
             "PYTHONPATH",
+            "_UNSLOTH_SANDBOX_BLOCK_METADATA",
             "VIRTUAL_ENV",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack

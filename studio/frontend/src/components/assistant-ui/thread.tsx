@@ -191,7 +191,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "@/features/chat/components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -326,6 +329,8 @@ import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
   splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
   chatHistoryClearBoundary,
@@ -433,6 +438,7 @@ import {
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
 import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -2092,7 +2098,6 @@ export const Thread: FC<{
   // bottom while the user scrolls up (see the hook for the full explanation).
   const {
     ref: viewportRef,
-    markerRef,
     context: autoScrollContext,
   } = useIntentAwareAutoScroll();
 
@@ -2316,7 +2321,6 @@ export const Thread: FC<{
           scrollToBottomOnRunStart={false}
           scrollToBottomOnInitialize={false}
           scrollToBottomOnThreadSwitch={false}
-          ref={markerRef}
           className="aui-thread-host hidden"
           onDragEnter={onDragEnter}
           onDragOver={onDragOver}
@@ -3245,6 +3249,7 @@ const Composer: FC<{
       : null;
   // Expand only once the input wraps, latched so it cannot flip-flop at the wrap boundary.
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, inputRef);
   const editorRef = useRef<HTMLDivElement>(null);
   const inputId = useId();
   const uiSpaceScale = useUiSpaceScale();
@@ -5819,7 +5824,7 @@ const Composer: FC<{
                 placeholder={
                   overlay ? "Type your edits for your image" : "Ask anything"
                 }
-                ref={inputRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 className="aui-composer-input unsloth-composer-input"
                 minRows={1}
@@ -7161,56 +7166,33 @@ const ComposerToolsMenu: FC<{
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          <DropdownMenuItem
-            onSelect={() => {
+          <ExportFormatItems
+            options={[
+              { key: "raw", label: "Training JSONL" },
+              { key: "messages", label: "Message JSONL" },
+              { key: "csv", label: "CSV" },
+              { key: "sharegpt", label: "ShareGPT JSONL" },
+              { key: "markdown", label: CONVERSATION_MARKDOWN_LABEL },
+              { key: "html", label: CONVERSATION_HTML_LABEL },
+              { key: "pdf", label: CONVERSATION_PDF_LABEL },
+            ]}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(key) => {
               if (!activeThreadId) return;
-              exportConversationRawJsonl(activeThreadId).catch((error) => {
+              const exporters = {
+                raw: exportConversationRawJsonl,
+                messages: exportConversationMessagesJsonl,
+                csv: exportConversationCsv,
+                sharegpt: exportConversationShareGPT,
+                markdown: exportConversationMarkdown,
+                html: exportConversationHtml,
+                pdf: exportConversationPdf,
+              };
+              exporters[key](activeThreadId).catch((error) => {
                 if (!isDownloadCancelled(error)) toast.error("Export failed.");
               });
             }}
-          >
-            Training JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMessagesJsonl(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            Message JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationCsv(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            CSV
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationShareGPT(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            ShareGPT JSONL
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              if (!activeThreadId) return;
-              exportConversationMarkdown(activeThreadId).catch((error) => {
-                if (!isDownloadCancelled(error)) toast.error("Export failed.");
-              });
-            }}
-          >
-            {CONVERSATION_MARKDOWN_LABEL}
-          </DropdownMenuItem>
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),

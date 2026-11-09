@@ -314,6 +314,8 @@ def run(page):
     reset(holdExport = True)
     export_row = page.locator('[data-settings-label="Export chat history"]')
     export_row.get_by_role("button", name = "Export", exact = True).click()
+    # Export opens a format menu; JSON is the full backup this check holds in flight.
+    page.get_by_role("menuitem", name = "JSON", exact = True).click()
     page.wait_for_function("typeof window.__dataFixture.releaseExport === 'function'")
     search_to(page, "Chat sandbox files")
     expect_search_hit(page, "Chat sandbox files")

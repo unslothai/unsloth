@@ -39,6 +39,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
 import { BrowserAgentMenuItem, BrowserAgentPill } from "@/features/browser/agent/lazy-composer-toggle";
 import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { useSurfaceRef } from "@/lib/surface-registry";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -93,6 +94,10 @@ import {
 } from "./image-normalize";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
+import {
+  CONVERSATION_HTML_LABEL,
+  CONVERSATION_PDF_LABEL,
+} from "./utils/conversation-html";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
 import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
@@ -142,7 +147,10 @@ import {
   exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationMarkdown,
+  exportConversationHtml,
+  exportConversationPdf,
 } from "./prompt-storage/prompt-storage-dialog";
+import { ExportFormatItems } from "./components/export-format-items";
 import {
   listPromptEntries,
   listPromptLists,
@@ -287,6 +295,19 @@ export interface CompareHandle {
 }
 
 // Inlined to avoid a new icon dep. Kept in sync with the main composer.
+// Built on call, like chatExportOptions, so an import cycle cannot leave an exporter undefined.
+function composerExportFormats() {
+  return [
+    { label: "Training JSONL", fn: exportConversationRawJsonl },
+    { label: "Message JSONL", fn: exportConversationMessagesJsonl },
+    { label: "CSV", fn: exportConversationCsv },
+    { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+    { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
+    { label: CONVERSATION_HTML_LABEL, fn: exportConversationHtml },
+    { label: CONVERSATION_PDF_LABEL, fn: exportConversationPdf },
+  ];
+}
+
 function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
@@ -777,6 +798,7 @@ export function SharedComposer({
   );
   const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerSurfaceRef = useSurfaceRef(COMPOSER_INPUT_SELECTOR, textareaRef);
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
@@ -2628,36 +2650,25 @@ export function SharedComposer({
           collisionPadding={16}
           className="unsloth-plus-menu w-[calc(208px*var(--ui-space-scale,1))]"
         >
-          {[
-            { label: "Training JSONL", fn: exportConversationRawJsonl },
-            { label: "Message JSONL", fn: exportConversationMessagesJsonl },
-            { label: "CSV", fn: exportConversationCsv },
-            { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
-            {
-              label: CONVERSATION_MARKDOWN_LABEL,
-              fn: exportConversationMarkdown,
-            },
-          ].map(({ label, fn }) => (
-            <DropdownMenuItem
-              key={label}
-              disabled={exportThreadIds.length === 0}
-              onSelect={() => {
-                if (!exportThreadIds.length) {
-                  toast.error("No conversation to export yet.");
-                  return;
+          <ExportFormatItems
+            options={composerExportFormats().map(({ label }) => ({ key: label, label }))}
+            subContentClassName="unsloth-plus-menu w-[calc(176px*var(--ui-space-scale,1))]"
+            onSelect={(label) => {
+              const fn = composerExportFormats().find((f) => f.label === label)?.fn;
+              if (!fn) return;
+              if (!exportThreadIds.length) {
+                toast.error("No conversation to export yet.");
+                return;
+              }
+              (async () => {
+                for (const id of exportThreadIds) {
+                  await fn(id);
                 }
-                (async () => {
-                  for (const id of exportThreadIds) {
-                    await fn(id);
-                  }
-                })().catch((error) => {
-                  if (!isDownloadCancelled(error)) toast.error("Export failed.");
-                });
-              }}
-            >
-              {label}
-            </DropdownMenuItem>
-          ))}
+              })().catch((error) => {
+                if (!isDownloadCancelled(error)) toast.error("Export failed.");
+              });
+            }}
+          />
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
@@ -3080,7 +3091,7 @@ export function SharedComposer({
               <textarea
                 {...skillMentions.inputProps}
                 id={inputId}
-                ref={textareaRef}
+                ref={composerSurfaceRef}
                 data-type-to-activate="composer"
                 value={text}
                 onChange={(e) => {

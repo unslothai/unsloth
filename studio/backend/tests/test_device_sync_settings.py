@@ -71,6 +71,39 @@ def test_client_preferences_reject_out_of_range_values(client):
     assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
 
 
+def test_chat_menu_time_and_spellcheck_preferences_follow_the_account(client):
+    chat = {
+        "sendShortcut": "mod-enter",
+        "showReplyTimes": True,
+        "pastedTextMinChars": 8000,
+        "generationStatsUpdates": "realtime",
+    }
+    plus_menu = {"pins": {"mcp": True}, "order": ["mcp", "skills"], "pinnedPromptIds": ["p1"]}
+    client.put("/api/settings/client-preferences", json = {"chat": chat, "plusMenu": plus_menu})
+    client.put("/api/settings/client-preferences", json = {"timeFormat": "24h", "spellcheck": False})
+    body = client.get("/api/settings/client-preferences").json()
+    assert {k: body["chat"][k] for k in chat} == chat
+    assert body["plusMenu"]["pins"] == {"mcp": True}
+    assert body["plusMenu"]["order"] == ["mcp", "skills"]
+    assert body["plusMenu"]["pinnedPromptIds"] == ["p1"]
+    assert body["timeFormat"] == "24h"
+    assert body["spellcheck"] is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"chat": {"sendShortcut": "alt-enter"}},
+        {"chat": {"newChatComposerPosition": 101}},
+        {"plusMenu": {"order": "mcp"}},
+        {"timeFormat": "36h"},
+        {"chat": {"generationStatsUpdates": "live"}},
+    ],
+)
+def test_synced_preferences_reject_invalid_values(client, bad):
+    assert client.put("/api/settings/client-preferences", json = bad).status_code == 422
+
+
 def test_background_image_round_trips_and_follows_its_own_bytes(client):
     assert client.get("/api/settings/chat-background").json()["saved"] is False
     put = client.put(
