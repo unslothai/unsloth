@@ -3183,12 +3183,10 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV, ShareGPT JSONL या Markdown के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML या PDF के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग। Message JSONL केवल हर चैट के लिए अलग फ़ाइल में उपलब्ध है।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
-      exportCombinedSuffix: "(संयुक्त)",
-      exportPerChatSuffix: "(प्रति चैट)",
       importChats: "चैट इंपोर्ट करें",
       importChatsDescription:
         "JSON, JSONL, NDJSON, CSV या Markdown फ़ाइलों को Recents में इंपोर्ट करें।",

@@ -3344,12 +3344,10 @@ export const sv = {
       exportingAction: "Exporterar ...",
       exportConversations: "Exportera Senaste och Projekt",
       exportConversationsDescription:
-        "Hämta Senaste eller Senaste plus projektchattar som tränings-JSONL, CSV, ShareGPT JSONL eller Markdown, sammanslaget eller per chatt. Meddelande-JSONL är tillgängligt per chatt.",
+        "Hämta Senaste eller Senaste plus projektchattar som tränings-JSONL, CSV, ShareGPT JSONL, Markdown, HTML eller PDF, sammanslaget eller per chatt. Meddelande-JSONL är tillgängligt per chatt.",
       exportConversationsAction: "Exportera",
       exportScopeRecents: "Senaste",
       exportScopeAll: "Senaste + Projekt",
-      exportCombinedSuffix: "(sammanslagen)",
-      exportPerChatSuffix: "(per chatt)",
       importChats: "Importera chattar",
       importChatsDescription:
         "Importera JSON-, JSONL-, NDJSON-, CSV- eller Markdown-filer till Senaste.",

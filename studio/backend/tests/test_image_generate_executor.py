@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextvars
 import threading
@@ -88,3 +89,20 @@ def test_results_and_errors_pass_through(monkeypatch, raises):
             asyncio.run(main())
     else:
         assert asyncio.run(main()) == 3
+
+
+def _render_slot_dispatches(name: str) -> list[str]:
+    tree = ast.parse(open(inference.__file__, encoding = "utf-8").read())
+    callees = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Await) and isinstance(node.value, ast.Call)):
+            continue
+        call = node.value
+        if call.args and isinstance(call.args[0], ast.Name) and call.args[0].id == name:
+            callees.append(ast.unparse(call.func))
+    return callees
+
+
+def test_detailer_inpaints_wait_on_the_image_pool():
+    callees = _render_slot_dispatches("_run_detailer")
+    assert callees == ["_image_generate_in_thread"], callees

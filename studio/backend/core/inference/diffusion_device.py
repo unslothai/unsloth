@@ -756,6 +756,11 @@ def diffusion_device_target_from_torch_device(
             ordinal = int(index) if index.isdigit() else None,
         )
     if device == "xpu":
+        try:
+            import torch
+            xpu = getattr(torch, "xpu", None)
+        except Exception:
+            xpu = None
         return DiffusionDeviceTarget(
             device = "xpu",
             dtype = dtype,
@@ -764,6 +769,10 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = True,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            # float64_device() (VAE tiling blend weights) comes through here, not _xpu_target.
+            supports_float64 = _xpu_has_fp64(xpu, int(index) if index.isdigit() else None)
+            if xpu is not None
+            else True,
         )
     if device == "mps":
         return DiffusionDeviceTarget(
@@ -832,6 +841,21 @@ def _cuda_or_rocm_target(
     )
 
 
+# Arc A-series has no fp64 ("Required aspect fp64"); 0 skips the probe.
+XPU_FP64_PROBE_ENV = "UNSLOTH_DIFFUSION_XPU_FP64_PROBE"
+
+
+def _xpu_has_fp64(xpu: Any, index: Optional[int] = None) -> bool:
+    """True when the probe is off or unanswerable."""
+    if (os.environ.get(XPU_FP64_PROBE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return True
+    try:
+        idx = xpu.current_device() if index is None else index
+        return bool(getattr(xpu.get_device_properties(idx), "has_fp64", True))
+    except Exception:
+        return True
+
+
 def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
     bf16_ok = False
     xpu = getattr(torch, "xpu", None)
@@ -847,6 +871,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
         supports_model_cpu_offload = True,
         supports_default_torch_compile = False,
         supports_pinned_transfer = False,
+        supports_float64 = _xpu_has_fp64(xpu) if xpu is not None else True,
     )
 
 

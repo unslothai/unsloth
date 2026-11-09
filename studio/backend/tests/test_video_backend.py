@@ -10689,6 +10689,44 @@ def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
     assert "moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
 
 
+@pytest.mark.parametrize("switch", [None, "0"])
+def test_a_seed_declined_by_the_loads_own_offload_plan_reads_the_hosted_native_build(
+    fake_runtime, monkeypatch, switch
+):
+    """Probe prices the seed resident but the load's plan offloads it (LTX-2.5 sidecar encoder): read the hosted file."""
+    import core.inference.video as video_mod
+
+    if switch is not None:
+        monkeypatch.setenv(video_mod.OFFLOAD_HOSTED_READ_ENV, switch)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: "int8")
+    _stub_denoiser_seed(monkeypatch, scheme = "int8", plan_scheme = "int8")
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    _stub_apply_memory_plan(monkeypatch, video_mod)
+    monkeypatch.setattr(
+        video_mod, "_video_native_hosted_scheme", lambda fam, scheme, target: "int8"
+    )
+    monkeypatch.setattr(video_mod, "_video_native_cache_spec", lambda fam, **kw: {"scheme": "int8"})
+    monkeypatch.setattr(video_mod, "_read_native_quant_from_cache", lambda *a, **k: {})
+    monkeypatch.setattr(video_mod, "_video_native_stream_build", lambda *a, **k: {})
+    hosted_reads = []
+    monkeypatch.setattr(
+        video_mod, "_read_native_quant_from_hosted", lambda *a, **k: hosted_reads.append(k) or {}
+    )
+
+    # The fake target lacks a native int8 kernel, so the load refuses after the read.
+    with contextlib.suppress(RuntimeError):
+        VideoBackend().load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"
+        )
+    assert len(hosted_reads) == (0 if switch == "0" else 1)
+
+
 def _plans_for(monkeypatch, video_mod):
     """Every ``model_dense_mib`` the memory planner was asked to judge, in order."""
     real_plan = video_mod.plan_diffusion_memory

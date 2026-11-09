@@ -3453,12 +3453,10 @@ export const cs = {
       exportingAction: "Exportování...",
       exportConversations: "Exportovat Nedávné a Projekty",
       exportConversationsDescription:
-        "Stáhnout Nedávné, nebo Nedávné spolu s chaty projektů, jako Training JSONL, CSV, ShareGPT JSONL nebo Markdown, sloučené nebo po jednotlivých chatech. Message JSONL je k dispozici po jednotlivých chatech.",
+        "Stáhnout Nedávné, nebo Nedávné spolu s chaty projektů, jako Training JSONL, CSV, ShareGPT JSONL, Markdown, HTML nebo PDF, sloučené nebo po jednotlivých chatech. Message JSONL je k dispozici po jednotlivých chatech.",
       exportConversationsAction: "Exportovat",
       exportScopeRecents: "Nedávné",
       exportScopeAll: "Nedávné + Projekty",
-      exportCombinedSuffix: "(sloučené)",
-      exportPerChatSuffix: "(po chatech)",
       importChats: "Importovat chaty",
       importChatsDescription:
         "Importovat soubory JSON, JSONL, NDJSON, CSV nebo Markdown do Nedávných.",

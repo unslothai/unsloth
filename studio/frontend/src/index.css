@@ -7263,6 +7263,16 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] [data-page-model-header] [data-slot="api-toolbar-fade"] {
   display: none;
 }
+/* macOS glass sees the window through every page, and with no glass a background image clears the
+   page too, so these headers' own page-colour fill read as a strip until content scrolls under them. */
+html[data-glass="macos"] [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header], .hub-page .hub-detail-bar:not([data-scrolled])),
+html:not([data-glass]) [data-wallpaper-workspace][data-wallpaper-ready][data-wallpaper-ready] > [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
+  background-color: transparent;
+}
+html[data-glass="macos"] [data-page-model-header] [data-slot="api-toolbar-fade"],
+html:not([data-glass]) [data-wallpaper-workspace][data-wallpaper-ready][data-wallpaper-ready] [data-page-model-header] [data-slot="api-toolbar-fade"] {
+  display: none;
+}
 /* Follow the actual sidebar edge during resize. The decorative layer stays
    behind the scrolling pane and below the Windows caption. */
 [data-windows-wallpaper-page] > [data-slot="sidebar"] {

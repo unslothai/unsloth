@@ -425,7 +425,7 @@ def video_te_quant_request(
     that cannot run it (fp8 below cc 8.9, a hosted file that is not there) gets the dense encoder, never a refusal.
 
     Two limits on the automatic pick, never on an explicit scheme: Speed="off" is bit-exact, so it keeps the released
-    encoder (LTX-2.5's raw unset included, which takes int8 under UNSLOTH_LTX25_TE_INT8=1); and only an exactly identified official
+    encoder (LTX-2.5's raw unset included, which otherwise takes the hosted int8 encoder); and only an exactly identified official
     ``base`` takes the hosted file, so a custom pack that merely shares the folder name keeps its own weights."""
     unset = text_encoder_quant is None or str(text_encoder_quant).strip().lower() in ("", "auto")
     auto_scheme = getattr(fam, "te_quant_auto", None)
@@ -4407,6 +4407,19 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     """auto takes int8 for an offloaded DiT: its torchao-free build rides every offload hook."""
     scheme = normalize_transformer_quant(requested)
     return TQ_INT8 if scheme == TQ_AUTO else scheme
+
+
+# "0" disables reading the hosted native file when the load's own plan offloads a seeded denoiser.
+OFFLOAD_HOSTED_READ_ENV = "UNSLOTH_VIDEO_OFFLOAD_HOSTED_READ"
+
+
+def _offload_hosted_read_enabled() -> bool:
+    return (os.environ.get(OFFLOAD_HOSTED_READ_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) -> Optional[str]:
@@ -9061,6 +9074,14 @@ class VideoBackend:
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
         )
+        if fam.name == "ltx-2.5":
+            # Settle auto once so the memory plan and the encoder worker read one decision.
+            from .video_ltx25 import ltx25_resolve_te_request
+            text_encoder_quant = ltx25_resolve_te_request(
+                text_encoder_quant,
+                repo_id if kind == "pipeline" else base,
+                _te_prequant_failed,
+            )
         # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
         te_auto_unavailable = auto_te_fetch_failure(
             fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed
@@ -9519,6 +9540,16 @@ class VideoBackend:
                 denoiser_seed_scheme,
                 _video_plan_label(plan),
             )
+            if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
+                # The probe planned a resident seed; read the hosted native build rather than quantising dense shards.
+                _video_native_hosted_planned = _video_native_hosted_scheme(
+                    fam, denoiser_seed_scheme, target
+                )
+                if _video_native_hosted_planned is not None:
+                    logger.info(
+                        "video.denoiser_prequant: the hosted %s checkpoint is read as offload-safe native Linears",
+                        _video_native_hosted_planned,
+                    )
             denoiser_seed_scheme = None
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
@@ -9881,8 +9912,11 @@ class VideoBackend:
                 "local_files_only": local_files_only,
             }
             if kind == "gguf":
+                from .diffusion_gguf_exact import install_exact_dequant
                 from .diffusion_gguf_lowbit import install_lowbit_iq
+
                 install_lowbit_iq(logger)
+                install_exact_dequant(logger)
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
@@ -11691,6 +11725,10 @@ class VideoBackend:
             **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
             **({"revision": component_revisions} if component_revisions else {}),
         )
+        # Before any offload hook wraps the denoiser's forward (the hooks then wrap this one).
+        from .video_minimax_h3_forward import install_h3_forward_on_pipe
+
+        install_h3_forward_on_pipe(pipe, logger = logger)
         # Pre-cast the decoder: fp32 VAE under fp16 autocast keeps both copies; encoder stays for keyframes.
 
         from .video_minimax_h3 import trim_h3_video_vae
@@ -13588,6 +13626,11 @@ class VideoBackend:
                             )
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
+                        if fam.name == "minimax-h3":
+                            from .video_minimax_h3_forward import h3_render_scope
+
+                            # H3's text stream runs once inside this render, dropped after it.
+                            stack.enter_context(h3_render_scope(pipe, logger))
                         if float_seeds is not None:
                             stack.enter_context(_seed_before_first_forward(float_seeds))
                         # No video family has a denoise-to-decode callback, so the decoder itself reports the decode phase.

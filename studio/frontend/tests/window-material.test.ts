@@ -409,3 +409,10 @@ test("the model page's Back to Hub bar paints no strip over a background image u
 	assert.match(css, new RegExp(String.raw`:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*-webkit-backdrop-filter: none;`));
 	assert.match(css, new RegExp(String.raw`html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], ${resting}\) \{\n\s*background-color: transparent;`));
 });
+
+test("macOS glass and a plain background image leave the resting page headers clear", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const block = css.slice(css.indexOf("/* macOS glass sees the window through every page"));
+	assert.match(block, /^\/\*[^]*?\*\/\nhtml\[data-glass="macos"\] \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\], \.hub-page \.hub-detail-bar:not\(\[data-scrolled\]\)\),\nhtml:not\(\[data-glass\]\) \[data-wallpaper-workspace\]\[data-wallpaper-ready\]\[data-wallpaper-ready\] > \[data-slot="sidebar-inset"\] :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  background-color: transparent;/);
+	assert.match(block, /html\[data-glass="macos"\] \[data-page-model-header\] \[data-slot="api-toolbar-fade"\],\nhtml:not\(\[data-glass\]\) [^{]*\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
+});

@@ -686,13 +686,16 @@ def test_prequant_repos_point_each_variant_at_its_own_fp8_repo():
 
 @pytest.mark.parametrize("variant", ["distilled", "base"])
 @pytest.mark.parametrize("scheme, stem", [("int8", "INT8"), ("fp8", "FP8")])
-def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant):
+def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem, variant, monkeypatch):
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
     name, base, model = {
         "distilled": (FLUX3_KLEIN_FAMILY_NAME, DISTILLED, "flux-3-image-klein"),
         "base": (FLUX3_KLEIN_BASE_FAMILY_NAME, BASE, "flux-3-image-klein-base"),
     }[variant]
+    if variant == "distilled" and scheme == "int8":
+        # The hosted distilled int8 file is unrotated: read only with the ConvRot kill switch.
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_INT8_CONVROT", "0")
     source = resolve_prequant_source(_family(name), scheme, base_repo = base)
     assert source.kind == "repo" and source.location == f"unsloth/{model}-FP8"
     names = candidate_filenames_of(source)

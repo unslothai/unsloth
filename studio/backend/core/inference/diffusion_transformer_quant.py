@@ -381,6 +381,10 @@ _INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset(
     name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.default_on
 )
 
+_INT8_FAMILY_CONVROT_HOSTED_PLAIN: frozenset[str] = frozenset(
+    name for name, spec in _INT8_FAMILY_CONVROT_SPECS.items() if spec.hosted_plain
+)
+
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 
@@ -393,6 +397,14 @@ def int8_convrot_enabled(family: Optional[str] = None) -> bool:
     if raw in ("0", "off", "false", "no"):
         return False
     return str(family or "").strip().lower() in _INT8_FAMILY_CONVROT_DEFAULT_ON
+
+
+def convrot_drops_plain_hosted(scheme: str, family: Optional[str] = None) -> bool:
+    """True when an int8 load must skip the family's unrotated hosted files (``ConvRotSpec.hosted_plain``)."""
+    if scheme != TQ_INT8:
+        return False
+    key = str(family or "").strip().lower()
+    return key in _INT8_FAMILY_CONVROT_HOSTED_PLAIN and int8_convrot_enabled(key)
 
 
 def convrot_spec_for_scheme(
@@ -2124,6 +2136,26 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     raise ValueError(f"unknown transformer quant scheme '{scheme}'")
 
 
+def linear_compute_dtype(module: Any) -> Any:
+    """Manual-cast ``_unsloth_compute_dtype`` if set, else the weight dtype."""
+    import torch
+
+    cast = getattr(module, "_unsloth_compute_dtype", None)
+    if isinstance(cast, torch.dtype):
+        return cast
+    weight = getattr(module, "weight", None)
+    return getattr(weight, "dtype", None)
+
+
+FP16_CARD_QUANT_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP16_CARD_QUANT_STORAGE"
+
+
+def fp16_card_quant_storage_enabled() -> bool:
+    """fp16-card native quant reads bf16 as stored instead of widening to float32; env ``=0`` widens."""
+    raw = (_os.environ.get(FP16_CARD_QUANT_STORAGE_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def make_filter_fn(
     min_features: int,
     exclude_name_tokens: tuple[str, ...] = (),
@@ -2133,7 +2165,7 @@ def make_filter_fn(
     require_dtype: Any = None,
 ):
     """A non-bf16 Linear aborts the whole quantise pass; an unaligned one crashes the first matmul later.
-    ``require_dtype``: keep only Linears of that dtype (the fp16-card int8 path's compute dtype)."""
+    ``require_dtype``: keep only Linears computing in that dtype (by compute dtype, not stored bf16 weight)."""
 
     def filter_fn(module: Any, fqn: str = "") -> bool:
         try:
@@ -2163,7 +2195,7 @@ def make_filter_fn(
                 return False
         if require_dtype is not None:
             weight = getattr(module, "weight", None)
-            if weight is None or weight.dtype != require_dtype:
+            if weight is None or linear_compute_dtype(module) != require_dtype:
                 return False
         return True
 
