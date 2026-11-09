@@ -93,7 +93,11 @@ def _smi_visible_capabilities(torch: Any) -> tuple:
     return caps
 
 
-def _probe_device_profile() -> DeviceProfile:
+class _CudaInitRefused(RuntimeError):
+    """Reading the cards would initialise CUDA in this process, which the caller does not allow right now."""
+
+
+def _probe_device_profile(allow_cuda_init: bool = True) -> DeviceProfile:
     """Raises when the device cannot be read, so a transient failure is never cached."""
     try:
         import torch
@@ -109,6 +113,8 @@ def _probe_device_profile() -> DeviceProfile:
         if caps:
             return DeviceProfile(NVIDIA, caps)
     if torch.cuda.is_available():
+        if not allow_cuda_init and not torch.cuda.is_initialized():
+            raise _CudaInitRefused()
         caps = tuple(
             tuple(int(v) for v in torch.cuda.get_device_capability(index))
             for index in range(torch.cuda.device_count())
@@ -123,15 +129,21 @@ def _probe_device_profile() -> DeviceProfile:
     return DeviceProfile(CPU)
 
 
-def device_profile() -> DeviceProfile:
-    """Read once per process (a box's capabilities do not change while it runs); ``unknown`` when unreadable."""
+def device_profile(*, allow_cuda_init: bool = True) -> DeviceProfile:
+    """Read once per process (a box's capabilities do not change while it runs); ``unknown`` when unreadable, or when
+    only torch could answer and ``allow_cuda_init`` is False (training owns the GPU: no context may be taken here)."""
     if _PROFILE:
         return _PROFILE[0]
     with _PROFILE_LOCK:
         if _PROFILE:
             return _PROFILE[0]
         try:
-            profile = _probe_device_profile()
+            profile = _probe_device_profile(allow_cuda_init)
+        except _CudaInitRefused:
+            logger.info(
+                "diffusion.nvfp4_route: training is active and only CUDA could read the cards; left as is"
+            )
+            return DeviceProfile(UNKNOWN)
         except Exception as exc:  # noqa: BLE001 -- not cached: the next request asks again
             logger.info(
                 "diffusion.nvfp4_route: device unreadable (%s), request left as is",
@@ -500,6 +512,7 @@ def plan_nvfp4_route(
     gpu_ids: Optional[Iterable[int]] = None,
     component_files: bool = False,
     replace_checkpoint: bool = True,
+    allow_cuda_init: bool = True,
     profile: Optional[DeviceProfile] = None,
     log: bool = True,
 ) -> Optional[Nvfp4Route]:
@@ -531,7 +544,7 @@ def plan_nvfp4_route(
         ckpt_pick = False
     if not (dit_pick or te_pick or prequant_pick or ckpt_pick):
         return None
-    profile = profile or device_profile()
+    profile = profile or device_profile(allow_cuda_init = allow_cuda_init)
     capability = None
     if profile.kind == NVIDIA:
         capability, routes = load_capability(profile, gpu_ordinal, gpu_ids)
@@ -678,6 +691,7 @@ def route_load_request(
     media: str = "image",
     gpu_ordinal: Optional[int] = None,
     replace_checkpoint: bool = True,
+    allow_cuda_init: bool = True,
 ) -> tuple:
     """``(request, route)``: a pydantic load request with the reroute applied (a copy), or the same object and None."""
     route = plan_nvfp4_route(
@@ -694,6 +708,7 @@ def route_load_request(
         gpu_ids = getattr(request, "gpu_ids", None),
         component_files = _has_component_files(request),
         replace_checkpoint = replace_checkpoint,
+        allow_cuda_init = allow_cuda_init,
     )
     if route is None:
         return request, None

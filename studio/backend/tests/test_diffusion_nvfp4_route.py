@@ -37,7 +37,7 @@ def _profile(device, cap):
 
 
 def _fake_device(monkeypatch, device, cap):
-    monkeypatch.setattr(route, "device_profile", lambda: _profile(device, cap))
+    monkeypatch.setattr(route, "device_profile", lambda **kw: _profile(device, cap))
 
 
 def _ltx_folder(tmp_path):
@@ -282,7 +282,7 @@ def test_mixed_boxes_follow_the_card_the_load_uses(caps, ordinal, routes):
 
 
 def test_an_ordinary_request_never_reads_the_device(monkeypatch):
-    monkeypatch.setattr(route, "device_profile", lambda: pytest.fail("read the device"))
+    monkeypatch.setattr(route, "device_profile", lambda **kw: pytest.fail("read the device"))
     for kwargs in (
         dict(model_path = "Tongyi-MAI/Z-Image-Turbo"),
         dict(
@@ -323,6 +323,46 @@ def test_nvidia_smi_answers_without_initialising_cuda(monkeypatch):
         monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda caps = caps: caps)
         monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0, 1])
         assert route._smi_visible_capabilities(torch) == ()
+
+
+def test_training_never_initialises_cuda_for_the_route(monkeypatch):
+    """Mixed cards (nvidia-smi cannot answer) while training owns the GPU: left as is, nothing cached."""
+    import torch
+
+    route.reset_device_profile()
+    monkeypatch.setattr(route, "_smi_visible_capabilities", lambda torch: ())
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_capability", lambda *a: pytest.fail("initialised CUDA")
+    )
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+cu130")
+    try:
+        got = route.plan_nvfp4_route(
+            model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4", allow_cuda_init = False
+        )
+        assert got is None
+        assert route._PROFILE == []
+    finally:
+        route.reset_device_profile()
+
+
+def test_the_route_reads_the_cards_without_cuda_while_training(monkeypatch):
+    from models.inference import DiffusionLoadRequest
+    from routes import inference as image_routes
+
+    seen = {}
+
+    def _plan(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(route, "plan_nvfp4_route", _plan)
+    monkeypatch.setattr(image_routes, "_training_is_active", lambda: True)
+    pick = DiffusionLoadRequest(model_path = "Tongyi-MAI/Z-Image-Turbo", transformer_quant = "nvfp4")
+    asyncio.run(image_routes._route_nvfp4_request(pick, "image"))
+    assert seen["allow_cuda_init"] is False
 
 
 def test_the_device_is_read_once(monkeypatch):
@@ -539,7 +579,7 @@ def test_a_recorded_header_wins_over_the_name_and_pickles_are_never_opened(monke
 def test_an_unreadable_device_is_not_cached_and_leaves_the_request(monkeypatch):
     calls = []
 
-    def _boom():
+    def _boom(*args, **kwargs):
         calls.append(1)
         raise RuntimeError("driver hiccup")
 
