@@ -1173,3 +1173,36 @@ def test_frames_from_video_applies_the_display_rotation(monkeypatch):
     monkeypatch.setattr(vr, "fit_frame", lambda image: sizes.append(image.size) or real(image))
     vr.frames_from_video(_clip(30, 3))
     assert sizes and all(size == (48, 64) for size in sizes)  # coded 64x48, displayed portrait
+
+
+def test_a_failed_start_leaves_the_previous_owner_and_job(weights, monkeypatch):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    job = runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+    runner._update(active = False, phase = "done")
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(vr.tempfile, "mkdtemp", full)
+    with pytest.raises(OSError):
+        runner.start(prompt = "y", frames = _frames(5), owner = "bob")
+    assert runner.owned_by("alice") and runner.progress("alice")["id"] == job["id"]
+    assert runner.progress("bob").get("id") is None
+
+
+def test_a_finished_job_has_already_released_its_server(weights, monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3.transcode_video_to_mp4", lambda path, fps: b"MP4"
+    )
+    seen = []
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    real = runner._update
+
+    def update(**fields):
+        real(**fields)
+        if fields.get("active") is False:
+            seen.append(runner._server)
+
+    monkeypatch.setattr(runner, "_update", update)
+    runner.run(runner.start(prompt = "x", frames = _frames(5)))
+    assert runner.progress()["phase"] == "done" and seen == [None]

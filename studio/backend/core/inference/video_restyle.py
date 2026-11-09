@@ -479,14 +479,16 @@ class RestyleRunner:
                 raise RestyleError("This account is being removed.")
             if self._state.get("active") or self._reservation not in (None, reservation):
                 raise RestyleBusy("A restyle is already running.")
+            # Allocated before anything changes hands: a failure here leaves the old job and owner intact.
+            workdir = Path(tempfile.mkdtemp(prefix = "unsloth-restyle-"))
+            job_id = uuid.uuid4().hex
             self._reservation = None
             self._cancel.clear()
             self._publishing = False
             self._owner = owner
             if self._workdir is not None:
                 shutil.rmtree(self._workdir, ignore_errors = True)
-            self._workdir = Path(tempfile.mkdtemp(prefix = "unsloth-restyle-"))
-            job_id = uuid.uuid4().hex
+            self._workdir = workdir
             self._state = {
                 "active": True,
                 "id": job_id,
@@ -546,6 +548,15 @@ class RestyleRunner:
         if held:
             self.cancel(owner)
         return held
+
+    def _finish(self, **fields: Any) -> None:
+        # The server is detached in the same step that ends the job: a restyle that claims the runner
+        # next can never reuse a server this worker is about to stop. Not kept resident either: an idle
+        # ~30 GB server would sit outside every other loader's VRAM accounting (stop() counts in holds_gpu).
+        with self._lock:
+            server = self._detach_locked()
+            self._update(active = False, **fields)
+        self._stop(server)
 
     def unload(self) -> None:
         with self._lock:
@@ -726,20 +737,17 @@ class RestyleRunner:
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     },
                 )
-            self._update(active = False, phase = "done", video = record)
+            self._finish(phase = "done", video = record)
         except SdCppCancelled:
-            self._update(active = False, phase = "cancelled")
+            self._finish(phase = "cancelled")
         except Exception as exc:  # noqa: BLE001 -- surfaced through progress
             if self._cancel.is_set():
-                self._update(active = False, phase = "cancelled")
+                self._finish(phase = "cancelled")
             else:
                 logger.warning("restyle failed: %s", exc)
-                self._update(active = False, phase = "error", error = str(exc))
+                self._finish(phase = "error", error = str(exc))
         finally:
             lease.close()
-            # Not kept resident: an idle ~30 GB server would sit outside every other loader's VRAM
-            # accounting. stop() is counted (holds_gpu) until the process has exited.
-            self.unload()
 
 
 runner = RestyleRunner()
