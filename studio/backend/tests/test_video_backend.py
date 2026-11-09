@@ -10632,9 +10632,7 @@ def test_seeding_is_skipped_entirely_under_offload(fake_runtime, monkeypatch):
 def test_a_seed_declined_by_the_loads_own_offload_plan_reads_the_hosted_native_build(
     fake_runtime, monkeypatch, switch
 ):
-    """The pre-download probe can price the seeded int8 DiT resident while the load's own plan offloads it (LTX-2.5:
-    the probe omits the sidecar encoder). The decline then reads the hosted file as the native build, not the dense
-    shards quantised at load."""
+    """Probe prices the seed resident but the load's plan offloads it (LTX-2.5 sidecar encoder): read the hosted file."""
     import core.inference.video as video_mod
 
     if switch is not None:
@@ -10660,7 +10658,7 @@ def test_a_seed_declined_by_the_loads_own_offload_plan_reads_the_hosted_native_b
         video_mod, "_read_native_quant_from_hosted", lambda *a, **k: hosted_reads.append(k) or {}
     )
 
-    # The fake target has no native int8 kernel, so the load refuses after the read; the read decision is the point.
+    # The fake target lacks a native int8 kernel, so the load refuses after the read.
     with contextlib.suppress(RuntimeError):
         VideoBackend().load_pipeline(
             "Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline", transformer_quant = "int8"

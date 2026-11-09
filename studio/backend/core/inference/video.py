@@ -4392,7 +4392,7 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     return TQ_INT8 if scheme == TQ_AUTO else scheme
 
 
-# "0": a load whose own plan offloads a seeded denoiser quantises the dense shards again (no hosted native read).
+# "0" disables reading the hosted native file when the load's own plan offloads a seeded denoiser.
 OFFLOAD_HOSTED_READ_ENV = "UNSLOTH_VIDEO_OFFLOAD_HOSTED_READ"
 
 
@@ -9523,8 +9523,7 @@ class VideoBackend:
                 _video_plan_label(plan),
             )
             if _video_native_hosted_planned is None and _offload_hosted_read_enabled():
-                # The pre-download probe did not plan this read (it planned a resident seed): read the hosted file
-                # as the offload-safe native build instead of quantising the dense shards at load.
+                # The probe planned a resident seed; read the hosted native build rather than quantising dense shards.
                 _video_native_hosted_planned = _video_native_hosted_scheme(
                     fam, denoiser_seed_scheme, target
                 )
