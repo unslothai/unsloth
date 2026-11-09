@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
+import dataclasses
 import functools
 import hashlib
 import io
@@ -460,35 +461,39 @@ def _apply_data_designer_sql_inline_config_patch() -> None:
 # Set by the jobs route on a local image model config; stripped before Data Designer sees it.
 DIFFUSION_ROUTE_KEY = "unsloth_diffusion_route"
 
-# Per process: each job runs in its own.
-_studio_diffusion_models: set[str] = set()
+# Aliases of the configs the jobs route marked. Per process: each job runs in its own.
+_studio_diffusion_aliases: set[str] = set()
 
 
 def _apply_data_designer_local_image_route_patch() -> None:
     # Data Designer sends only names like "dall-e-" to /images/generations; Studio's image models match none.
-    from data_designer.engine.models import facade  # pyright: ignore[reportMissingImports]
+    from data_designer.engine.models.facade import ModelFacade  # pyright: ignore[reportMissingImports]
 
-    if getattr(facade, "_unsloth_local_image_route_patch_applied", False):
+    if getattr(ModelFacade, "_unsloth_local_image_route_patch_applied", False):
         return
 
-    original_is_diffusion = facade.is_image_diffusion_model
+    original_build = ModelFacade._build_image_generation_request
 
-    @functools.wraps(original_is_diffusion)
-    def _patched_is_diffusion(model_name: str) -> bool:
-        return model_name in _studio_diffusion_models or original_is_diffusion(model_name)
+    @functools.wraps(original_build)
+    def _patched_build(self, prompt, multi_modal_context, kwargs):
+        request = original_build(self, prompt, multi_modal_context, kwargs)
+        # By alias, not model name: a remote preset naming the same model keeps its own route.
+        if request.messages is not None and self.model_alias in _studio_diffusion_aliases:
+            return dataclasses.replace(request, messages = None)
+        return request
 
-    facade.is_image_diffusion_model = _patched_is_diffusion
-    setattr(facade, "_unsloth_local_image_route_patch_applied", True)
+    ModelFacade._build_image_generation_request = _patched_build
+    setattr(ModelFacade, "_unsloth_local_image_route_patch_applied", True)
 
 
-def _register_studio_diffusion_models(recipe: dict[str, Any]) -> None:
-    _studio_diffusion_models.clear()
+def _register_studio_diffusion_aliases(recipe: dict[str, Any]) -> None:
+    _studio_diffusion_aliases.clear()
     for model_config in recipe.get("model_configs") or []:
         if not isinstance(model_config, dict) or model_config.get(DIFFUSION_ROUTE_KEY) is not True:
             continue
-        model = model_config.get("model")
-        if isinstance(model, str) and model:
-            _studio_diffusion_models.add(model)
+        alias = model_config.get("alias")
+        if isinstance(alias, str) and alias:
+            _studio_diffusion_aliases.add(alias)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -883,7 +888,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
         # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
-    _register_studio_diffusion_models(recipe)
+    _register_studio_diffusion_aliases(recipe)
     recipe = _strip_frontend_model_config_metadata(recipe)
     model_providers = build_model_providers(recipe)
     _validate_recipe_runtime_support(recipe, model_providers)

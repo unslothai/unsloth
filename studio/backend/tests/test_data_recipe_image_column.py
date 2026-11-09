@@ -158,6 +158,36 @@ def test_a_cloud_image_model_keeps_data_designers_own_route(tmp_path, provider):
     assert _paths(requests) == ["/v1/images/generations"]
 
 
+def test_a_remote_preset_naming_the_local_model_keeps_its_own_route(tmp_path, provider):
+    pytest.importorskip("data_designer")
+    from core.data_recipe.service import build_config_builder, create_data_designer
+
+    endpoint, requests = provider
+    recipe = _recipe(endpoint + "/local")
+    recipe["model_providers"].append(
+        {"name": "remote", "endpoint": endpoint + "/remote", "provider_type": "openai"}
+    )
+    remote = json.loads(json.dumps(recipe["model_configs"][0]))
+    remote.pop("unsloth_diffusion_route")
+    remote.update(alias = "remote_painter", provider = "remote")
+    recipe["model_configs"].append(remote)
+    recipe["columns"].append(
+        {
+            "column_type": "image",
+            "name": "remote_photo",
+            "model_alias": "remote_painter",
+            "prompt": "a cat",
+        }
+    )
+    designer = create_data_designer(recipe, artifact_path = str(tmp_path))
+    with pytest.raises(Exception):
+        designer.preview(build_config_builder(recipe), num_records = 1)
+
+    assert "/v1/local/images/generations" in _paths(requests)
+    assert "/v1/remote/images/generations" not in _paths(requests)
+    assert "/v1/remote/chat/completions" in _paths(requests)
+
+
 def test_a_full_run_writes_images_that_dataset_pages_show(tmp_path, provider, monkeypatch):
     pytest.importorskip("data_designer")
     from core.data_recipe import export
