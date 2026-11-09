@@ -1744,6 +1744,21 @@ def test_cpu_forward_widens_into_a_reused_scratch_bitwise():
     assert small.weight.data_ptr() != grown.data_ptr()
 
 
+def test_cpu_scratch_made_under_inference_mode_still_serves_no_grad():
+    import core.inference.diffusion_native_quant as nq
+
+    nq._CPU_WIDEN.buf = None
+    layer = _cpu_native(40, 64, 5)
+    x = torch.randn(3, 64)
+    with torch.inference_mode():
+        first = layer(x)
+    with torch.no_grad():
+        second = layer(x)
+    second_grad_on = layer(x)
+    assert not nq._CPU_WIDEN.buf.is_inference()
+    assert torch.equal(first, second) and torch.equal(second, second_grad_on)
+
+
 def test_cpu_forward_under_autograd_keeps_its_own_weight():
     layer = _cpu_native(32, 64, 2)
     other = _cpu_native(32, 64, 3)
