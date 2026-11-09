@@ -112,3 +112,12 @@ test("settled WebKitGTK fences only line-window themselves while code wrapping i
   assert.match(defer, /const useCodeWrap = \(node: RefObject<Element \| null>\): boolean =>\s*useSyncExternalStore\(subscribeCodeWrap, \(\) => codeWrapOn\(node\.current\), \(\) => false\);/);
   assert.match(defer, /attributeFilter: \["data-code-wrap", "data-wrap"\]/);
 });
+
+test("without requestIdleCallback fence work waits for the reader to stop scrolling", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  assert.match(defer, /const MID_SCROLL_WORK = typeof window !== "undefined"\s*&& typeof \(window as \{ requestIdleCallback\?: unknown \}\)\.requestIdleCallback === "function";/,
+    "WebKit has no requestIdleCallback: a mid-scroll step there is a timer inside the scroll, and the reach it makes swaps markup the worker has not coloured yet");
+  assert.match(defer, /const remove = highlightQueue\.add\(\(\) => \{\s*finish\(\);\s*return true;\s*\}, finish, MID_SCROLL_WORK\);/,
+    "a reach, a start and a worker answer run mid-scroll only where idle callbacks exist");
+  assert.match(defer, /capped !== null && MID_SCROLL_WORK\);/, "so do the lines in view inside a capped block");
+});
