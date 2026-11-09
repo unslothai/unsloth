@@ -88,6 +88,40 @@ def test_a_long_page_that_does_not_load_fails():
     assert [v["metric"] for v in wk.judge(res, known = {}) if v["fail"]] == ["load"]
 
 
+def test_a_short_page_that_does_not_load_fails():
+    res = {
+        ("webkit_mac", "default", wk.SHORT): {"error": "did not load"},
+        ("webkit_mac", "default", wk.LONG): {"cells": {"browser_pane": _cell(10_000)}},
+    }
+    assert [v["metric"] for v in wk.judge(res, known = {}) if v["fail"]] == ["load"]
+
+
+def test_a_surface_without_a_short_baseline_fails():
+    res = _result({"status": "NOT_RUN: never reached sel"}, _cell(10_000))
+    assert [v["metric"] for v in wk.judge(res, known = {}) if v["fail"]] == ["run"]
+
+
+def test_a_surface_that_runs_at_neither_length_fails():
+    res = _result({"status": "NOT_RUN: a"}, {"status": "NOT_RUN: b"})
+    assert [v["metric"] for v in wk.judge(res, known = {}) if v["fail"]] == ["run"]
+
+
+def test_a_crashed_engine_worker_fails_every_planned_page(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("webkit did not launch")
+
+    class _Server:
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(wk, "_engine_worker", boom)
+    monkeypatch.setattr(wk.am, "serve_app", lambda dist: (_Server(), "http://x"))
+    res = wk.measure(Path("."), modes = ["default"], engines = ["webkit_mac"], log = lambda *a, **k: None)
+    assert set(res) == {("webkit_mac", "default", wk.SHORT), ("webkit_mac", "default", wk.LONG)}
+    assert all("webkit did not launch" in page["error"] for page in res.values())
+    assert [v["metric"] for v in wk.judge(res, known = {}) if v["fail"]] == ["load", "load"]
+
+
 def test_short_floor_keeps_instant_surfaces_from_inflating_the_ratio():
     v = [v for v in wk.judge(_result(_cell(5), _cell(210)), known = {}) if v["metric"] == "open"][0]
     assert v["ratio"] == pytest.approx(210 / wk.SHORT_FLOOR_MS)

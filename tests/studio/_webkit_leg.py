@@ -300,18 +300,32 @@ def measure(
     out: dict = {}
     try:
         # One browser per engine (a browser per appearance as well doubles the frames on a 4-core runner).
-        threads = [
-            threading.Thread(
-                target = _engine_worker, args = (e, base, chosen, surfaces, reps, out, log)
-            )
-            for e in (engines or ENGINES)
-        ]
+        crashed: dict = {}
+
+        def work(engine):
+            try:
+                _engine_worker(engine, base, chosen, surfaces, reps, out, log)
+            except Exception as exc:  # noqa: BLE001  (recorded below: a crash must never read as a pass)
+                crashed[engine] = f"{type(exc).__name__}: {str(exc)[:160]}"
+
+        engines = engines or ENGINES
+        threads = [threading.Thread(target = work, args = (e,)) for e in engines]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
     finally:
         server.shutdown()
+    # Every planned page gets a result: one a worker never recorded is a load failure.
+    for e in engines:
+        for m in chosen:
+            for turns in (SHORT, LONG):
+                out.setdefault(
+                    (e, m["name"], turns),
+                    {
+                        "error": f"not measured ({crashed.get(e, 'the engine worker stopped early')})"
+                    },
+                )
     return out
 
 
@@ -319,7 +333,7 @@ def judge(result: dict, known: dict | None = None) -> list[dict]:
     known = KNOWN if known is None else known
     out = []
     for (engine, mode, turns), page in sorted(result.items()):
-        if turns == LONG and "error" in page:
+        if "error" in page:
             out.append(
                 {
                     "engine": engine,
@@ -333,23 +347,24 @@ def judge(result: dict, known: dict | None = None) -> list[dict]:
     for (engine, mode, turns), page in sorted(result.items()):
         if turns != LONG or "cells" not in page:
             continue
-        short = (result.get((engine, mode, SHORT)) or {}).get("cells", {})
-        for name, lc in page["cells"].items():
-            sc = short.get(name, {})
-            if lc.get("status") != "OK":
-                if sc.get("status") == "OK":
-                    out.append(
-                        {
-                            "engine": engine,
-                            "mode": mode,
-                            "surface": name,
-                            "metric": "run",
-                            "fail": True,
-                            "why": f"{lc.get('status')} at {LONG} turns, OK at {SHORT}",
-                        }
-                    )
-                continue
-            if sc.get("status") != "OK":
+        short_page = result.get((engine, mode, SHORT)) or {}
+        if "cells" not in short_page:
+            continue  # its load failure is reported above
+        short = short_page["cells"]
+        for name in sorted(set(page["cells"]) | set(short)):
+            lc, sc = page["cells"].get(name, {}), short.get(name, {})
+            if lc.get("status") != "OK" or sc.get("status") != "OK":
+                # A surface missing at either length is a gap in the gate, never a silent pass.
+                out.append(
+                    {
+                        "engine": engine,
+                        "mode": mode,
+                        "surface": name,
+                        "metric": "run",
+                        "fail": True,
+                        "why": f"{lc.get('status', 'missing')} at {LONG} turns, {sc.get('status', 'missing')} at {SHORT}",
+                    }
+                )
                 continue
             for edge in ("open", "close"):
                 lv, sv = lc.get(f"{edge}_ms"), sc.get(f"{edge}_ms")
