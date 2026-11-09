@@ -1748,6 +1748,13 @@ export const th = {
         audioUploadCancel: "ยกเลิกการถอดเสียง",
         audioUploadTranscribing: "กำลังถอดเสียง…",
         sectionTitle: "การป้อนตามคำบอก",
+        micTargetLabel: "ปุ่มไมโครโฟน",
+        micTargetAsr: "ถอดความด้วย ASR",
+        micTargetModel: "ส่งเสียงไปยังโมเดล",
+        micTargetAsrDescription: "ปุ่มไมโครโฟนจะพิมพ์สิ่งที่คุณพูดลงในช่องข้อความ",
+        micTargetModelDescription: "เมื่อโหลดโมเดลที่รับอินพุตเสียง ไมโครโฟนจะบันทึกคลิปและแนบไปกับข้อความของคุณ โมเดลอื่นยังคงใช้การป้อนตามคำบอก",
+        micTargetModelUnavailable: "โหลดโมเดลที่รับอินพุตเสียงได้ (เช่น LFM3-Omni) เพื่อส่งเสียงของคุณไปให้",
+        micRecordForModel: "บันทึกเสียงสำหรับโมเดล",
         engineLabel: "เอนจินการป้อนตามคำบอก",
         engineBrowser: "เบราว์เซอร์",
         engineBrowserDescription:
@@ -1771,6 +1778,13 @@ export const th = {
         sttQuantDescription:
           "เลือกหรือค้นหาโมเดล STT เพื่อรันภายในเครื่อง แล้วเลือกการควอนไทซ์",
         sttDeviceLabel: "โหลดลงใน",
+        sttContextLabel: "บริบทเสียง",
+        sttContextAuto: "อัตโนมัติ (แนะนำ)",
+        sttContextAutoDescription:
+          "ปรับตามการบันทึกแต่ละครั้ง โดยใช้หน่วยความจำมากขึ้นสำหรับเสียงที่ยาวขึ้น รันไทม์รุ่นเก่าอาจต้องใช้ขนาดคงที่เพื่อลดการใช้หน่วยความจำ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextFixedDescription:
+          "ขีดจำกัดที่เล็กลงจะใช้หน่วยความจำน้อยลง การบันทึกที่ใส่ไม่พอต้องใช้ขีดจำกัดที่สูงขึ้นหรืออัตโนมัติ ใช้กับ Qwen3-ASR ในเสียงพูดและถอดเสียง",
+        sttContextTokens: "{count} โทเค็น",
         sttDeviceAuto: "GPU เมื่อพร้อมใช้งาน",
         sttDeviceCpu: "RAM ของ CPU",
         sttDeviceAutoDescription: "ใช้ GPU เมื่อมี หากไม่มีให้ใช้ CPU",

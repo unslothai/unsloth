@@ -168,10 +168,9 @@ _SEARCH_BUDGET = 200_000
 def _search_cuts(
     layouts: Sequence[Sequence[int]], capacities: Sequence[int]
 ) -> Optional[list[list[int]]]:
-    """Cut points for several denoisers sharing the cards, by backtracking: each denoiser contiguous over the cards in
-    order, at least one keeping a block off the primary (a denoiser wholly on the primary is placed there unsplit),
-    each card's parts within its capacity. The fallback when cutting each denoiser in turn by proportion leaves a later one no fit.
-    None when nothing fits within the search budget."""
+    """Backtracking cut points for denoisers sharing the cards, used when cutting each by proportion
+    leaves a later one no fit; each contiguous in card order, at least one keeping a block off
+    the primary, within capacity; None past the search budget."""
     k = len(capacities)
     prefixes = []
     for blocks in layouts:
@@ -227,15 +226,10 @@ def plan_layer_split(
     secondary_overhead_mib: Optional[int] = None,
     working_set_mib: Optional[int] = None,
 ) -> tuple[Optional[LayerSplit], str]:
-    """Pure decision: ``(LayerSplit, reason)`` or ``(None, decline reason)``.
-
-    ``card_limits`` maps every usable card (the primary included) to its resident limit. Fewest cards first: the
-    primary, then the secondaries by limit (largest first). ``phase_headroom_mib`` = ``(encode, denoise, decode)``.
-
-    The primary holds the stems, the VAE, the latents and the activation peak: it is charged the plan's full headroom
-    and ``max(overhead_mib, secondary reserve)``. A secondary runs blocks only: one block's working set
-    (``working_set_mib``, default :func:`block_working_set_mib`) plus ``secondary_overhead_mib`` (default
-    :func:`secondary_reserve_mib`), and the encode headroom when the text encoders live there."""
+    """Pure decision: (LayerSplit, reason) or (None, decline reason); cards tried fewest first,
+    primary then secondaries by limit; the primary pays full headroom and max(overhead_mib,
+    secondary reserve), a secondary one block's working set plus overhead and encode headroom if
+    text encoders sit there."""
     if primary not in card_limits:
         return None, "primary card limit unknown"
     if not denoisers or any(not d.block_mib for d in denoisers.values()):
@@ -796,10 +790,9 @@ def _rocm_backend_cards(
     cards: tuple[int, ...],
     logger: Any = None,
 ) -> tuple[tuple[int, ...], Optional[str]]:
-    """ROCm: native SDPA runs on any gfx target (the load dtype is already matched by ``make_selection``), so every
-    card whose SDPA is not math-only where the primary's is fused is kept. A per-target kernel (flash_attn, AITER) the
-    primary verified keeps only cards of the primary's gfx target, and flash only where its own probe runs and matches
-    on that card (as the primary's did at load)."""
+    """Native SDPA runs on any gfx target (load dtype matched by make_selection), so every card not
+    math-only where the primary's is fused is kept; per-target kernels (flash_attn, AITER) keep
+    only the primary's gfx target, flash only where its own probe matches."""
     from . import diffusion_multigpu as mg
 
     backend = module = None

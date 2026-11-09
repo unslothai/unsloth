@@ -1665,6 +1665,13 @@ export const de = {
         audioUploadCancel: "Transkription abbrechen",
         audioUploadTranscribing: "Audio wird transkribiert…",
         sectionTitle: "Diktat",
+        micTargetLabel: "Mikrofontaste",
+        micTargetAsr: "Mit ASR transkribieren",
+        micTargetModel: "Audio an das Modell senden",
+        micTargetAsrDescription: "Die Mikrofontaste schreibt, was du sagst, in das Nachrichtenfeld.",
+        micTargetModelDescription: "Ist ein Modell mit Audioeingabe geladen, nimmt das Mikrofon einen Clip auf und hängt ihn an deine Nachricht an. Andere Modelle erhalten weiterhin Diktat.",
+        micTargetModelUnavailable: "Lade ein Modell mit Audioeingabe (zum Beispiel LFM3-Omni), um ihm deine Stimme zu senden.",
+        micRecordForModel: "Audio für das Modell aufnehmen",
         engineLabel: "Diktat-Engine",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1690,6 +1697,13 @@ export const de = {
         sttQuantDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung, dann seine Quantisierung.",
         sttDeviceLabel: "Laden in",
+        sttContextLabel: "Sprachkontext",
+        sttContextAuto: "Auto (empfohlen)",
+        sttContextAutoDescription:
+          "Passt sich jeder Aufnahme an und verwendet mehr Speicher für längere Audiodateien. Bei älteren Laufzeitumgebungen kann eine feste Größe nötig sein, um den Speicherverbrauch zu senken. Gilt für Qwen3-ASR unter „Sprachfunktionen“ und „Transkribieren“.",
+        sttContextFixedDescription:
+          "Kleinere Grenzen benötigen weniger Speicher. Für Aufnahmen, die nicht hineinpassen, ist eine höhere Grenze oder Auto nötig. Gilt für Qwen3-ASR unter „Sprachfunktionen“ und „Transkribieren“.",
+        sttContextTokens: "{count} Token",
         sttDeviceAuto: "GPU, wenn verfügbar",
         sttDeviceCpu: "CPU-RAM",
         sttDeviceAutoDescription:

@@ -138,6 +138,8 @@ RUNNER_READINGS = [
     (am.GLASS, "reasoning_toggle", 7.8),
     ("blurred", "settings_scroll", 4.9),
     ("frosted", "settings_scroll", 4.9),
+    # Before keys and presses paused the blur (main runner, Frontend CI 42610880257).
+    ("liquid", "type", 4.9),
 ]
 
 

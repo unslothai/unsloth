@@ -157,8 +157,7 @@ def test_delete_keeps_sidecar_listable_when_mp4_unlink_fails(monkeypatch):
             raise PermissionError("mp4 locked")
         return real_unlink(self, *a, **k)
 
-    # Patch Path.unlink, not os.unlink (3.10 caches an _accessor); scoped context keeps
-    # the autouse studio_root redirect.
+    # Patch Path.unlink, not os.unlink (3.10 caches _accessor); scope keeps studio_root.
     with pytest.MonkeyPatch.context() as m:
         m.setattr(Path, "unlink", _fail_on_mp4)
         assert gallery.delete(record["id"]) is False
@@ -416,8 +415,7 @@ def test_webm_export_keeps_the_audio_track():
     with av.open(io.BytesIO(webm)) as container:
         for frame in container.decode(audio = 0):
             samples += frame.samples
-    # Allow one 20 ms Opus frame of loss; compare to the decoded source since PyAV
-    # versions differ on AAC encoder padding.
+    # Allow one 20 ms Opus frame; PyAV AAC padding varies, so compare the decoded source.
     assert samples >= source_seconds * 48000 - 960, (samples, source_seconds)
 
 
@@ -585,9 +583,8 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):
-    """Every kept frame is held as a paletted image before the encoder runs, so an unbounded walk
-    is a memory bomb: the generate request allows 2048x2048 for 1024 frames, and at the 12 fps
-    target the step is 1, which is over 4 GB of frames plus the GIF buffer. Cap both axes."""
+    """Every kept frame is held as a paletted image before encoding, so an unbounded walk is a
+    memory bomb: 2048x2048 x 1024 frames at a 12 fps target is over 4 GB; cap both axes."""
     import io as _io
 
     from core.inference import video_gallery as vg

@@ -1322,6 +1322,7 @@ def fp16_card_int8_act(target: Any) -> bool:
 
 # Checkpoint int8 codes on a GPU with no Studio int8 runtime (pre-Ampere fp16, XPU) stay int8, widened per layer.
 # Unset: offloaded plans only (resident, the expanded DiT is faster); 1: resident too; 0: always expand.
+# A float32 CPU target stores them unless 0: the expanded copy is 4 bytes a weight, the per-layer widen inside step noise.
 INT8_STORAGE_ENV = "UNSLOTH_DIFFUSION_INT8_STORAGE"
 
 
@@ -1338,6 +1339,8 @@ def int8_storage_host(target: Any) -> bool:
         import torch
 
         dtype = getattr(target, "dtype", None)
+        if device == "cpu":
+            return dtype is torch.float32
         if device == "xpu":
             return dtype in (torch.bfloat16, torch.float16)
         if device != "cuda" or torch_is_rocm() or is_stubbed("torchao"):
@@ -1353,7 +1356,8 @@ def int8_storage_scheme(
     *,
     offload: bool = False,
 ) -> Optional[str]:
-    if not (offload or _int8_storage_setting() in ("1", "on", "true", "yes")):
+    cpu = getattr(target, "device", None) == "cpu"
+    if not (offload or cpu or _int8_storage_setting() in ("1", "on", "true", "yes")):
         return None
     if not int8_storage_host(target) or _family_denied(family, TQ_INT8):
         return None
@@ -1364,8 +1368,8 @@ def native_int8_act(target: Any) -> bool:
     # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
     if _mps_bf16(target):
         return False
-    # storage only (int8_storage_scheme): never an int8 GEMM
-    if int8_storage_host(target):
+    # storage only (int8_storage_scheme): never an int8 GEMM, unless the host also runs a native W8A8 path
+    if int8_storage_host(target) and not (native_quant_host(target) or native_offload_host(target)):
         return False
     if native_quant_host(target):
         return int8_act_requested()

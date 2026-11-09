@@ -1665,6 +1665,13 @@ export const hi = {
         audioUploadCancel: "ट्रांसक्रिप्शन रद्द करें",
         audioUploadTranscribing: "ऑडियो को टेक्स्ट में बदला जा रहा है…",
         sectionTitle: "डिक्टेशन",
+        micTargetLabel: "माइक बटन",
+        micTargetAsr: "ASR से ट्रांसक्राइब करें",
+        micTargetModel: "मॉडल को ऑडियो भेजें",
+        micTargetAsrDescription: "माइक बटन आप जो बोलते हैं उसे संदेश बॉक्स में टाइप करता है।",
+        micTargetModelDescription: "ऑडियो इनपुट वाला मॉडल लोड होने पर माइक एक क्लिप रिकॉर्ड करके आपके संदेश में जोड़ता है। अन्य मॉडलों के लिए डिक्टेशन ही चलता है।",
+        micTargetModelUnavailable: "अपनी आवाज़ भेजने के लिए ऑडियो इनपुट स्वीकार करने वाला मॉडल लोड करें (जैसे LFM3-Omni)।",
+        micRecordForModel: "मॉडल के लिए ऑडियो रिकॉर्ड करें",
         engineLabel: "डिक्टेशन इंजन",
         engineBrowser: "ब्राउज़र",
         engineBrowserDescription:
@@ -1689,6 +1696,13 @@ export const hi = {
         sttQuantDescription:
           "लोकली चलाने के लिए STT मॉडल चुनें या खोजें, फिर उसका क्वांटाइज़ेशन चुनें।",
         sttDeviceLabel: "इसमें लोड करें",
+        sttContextLabel: "आवज क कनक",
+        sttContextAuto: "सचलत (अनशसत)",
+        sttContextAutoDescription:
+          "हर रकरग क अनसर आकर समयजत करत ह। लब ऑडय क लए अधक ममर इसमल हत ह। परन रनटइम म ममर उपयग घटन क लए आकर तय करन पड सकत ह। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextFixedDescription:
+          "छट सम कम ममर इसमल करत ह। सम म न समन वल रकरग क लए सम बढए य “सचलत” चन। “आवज” और “टसकइब” म Qwen3-ASR पर लग हत ह।",
+        sttContextTokens: "{count} टकन",
         sttDeviceAuto: "उपलब्ध होने पर GPU",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:

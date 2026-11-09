@@ -1845,6 +1845,13 @@ export const pl = {
         audioUploadCancel: "Anuluj transkrypcję",
         audioUploadTranscribing: "Transkrybowanie dźwięku…",
         sectionTitle: "Dyktowanie",
+        micTargetLabel: "Przycisk mikrofonu",
+        micTargetAsr: "Transkrybuj za pomocą ASR",
+        micTargetModel: "Wyślij dźwięk do modelu",
+        micTargetAsrDescription: "Przycisk mikrofonu wpisuje to, co mówisz, w polu wiadomości.",
+        micTargetModelDescription: "Gdy załadowany jest model z wejściem audio, mikrofon nagrywa klip i dołącza go do wiadomości. Pozostałe modele nadal korzystają z dyktowania.",
+        micTargetModelUnavailable: "Załaduj model obsługujący wejście audio (na przykład LFM3-Omni), aby wysłać mu swój głos.",
+        micRecordForModel: "Nagraj dźwięk dla modelu",
         engineLabel: "Silnik dyktowania",
         engineBrowser: "Przeglądarka",
         engineBrowserDescription:
@@ -1870,6 +1877,13 @@ export const pl = {
         sttQuantDescription:
           "Wybierz lub wyszukaj model STT do uruchomienia lokalnie, a następnie jego kwantyzację.",
         sttDeviceLabel: "Wczytaj do",
+        sttContextLabel: "Kontekst głosu",
+        sttContextAuto: "Automatycznie (zalecane)",
+        sttContextAutoDescription:
+          "Dopasowuje się do każdego nagrania, używając więcej pamięci przy dłuższym dźwięku. Starsze środowiska uruchomieniowe mogą wymagać stałego rozmiaru, aby ograniczyć użycie pamięci. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextFixedDescription:
+          "Mniejsze limity zużywają mniej pamięci. Nagrania, które się nie mieszczą, wymagają wyższego limitu lub trybu Automatycznie. Dotyczy Qwen3-ASR w sekcjach Głos i Transkrypcja.",
+        sttContextTokens: "tokeny: {count}",
         sttDeviceAuto: "GPU, gdy jest dostępny",
         sttDeviceCpu: "RAM procesora CPU",
         sttDeviceAutoDescription:

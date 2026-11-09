@@ -1670,6 +1670,16 @@ export const en = {
         audioUploadCancel: "Cancel transcription",
         audioUploadTranscribing: "Transcribing audio…",
         sectionTitle: "Dictation",
+        micTargetLabel: "Mic button",
+        micTargetAsr: "Transcribe with ASR",
+        micTargetModel: "Send audio to the model",
+        micTargetAsrDescription:
+          "The mic button types what you say into the message box.",
+        micTargetModelDescription:
+          "With an audio-input model loaded, the mic records a clip and attaches it to your message. Other models still get dictation.",
+        micTargetModelUnavailable:
+          "Load a model that accepts audio input (for example LFM3-Omni) to send it your voice.",
+        micRecordForModel: "Record audio for the model",
         engineLabel: "Dictation engine",
         engineBrowser: "Browser",
         engineBrowserDescription:
@@ -1693,6 +1703,13 @@ export const en = {
         sttQuantDescription:
           "Choose or search a STT model to run locally, then its quantization.",
         sttDeviceLabel: "Load into",
+        sttContextLabel: "Voice context",
+        sttContextAuto: "Auto (recommended)",
+        sttContextAutoDescription:
+          "Fits each recording, with more memory for longer audio. Older runtimes may need a fixed size to reduce memory. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextFixedDescription:
+          "Smaller limits use less memory. Recordings that do not fit need a higher limit or Auto. Applies to Qwen3-ASR in Voice and Transcribe.",
+        sttContextTokens: "{count} tokens",
         sttDeviceAuto: "GPU when available",
         sttDeviceCpu: "CPU RAM",
         sttDeviceAutoDescription:

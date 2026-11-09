@@ -80,8 +80,7 @@ HSA_ENABLE_DXG_DETECTION=1 /opt/rocm/bin/rocminfo | grep -E "Name:[[:space:]]+gf
   exit 3
 }
 """.replace("{release}", ROCM_RELEASE)
-# HSA loads the DXG bridge only when asked. The profiler SDK is never registered: it aborts HIP
-# start-up without KFD's sysfs topology, which WSL lacks.
+# HSA DXG bridge only if asked; profiler SDK never registered (HIP aborts without KFD sysfs).
 ROCM_ENVIRONMENT = {
     "HSA_ENABLE_DXG_DETECTION": "1",
     "LD_LIBRARY_PATH": "/opt/rocm-wsl/lib",
@@ -372,8 +371,7 @@ def guest_command(
     secrets: dict[str, str] | None = None,
     withhold: tuple[str, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
-    """wsl.exe argv plus the Windows env for it. Secrets cross through WSLENV, never argv, so they
-    stay out of the Windows process list."""
+    """Secrets cross via WSLENV, never argv, so they stay out of the Windows process list."""
     exe = wsl_exe()
     if exe is None:
         raise RuntimeError("WSL is not installed.")
@@ -474,8 +472,7 @@ def _sha256(path: Path) -> str:
 
 def ensure_build_tools(run_guest, progress = None) -> None:
     """Use the installer's cancellable runner for every prerequisite command."""
-    # A successful shell reports absent tools explicitly. Transport/shell failures
-    # propagate through run_guest rather than being mistaken for missing packages.
+    # A successful shell reports absent tools; transport failures raise, never looking absent.
     state = (
         run_guest(
             [
@@ -495,8 +492,7 @@ def ensure_build_tools(run_guest, progress = None) -> None:
         raise RuntimeError("Could not check WSL build tools. Retry the installation.")
     if progress:
         progress("Installing WSL build tools")
-    # Cancellation can leave a package unpacked but unconfigured. Repair it before
-    # retrying the same signed Ubuntu packages in this Studio-owned distro.
+    # Cancel can leave packages unpacked but unconfigured; dpkg is repaired before retrying.
     run_guest(["dpkg", "--configure", "-a"])
     run_guest(["apt-get", "update"])
     run_guest(["apt-get", "install", "-y", "--no-install-recommends", "build-essential"])
