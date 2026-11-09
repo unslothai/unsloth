@@ -134,7 +134,6 @@ def test_install_declines(monkeypatch):
     assert (
         fa.install(_pipe(), "_native_cudnn", SimpleNamespace(device = "cpu", torch_device = "cpu")) == 0
     )
-    # a probe that saw a different output keeps diffusers' contiguous call
     target = _cuda_target(monkeypatch, probe = False)
     assert fa.install(_pipe(), "_native_cudnn", target) == 0
     target = _cuda_target(monkeypatch)

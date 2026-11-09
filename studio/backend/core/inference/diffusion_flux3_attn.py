@@ -129,7 +129,6 @@ def strided_matches(device: Any, dtype: Any, heads: int, head_dim: int) -> bool:
     ok = False
     try:
         gen = torch.Generator(device = device).manual_seed(0)
-        # odd length, batch 2: a layout or batch-stride bug cannot hide in a square power-of-two shape
         q, k, v = (
             torch.randn(
                 (2, 333, heads, head_dim), generator = gen, device = device, dtype = torch.float32
