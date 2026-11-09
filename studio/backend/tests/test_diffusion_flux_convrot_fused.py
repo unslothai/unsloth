@@ -271,7 +271,6 @@ def test_prefix_layout_reads_any_attention_output_stride():
     assert (
         cq._prefix_layout(torch.zeros(1, 41, 24, 96)) is None
     )  # head width the kernel does not index
-    # CPU tensors never reach the kernel
     assert not cq.producer_layout_ok(
         None, torch.zeros(8, 256, dtype = torch.bfloat16), torch.zeros(8, 256, dtype = torch.bfloat16)
     )
